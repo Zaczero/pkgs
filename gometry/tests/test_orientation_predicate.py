@@ -49,12 +49,12 @@ def test_wrong_nonzero_ray_filter_declines_to_exact_orientation() -> None:
 
     polygon = gm.Polygon([a, b, d, a])
     probe = gm.Point(*point)
-    assert gm.contains(polygon, probe)
+    assert gm.contains(polygon.prepare(), probe)
     assert gm.covers(polygon, probe)
     assert gm.intersects(polygon, probe)
     assert not gm.disjoint(polygon, probe)
     assert gm.distance(polygon, probe) == 0.0
-    assert polygon.prepare().contains(probe)
+    assert gm.contains(polygon, probe)
 
 
 def test_simd_ray_filter_accepts_exactly_valid_hole() -> None:

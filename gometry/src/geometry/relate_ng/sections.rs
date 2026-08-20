@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::geometry::relate_ng::{
     AreaTesters, BoundaryContacts, Operand, OperandPool, OrientedRing, PointKey, RingClass,
     SectionEnd, Segment, SharedRun, TopologyComputer, XY, operand_covers_boundary, other_contains,
@@ -43,30 +45,94 @@ pub(crate) struct BoundarySection {
     end: SectionEnd,
 }
 
+pub(crate) struct BoundarySectionPlan {
+    sections: Vec<BoundarySection>,
+    rings: Vec<PlannedRing>,
+    target_probe_counts: [usize; 2],
+}
+
+struct PlannedRing {
+    operand: Operand,
+    sections: Range<usize>,
+    seed_offset: Option<usize>,
+}
+
+const fn operand_index(operand: Operand) -> usize {
+    match operand {
+        Operand::Left => 0,
+        Operand::Right => 1,
+    }
+}
+
+impl BoundarySectionPlan {
+    pub(crate) fn build(pool: &OperandPool, contacts: &mut BoundaryContacts) -> Self {
+        let mut plan = Self {
+            sections: Vec::new(),
+            rings: Vec::with_capacity(pool.rings.len()),
+            target_probe_counts: [0; 2],
+        };
+        let mut sections = Vec::new();
+        for ring in &pool.rings {
+            ring_sections(ring, pool, contacts, &mut sections);
+            let start = plan.sections.len();
+            let seed_offset = sections.iter().position(|section| !section.shared);
+            if let Some(seed_offset) = seed_offset {
+                let probes = planned_ring_probe_count(&sections, seed_offset);
+                let target = operand_index(opposite(ring.operand));
+                plan.target_probe_counts[target] =
+                    plan.target_probe_counts[target].saturating_add(probes);
+            }
+            plan.sections.extend_from_slice(&sections);
+            plan.rings.push(PlannedRing {
+                operand: ring.operand,
+                sections: start..plan.sections.len(),
+                seed_offset,
+            });
+        }
+        plan
+    }
+
+    pub(crate) const fn target_probe_counts(&self) -> [usize; 2] {
+        self.target_probe_counts
+    }
+}
+
+fn planned_ring_probe_count(sections: &[BoundarySection], seed_index: usize) -> usize {
+    let mut probes = 1_usize;
+    let mut reseed_next = false;
+    let (head, tail) = sections.split_at(seed_index);
+    for section in tail.iter().chain(head.iter()) {
+        if section.shared {
+            reseed_next = true;
+            continue;
+        }
+        if section.starts_after_reseed || reseed_next {
+            probes = probes.saturating_add(1);
+            reseed_next = false;
+        }
+        if section.end == SectionEnd::Reseed {
+            reseed_next = true;
+        }
+    }
+    probes
+}
+
 pub(crate) fn classify_boundary_sections(
     operand: Operand,
     pool: &OperandPool,
-    contacts: &mut BoundaryContacts,
+    plan: &BoundarySectionPlan,
     computer: &mut TopologyComputer<'_>,
     testers: AreaTesters<'_>,
 ) -> bool {
     // Per-ring boundary sections are the same ~N shape every relate; reuse one
     // thread-local buffer instead of allocating a fresh `Vec` per ring (the
     // large-polygon profile's hot allocation).
-    thread_local! {
-        static SECTIONS_SCRATCH: std::cell::Cell<Vec<BoundarySection>> =
-            const { std::cell::Cell::new(Vec::new()) };
-    }
-    let mut sections = SECTIONS_SCRATCH.take();
     let other = opposite(operand);
     let mut early_decided = false;
     let mut deferred = false;
-    for ring in pool.rings.iter().filter(|ring| ring.operand == operand) {
-        ring_sections(ring, pool, contacts, &mut sections);
-        if sections.is_empty() {
-            continue;
-        }
-        let Some(seed_index) = sections.iter().position(|section| !section.shared) else {
+    for ring in plan.rings.iter().filter(|ring| ring.operand == operand) {
+        let sections = &plan.sections[ring.sections.clone()];
+        let Some(seed_index) = ring.seed_offset else {
             continue;
         };
         let seed = sections[seed_index];
@@ -121,8 +187,6 @@ pub(crate) fn classify_boundary_sections(
             break;
         }
     }
-    sections.clear();
-    SECTIONS_SCRATCH.set(sections);
     !deferred
 }
 
@@ -288,7 +352,7 @@ fn strict_section_membership(
     Some(other_contains(pool, operand, midpoint))
 }
 
-pub(crate) const fn opposite(operand: Operand) -> Operand {
+const fn opposite(operand: Operand) -> Operand {
     match operand {
         Operand::Left => Operand::Right,
         Operand::Right => Operand::Left,

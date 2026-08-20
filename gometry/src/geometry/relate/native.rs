@@ -62,15 +62,29 @@ pub(crate) fn native_relate_pattern_shapes(
 }
 
 pub(crate) fn native_relate_data(left: &ShapeData, right: &ShapeData) -> De9im {
+    native_relate_data_for(
+        left,
+        right,
+        crate::geometry::PointProbeUse::OneShot(0),
+        crate::geometry::PointProbeUse::OneShot(0),
+    )
+}
+
+pub(crate) fn native_relate_data_for(
+    left: &ShapeData,
+    right: &ShapeData,
+    left_mode: crate::geometry::PointProbeUse,
+    right_mode: crate::geometry::PointProbeUse,
+) -> De9im {
     if left.shape().is_empty() || right.shape().is_empty() {
         return empty_relate(left.shape(), right.shape());
     }
-    if let Some(matrix) =
-        areal_relate_data(left, right).or_else(|| lineal_relate_shapes(left.shape(), right.shape()))
+    if let Some(matrix) = areal_relate_data(left, right, left_mode, right_mode)
+        .or_else(|| lineal_relate_shapes(left.shape(), right.shape()))
     {
         return matrix;
     }
-    if let Some(mut matrix) = mixed_relate_data(left, right) {
+    if let Some(mut matrix) = mixed_relate_data(left, right, left_mode, right_mode) {
         if let Some(degenerate) = degenerate_polygonal_lineal_overlap(left.shape(), right.shape()) {
             matrix.set_at_least(Loc::Interior, Loc::Interior, DimCurve);
             if degenerate.two_point_collapse {

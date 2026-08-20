@@ -1,5 +1,5 @@
 use crate::geometry::relate::{De9im, polygon_parts};
-use crate::geometry::{Polygon, Shape, ShapeData, overlay, relate_ng};
+use crate::geometry::{PointProbeUse, Polygon, Shape, ShapeData, overlay, relate_ng};
 
 pub(crate) fn areal_relate_arrangement_oracle(
     left: &[Polygon],
@@ -84,19 +84,24 @@ pub(crate) fn areal_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im> 
 /// [`PointBatchTester`] turns the per-boundary-section membership probes from
 /// O(ring) scans into hierarchical Y-stabbing lookups — the dominant cost on
 /// large polygons.
-pub(crate) fn areal_relate_data(left: &ShapeData, right: &ShapeData) -> Option<De9im> {
+pub(crate) fn areal_relate_data(
+    left: &ShapeData,
+    right: &ShapeData,
+    left_mode: PointProbeUse,
+    right_mode: PointProbeUse,
+) -> Option<De9im> {
     let (Some(left_rings), Some(right_rings)) = (left.staged_rings(), right.staged_rings()) else {
         return None;
     };
-    let testers = relate_ng::AreaTesters {
-        left: left.point_tester(),
-        right: right.point_tester(),
-    };
-    match relate_ng::areal_relate_ng_staged(
+    match relate_ng::areal_relate_ng_staged_with_sources(
         left_rings,
         right_rings,
         relate_ng::RelateGoal::Matrix,
-        testers,
+        relate_ng::AreaTesters::default(),
+        relate_ng::AreaTesterSources {
+            left: Some((left, left_mode)),
+            right: Some((right, right_mode)),
+        },
         left.is_simple_cached() && right.is_simple_cached(),
     ) {
         Some(relate_ng::RelateDecision::Matrix(matrix)) => Some(matrix),

@@ -14,7 +14,7 @@ mod stabbing;
 mod sweep;
 
 pub(crate) use index::{PointSetIndex, SegmentIndex};
-pub(crate) use stabbing::{EdgeYIndex, YStabbingIndex};
+pub(crate) use stabbing::{EdgeId, EdgeYIndex, YStabbingIndex, uses_linear_plan_for_len};
 pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,

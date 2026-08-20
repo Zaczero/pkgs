@@ -16,7 +16,7 @@ mod validity_helpers;
 
 pub(crate) use convex::{
     convex_box_strictly_inside, convex_covers_all_vertices, convex_halfplanes_cover,
-    option_bounds_disjoint, vertex_witness,
+    option_bounds_disjoint, vertex_witness, vertex_witness_probe_count,
 };
 pub(crate) use membership::{
     RingClass, TouchDirections, bounds_equal_topological, exterior_part_uniform,

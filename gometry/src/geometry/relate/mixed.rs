@@ -1,40 +1,50 @@
-use crate::geometry::relate::{De9im, LinealOperand, polygon_parts};
+use crate::geometry::relate::{De9im, LinealOperand, Loc, polygon_parts};
 use crate::geometry::{
-    Coordinates as _, Point, PointBatchTester, Polygon, SEGMENT_INDEX_MIN_PAIRS, Segment,
-    SegmentContact, SegmentProjection, Shape, ShapeData, XY, for_each_bipartite_index_pair,
-    point_on_segment, same_point, segment_contact, segment_cross_point, segment_envelopes_disjoint,
-    segment_midpoint, segment_projection, shared_segment_part,
+    Coordinates as _, Point, PointBatchTester, PointProbeUse, Polygon, RingClass,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentContact, SegmentProjection, Shape, ShapeData, XY,
+    for_each_bipartite_index_pair, point_on_segment, same_point, segment_contact,
+    segment_cross_point, segment_envelopes_disjoint, segment_midpoint, segment_projection,
+    shared_segment_part,
 };
 
 pub(crate) fn mixed_relate_shapes(left: &Shape, right: &Shape) -> Option<De9im> {
-    mixed_relate_with(left, None, right, None)
+    mixed_relate_with(left, None, None, right, None, None)
 }
 
 /// [`mixed_relate_shapes`] over cached operands: the area side's prepared
 /// hierarchical [`PointBatchTester`] turns each line sub-piece's membership
 /// probe from an O(ring) ring scan into a Y-stabbing lookup, the dominant
 /// cost on large polygons.
-pub(crate) fn mixed_relate_data(left: &ShapeData, right: &ShapeData) -> Option<De9im> {
+pub(crate) fn mixed_relate_data(
+    left: &ShapeData,
+    right: &ShapeData,
+    left_mode: PointProbeUse,
+    right_mode: PointProbeUse,
+) -> Option<De9im> {
     mixed_relate_with(
         left.shape(),
-        left.point_tester(),
+        None,
+        Some((left, left_mode)),
         right.shape(),
-        right.point_tester(),
+        None,
+        Some((right, right_mode)),
     )
 }
 
 pub(crate) fn mixed_relate_with(
     left: &Shape,
     left_tester: Option<&PointBatchTester>,
+    left_source: Option<(&ShapeData, PointProbeUse)>,
     right: &Shape,
     right_tester: Option<&PointBatchTester>,
+    right_source: Option<(&ShapeData, PointProbeUse)>,
 ) -> Option<De9im> {
     if let (Some(line), Some(polygons)) = (LinealOperand::from_shape(left), polygon_parts(right)) {
-        mixed_relate(&line, polygons, right, right_tester)
+        mixed_relate(&line, polygons, right, right_tester, right_source)
     } else if let (Some(line), Some(polygons)) =
         (LinealOperand::from_shape(right), polygon_parts(left))
     {
-        Some(mixed_relate(&line, polygons, left, left_tester)?.transpose())
+        Some(mixed_relate(&line, polygons, left, left_tester, left_source)?.transpose())
     } else {
         None
     }
@@ -87,25 +97,20 @@ pub(crate) fn projection_interval(
 }
 
 #[expect(
-    clippy::iter_over_hash_type,
-    reason = "each boundary visit writes independent DE-9IM cells, so iteration order is unobservable"
+    clippy::too_many_lines,
+    reason = "the scan, probe construction, and matrix assembly form one cohesive relation operation"
+)]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the explicit tester fallback keeps the two classification strategies readable"
 )]
 pub(crate) fn mixed_relate(
     line: &LinealOperand,
     polygons: &[Polygon],
     area: &Shape,
     area_tester: Option<&PointBatchTester>,
+    area_source: Option<(&ShapeData, PointProbeUse)>,
 ) -> Option<De9im> {
-    // The area-side membership probes: the cached hierarchical
-    // `PointBatchTester` when the operand came through the prepared
-    // `ShapeData` path, else the raw ring scan. Both share
-    // `Shape::contains_point`/`covers_point` semantics.
-    let contains = |point: Point| {
-        area_tester.map_or_else(|| area.contains_point(point), |t| t.contains_point(point))
-    };
-    let covers = |point: Point| {
-        area_tester.map_or_else(|| area.covers_point(point), |t| t.covers_point(point))
-    };
     let mut rings: Vec<Segment> = Vec::new();
     for polygon in polygons {
         for ring in polygon.rings() {
@@ -133,11 +138,9 @@ pub(crate) fn mixed_relate(
     let mut splits = group_values_by_index(splits_flat, line.segments.len());
     let on_boundary = group_intervals_by_index(on_boundary_flat, line.segments.len());
     let mut ring_cover = group_intervals_by_index(ring_cover_flat, rings.len());
-    // Classify the line sub-pieces between splits: each lies wholly
-    // inside, outside, or along a recorded boundary run, so ONE strict
-    // midpoint raycast decides it.
-    let mut ii = false;
-    let mut ie = false;
+    // This is the operation's membership plan. The same points counted for
+    // tester selection are consumed below; do not recompute midpoints later.
+    let mut subpiece_probes = Vec::new();
     for (index, &segment) in line.segments.iter().enumerate() {
         let ts = &mut splits[index];
         ts.push(SegmentProjection::Start);
@@ -152,20 +155,44 @@ pub(crate) fn mixed_relate(
                 .iter()
                 .any(|(b0, b1)| b0.cmp_along(t0).is_le() && b1.cmp_along(t1).is_ge())
             {
-                continue; // collinear run — already graded IB = 1
+                continue;
             }
-            let probe = segment_midpoint(Segment {
+            subpiece_probes.push(segment_midpoint(Segment {
                 start: t0.interpolate_xy(segment),
                 end: t1.interpolate_xy(segment),
-            });
-            if contains(probe) {
-                ii = true;
-            } else {
-                ie = true;
-            }
+            }));
         }
-        if ii && ie {
-            break;
+    }
+    let boundary_probes: Vec<Point> = line.boundary.iter().map(|key| key.xy().point()).collect();
+    let probe_count = subpiece_probes.len().saturating_add(boundary_probes.len());
+    let area_tester = area_source
+        .and_then(|(shape, mode)| shape.point_tester_for(mode.for_plan(probe_count)))
+        .or(area_tester);
+    let locate = |point: Point| {
+        if let Some(tester) = area_tester {
+            match tester
+                .classify_area_point(point)
+                .expect("mixed relate area source is polygonal")
+            {
+                RingClass::Interior => Loc::Interior,
+                RingClass::Boundary => Loc::Boundary,
+                RingClass::Exterior => Loc::Exterior,
+            }
+        } else if area.contains_point(point) {
+            Loc::Interior
+        } else if area.covers_point(point) {
+            Loc::Boundary
+        } else {
+            Loc::Exterior
+        }
+    };
+    let mut ii = false;
+    let mut ie = false;
+    for probe in subpiece_probes {
+        if matches!(locate(probe), Loc::Interior) {
+            ii = true;
+        } else {
+            ie = true;
         }
     }
     let mut matrix = [b'F'; 9];
@@ -187,14 +214,11 @@ pub(crate) fn mixed_relate(
     if bb {
         matrix[4] = b'0';
     }
-    for key in &line.boundary {
-        let point = key.xy().point();
-        if contains(point) {
-            matrix[3] = b'0';
-        } else if covers(point) {
-            matrix[4] = b'0';
-        } else {
-            matrix[5] = b'0';
+    for point in boundary_probes {
+        match locate(point) {
+            Loc::Interior => matrix[3] = b'0',
+            Loc::Boundary => matrix[4] = b'0',
+            Loc::Exterior => matrix[5] = b'0',
         }
     }
     if !fully_covered(&mut ring_cover) {

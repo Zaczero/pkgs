@@ -512,7 +512,7 @@ impl GeometryArrayStorage {
             },
             // Mixed has no columnar fold; the unary bounds kernel walks
             // shapes (and the prepared-row cache must not seed `None` as
-            // "known empty" when this returns None — see with_row_data).
+            // "known empty" when this returns None — see prepared_row).
             Self::Mixed(_) => None,
         }
     }

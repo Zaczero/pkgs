@@ -35,8 +35,9 @@ pub(crate) use mixed::{
     projection_interval,
 };
 pub(crate) use native::{
-    collection_has_overlapping_lineal_members, native_relate_data, native_relate_pattern_shapes,
-    native_relate_shapes, shape_has_polygonal_members, shape_has_puntal_support,
+    collection_has_overlapping_lineal_members, native_relate_data, native_relate_data_for,
+    native_relate_pattern_shapes, native_relate_shapes, shape_has_polygonal_members,
+    shape_has_puntal_support,
 };
 pub(crate) use operands::{
     LinealOperand, PuntalOperand, effective_dimension, empty_relate, line_has_nonzero_segment,

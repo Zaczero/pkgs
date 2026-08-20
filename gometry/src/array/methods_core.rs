@@ -341,6 +341,11 @@ impl PyGeometryArray {
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use pyo3::types::{PyDict, PyList};
+        if self.has_m() || self.epoch().is_some() {
+            return Err(crate::PyTypeError::new_err(
+                "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
+            ));
+        }
         let features = PyList::empty(py);
         for row in 0..self.storage().len() {
             let feature = PyDict::new(py);

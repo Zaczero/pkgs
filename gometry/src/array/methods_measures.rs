@@ -990,7 +990,7 @@ mod geographic_masked_bounds_tests {
 
     #[test]
     fn geographic_missing_rows_keep_the_packed_bounds_lane() {
-        Python::initialize();
+        crate::test_support::initialize_python();
         let array = PyGeometryArray::from_shapes(
             vec![
                 line(&[(170.0, 10.0), (-170.0, 20.0)]),

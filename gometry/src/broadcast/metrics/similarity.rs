@@ -3,9 +3,9 @@
 use pyo3::types::PyAny;
 
 use crate::broadcast::metrics::{
-    Arc, Bound, CollectRows as _, DistanceUnit, Frame, GeometryInput, Py, PyGeometry,
-    PyGeometryArray, PyResult, Python, Shape, classify_required, crs, float64_array,
-    pair_dwithin_shapes, paired_arrays, resolve_metric, rows_err,
+    Arc, Bound, CollectRows as _, DistanceUnit, Frame, GeometryInput, Py, PyGeometryArray,
+    PyResult, Python, Shape, classify_required, crs, float64_array, paired_arrays, resolve_metric,
+    rows_err,
 };
 
 /// Per-element ``densify=`` lane for array Hausdorff/Fréchet.
@@ -70,26 +70,4 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             )
         },
     }
-}
-
-/// CRS-aware "within `distance`" test (planar coordinate units, or geodesic
-/// meters on a geographic CRS).
-pub(crate) fn crs_aware_dwithin(
-    geometry: &PyGeometry,
-    other: &PyGeometry,
-    distance: f64,
-    operation: &str,
-    unit: Option<DistanceUnit>,
-) -> PyResult<bool> {
-    geometry.frame.compatible(&other.frame, operation)?;
-    let model = resolve_metric(geometry.crs_str(), unit, operation)?;
-    // Both metric families short-circuit through their threshold kernels.
-    Ok(match &model {
-        crs::MetricModel::Planar { to_metre } => geometry
-            .shape
-            .dwithin(&other.shape, distance / to_metre.get()),
-        crs::MetricModel::Geodesic(_) => {
-            pair_dwithin_shapes(&model, &geometry.shape, &other.shape, distance)?
-        },
-    })
 }

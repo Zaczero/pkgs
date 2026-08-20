@@ -44,6 +44,8 @@ mod crs;
 mod curves;
 mod error;
 mod geometry;
+#[cfg(test)]
+mod test_support;
 #[macro_use]
 mod heap_size;
 pub(crate) use heap_size::HeapSize;
@@ -67,16 +69,16 @@ pub(crate) use array::{
 mod broadcast;
 use broadcast::{
     CollectRows, DistanceUnit, GeometryInput, OptionalDensifyParam, array_binary_geometry,
-    array_crs_dwithin_scalar, broadcast2, broadcast2_geometry, classify_input, classify_required,
-    coerce_geometry, crs_aware_dwithin, crs_metric_binary_geometry_broadcast, ensure_same_len,
-    exact_geometry, exact_geometry_array, expected_geometry_or_array, lonlat_shape,
-    lonlat_shape_under, metric_frechet_densified, metric_hausdorff_densified,
-    metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points, metric_shortest_line, multipoint_splitter_from_array,
-    pair_distance_resolved, pair_distance_resolved_result, pair_dwithin_resolved,
-    pair_dwithin_resolved_result, paired_arrays, parse_wkb_geometry, predicate_broadcast,
-    push_ring_shapes, py_bool, relate_pattern_broadcast, relate_string_broadcast, require_point,
-    resolve_metric, rows_err, validate_densify, xy_predicate, xy_predicate_geometry,
+    broadcast2, broadcast2_geometry, classify_input, classify_required, coerce_geometry,
+    crs_metric_binary_geometry_broadcast, ensure_same_len, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, lonlat_shape, lonlat_shape_under, metric_frechet_densified,
+    metric_hausdorff_densified, metric_maximum_inscribed_radius, metric_minimum_clearance,
+    metric_minimum_clearance_line, metric_nearest_points, metric_shortest_line,
+    multipoint_splitter_from_array, pair_distance_resolved, pair_distance_resolved_result,
+    pair_dwithin_resolved, pair_dwithin_resolved_result, paired_arrays, parse_wkb_geometry,
+    predicate_broadcast, push_ring_shapes, py_bool, relate_pattern_broadcast,
+    relate_string_broadcast, require_point, resolve_metric, rows_err, validate_densify,
+    xy_predicate,
 };
 mod dispatch;
 pub(crate) use py::classes::{
@@ -99,11 +101,11 @@ use py::functions::{
 mod grid;
 mod predicates;
 pub(crate) use predicates::{
-    _unpickle_prepared, IndexEnvelope, PREPARED_PREDICATE_MIN, Predicate, PyPreparedGeometry,
-    contains, contains_properly, contains_xy, covered_by, covers, crosses, disjoint, distance,
-    distance_3d, dwithin, equals, equals_exact, equals_identical, frechet_distance,
-    hausdorff_distance, intersects, intersects_xy, nearest_points, overlaps, relate,
-    relate_pattern, scalar_vs_shapes, shortest_line, topology_scalar_pair, touches, within,
+    _unpickle_prepared, IndexEnvelope, Predicate, PyPreparedGeometry, contains, contains_properly,
+    contains_xy, covered_by, covers, crosses, disjoint, distance, distance_3d, dwithin, equals,
+    equals_exact, equals_identical, frechet_distance, hausdorff_distance, intersects,
+    intersects_xy, nearest_points, overlaps, relate, relate_pattern, scalar_vs_shapes,
+    shortest_line, topology_scalar_pair, touches, within,
 };
 mod py;
 mod render;
@@ -239,4 +241,152 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .collect();
     m.setattr("__all__", public)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod above_gate_parity_tests {
+    use std::fmt::Write as _;
+
+    use pyo3::types::{PyList, PyModule};
+
+    use super::*;
+
+    const PROBE_COUNT_BELOW_GATE: usize = 9_999;
+    const PROBE_COUNT_ABOVE_GATE: usize = 10_000;
+
+    fn probes(count: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut state = 0x4D59_5DF4_u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (state >> 11) as f64 / ((1_u64 << 53) as f64)
+        };
+        (
+            std::iter::repeat_with(&mut next)
+                .take(count)
+                .map(|value| value * 24.0 - 12.0)
+                .collect(),
+            std::iter::repeat_with(next)
+                .take(count)
+                .map(|value| value * 24.0 - 12.0)
+                .collect(),
+        )
+    }
+
+    fn regular_polygon_wkt() -> String {
+        let mut wkt = String::from("POLYGON ((");
+        for index in 0..64 {
+            let angle = std::f64::consts::TAU * f64::from(index) / 64.0;
+            if index != 0 {
+                wkt.push_str(", ");
+            }
+            let _ = write!(wkt, "{} {}", 10.0 * angle.cos(), 10.0 * angle.sin());
+        }
+        wkt.push_str(", 10 0))");
+        wkt
+    }
+
+    fn bools(value: &Bound<'_, PyAny>) -> PyResult<Vec<bool>> {
+        value.call_method0("tolist")?.extract()
+    }
+
+    fn xy_mismatch(
+        py: Python<'_>,
+        module: &Bound<'_, PyModule>,
+        geometry: &Bound<'_, PyAny>,
+        xs: &[f64],
+        ys: &[f64],
+        label: &str,
+    ) -> PyResult<Option<String>> {
+        let contains_xy = module.getattr("contains_xy")?;
+        let x = PyList::new(py, xs)?;
+        let y = PyList::new(py, ys)?;
+        let fast = bools(&contains_xy.call1((geometry, &x, &y))?)?;
+        for (index, ((&x, &y), &fast_verdict)) in xs.iter().zip(ys).zip(&fast).enumerate() {
+            let exact = contains_xy.call1((geometry, x, y))?.extract::<bool>()?;
+            if fast_verdict != exact {
+                return Ok(Some(format!(
+                    "{label} mismatch at probe {index} coordinate ({x}, {y}): fast={fast_verdict}, exact={exact}"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn packed_mismatch(
+        module: &Bound<'_, PyModule>,
+        geometry: &Bound<'_, PyAny>,
+        from_wkt: &Bound<'_, PyAny>,
+        xs: &[f64],
+        ys: &[f64],
+    ) -> PyResult<Option<String>> {
+        let point_wkts: Vec<String> = xs
+            .iter()
+            .zip(ys)
+            .map(|(x, y)| format!("POINT ({x} {y})"))
+            .collect();
+        let points = from_wkt.call1((point_wkts,))?;
+        let fast = bools(&module.getattr("contains")?.call1((geometry, &points))?)?;
+        let contains_xy = module.getattr("contains_xy")?;
+        for (index, ((&x, &y), &fast_verdict)) in xs.iter().zip(ys).zip(&fast).enumerate() {
+            let exact = contains_xy.call1((geometry, x, y))?.extract::<bool>()?;
+            if fast_verdict != exact {
+                return Ok(Some(format!(
+                    "packed mismatch at probe {index} coordinate ({x}, {y}): fast={fast_verdict}, exact={exact}"
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions include the first mismatching coordinate in the failure"
+    )]
+    fn contains_xy_and_packed_points_match_exact_across_grid_gate() -> PyResult<()> {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib")?;
+            lib(&module)?;
+            let from_wkt = module.getattr("from_wkt")?;
+            let geometry = from_wkt.call1((regular_polygon_wkt(),))?;
+
+            let (xs, ys) = probes(PROBE_COUNT_BELOW_GATE);
+            let below_mismatch = xy_mismatch(py, &module, &geometry, &xs, &ys, "XY below gate")?;
+            assert!(
+                below_mismatch.is_none(),
+                "below-gate parity unexpectedly failed: {}",
+                below_mismatch.unwrap_or_default()
+            );
+            let packed_below = packed_mismatch(&module, &geometry, &from_wkt, &xs, &ys)?;
+            assert!(
+                packed_below.is_none(),
+                "packed below-gate parity unexpectedly failed: {}",
+                packed_below.unwrap_or_default()
+            );
+
+            let (xs_above, ys_above) = probes(PROBE_COUNT_ABOVE_GATE);
+            let mut failures = Vec::new();
+            if let Some(failure) = xy_mismatch(
+                py,
+                &module,
+                &geometry,
+                &xs_above,
+                &ys_above,
+                "XY above gate",
+            )? {
+                failures.push(failure);
+            }
+
+            if let Some(failure) =
+                packed_mismatch(&module, &geometry, &from_wkt, &xs_above, &ys_above)?
+            {
+                failures.push(failure);
+            }
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            Ok(())
+        })
+    }
 }

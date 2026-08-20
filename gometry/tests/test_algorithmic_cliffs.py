@@ -243,27 +243,23 @@ def test_prepared_contains_xy_matches_free_at_every_probe_count():
     """Prepared receiver uses its tester at every count: results match free.
 
     Pre-fix cliff discarded the prepared tester below 64 probes (572x).
-    Post-fix: prepared always uses the hierarchical tester; free keeps
-    MIN_PROBES=64 for one-shot batches. Observable without a clock: identical
-    results at 1/8/63/64 probes, and ``explain()`` names the hierarchical
-    kernel. Wall-clock scale lives in
+    The retained policy is plan-aware: this 10,000-edge shape crosses over
+    at four one-shot probes. Observable without a clock: identical results
+    at 1/2/3/4 probes. Wall-clock scale lives in
     ``benches/cases/case_prepared_contains_xy_scale.py``.
     """
     big = _big_polygon(10_000)
     prep = big.prepare()
-    plan = prep.explain()
-    assert plan[0] == 'prepared geometry: Polygon'
-    assert any('hierarchical Y-stabbing' in line for line in plan)
 
-    for n in (1, 8, 63, 64):
+    for n in (1, 2, 3, 4):
         xs, ys = _PREPARED_PROBES[:n].T
         np.testing.assert_array_equal(
-            prep.contains_xy(xs, ys),
+            gm.contains_xy(prep, xs, ys),
             gm.contains_xy(big, xs, ys),
             err_msg=f'contains_xy mismatch at n={n}',
         )
         np.testing.assert_array_equal(
-            prep.intersects_xy(xs, ys),
+            gm.intersects_xy(prep, xs, ys),
             gm.intersects_xy(big, xs, ys),
             err_msg=f'intersects_xy mismatch at n={n}',
         )
@@ -273,30 +269,28 @@ def test_prepared_and_free_contains_xy_results_match():
     big = _big_polygon(2000)
     prep = big.prepare()
     xs, ys = _PREPARED_PROBES.T
-    np.testing.assert_array_equal(prep.contains_xy(xs, ys), gm.contains_xy(big, xs, ys))
+    np.testing.assert_array_equal(gm.contains_xy(prep, xs, ys), gm.contains_xy(big, xs, ys))
     np.testing.assert_array_equal(
-        prep.intersects_xy(xs, ys), gm.intersects_xy(big, xs, ys)
+        gm.intersects_xy(prep, xs, ys), gm.intersects_xy(big, xs, ys)
     )
     # Scalar too
-    assert prep.contains_xy(0.0, 0.0) == gm.contains_xy(big, 0.0, 0.0)
-    assert prep.intersects_xy(2.0, 2.0) == gm.intersects_xy(big, 2.0, 2.0)
+    assert gm.contains_xy(prep, 0.0, 0.0) == gm.contains_xy(big, 0.0, 0.0)
+    assert gm.intersects_xy(prep, 2.0, 2.0) == gm.intersects_xy(big, 2.0, 2.0)
 
 
 def test_free_fn_contains_xy_agrees_across_threshold():
-    """Free contains_xy is correct on both sides of MIN_PROBES (63 and 64).
+    """Free contains_xy is correct on both sides of the four-probe crossover.
 
-    The free path still thresholds tester build at 64 probes; that timing
-    shape lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
+    The timing shape lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
     Here only result agreement with prepared (and across the threshold).
     """
     big = _big_polygon(10_000)
     prep = big.prepare()
     xs64, ys64 = _PREPARED_PROBES.T
-    xs63, ys63 = xs64[:63], ys64[:63]
-    free63 = gm.contains_xy(big, xs63, ys63)
-    free64 = gm.contains_xy(big, xs64, ys64)
-    np.testing.assert_array_equal(free63, prep.contains_xy(xs63, ys63))
-    np.testing.assert_array_equal(free64, prep.contains_xy(xs64, ys64))
-    # Shared prefix: 63-probe free (edge walk) matches the first 63 of the
-    # 64-probe free path (tester-built) — both sides of MIN_PROBES agree.
-    np.testing.assert_array_equal(free63, free64[:63])
+    xs3, ys3 = xs64[:3], ys64[:3]
+    xs4, ys4 = xs64[:4], ys64[:4]
+    free3 = gm.contains_xy(big, xs3, ys3)
+    free4 = gm.contains_xy(big, xs4, ys4)
+    np.testing.assert_array_equal(free3, gm.contains_xy(prep, xs3, ys3))
+    np.testing.assert_array_equal(free4, gm.contains_xy(prep, xs4, ys4))
+    np.testing.assert_array_equal(free3, free4[:3])

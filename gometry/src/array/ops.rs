@@ -393,24 +393,23 @@ impl PyGeometryArray {
                                         if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                                             return Ok(Self::missing_placeholder());
                                         }
-                                        row.with_data(|left| {
-                                            let left_cache = lefts.row_frame_cache(row_index);
-                                            Ok(crate::geometry::nearest_line(
-                                                left.geodesic_nearest_points_cached_split(
-                                                    &left_cache,
-                                                    &right,
-                                                    &right_cache,
-                                                    crs,
-                                                    semi_major,
-                                                    flattening,
-                                                    metric,
-                                                )?,
-                                                crate::geometry::common_axes(
-                                                    left.shape(),
-                                                    right.shape(),
-                                                ),
-                                            ))
-                                        })
+                                        let left = lefts.prepared_row(row_index, row);
+                                        let left_cache = lefts.row_frame_cache(row_index);
+                                        Ok(crate::geometry::nearest_line(
+                                            left.geodesic_nearest_points_cached_split(
+                                                &left_cache,
+                                                &right,
+                                                &right_cache,
+                                                crs,
+                                                semi_major,
+                                                flattening,
+                                                metric,
+                                            )?,
+                                            crate::geometry::common_axes(
+                                                left.shape(),
+                                                right.shape(),
+                                            ),
+                                        ))
                                     })
                                     .collect_rows())
                             },
@@ -440,27 +439,22 @@ impl PyGeometryArray {
                                     if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
                                         return Ok(Self::missing_placeholder());
                                     }
-                                    left.with_data(|left| {
-                                        right.with_data(|right| {
-                                            let left_cache = lefts.row_frame_cache(row);
-                                            let right_cache = rights.row_frame_cache(row);
-                                            Ok(crate::geometry::nearest_line(
-                                                left.geodesic_nearest_points_cached_split(
-                                                    &left_cache,
-                                                    right,
-                                                    &right_cache,
-                                                    crs,
-                                                    semi_major,
-                                                    flattening,
-                                                    metric,
-                                                )?,
-                                                crate::geometry::common_axes(
-                                                    left.shape(),
-                                                    right.shape(),
-                                                ),
-                                            ))
-                                        })
-                                    })
+                                    let left = lefts.prepared_row(row, left);
+                                    let right = rights.prepared_row(row, right);
+                                    let left_cache = lefts.row_frame_cache(row);
+                                    let right_cache = rights.row_frame_cache(row);
+                                    Ok(crate::geometry::nearest_line(
+                                        left.geodesic_nearest_points_cached_split(
+                                            &left_cache,
+                                            &right,
+                                            &right_cache,
+                                            crs,
+                                            semi_major,
+                                            flattening,
+                                            metric,
+                                        )?,
+                                        crate::geometry::common_axes(left.shape(), right.shape()),
+                                    ))
                                 })
                                 .collect_rows())
                         })
@@ -509,26 +503,22 @@ impl PyGeometryArray {
                                     if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
                                         return Ok((None, CoordinateAxes::XY));
                                     }
-                                    left.with_data(|left| {
-                                        right.with_data(|right| {
-                                            let left_cache = lefts.row_frame_cache(row);
-                                            let right_cache = rights.row_frame_cache(row);
-                                            let common = crate::geometry::common_axes(
-                                                left.shape(),
-                                                right.shape(),
-                                            );
-                                            left.geodesic_nearest_points_cached_split(
-                                                &left_cache,
-                                                right,
-                                                &right_cache,
-                                                crs,
-                                                semi_major,
-                                                flattening,
-                                                metric,
-                                            )
-                                            .map(|pair| (pair, common))
-                                        })
-                                    })
+                                    let left = lefts.prepared_row(row, left);
+                                    let right = rights.prepared_row(row, right);
+                                    let left_cache = lefts.row_frame_cache(row);
+                                    let right_cache = rights.row_frame_cache(row);
+                                    let common =
+                                        crate::geometry::common_axes(left.shape(), right.shape());
+                                    left.geodesic_nearest_points_cached_split(
+                                        &left_cache,
+                                        &right,
+                                        &right_cache,
+                                        crs,
+                                        semi_major,
+                                        flattening,
+                                        metric,
+                                    )
+                                    .map(|pair| (pair, common))
                                 })
                                 .collect_rows())
                         })
@@ -552,14 +542,10 @@ impl PyGeometryArray {
                             if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
                                 return Ok((None, CoordinateAxes::XY));
                             }
-                            left.with_data(|left| {
-                                right.with_data(|right| {
-                                    let common =
-                                        crate::geometry::common_axes(left.shape(), right.shape());
-                                    metric_nearest_points(&model, left, right)
-                                        .map(|pair| (pair, common))
-                                })
-                            })
+                            let left = lefts.prepared_row(row, left);
+                            let right = rights.prepared_row(row, right);
+                            let common = crate::geometry::common_axes(left.shape(), right.shape());
+                            metric_nearest_points(&model, &left, &right).map(|pair| (pair, common))
                         })
                         .collect_rows()
                 })
@@ -897,7 +883,7 @@ mod voronoi_budget_tests {
 
     #[test]
     fn voronoi_array_budget_is_cumulative_across_rows() {
-        Python::initialize();
+        crate::test_support::initialize_python();
         let visits = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&visits);
         let array = PyGeometryArray::from_shapes(

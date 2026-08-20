@@ -23,14 +23,16 @@ mod sections;
 
 pub(crate) use computer::CompiledPattern;
 pub(in crate::geometry) use computer::{
-    AreaTesters, RelateDecision, RelateGoal, TopologyComputer, areal_relate_ng,
-    areal_relate_ng_staged,
+    AreaTesterSources, AreaTesters, RelateDecision, RelateGoal, TopologyComputer, areal_relate_ng,
+    areal_relate_ng_staged_with_sources,
 };
 pub(in crate::geometry) use contacts::{BoundaryContacts, SharedRun, scan_boundary_contacts};
 #[cfg(test)]
 pub(in crate::geometry) use probe::polygon_interior_probe;
 pub(in crate::geometry) use probe::probe_interior_faces;
-pub(in crate::geometry) use sections::{NodeIncidence, classify_boundary_sections};
+pub(in crate::geometry) use sections::{
+    BoundarySectionPlan, NodeIncidence, classify_boundary_sections,
+};
 
 #[cfg(test)]
 mod tests;

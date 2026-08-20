@@ -102,24 +102,20 @@ pub(crate) fn shortest_line(
                             .iter_rows()
                             .enumerate()
                             .map(|(row_index, row)| {
-                                row.with_data(|element| {
-                                    let element_cache = array.row_frame_cache(row_index);
-                                    Ok(crate::geometry::nearest_line(
-                                        scalar.geodesic_nearest_points_cached_split(
-                                            &scalar_cache,
-                                            element,
-                                            &element_cache,
-                                            crs,
-                                            semi_major,
-                                            flattening,
-                                            metric,
-                                        )?,
-                                        crate::geometry::common_axes(
-                                            scalar.shape(),
-                                            element.shape(),
-                                        ),
-                                    ))
-                                })
+                                let element = array.prepared_row(row_index, row);
+                                let element_cache = array.row_frame_cache(row_index);
+                                Ok(crate::geometry::nearest_line(
+                                    scalar.geodesic_nearest_points_cached_split(
+                                        &scalar_cache,
+                                        &element,
+                                        &element_cache,
+                                        crs,
+                                        semi_major,
+                                        flattening,
+                                        metric,
+                                    )?,
+                                    crate::geometry::common_axes(scalar.shape(), element.shape()),
+                                ))
                             })
                             .collect_rows())
                     })
@@ -525,6 +521,18 @@ pub(crate) fn dwithin(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    if let Ok(prepared) = left.cast::<crate::PyPreparedGeometry>() {
+        return Python::attach(|py| {
+            let geometry = prepared.get().geometry.clone().into_pyobject(py)?;
+            dwithin(py, geometry.as_any(), right, distance, unit)
+        });
+    }
+    if let Ok(prepared) = right.cast::<crate::PyPreparedGeometry>() {
+        return Python::attach(|py| {
+            let geometry = prepared.get().geometry.clone().into_pyobject(py)?;
+            dwithin(py, left, geometry.as_any(), distance, unit)
+        });
+    }
     // The per-element distance lane needs an array operand (its result is one
     // bool per row); the broadcast length comes from that operand.
     let left_array = crate::broadcast::exact_geometry_array(left);

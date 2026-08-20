@@ -4,29 +4,44 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::{
     Bounds, Coordinates, HashMap, HashMapExt as _, HashSet, IndexedSegment, LineworkChains, Point,
-    PointBatchTester, PointKey, RingClass, Segment, Shape, ShapeData, TouchDirections,
+    PointKey, PointProbeUse, RingClass, Segment, Shape, ShapeData, TouchDirections,
     ValidationIssue, XY, convex_halfplanes_cover, face_interior_point, has_collection_operand,
-    linework_contact, native_relate_data, orient_ring, ring_classify_point, ring_label, same_point,
-    segment_cross_point, segment_intersection_is_simple, segments_are_adjacent, segments_intersect,
-    shared_segment_part, vertex_witness,
+    linework_contact, native_relate_data, native_relate_data_for, orient_ring, ring_classify_point,
+    ring_label, same_point, segment_cross_point, segment_intersection_is_simple,
+    segments_are_adjacent, segments_intersect, shared_segment_part, vertex_witness,
 };
+
 impl ShapeData {
     /// The relate-class predicates over CACHED bounds — the batch engine's
     /// per-pair lanes never re-scan coordinates for the box gates.
     pub fn contains_cached(&self, other: &Self) -> bool {
-        self.containment_cached::<false>(other)
+        self.contains_cached_for(
+            other,
+            PointProbeUse::OneShot(crate::geometry::vertex_witness_probe_count(other.shape())),
+        )
     }
 
     pub fn covers_cached(&self, other: &Self) -> bool {
-        self.containment_cached::<true>(other)
+        self.covers_cached_for(
+            other,
+            PointProbeUse::OneShot(crate::geometry::vertex_witness_probe_count(other.shape())),
+        )
     }
 
-    fn containment_cached<const COVERS: bool>(&self, other: &Self) -> bool {
+    pub(crate) fn contains_cached_for(&self, other: &Self, mode: PointProbeUse) -> bool {
+        self.containment_cached::<false>(other, mode)
+    }
+
+    pub(crate) fn covers_cached_for(&self, other: &Self, mode: PointProbeUse) -> bool {
+        self.containment_cached::<true>(other, mode)
+    }
+
+    fn containment_cached<const COVERS: bool>(&self, other: &Self, mode: PointProbeUse) -> bool {
         if has_collection_operand(self.shape(), other.shape()) {
             return if COVERS {
-                native_relate_data(self, other).is_covers()
+                native_relate_data_for(self, other, mode, PointProbeUse::OneShot(0)).is_covers()
             } else {
-                native_relate_data(self, other).is_contains()
+                native_relate_data_for(self, other, mode, PointProbeUse::OneShot(0)).is_contains()
             };
         }
         // Bounds containment is NECESSARY: a candidate poking out of the
@@ -44,7 +59,10 @@ impl ShapeData {
         // refutation is exact for any candidate; confirmation for areal ones
         // (positive area cannot hide inside the boundary curve); covered
         // NON-areal candidates keep the lane (boundary-contact subtleties).
-        if self.shape().coord_count() < PointBatchTester::MIN_PROBES
+        if let Shape::Polygon(container) = self.shape()
+            && crate::geometry::uses_linear_plan_for_len(
+                container.shell.coords().len().saturating_sub(1),
+            )
             && let Some(ccw) = self.convex_shell()
             && let Shape::Polygon(container) = self.shape()
             && other.bounds().is_some()
@@ -62,12 +80,7 @@ impl ShapeData {
             }
             return self.with_bounds_tail::<false, false>(other);
         }
-        // The hierarchical `PointBatchTester` beats raw ring raycasts only
-        // past ~64 container vertices (tiny rings pay more for the Y-stabbing
-        // build than the 4-edge scan it replaces — measured both ways).
-        if self.shape().coord_count() >= PointBatchTester::MIN_PROBES
-            && let Some(tester) = self.point_tester()
-        {
+        if let Some(tester) = self.point_tester_for(mode) {
             // Same uncovered-vertex refutation as the lane's witness, but
             // each probe rides the cached hierarchical tester.
             if vertex_witness(other.shape(), |point| !tester.covers_point(point)) {
@@ -132,9 +145,20 @@ impl ShapeData {
             })
     }
 
-    pub fn contains_properly_cached(&self, other: &Self) -> bool {
+    pub(crate) fn contains_properly_cached_for(&self, other: &Self, mode: PointProbeUse) -> bool {
         if has_collection_operand(self.shape(), other.shape()) {
-            return native_relate_data(self, other).is_contains_properly();
+            return native_relate_data_for(self, other, mode, PointProbeUse::OneShot(0))
+                .is_contains_properly();
+        }
+        match (self.bounds(), other.bounds()) {
+            (Some(outer), Some(inner)) if !bounds_cover(outer, inner) => return false,
+            (None, _) | (_, None) => return false,
+            _ => {},
+        }
+        if let Some(tester) = self.point_tester_for(mode)
+            && vertex_witness(other.shape(), |point| !tester.covers_point(point))
+        {
+            return false;
         }
         self.shape().contains_properly_with_bounds(
             other.shape(),
@@ -412,4 +436,38 @@ pub(in crate::geometry) fn pseudo_angle(dx: f64, dy: f64) -> f64 {
     }
     let core = dx / denominator;
     if dy >= 0.0 { 1.0 - core } else { 3.0 + core }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{CoordSeq, LineSeq, Polygon, Ring};
+
+    fn indexed_polygon() -> ShapeData {
+        let mut points: Vec<Point> = (0..64)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * f64::from(index) / 64.0;
+                Point::new_unchecked_xy(10.0 * angle.cos(), 10.0 * angle.sin())
+            })
+            .collect();
+        points.push(points[0]);
+        ShapeData::from(Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(points),
+            Vec::new(),
+        )))
+    }
+
+    #[test]
+    fn contains_properly_bounds_rejection_does_not_build_tester() {
+        let container = indexed_polygon();
+        let candidate = ShapeData::from(Shape::LineString(LineSeq::from_trusted(CoordSeq::from(
+            vec![
+                Point::new_unchecked_xy(20.0, 0.0),
+                Point::new_unchecked_xy(21.0, 0.0),
+            ],
+        ))));
+        let cold = container.retained_heap_bytes();
+        assert!(!container.contains_properly_cached_for(&candidate, PointProbeUse::AcrossCalls,));
+        assert_eq!(container.retained_heap_bytes(), cold);
+    }
 }

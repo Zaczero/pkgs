@@ -8,8 +8,9 @@
 //! take, or when they amortize a prepared relation.
 
 use crate::geometry::{
-    Bounds, Dimension, Point, PointBatchTester, RingClass, Shape, ShapeData,
-    convex_halfplanes_cover, point_is_geographic_pole, pole_position, same_point, topology_split,
+    Bounds, CellCertificate, Dimension, Point, PointBatchTester, PointProbeUse, RingClass, Shape,
+    ShapeData, convex_halfplanes_cover, point_is_geographic_pole, pole_position, same_point,
+    topology_split,
 };
 use crate::{GeometryKind, PointRows, PyGeometryArray, ShapeRow};
 
@@ -19,8 +20,6 @@ use crate::{GeometryKind, PointRows, PyGeometryArray, ShapeRow};
 /// `scalar_vs_shapes` uses one pipeline for every batch length. Call sites may
 /// still use it only as a layout/scheduling hint (e.g. detach vs in-GIL), never
 /// to pick a different predicate kernel.
-pub(crate) const PREPARED_PREDICATE_MIN: usize = 16;
-
 /// A named planar topological predicate with one canonical public token.
 ///
 /// `dwithin` is not listed: it is a metric test that needs a distance model,
@@ -38,6 +37,102 @@ pub(crate) enum Predicate {
     Crosses,
     Overlaps,
     Equals,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::RowSelectionRef;
+    use crate::geometry::{CoordSeq, Polygon, Ring};
+
+    fn indexed_polygon() -> ShapeData {
+        let mut points: Vec<Point> = (0..64)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * f64::from(index) / 64.0;
+                Point::new_unchecked_xy(10.0 * angle.cos(), 10.0 * angle.sin())
+            })
+            .collect();
+        points.push(points[0]);
+        ShapeData::from(Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(points),
+            Vec::new(),
+        )))
+    }
+
+    #[test]
+    fn right_prepared_point_pair_retains_membership_tester() {
+        let left = ShapeData::from(Shape::Point(Point::new_unchecked_xy(0.0, 0.0)));
+        let right = indexed_polygon();
+        let cold = right.retained_heap_bytes();
+
+        assert!(topology_scalar_pair_with_modes(
+            &Predicate::Within.spec(),
+            &left,
+            &right,
+            false,
+            PointProbeUse::AcrossCalls,
+            PointProbeUse::AcrossCalls,
+        ));
+        assert!(right.retained_heap_bytes() > cold);
+    }
+
+    #[test]
+    fn packed_point_batches_map_interior_and_exterior_certificates_for_every_predicate() {
+        const PROBE_COUNT: usize = 10_001;
+        let scalar = indexed_polygon();
+        let probes = CoordSeq::from(
+            (0..PROBE_COUNT)
+                .map(|index| {
+                    if index % 2 == 0 {
+                        Point::new_unchecked_xy(0.0, 0.0)
+                    } else {
+                        Point::new_unchecked_xy(20.0, 20.0)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+        let points = PointRows::Packed {
+            coords: &probes,
+            row_map: RowSelectionRef::Identity,
+        };
+        let tester = scalar
+            .point_tester_for(PointProbeUse::OneShot(PROBE_COUNT))
+            .expect("indexed polygon admits the packed point tester");
+        let certificates = tester
+            .cell_batch_classify(PROBE_COUNT, &points.iter().collect::<Vec<_>>())
+            .expect("more than 10,000 probes build the cell preclassification");
+        assert!(
+            certificates.contains(&Some(CellCertificate::Interior)),
+            "probe corpus must exercise certified interior cells"
+        );
+        assert!(
+            certificates.contains(&Some(CellCertificate::Exterior)),
+            "probe corpus must exercise certified exterior cells"
+        );
+
+        for (predicate, scalar_is_left, interior, exterior) in [
+            (Predicate::Contains, true, true, false),
+            (Predicate::ContainsProperly, true, true, false),
+            (Predicate::Within, false, true, false),
+            (Predicate::Covers, true, true, false),
+            (Predicate::CoveredBy, false, true, false),
+            (Predicate::Intersects, true, true, false),
+            (Predicate::Disjoint, true, false, true),
+            (Predicate::Touches, true, false, false),
+        ] {
+            let actual = point_batch(&predicate.spec(), &scalar, &points, scalar_is_left, false)
+                .expect("predicate has a packed point kernel");
+            let expected: Vec<bool> = (0..PROBE_COUNT)
+                .map(|index| if index % 2 == 0 { interior } else { exterior })
+                .collect();
+            for (index, (actual, expected)) in actual.into_iter().zip(expected).enumerate() {
+                assert_eq!(
+                    actual, expected,
+                    "{predicate:?} certificate mapping at probe {index}"
+                );
+            }
+        }
+    }
 }
 
 /// How the R-tree narrows candidates for `query OP item`.
@@ -89,11 +184,7 @@ pub(crate) fn point_disjoint_shape(point: Point, shape: &Shape) -> bool {
 /// via hierarchical classification; mixed/non-areal fall through to the
 /// full DE-9IM contact lane (`classify_area_point` is `None` there).
 pub(crate) fn shape_touches_point(shape: &Shape, point: Point) -> bool {
-    match PointBatchTester::new(shape).classify_area_point(point) {
-        Some(RingClass::Boundary) => true,
-        Some(_) => false,
-        None => shape.touches(&Shape::Point(point)),
-    }
+    shape.touches(&Shape::Point(point))
 }
 
 /// Point on the left: touches is symmetric for point×geometry.
@@ -453,18 +544,6 @@ impl PredicateSpec {
 /// `PreparedGeometry`, and the spatial-index refine loop. Rows come straight
 /// off the storage: `Mixed` rows keep their persistent handles (prepared
 /// state accumulates), packed point rows never synthesize one.
-fn dispatch_row_data<R>(
-    array: Option<&PyGeometryArray>,
-    index: usize,
-    row: ShapeRow<'_>,
-    f: impl FnOnce(&ShapeData) -> R,
-) -> R {
-    match array {
-        Some(array) => array.with_row_data(index, row, f),
-        None => row.with_data(f),
-    }
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "cohesive kernel; splitting obscures the algorithm"
@@ -474,6 +553,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     scalar: &ShapeData,
     elements: impl ExactSizeIterator<Item = (usize, ShapeRow<'a>)>,
     scalar_is_left: bool,
+    scalar_prepared: bool,
     array: Option<&PyGeometryArray>,
     geographic: bool,
 ) -> Vec<bool> {
@@ -529,8 +609,11 @@ pub(crate) fn scalar_vs_shapes<'a>(
         // elements (built once per handle; `point_batch_eval` mirrors the
         // kernel table exactly), so prepared/array batches never pay a full
         // per-probe ring scan.
-        if let Some(tester) = scalar.point_tester()
-            && let Some(verdict) = point_batch_eval(spec, tester, point, scalar_is_left)
+        if let Some(tester) = scalar.point_tester_for(if scalar_prepared {
+            PointProbeUse::AcrossCalls
+        } else {
+            PointProbeUse::OneShot(n)
+        }) && let Some(verdict) = point_batch_eval(spec, tester, point, scalar_is_left)
         {
             return Some(verdict);
         }
@@ -543,7 +626,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     // Reject from operand bounds before building any handle, for EVERY row
     // type: strictly-disjoint boxes settle every predicate (and containment /
     // equality also reject on a failed nesting), so a refuted row never pays
-    // `with_data` + the prepared kernel. The box is one cheap read per row —
+    // A prepared row feeds the kernel. The box is one cheap read per row —
     // packed line/polygon rows scan their columns (no `Arc` bumps, no transient
     // `ShapeData`), `Mixed` rows read their cached bounds. This is the dominant
     // saving on the spatial-filter hot shape (one query vs many mostly-disjoint
@@ -607,7 +690,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
         ) | (Predicate::Within | Predicate::CoveredBy, false)
     );
     if convex_side
-        && scalar.shape().coord_count() < PointBatchTester::MIN_PROBES
+        && matches!(scalar.shape(), Shape::Polygon(p) if crate::geometry::uses_linear_plan_for_len(p.shell.coords().len().saturating_sub(1)))
         && scalar.convex_shell().is_some()
     {
         return elements
@@ -618,9 +701,11 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     kind_reject(row)
                         .or_else(|| element_point(row))
                         .unwrap_or_else(|| {
-                            dispatch_row_data(array, index, row, |element| {
-                                convex_scalar_pair(spec, scalar, element, scalar_is_left)
-                            })
+                            let element = array.map_or_else(
+                                || crate::array::PreparedRow::transient(row),
+                                |array| array.prepared_row(index, row),
+                            );
+                            convex_scalar_pair(spec, scalar, &element, scalar_is_left)
                         })
                 }
             })
@@ -639,14 +724,16 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     .or_else(|| element_point(row))
                     .or_else(|| bounds_reject(index, row))
                     .unwrap_or_else(|| {
-                        dispatch_row_data(array, index, row, |element| {
-                            let order = if scalar_is_left {
-                                ScalarOperand::Left
-                            } else {
-                                ScalarOperand::Right
-                            };
-                            topology_scalar_pair_unchecked(spec, scalar, element, order, geographic)
-                        })
+                        let element = array.map_or_else(
+                            || crate::array::PreparedRow::transient(row),
+                            |array| array.prepared_row(index, row),
+                        );
+                        let order = if scalar_is_left {
+                            ScalarOperand::Left
+                        } else {
+                            ScalarOperand::Right
+                        };
+                        topology_scalar_pair_unchecked(spec, scalar, &element, order, geographic)
                     })
             }
         })
@@ -851,6 +938,24 @@ pub(crate) fn topology_scalar_pair(
     right: &ShapeData,
     geographic: bool,
 ) -> bool {
+    topology_scalar_pair_with_modes(
+        spec,
+        left,
+        right,
+        geographic,
+        PointProbeUse::OneShot(1),
+        PointProbeUse::OneShot(1),
+    )
+}
+
+pub(crate) fn topology_scalar_pair_with_modes(
+    spec: &PredicateSpec,
+    left: &ShapeData,
+    right: &ShapeData,
+    geographic: bool,
+    left_mode: PointProbeUse,
+    right_mode: PointProbeUse,
+) -> bool {
     if geographic
         && let Some(verdict) = try_geographic_point_pair(spec, left.shape(), right.shape())
     {
@@ -858,7 +963,7 @@ pub(crate) fn topology_scalar_pair(
     }
     match geo_split_pair(geographic, left.shape(), right.shape()) {
         Some((left, right)) => scalar_pair(spec, &ShapeData::from(left), &ShapeData::from(right)),
-        None => scalar_pair(spec, left, right),
+        None => scalar_pair_with_modes(spec, left, right, left_mode, right_mode),
     }
 }
 
@@ -942,6 +1047,7 @@ pub(crate) fn point_batch(
     scalar: &ShapeData,
     points: &PointRows<'_>,
     scalar_is_left: bool,
+    scalar_prepared: bool,
 ) -> Option<Vec<bool>> {
     let kernel_for_side = if scalar_is_left {
         spec.right_point.is_some()
@@ -951,11 +1057,35 @@ pub(crate) fn point_batch(
     if !kernel_for_side {
         return None;
     }
-    if points.len() >= PointBatchTester::MIN_PROBES
-        && let Some(tester) = scalar.point_tester()
+    let mode = if scalar_prepared {
+        PointProbeUse::AcrossCalls
+    } else {
+        PointProbeUse::OneShot(points.len())
+    };
+    if let Some(tester) = scalar.point_tester_for(mode)
         && let Some(first) = points.first()
         && point_batch_eval(spec, tester, first, scalar_is_left).is_some()
     {
+        let point_values: Vec<Point> = points.iter().collect();
+        if let Some(values) = tester.cell_batch_classify(points.len(), &point_values) {
+            return Some(
+                values
+                    .into_iter()
+                    .zip(point_values)
+                    .map(|(value, point)| {
+                        value.map_or_else(
+                            || {
+                                point_batch_eval(spec, tester, point, scalar_is_left)
+                                    .expect("probed above")
+                            },
+                            |certificate| {
+                                cell_certificate_value(spec.predicate, scalar_is_left, certificate)
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+        }
         return Some(
             points
                 .iter()
@@ -974,15 +1104,76 @@ pub(crate) fn point_batch(
     })
 }
 
+fn cell_certificate_value(
+    predicate: Predicate,
+    scalar_is_left: bool,
+    certificate: CellCertificate,
+) -> bool {
+    let (interior, exterior) = match (predicate, scalar_is_left) {
+        (Predicate::Contains | Predicate::ContainsProperly | Predicate::Covers, true)
+        | (Predicate::Within | Predicate::CoveredBy, false)
+        | (Predicate::Intersects, _) => (true, false),
+        (Predicate::Disjoint, _) => (false, true),
+        (Predicate::Touches, _) => (false, false),
+        (Predicate::Contains | Predicate::ContainsProperly | Predicate::Covers, false)
+        | (Predicate::Within | Predicate::CoveredBy, true) => {
+            unreachable!("point batch predicate orientation is invalid")
+        },
+        (Predicate::Crosses | Predicate::Overlaps | Predicate::Equals, _) => {
+            unreachable!("point batch cell classification has no predicate kernel")
+        },
+    };
+    match certificate {
+        CellCertificate::Interior => interior,
+        CellCertificate::Exterior => exterior,
+    }
+}
+
 /// Evaluate `spec` for one pair, taking the point fast kernels when an operand
 /// is a point.
 pub(crate) fn scalar_pair(spec: &PredicateSpec, left: &ShapeData, right: &ShapeData) -> bool {
+    scalar_pair_with_modes(
+        spec,
+        left,
+        right,
+        PointProbeUse::OneShot(1),
+        PointProbeUse::OneShot(1),
+    )
+}
+
+fn scalar_pair_with_modes(
+    spec: &PredicateSpec,
+    left: &ShapeData,
+    right: &ShapeData,
+    left_mode: PointProbeUse,
+    right_mode: PointProbeUse,
+) -> bool {
+    let witness_count =
+        |shape: &Shape| PointProbeUse::OneShot(crate::geometry::vertex_witness_probe_count(shape));
+    let left_mode = if matches!(
+        spec.predicate,
+        Predicate::Contains | Predicate::ContainsProperly | Predicate::Covers
+    ) && !matches!(left_mode, PointProbeUse::AcrossCalls)
+    {
+        witness_count(right.shape())
+    } else {
+        left_mode
+    };
+    let right_mode = if matches!(
+        spec.predicate,
+        Predicate::Within | Predicate::ContainsProperly | Predicate::CoveredBy
+    ) && !matches!(right_mode, PointProbeUse::AcrossCalls)
+    {
+        witness_count(left.shape())
+    } else {
+        right_mode
+    };
     // Kind×kind constant before point kernels / bounds / contact / relate.
     if let Some(verdict) = spec.predicate.shape_kind_gate(left.shape(), right.shape()) {
         return verdict;
     }
     if let (Some(right_point), Shape::Point(point)) = (spec.right_point, right.shape()) {
-        if let Some(tester) = left.point_tester()
+        if let Some(tester) = left.point_tester_for(left_mode)
             && let Some(verdict) = point_batch_eval(spec, tester, *point, true)
         {
             return verdict;
@@ -990,7 +1181,7 @@ pub(crate) fn scalar_pair(spec: &PredicateSpec, left: &ShapeData, right: &ShapeD
         return right_point(left, *point);
     }
     if let (Some(left_point), Shape::Point(point)) = (spec.left_point, left.shape()) {
-        if let Some(tester) = right.point_tester()
+        if let Some(tester) = right.point_tester_for(right_mode)
             && let Some(verdict) = point_batch_eval(spec, tester, *point, false)
         {
             return verdict;
@@ -1003,14 +1194,14 @@ pub(crate) fn scalar_pair(spec: &PredicateSpec, left: &ShapeData, right: &ShapeD
     match spec.predicate {
         Predicate::Intersects => left.intersects(right),
         Predicate::Disjoint => !left.intersects(right),
-        Predicate::Contains => left.contains_cached(right),
-        Predicate::Within => right.contains_cached(left),
-        Predicate::Covers => left.covers_cached(right),
-        Predicate::CoveredBy => right.covers_cached(left),
+        Predicate::Contains => left.contains_cached_for(right, left_mode),
+        Predicate::Within => right.contains_cached_for(left, right_mode),
+        Predicate::Covers => left.covers_cached_for(right, left_mode),
+        Predicate::CoveredBy => right.covers_cached_for(left, right_mode),
         Predicate::Equals => left.equals_cached(right),
         Predicate::Touches => left.touches_cached(right),
         Predicate::Crosses => left.crosses_cached(right),
         Predicate::Overlaps => left.overlaps_cached(right),
-        Predicate::ContainsProperly => left.contains_properly_cached(right),
+        Predicate::ContainsProperly => left.contains_properly_cached_for(right, left_mode),
     }
 }

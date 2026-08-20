@@ -181,14 +181,8 @@ pub(crate) fn line_interpolate_points_rows(
         if !array.missing().is_some_and(|mask| mask[row]) {
             shapes.extend(
                 plan.with_row(row, |plan| {
-                    handle.with_data(|line| {
-                        line_interpolate_points_shape(
-                            &model,
-                            line,
-                            &array.row_frame_cache(row),
-                            plan,
-                        )
-                    })
+                    let line = array.prepared_row(row, handle);
+                    line_interpolate_points_shape(&model, &line, &array.row_frame_cache(row), plan)
                 })
                 .map_err(|error| note_array_row(error.into(), row))?,
             );

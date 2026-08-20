@@ -81,6 +81,10 @@ pub(crate) fn convex_covers_all_vertices(container: &Shape, candidate: &Shape) -
 
 pub(crate) const PROBE_LIMIT: usize = 32;
 
+pub(crate) fn vertex_witness_probe_count(shape: &Shape) -> usize {
+    shape.coord_count().min(PROBE_LIMIT)
+}
+
 /// Whether any of the first vertices of `shape` (probe budget capped)
 /// satisfies `test` — the overlaps witness scan.
 /// Visitor-based: no per-call vertex buffer (this runs once per PAIR in

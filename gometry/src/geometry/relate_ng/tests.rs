@@ -1,6 +1,8 @@
-use crate::geometry::relate::areal_relate_arrangement_oracle;
+use crate::geometry::relate::{
+    areal_relate_arrangement_oracle, areal_relate_data, areal_relate_shapes,
+};
 use crate::geometry::relate_ng::*;
-use crate::geometry::{CoordSeq, Point, Ring, Shape};
+use crate::geometry::{CoordSeq, Point, PointProbeUse, Ring, Shape, ShapeData};
 
 fn radial_ring(cx: f64, cy: f64, radii: &[f64], rot: f64, clockwise: bool) -> CoordSeq {
     let n = radii.len();
@@ -292,4 +294,35 @@ fn areal_relate_ng_matches_arrangement_oracle_on_curated_cases() {
         )],
         false,
     );
+}
+
+#[test]
+fn areal_relate_one_shot_uses_section_plan_occupancy() {
+    let parts = |dx: f64, dy: f64| {
+        (0..40)
+            .map(|index| {
+                let x = f64::from(index) * 4.0 + dx;
+                rectangle(x, dy, x + 3.0, dy + 3.0)
+            })
+            .collect::<Vec<_>>()
+    };
+    let left = ShapeData::from(Shape::MultiPolygon(parts(0.0, 0.0)));
+    let right = ShapeData::from(Shape::MultiPolygon(parts(1.0, 1.0)));
+    let _ = left.staged_rings();
+    let _ = right.staged_rings();
+    let _ = left.is_simple_cached();
+    let _ = right.is_simple_cached();
+    let left_cold = left.retained_heap_bytes();
+    let right_cold = right.retained_heap_bytes();
+    let expected = areal_relate_shapes(left.shape(), right.shape()).expect("areal lane");
+    let actual = areal_relate_data(
+        &left,
+        &right,
+        PointProbeUse::OneShot(1),
+        PointProbeUse::OneShot(1),
+    )
+    .expect("areal lane");
+    assert_eq!(actual.text(), expected.text());
+    assert!(left.retained_heap_bytes() > left_cold);
+    assert!(right.retained_heap_bytes() > right_cold);
 }

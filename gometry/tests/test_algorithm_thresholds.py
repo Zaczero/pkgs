@@ -161,6 +161,6 @@ def test_prepared_predicate_matches_free_across_batch_threshold() -> None:
     for n in (1, 15, 16):
         arr = gm.GeometryArray(pts[:n])
         free = [bool(v) for v in gm.contains(poly, arr)]
-        prepared = [bool(v) for v in prep.contains(arr)]
+        prepared = [bool(v) for v in gm.contains(prep, arr)]
         assert free == prepared
         assert free[0] is True  # ±180 / interior seam membership

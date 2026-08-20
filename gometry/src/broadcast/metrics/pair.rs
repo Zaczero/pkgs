@@ -295,32 +295,6 @@ pub(crate) fn pair_distance_resolved(
     pair_distance_resolved_result(metric, a, a_cache, b, b_cache).map_err(Into::into)
 }
 
-/// Whether two shapes lie within `distance` (meters under the model, or
-/// coordinate units for [`crs::MetricModel::COORDINATE`]) under an
-/// already-resolved metric. A planar model rescales the threshold into
-/// coordinate units for the cheap planar `dwithin`; a geodesic model compares
-/// the true geodesic closest-pair distance. The pre-resolved kernel the spatial
-/// index and `dwithin` surfaces share.
-pub(crate) fn pair_dwithin_shapes(
-    model: &crs::MetricModel,
-    a: &ShapeData,
-    b: &ShapeData,
-    distance: f64,
-) -> PyResult<bool> {
-    let a_cache = FrameDependentCaches::default();
-    let b_cache = FrameDependentCaches::default();
-    pair_dwithin_resolved(
-        &crs::ResolvedMetric::from_model(model)?,
-        a,
-        &a_cache,
-        b,
-        &b_cache,
-        distance,
-    )
-}
-
-/// `pair_dwithin_shapes` against an already-resolved metric (see
-/// [`pair_distance_resolved`]).
 pub(crate) fn pair_dwithin_resolved_result(
     metric: &crs::ResolvedMetric,
     a: &ShapeData,

@@ -293,12 +293,21 @@ fn rewrap_point(point: Point) -> Result<Point> {
 /// * every other crossing `centroid` uses unwrap-rewrap, which gives the TRUE
 ///   geographic centroid (the split's two opposite-seam halves would average to
 ///   a meaningless mid-longitude).
+#[derive(Clone, Copy)]
+pub(crate) enum DerivedPointStrategy {
+    Centroid,
+    Interior,
+}
+
 pub(crate) fn derived_point_unwrapped(
     shape: &Shape,
-    interior: bool,
+    strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    if interior || shape_encloses_pole(shape, true) || shape_encloses_pole(shape, false) {
+    if matches!(strategy, DerivedPointStrategy::Interior)
+        || shape_encloses_pole(shape, true)
+        || shape_encloses_pole(shape, false)
+    {
         return kernel(&shape.force_2d().split_antimeridian()?);
     }
     let unwrapped = unwrap_longitude(shape)?;
@@ -312,11 +321,11 @@ pub(crate) fn derived_point_unwrapped(
 pub(crate) fn unary_antimeridian_derived(
     shape: &Shape,
     geographic: bool,
-    interior: bool,
+    strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     if geographic && shape.crosses_antimeridian() {
-        derived_point_unwrapped(shape, interior, kernel)
+        derived_point_unwrapped(shape, strategy, kernel)
     } else {
         kernel(shape)
     }

@@ -13,8 +13,23 @@
 
 use crate::HeapSize;
 
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EdgeId(u32);
+
+impl EdgeId {
+    pub(crate) const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Maximum items handled by a flat linear scan.
 const LINEAR_MAX: usize = 32;
+
+/// Whether a collection uses the flat plan rather than an indexed plan.
+pub(crate) const fn uses_linear_plan_for_len(len: usize) -> bool {
+    len <= LINEAR_MAX
+}
 
 /// Dense bands are admitted only when total band references stay within
 /// `DENSE_REF_FACTOR * n` (and fit in `u32` CSR storage). Sized so ordinary
@@ -44,7 +59,7 @@ enum YPlan {
     DenseBands {
         min_y: f64,
         inv_band_height: f64,
-        band_count: usize,
+        band_count: std::num::NonZeroUsize,
         band_offsets: Box<[u32]>,
         /// Indices into [`YStabbingIndex::items`].
         band_items: Box<[u32]>,
@@ -68,6 +83,10 @@ pub(crate) struct YStabbingIndex<T> {
 }
 
 impl<T> YStabbingIndex<T> {
+    #[cfg(test)]
+    pub(crate) const fn uses_indexed_plan(&self) -> bool {
+        !matches!(self.plan, YPlan::Linear)
+    }
     /// Build with a checked sizing pass selecting linear / dense bands / tree.
     pub(crate) fn build(items: Vec<T>, mut y_span: impl FnMut(&T) -> (f64, f64)) -> Self {
         let spans: Box<[(f64, f64)]> = items.iter().map(&mut y_span).collect();
@@ -103,10 +122,7 @@ impl<T> YStabbingIndex<T> {
                 band_offsets,
                 band_items,
             } => {
-                if *band_count == 0 {
-                    return None;
-                }
-                let band = band_of(y, *min_y, *inv_band_height, *band_count);
+                let band = band_of(y, *min_y, *inv_band_height, band_count.get());
                 let start = band_offsets[band] as usize;
                 let end = band_offsets[band + 1] as usize;
                 // Band placement is a conservative superset of closed Y-spans.
@@ -162,6 +178,10 @@ pub(crate) struct EdgeYIndex {
 }
 
 impl EdgeYIndex {
+    #[cfg(test)]
+    pub(crate) const fn uses_indexed_plan(&self) -> bool {
+        !matches!(self.plan, YPlan::Linear)
+    }
     /// Build from parallel ring Y columns (`edge i` spans `ys[i]..ys[i+1]`).
     /// Items in the shared plan are edge ids (`0..edge_count`).
     pub(crate) fn build(ys: &[f64]) -> Self {
@@ -179,10 +199,9 @@ impl EdgeYIndex {
         }
     }
 
-    /// Candidate edge-id slice for probe `y` (dense band without Y re-filter).
-    /// Linear yields a virtual full range via [`edge_count`]; tree callers use
-    /// [`for_each_edge`].
-    pub(crate) fn dense_band_edges(&self, y: f64) -> Option<&[u32]> {
+    /// Borrow the dense CSR candidates for probe `y` without exposing the
+    /// coordinate columns owned by the caller.
+    pub(crate) fn dense_band_edges(&self, y: f64) -> Option<&[EdgeId]> {
         match &self.plan {
             YPlan::DenseBands {
                 min_y,
@@ -191,13 +210,12 @@ impl EdgeYIndex {
                 band_offsets,
                 band_items,
             } => {
-                if *band_count == 0 {
-                    return Some(&[]);
-                }
-                let band = band_of(y, *min_y, *inv_band_height, *band_count);
+                let band = band_of(y, *min_y, *inv_band_height, band_count.get());
                 let start = band_offsets[band] as usize;
                 let end = band_offsets[band + 1] as usize;
-                Some(&band_items[start..end])
+                // SAFETY: EdgeId is a transparent u32 wrapper and the slice is
+                // only interpreted as edge ids from this index.
+                Some(unsafe { &*(&raw const band_items[start..end] as *const [EdgeId]) })
             },
             _ => None,
         }
@@ -207,31 +225,21 @@ impl EdgeYIndex {
     pub(crate) fn for_each_edge<B>(
         &self,
         y: f64,
-        mut visit: impl FnMut(u32) -> std::ops::ControlFlow<B>,
+        mut visit: impl FnMut(EdgeId) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
         use std::ops::ControlFlow;
         match &self.plan {
             YPlan::Linear => {
                 for edge in 0..self.edge_count as u32 {
-                    if let ControlFlow::Break(b) = visit(edge) {
+                    if let ControlFlow::Break(b) = visit(EdgeId(edge)) {
                         return Some(b);
                     }
                 }
                 None
             },
-            YPlan::DenseBands { .. } => {
-                // Prefer dense_band_edges + open loop at the call site.
-                if let Some(edges) = self.dense_band_edges(y) {
-                    for &edge in edges {
-                        if let ControlFlow::Break(b) = visit(edge) {
-                            return Some(b);
-                        }
-                    }
-                }
-                None
-            },
+            YPlan::DenseBands { .. } => unreachable!("dense bands use the caller-owned open loop"),
             YPlan::IntervalTree { nodes, root } => {
-                query_itree(nodes, *root, y, &mut |edge| visit(edge))
+                query_itree(nodes, *root, y, &mut |edge| visit(EdgeId(edge)))
             },
         }
     }
@@ -286,7 +294,7 @@ fn band_of(y: f64, min_y: f64, inv_band_height: f64, band_count: usize) -> usize
 
 /// Checked dense-band sizing. Returns `Some((min_y, inv, band_count, total_refs))`
 /// only when references stay proportional and fit `u32` CSR storage.
-fn try_dense_sizing(spans: &[(f64, f64)]) -> Option<(f64, f64, usize, usize)> {
+fn try_dense_sizing(spans: &[(f64, f64)]) -> Option<(f64, f64, std::num::NonZeroUsize, usize)> {
     let n = spans.len();
     if n == 0 || n > u32::MAX as usize {
         return None;
@@ -317,7 +325,12 @@ fn try_dense_sizing(spans: &[(f64, f64)]) -> Option<(f64, f64, usize, usize)> {
     if total_refs > u32::MAX as usize {
         return None;
     }
-    Some((min_y, inv_band_height, band_count, total_refs))
+    Some((
+        min_y,
+        inv_band_height,
+        std::num::NonZeroUsize::new(band_count)?,
+        total_refs,
+    ))
 }
 
 fn choose_plan(spans: &[(f64, f64)]) -> YPlan {
@@ -335,32 +348,33 @@ fn build_dense(
     spans: &[(f64, f64)],
     min_y: f64,
     inv_band_height: f64,
-    band_count: usize,
+    band_count: std::num::NonZeroUsize,
     total_refs: usize,
 ) -> YPlan {
     let n = spans.len();
+    let band_count_value = band_count.get();
     // Two-pass CSR with checked counts (sizing already proved fit).
-    let mut band_offsets = vec![0_u32; band_count + 1];
+    let mut band_offsets = vec![0_u32; band_count_value + 1];
     for &(lo, hi) in spans {
-        let b0 = band_of(lo, min_y, inv_band_height, band_count);
-        let b1 = band_of(hi, min_y, inv_band_height, band_count);
+        let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
+        let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
         for band in b0..=b1 {
             // Sizing proved no wrap; debug_assert for the contract.
             debug_assert!(band_offsets[band + 1] < u32::MAX);
             band_offsets[band + 1] += 1;
         }
     }
-    for band in 0..band_count {
+    for band in 0..band_count_value {
         band_offsets[band + 1] = band_offsets[band + 1]
             .checked_add(band_offsets[band])
             .expect("dense band offsets checked at sizing");
     }
-    debug_assert_eq!(band_offsets[band_count] as usize, total_refs);
+    debug_assert_eq!(band_offsets[band_count_value] as usize, total_refs);
     let mut cursor = band_offsets.clone();
     let mut band_items = vec![0_u32; total_refs];
     for (idx, &(lo, hi)) in spans.iter().enumerate() {
-        let b0 = band_of(lo, min_y, inv_band_height, band_count);
-        let b1 = band_of(hi, min_y, inv_band_height, band_count);
+        let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
+        let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
         let edge = idx as u32;
         for c in &mut cursor[b0..=b1] {
             let slot = *c as usize;

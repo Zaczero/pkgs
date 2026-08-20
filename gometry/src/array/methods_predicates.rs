@@ -276,7 +276,15 @@ impl PyGeometryArray {
                 "gometry cannot return the requested array without copying",
             ));
         }
-        let _ = dtype;
+        if let Some(dtype) = dtype
+            && !dtype.is_none()
+        {
+            let numpy = crate::py::numpy::numpy_module(py)?;
+            let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
+            if dtype.getattr("kind")?.extract::<String>()? != "O" {
+                return Err(GeometryError::new_err("dtype must be object or None"));
+            }
+        }
         self.to_numpy(py)
     }
     /// Export the array as a `GeoArrow` array.

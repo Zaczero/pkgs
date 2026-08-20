@@ -264,26 +264,25 @@ where
         geographic,
         metric,
         move |row, array_row, ctx| {
-            array_handle.with_row_data(row, array_row, |array_data| {
-                let ordered = OpCtx {
-                    frame: ctx.frame,
-                    geographic: ctx.geographic,
-                    metric: ctx.metric,
-                    lane: ctx.lane,
-                    left_frame_cache: match side {
-                        ArrayOperandSide::Left => ctx.left_frame_cache,
-                        ArrayOperandSide::Right => Some(&fixed_cache),
-                    },
-                    right_frame_cache: match side {
-                        ArrayOperandSide::Left => Some(&fixed_cache),
-                        ArrayOperandSide::Right => ctx.left_frame_cache,
-                    },
-                };
-                match side {
-                    ArrayOperandSide::Left => kernel(array_data, &fixed_shape, &ordered),
-                    ArrayOperandSide::Right => kernel(&fixed_shape, array_data, &ordered),
-                }
-            })
+            let array_data = array_handle.prepared_row(row, array_row);
+            let ordered = OpCtx {
+                frame: ctx.frame,
+                geographic: ctx.geographic,
+                metric: ctx.metric,
+                lane: ctx.lane,
+                left_frame_cache: match side {
+                    ArrayOperandSide::Left => ctx.left_frame_cache,
+                    ArrayOperandSide::Right => Some(&fixed_cache),
+                },
+                right_frame_cache: match side {
+                    ArrayOperandSide::Left => Some(&fixed_cache),
+                    ArrayOperandSide::Right => ctx.left_frame_cache,
+                },
+            };
+            match side {
+                ArrayOperandSide::Left => kernel(&array_data, &fixed_shape, &ordered),
+                ArrayOperandSide::Right => kernel(&fixed_shape, &array_data, &ordered),
+            }
         },
     )?;
     Ok((values, output_frame))
@@ -322,11 +321,9 @@ where
         geographic,
         metric,
         move |row, left_row, right_row, ctx| {
-            left_array.with_row_data(row, left_row, |left_data| {
-                right_array.with_row_data(row, right_row, |right_data| {
-                    kernel(left_data, right_data, ctx)
-                })
-            })
+            let left_data = left_array.prepared_row(row, left_row);
+            let right_data = right_array.prepared_row(row, right_row);
+            kernel(&left_data, &right_data, ctx)
         },
     )?;
     Ok((values, missing, output_frame))
@@ -336,7 +333,7 @@ where
 ///
 /// Resolves the metric once via ``op.resolver()``, checks frame compatibility
 /// once per operand pair-set, runs the kernel inside one ``py.detach``, uses
-/// caching ``with_row_data`` for array lanes, and bulk-converts via
+/// caching prepared rows for array lanes, and bulk-converts via
 /// [`BulkElement`].
 pub(crate) fn dispatch_binary<R, F>(
     py: Python<'_>,
@@ -692,15 +689,16 @@ where
                 &frame,
                 geographic,
                 metric,
-                move |_row, right_row, ctx| {
-                    right_row.with_data(|right_data| {
-                        invoke_topology_geometry_kernel(
-                            geographic,
-                            &left_fixed,
-                            right_data,
-                            &|l, r| kernel(l, r, ctx),
-                        )
-                    })
+                move |row, right_row, ctx| {
+                    let known_bounds = right_row.quick_bounds();
+                    let right_data =
+                        right.warm_prepared_row_or_transient(row, right_row, known_bounds);
+                    invoke_topology_geometry_kernel(
+                        geographic,
+                        &left_fixed,
+                        &right_data,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )?;
             Shape::bulk_into_py_masked(shapes, py, &output_frame, right.missing())
@@ -818,14 +816,13 @@ where
                     }) {
                         return Ok(result);
                     }
-                    left_row.with_data_bounds(left_box, |left_data| {
-                        invoke_topology_geometry_kernel(
-                            geographic,
-                            left_data,
-                            &right_shape,
-                            &|l, r| kernel(l, r, ctx),
-                        )
-                    })
+                    let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
+                    invoke_topology_geometry_kernel(
+                        geographic,
+                        &left_data,
+                        &right_shape,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )?;
             (shapes, left.missing().cloned())
@@ -865,15 +862,11 @@ where
                     }) {
                         return Ok(result);
                     }
-                    left_row.with_data_bounds(left_box, |left_data| {
-                        right_row.with_data_bounds(right_box, |right_data| {
-                            invoke_topology_geometry_kernel(
-                                geographic,
-                                left_data,
-                                right_data,
-                                &|l, r| kernel(l, r, ctx),
-                            )
-                        })
+                    let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
+                    let right_data =
+                        right.warm_prepared_row_or_transient(row, right_row, right_box);
+                    invoke_topology_geometry_kernel(geographic, &left_data, &right_data, &|l, r| {
+                        kernel(l, r, ctx)
                     })
                 },
             )?

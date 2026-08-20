@@ -12,7 +12,8 @@ use crate::geometry::types::{
 };
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
-    PlanarMetric, PointBatchTester, SegmentMetric, bounds_to_shape, ring_winding, shell_is_convex,
+    PlanarMetric, PointBatchTester, PointProbeUse, SegmentMetric, bounds_to_shape, ring_winding,
+    shell_is_convex,
 };
 
 #[derive(Default)]
@@ -403,7 +404,10 @@ impl ShapeData {
     /// The prepared point-membership tester (hierarchical
     /// [`PointBatchTester`] / Y-stabbing for polygonal shapes; `None`
     /// otherwise), built once.
-    pub(crate) fn point_tester(&self) -> Option<&PointBatchTester> {
+    pub(in crate::geometry) fn point_tester_required(
+        &self,
+        _required: crate::geometry::distance::RequiredPointTester,
+    ) -> Option<&PointBatchTester> {
         self.point_tester
             .get_or_init(|| {
                 Box::new(
@@ -411,6 +415,16 @@ impl ShapeData {
                         .then(|| PointBatchTester::new(&self.shape)),
                 )
             })
+            .as_ref()
+            .as_ref()
+    }
+
+    pub(crate) fn point_tester_for(&self, use_mode: PointProbeUse) -> Option<&PointBatchTester> {
+        if !PointBatchTester::should_use(&self.shape, use_mode) {
+            return None;
+        }
+        self.point_tester
+            .get_or_init(|| Box::new(Some(PointBatchTester::new(&self.shape))))
             .as_ref()
             .as_ref()
     }

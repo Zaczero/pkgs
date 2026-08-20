@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
 use crate::{
@@ -245,6 +246,24 @@ pub(crate) fn equals_exact(
     include_m: bool,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
+    // Prepared handles are predicate operands; exact equality does not use
+    // their cache, but must still compare the wrapped geometries.
+    let left_prepared = left.cast::<crate::PyPreparedGeometry>().ok();
+    let right_prepared = right.cast::<crate::PyPreparedGeometry>().ok();
+    let left_geometry = match left_prepared {
+        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        None => None,
+    };
+    let right_geometry = match right_prepared {
+        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        None => None,
+    };
+    let left = left_geometry
+        .as_ref()
+        .map_or(left, |geometry| geometry.as_any());
+    let right = right_geometry
+        .as_ref()
+        .map_or(right, |geometry| geometry.as_any());
     // Delegate any array operand to the `GeometryArray::equals_exact` method —
     // it owns the packed-polygon/line SIMD fast paths and the scalar-or-array
     // tolerance lane. `equals_exact` is symmetric, so a scalar-left/array-right

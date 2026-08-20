@@ -7,8 +7,9 @@ use crate::crs::{CrsError, MetricModel, ResolvedMetric};
 use crate::dispatch::metric::{MetricCtx, OpCtx};
 use crate::error::Result;
 use crate::geometry::{
-    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, Dimension, EmptyKind, MeasureRange, Shape,
-    ShapeData, SimplifyMethod, SmoothMethod, Strictness, same_topological_coordinate,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
+    EmptyKind, MeasureRange, Shape, ShapeData, SimplifyMethod, SmoothMethod, Strictness,
+    same_topological_coordinate,
 };
 use crate::numeric::Positive;
 use crate::{
@@ -33,7 +34,7 @@ pub(crate) fn unary_centroid(data: &ShapeData, ctx: &OpCtx<'_>) -> Result<Shape>
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
         ctx.geographic,
-        false,
+        DerivedPointStrategy::Centroid,
         Shape::centroid,
     )
 }
@@ -214,7 +215,7 @@ pub(crate) fn unary_point_on_surface(data: &ShapeData, ctx: &OpCtx<'_>) -> Resul
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
         ctx.geographic,
-        true,
+        DerivedPointStrategy::Interior,
         Shape::point_on_surface,
     )
 }

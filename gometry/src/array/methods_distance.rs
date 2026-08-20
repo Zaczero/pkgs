@@ -14,7 +14,7 @@ use crate::array::{
     PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
     line_crosses_antimeridian, packed_centroid_xy, packed_surface_point, row_bounds_values,
 };
-use crate::geometry::{CoordWindow, LineSeq};
+use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
 fn point_from_unary_shape(shape: Shape) -> Point {
     match shape {
@@ -27,14 +27,14 @@ fn point_from_unary_shape(shape: Shape) -> Point {
 fn packed_point_row(
     crosses_antimeridian: bool,
     shape: impl FnOnce() -> Shape,
-    wrap_antimeridian: bool,
+    strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     column_point: impl FnOnce() -> Result<Point>,
 ) -> Result<Point> {
     if crosses_antimeridian {
         let shape = shape();
         Ok(point_from_unary_shape(
-            crate::geometry::unary_antimeridian_derived(&shape, true, wrap_antimeridian, op)?,
+            crate::geometry::unary_antimeridian_derived(&shape, true, strategy, op)?,
         ))
     } else {
         column_point()
@@ -64,7 +64,7 @@ fn packed_point_unary<L, P>(
     py: Python<'_>,
     frame: Frame,
     geographic: bool,
-    wrap_antimeridian: bool,
+    strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     line_point: L,
     polygon_point: P,
@@ -111,7 +111,7 @@ where
                             coords.view(CoordWindow::trusted(shape_window, coords.len())),
                         ))
                     },
-                    wrap_antimeridian,
+                    strategy,
                     op,
                     || line_point(coords, xs, ys, window),
                 )
@@ -159,7 +159,7 @@ where
                             shape_rings,
                         ))
                     },
-                    wrap_antimeridian,
+                    strategy,
                     op,
                     || polygon_point(coords, xs, ys, ring_offsets, rings, shell),
                 )
@@ -192,7 +192,7 @@ impl PyGeometryArray {
                 py,
                 frame,
                 geographic,
-                false,
+                DerivedPointStrategy::Centroid,
                 Shape::centroid,
                 |_, xs, ys, window| {
                     packed_centroid_xy(crate::geometry::centroid_line_row_columns(
@@ -216,7 +216,7 @@ impl PyGeometryArray {
             Ok(crate::geometry::unary_antimeridian_derived(
                 shape,
                 geographic,
-                false,
+                DerivedPointStrategy::Centroid,
                 Shape::centroid,
             )?)
         })
@@ -234,7 +234,7 @@ impl PyGeometryArray {
                 py,
                 frame,
                 geographic,
-                true,
+                DerivedPointStrategy::Interior,
                 Shape::point_on_surface,
                 |_, xs, ys, window| {
                     packed_surface_point(crate::geometry::point_on_surface_line_columns(
@@ -263,7 +263,7 @@ impl PyGeometryArray {
             Ok(crate::geometry::unary_antimeridian_derived(
                 shape,
                 geographic,
-                true,
+                DerivedPointStrategy::Interior,
                 Shape::point_on_surface,
             )?)
         })

@@ -31,9 +31,9 @@ def _ring_area(polygon: gm.Geometry) -> Fraction:
         'covers',
         'within',
         'hausdorff',
-        'prepared_equals',
-        'prepared_covers',
-        'prepared_within',
+        'equals_prepared',
+        'covers_prepared',
+        'within_prepared',
         'packed_equals',
         'packed_covers',
         'index_equals',
@@ -68,8 +68,12 @@ def test_reciprocal_axis_identical_linework_has_no_exterior_residue(
             assert gm.relate(left, right) == '1FFF0FFF2'
         elif frontend == 'hausdorff':
             assert gm.hausdorff_distance(left, right) == 0.0
-        elif frontend.startswith('prepared_'):
-            assert getattr(left.prepare(), frontend.removeprefix('prepared_'))(right)
+        elif frontend == 'equals_prepared':
+            assert gm.equals(left.prepare(), right)
+        elif frontend == 'covers_prepared':
+            assert gm.covers(left.prepare(), right)
+        elif frontend == 'within_prepared':
+            assert gm.within(left.prepare(), right)
         elif frontend.startswith('packed_'):
             operation = getattr(gm, frontend.removeprefix('packed_'))
             assert operation(gm.GeometryArray([left]), right).tolist() == [True]

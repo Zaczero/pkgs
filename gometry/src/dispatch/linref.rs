@@ -113,9 +113,10 @@ pub(crate) fn line_locate_point_input(
                     normalized,
                 );
             }
-            let storage = Arc::clone(array.storage_arc());
+            let array = array.clone();
             detach_collect_f64(py, move || {
-                storage
+                array
+                    .storage()
                     .iter_rows()
                     .zip(queries.iter())
                     .enumerate()
@@ -123,15 +124,14 @@ pub(crate) fn line_locate_point_input(
                         if is_missing_row(missing.as_ref(), row) {
                             return Ok(f64::NAN);
                         }
-                        line_row.with_data(|line| {
-                            degrade_linref_float(line_locate_shape(
-                                &model,
-                                line,
-                                &array.row_frame_cache(row),
-                                query,
-                                normalized,
-                            ))
-                        })
+                        let line = array.prepared_row(row, line_row);
+                        degrade_linref_float(line_locate_shape(
+                            &model,
+                            &line,
+                            &array.row_frame_cache(row),
+                            query,
+                            normalized,
+                        ))
                     })
                     .collect_rows()
             })

@@ -256,7 +256,7 @@ impl LineIndex {
 
     /// Build over one line's zero-copy [`CoordSeq`] window — the packed-`Lines`
     /// batch lane reads CSR rows through this with no per-row `Shape` / `Arc`
-    /// traffic (the measured gap vs the `iter_rows` + `with_data` fallback).
+    /// traffic (the measured gap vs the `iter_rows` + transient fallback).
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"

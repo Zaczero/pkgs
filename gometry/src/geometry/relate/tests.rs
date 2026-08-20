@@ -1,7 +1,9 @@
 use crate::geometry::relate::native::mod2_relate;
 use crate::geometry::relate::topo::source_direction;
 use crate::geometry::relate::*;
-use crate::geometry::{Point, Segment, Shape, XY};
+use crate::geometry::{
+    CoordSeq, LineSeq, Point, PointProbeUse, Polygon, Ring, Segment, Shape, ShapeData, XY,
+};
 use crate::io::parse_wkt;
 
 fn wkt(value: &str) -> Shape {
@@ -178,4 +180,38 @@ fn source_direction_orders_subpieces_by_exact_projection() {
 
     assert_eq!(source_direction(forward, source), 1);
     assert_eq!(source_direction(reverse, source), -1);
+}
+
+#[test]
+fn mixed_relate_one_shot_uses_materialized_subpiece_occupancy() {
+    let mut points: Vec<Point> = (0..64)
+        .map(|index| {
+            let angle = std::f64::consts::TAU * f64::from(index) / 64.0;
+            Point::new_unchecked_xy(10.0 * angle.cos(), 10.0 * angle.sin())
+        })
+        .collect();
+    points.push(points[0]);
+    let area = ShapeData::from(Shape::Polygon(Polygon::new(
+        Ring::from_trusted_closed(points),
+        Vec::new(),
+    )));
+    let line = ShapeData::from(Shape::LineString(LineSeq::from_trusted(CoordSeq::from(
+        (0..24)
+            .map(|index| {
+                let x = -8.0 + 16.0 * f64::from(index) / 23.0;
+                Point::new_unchecked_xy(x, 0.25 * f64::from(index).sin())
+            })
+            .collect::<Vec<_>>(),
+    ))));
+    let cold = area.retained_heap_bytes();
+    let expected = mixed_relate_shapes(line.shape(), area.shape()).expect("mixed lane");
+    let actual = mixed_relate_data(
+        &line,
+        &area,
+        PointProbeUse::OneShot(1),
+        PointProbeUse::OneShot(1),
+    )
+    .expect("mixed lane");
+    assert_eq!(actual.text(), expected.text());
+    assert!(area.retained_heap_bytes() > cold);
 }

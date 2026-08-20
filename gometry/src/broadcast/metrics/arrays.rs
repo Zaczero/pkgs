@@ -237,6 +237,10 @@ pub(crate) fn crs_metric_binary_geometry_broadcast(
 /// columns through `packed_planar` with the GIL released (one kernel call per
 /// pair, no `Shape` wrapping); remaining all-`Point` pairings and general
 /// rows run `pair` over per-row shapes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the generic pair loop keeps bounds, parallel execution, and missing-value scattering together"
+)]
 fn array_pair_metric<T, P, C, B, F>(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -313,13 +317,14 @@ where
         && let (Some(left_bounds), Some(right_bounds)) =
             (array.cached_element_bounds(), right.cached_element_bounds())
     {
-        let left_storage = Arc::clone(array.storage_arc());
-        let right_storage = Arc::clone(right.storage_arc());
+        let left_array = array.clone();
+        let right_array = right.clone();
         return py
             .detach(move || {
-                left_storage
+                left_array
+                    .storage()
                     .iter_rows()
-                    .zip(right_storage.iter_rows())
+                    .zip(right_array.storage().iter_rows())
                     .enumerate()
                     .map(|(index, (left_row, right_row))| {
                         if missing.as_ref().is_some_and(|mask| mask[index]) {
@@ -330,28 +335,29 @@ where
                         {
                             return Ok(verdict);
                         }
-                        left_row.with_data(|left| {
-                            right_row.with_data(|right_data| pair(index, left, right_data))
-                        })
+                        let left = left_array.prepared_row(index, left_row);
+                        let right = right_array.prepared_row(index, right_row);
+                        pair(index, &left, &right)
                     })
                     .collect_rows()
             })
             .map_err(rows_err);
     }
-    let left_storage = Arc::clone(array.storage_arc());
-    let right_storage = Arc::clone(right.storage_arc());
+    let left_array = array.clone();
+    let right_array = right.clone();
     py.detach(move || {
-        left_storage
+        left_array
+            .storage()
             .iter_rows()
-            .zip(right_storage.iter_rows())
+            .zip(right_array.storage().iter_rows())
             .enumerate()
             .map(|(index, (left_row, right_row))| {
                 if missing.as_ref().is_some_and(|mask| mask[index]) {
                     return Ok(missing_value);
                 }
-                left_row.with_data(|left| {
-                    right_row.with_data(|right_data| pair(index, left, right_data))
-                })
+                let left = left_array.prepared_row(index, left_row);
+                let right = right_array.prepared_row(index, right_row);
+                pair(index, &left, &right)
             })
             .collect_rows()
     })
@@ -424,19 +430,23 @@ pub(crate) fn array_crs_distances(
                 // once on its handle and serves every element; each element's
                 // state persists on ITS handle for later operations. Pure Rust
                 // work — run it detached.
-                let shapes = Arc::clone(array.storage_arc());
+                let array = array.clone();
+                let missing = array.missing().cloned();
                 let right_shape = Arc::clone(&right.shape);
                 return float64_array_mask_missing(
                     py,
                     py.detach(move || {
-                        shapes
+                        array
+                            .storage()
                             .iter_rows()
-                            .map(|row| {
-                                row.with_data(|left| left.distance(&right_shape)) * to_metre.get()
+                            .enumerate()
+                            .map(|(row, row_shape)| {
+                                let left = array.prepared_row(row, row_shape);
+                                left.distance(&right_shape) * to_metre.get()
                             })
                             .collect::<Vec<f64>>()
                     }),
-                    array.missing(),
+                    missing.as_ref(),
                 );
             }
             // Geodesic scalar-fixed packed points: the geodesic cache resolves
@@ -507,21 +517,20 @@ pub(crate) fn array_crs_distances(
                                     if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                                         return Ok(f64::NAN);
                                     }
-                                    row.with_data(|left| {
-                                        let left_cache = array.row_frame_cache(row_index);
-                                        finite_geodesic_value(
-                                            left.geodesic_distance_cached(
-                                                &left_cache,
-                                                &right_shape,
-                                                &right_cache,
-                                                crs,
-                                                semi_major,
-                                                flattening,
-                                                metric,
-                                            )?,
-                                            "geodesic distance",
-                                        )
-                                    })
+                                    let left = array.prepared_row(row_index, row);
+                                    let left_cache = array.row_frame_cache(row_index);
+                                    finite_geodesic_value(
+                                        left.geodesic_distance_cached(
+                                            &left_cache,
+                                            &right_shape,
+                                            &right_cache,
+                                            crs,
+                                            semi_major,
+                                            flattening,
+                                            metric,
+                                        )?,
+                                        "geodesic distance",
+                                    )
                                 })
                                 .collect_rows())
                         },
@@ -804,16 +813,15 @@ pub(crate) fn array_crs_dwithin_per_element(
                     if missing.as_ref().is_some_and(|mask| mask[row]) {
                         return Ok(false);
                     }
-                    left.with_data(|left| {
-                        pair_dwithin_resolved(
-                            &resolved,
-                            left,
-                            &array.row_frame_cache(row),
-                            &right.shape,
-                            &right.frame_cache,
-                            distance.get(row),
-                        )
-                    })
+                    let left = array.prepared_row(row, left);
+                    pair_dwithin_resolved(
+                        &resolved,
+                        &left,
+                        &array.row_frame_cache(row),
+                        &right.shape,
+                        &right.frame_cache,
+                        distance.get(row),
+                    )
                 })
                 .collect::<PyResult<_>>()?;
             bool_array(py, results)
@@ -832,18 +840,16 @@ pub(crate) fn array_crs_dwithin_per_element(
                     if missing.as_ref().is_some_and(|mask| mask[row]) {
                         return Ok(false);
                     }
-                    left.with_data(|left| {
-                        right_row.with_data(|right_data| {
-                            pair_dwithin_resolved(
-                                &resolved,
-                                left,
-                                &array.row_frame_cache(row),
-                                right_data,
-                                &right.row_frame_cache(row),
-                                distance.get(row),
-                            )
-                        })
-                    })
+                    let left = array.prepared_row(row, left);
+                    let right_data = right.prepared_row(row, right_row);
+                    pair_dwithin_resolved(
+                        &resolved,
+                        &left,
+                        &array.row_frame_cache(row),
+                        &right_data,
+                        &right.row_frame_cache(row),
+                        distance.get(row),
+                    )
                 })
                 .collect::<PyResult<_>>()?;
             bool_array(py, results)
@@ -892,16 +898,15 @@ pub(crate) fn array_crs_dwithin_scalar(
                 if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                     return Ok(false);
                 }
-                row.with_data(|left| {
-                    pair_dwithin_resolved(
-                        &resolved,
-                        left,
-                        &array_owned.row_frame_cache(row_index),
-                        &other_shape,
-                        &other_cache,
-                        distance,
-                    )
-                })
+                let left = array_owned.prepared_row(row_index, row);
+                pair_dwithin_resolved(
+                    &resolved,
+                    &left,
+                    &array_owned.row_frame_cache(row_index),
+                    &other_shape,
+                    &other_cache,
+                    distance,
+                )
             })
             .collect::<PyResult<Vec<_>>>()?;
         return bool_array(py, rows);
@@ -933,19 +938,21 @@ pub(crate) fn array_crs_dwithin_scalar(
     }
     match model {
         crs::MetricModel::Planar { to_metre } => {
-            let shapes = Arc::clone(array.storage_arc());
+            let array = array.clone();
+            let missing = array.missing().cloned();
             let limit = distance / to_metre.get();
             let other_shape = Arc::clone(&other.shape);
             // Box-separation reject against the FIXED operand's box, from the
             // array's batch per-element boxes: an element whose box sits farther
-            // (squared) than the limit is settled false before `with_data`.
+            // (squared) than the limit is settled false before materialization.
             let sq_limit = (limit * limit).is_finite().then_some(limit * limit);
             let other_bounds = other_shape.bounds();
             let element_bounds = array.cached_element_bounds();
             bool_array_mask_missing(
                 py,
                 py.detach(move || {
-                    shapes
+                    array
+                        .storage()
                         .iter_rows()
                         .enumerate()
                         .map(|(index, row)| {
@@ -956,11 +963,12 @@ pub(crate) fn array_crs_dwithin_scalar(
                             {
                                 return false;
                             }
-                            row.with_data(|left| left.dwithin(&other_shape, limit))
+                            let left = array.prepared_row(index, row);
+                            left.dwithin(&other_shape, limit)
                         })
                         .collect::<Vec<bool>>()
                 }),
-                array.missing(),
+                missing.as_ref(),
             )
         },
         crs::MetricModel::Geodesic(crs) => {
@@ -1028,19 +1036,18 @@ pub(crate) fn array_crs_dwithin_scalar(
                             if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                                 return Ok(false);
                             }
-                            row.with_data(|left| {
-                                let left_cache = array_owned.row_frame_cache(row_index);
-                                left.geodesic_dwithin_cached(
-                                    &left_cache,
-                                    &other_shape,
-                                    &other_cache,
-                                    crs,
-                                    semi_major,
-                                    flattening,
-                                    metric,
-                                    distance,
-                                )
-                            })
+                            let left = array_owned.prepared_row(row_index, row);
+                            let left_cache = array_owned.row_frame_cache(row_index);
+                            left.geodesic_dwithin_cached(
+                                &left_cache,
+                                &other_shape,
+                                &other_cache,
+                                crs,
+                                semi_major,
+                                flattening,
+                                metric,
+                                distance,
+                            )
                         })
                         .collect_rows())
                 })

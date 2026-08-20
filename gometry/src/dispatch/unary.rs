@@ -158,10 +158,12 @@ fn run_unary_rows<T: BulkElement>(
                     match mode {
                         UnaryRowMode::ShapeOnly | UnaryRowMode::ShapeWithFrameCache => {
                             // Transient handle — never write prepared slots.
-                            shape_row.with_data(|data| kernel(data, &ctx))
+                            let data = crate::array::PreparedRow::transient(shape_row);
+                            kernel(&data, &ctx)
                         },
                         UnaryRowMode::Prepared => {
-                            array.with_row_data(row, shape_row, |data| kernel(data, &ctx))
+                            let data = array.prepared_row(row, shape_row);
+                            kernel(&data, &ctx)
                         },
                     }
                 })
@@ -252,7 +254,8 @@ pub(crate) fn unary_array_shapes_budgeted(
                         left_frame_cache: None,
                         right_frame_cache: None,
                     };
-                    shape_row.with_data(|data| kernel(data, &ctx, &mut budget))
+                    let data = array.prepared_row(row, shape_row);
+                    kernel(&data, &ctx, &mut budget)
                 })
                 .collect_rows()
         })

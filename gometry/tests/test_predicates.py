@@ -336,6 +336,33 @@ def test_de9im_predicates_are_exposed_for_scalar_array_index_and_join() -> None:
     ) == [(1, 1)]
 
 
+def test_de9im_predicates_accept_prepared_operands() -> None:
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(1, 1, 3, 3)
+    prepared = left.prepare()
+    expected_relate = gm.relate(left, right)
+    expected_pattern = gm.relate_pattern(left, right, 'T*T***T**')
+
+    assert gm.relate(prepared, right) == expected_relate
+    assert gm.relate(right, prepared) == gm.relate(right, left)
+    assert gm.relate_pattern(prepared, right, 'T*T***T**') is expected_pattern
+    assert gm.relate_pattern(right, prepared, 'T*T***T**') == gm.relate_pattern(
+        right, left, 'T*T***T**'
+    )
+
+    others = gm.GeometryArray([right, gm.box(5, 5, 6, 6)])
+    assert gm.relate(prepared, others) == [gm.relate(left, value) for value in others]
+    assert gm.relate(others, prepared) == [gm.relate(value, left) for value in others]
+    np.testing.assert_array_equal(
+        gm.relate_pattern(prepared, others, 'T*T***T**'),
+        [gm.relate_pattern(left, value, 'T*T***T**') for value in others],
+    )
+    np.testing.assert_array_equal(
+        gm.relate_pattern(others, prepared, 'T*T***T**'),
+        [gm.relate_pattern(value, left, 'T*T***T**') for value in others],
+    )
+
+
 def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
     shapely = pytest.importorskip('shapely')
     cases = [
@@ -549,7 +576,7 @@ def test_contains_properly_excludes_boundary_contact() -> None:
     np.testing.assert_array_equal(gm.contains_properly(square, arr), [True, False])
     np.testing.assert_array_equal(gm.contains_properly(arr, square), [False, False])
     np.testing.assert_array_equal(
-        square.prepare().contains_properly(arr), [True, False]
+        gm.contains_properly(square.prepare(), arr), [True, False]
     )
     idx = gm.SpatialIndex(arr)
     assert ids(idx.query(square, predicate='contains_properly')) == [0]
@@ -563,9 +590,9 @@ def test_xy_predicates_are_vectorized_on_every_surface() -> None:
     np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
     np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
     prepared = square.prepare()
-    np.testing.assert_array_equal(prepared.contains_xy(xs, ys), [True, False, False])
-    np.testing.assert_array_equal(prepared.intersects_xy(xs, ys), [True, True, False])
-    assert prepared.intersects_xy(0, 5) is True
+    np.testing.assert_array_equal(gm.contains_xy(prepared, xs, ys), [True, False, False])
+    np.testing.assert_array_equal(gm.intersects_xy(prepared, xs, ys), [True, True, False])
+    assert gm.intersects_xy(prepared, 0, 5) is True
     np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
     np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
 
@@ -587,7 +614,7 @@ def test_dispatch_strategy_seams_cannot_change_results() -> None:
         expected = [gm.contains(probe, b) for b in batch]
         np.testing.assert_array_equal(gm.contains(probe, arr), expected, err_msg=str(n))
         np.testing.assert_array_equal(
-            probe.prepare().contains(arr), expected, err_msg=str(n)
+            gm.contains(probe.prepare(), arr), expected, err_msg=str(n)
         )
     cells = gm.GeometryArray([
         gm.box(i, j, i + 0.9, j + 0.9) for i in range(6) for j in range(6)
@@ -615,20 +642,20 @@ def test_geometry_collections_flow_through_every_strategy() -> None:
         gm.contains(square, gm.GeometryArray([gc] * 3)), [True] * 3
     )
     np.testing.assert_array_equal(
-        gm.contains(square, gm.GeometryArray([gc] * 20)), [True] * 20
+        gm.contains(square.prepare(), gm.GeometryArray([gc] * 20)), [True] * 20
     )
     np.testing.assert_array_equal(
-        square.prepare().contains(gm.GeometryArray([gc] * 20)), [True] * 20
+        gm.contains(square, gm.GeometryArray([gc] * 20)), [True] * 20
     )
 
 
 def test_prepared_empty_geometry_answers_through_kernels() -> None:
     prepared = gm.from_wkt('POLYGON EMPTY').prepare()
-    assert prepared.contains(gm.Point(0, 0)) is False
+    assert gm.contains(prepared, gm.Point(0, 0)) is False
     np.testing.assert_array_equal(
-        prepared.contains(gm.GeometryArray([gm.Point(0, 0)] * 20)), [False] * 20
+        gm.contains(prepared, gm.GeometryArray([gm.Point(0, 0)] * 20)), [False] * 20
     )
-    assert prepared.equals(gm.from_wkt('POINT EMPTY')) is True
+    assert gm.equals(prepared, gm.from_wkt('POINT EMPTY')) is True
 
 
 def test_multiline_mod2_junction_rule_holds_on_every_spelling() -> None:
@@ -637,11 +664,11 @@ def test_multiline_mod2_junction_rule_holds_on_every_spelling() -> None:
     degree3 = gm.from_wkt('MULTILINESTRING ((0 0, 1 1), (2 0, 1 1), (1 2, 1 1))')
     degree2 = gm.from_wkt('MULTILINESTRING ((0 0, 1 1), (2 2, 1 1))')
     for lines, contained in ((degree3, False), (degree2, True)):
-        assert gm.contains(lines, junction) is contained
+        assert gm.contains(lines.prepare(), junction) is contained
         np.testing.assert_array_equal(
             gm.contains(lines, gm.GeometryArray([junction] * 20)), [contained] * 20
         )
-        assert lines.prepare().contains(junction) is contained
+        assert gm.contains(lines, junction) is contained
         assert ids(gm.SpatialIndex([junction]).query(lines, predicate='contains')) == (
             [0] if contained else []
         )
@@ -710,7 +737,7 @@ def test_hole_boundary_point_relations_across_spellings() -> None:
     batch = gm.GeometryArray([on_hole_edge] * 20)
     for name, expected in expectations.items():
         assert getattr(gm, name)(donut, on_hole_edge) is expected, name
-        assert getattr(prepared, name)(on_hole_edge) is expected, name
+        assert getattr(gm, name)(prepared, on_hole_edge) is expected, name
         assert (
             getattr(gm, name)(donut, on_hole_edge) == getattr(gm, name)(donut, batch)[0]
         ), name
@@ -730,23 +757,47 @@ def test_shared_edge_multipolygon_is_invalid_but_strategies_agree() -> None:
     np.testing.assert_array_equal(
         gm.contains(mp, gm.GeometryArray([edge_point] * 20)), [scalar] * 20
     )
-    assert mp.prepare().contains(edge_point) is scalar
+    assert gm.contains(mp.prepare(), edge_point) is scalar
 
 
 def test_equals_exact_tolerance_boundary_includes_z_and_m() -> None:
     a = gm.from_wkt('POINT ZM (0 0 0 0)')
     b = gm.from_wkt('POINT ZM (1e-12 -1e-12 1e-12 -1e-12)')
     assert gm.equals_exact(a, b, 1e-12)
+    assert gm.equals_exact(a.prepare(), b, 1e-12)
     assert not gm.equals_exact(a, b, 5e-13)
     assert not gm.equals_exact(a, b, 0.0)
     c = gm.from_wkt('POINT ZM (0 0 5 5)')
     assert gm.equals_exact(a, c, 0.0, include_z=False, include_m=False)
+    assert gm.equals_exact(a.prepare(), c, 0.0, include_z=False, include_m=False)
+
+
+def test_free_equality_accepts_prepared_operands() -> None:
+    a = gm.LineString([(0, 0), (2, 2)])
+    b = gm.LineString([(0, 0), (1, 1), (2, 2)])
+    assert gm.equals(a.prepare(), b.prepare())
+    assert gm.equals(b.prepare(), a)
+    assert gm.equals_exact(a.prepare(), a)
+    assert gm.equals_exact(a, a.prepare())
+    assert gm.equals_exact(a.prepare(), a.prepare())
+
+
+def test_dwithin_accepts_prepared_operands_in_both_positions() -> None:
+    a = gm.box(0, 0, 1, 1)
+    b = gm.box(1.5, 0, 2.5, 1)
+    distance = 0.5
+
+    assert gm.dwithin(a.prepare(), b.prepare(), distance) == gm.dwithin(
+        a, b, distance
+    )
+    assert gm.dwithin(a.prepare(), b, distance) == gm.dwithin(a, b, distance)
+    assert gm.dwithin(a, b.prepare(), distance) == gm.dwithin(a, b, distance)
 
 
 def test_xy_predicates_accept_empty_iterables() -> None:
     poly = gm.box(0, 0, 1, 1)
-    np.testing.assert_array_equal(gm.contains_xy(poly, [], []), [])
-    np.testing.assert_array_equal(poly.prepare().intersects_xy([], []), [])
+    np.testing.assert_array_equal(gm.contains_xy(poly.prepare(), [], []), [])
+    np.testing.assert_array_equal(gm.intersects_xy(poly.prepare(), [], []), [])
     with pytest.raises(ValueError, match='same length'):
         gm.contains_xy(poly, 0.0, [])
 

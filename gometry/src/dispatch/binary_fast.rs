@@ -16,21 +16,33 @@ use crate::dispatch::binary::{
 use crate::dispatch::kernels;
 use crate::dispatch::metric::OpCtx;
 use crate::dispatch::operation::Operation;
-use crate::geometry::{ShapeData, is_geographic_frame};
-use crate::predicates::engine::{Predicate, topology_scalar_pair};
+use crate::geometry::{PointProbeUse, ShapeData, is_geographic_frame};
+use crate::predicates::engine::{Predicate, topology_scalar_pair_with_modes};
 use crate::{DistanceUnit, NonNegative, OverlayOp};
 
 /// Predicate array-lane fast paths (point SIMD, bounds gates, prepared scans).
 pub(crate) struct PredicateFastPath {
     predicate: Predicate,
     scalar_is_left: bool,
+    scalar_prepared: bool,
 }
 
 impl PredicateFastPath {
-    fn new(predicate: Predicate, left: &Bound<'_, PyAny>) -> Self {
+    fn new(
+        predicate: Predicate,
+        left: &Bound<'_, PyAny>,
+        left_prepared: bool,
+        right_prepared: bool,
+    ) -> Self {
+        let scalar_is_left = matches!(classify_input(left), Some(GeometryInput::One(_)));
         Self {
             predicate,
-            scalar_is_left: matches!(classify_input(left), Some(GeometryInput::One(_))),
+            scalar_is_left,
+            scalar_prepared: if scalar_is_left {
+                left_prepared
+            } else {
+                right_prepared
+            },
         }
     }
 }
@@ -48,9 +60,14 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
     ) -> Option<PyResult<Py<PyAny>>> {
         let spec = self.predicate.spec();
         Some(match other {
-            GeometryInput::One(scalar) => {
-                predicate_scalar_vs_array(py, &spec, scalar, array, self.scalar_is_left)
-            },
+            GeometryInput::One(scalar) => predicate_scalar_vs_array(
+                py,
+                &spec,
+                scalar,
+                array,
+                self.scalar_is_left,
+                self.scalar_prepared,
+            ),
             GeometryInput::Many(right) => predicate_pairwise_arrays(py, &spec, array, right),
         })
     }
@@ -80,6 +97,8 @@ pub(crate) fn dispatch_predicate(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     predicate: Predicate,
+    left_prepared: bool,
+    right_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
     let spec = predicate.spec();
     let operation = Operation::Predicate(predicate);
@@ -89,13 +108,28 @@ pub(crate) fn dispatch_predicate(
         right,
         operation.name(),
         super::MetricResolver::None,
-        &PredicateFastPath::new(predicate, left),
+        &PredicateFastPath::new(predicate, left, left_prepared, right_prepared),
         move |left, right, ctx| {
             debug_assert!(
                 is_geographic_frame(ctx.frame) == ctx.geographic,
                 "geographic flag matches the resolved frame"
             );
-            Ok(topology_scalar_pair(&spec, left, right, ctx.geographic))
+            Ok(topology_scalar_pair_with_modes(
+                &spec,
+                left,
+                right,
+                ctx.geographic,
+                if left_prepared {
+                    PointProbeUse::AcrossCalls
+                } else {
+                    PointProbeUse::OneShot(1)
+                },
+                if right_prepared {
+                    PointProbeUse::AcrossCalls
+                } else {
+                    PointProbeUse::OneShot(1)
+                },
+            ))
         },
     )
 }

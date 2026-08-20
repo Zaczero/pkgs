@@ -152,7 +152,7 @@ def test_touches_packed_points_match_scalar_corpus():
     np.testing.assert_array_equal(scalar, expected)
     np.testing.assert_array_equal(vec, expected)
     np.testing.assert_array_equal(rev, expected)
-    # Larger batch exercises PointBatchTester path (MIN_PROBES=64).
+    # Larger batch exercises the indexed point-membership path.
     big = gm.GeometryArray(
         [gm.Point(float(i % 11), float(i % 13)) for i in range(200)]
         + [gm.Point(0, 0), gm.Point(5, 0), gm.Point(5, 5), gm.Point(20, 20)]

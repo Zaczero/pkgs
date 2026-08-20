@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::array::{GeometryArrayStorage, polygon_row_point_membership, row_bounds};
 use crate::geometry::{Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, Shape, ShapeData};
 
@@ -10,9 +12,9 @@ pub(crate) struct VertexWindow {
 #[derive(Clone, Copy)]
 pub enum ShapeRow<'a> {
     /// Persistent prepared handle (index boxed rows, scalar geometry).
-    Handle(&'a ShapeData),
+    Handle(&'a Arc<ShapeData>),
     /// Array-owned mixed storage: plain shape; prepared state lives in the
-    /// array-side prepared-row cache (see [`PyGeometryArray::with_row_data`]).
+    /// array-side prepared-row cache (see [`PyGeometryArray::prepared_row`]).
     Shape(&'a Shape),
     Point(Point),
     Line(&'a CoordSeq, usize, usize),
@@ -76,24 +78,6 @@ impl ShapeRow<'_> {
         }
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
-    )]
-    pub fn with_data<R>(self, f: impl FnOnce(&ShapeData) -> R) -> R {
-        match self {
-            Self::Handle(handle) => f(handle),
-            Self::Shape(shape) => f(&ShapeData::new(shape.clone())),
-            Self::Point(point) => f(&ShapeData::new(Shape::Point(point))),
-            Self::Line(coords, start, end) => {
-                f(&ShapeData::new(Self::line_shape(coords, start, end)))
-            },
-            Self::Rings(coords, ring_offsets, start, end) => f(&ShapeData::new(Shape::Polygon(
-                GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
-            ))),
-        }
-    }
-
     pub fn contains_point(self, point: Point) -> bool {
         self.point_membership::<false>(point)
     }
@@ -114,62 +98,6 @@ impl ShapeRow<'_> {
                     shape.contains_point(point)
                 }
             }),
-        }
-    }
-
-    pub(crate) fn packed_coord_count(self) -> usize {
-        match self {
-            Self::Handle(handle) => handle.shape().coord_count(),
-            Self::Shape(shape) => shape.coord_count(),
-            Self::Point(_) => 1,
-            Self::Line(_, start, end) => end - start,
-            Self::Rings(_, ring_offsets, start, end) => (start..end)
-                .map(|ring| {
-                    let begin = ring_offsets[ring] as usize;
-                    let finish = ring_offsets[ring + 1] as usize;
-                    finish.saturating_sub(begin)
-                })
-                .sum(),
-        }
-    }
-
-    pub(crate) fn into_shape_data(self, bounds: Option<Bounds>) -> ShapeData {
-        match self {
-            Self::Handle(handle) => {
-                let data = ShapeData::new(handle.shape().clone());
-                data.with_seeded_bounds(bounds)
-            },
-            Self::Shape(shape) => ShapeData::new(shape.clone()).with_seeded_bounds(bounds),
-            Self::Point(point) => ShapeData::new(Shape::Point(point)).with_seeded_bounds(bounds),
-            Self::Line(coords, start, end) => {
-                ShapeData::new(Self::line_shape(coords, start, end)).with_seeded_bounds(bounds)
-            },
-            Self::Rings(coords, ring_offsets, start, end) => ShapeData::new(Shape::Polygon(
-                GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
-            ))
-            .with_seeded_bounds(bounds),
-        }
-    }
-
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
-    )]
-    pub fn with_data_bounds<R>(self, bounds: Option<Bounds>, f: impl FnOnce(&ShapeData) -> R) -> R {
-        match self {
-            Self::Handle(handle) => f(handle),
-            Self::Shape(shape) => f(&ShapeData::new(shape.clone()).with_seeded_bounds(bounds)),
-            Self::Point(point) => {
-                f(&ShapeData::new(Shape::Point(point)).with_seeded_bounds(bounds))
-            },
-            Self::Line(coords, start, end) => f(&ShapeData::new(Self::line_shape(
-                coords, start, end,
-            ))
-            .with_seeded_bounds(bounds)),
-            Self::Rings(coords, ring_offsets, start, end) => f(&ShapeData::new(Shape::Polygon(
-                GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
-            ))
-            .with_seeded_bounds(bounds)),
         }
     }
 }

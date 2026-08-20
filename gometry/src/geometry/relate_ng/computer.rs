@@ -1,8 +1,10 @@
 use crate::geometry::relate::De9im;
 use crate::geometry::relate_ng::{
-    BoundaryContacts, Operand, OperandPool, PointBatchTester, Polygon, StagedRings,
-    classify_boundary_sections, probe_interior_faces, scan_boundary_contacts, topology,
+    BoundaryContacts, BoundarySectionPlan, Operand, OperandPool, PointBatchTester, Polygon,
+    StagedRings, classify_boundary_sections, probe_interior_faces, scan_boundary_contacts,
+    topology,
 };
+use crate::geometry::{PointProbeUse, ShapeData};
 pub(in crate::geometry) enum RelateGoal<'a> {
     Matrix,
     Pattern(CompiledPattern<'a>),
@@ -126,6 +128,25 @@ pub(in crate::geometry) struct AreaTesters<'a> {
     pub(in crate::geometry) right: Option<&'a PointBatchTester>,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(in crate::geometry) struct AreaTesterSources<'a> {
+    pub(in crate::geometry) left: Option<(&'a ShapeData, PointProbeUse)>,
+    pub(in crate::geometry) right: Option<(&'a ShapeData, PointProbeUse)>,
+}
+
+impl<'a> AreaTesterSources<'a> {
+    fn resolve(self, probe_counts: [usize; 2]) -> AreaTesters<'a> {
+        AreaTesters {
+            left: self
+                .left
+                .and_then(|(shape, mode)| shape.point_tester_for(mode.for_plan(probe_counts[0]))),
+            right: self
+                .right
+                .and_then(|(shape, mode)| shape.point_tester_for(mode.for_plan(probe_counts[1]))),
+        }
+    }
+}
+
 impl<'a> AreaTesters<'a> {
     pub(crate) const fn for_operand(self, operand: Operand) -> Option<&'a PointBatchTester> {
         match operand {
@@ -147,6 +168,7 @@ pub(in crate::geometry) fn areal_relate_ng(
         &topology::build_operand_pool(left, right),
         goal,
         testers,
+        AreaTesterSources::default(),
         false,
     )
 }
@@ -155,17 +177,19 @@ pub(in crate::geometry) fn areal_relate_ng(
 /// repeated relate on the same geometry skips re-orienting every ring.
 /// `both_simple` is the cached `is_simple` verdict of both operands: when set,
 /// the broad phase skips the within-operand self-intersection gate.
-pub(in crate::geometry) fn areal_relate_ng_staged(
+pub(in crate::geometry) fn areal_relate_ng_staged_with_sources(
     left: &StagedRings,
     right: &StagedRings,
     goal: RelateGoal<'_>,
     testers: AreaTesters<'_>,
+    sources: AreaTesterSources<'_>,
     both_simple: bool,
 ) -> Option<RelateDecision> {
     areal_relate_pool(
         &topology::build_operand_pool_staged(left, right),
         goal,
         testers,
+        sources,
         both_simple,
     )
 }
@@ -174,6 +198,7 @@ pub(crate) fn areal_relate_pool(
     pool: &OperandPool,
     goal: RelateGoal<'_>,
     testers: AreaTesters<'_>,
+    sources: AreaTesterSources<'_>,
     both_simple: bool,
 ) -> Option<RelateDecision> {
     if pool.split == 0 || pool.split == pool.segments.len() {
@@ -189,13 +214,40 @@ pub(crate) fn areal_relate_pool(
         return Some(computer.finish());
     }
 
-    if !classify_boundary_sections(Operand::Left, pool, &mut contacts, &mut computer, testers) {
+    let section_plan = BoundarySectionPlan::build(pool, &mut contacts);
+    let mut probe_counts = section_plan.target_probe_counts();
+    for shell in pool.rings.iter().filter(|ring| ring.ring == 0) {
+        let source = match shell.operand {
+            Operand::Left => 0,
+            Operand::Right => 1,
+        };
+        let target = 1 - source;
+        let ring_points = pool
+            .rings
+            .iter()
+            .filter(|ring| ring.operand == shell.operand && ring.polygon == shell.polygon)
+            .fold(0_usize, |count, ring| {
+                count.saturating_add(ring.points.len())
+            });
+        let fallback_candidates = (ring_points / 2).saturating_mul(3);
+        probe_counts[source] = probe_counts[source].saturating_add(fallback_candidates);
+        probe_counts[target] = probe_counts[target]
+            .saturating_add(fallback_candidates)
+            .saturating_add(2);
+    }
+    let selected = sources.resolve(probe_counts);
+    let testers = AreaTesters {
+        left: selected.left.or(testers.left),
+        right: selected.right.or(testers.right),
+    };
+
+    if !classify_boundary_sections(Operand::Left, pool, &section_plan, &mut computer, testers) {
         return None;
     }
     if computer.decided() {
         return Some(computer.finish());
     }
-    if !classify_boundary_sections(Operand::Right, pool, &mut contacts, &mut computer, testers) {
+    if !classify_boundary_sections(Operand::Right, pool, &section_plan, &mut computer, testers) {
         return None;
     }
     if computer.decided() {

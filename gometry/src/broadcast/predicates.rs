@@ -9,24 +9,26 @@
 
 use std::simd::cmp::SimdPartialEq as _;
 
-use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
+use pyo3::{IntoPyObject as _, IntoPyObjectExt as _};
 
 use crate::array::MissingMask;
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Arc, Bound, Bounds, CollectRows as _, CoordSeq, CoordinateInput, EmptyKind,
-    GeometryArrayStorage, GeometryErrorKind, GeometryInput, Point, PointBatchTester, PredicateSpec,
-    Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData, ShapeRow,
+    GeometryArrayStorage, GeometryErrorKind, GeometryInput, Point, PredicateSpec, Py, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData, ShapeRow,
     broadcast_coordinate_input, broadcast2, classify_input, coordinate_input_with_expected,
     coordinate_sequence_len_hint, expected_geometry_or_array_for, mask_missing, paired_arrays,
     point_batch, py_bool, scalar_vs_shapes,
 };
 use crate::error::Result;
 use crate::geometry::{
-    REDUCE_LANES, is_geographic_frame, pair_select_mask, point_is_geographic_pole,
-    same_topological_coordinate, topology_coordinate_bits_simd, topology_split,
+    CellCertificate, PointProbeUse, REDUCE_LANES, is_geographic_frame, pair_select_mask,
+    point_is_geographic_pole, same_topological_coordinate, topology_coordinate_bits_simd,
+    topology_split,
 };
+use crate::predicates::PyPreparedGeometry;
 use crate::predicates::engine::{
     Predicate, geo_binary, geo_split_pair, skip_antimeridian_bounds_gate_row, topology_scalar_pair,
     try_geographic_point_membership,
@@ -64,6 +66,44 @@ fn input_is_geographic(value: &Bound<'_, PyAny>) -> bool {
     }
 }
 
+/// Present prepared operands as their underlying geometries to a broadcast
+/// implementation. The owned Python values keep the temporary unwrapped
+/// operands alive for the duration of the callback.
+fn with_prepared_operands(
+    py: Python<'_>,
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    operation: impl for<'a> FnOnce(
+        &Bound<'a, PyAny>,
+        &Bound<'a, PyAny>,
+        bool,
+        bool,
+    ) -> PyResult<Py<PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let left_prepared = left.cast::<PyPreparedGeometry>().ok();
+    let right_prepared = right.cast::<PyPreparedGeometry>().ok();
+    let left_geometry = match left_prepared {
+        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        None => None,
+    };
+    let right_geometry = match right_prepared {
+        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        None => None,
+    };
+    let left = left_geometry
+        .as_ref()
+        .map_or(left, |geometry| geometry.as_any());
+    let right = right_geometry
+        .as_ref()
+        .map_or(right, |geometry| geometry.as_any());
+    operation(
+        left,
+        right,
+        left_prepared.is_some(),
+        right_prepared.is_some(),
+    )
+}
+
 /// Point-in-container membership for one [`ShapeRow`], mirroring
 /// [`point_batch_eval`] without materializing a `ShapeData` handle.
 fn row_point_membership(
@@ -77,25 +117,23 @@ fn row_point_membership(
     row_crosses: bool,
 ) -> bool {
     if geographic {
-        return row.with_data(|container| {
-            if let Some(verdict) =
-                try_geographic_point_membership(spec, container.shape(), point, container_is_left)
-            {
-                return verdict;
-            }
-            if row_crosses {
-                // `topology_scalar_pair` split-normalizes the crossing container
-                // internally (the pole fast path already ran above).
-                let point = ShapeData::from(Shape::Point(point));
-                if container_is_left {
-                    topology_scalar_pair(spec, container, &point, true)
-                } else {
-                    topology_scalar_pair(spec, &point, container, true)
-                }
+        let container = crate::array::PreparedRow::transient(row);
+        if let Some(verdict) =
+            try_geographic_point_membership(spec, container.shape(), point, container_is_left)
+        {
+            return verdict;
+        }
+        if row_crosses {
+            // `topology_scalar_pair` split-normalizes the crossing container
+            // internally (the pole fast path already ran above).
+            let point = ShapeData::from(Shape::Point(point));
+            return if container_is_left {
+                topology_scalar_pair(spec, &container, &point, true)
             } else {
-                row_point_membership_fast(container, point, spec, container_is_left)
-            }
-        });
+                topology_scalar_pair(spec, &point, &container, true)
+            };
+        }
+        return row_point_membership_fast(&container, point, spec, container_is_left);
     }
     row_point_membership_fast_row(row, point, spec, container_is_left)
 }
@@ -106,7 +144,8 @@ fn row_point_membership_fast_row(
     spec: &PredicateSpec,
     container_is_left: bool,
 ) -> bool {
-    row.with_data(|container| row_point_membership_fast(container, point, spec, container_is_left))
+    let container = crate::array::PreparedRow::transient(row);
+    row_point_membership_fast(&container, point, spec, container_is_left)
 }
 
 fn row_point_membership_fast(
@@ -147,7 +186,21 @@ pub(crate) fn predicate_broadcast(
     right: &Bound<'_, PyAny>,
     predicate: Predicate,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_predicate(py, left, right, predicate)
+    with_prepared_operands(
+        py,
+        left,
+        right,
+        |left, right, left_prepared, right_prepared| {
+            crate::dispatch::dispatch_predicate(
+                py,
+                left,
+                right,
+                predicate,
+                left_prepared,
+                right_prepared,
+            )
+        },
+    )
 }
 
 /// One fixed `scalar` operand against every element of `array`.
@@ -161,6 +214,7 @@ pub(crate) fn predicate_scalar_vs_array(
     scalar: &PyGeometry,
     array: &PyGeometryArray,
     scalar_is_left: bool,
+    scalar_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
     Frame::compatible_parts(
         scalar.crs_ref(),
@@ -198,7 +252,7 @@ pub(crate) fn predicate_scalar_vs_array(
             py.detach(move || {
                 // Cached band-indexed raycaster via `point_batch`: built once
                 // per handle, each probe scans only its Y-band.
-                point_batch(&spec, &shape, &points, scalar_is_left)
+                point_batch(&spec, &shape, &points, scalar_is_left, scalar_prepared)
                     .expect("array-side point kernel checked above")
             }),
             missing.as_ref(),
@@ -266,6 +320,7 @@ pub(crate) fn predicate_scalar_vs_array(
                 &shape,
                 array.storage().iter_rows().enumerate(),
                 scalar_is_left,
+                scalar_prepared,
                 Some(&array),
                 geographic,
             )
@@ -307,11 +362,9 @@ pub(crate) fn predicate_pairwise_arrays(
                         if left_array.is_row_missing(index) || right_array.is_row_missing(index) {
                             return false;
                         }
-                        left_array.with_row_data(index, left, |left| {
-                            right_array.with_row_data(index, right, |right| {
-                                topology_scalar_pair(&spec, left, right, geographic)
-                            })
-                        })
+                        let left = left_array.prepared_row(index, left);
+                        let right = right_array.prepared_row(index, right);
+                        topology_scalar_pair(&spec, &left, &right, geographic)
                     })
                     .collect::<Vec<_>>()
             }),
@@ -442,7 +495,7 @@ pub(crate) fn predicate_pairwise_arrays(
     }
     // The unified predicate table owns all bounds-only short-circuits. The
     // per-row boxes are SIMD `column_minmax` straight off the packed columns,
-    // so a refuted pair skips `with_data` + the full kernel while preserving
+    // so a refuted pair skips materialization + the full kernel while preserving
     // the scalar/prepared lane's single source of truth.
     if let (Some(left_bounds), Some(right_bounds)) =
         (left.cached_element_bounds(), right.cached_element_bounds())
@@ -475,11 +528,9 @@ pub(crate) fn predicate_pairwise_arrays(
                         {
                             return verdict;
                         }
-                        left_array.with_row_data(index, left, |left| {
-                            right_array.with_row_data(index, right, |right| {
-                                topology_scalar_pair(&spec, left, right, geographic)
-                            })
-                        })
+                        let left = left_array.prepared_row(index, left);
+                        let right = right_array.prepared_row(index, right);
+                        topology_scalar_pair(&spec, &left, &right, geographic)
                     })
                     .collect::<Vec<_>>()
             }),
@@ -496,11 +547,9 @@ pub(crate) fn predicate_pairwise_arrays(
                 .zip(right_shapes.iter_rows())
                 .enumerate()
                 .map(|(index, (left, right))| {
-                    left_array.with_row_data(index, left, |left| {
-                        right_array.with_row_data(index, right, |right| {
-                            topology_scalar_pair(&spec, left, right, geographic)
-                        })
-                    })
+                    let left = left_array.prepared_row(index, left);
+                    let right = right_array.prepared_row(index, right);
+                    topology_scalar_pair(&spec, &left, &right, geographic)
                 })
                 .collect::<Vec<_>>()
         }),
@@ -559,22 +608,24 @@ pub(crate) fn relate_string_broadcast(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    use GeometryInput::One;
-    if let (Some(One(left)), Some(One(right))) = (classify_input(left), classify_input(right)) {
-        left.frame.compatible(&right.frame, "relate")?;
-        let geographic = is_geographic_frame(&left.frame);
-        return match geo_split_pair(geographic, left.shape.shape(), right.shape.shape()) {
-            Some((left_shape, right_shape)) => {
-                let left = ShapeData::from(left_shape);
-                let right = ShapeData::from(right_shape);
-                ShapeData::relate(&left, &right).into_py_any(py)
-            },
-            None => ShapeData::relate(&left.shape, &right.shape).into_py_any(py),
-        };
-    }
-    let geographic = input_is_geographic(left) || input_is_geographic(right);
-    broadcast2(py, left, right, "relate", move |left, right| {
-        Ok(geo_binary(geographic, left, right, Shape::relate))
+    with_prepared_operands(py, left, right, |left, right, _, _| {
+        use GeometryInput::One;
+        if let (Some(One(left)), Some(One(right))) = (classify_input(left), classify_input(right)) {
+            left.frame.compatible(&right.frame, "relate")?;
+            let geographic = is_geographic_frame(&left.frame);
+            return match geo_split_pair(geographic, left.shape.shape(), right.shape.shape()) {
+                Some((left_shape, right_shape)) => {
+                    let left = ShapeData::from(left_shape);
+                    let right = ShapeData::from(right_shape);
+                    ShapeData::relate(&left, &right).into_py_any(py)
+                },
+                None => ShapeData::relate(&left.shape, &right.shape).into_py_any(py),
+            };
+        }
+        let geographic = input_is_geographic(left) || input_is_geographic(right);
+        broadcast2(py, left, right, "relate", move |left, right| {
+            Ok(geo_binary(geographic, left, right, Shape::relate))
+        })
     })
 }
 
@@ -602,45 +653,49 @@ pub(crate) fn relate_pattern_broadcast(
         "T*F**FFF*" => Some(Shape::equals),
         _ => None,
     };
-    if let Some(kernel) = canonical {
+    with_prepared_operands(py, left, right, |left, right, _, _| {
+        if let Some(kernel) = canonical {
+            if let (Some(One(left)), Some(One(right))) =
+                (classify_input(left), classify_input(right))
+            {
+                left.frame.compatible(&right.frame, "relate_pattern")?;
+                let geographic = is_geographic_frame(&left.frame);
+                return match geo_split_pair(geographic, left.shape.shape(), right.shape.shape()) {
+                    Some((left_shape, right_shape)) => {
+                        Ok(py_bool(py, kernel(&left_shape, &right_shape)))
+                    },
+                    None => Ok(py_bool(py, kernel(left.shape.shape(), right.shape.shape()))),
+                };
+            }
+            let geographic = input_is_geographic(left) || input_is_geographic(right);
+            return broadcast2(py, left, right, "relate_pattern", move |left, right| {
+                Ok(geo_binary(geographic, left, right, kernel))
+            });
+        }
+        let pattern_owned = pattern.to_owned();
+        let compiled = crate::geometry::CompiledPattern::new(&pattern_owned)
+            .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
         if let (Some(One(left)), Some(One(right))) = (classify_input(left), classify_input(right)) {
             left.frame.compatible(&right.frame, "relate_pattern")?;
             let geographic = is_geographic_frame(&left.frame);
             return match geo_split_pair(geographic, left.shape.shape(), right.shape.shape()) {
                 Some((left_shape, right_shape)) => {
-                    Ok(py_bool(py, kernel(&left_shape, &right_shape)))
+                    let left = ShapeData::from(left_shape);
+                    let right = ShapeData::from(right_shape);
+                    Ok(py_bool(py, left.relate_pattern_compiled(&right, compiled)))
                 },
-                None => Ok(py_bool(py, kernel(left.shape.shape(), right.shape.shape()))),
+                None => Ok(py_bool(
+                    py,
+                    left.shape.relate_pattern_compiled(&right.shape, compiled),
+                )),
             };
         }
         let geographic = input_is_geographic(left) || input_is_geographic(right);
-        return broadcast2(py, left, right, "relate_pattern", move |left, right| {
-            Ok(geo_binary(geographic, left, right, kernel))
-        });
-    }
-    let pattern_owned = pattern.to_owned();
-    let compiled = crate::geometry::CompiledPattern::new(&pattern_owned)
-        .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
-    if let (Some(One(left)), Some(One(right))) = (classify_input(left), classify_input(right)) {
-        left.frame.compatible(&right.frame, "relate_pattern")?;
-        let geographic = is_geographic_frame(&left.frame);
-        return match geo_split_pair(geographic, left.shape.shape(), right.shape.shape()) {
-            Some((left_shape, right_shape)) => {
-                let left = ShapeData::from(left_shape);
-                let right = ShapeData::from(right_shape);
-                Ok(py_bool(py, left.relate_pattern_compiled(&right, compiled)))
-            },
-            None => Ok(py_bool(
-                py,
-                left.shape.relate_pattern_compiled(&right.shape, compiled),
-            )),
-        };
-    }
-    let geographic = input_is_geographic(left) || input_is_geographic(right);
-    broadcast2(py, left, right, "relate_pattern", move |left, right| {
-        Ok(geo_binary(geographic, left, right, |left, right| {
-            Shape::relate_pattern_compiled(left, right, compiled)
-        }))
+        broadcast2(py, left, right, "relate_pattern", move |left, right| {
+            Ok(geo_binary(geographic, left, right, |left, right| {
+                Shape::relate_pattern_compiled(left, right, compiled)
+            }))
+        })
     })
 }
 
@@ -654,6 +709,11 @@ pub(crate) fn xy_predicate(
     y: &Bound<'_, PyAny>,
     inclusive: bool,
 ) -> PyResult<Py<PyAny>> {
+    if let Ok(prepared) = geometry.cast::<PyPreparedGeometry>() {
+        // Preserve the prepared operand's public policy while reusing the
+        // coordinate parser and scalar XY kernel.
+        return xy_predicate_geometry(py, &prepared.get().geometry, x, y, inclusive, true);
+    }
     let input = classify_input(geometry).ok_or_else(|| expected_geometry_or_array_for(geometry))?;
     // Streaming owner: pin bare one-shot iterators with the sibling length when
     // known so each coordinate column is drained once (not twice via independent
@@ -670,7 +730,9 @@ pub(crate) fn xy_predicate(
         )));
     }
     match input {
-        GeometryInput::One(geometry) => xy_predicate_geometry_inputs(py, geometry, x, y, inclusive),
+        GeometryInput::One(geometry) => {
+            xy_predicate_geometry_inputs(py, geometry, x, y, inclusive, false)
+        },
         GeometryInput::Many(array) => {
             let len = array.storage().len();
             broadcast_coordinate_input(&mut x, len, "GeometryArray and x")?;
@@ -689,12 +751,13 @@ pub(crate) fn xy_predicate_geometry(
     x: &Bound<'_, PyAny>,
     y: &Bound<'_, PyAny>,
     inclusive: bool,
+    scalar_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
     let x_hint = coordinate_sequence_len_hint(x);
     let y_hint = coordinate_sequence_len_hint(y);
     let x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
     let y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
-    xy_predicate_geometry_inputs(py, geometry, x, y, inclusive)
+    xy_predicate_geometry_inputs(py, geometry, x, y, inclusive, scalar_prepared)
 }
 
 fn xy_predicate_geometry_inputs(
@@ -703,6 +766,7 @@ fn xy_predicate_geometry_inputs(
     mut x: CoordinateInput,
     mut y: CoordinateInput,
     inclusive: bool,
+    scalar_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
     if x.values.len() != y.values.len() && !x.scalar && !y.scalar {
         return Err(InvalidGeometryError::new_err(format!(
@@ -715,7 +779,15 @@ fn xy_predicate_geometry_inputs(
     let len = x.values.len().max(y.values.len());
     broadcast_coordinate_input(&mut x, len, "x and y")?;
     broadcast_coordinate_input(&mut y, len, "x and y")?;
-    xy_predicate_values(py, geometry, x.values, y.values, scalar, inclusive)
+    xy_predicate_values(
+        py,
+        geometry,
+        x.values,
+        y.values,
+        scalar,
+        inclusive,
+        scalar_prepared,
+    )
 }
 
 fn xy_predicate_array_values(
@@ -741,7 +813,7 @@ fn xy_predicate_array_values(
                     if missing {
                         return Ok(false);
                     }
-                    let point = Point::new(x, y)?;
+                    let point = Point::new_unchecked_xy(x, y);
                     let crosses = geographic && row.with_shape(Shape::crosses_antimeridian);
                     Ok(row_point_membership(
                         row, point, &spec, true, geographic, crosses,
@@ -755,6 +827,120 @@ fn xy_predicate_array_values(
 
 /// `contains_xy`/`intersects_xy` after the caller has parsed, broadcast, and
 /// optionally domain-validated the coordinate columns.
+fn xy_exact_membership(shape: &ShapeData, point: Point, inclusive: bool) -> bool {
+    if inclusive {
+        shape.covers_point(point)
+    } else {
+        shape.contains_point(point)
+    }
+}
+
+fn xy_array_values(
+    x: Vec<f64>,
+    y: Vec<f64>,
+    len: usize,
+    shape: &Arc<ShapeData>,
+    original: &Arc<ShapeData>,
+    spec: PredicateSpec,
+    geographic: bool,
+    inclusive: bool,
+    scalar_prepared: bool,
+) -> Result<Vec<bool>, (usize, crate::error::Error)> {
+    let split_transient = !std::ptr::eq(Arc::as_ptr(shape), Arc::as_ptr(original));
+    let points: Vec<Point> = x
+        .into_iter()
+        .zip(y)
+        .map(|(x, y)| Point::new_unchecked_xy(x, y))
+        .collect();
+    let mode = if scalar_prepared {
+        PointProbeUse::AcrossCalls
+    } else {
+        PointProbeUse::OneShot(len)
+    };
+    if split_transient {
+        let tester = shape.point_tester_for(mode);
+        return points
+            .into_iter()
+            .map(|point| {
+                if let Some(verdict) =
+                    try_geographic_point_membership(&spec, original.shape(), point, true)
+                {
+                    return Ok(verdict);
+                }
+                Ok(match tester {
+                    Some(tester) if inclusive => tester.covers_point(point),
+                    Some(tester) => tester.contains_point(point),
+                    None => xy_exact_membership(shape, point, inclusive),
+                })
+            })
+            .collect_rows();
+    }
+    if let Some(tester) = shape.point_tester_for(mode) {
+        let geographic_verdicts: Vec<Option<bool>> = points
+            .iter()
+            .map(|&point| {
+                geographic
+                    .then(|| try_geographic_point_membership(&spec, original.shape(), point, true))
+                    .flatten()
+            })
+            .collect();
+        if let Some(grid_values) = tester.cell_batch_classify(len, &points) {
+            return points
+                .into_iter()
+                .zip(geographic_verdicts)
+                .enumerate()
+                .map(|(index, (point, geographic_verdict))| {
+                    if let Some(verdict) = geographic_verdict {
+                        return Ok(verdict);
+                    }
+                    if let Some(certificate) = grid_values[index] {
+                        return Ok(matches!(certificate, CellCertificate::Interior));
+                    }
+                    Ok(if inclusive {
+                        tester.covers_point(point)
+                    } else {
+                        tester.contains_point(point)
+                    })
+                })
+                .collect_rows();
+        }
+        return points
+            .into_iter()
+            .zip(geographic_verdicts)
+            .map(|(point, geographic_verdict)| {
+                if let Some(verdict) = geographic_verdict {
+                    return Ok(verdict);
+                }
+                Ok(if inclusive {
+                    tester.covers_point(point)
+                } else {
+                    tester.contains_point(point)
+                })
+            })
+            .collect_rows();
+    }
+
+    let bounds = shape.bounds();
+    points
+        .into_iter()
+        .map(|point| {
+            if geographic
+                && let Some(verdict) =
+                    try_geographic_point_membership(&spec, original.shape(), point, true)
+            {
+                return Ok(verdict);
+            }
+            if let Some(bounds) = bounds {
+                let probe = Bounds::from_point(point);
+                if !bounds.contains(probe) {
+                    return Ok(false);
+                }
+            }
+            Ok(xy_exact_membership(shape, point, inclusive))
+        })
+        .collect_rows()
+}
+
 pub(crate) fn xy_predicate_values(
     py: Python<'_>,
     geometry: &PyGeometry,
@@ -762,6 +948,7 @@ pub(crate) fn xy_predicate_values(
     y: Vec<f64>,
     scalar: bool,
     inclusive: bool,
+    scalar_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
     let len = x.len();
     let spec = if inclusive {
@@ -789,61 +976,107 @@ pub(crate) fn xy_predicate_values(
             return Ok(py_bool(py, verdict));
         }
         let shape = antimeridian_scalar_operand(&geometry.shape, geographic);
+        if std::ptr::eq(Arc::as_ptr(&shape), Arc::as_ptr(&original))
+            && let Some(tester) = original.point_tester_for(if scalar_prepared {
+                PointProbeUse::AcrossCalls
+            } else {
+                PointProbeUse::OneShot(1)
+            })
+            && let Some(verdict) =
+                crate::predicates::engine::point_batch_eval(&spec, tester, point, true)
+        {
+            return Ok(py_bool(py, verdict));
+        }
         return Ok(py_bool(py, kernel(&shape, point)));
     }
     let shape = antimeridian_scalar_operand(&geometry.shape, geographic);
     let result = py
         .detach(move || {
-            // Polygonal batches answer through the prepared band-indexed
-            // raycaster (built once, probes scan one Y-band).
-            if len >= PointBatchTester::MIN_PROBES
-                && let Some(tester) = shape.point_tester()
-            {
-                // Cached on the shape handle — amortized across repeated batches.
-                return x
-                    .into_iter()
-                    .zip(y)
-                    .map(|(x, y)| {
-                        let point = Point::new(x, y)?;
-                        if geographic
-                            && let Some(verdict) = try_geographic_point_membership(
-                                &spec,
-                                original.shape(),
-                                point,
-                                true,
-                            )
-                        {
-                            return Ok(verdict);
-                        }
-                        Ok(if inclusive {
-                            tester.covers_point(point)
-                        } else {
-                            tester.contains_point(point)
-                        })
-                    })
-                    .collect_rows();
-            }
-            let bounds = shape.bounds();
-            x.into_iter()
-                .zip(y)
-                .map(|(x, y)| {
-                    let point = Point::new(x, y)?;
-                    if geographic
-                        && let Some(verdict) =
-                            try_geographic_point_membership(&spec, original.shape(), point, true)
-                    {
-                        return Ok(verdict);
-                    }
-                    if let Some(bounds) = bounds {
-                        let probe = Bounds::from_point(point);
-                        if !bounds.contains(probe) {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(kernel(&shape, point))
-                })
-                .collect_rows()
+            xy_array_values(
+                x,
+                y,
+                len,
+                &shape,
+                &original,
+                spec,
+                geographic,
+                inclusive,
+                scalar_prepared,
+            )
         })
         .map_err(super::rows_err)?;
     bool_array(py, result)
+}
+
+#[cfg(test)]
+mod geographic_tests {
+
+    use pyo3::types::PyAnyMethods as _;
+
+    use super::*;
+    use crate::boundary::{Frame, crs_arc_static};
+    use crate::geometry::{CoordSeq, Polygon, Ring};
+
+    #[test]
+    fn geographic_crossing_xy_agrees_with_scalar_oracle_at_seam_and_pole() {
+        crate::test_support::initialize_python();
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_trusted_closed(CoordSeq::from(vec![
+                Point::new_unchecked_xy(170.0, 80.0),
+                Point::new_unchecked_xy(-170.0, 80.0),
+                Point::new_unchecked_xy(-170.0, 90.0),
+                Point::new_unchecked_xy(170.0, 90.0),
+            ])),
+            Vec::new(),
+        ));
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+            .expect("EPSG:4326 is a valid geographic frame");
+        let geometry = PyGeometry::with_frame(shape, frame);
+
+        // The first four points sit on or immediately beside both longitude
+        // representations of the seam; the rest test the high-latitude cap.
+        let probes = [
+            (180.0, 85.0),
+            (-180.0, 85.0),
+            (179.999, 85.0),
+            (-179.999, 85.0),
+            (0.0, 90.0),
+            (90.0, 90.0),
+            (-90.0, 90.0),
+        ];
+        let x = probes.iter().map(|&(x, _)| x).collect();
+        let y = probes.iter().map(|&(_, y)| y).collect();
+        let spec = Predicate::Intersects.spec();
+        let expected: Vec<bool> = probes
+            .iter()
+            .map(|&(x, y)| {
+                try_geographic_point_membership(
+                    &spec,
+                    geometry.shape.shape(),
+                    Point::new_unchecked_xy(x, y),
+                    true,
+                )
+                .unwrap_or_else(|| {
+                    topology_split(geometry.shape.shape())
+                        .covers_point(Point::new_unchecked_xy(x, y))
+                })
+            })
+            .collect();
+
+        let actual = Python::attach(|py| {
+            let result = xy_predicate_values(py, &geometry, x, y, false, true, false)
+                .expect("geographic XY predicate succeeds");
+            result
+                .bind(py)
+                .call_method0("tolist")
+                .expect("predicate returns an array with tolist")
+                .extract::<Vec<bool>>()
+                .expect("predicate array contains booleans")
+        });
+
+        assert_eq!(
+            actual, expected,
+            "geographic XY result differs from scalar oracle"
+        );
+    }
 }

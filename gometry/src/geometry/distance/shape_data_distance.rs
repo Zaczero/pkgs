@@ -1,3 +1,4 @@
+use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
     coordinate_squared_safe, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
@@ -175,10 +176,11 @@ impl ShapeData {
     /// prepared parts (isolated identity, robust on-segment via the facet
     /// tree, recursive area parts).
     pub(crate) fn covers_point_cached(&self, point: Point) -> bool {
-        self.point_tester().map_or_else(
-            || parts_covers_point(self.shape(), self.distance_parts(), point),
-            |tester| tester.covers_point(point),
-        )
+        self.point_tester_required(RequiredPointTester(()))
+            .map_or_else(
+                || parts_covers_point(self.shape(), self.distance_parts(), point),
+                |tester| tester.covers_point(point),
+            )
     }
 
     /// Per-row planar distances from an XY probe stream, on cached prepared
