@@ -126,13 +126,6 @@ verbose_file_reads = "warn"
 # clippy `redundant_pub_crate = "allow"` above (the two are inverses).
 unreachable_pub = "warn"
 
-[profile.release]
-lto = true
-codegen-units = 1
-debug = "line-tables-only"
-strip = "symbols"
-trim-paths = "all"
-
 [profile.dev]
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
@@ -140,3 +133,24 @@ split-debuginfo = "unpacked"
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
+
+# Local release builds stay cheap: thin LTO and default codegen-units cut a warmed
+# build from ~9min to ~4min, and every correctness gate builds a release wheel.
+# `strip` is deliberately absent — with `debug` set, Cargo already defaults to
+# "none", so naming it would restate a default. Line tables plus the symbol table
+# are what turn a panic into a backtrace with names and file:line.
+[profile.release]
+lto = "thin"
+debug = "line-tables-only"
+trim-paths = "all"
+
+# Published artifacts only: maximal optimization, and drop DWARF while keeping the
+# symbol table. That yields a demangled call chain without frame-level file:line,
+# which costs +4.6% wheel size instead of the +388% that shipping line tables does.
+# Invoke as `maturin build --profile release-dist`; plain `--release` uses the fast
+# local profile above and would publish the 5x-larger artifact.
+[profile.release-dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

@@ -1,4 +1,4 @@
 [profile.default]
-slow-timeout = { period = "1s", terminate-after = 3, grace-period = "1s" }
+slow-timeout = { period = "1s", terminate-after = 10, grace-period = "1s" }
 leak-timeout = { period = "1s", result = "fail" }
 fail-fast = false

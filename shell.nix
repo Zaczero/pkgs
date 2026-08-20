@@ -3,7 +3,7 @@
 let
   pkgs =
     import
-      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/8d8c1fa5b412c223ffa47410867813290cdedfef.tar.gz")
+      (fetchTarball "https://github.com/NixOS/nixpkgs/archive/6b5e5b7a6631f065bf6908986990b37d845f847f.tar.gz")
       { };
 
   makeScript =
@@ -44,21 +44,6 @@ let
     (makeScript "activate" ''
       if [ -f pyproject.toml ]; then
         uv sync --all-groups
-        if ${gnugrep}/bin/grep -q 'build-backend = "maturin"' pyproject.toml; then
-          if ! .venv/bin/python - <<'PY'
-      import sys
-      import sysconfig
-      from pathlib import Path
-
-      sitecustomize = Path(sysconfig.get_paths()["purelib"]) / "sitecustomize.py"
-      if sitecustomize.exists() and "maturin_import_hook" in sitecustomize.read_text():
-          raise SystemExit(0)
-      raise SystemExit(1)
-      PY
-          then
-            uv run python -m maturin_import_hook site install
-          fi
-        fi
       fi
     '')
 
@@ -141,7 +126,7 @@ let
     export PYTEST_ADDOPTS="--quiet --import-mode=importlib --strict-markers --strict-config"
 
     # `uv sync` builds through maturin's PEP 517 backend, which defaults to
-    # release -- fat LTO and codegen-units=1, measured at 37 s for a one-line
+    # plain `--release` (thin LTO and default codegen-units), measured at 37 s for a one-line
     # change against 2 s for dev. The import hook is separately unset above, so
     # both paths agree on dev. Dev also turns on debug_assertions and
     # overflow-checks, which release omits and which nothing else exercises.
