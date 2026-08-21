@@ -112,9 +112,7 @@ def test_available_best_operation_grids_execute_without_warning() -> None:
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter('always')
         result = gm.crs_transform(4267, 4326, -104.0, 40.0)
-    assert result == pytest.approx(
-        (-104.0005055600116, 39.99998770647132), abs=1e-12
-    )
+    assert result == pytest.approx((-104.0005055600116, 39.99998770647132), abs=1e-12)
     assert not [item for item in seen if item.category is gm.AccuracyWarning]
 
 

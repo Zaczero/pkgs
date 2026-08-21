@@ -1,5 +1,5 @@
 """
-High-performance HTTP/2 ASGI server for FastAPI, Starlette, and similar apps.
+Blazing-fast HTTP/2 ASGI server for Python, written in Rust.
 
 `h2corn` is optimized for `h2c` behind a trusted reverse proxy, with optional
 direct TLS support for TCP deployments. Application traffic stays on HTTP/2

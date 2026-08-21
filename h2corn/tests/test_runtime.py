@@ -864,6 +864,7 @@ async def test_worker_fds_rejected_generation_releases_transferred_descriptors(
     listener_fd = listener_endpoint.detach()
     quiesce_peer, quiesce_endpoint = socket.socketpair()
     quiesce_read = quiesce_endpoint.detach()
+
     async def app(*_args: object) -> None:
         pass
 
@@ -929,6 +930,7 @@ async def test_worker_fds_success_releases_transferred_descriptors(monkeypatch) 
         await shutdown
 
     monkeypatch.setattr(_lib, 'serve_fds', fake_serve_fds)
+
     async def app(*_args: object) -> None:
         pass
 
@@ -1324,6 +1326,7 @@ async def test_worker_fd_construction_failure_closes_listeners_and_quiesce(
         return original(fd=fd)
 
     monkeypatch.setattr(_socket, '_InheritedListener', fail_after_first)
+
     async def app(*_args: object) -> None:
         pass
 

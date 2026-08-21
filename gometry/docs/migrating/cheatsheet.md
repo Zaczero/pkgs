@@ -4,11 +4,6 @@ description: Searchable old-symbol → gometry-spelling reference tables, groupe
 
 # Migration cheatsheet
 
-One scannable table per source library, followed by the utility codecs (polyline,
-plus codes, tiles, geohash). Use your browser's find
-(or the search box) to jump to a symbol. Where a behavior changes, the Notes
-column says so; the per-library pages have side-by-side examples.
-
 Conventions:
 
 - `import gometry as gm`
@@ -43,7 +38,7 @@ Conventions:
 | `geom.has_z` | `geom.has_z` / `geom.has_m` | |
 | — | `geom.coordinate_axes` | `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"`. |
 | — | `geom.epoch` | Coordinate epoch. |
-| `geom.crs` (n/a in Shapely) | `geom.crs` | CRS is first-class metadata. |
+| `geom.crs` (n/a in Shapely) | `geom.crs` | CRS is metadata. |
 | `get_coordinates(geom)` | `geom.coords` (`list(...)`, `.x`/`.y`, `.index`) / `gm.get_coordinates(...)` | |
 | `parts(...)` / `rings(...)` | `gm.parts(...)` / `gm.rings(...)` | |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
@@ -110,7 +105,7 @@ Conventions:
 | `line_merge(...)` | `(...).line_merge()` | |
 | `shared_paths(...)` | `gm.shared_paths(...)` | |
 | `snap(g, ref, tol)` | `gm.snap(g, ref, tol)` | |
-| `segmentize(g, max_len)` | `g.segmentize(max_len)` | |
+| `segmentize(g, max_len)` | `g.segmentize(max_len)` | `max_length` follows the CRS metric (geographic metres, projected native units, CRS-free coordinate units); `fraction=` is unitless. |
 | `remove_repeated_points(...)` | `(...).remove_repeated_points()` | |
 | `minimum_rotated_rectangle(g)` | `g.minimum_rotated_rectangle()` | |
 | `geom.reverse()` / `shapely.reverse(geom)` | `geom.reverse()` | |
@@ -170,7 +165,7 @@ Conventions:
 
 | pyproj | gometry | Notes |
 |---|---|---|
-| `CRS.from_epsg(4326)` | `gm.CRS(4326)` | First-class CRS object; `geom.crs` returns one. |
+| `CRS.from_epsg(4326)` | `gm.CRS(4326)` | CRS object; `geom.crs` returns one. |
 | `gdf.set_crs(c)` | `geom.set_crs(c)` | Declare meaning. |
 | `gdf.to_crs(c)` | `geom.to_crs(c)` | Transform coordinates. |
 | `Transformer.from_crs(a, b)` + `.transform(x, y)` | `gm.crs_transform(a, b, x, y, z=..., t=...)` | Stateless; always X/Y. Scalar inputs return a tuple; bulk inputs return one `(N, 2)` / `(N, 3)` NumPy matrix (`t` is input-only). |
@@ -178,7 +173,7 @@ Conventions:
 | `always_xy=True` | (default) | gometry is always X/Y. |
 | `query_utm_crs_info(...)` | `geom.estimate_local_crs()` / `geoms.estimate_local_crs()` | Scalar and array receiver methods → `CRS`. |
 | polar/UPS selection | `geom.estimate_local_crs()` | |
-| `crs.is_geographic` / `is_projected` | `gm.CRS(c).is_geographic` / `.is_projected` | Full `is_*` property family. |
+| `crs.is_geographic` / `is_projected` | `gm.CRS(c).is_geographic` / `.is_projected` | `is_*` property family. |
 | `crs.axis_info` | `gm.CRS(c).axis_order` | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | `gm.CRS(c).to_authority()` / `.to_epsg()` | |
 | `crs.to_wkt()` / `to_proj4()` / `to_json()` | `gm.CRS(c).to_wkt()` / `.to_proj()` / `.to_projjson()` / `.to_projjson_dict()` | |
@@ -295,4 +290,4 @@ spelling:
 | `unary_union` | `gm.union_all` |
 | `polyfill` (tiles/geohash) | `gm.tile_cover(geom, ...)` / `gm.geohash_cover(geom, ...)` |
 
-The reasoning behind these choices is on the [design page](../about/design.md).
+These naming choices are defined on the [design page](../about/design.md).

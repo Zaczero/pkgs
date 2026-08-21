@@ -57,7 +57,7 @@ def test_manufactured_normal_residual_falls_back_to_source_distance(
     ys[count // 2] = 2.0 * separation
     left = gm.LineString([(x, 0.0) for x in xs])
     right = gm.LineString(list(zip(xs, ys, strict=True)))
-    expected = float(Fraction.from_float(separation) * 2)
+    expected = float(Fraction(separation) * 2)
     assert _carrier_results(left, right) == [expected] * 5
     assert _carrier_results(right, left) == [expected] * 5
 
@@ -77,9 +77,7 @@ def test_normal_squared_residual_is_not_a_completeness_certificate(
     length = 10.0**exponent
     source = gm.LineString([(-length, 0.0), (length, 0.0)])
     target = gm.MultiPoint([(-length, 1.0), (length / 7.0, 1.0), (length, 1.0)])
-    expected = float(
-        (Fraction.from_float(target[1].x) - Fraction.from_float(target[0].x)) / 2
-    )
+    expected = float((Fraction(target[1].x) - Fraction(target[0].x)) / 2)
     for first, second in ((source, target), (target, source)):
         results = _carrier_results(first, second)
         assert results == [results[0]] * len(results)
@@ -99,6 +97,6 @@ def test_hausdorff_exact_power_of_two_similarity_homogeneity(exponent: int) -> N
     scale = 2.0**exponent
     left = gm.LineString([(x * scale, y * scale) for x, y in left_points])
     right = gm.LineString([(x * scale, y * scale) for x, y in right_points])
-    expected = float(Fraction.from_float(baseline) * Fraction.from_float(scale))
+    expected = float(Fraction(baseline) * Fraction(scale))
     for first, second in ((left, right), (right, left)):
         assert _carrier_results(first, second) == [expected] * 5

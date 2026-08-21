@@ -349,10 +349,10 @@ pub(crate) fn coordinate_arc_values(
 ) -> PyResult<Arc<[f64]>> {
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         if buffer.is_c_contiguous() {
-            return buffer_to_arc_f64(py, value, &buffer);
+            return buffer_to_arc_f64(py, &buffer);
         }
         // Strided 1-D (or flattened multi-D): fill Arc directly via strided walk.
-        return strided_buffer_to_arc_f64(py, value, &buffer);
+        return strided_buffer_to_arc_f64(py, &buffer);
     }
     coordinate_values(py, value, name).map(Into::into)
 }
@@ -366,12 +366,16 @@ pub(crate) fn coordinate_arc_values(
 /// `Arc` is retained.
 fn strided_buffer_to_arc_f64(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<f64>,
 ) -> PyResult<Arc<[f64]>> {
     use pyo3::buffer::ReadOnlyCell;
 
-    crate::boundary::buffer_endian::require_immutable_exporter(py, value, buffer)?;
+    // The strided fast path below reads through a raw pointer. When the
+    // exporter's storage may change under it, take the same contiguous copy the
+    // suboffset case already falls back to.
+    if !crate::boundary::buffer_endian::exporter_storage_is_stable(py, buffer) {
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
+    }
 
     let len = buffer.item_count();
     // Indirect (PIL-style) buffers store pointers in the strided slots;
@@ -380,7 +384,7 @@ fn strided_buffer_to_arc_f64(
     // pointer-table bytes as f64 coordinates. Route through PyO3's safe
     // contiguous copy which honors suboffsets via `PyBuffer_GetPointer`.
     if buffer.suboffsets().is_some() {
-        return buffer_to_vec_f64(py, value, buffer).map(Into::into);
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
     }
     // `to_vec` handles arbitrary strides/endian via pyo3; then Arc without
     // realloc when capacity == len (usual). Prefer exact Arc fill when the
@@ -413,21 +417,20 @@ fn strided_buffer_to_arc_f64(
             }
         }
     }
-    buffer_to_vec_f64(py, value, buffer).map(Into::into)
+    buffer_to_vec_f64(py, buffer).map(Into::into)
 }
 
 /// Build a [`CoordSeq`] from an indirect (suboffset) N×D `f64` buffer via
 /// PyO3's safe contiguous copy, then de-interleave into SoA columns.
 fn coordseq_from_indirect_nd_buffer(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<f64>,
     n: usize,
     d: usize,
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<CoordSeq> {
-    let flat = buffer_to_vec_f64(py, value, buffer)?;
+    let flat = buffer_to_vec_f64(py, buffer)?;
     if flat.len() != n * d {
         return Err(InvalidGeometryError::new_err(
             "indirect buffer item count does not match N×D shape",
@@ -534,7 +537,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     // the flat row/col stride arithmetic would read the pointer table as
     // coordinates. Snapshot through PyO3's safe contiguous copy.
     if buffer.suboffsets().is_some() {
-        return coordseq_from_indirect_nd_buffer(value.py(), value, &buffer, n, d, z, m).map(Some);
+        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
     }
     let strides = buffer.strides();
     let row_stride = strides[0];
@@ -545,7 +548,12 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     }
     let row_step = row_stride / item;
     let col_step = col_stride / item;
-    crate::boundary::buffer_endian::require_immutable_exporter(value.py(), value, &buffer)?;
+    // Same reasoning as the suboffset branch above: storage another thread may
+    // write cannot be read through the stride arithmetic below.
+    if !crate::boundary::buffer_endian::exporter_storage_is_stable(value.py(), &buffer) {
+        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m)
+            .map(Some);
+    }
     let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
     let swap = !native;
 
@@ -619,9 +627,9 @@ pub(crate) fn coordinate_arc_values_exact(
             return Err(on_len(got));
         }
         if buffer.is_c_contiguous() {
-            return buffer_to_arc_f64(py, value, &buffer);
+            return buffer_to_arc_f64(py, &buffer);
         }
-        return buffer_to_vec_f64(py, value, &buffer).map(Into::into);
+        return buffer_to_vec_f64(py, &buffer).map(Into::into);
     }
     coordinate_values_exact(py, value, name, expected, on_len).map(Into::into)
 }
@@ -656,7 +664,7 @@ pub(crate) fn coordinate_values(
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
-        return buffer_to_vec_f64(py, value, &buffer);
+        return buffer_to_vec_f64(py, &buffer);
     }
     // Fallible element-by-element collect via the reservation keystone.
     // Never `extract::<Vec<f64>>()` — that path allocates from a lying
@@ -703,7 +711,7 @@ pub(crate) fn coordinate_values_exact(
         if got != expected {
             return Err(on_len(got));
         }
-        return buffer_to_vec_f64(py, value, &buffer);
+        return buffer_to_vec_f64(py, &buffer);
     }
     let type_err = || {
         PyTypeError::new_err(format!(

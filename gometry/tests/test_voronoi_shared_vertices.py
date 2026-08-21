@@ -62,9 +62,7 @@ def test_three_site_vertex_is_site_scale_and_shared_across_clip_scale_sweep(
     source = _carrier(points, carrier)
     clip = gm.box(-half_extent, -half_extent, half_extent, half_extent)
     cells = _cells(source, clip, frontend)
-    midpoint = float(
-        (Fraction.from_float(points[0][0]) + Fraction.from_float(points[1][0])) / 2
-    )
+    midpoint = float((Fraction(points[0][0]) + Fraction(points[1][0])) / 2)
     observed = _near_vertices(cells)
     assert (midpoint, midpoint) in observed, (half_extent, observed)
     _assert_partition(cells, clip)
@@ -82,10 +80,10 @@ def test_five_site_circumcenter_is_one_canonical_stored_double(
         gm.box(-half_extent, -half_extent, half_extent, half_extent),
         frontend,
     )
-    one = Fraction.from_float(points[1][0])
-    half = Fraction.from_float(points[4][0])
-    center_y = Fraction.from_float(points[2][1]) / 2
-    inner_y = Fraction.from_float(points[4][1])
+    one = Fraction(points[1][0])
+    half = Fraction(points[4][0])
+    center_y = Fraction(points[2][1]) / 2
+    inner_y = Fraction(points[4][1])
     expected = (float(one - (half - inner_y) ** 2), float(center_y))
     near = {
         xy for xy in _near_vertices(cells) if 0.9 < xy[0] < 1.0 and 0.4 < xy[1] < 0.6

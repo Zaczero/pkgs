@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Route path-filtered changed paths to monorepo packages that need testing.
+"""Route changed paths to monorepo packages that need testing.
 
-Reads already-filtered paths on stdin. Writes sorted unique package names on
-stdout (ci.yaml pipes them to jq). Diagnostics go to stderr; metadata/TOML
-failures exit nonzero.
+Reads paths on stdin. Docs-only paths are skipped, then the remaining paths are
+mapped to sorted unique package names on stdout (ci.yaml pipes them to jq).
+Diagnostics go to stderr; metadata/TOML failures exit nonzero.
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -20,6 +21,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from package_version import ci_package_sort_key, list_packages, load_toml
 
 ROOT_RUST_PATHS = frozenset({'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'})
+IGNORED_PATHS = re.compile(
+    r'^(?:'
+    r'[^/]+/(?:docs|overrides|_snippets|assets)/'  # per-package docs and theme
+    r'|[^/]+/properdocs\.yml$'  # per-package docs site config
+    r'|[^/]+\.md$'  # repo-root markdown
+    r')'
+)
+
+
+def filter_changed_paths(paths: Iterable[str]) -> list[str]:
+    """Normalize stdin paths and skip docs-only changes."""
+    filtered: list[str] = []
+    for raw in paths:
+        path = raw.strip()
+        if path and not IGNORED_PATHS.search(path):
+            filtered.append(path)
+    return filtered
 
 
 def discover_rusty_packages(test_packages: Iterable[str]) -> set[str]:
@@ -64,13 +82,15 @@ def route_paths(
     rusty_packages: set[str] | None = None,
     reverse_consumers: Mapping[str, set[str]] | None = None,
 ) -> list[str]:
-    """Select packages impacted by *paths* (already path-filtered).
+    """Select packages impacted by raw changed paths.
 
     Rules (exact root-Cargo match; package-local Cargo is not root):
     - Root Cargo.toml / Cargo.lock / rust-toolchain.toml / .cargo/** → all rusty
     - Root .python-versions → all test packages
     - <pkg>/… → that package + reverse uv.sources consumers
     - Anything else (shared dirs, unknown root files, .github/**) → all test packages
+    - Per-package docs/overrides/_snippets/assets, properdocs.yml, and root .md
+      files are ignored
     """
     if test_packages is None:
         packages = set(list_packages('test'))
@@ -88,11 +108,7 @@ def route_paths(
         reverse = {key: set(value) for key, value in reverse_consumers.items()}
 
     selected: set[str] = set()
-    for raw in paths:
-        path = raw.strip()
-        if not path:
-            continue
-
+    for path in filter_changed_paths(paths):
         if path in ROOT_RUST_PATHS or path == '.cargo' or path.startswith('.cargo/'):
             selected.update(rusty)
         elif path == '.python-versions':

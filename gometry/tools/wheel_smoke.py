@@ -173,7 +173,9 @@ def verify_libtiff_checkout() -> None:
     if version.read_text().strip() != LIBTIFF_VERSION:
         raise AssertionError(f'libtiff VERSION is not {LIBTIFF_VERSION}')
     if 'add_subdirectory(build)' not in cmake.read_text():
-        raise AssertionError('libtiff CMakeLists.txt is not the unmodified upstream file')
+        raise AssertionError(
+            'libtiff CMakeLists.txt is not the unmodified upstream file'
+        )
     pin = LIBTIFF_PIN.read_text()
     required_pin = (
         'url = https://gitlab.com/libtiff/libtiff.git\n'
@@ -182,7 +184,9 @@ def verify_libtiff_checkout() -> None:
         'version = 4.7.2\n'
     )
     if pin != required_pin:
-        raise AssertionError('libtiff.pin does not describe the required upstream source')
+        raise AssertionError(
+            'libtiff.pin does not describe the required upstream source'
+        )
     result = subprocess.run(
         ['git', '-C', str(LIBTIFF), 'rev-parse', 'HEAD'],
         check=True,
@@ -194,11 +198,15 @@ def verify_libtiff_checkout() -> None:
     for diff_args in (('diff', '--exit-code'), ('diff', '--cached', '--exit-code')):
         dirty = subprocess.run(
             ['git', '-C', str(LIBTIFF), *diff_args],
+            # A non-zero exit is the signal being read, not a failure.
+            check=False,
             capture_output=True,
             text=True,
         )
         if dirty.returncode:
-            raise AssertionError(f'libtiff submodule has tracked changes: {dirty.stdout}')
+            raise AssertionError(
+                f'libtiff submodule has tracked changes: {dirty.stdout}'
+            )
     status = subprocess.run(
         ['git', '-C', str(LIBTIFF), 'status', '--porcelain', '--untracked-files=all'],
         check=True,
@@ -211,10 +219,16 @@ def verify_libtiff_checkout() -> None:
     first_start = license_text.index(b'Copyright')
     first_end = license_text.index(b'# Lempel-Ziv')
     notices = ROOT / 'native' / 'libtiff-sys' / 'notices'
-    if (notices / 'libtiff-license.md').read_bytes() != license_text[first_start:first_end]:
-        raise AssertionError('libtiff license notice extract differs from upstream LICENSE.md')
+    if (notices / 'libtiff-license.md').read_bytes() != license_text[
+        first_start:first_end
+    ]:
+        raise AssertionError(
+            'libtiff license notice extract differs from upstream LICENSE.md'
+        )
     if (notices / 'libtiff-lzw-license.md').read_bytes() != license_text[first_end:]:
-        raise AssertionError('libtiff LZW notice extract differs from upstream LICENSE.md')
+        raise AssertionError(
+            'libtiff LZW notice extract differs from upstream LICENSE.md'
+        )
 
 
 def inspect_sdist(path: Path) -> str:

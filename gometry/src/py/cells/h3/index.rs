@@ -177,12 +177,12 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
         ($($ty:ty),* $(,)?) => {
             $(
                 if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    let buffer = PyBuffer::<$ty>::get(ids)?;
-                    crate::boundary::buffer_endian::require_immutable_exporter(
-                        ids.py(), ids, &buffer,
-                    )?;
-                    // Owned capture via `tobytes()` — never ArrayView over
-                    // writable NumPy memory.
+                    // Owned capture via `tobytes()` — never an ArrayView over
+                    // writable NumPy memory, so no borrow outlives this call.
+                    // The free-threaded exporter allowlist that
+                    // `boundary::coordinate_input` needs for its raw pointer
+                    // loads has nothing to protect here, and applying it would
+                    // reject every NumPy array the GIL build accepts.
                     return Ok(Some(owned_h3_ids_from_tobytes::<I, $ty>(ids)?));
                 }
             )*
@@ -225,7 +225,7 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
         }
         // Normalize non-native endian (`>u8`) — raw to_vec reinterprets bytes
         // and yields invalid-looking ids that then over-reject at validate.
-        let values = crate::buffer_to_vec_u64(ids.py(), ids, &buffer)?;
+        let values = crate::buffer_to_vec_u64(ids.py(), &buffer)?;
         validate_h3_index_ids::<I>(&values)?;
         return Ok(values);
     }

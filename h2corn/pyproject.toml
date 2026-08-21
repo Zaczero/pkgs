@@ -1,6 +1,6 @@
 [project]
 name = "h2corn"
-description = "High-performance HTTP/2 ASGI server"
+description = "A blazing-fast HTTP/2 ASGI server for Python, written in Rust"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

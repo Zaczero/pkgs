@@ -80,7 +80,10 @@ async def _http1_after_split_proxy_prefix(
 
 
 async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
+    seen_headers: set[bytes] = set()
+
     async def app(scope, receive, send):
+        seen_headers.update(name for name, _value in scope['headers'])
         payload = (
             f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
             f'{scope["server"][1]}|{scope.get("root_path", "")}'
@@ -107,6 +110,10 @@ async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
                         b'forwarded',
                         b'for=203.0.113.10;proto=https;host="example.com:8443"',
                     ),
+                    (b'x-forwarded-for', b'203.0.113.10'),
+                    (b'x-forwarded-proto', b'https'),
+                    (b'x-forwarded-host', b'attacker.example'),
+                    (b'x-forwarded-port', b'9443'),
                     (b'x-forwarded-prefix', b'/api'),
                 ],
             ),
@@ -115,6 +122,112 @@ async def test_proxy_headers_are_ignored_from_untrusted_peer() -> None:
 
     assert status == 200
     assert body == f'http|127.0.0.1|127.0.0.1|{port}|'.encode()
+    assert not seen_headers.intersection({
+        b'forwarded',
+        b'x-forwarded-for',
+        b'x-forwarded-proto',
+        b'x-forwarded-host',
+        b'x-forwarded-port',
+        b'x-forwarded-prefix',
+    })
+
+
+async def test_default_forwarded_fields_strip_unselected_trusted_headers() -> None:
+    seen_headers: set[bytes] = set()
+
+    async def app(scope, receive, send):
+        seen_headers.update(name for name, _value in scope['headers'])
+        payload = (
+            f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
+            f'{scope["server"][1]}|{scope.get("root_path", "")}'
+        ).encode()
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': payload})
+
+    config = Config(
+        port=0,
+        proxy_headers=True,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        status, body = await asyncio.wait_for(
+            h2_request(
+                port=port,
+                extra_headers=[
+                    (b'x-forwarded-for', b'203.0.113.10'),
+                    (b'x-forwarded-proto', b'https'),
+                    (b'x-forwarded-host', b'attacker.example'),
+                    (b'x-forwarded-port', b'9443'),
+                    (b'x-forwarded-prefix', b'/attacker'),
+                    (
+                        b'forwarded',
+                        b'for=198.51.100.7;proto=http;host=attacker.example',
+                    ),
+                ],
+            ),
+            timeout=5,
+        )
+
+    assert status == 200
+    assert body == f'https|203.0.113.10|127.0.0.1|{port}|'.encode()
+    assert {b'x-forwarded-for', b'x-forwarded-proto'} <= seen_headers
+    assert not seen_headers.intersection({
+        b'forwarded',
+        b'x-forwarded-host',
+        b'x-forwarded-port',
+        b'x-forwarded-prefix',
+    })
+
+
+@pytest.mark.parametrize('transport', ['h1', 'h2'])
+async def test_proxy_headers_strip_underscore_spellings(transport: str) -> None:
+    seen_headers: set[bytes] = set()
+
+    async def app(scope, receive, send):
+        seen_headers.update(name for name, _value in scope['headers'])
+        await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b''})
+
+    config = Config(
+        port=0,
+        proxy_headers=True,
+        forwarded_allow_ips=('127.0.0.1',),
+    )
+    async with running_server(app, config) as server:
+        port = server_port(server)
+        if transport == 'h2':
+            status, _body = await h2_request(
+                port=port,
+                extra_headers=[
+                    (b'x_forwarded_for', b'203.0.113.10'),
+                    (b'x_forwarded_proto', b'https'),
+                    (b'x_forwarded_host', b'attacker.example'),
+                    (b'x_forwarded_port', b'9443'),
+                    (b'x_forwarded_prefix', b'/attacker'),
+                ],
+            )
+        else:
+            status, _headers, _body, _trailers = await http1_request(
+                port=port,
+                request=(
+                    b'GET / HTTP/1.1\r\nHost: localhost\r\n'
+                    b'X_Forwarded_For: 203.0.113.10\r\n'
+                    b'X_Forwarded_Proto: https\r\n'
+                    b'X_Forwarded_Host: attacker.example\r\n'
+                    b'X_Forwarded_Port: 9443\r\n'
+                    b'X_Forwarded_Prefix: /attacker\r\n\r\n'
+                ),
+            )
+
+    assert status == 204
+    assert not seen_headers.intersection({
+        b'x_forwarded_for',
+        b'x_forwarded_proto',
+        b'x_forwarded_host',
+        b'x_forwarded_port',
+        b'x_forwarded_prefix',
+    })
 
 
 async def test_proxy_headers_infer_default_port_from_forwarded_scheme() -> None:
@@ -132,6 +245,7 @@ async def test_proxy_headers_infer_default_port_from_forwarded_scheme() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('for', 'proto', 'host'),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -176,6 +290,7 @@ async def test_proxy_headers_join_forwarded_prefix_and_root_path(
         port=0,
         root_path=root_path,
         proxy_headers=True,
+        forwarded_fields=('prefix',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -207,6 +322,7 @@ async def test_proxy_headers_support_bracketed_ipv6_forwarded_values() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -243,6 +359,7 @@ async def test_proxy_headers_support_mixed_case_forwarded_parameters() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -252,7 +369,7 @@ async def test_proxy_headers_support_mixed_case_forwarded_parameters() -> None:
                 extra_headers=[
                     (
                         b'forwarded',
-                            b'For="[2001:db8::1]:1234";Proto=HTTPS;Host="example.com:8443"',
+                        b'For="[2001:db8::1]:1234";Proto=HTTPS;Host="example.com:8443"',
                     ),
                 ],
             ),
@@ -264,7 +381,9 @@ async def test_proxy_headers_support_mixed_case_forwarded_parameters() -> None:
 
 
 @pytest.mark.parametrize('extension', ['edge;one', r'edge\;one'])
-async def test_forwarded_wins_over_conflicting_x_forwarded_headers(extension: str) -> None:
+async def test_forwarded_dialect_is_selected_without_x_family_fallback(
+    extension: str,
+) -> None:
     async def app(scope, receive, send):
         payload = (
             f'{scope["scheme"]}|{scope["client"][0]}|{scope["server"][0]}|'
@@ -276,6 +395,7 @@ async def test_forwarded_wins_over_conflicting_x_forwarded_headers(extension: st
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -285,7 +405,7 @@ async def test_forwarded_wins_over_conflicting_x_forwarded_headers(extension: st
                 extra_headers=[
                     (
                         b'forwarded',
-                            f'for=203.0.113.10;proto=https;host="good.example:8443";'
+                        f'for=203.0.113.10;proto=https;host="good.example:8443";'
                         f'ext="{extension}"'.encode(),
                     ),
                     (b'x-forwarded-for', b'192.0.2.66'),
@@ -302,7 +422,7 @@ async def test_forwarded_wins_over_conflicting_x_forwarded_headers(extension: st
 
 
 @pytest.mark.parametrize('transport', ['h1', 'h2'])
-async def test_malformed_forwarded_keeps_transport_defaults_but_applies_prefix(
+async def test_malformed_forwarded_keeps_defaults_and_does_not_apply_unselected_fields(
     transport: str,
 ) -> None:
     async def app(scope, receive, send):
@@ -316,6 +436,7 @@ async def test_malformed_forwarded_keeps_transport_defaults_but_applies_prefix(
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -350,7 +471,7 @@ async def test_malformed_forwarded_keeps_transport_defaults_but_applies_prefix(
             )
 
     assert status == 200
-    assert body == f'http|127.0.0.1|127.0.0.1|{port}|/edge'.encode()
+    assert body == f'http|127.0.0.1|127.0.0.1|{port}|'.encode()
 
 
 @pytest.mark.parametrize('transport', ['h1', 'h2'])
@@ -366,6 +487,7 @@ async def test_non_utf8_forwarded_keeps_transport_defaults(transport: str) -> No
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -421,6 +543,7 @@ async def test_proxy_headers_walk_forwarded_for_through_trusted_hops() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         # The edge proxy is trusted too, so the walk has to pass through it.
         forwarded_allow_ips=('127.0.0.1', '198.51.100.7'),
     )
@@ -462,6 +585,7 @@ async def test_proxy_headers_use_backend_facing_forwarded_hop() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -506,6 +630,7 @@ async def test_proxy_headers_reject_repeated_forwarded_fields(
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     port = None
@@ -528,8 +653,12 @@ async def test_proxy_headers_reject_repeated_forwarded_fields(
                 port=server_port(server),
                 request=(
                     b'GET / HTTP/1.1\r\nHost: localhost\r\n'
-                    b'Forwarded: ' + first + b'\r\n'
-                    + b'Forwarded: ' + second + b'\r\n\r\n'
+                    b'Forwarded: '
+                    + first
+                    + b'\r\n'
+                    + b'Forwarded: '
+                    + second
+                    + b'\r\n\r\n'
                 ),
             )
 
@@ -553,6 +682,7 @@ async def test_proxy_headers_walk_x_forwarded_for_from_backend_facing_end() -> N
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('for', 'proto', 'host'),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -587,6 +717,7 @@ async def test_proxy_headers_use_backend_facing_proto_and_host_tokens() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('proto', 'host'),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -622,6 +753,7 @@ async def test_proxy_headers_use_backend_facing_port_and_prefix_tokens() -> None
         port=0,
         root_path='/root',
         proxy_headers=True,
+        forwarded_fields=('proto', 'host', 'port', 'prefix'),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -744,6 +876,7 @@ async def test_proxy_protocol_v2_and_forwarded_headers_stack_cleanly() -> None:
     config = Config(
         port=0,
         proxy_headers=True,
+        forwarded_fields=('proto', 'host', 'prefix'),
         forwarded_allow_ips=('127.0.0.1/32',),
         proxy_protocol='v2',
     )
@@ -758,7 +891,8 @@ async def test_proxy_protocol_v2_and_forwarded_headers_stack_cleanly() -> None:
                     server_port=8080,
                 ),
                 extra_headers=[
-                    (b'forwarded', b'proto=https;host="example.com:8443"'),
+                    (b'x-forwarded-proto', b'https'),
+                    (b'x-forwarded-host', b'example.com:8443'),
                     (b'x-forwarded-prefix', b'/api'),
                 ],
             ),

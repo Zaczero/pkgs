@@ -139,7 +139,9 @@ def _attribute_table(attributes: Any, row_count: int) -> Any | None:
             'attributes must be an Arrow table, mapping of columns, or None'
         )
     if 'geometry' in table.column_names:
-        raise GeometryError("attributes must not contain the reserved 'geometry' column")
+        raise GeometryError(
+            "attributes must not contain the reserved 'geometry' column"
+        )
     if table.num_rows != row_count:
         raise GeometryError(
             f'attributes length {table.num_rows} does not match geometry length {row_count}'

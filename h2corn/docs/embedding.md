@@ -5,11 +5,9 @@ description: Run h2corn inside your own event loop with the Server class — sta
 # Embedding
 
 The CLI (`h2corn module:app`) and the [`serve()`][h2corn.serve] function
-cover the common case: spawn the server as a top-level process. When you
-need finer control — running inside an existing event loop, supervising
-the server from your own code, or driving it from tests — reach for the
-[`Server`][h2corn.Server] class instead. Full signatures are in the
-[API reference](api/index.md).
+start the server as a top-level process. Use the [`Server`][h2corn.Server]
+class inside an existing event loop or test harness. Full signatures are in
+the [API reference](api/index.md).
 
 ## Inside an asyncio app
 
@@ -18,9 +16,9 @@ the server from your own code, or driving it from tests — reach for the
 ```
 
 [`Server.serve()`][h2corn.Server.serve] is an async function that runs
-until the server is asked to shut down. It is single-worker by design;
-when you need multiple workers, fall back to [`serve()`][h2corn.serve],
-which goes through the same multi-process supervisor as the CLI.
+until the server is asked to shut down. It runs one worker in the calling
+process; [`serve()`][h2corn.serve] runs several through the same multi-process
+supervisor as the CLI.
 
 `Server.serve()` owns an in-process lifecycle, so it rejects a configuration
 that combines `pid` with `user` or `group`: the pidfile and privilege change
@@ -45,7 +43,9 @@ waits for them, [`releasing`][h2corn.Server.releasing] stays true, and a
 `serve()` call made in that window raises
 `RuntimeError: this Server is still releasing a previous serve() call`.
 
-```python
+Using the `hello.py` application from the [Quickstart](quickstart.md):
+
+```python title="shutdown.py (requires hello.py)"
 import asyncio
 from h2corn import Config, Server
 from hello import app
@@ -54,11 +54,11 @@ from hello import app
 async def main():
     server = Server(app, Config(bind=('127.0.0.1:8000',)))
 
-    async def stop_after(delay: float):
-        await asyncio.sleep(delay)
+    async def stop_when_ready():
+        await server.wait_started()
         server.shutdown()
 
-    await asyncio.gather(server.serve(), stop_after(5.0))
+    await asyncio.gather(server.serve(), stop_when_ready())
 
 
 asyncio.run(main())
@@ -76,7 +76,7 @@ let go of everything it held.
   still running, or still winding down, raises
   `RuntimeError: this Server already has an active serve() call` or
   `RuntimeError: this Server is still releasing a previous serve() call`.
-  [`releasing`][h2corn.Server.releasing] tells you which situation you are in:
+  [`releasing`][h2corn.Server.releasing] distinguishes these states:
   it stays true after `serve()` returns until reuse is safe.
 - **Cancellation drains gracefully.** Cancelling the task running `serve()`
   does not abort in-flight work — it starts the same bounded drain as
@@ -88,23 +88,22 @@ let go of everything it held.
 
 ## Knowing when the server is up
 
-`serve()` runs until the server stops, so it is normally a task — and
-whoever started it usually needs to know the port is open before doing
-anything else. [`Server.wait_started()`][h2corn.Server.wait_started]
-answers exactly that:
+`serve()` runs until the server stops, so run it as a task when readiness is
+needed. [`Server.wait_started()`][h2corn.Server.wait_started] resolves once the
+server is accepting requests:
 
-```python
+```python title="partial readiness fragment"
 serving = asyncio.create_task(server.serve())
 await server.wait_started()
-# Requests sent from here are accepted.
+# Requests sent after readiness are accepted.
 ```
 
 It resolves once the server is serving, not when the listeners open — those
 can be bound while lifespan startup is still running, and `wait_started()`
 stays pending through that. A failed bind, a failed lifespan startup, or a
 shutdown before readiness raises instead, to everyone waiting at the time.
-Only success is remembered: start waiting after a failed attempt and you are
-asking about the next one.
+Only success is remembered; a wait begun after a failed attempt applies to the
+next `serve()` attempt.
 
 Readiness is a fact about the process rather than about one event loop, so a
 `Server` driven from another thread's loop can still be awaited from yours.
@@ -115,17 +114,20 @@ Bind port `0` and read the kernel-assigned address back from
 [`Server.addresses`][h2corn.Server.addresses] — ideal for test harnesses
 and service discovery:
 
-```python
+The printed port is assigned by the operating system and is different on each
+run.
+
+```python title="partial embedding fragment"
 server = Server(app, Config(bind=('127.0.0.1:0',)))
 serving = asyncio.create_task(server.serve())
-# Resolves when the listeners are live, and raises whatever stopped the
+# Resolves when the server is ready, and raises whatever stopped the
 # server if it never gets that far.
 await server.wait_started()
-print(server.addresses)  # ('127.0.0.1:54123',)
+print(server.addresses)  # runtime-assigned address
 ```
 
 When several TCP listeners all bind port `0` (for example `0.0.0.0:0`
-plus `[::]:0`), they deliberately share one kernel-assigned port.
+plus `[::]:0`), they share one kernel-assigned port.
 
 ## Which entrypoint to use
 

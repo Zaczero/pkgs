@@ -27,11 +27,10 @@ than a hijacked socket. Two practical consequences:
 - The proxy → app hop stays on HTTP/2 the whole time — no
   `Upgrade`/`Connection: keep-alive` interaction with HTTP/1.1.
 
-When your reverse proxy speaks HTTP/2 to `h2corn` *and* translates
-browser `Upgrade` into RFC 8441 extended `CONNECT` (HAProxy does;
-generic Caddy h2c proxying does not — see
-[Behind a proxy](deployment/proxy.md)), WebSocket traffic rides the same
-`h2c` connection as the rest of the application.
+When a reverse proxy translates the browser's `Upgrade` into RFC 8441 extended
+`CONNECT`, WebSocket traffic can ride the same `h2c` connection as the rest of
+the application. See [Behind a reverse proxy](deployment/proxy.md) for the
+HTTP/1.1 split route and the pure HTTP/2 requirements.
 
 ## Limits and keep-alives
 
@@ -52,9 +51,9 @@ descriptions, defaults, and CLI flags live in the
   no pings are sent, and the timeout is irrelevant while keep-alive is
   unset.
 
-## Example
+## Echo application
 
-```python
+```python title="ws.py"
 from fastapi import FastAPI, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
@@ -73,18 +72,19 @@ async def echo(ws: WebSocket):
 ```
 
 Once the peer is gone, `send()` raises `OSError` — see
-[What `send()` raises](asgi.md#what-send-raises). Starlette surfaces that as the
-`WebSocketDisconnect` above.
+[What `send()` raises](asgi.md#what-send-raises). Starlette surfaces that as
+`WebSocketDisconnect`.
 
-```bash
+## HTTP/2-only deployment
+
+```bash title="development command"
 h2corn ws:app --no-http1
 ```
 
 With `--no-http1`, the server only accepts the HTTP/2 WebSocket
 bootstrap — the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)
-extended `CONNECT`. Browsers negotiate that transparently when they reach
-`h2corn` over HTTP/2, but a reverse proxy in between has to translate the
-upgrade rather than forward it. HAProxy does. Caddy's shipped configuration
-instead routes WebSocket upgrades over HTTP/1.1 and ordinary requests over
-`h2c`, so keep HTTP/1 enabled there. See [Behind a reverse
+extended `CONNECT`. Browser WebSocket APIs and the reverse proxy need support
+for the upgrade translation. If the proxy does not provide it, route WebSocket
+upgrades over HTTP/1.1 and ordinary requests over `h2c`, and keep HTTP/1
+enabled there. See [Behind a reverse
 proxy](deployment/proxy.md) before dropping HTTP/1.

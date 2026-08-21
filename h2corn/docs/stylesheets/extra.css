@@ -157,6 +157,111 @@
   padding: 0.5rem;
 }
 
+/* Mermaid caps each rendered diagram at its own natural width, so a compact
+   diagram sits small in the middle of a wide column while a wide one is scaled
+   down until its labels are unreadable. Filling the content column instead
+   keeps the deployment figures legible and the same size as each other. */
+.md-typeset .mermaid {
+  text-align: center;
+}
+
+.md-typeset .mermaid > svg {
+  width: 100%;
+  max-width: 100% !important;
+  height: auto;
+}
+
+/* Material themes Mermaid through 26 --md-mermaid-* variables, but none of
+   them name a sequence activation bar and none name any Gantt element, so
+   those keep Mermaid's built-in light palette. Under slate that paints a
+   near-white activation bar with 1.29:1 message text over it, black note text
+   at 1.3:1, and a Gantt in stock blue/yellow whose labels measure 2.95:1 in
+   *both* schemes. Mermaid's own rules are `#<svg-id> .class`, so overriding
+   them needs !important rather than more selector.
+
+   Bar text is --md-default-bg-color because it inverts with the scheme, which
+   is what keeps one rule legible on both: white on #6c1ffc (7.8:1) and
+   near-black on #b48aff (8.0:1). */
+[data-md-color-primary="deep-purple"] {
+  --h2corn-mermaid-bar: var(--h2corn-purple);
+  --h2corn-mermaid-bar-fg: var(--md-default-bg-color);
+  /* The deadline bar stays amber in both schemes, so its label cannot follow
+     the scheme: light-on-amber is 1.9:1. It is pinned dark for both. */
+  --h2corn-mermaid-bar-alt: var(--h2corn-amber);
+  --h2corn-mermaid-bar-alt-fg: #1e2129;
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="deep-purple"] {
+  --h2corn-mermaid-bar: var(--h2corn-purple-light);
+}
+
+/* The bar gets its presence from the branded stroke, not the fill: message
+   text crosses it, and at --lighter (0.32 alpha) that text measures 4.1:1
+   light / 3.8:1 slate. The 0.07 token clears 7:1 in both. */
+.md-typeset .mermaid rect[class*="activation"] {
+  fill: var(--md-default-fg-color--lightest) !important;
+  stroke: var(--md-typeset-a-color) !important;
+}
+
+.md-typeset .mermaid rect.note {
+  fill: var(--md-code-bg-color) !important;
+  stroke: var(--md-default-fg-color--lighter) !important;
+}
+
+.md-typeset .mermaid .noteText,
+.md-typeset .mermaid .noteText tspan,
+.md-typeset .mermaid text.actor,
+.md-typeset .mermaid text.actor tspan {
+  fill: var(--md-default-fg-color) !important;
+}
+
+.md-typeset .mermaid .section {
+  fill: var(--md-default-fg-color--lightest) !important;
+  opacity: 1 !important;
+}
+
+.md-typeset .mermaid .section1,
+.md-typeset .mermaid .section3 {
+  fill: transparent !important;
+}
+
+.md-typeset .mermaid rect.task {
+  fill: var(--h2corn-mermaid-bar) !important;
+  stroke: var(--h2corn-mermaid-bar) !important;
+}
+
+.md-typeset .mermaid rect[class*="crit"] {
+  fill: var(--h2corn-mermaid-bar-alt) !important;
+  stroke: var(--md-default-fg-color--light) !important;
+}
+
+.md-typeset .mermaid .taskText,
+.md-typeset .mermaid .taskText tspan {
+  fill: var(--h2corn-mermaid-bar-fg) !important;
+}
+
+/* Mermaid suffixes these with the task index -- the class is `critText2`,
+   never a bare `critText` -- so an exact-class selector silently matches
+   nothing. Must follow the .taskText rule: the element carries both. */
+.md-typeset .mermaid [class*="critText"],
+.md-typeset .mermaid [class*="critText"] tspan {
+  fill: var(--h2corn-mermaid-bar-alt-fg) !important;
+}
+
+.md-typeset .mermaid .sectionTitle,
+.md-typeset .mermaid .sectionTitle tspan,
+.md-typeset .mermaid .titleText,
+.md-typeset .mermaid .grid .tick text,
+.md-typeset .mermaid [class*="taskTextOutside"],
+.md-typeset .mermaid [class*="taskTextOutside"] tspan {
+  fill: var(--md-default-fg-color) !important;
+}
+
+.md-typeset .mermaid .grid path,
+.md-typeset .mermaid .grid line {
+  stroke: var(--md-default-fg-color--lighter) !important;
+}
+
 /* Pygments tags every integer/float as a Number token (.m, .mi, .mf, ...),
    which paints addresses and ports red in shell and config blocks. Render
    them as regular code text so 127.0.0.1 reads as an address, not an error. */

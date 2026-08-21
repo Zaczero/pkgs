@@ -113,7 +113,7 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
 
 @pytest.mark.parametrize(
     ('cell_type', 'roots', 'depth', 'expected_count'),
-    (
+    [
         (
             gm.S2Cell,
             lambda: [gm.S2Cell(-120, 30, level=5), gm.S2Cell(120, 30, level=5)],
@@ -122,7 +122,7 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
         ),
         (gm.Tile, lambda: [gm.Tile('00000'), gm.Tile('11111')], 7, 32),
         (gm.GeohashCell, lambda: [gm.GeohashCell('0'), gm.GeohashCell('z')], 3, 2048),
-    ),
+    ],
     ids=('s2', 'tile', 'geohash'),
 )
 def test_public_uncompact_preserves_exact_range_order(
@@ -411,8 +411,16 @@ def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
     assert np.isnan(values.area[1])
     assert np.isnan(values.children_count()[1])
     assert values.parent().is_missing.tolist() == [False, True, False]
-    assert [len(row) for row in values.neighbors] == [len(a.neighbors), 0, len(a.neighbors)]
-    assert [len(row) for row in values.children()] == [len(a.children()), 0, len(a.children())]
+    assert [len(row) for row in values.neighbors] == [
+        len(a.neighbors),
+        0,
+        len(a.neighbors),
+    ]
+    assert [len(row) for row in values.children()] == [
+        len(a.children()),
+        0,
+        len(a.children()),
+    ]
     assert values.token == [a.token, None, a.token]
 
 

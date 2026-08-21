@@ -1,15 +1,11 @@
 ---
-description: GeometryArray, CellArray, Groups, missing rows, and the performance doctrine — one Rust pass over a whole column instead of a Python loop.
+description: GeometryArray, CellArray, Groups, missing rows, and the batch-result contract.
 ---
 
 # Arrays & performance
 
-Everything gometry does to one geometry it does to a whole column in a single Rust
-pass — no per-row Python loop. This page is the batch surface end to end: the typed
-containers ([`GeometryArray`][gometry.GeometryArray], [`CellArray`][gometry.CellArray],
-[`Groups`][gometry.Groups]), how vectorized calls broadcast, how missing rows travel,
-and the performance doctrine that keeps work in Rust. Read it top to bottom the first
-time; the checklist at the end is the reference card afterwards.
+Many gometry operations on one geometry also accept a whole column and keep the
+per-row traversal in native code.
 
 The core symmetry is that a scalar call and its array form run the **same kernel** —
 only the receiver and the return shape change. State is a property (`geom.area`), a
@@ -27,18 +23,14 @@ relationship is a free function (`gm.contains(a, b)`):
 | `idx.query(scalar)` | one geometry | `int64` ndarray |
 | `idx.query(arr)` | `GeometryArray` | `Groups[int64]` |
 
-!!! tip "Rule of thumb"
-    If you find yourself writing a Python `for` loop over geometry objects, stop —
-    pass a [`GeometryArray`][gometry.GeometryArray] to the same method or function. The
-    [performance doctrine](#performance-doctrine) below measures why.
-
 ## GeometryArray
 
 [`gm.GeometryArray`][gometry.GeometryArray] builds a packed, typed container of
 geometries that every vectorized function consumes. It behaves like a sequence
 (indexing, iteration, `len`) while keeping geometry storage in Rust-owned objects rather
-than a Python list. It carries a single CRS and, for homogeneous data, a single
-`coordinate_axes`:
+than a Python list. It carries one CRS for the column. `coordinate_axes` reports the
+layout of each row; `common_coordinate_axes` reports
+one shared layout for present rows, or `None` when those layouts differ:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -50,6 +42,7 @@ arr = gm.GeometryArray([
 print("len:", len(arr))
 print("crs:", arr.crs)
 print("coordinate_axes:", arr.coordinate_axes)
+print("common_coordinate_axes:", arr.common_coordinate_axes)
 print("element types:", arr.geometry_type)
 print("combined bounds:", arr.total_bounds)
 print("areas (geodesic m^2):", arr.area)
@@ -63,8 +56,7 @@ pass. `GeometryArray.total_bounds` is the combined `(minx, miny, maxx, maxy)` tu
 
 ### Packed constructors
 
-Building geometries one object at a time and stuffing them in a list defeats the point of
-vectorization. The packed constructors take parallel coordinate arrays and build a
+The packed constructors take parallel coordinate arrays and build a
 `GeometryArray` directly. [`gm.points`][gometry.points] accepts optional `z=` and `m=`
 arrays, so you can construct XY, XYZ, XYM, or XYZM arrays in one call — the bulk analogue
 of `gm.Point(..., z=..., m=...)`:
@@ -74,17 +66,35 @@ import gometry as gm
 
 # 2D points from lon/lat arrays:
 pts = gm.points([21.0, 22.0, 23.0], [52.0, 52.5, 53.0], crs=4326)
-print("2D:", pts.coordinate_axes, "len", len(pts))
+print("2D per row:", pts.coordinate_axes, "shared:", pts.common_coordinate_axes, "len", len(pts))
 
 # XYZ points: add a parallel z array (note crs=4979, the 3D WGS84 CRS):
 pts_z = gm.points([21.0, 22.0], [52.0, 52.5], z=[100.0, 200.0], crs=4979)
-print("XYZ:", pts_z.coordinate_axes)
+print("XYZ per row:", pts_z.coordinate_axes, "shared:", pts_z.common_coordinate_axes)
 
 ```
 
 The sibling column factories `gm.line_strings`, `gm.polygons`, and the rest skip the
 per-row Python object loop the same way; IO parsers (`from_wkb`, `from_wkt`,
 `from_geojson`) also return packed arrays directly.
+
+### Per-row axes and missing rows
+
+`coordinate_axes` is row-aligned and uses `None` for a missing row.
+`common_coordinate_axes` reports one shared layout for formats that require it:
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+mixed = gm.GeometryArray([
+    gm.from_wkt("POINT Z (1 2 3)"),
+    None,
+    gm.from_wkt("POINT M (1 2 9)"),
+])
+print("per row:", mixed.coordinate_axes)
+print("shared:", mixed.common_coordinate_axes)
+print("missing:", mixed.is_missing.tolist())
+```
 
 ### Indexing, slicing, and element types
 
@@ -140,8 +150,8 @@ print("round-trip len:", len(back), "| x column:", np.asarray(back.coords.x))
 ```
 
 Like scalar geometries, a geographic array previews itself with lonboard when the
-optional visualization extra is installed; otherwise it uses a capped SVG grid, so a
-million-row array never renders a million elements:
+optional visualization extra is installed; otherwise it uses a capped SVG grid,
+so the preview remains bounded for large arrays:
 
 ```python exec="on" html="true"
 import gometry as gm
@@ -158,8 +168,8 @@ print(arr._repr_html_())
 
 ## Vectorized calls & broadcasting
 
-Array methods and binary free functions accept arrays and return arrays. The polygon
-below is tested against every point in a single Rust pass, handing back a read-only
+Array methods and binary free functions accept arrays and return arrays. A scalar
+polygon tested against an array of points is evaluated in one native pass, returning a read-only
 `numpy.ndarray` that shares Rust-owned storage with no copy:
 
 ```python exec="on" source="block" result="text"
@@ -233,9 +243,8 @@ print("pairwise contains:", gm.contains(polys, points))
 
 ### Mismatched lengths are refused
 
-This is the safety rail. Two non-scalar arrays of different lengths do **not** silently
-broadcast into an n×m grid — that is almost always a bug and would allocate a huge
-result. gometry raises and points you at the right tool:
+Two non-scalar arrays of different lengths raise instead of broadcasting into an
+n×m grid. The exception identifies the mismatch:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -253,19 +262,15 @@ except gm.GeometryError as e:
 
 ```
 
-!!! warning "Many-to-many means index or join, never implicit cross products"
-    If you genuinely want every (polygon, point) pair that matches, you want a *spatial
-    join*, not broadcasting. `gm.join(polys, points, predicate="contains")` runs a bbox
-    prefilter plus exact refine in Rust and returns only the matching pairs — see
-    [Indexing & joins](indexing.md). Forcing a full n×m broadcast would compute and store
-    comparisons you don't need.
+!!! note "Many-to-many uses an index or join"
+    `gm.join(polys, points, predicate="contains")` runs a bbox prefilter plus
+    exact refine in Rust and returns matching pairs. See [Indexing & joins](indexing.md).
 
 Coming from Shapely? See [Migrating](../migrating/index.md#coming-from-shapely).
 Shapely 2.x already follows NumPy broadcasting and raises on incompatible 1-D
 shapes (e.g. lengths 2 and 3) rather than a Cartesian product. gometry's
-differences that matter here are attaching a **CRS to arrays** (so units are never
-ambiguous) and the same strict equal-length / scalar-vs-array broadcast rules with
-no silent n×m expansion.
+differences that matter here are attaching a **CRS to arrays** and using the same
+strict equal-length / scalar-vs-array broadcast rules without n×m expansion.
 
 ## CellArray
 
@@ -294,7 +299,7 @@ Row-preserving `CellArray` operations keep one result per logical input row:
 hierarchy predicates return `False` for either missing side, geometry accessors
 retain the geometry-array missing mask, numeric results use `NaN`, `parent`
 retains its mask, ragged hierarchy results contain an empty row, and `token`
-contains `None`. Set-like `compact`, `uncompact`, and `to_polygon` deliberately
+contains `None`. Set-like `compact`, `uncompact`, and `to_polygon`
 operate on present cells only.
 
 ```python exec="on" source="block" result="text"
@@ -350,14 +355,14 @@ results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
 
 !!! tip "Scalar vs array index query"
     A scalar `idx.query(geom, predicate=...)` returns a dense `int64` ndarray. Pass an
-    array of query geometries and you get `Groups` — one candidate row per element. See
+    array of query geometries and you get `Groups` — one result row per element. See
     [Spatial indexing](indexing.md).
 
 ## Missing rows
 
 `None` is a missing row; empty geometry is a real geometry value. `GeometryArray` carries
-missing rows natively — the pyarrow/shapely-2 model, with zero overhead when no row is
-missing (a dense array stores packed columns without a validity bitmap). This
+missing rows natively using a validity model. A dense array stores packed columns
+without a missing-row marker when no row is missing. This
 distinction is preserved across arrays, dataframe handoff, Arrow, GeoParquet, and most
 vectorized operations. Batch ingest (`from_wkt` / `from_wkb` / `from_geojson` /
 `GeometryArray([...])`) keeps native GeoArrow typing when some rows are missing rather
@@ -403,20 +408,16 @@ slice, fancy indexing (`arr[[0, 2]]`), pickle, and Arrow round-trip.
 `drop_missing()` and `fill_missing(value)` convert back to dense. `fill_missing` accepts
 one scalar geometry or a row-aligned `GeometryArray` fill source; indexes and
 `GeometryCollection` construction require dense input (their error says so). Drop or fill
-missingness explicitly when the next boundary cannot represent it.
+Missingness must be dropped or filled when the next boundary cannot represent it.
 
-## Performance doctrine
+## Batching choices
 
-gometry's hot paths are Rust; the way to make code slow is to keep work in Python. These
-are the recurring footguns and their fixes, each as a concrete before/after. One principle
-runs through all of them: **let one Rust kernel do the batch, and never pay per-geometry
-Python overhead.**
+Gometry keeps geometry kernels in Rust and exposes packed, vectorized entry points.
 
-### 1. Vectorize instead of looping
+### Vectorize instead of looping
 
-The single biggest win. A Python loop calling a scalar method pays interpreter and
-object-construction overhead on every iteration; a vectorized call does the whole batch in
-one Rust pass.
+A Python loop calls the scalar API once per object; a vectorized call accepts the
+whole batch and returns one aligned result.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -425,11 +426,11 @@ poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 lons = [20.0, 20.5, 21.0, 30.0]
 lats = [51.0, 51.5, 52.0, 10.0]
 
-# SLOW: build Python geometry objects, loop, call the scalar method each time.
+# Per-item form: build Python geometry objects and call the scalar API.
 sample = [gm.Point(lo, la, crs=4326) for lo, la in zip(lons, lats)]
 loop_result = [gm.contains(poly, g) for g in sample]
 
-# FAST: one packed array, one vectorized call.
+# Batched form: one packed array and one vectorized call.
 pts = gm.points(lons, lats, crs=4326)
 vectorized_result = gm.contains(poly, pts)
 
@@ -438,47 +439,14 @@ print("rows evaluated:", len(vectorized_result))
 
 ```
 
-The vectorized call batches work in Rust and avoids per-element Python call
-overhead; measure with the [benchmark harness](../about/benchmarks.md) for your
-workload rather than assuming a fixed speedup. The gap
-*grows* with array size because the fixed Python overhead is amortized away. See
-[Benchmarks](../about/benchmarks.md) for measured release evidence.
-
-### 2. Reproject once, then measure planar in a loop
-
-On a **geographic** CRS, every `area`/`length`/`distance` is a geodesic computation on the
-ellipsoid — correct, but heavier than planar arithmetic. When you measure the same
-geometries many times in a hot loop and want planar speed, reproject **once** to a metric
-CRS up front and reuse the projected geometry:
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-line = gm.LineString([(20.0, 51.0), (21.0, 52.0), (22.0, 51.5)], crs=4326)
-
-# Geographic CRS -> geodesic length (ellipsoidal meters), no projection chosen.
-length_m = line.length
-midpoint = line.line_interpolate(0.5, normalized=True)
-print("length m:", round(length_m), "| midpoint:", midpoint.to_wkt())
-
-# For repeated planar measurement, reproject once and reuse `metric`.
-metric = line.to_crs(line.estimate_local_crs())
-print("planar length m:", round(metric.length))
-
-```
-
-The CRS is the single metric knob — a geographic geometry measures geodesically, a
-projected one measures planar. See the [mental model](../get-started/mental-model.md) for
-how units flow from the CRS.
-
-### 3. Prepare geometry for repeated predicates
+### Prepare geometry for repeated predicates
 
 When you test **one** geometry against **many** others with the same predicate, build a
 [`PreparedGeometry`][gometry.PreparedGeometry] once with
 [`geom.prepare()`][gometry.Geometry.prepare]. The prepared object keeps
 [`geometry`][gometry.PreparedGeometry.geometry] as a handle back to the source.
 It precomputes
-an internal index of the geometry's edges so each subsequent predicate is much cheaper than
+an edge index so each subsequent predicate reuses prepared geometry state instead of
 re-analysing the geometry from scratch.
 
 ```python exec="on" source="block" result="text"
@@ -500,7 +468,7 @@ spatial/segment index. Prepare when the
 *same* complex geometry is tested against many others; for two arrays, prefer the
 vectorized predicates or a [join](indexing.md).
 
-### 4. Index / join instead of nested loops
+### Index or join for many-to-many work
 
 A nested loop over two collections is O(N·M) and allocates per test. The
 [`SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] replace it with a
@@ -524,113 +492,28 @@ print("matched pairs:", pairs)
 ```
 
 For repeated queries against a fixed set, build the index once and reuse it; see
-[Indexing & joins](indexing.md). For coarse pre-filtering at scale, a grid cover (see
-[Grids](grids.md)) can shrink the candidate set before the exact refine.
+[Indexing & joins](indexing.md).
 
-### 5. Let the CRS carry the units
+### Prefer `equals_identical` for array value identity
 
-The buffer distance is read through the geometry's CRS, so picking the right CRS is both a
-correctness and a performance decision. On a **geographic** CRS, `poly.buffer(1000)` is a
-thousand *meters* (1 km) through a local projection — not a thousand degrees:
+For array **value identity**, use [`equals_identical`][gometry.equals_identical]. It is
+the vectorized form of scalar `==`; frame differences return `False`, and dimensional
+empties remain axes-sensitive.
 
-```python exec="on" source="block" result="text"
-import gometry as gm
+### Ingest in bulk, and use the direct parser form
 
-poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-
-# Geographic CRS: a CRS-aware local-projection meter buffer.
-buffered = poly.buffer(1000.0)            # 1000 meters = 1 km
-print("geographic 1 km buffer:", buffered.geometry_type)
-
-```
-
-For hot loops that buffer repeatedly, the reproject-once recipe from
-[footgun 2](#2-reproject-once-then-measure-planar-in-a-loop) applies unchanged.
-
-The units doctrine — geographic → geodesic meters, projected → native linear units,
-CRS-free → coordinate units, `unit='meters'` / `unit='planar'` overrides — lives in the
-[mental model](../get-started/mental-model.md). Pick a metric CRS with
-[`geom.estimate_local_crs()`][gometry.Geometry.estimate_local_crs] when you want planar
-speed.
-
-### 6. Use the right interchange format
-
-For bulk data movement, packed binary beats text by a wide margin. Prefer
-[GeoArrow](https://geoarrow.org/) or [WKB](https://www.ogc.org/standard/sfa/)/EWKB over
-WKT/[GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) in hot paths, and use
-`quantize` / [`simplify`][gometry.Geometry.simplify] to cut coordinate precision and vertex
-count when full precision isn't needed:
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-p = gm.Point(21.0123456789, 52.0987654321, crs=4326)
-print('full:     ', p.to_wkt())
-print('quantized:', (p.quantize(4)).to_wkt())
-
-```
-
-Quantizing before serialization improves **compressibility** (and can shorten
-WKT/GeoJSON text); fixed-width WKB and GeoArrow coordinate buffers keep the same
-byte width and vertex count after quantize alone. **Simplifying** drops redundant
-vertices and is what actually shrinks binary payloads. Both trade a controlled
-amount of precision for size and speed. See
-[Text & binary formats](../ecosystem/text-formats.md) for format selection.
-
-### 7. Prefer `equals_identical` for array value identity
-
-Topological [`equals`][gometry.equals] and coordinate [`equals_exact`][gometry.equals_exact]
-stay free functions. For **value identity** (coordinates + CRS + epoch), use
-[`equals_identical`][gometry.equals_identical] — the vectorized form of scalar
-`==` — so frame differences are `False` rather than raises, and dimensional
-empties stay axes-sensitive.
-
-### 8. Columns beat object lists at bulk scale
-
-Dense bulk lanes stay columnar. `array.bounds` returns a read-only `(rows, 4)` `float64`
-ndarray (`nan` rows for empty geometries); `bounds[i]` is a length-4 row view.
-Materializing row-shaped Python objects (`array.bounds.tolist()` and list-returning
-ragged/diagnostic getters) builds one Python object per element — convenient, but the
-object churn is the cost floor at 100k+ rows. The ndarray lanes skip it entirely:
-
-- `array.coords` exposes packed coordinate columns as `float64` ndarrays;
-  `np.asarray(coords)` materializes an `(N, dims)` matrix. For point arrays, bounds are
-  cheaply derived by duplicating each point's X/Y into min/max (shape `(n, 4)`, not the
-  coordinate matrix itself).
-- `to_arrow()` moves whole arrays as GeoArrow without materializing rows.
-- Bulk coordinate lanes return ndarrays too: `gm.crs_transform` hands back one frozen
-  row-major `(N, 2)` / `(N, 3)` `float64` matrix; `gm.crs_apply`, `gm.crs_roundtrip`, and the
-  `CRS.geodesic*`/`CRS.factors` batches hand back `float64` lanes.
-- Homogeneous point, line, and polygon arrays store as packed coordinate columns
-  automatically (lines/polygons add CSR offsets), so supported operations run
-  over columns without materializing Python geometry rows.
-
-```python exec="on" source="block" result="text"
-import numpy as np
-
-import gometry as gm
-
-pts = gm.points(np.arange(5.0), np.arange(5.0) * 2)
-xs = pts.coords.x                   # zero-copy X column
-ys = pts.coords.y                   # zero-copy Y column
-print(xs[:3], ys[:3])
-
-```
-
-### 9. Ingest in bulk, and feed the parser its fastest form
-
-Reading data in is a hot path too. Two rules: **parse a whole batch in one call**, and
-**hand the parser the form it reads fastest** — a string/bytes blob it can scan in Rust,
-not a pre-exploded Python structure it has to walk.
+Batch readers accept a whole iterable in one call. Direct string or bytes input is scanned
+in Rust instead of being expanded into a Python object tree first.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 wkb = [gm.Point(i * 0.01, i * 0.02, crs=4326).to_wkb() for i in range(5)]
 
-# SLOW: one scalar parse per row, in a Python loop.
+# Per-item form: one scalar parse per row, in a Python loop.
 loop_result = [gm.from_wkb(b) for b in wkb]
 
-# FAST: one batch call — the array is packed in a single Rust pass.
+# Batched form: one call returning a packed array.
 batch_result = gm.from_wkb(wkb)
 
 print("same rows:", [g.to_wkt() for g in loop_result] == batch_result.to_wkt())
@@ -675,14 +558,14 @@ For very large files, stream at the file/database layer into bounded batches, th
 gometry once per batch — that keeps memory bounded without falling back to per-row parser
 overhead.
 
-!!! tip "Feed `from_geojson` a string, not `json.loads(...)`"
+!!! note "Pass raw GeoJSON to the parser"
     `gm.from_geojson(text)` parses the JSON in Rust and skips the discarded `properties`
     entirely. Calling `json.loads` first and passing the resulting `dict` forces a full
-    Python object tree to be built and re-walked — markedly slower for the same result.
+    Python object tree to be built and re-walked before the native parser sees it.
     Pass the raw `str`/`bytes` (a file's contents, a `polars`/`duckdb` binary column) and
     let the Rust reader do the scan.
 
-| Ingest | Slow form | Fast form |
+| Ingest | Per-item or expanded form | Batched/direct form |
 | --- | --- | --- |
 | GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | `gm.points(xs, ys)` |
@@ -696,8 +579,8 @@ a Python loop.
 
 ## Crossing the dataframe / Arrow boundary
 
-Interop glue is where a fast core quietly bleeds speed: a per-row conversion loop hidden
-behind a tidy call. Move whole columns at once.
+Per-row interop conversion changes a columnar boundary into Python object work. Bulk
+converters accept whole columns.
 
 - **pandas:** `arr.to_pandas()` stores the native array behind a concrete extension dtype;
   `gm.from_pandas()` returns that same `GeometryArray` **zero-copy**.
@@ -705,85 +588,20 @@ behind a tidy call. Move whole columns at once.
   Series in native batched calls. The boundary does not require PyArrow.
 - **GeoPandas:** `gm.from_geopandas()` / `arr.to_geopandas()` convert a `GeoSeries` in one
   vectorized WKB step. Avoid rebuilding a `GeoSeries` element by element (`[g.wkb for g in
-  series]`); that per-row hop into Shapely is the slow path the vectorized helpers exist to
+  series]`); that per-row hop into Shapely is the per-item path the vectorized helpers exist to
   replace.
 - **Arrow:** `array.to_arrow()` and [`gm.from_arrow`][gometry.from_arrow] move whole arrays
   as GeoArrow through the C data interface — no WKB round-trip and no `pyarrow` needed on
-  the import side for capsule-producing sources (`polars`, `duckdb`, `nanoarrow`). Prefer it
-  over decoding row-by-row through WKB.
-
-!!! tip "A loop in your glue is a loop in your hot path"
-    If an interop helper iterates geometries in Python (`for g in series`, a WKB list
-    comprehension, a per-row `to_arrow`), it forfeits the Rust batch. Reach for the bulk
-    converters, or keep the data on gometry's extension dtype so it never has to convert.
-
-The full round-trip surface — GeoArrow, GeoParquet, dataframe handoff — lives in
-[Arrow & interop](../ecosystem/index.md).
-
-## Profile & benchmark your workload
-
-Do not publish speedups from one `time.perf_counter()` loop or a best-of-N sample. Use
-three levels of evidence:
-
-- a profiler to find where time goes;
-- a small case script for the exact hot path you own;
-- `benches/drivers/bench.py` only when you need to compare against the maintained release
-  benchmark surface.
-
-For A/B work, make the case script print one float — elapsed seconds for the measured
-region — then run the two builds interleaved so machine drift does not favor either side:
-
-```bash
-.venv/bin/python benches/drivers/bench_ab.py \
-  --a /path/to/baseline/.venv/bin/python \
-  --b .venv/bin/python \
-  --case benches/cases/case_import_wkb.py \
-  --rounds 9 \
-  --warmup 2 \
-  --seed 20260709 \
-  --cpu 1 \
-  --json-out /tmp/gometry-import-wkb-ab.json
-```
-
-Choose an otherwise idle CPU; a kernel-isolated CPU is best. The harness pins itself and
-both children, alternates `A/B` and `B/A` lead order, records the
-seed/governor/frequency/affinity, and reports median (p50), IQR, max block time, and
-bootstrap median confidence intervals. If it must fall back to a non-isolated CPU, it
-marks the run as unsuitable for release evidence.
-
-For release-surface checks, use the bounded harness:
-
-```bash
-env -u RUSTC_WRAPPER .venv/bin/python benches/drivers/bench.py --profile smoke
-env -u RUSTC_WRAPPER .venv/bin/python benches/drivers/bench.py --profile release --plan-only
-```
-
-Keep raw artifacts, record hardware/contention warnings, and treat differences inside the
-IQR/bootstrap noise floor as no result. See [Benchmarks](../about/benchmarks.md) for the
-current public evidence and interpretation rules.
-
-## Checklist
-
-| Symptom | Fix |
-| --- | --- |
-| `for geom in ...: gm.contains(geom, other)` | vectorized `gm.contains(array, other)` |
-| geodesic metrics in a hot loop | `to_crs` to a metric CRS once, then measure planar |
-| one geometry vs many, same predicate | [`geom.prepare()`][gometry.Geometry.prepare] |
-| nested loops over two collections | [`gm.SpatialIndex`][gometry.SpatialIndex] / [`gm.join`][gometry.join] |
-| want planar `buffer`/`distance` on lon/lat | `to_crs(geom.estimate_local_crs())` first |
-| huge WKT/GeoJSON payloads | WKB/EWKB or GeoArrow + `quantize`/[`simplify`][gometry.Geometry.simplify] |
-| `for b in blobs: from_wkb(b)` | one batch `from_wkb(blobs)` (also `from_wkt`/`from_geojson`) |
-| `from_geojson(json.loads(s))` | `from_geojson(s)` — pass the `str`/`bytes` |
-| `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
-| `[g.wkb for g in geoseries]` / per-row interop | `gm.from_geopandas` / `to_arrow` whole-column |
+  the import side for capsule-producing sources (`polars`, `duckdb`, `nanoarrow`). It avoids
+  decoding row-by-row through WKB.
 
 ## See also
 
-- [Mental model](../get-started/mental-model.md) — the CRS-units and candidate-vs-exact doctrines.
+- [Mental model](../get-started/mental-model.md) — the three operation models.
 - [Spatial indexing & joins](indexing.md) — `Groups` from array queries, index reuse.
 - [CRS, units & measurement](crs.md) — projecting for planar speed and metric units.
 - [Grids](grids.md) — `CellArray`, coverages, and grid pre-filtering.
 - [Arrow & interop](../ecosystem/index.md) — zero-copy GeoArrow / dataframe handoff.
 - [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
-- [Benchmarks](../about/benchmarks.md) — release evidence and interpretation.
+- [Benchmarks](../about/benchmarks.md) — current release status.
 - [API: GeometryArray][gometry.GeometryArray] · [points][gometry.points] · [Groups][gometry.Groups] · [CellArray][gometry.CellArray] · [from_wkb][gometry.from_wkb]

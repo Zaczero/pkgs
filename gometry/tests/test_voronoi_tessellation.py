@@ -83,9 +83,7 @@ def test_reciprocal_sites_use_actual_nonrectangular_clip() -> None:
     ('start', 'stop'),
     [(start, min(start + 9, 1_000)) for start in range(10, 1_001, 10)],
 )
-def test_convex_quad_clip_sweep_keeps_every_cell_valid(
-    start: int, stop: int
-) -> None:
+def test_convex_quad_clip_sweep_keeps_every_cell_valid(start: int, stop: int) -> None:
     rng = random.Random(7)
     sites = [(rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(1_000)]
     clip = gm.Polygon([(50, 50), (950, 120), (900, 900), (120, 850), (50, 50)])

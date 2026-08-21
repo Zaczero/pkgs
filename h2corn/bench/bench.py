@@ -2,13 +2,13 @@
 
 Servers and load generators run unpinned, exactly as a deployment runs them.
 Trials are rotation-balanced cold starts (3-9 per scenario). Sampling stops
-when the published claim is resolved — the leader is ahead of the runner-up
+when the reported comparison is resolved — the leader is ahead of the runner-up
 and the leader's own interval is within the target half-width — or when the
 scenario's 240 s ceiling (suite 7200 s) is hit. There is no separate headroom
 phase.
 
     uv run python bench/bench.py            # stage a run under bench/results/runs/
-    uv run python bench/bench.py --publish  # also replace the canonical plots
+    uv run python bench/bench.py --publish  # also replace the checked-in plots
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ import matplotlib.pyplot as plt
 
 try:
     from bench._core import (
-        PSS_SAMPLE_INTERVAL_SECONDS,
         RESPONSE_CONTRACTS,
         RESULTS_DIRECTORY,
         BenchmarkError,
@@ -60,7 +59,6 @@ try:
     )
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
     from _core import (  # type: ignore[import-not-found, no-redef]
-        PSS_SAMPLE_INTERVAL_SECONDS,
         RESPONSE_CONTRACTS,
         RESULTS_DIRECTORY,
         BenchmarkError,
@@ -108,10 +106,9 @@ NETEM_RATE = '1gbit'
 NETEM_RTT_TOLERANCE_MS = 15.0
 NETEM_RTT_SAMPLES = 10
 NETEM_NAMESPACE_ENV = 'H2CORN_BENCH_NETEM_NAMESPACE'
-TUNING_MATERIALITY_THRESHOLD = 0.10
 
-CANONICAL_RAW_DIRECTORY = RESULTS_DIRECTORY / 'raw'
-CANONICAL_PLOT_DIRECTORY = RESULTS_DIRECTORY / 'plots'
+CHECKED_IN_RAW_DIRECTORY = RESULTS_DIRECTORY / 'raw'
+CHECKED_IN_PLOT_DIRECTORY = RESULTS_DIRECTORY / 'plots'
 
 # Every server runs the STDLIB asyncio event loop, and a pure-Python HTTP parser
 # where it has one (uvicorn `--http h11`, gunicorn `--http-parser python`). The
@@ -493,13 +490,6 @@ def system_summary() -> str:
     if model is None:
         raise BenchmarkError('failed to determine the CPU model for plot metadata')
     return f'{summary}\nCPU: {model}'
-
-
-def git_head() -> str | None:
-    result = subprocess.run(
-        ['git', 'rev-parse', 'HEAD'], capture_output=True, text=True, check=False
-    )
-    return result.stdout.strip() or None
 
 
 def aligned_setting(name: str, value: object, default: object) -> dict[str, object]:
@@ -1083,19 +1073,19 @@ def run_rtt50_namespace(run_directory: Path) -> tuple[int | None, str | None]:
 
 
 def publish(run_directories: Sequence[Path]) -> None:
-    for kind, suffix, canonical in (
-        ('raw', '.json', CANONICAL_RAW_DIRECTORY),
-        ('plots', '.svg', CANONICAL_PLOT_DIRECTORY),
+    for kind, suffix, destination in (
+        ('raw', '.json', CHECKED_IN_RAW_DIRECTORY),
+        ('plots', '.svg', CHECKED_IN_PLOT_DIRECTORY),
     ):
-        canonical.mkdir(parents=True, exist_ok=True)
-        for stale in canonical.glob(f'*{suffix}'):
+        destination.mkdir(parents=True, exist_ok=True)
+        for stale in destination.glob(f'*{suffix}'):
             stale.unlink()
         for run_directory in run_directories:
             for artifact in sorted((run_directory / kind).glob(f'*{suffix}')):
-                shutil.copy2(artifact, canonical / artifact.name)
+                shutil.copy2(artifact, destination / artifact.name)
     print(
-        f'Published {len(run_directories)} profile(s) to {CANONICAL_RAW_DIRECTORY} '
-        f'and {CANONICAL_PLOT_DIRECTORY}'
+        f'Published {len(run_directories)} profile(s) to {CHECKED_IN_RAW_DIRECTORY} '
+        f'and {CHECKED_IN_PLOT_DIRECTORY}'
     )
 
 
@@ -1152,35 +1142,6 @@ def run_suite(
         netem=netem,
     )
     write_json(run_directory / 'profile.json', active_profile)
-    write_json(
-        run_directory / 'identity.json',
-        {
-            'run_id': run_directory.name,
-            'git_head': git_head(),
-            'versions': package_versions(),
-            'system': summary,
-            'duration': duration,
-            'warmup': warmup,
-            'max_trials': max_trials,
-            'target_half_width': TARGET_HALF_WIDTH,
-            'network_profile': active_profile,
-            'peak_memory': {
-                'metric': 'peak memory (PSS)',
-                'sample_interval_seconds': PSS_SAMPLE_INTERVAL_SECONDS,
-            },
-            'tuning_materiality_threshold': TUNING_MATERIALITY_THRESHOLD,
-            'server_profiles': {
-                scenario.name: server_profiles(scenario) for scenario in scenarios
-            },
-            'commands': {
-                f'{name}:{scenario.type}:w{scenario.workers}': server_command(
-                    name, scenario, hypercorn_config=hypercorn_config
-                )
-                for scenario in scenarios
-                for name in eligible_servers(scenario, servers)
-            },
-        },
-    )
 
     suite_deadline = time.monotonic() + suite_budget
     records = []
@@ -1263,7 +1224,7 @@ def main() -> int:
     parser.add_argument(
         '--publish',
         action='store_true',
-        help='replace the canonical plots and raw records with this run',
+        help='replace the checked-in plots and raw records with this run',
     )
     args = parser.parse_args()
 
@@ -1340,7 +1301,7 @@ def main() -> int:
                 if status == 'completed':
                     complete.append(shaped_directory)
                 elif status == 'skipped':
-                    # Preserve the explicit skip record in published raw data
+                    # Preserve the explicit skip record in checked-in raw data
                     # while emitting no unshaped plot for this profile.
                     complete.append(shaped_directory)
                 elif status != 'skipped':

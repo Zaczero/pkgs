@@ -34,18 +34,14 @@ let
     hatch
     jq
     k6
+    lychee
     cmake
     openssh
+    oha
     pyright
     rsync
     ruff
     uv
-
-    (makeScript "activate" ''
-      if [ -f pyproject.toml ]; then
-        uv sync --all-groups
-      fi
-    '')
 
     (makeScript "nixpkgs-update" ''
       hash=$(
@@ -83,7 +79,10 @@ let
         exit 1
       fi
       uv sync --quiet --all-groups
-      exec uv run --no-sync properdocs build --strict --clean "$@"
+      uv run --no-sync properdocs build --strict --clean "$@"
+      if [ -f tools/docs/check.py ]; then
+        uv run --no-sync python tools/docs/check.py
+      fi
     '')
 
     (makeScript "docs-deploy" ''
@@ -97,22 +96,25 @@ let
       host=$(${gnugrep}/bin/grep -m1 '^site_url:' properdocs.yml \
         | sed -E 's|.*://||; s|/.*||')
       if [ -z "$host" ]; then
-        echo "could not derive host from mkdocs.yml site_url" >&2
+        echo "could not derive host from properdocs.yml site_url" >&2
         exit 1
       fi
 
-      dry=()
+      dry_run=false
       if [ "''${1:-}" = "--dry-run" ] || [ "''${1:-}" = "-n" ]; then
-        dry=(--dry-run)
-        echo "DRY RUN: nothing will be written to edge."
+        dry_run=true
+        echo "DRY RUN: build and validation will run; nothing will contact edge."
       fi
 
-      uv sync --quiet --all-groups
-      uv run --no-sync properdocs build --strict --clean
+      docs-build
 
       echo "Target: edge:/var/www/$host/"
-      rsync -avL --mkpath --delete-after "''${dry[@]}" \
-        site/ "edge:/var/www/$host/"
+      if [ "$dry_run" = true ]; then
+        echo "DRY RUN: rsync skipped."
+      else
+        rsync -avL --mkpath --delete-after \
+          site/ "edge:/var/www/$host/"
+      fi
       echo "Done. The Caddyfile entry for $host is maintained by hand on edge."
     '')
   ];
@@ -125,7 +127,7 @@ let
     export COVERAGE_CORE=sysmon
     export PYTEST_ADDOPTS="--quiet --import-mode=importlib --strict-markers --strict-config"
 
-    # `uv sync` builds through maturin's PEP 517 backend, which defaults to
+    # `uv sync --all-groups` builds through maturin's PEP 517 backend, which defaults to
     # plain `--release` (thin LTO and default codegen-units), measured at 37 s for a one-line
     # change against 2 s for dev. The import hook is separately unset above, so
     # both paths agree on dev. Dev also turns on debug_assertions and

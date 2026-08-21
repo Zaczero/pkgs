@@ -404,13 +404,13 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
         ($($ty:ty),* $(,)?) => {
             $(
                 if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    let buffer = PyBuffer::<$ty>::get(ids)?;
-                    crate::boundary::buffer_endian::require_immutable_exporter(
-                        ids.py(), ids, &buffer,
-                    )?;
                     // Owned capture via `tobytes()` — immutable bytes by
-                    // construction; never iterate an ArrayView over writable
-                    // NumPy memory.
+                    // construction, never an ArrayView over writable NumPy
+                    // memory, so no borrow outlives this call. The
+                    // free-threaded exporter allowlist that
+                    // `boundary::coordinate_input` needs for its raw pointer
+                    // loads has nothing to protect here, and applying it would
+                    // reject every NumPy array the GIL build accepts.
                     return Ok(Some(owned_u64_ids_from_tobytes::<$ty>(ids)?));
                 }
             )*
@@ -486,7 +486,7 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
         // Copy via the buffer API into a fallibly reserved Vec; normalize
         // non-native endian (e.g. NumPy `>u8`) so ids are not silently corrupted.
         values.resize(count, 0);
-        crate::buffer_copy_to_slice_u64(ids.py(), ids, &buffer, &mut values)?;
+        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, &mut values)?;
         for &id in &values {
             kind.validate_id(id)?;
         }

@@ -91,9 +91,7 @@ def test_h3_polygon_coverage() -> None:
     within = gm.h3_cover(polygon, resolution=7, cell_rule='within')
     bbox = gm.h3_cover(polygon, resolution=7, cell_rule='bbox')
     explicit_overlap = gm.h3_cover(polygon, resolution=7, cell_rule='overlap')
-    assert [cell.id for cell in coverage] == [
-        cell.id for cell in explicit_overlap
-    ]
+    assert [cell.id for cell in coverage] == [cell.id for cell in explicit_overlap]
     assert set(map(str, within)) <= set(map(str, center))
     assert set(map(str, center)) <= set(map(str, coverage))
     assert set(map(str, coverage)) <= set(map(str, bbox))
@@ -122,8 +120,7 @@ def test_h3_polygon_coverage() -> None:
     assert set(map(str, multi_coverage)) == single_cells
     np.testing.assert_array_equal(
         gm.contains(
-            multipolygon,
-            gm.points([21.0, 22.0, 21.5], [52.0, 52.0, 52.0], crs=4326)
+            multipolygon, gm.points([21.0, 22.0, 21.5], [52.0, 52.0, 52.0], crs=4326)
         ),
         [True, True, False],
     )
@@ -150,13 +147,9 @@ def test_h3_point_and_line_coverage_matches_other_grids() -> None:
         assert len(gm.h3_cover(geom, resolution=9, cell_rule='within')) == 0
         overlap = gm.h3_cover(geom, resolution=9, cell_rule='overlap')
         assert len(overlap) > 0
-        assert len(gm.h3_cover(geom, resolution=9, cell_rule='bbox')) >= len(
-            overlap
-        )
+        assert len(gm.h3_cover(geom, resolution=9, cell_rule='bbox')) >= len(overlap)
         assert overlap[0] in overlap
-    assert list(gm.h3_cover(point, resolution=9)) == [
-        gm.H3Cell(point, resolution=9)
-    ]
+    assert list(gm.h3_cover(point, resolution=9)) == [gm.H3Cell(point, resolution=9)]
     assert gm.contains(point, point)
     line_cov = gm.h3_cover(line, resolution=9)
     assert gm.covers(line, gm.Point(13.4, 52.5, crs=4326))
@@ -218,16 +211,14 @@ def test_h3_bbox_certified_root_descent_and_native_arc_corpus() -> None:
         '820377fffffffff',
     }
     polar_overlap = {
-        cell.token
-        for cell in gm.h3_cover(polar, resolution=2, cell_rule='overlap')
+        cell.token for cell in gm.h3_cover(polar, resolution=2, cell_rule='overlap')
     }
     assert polar_overlap == polar_bbox
     assert '820377fffffffff' in polar_overlap
 
     endpoint = gm.LineString([(-10.0, -40.0), (10.0, -40.0)], crs=4326)
     endpoint_bbox = {
-        cell.token
-        for cell in gm.h3_cover(endpoint, resolution=2, cell_rule='bbox')
+        cell.token for cell in gm.h3_cover(endpoint, resolution=2, cell_rule='bbox')
     }
     assert '82d10ffffffffff' in endpoint_bbox
 
@@ -238,12 +229,10 @@ def test_h3_cover_collinear_vertex_is_invariant_for_every_visible_rule() -> None
     dense = gm.LineString([(-90.0, 85.0), (0.0, 85.0), (90.0, 85.0)], crs=4326)
     for rule in ('center', 'within', 'overlap', 'bbox'):
         sparse_cells = {
-            cell.token
-            for cell in gm.h3_cover(sparse, resolution=2, cell_rule=rule)
+            cell.token for cell in gm.h3_cover(sparse, resolution=2, cell_rule=rule)
         }
         dense_cells = {
-            cell.token
-            for cell in gm.h3_cover(dense, resolution=2, cell_rule=rule)
+            cell.token for cell in gm.h3_cover(dense, resolution=2, cell_rule=rule)
         }
         assert sparse_cells == dense_cells, rule
     assert len(gm.h3_cover(sparse, resolution=2, cell_rule='overlap')) == 9
@@ -401,7 +390,6 @@ def test_h3_set_utilities_compact_uncompact_children_count() -> None:
         children.uncompact(5)
     assert parent.children_count(6) == len(children) == 7
     assert parent.children_count(8) == len(parent.children(8))
-
 
 
 def test_h3_depth_accessors_and_local_ij() -> None:
@@ -709,9 +697,7 @@ def _expected_h3_rule_ids(source: gm.Geometry, resolution: int) -> dict[str, set
 
 def _actual_h3_rule_ids(source: gm.Geometry, resolution: int) -> dict[str, set[int]]:
     return {
-        rule: {
-            int(cell) for cell in gm.h3_cover(source, resolution, cell_rule=rule)
-        }
+        rule: {int(cell) for cell in gm.h3_cover(source, resolution, cell_rule=rule)}
         for rule in ('overlap', 'within', 'center', 'bbox')
     }
 
@@ -862,8 +848,7 @@ def test_h3_within_central_box_is_analytic_strict_overlap_subset(
         cell.token for cell in gm.h3_cover(source, resolution, cell_rule='within')
     }
     overlap = {
-        cell.token
-        for cell in gm.h3_cover(source, resolution, cell_rule='overlap')
+        cell.token for cell in gm.h3_cover(source, resolution, cell_rule='overlap')
     }
     assert within == _analytic_h3_within_box(resolution, -10.0, -10.0, 10.0, 10.0)
     assert len(within) == count
@@ -873,9 +858,7 @@ def test_h3_within_central_box_is_analytic_strict_overlap_subset(
 def test_h3_overlap_keeps_both_closed_owners_at_native_arc_midpoint() -> None:
     """Literal independent great-circle midpoint, not a chord proxy oracle."""
     point = gm.Point(1.5835173670280838, -0.9613796866574875, crs=4326)
-    assert {
-        cell.token for cell in gm.h3_cover(point, 2, cell_rule='overlap')
-    } == {
+    assert {cell.token for cell in gm.h3_cover(point, 2, cell_rule='overlap')} == {
         '82754ffffffffff',
         '82825ffffffffff',
     }
@@ -1073,8 +1056,7 @@ def test_h3_pole_normalization_closes_every_shape_and_rule_neighbourhood() -> No
             expected = _pole_neighbourhood_shapes(pole, longitude)
             expected_tokens = {
                 (name, rule): {
-                    cell.token
-                    for cell in gm.h3_cover(exact, 2, cell_rule=rule)
+                    cell.token for cell in gm.h3_cover(exact, 2, cell_rule=rule)
                 }
                 for name, exact in expected.items()
                 for rule in ('overlap', 'bbox', 'center', 'within')
@@ -1085,9 +1067,7 @@ def test_h3_pole_normalization_closes_every_shape_and_rule_neighbourhood() -> No
                     for rule in ('overlap', 'bbox', 'center', 'within'):
                         actual_tokens = {
                             cell.token
-                            for cell in gm.h3_cover(
-                                actual[name], 2, cell_rule=rule
-                            )
+                            for cell in gm.h3_cover(actual[name], 2, cell_rule=rule)
                         }
                         assert actual_tokens == expected_tokens[name, rule], (
                             pole,
@@ -1225,9 +1205,7 @@ def test_h3_multipart_global_uncertainty_keeps_independent_component_caps() -> N
     multipart = gm.MultiPolygon([polar, middle], crs=4326)
     polar_ids = {cell.token for cell in gm.h3_cover(polar, 2, cell_rule='bbox')}
     middle_ids = {cell.token for cell in gm.h3_cover(middle, 2, cell_rule='bbox')}
-    combined_ids = {
-        cell.token for cell in gm.h3_cover(multipart, 2, cell_rule='bbox')
-    }
+    combined_ids = {cell.token for cell in gm.h3_cover(multipart, 2, cell_rule='bbox')}
     assert len(polar_ids) == 202
     assert len(middle_ids) == 19
     assert polar_ids.isdisjoint(middle_ids)

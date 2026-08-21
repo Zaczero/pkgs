@@ -49,6 +49,15 @@ def _ipv6_loopback_is_bindable() -> bool:
 def _assert_listener_accepts(listener: socket.socket) -> None:
     with socket.socket(listener.family, socket.SOCK_STREAM) as client:
         client.connect(listener.getsockname())
+        # Adoption puts O_NONBLOCK on the open file description, which `os.dup`
+        # shares with the caller's descriptor (`_socket._adopt_listener`), so
+        # this listener is non-blocking however it was created. Waiting for
+        # readability is what makes the accept deterministic: Darwin returns
+        # from connect() before the connection reaches the accept queue, where
+        # Linux happens to queue it synchronously. The timeout bounds a hang
+        # and nothing else.
+        readable, _, _ = select.select([listener], [], [], 10)
+        assert readable, 'listener never became readable'
         accepted, _ = listener.accept()
         accepted.close()
 
@@ -1625,12 +1634,13 @@ def test_cli_trusted_proxy_flags_replace_base_values(
 forwarded_allow_ips = ["127.0.0.1", "::1"]
 """.strip()
     )
-    _, app, config = parse_cli(
-        [
-            '--config', str(config_path), '--forwarded-allow-ips', '10.0.0.1, unix',
-            'example:app',
-        ]
-    )
+    _, app, config = parse_cli([
+        '--config',
+        str(config_path),
+        '--forwarded-allow-ips',
+        '10.0.0.1, unix',
+        'example:app',
+    ])
     assert app.target == 'example:app'
     assert app.factory is False
     assert config.forwarded_allow_ips == ('10.0.0.1', 'unix')
@@ -1643,12 +1653,15 @@ def test_cli_repeated_bind_replaces_base_bind_values(
 
     config_path = tmp_path / 'h2corn.toml'
     config_path.write_text('bind = ["127.0.0.1:9010"]')
-    _, _, config = parse_cli(
-        [
-            '--config', str(config_path), '--bind', '127.0.0.1:9030', '--bind',
-            'unix:/tmp/h2corn.sock', 'example:app',
-        ]
-    )
+    _, _, config = parse_cli([
+        '--config',
+        str(config_path),
+        '--bind',
+        '127.0.0.1:9030',
+        '--bind',
+        'unix:/tmp/h2corn.sock',
+        'example:app',
+    ])
     assert config.bind == ('127.0.0.1:9030', 'unix:/tmp/h2corn.sock')
 
 
@@ -1669,12 +1682,15 @@ access_log = false
     monkeypatch.setenv('H2CORN_PORT', '9020')
     monkeypatch.setenv('H2CORN_HTTP1', 'false')
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
-    _, _, config = parse_cli(
-        [
-            '--config', str(config_path), '--port', '9030', '--http1', '--access-log',
-            'example:app',
-        ]
-    )
+    _, _, config = parse_cli([
+        '--config',
+        str(config_path),
+        '--port',
+        '9030',
+        '--http1',
+        '--access-log',
+        'example:app',
+    ])
     assert config.bind == ('127.0.0.1:9030',)
     assert config.http1 is True
     assert config.access_log is True
@@ -1708,9 +1724,11 @@ def test_cli_app_dir_is_forwarded_to_import_target(
 ) -> None:
     from h2corn._cli import ImportSettings, parse_cli
 
-    _, import_settings, _ = parse_cli(
-        ['--app-dir', str(tmp_path / 'src'), 'example:app']
-    )
+    _, import_settings, _ = parse_cli([
+        '--app-dir',
+        str(tmp_path / 'src'),
+        'example:app',
+    ])
     assert import_settings == ImportSettings(
         target='example:app',
         app_dir=(tmp_path / 'src').resolve(),
@@ -1722,9 +1740,11 @@ def test_cli_env_file_is_forwarded_to_import_target(
 ) -> None:
     from h2corn._cli import ImportSettings, parse_cli
 
-    _, import_settings, _ = parse_cli(
-        ['--env-file', str(tmp_path / '.env'), 'example:app']
-    )
+    _, import_settings, _ = parse_cli([
+        '--env-file',
+        str(tmp_path / '.env'),
+        'example:app',
+    ])
     assert import_settings == ImportSettings(
         target='example:app',
         env_file=(tmp_path / '.env').resolve(),

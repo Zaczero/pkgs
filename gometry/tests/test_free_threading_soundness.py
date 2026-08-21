@@ -119,6 +119,93 @@ def test_buffer_ingest_shapes_deterministic() -> None:
     assert gm.from_wkb(memoryview(bytearray(wkb))) == pt
 
 
+@pytest.mark.parametrize(
+    'shape',
+    [
+        pytest.param('contiguous', id='buffer-contiguous-f64-ndarray'),
+        pytest.param('strided', id='buffer-strided-f64-ndarray'),
+        pytest.param('nd', id='buffer-NxD-f64-ndarray'),
+    ],
+)
+def test_mutable_numeric_buffers_are_snapshotted(shape: str) -> None:
+    """A writable exporter is copied at capture — neither aliased nor refused.
+
+    The paths that would form a Rust slice over the exporter take CPython's
+    contiguous copy when its storage may change under them, so ingest is a
+    snapshot and a later write cannot reach an already-built geometry. Refusing
+    the input instead would make NumPy, the one required runtime dependency,
+    unusable on the supported ``cp314t`` target.
+    """
+    n = 256
+    if shape == 'contiguous':
+        x = np.arange(n, dtype=np.float64)
+        y = np.arange(n, dtype=np.float64) * 0.5
+        built = gm.points(x, y)
+        before = [point.x for point in built[:4]]
+        x[:4] = -1.0
+        assert [point.x for point in built[:4]] == before
+
+    elif shape == 'strided':
+        storage = np.zeros((n, 2), dtype=np.float64)
+        storage[:, 0] = np.arange(n, dtype=np.float64)
+        storage[:, 1] = np.arange(n, dtype=np.float64) * 0.5
+        built = gm.points(storage[:, 0], storage[:, 1])
+        before = [point.x for point in built[:4]]
+        storage[:4, 0] = -1.0
+        assert [point.x for point in built[:4]] == before
+
+    else:
+        nd = np.column_stack([
+            np.arange(n, dtype=np.float64),
+            np.arange(n, dtype=np.float64) * 0.5,
+        ])
+        built = gm.LineString(nd)
+        before = str(built)
+        nd[0, 0] = -1.0
+        assert str(built) == before
+
+
+def test_readonly_facade_over_mutable_buffer_is_snapshotted() -> None:
+    """A readonly memoryview is a facade: the storage behind it still moves.
+
+    It carries no immutable provenance, so it takes the copying path — which is
+    a snapshot, not an error.
+    """
+    storage = np.arange(32, dtype=np.float64)
+    view = memoryview(storage).toreadonly()
+    built = gm.points(view, view)
+    before = [point.x for point in built[:4]]
+    storage[:4] = -1.0
+    assert [point.x for point in built[:4]] == before
+
+
+@pytest.mark.parametrize('format', ['d', 'Q'])
+def test_free_threaded_bytes_backed_typed_memoryview_is_accepted(format: str) -> None:
+    """Exact built-in memoryview views over bytes have immutable provenance."""
+    _require_free_threading()
+    import struct
+
+    endian = '<' if sys.byteorder == 'little' else '>'
+    if format == 'd':
+        view = memoryview(struct.pack(f'{endian}2d', 1.5, -2.25)).cast('d')
+        arr = gm.points(view, view)
+        assert [point.x for point in arr] == [1.5, -2.25]
+    else:
+        cell = gm.S2Cell(0, 0, level=1)
+        view = memoryview(struct.pack(f'{endian}Q', cell.id)).cast('Q')
+        arr = gm.CellArray(view, type=gm.S2Cell)
+        assert arr[0].id == cell.id
+
+
+def test_uint64_buffer_is_snapshotted() -> None:
+    """The cell and H3 u64 paths capture through ``tobytes()``, so they own their ids."""
+    cell = gm.H3Cell('8928308280fffff')
+    ids = np.array([cell.id], dtype=np.uint64)
+    built = gm.CellArray(ids, type=gm.H3Cell)
+    ids[0] = 0
+    assert built[0].id == cell.id
+
+
 # ---------------------------------------------------------------------------
 # Concurrent stress (free-threaded only)
 # ---------------------------------------------------------------------------
@@ -234,76 +321,43 @@ def test_concurrent_list_fancy_index_mutation(receiver_kind: str) -> None:
 @pytest.mark.parametrize(
     'shape',
     [
-        pytest.param('contiguous', id='buffer-contiguous-f64-ndarray'),
-        pytest.param('strided', id='buffer-strided-f64-ndarray'),
+        pytest.param('columns', id='buffer-columns-f64-ndarray'),
         pytest.param('nd', id='buffer-NxD-f64-ndarray'),
     ],
 )
-def test_free_threaded_mutable_numeric_buffers_are_rejected(shape: str) -> None:
-    """Mutable PEP 3118 exporters are rejected before any f64 content read."""
+def test_concurrent_numeric_buffer_mutation(shape: str) -> None:
+    """A mutator rewrites the source array while the reader captures from it.
+
+    Refusing writable exporters left this race with no coverage at all: the
+    reader could only raise. A torn snapshot is an acceptable outcome for a
+    caller that mutates its own input mid-call; memory unsafety is not.
+    """
     _require_free_threading()
 
     n = 256
-    if shape == 'contiguous':
-        x = np.arange(n, dtype=np.float64)
-        y = np.arange(n, dtype=np.float64) * 0.5
+    xs = np.arange(n, dtype=np.float64)
+    ys = np.arange(n, dtype=np.float64) * 0.5
+    nd = np.column_stack([xs, ys])
 
-        with pytest.raises(BufferError, match='mutable buffer exporters'):
-            gm.points(x, y)
+    def mutator() -> None:
+        # Slice assignment writes through; `xs += 1.0` would rebind a local.
+        xs[:] += 1.0
+        ys[:] -= 0.5
+        nd[:, 0] += 1.0
 
-    elif shape == 'strided':
-        storage = np.zeros((n, 2), dtype=np.float64)
-        storage[:, 0] = np.arange(n, dtype=np.float64)
-        storage[:, 1] = np.arange(n, dtype=np.float64) * 0.5
-        xs = storage[:, 0]
-        ys = storage[:, 1]
+    if shape == 'columns':
 
-        with pytest.raises(BufferError, match='mutable buffer exporters'):
-            gm.points(xs, ys)
+        def reader() -> None:
+            _ = gm.points(xs, ys)
 
-    elif shape == 'nd':
-        nd = np.column_stack([
-            np.arange(n, dtype=np.float64),
-            np.arange(n, dtype=np.float64) * 0.5,
-        ])
-
-        with pytest.raises(BufferError, match='mutable buffer exporters'):
-            gm.LineString(nd)
-
-
-def test_free_threaded_readonly_facade_over_mutable_buffer_is_rejected() -> None:
-    """A readonly memoryview does not establish immutable provenance."""
-    _require_free_threading()
-    storage = np.arange(32, dtype=np.float64)
-    view = memoryview(storage).toreadonly()
-    with pytest.raises(BufferError, match='mutable buffer exporters'):
-        gm.points(view, view)
-
-
-@pytest.mark.parametrize('format', ['d', 'Q'])
-def test_free_threaded_bytes_backed_typed_memoryview_is_accepted(format: str) -> None:
-    """Exact built-in memoryview views over bytes have immutable provenance."""
-    _require_free_threading()
-    import struct
-
-    endian = '<' if sys.byteorder == 'little' else '>'
-    if format == 'd':
-        view = memoryview(struct.pack(f'{endian}2d', 1.5, -2.25)).cast('d')
-        arr = gm.points(view, view)
-        assert [point.x for point in arr] == [1.5, -2.25]
     else:
-        cell = gm.S2Cell(0, 0, level=1)
-        view = memoryview(struct.pack(f'{endian}Q', cell.id)).cast('Q')
-        arr = gm.CellArray(view, type=gm.S2Cell)
-        assert arr[0].id == cell.id
 
+        def reader() -> None:
+            _ = gm.LineString(nd)
 
-def test_free_threaded_uint64_buffer_is_rejected() -> None:
-    """The numeric cell/H3 u64 paths use the same provenance gate."""
-    _require_free_threading()
-    ids = np.array([0x8928308280FFFFF], dtype=np.uint64)
-    with pytest.raises(BufferError, match='mutable buffer exporters'):
-        gm.CellArray(ids, type=gm.H3Cell)
+    errors = _run_mutator_reader(reader, mutator)
+    if errors:
+        pytest.fail('\n'.join(errors))
 
 
 def test_proj_info_snapshot_survives_concurrent_reconfigure() -> None:

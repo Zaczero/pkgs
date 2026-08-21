@@ -4,9 +4,8 @@ description: Decision tables for the operations that look alike — which predic
 
 # Choosing the right tool
 
-gometry keeps one canonical name per operation, but some families hold several
-genuinely different tools. These tables answer "which one?" in one
-glance; each entry links to the full reference.
+Each operation has one public name, while some families hold several genuinely
+different tools.
 
 ## Repeated predicates: prepare, index, or graph components?
 
@@ -19,9 +18,8 @@ glance; each entry links to the full reference.
 | a cheap pre-group before exact work | bounding-box candidates only | [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates] |
 
 `prepare()` is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
-is per-collection state (there is no free `gm.index`). When both fit (one polygon
-vs. one big array), the vectorized predicate (`gm.contains(polygon, arr)`) already
-uses the prepared path internally — measure before adding either by hand.
+is per-collection state (there is no free `gm.index`). For one polygon against one
+large array, `gm.contains(polygon, arr)` uses the prepared path.
 
 ## Containment: `contains`, `contains_properly`, `covers`, `within`
 
@@ -32,15 +30,15 @@ uses the prepared path internally — measure before adding either by hand.
 | "is the candidate inside without touching my boundary at all?" | [`contains_properly`][gometry.contains_properly] |
 | the same questions, asked from the candidate's side | [`covered_by`][gometry.covered_by] / [`within`][gometry.within] |
 
-The classic trap: a point **on** a polygon's edge is *not* contained —
+The boundary rule: a point **on** a polygon's edge is *not* contained —
 use `covers` for boundary-inclusive membership. See
-[the predicate gotchas](predicates.md#gotcha-1-boundary-points-are-not-contained).
+[the predicate boundary rules](predicates.md#boundary-points-are-not-contained).
 
 ## Clipping: `clip_by_rect` vs `intersection`
 
 | Situation | Use |
 | --- | --- |
-| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a fast rectangular cut that does not build a polygon operand |
+| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
 There is no separate `clip(mask)`: it would be `intersection` by another name.
@@ -53,7 +51,7 @@ There is no separate `clip(mask)`: it would be `intersection` by another name.
 | snap vertices onto a fixed coordinate grid | [`snap_to_grid`][gometry.Geometry.snap_to_grid] | grid-aligned vertices; collapsed parts become empty; output may be non-simple |
 | snap onto a grid **and** guarantee validity | [`snap_to_grid`][gometry.Geometry.snap_to_grid] with `repair=True` | grid-aligned, valid output (snap → repair → re-snap to a fixpoint); the geometry kind may change |
 | drop consecutive duplicate (or near-duplicate) vertices | [`remove_repeated_points`][gometry.Geometry.remove_repeated_points] | the geometry kind, with consecutive runs collapsed |
-| reduce vertex count while keeping shape | [`simplify`][gometry.Geometry.simplify] (`method='vw'` [Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm) by default for the smoothest cartographic look, or `method='dp'` [Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) for a distance band; `preserve_topology=True` keeps polygons valid and simple lines simple) | a vertex subset within tolerance |
+| reduce vertex count while keeping shape | [`simplify`][gometry.Geometry.simplify] (`method='vw'` [Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm) by default, or `method='dp'` [Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) for a distance band; `preserve_topology=True` keeps polygons valid and simple lines simple) | a vertex subset within tolerance |
 | collect the distinct vertices themselves | [`unique_points`][gometry.Geometry.unique_points] | a `MultiPoint` of first-occurrence distinct vertices |
 | fix actual invalidity (self-intersections, bad rings) | [`repair`][gometry.Geometry.repair] | a valid geometry, rebuilt |
 
@@ -61,9 +59,6 @@ There is no separate `clip(mask)`: it would be `intersection` by another name.
 pass `repair=True` to `snap_to_grid` (or follow `quantize` with
 [`repair`][gometry.Geometry.repair]) when downstream code needs validity, and use
 [`validate`][gometry.Geometry.validate] to see exactly what broke.
-
-Vertices make the difference between these cleaners visible — dots show what each
-operation keeps:
 
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices
@@ -98,7 +93,7 @@ print(before_after(with_vertices(off_grid), with_vertices(snapped),
 
 ## Polygonal `coverage_*` vs grid cells
 
-Two different concepts share the word:
+DGGS cell covers and polygonal coverages use different representations:
 
 - **DGGS cells** — `gm.h3_cover`, `gm.s2_cover`, `gm.geohash_cover`, and
   `gm.tile_cover` return typed `CellArray` values. Keep the source geometry
@@ -123,11 +118,10 @@ print("same as free fn:", gm.coverage_is_valid(list(grid)))
 
 ### Validate, inspect, then clean
 
-Coverage operations validate their tiling precondition themselves; callers do
-not need a fragile check-then-do sequence. Use the diagnostic edge layer when
-you need to understand a bad parcel fabric, and `coverage_clean` when the
-intended policy is known. Snapping is opt-in: the default `grid_size=0.0`
-preserves existing coordinates.
+Coverage operations validate their tiling precondition before processing.
+`coverage_invalid_edges` returns diagnostic edges for a bad parcel fabric, and
+`coverage_clean` applies the selected cleaning policy. Snapping is opt-in: the
+default `grid_size=0.0` preserves existing coordinates.
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
@@ -147,10 +141,6 @@ print(panels([
     ("coverage union", cleaned.coverage_union()),
 ]))
 ```
-
-The four panels deliberately separate source data, diagnostics, the
-policy-driven repair, and the final aggregate. This is also the recommended
-debugging order for real parcel and administrative-boundary data.
 
 ## See also
 

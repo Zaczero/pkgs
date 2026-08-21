@@ -303,9 +303,9 @@ def comparison_is_settled(
 
     Two things deliberately *not* required. Every server reaching the same
     precision never happens — the slowest is the noisiest in relative terms, so
-    a scenario burns its whole budget without the published claim improving.
+    a scenario burns its whole budget without the reported result improving.
     Nor every adjacent pair separating: two rivals can be genuinely tied, and
-    no amount of sampling separates them. In the published 21-scenario run,
+    no amount of sampling separates them. In the checked-in 21-scenario charts,
     gunicorn and uvicorn tie for second in one cell and uvicorn and hypercorn
     tie for third in another, while h2corn clears the field in both.
     """
@@ -323,7 +323,7 @@ def comparison_is_settled(
 def leader_is_separated(samples: Sequence[Sequence[float]], seed: int) -> bool:
     """Is the winner the chart draws actually ahead of the runner-up?
 
-    The claim a bar chart cannot walk back, and the one that survives a noisy
+    The winner a bar chart cannot walk back, and the one that survives a noisy
     host. Ties further down are a fact about those servers, and overlapping
     whiskers show them for what they are.
     """

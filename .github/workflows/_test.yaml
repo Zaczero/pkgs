@@ -66,6 +66,31 @@ jobs:
         with:
           tool: nextest
 
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      # Rust tests that touch the Python boundary run an embedded interpreter,
+      # which does not inherit a launcher-configured module search path -- the
+      # package's own runtime dependencies have to be handed to it explicitly.
+      # No `python-version` above and no PYO3_PYTHON here: pyo3 links whatever
+      # `python3` the runner provides, and installing for that same interpreter
+      # is what keeps the wheel ABI matching. Installing for a different one
+      # fails as an *incompatible* extension module rather than a missing
+      # package, which reads nothing like the real cause.
+      - name: Install embedded interpreter dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python="$(command -v python3)"
+          echo "embedded interpreter: $python ($("$python" -V))"
+          cd "$PACKAGE"
+          uv export --frozen --no-dev --no-emit-project --no-hashes \
+            -o "$RUNNER_TEMP/embedded-requirements.txt"
+          uv pip install --python "$python" --target "$RUNNER_TEMP/embedded-deps" \
+            -r "$RUNNER_TEMP/embedded-requirements.txt"
+          echo "PYTHONPATH=$RUNNER_TEMP/embedded-deps" >> "$GITHUB_ENV"
+
       # Practical behavior only — no clippy/fmt/lint gates in CI.
       - name: Test Rust debug
         shell: bash

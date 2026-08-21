@@ -10,7 +10,8 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 
 use crate::ascii;
-use crate::config::ServerConfig;
+use crate::config::{ForwardedFields, ServerConfig};
+use crate::http::header_meta::{ProxyHeaderSlots, proxy_header_kind};
 pub(crate) use crate::http::scope::forwarded::{
     ScopeHost, default_scope_view, resolve_scope_view, scope_view_with_defaults,
 };
@@ -91,7 +92,7 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
     websocket_subprotocols: &[BytesStr],
 ) -> PyResult<Bound<'py, PyDict>> {
     let request = &ctx.request;
-    let (view, defaults) =
+    let (view, defaults, consumed_fields) =
         scope_view_with_defaults(request, &ctx.connection.config, &ctx.connection.info);
     let path_and_query = request.path_and_query().map_or("", BytesStr::as_str);
     let (raw_path, query) = path_and_query
@@ -125,7 +126,13 @@ fn build_base_scope<'py, const IS_HTTP: bool>(
             "root_path" => root_path_to_python(py, &ctx.connection.config, view.root_path.as_ref()),
         },
         "server" => server_scope_value(py, ctx, view.server.clone(), view.server != defaults.server)?,
-        "headers" => headers_to_python(py, &request.headers)?,
+        "headers" => headers_to_python(
+            py,
+            &request.headers,
+            ctx.connection.config.proxy.trust_headers,
+            consumed_fields,
+            request.header_meta.proxy_headers(),
+        )?,
         "extensions" => extensions,
         if !IS_HTTP => {
             "subprotocols" => PyList::new(
@@ -276,17 +283,28 @@ fn asgi_scope_dict(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
 pub(crate) fn headers_to_python<'py>(
     py: Python<'py>,
     headers: &RequestHeaders,
+    strip_proxy_headers: bool,
+    consumed_fields: ForwardedFields,
+    proxy_headers: Option<&ProxyHeaderSlots>,
 ) -> PyResult<Bound<'py, PyList>> {
     // `PyList::new` over an exact-size iterator compiles to the same
     // `PyList_New` + `PyList_SET_ITEM` / `PyTuple_New` + `PyTuple_SET_ITEM`
     // sequence a hand-rolled fill would use.
     PyList::new(
         py,
-        headers.iter().map(|header| {
-            (
+        headers.iter().enumerate().filter_map(|(index, header)| {
+            if strip_proxy_headers
+                && let Some((kind, canonical)) = proxy_header_kind(header.name())
+                && (!canonical
+                    || !consumed_fields.contains(kind.field())
+                    || !proxy_headers.is_some_and(|slots| kind.index(slots) == Some(index)))
+            {
+                return None;
+            }
+            Some((
                 header_name_to_python(py, header.name()),
                 PyBytes::new(py, header.value()),
-            )
+            ))
         }),
     )
 }

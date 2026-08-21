@@ -59,7 +59,6 @@ jobs:
             elif ! $test_all; then
               changed="$(
                 git diff --name-only "$base" HEAD |
-                  python3 .github/scripts/path_filter.py |
                   python3 .github/scripts/route_packages.py
               )"
             fi

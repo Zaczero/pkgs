@@ -114,7 +114,9 @@ def test_coords_sequence_is_flat_and_columnar() -> None:
         'float16-e',
     ],
 )
-def test_coordinates_numpy_protocol_accepts_float_dtype_spellings(dtype: object) -> None:
+def test_coordinates_numpy_protocol_accepts_float_dtype_spellings(
+    dtype: object,
+) -> None:
     coords = gm.LineString([(0, 0), (1, 2)]).coords
 
     direct = coords.__array__(dtype=dtype)

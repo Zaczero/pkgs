@@ -1,5 +1,5 @@
 ---
-description: Constructing, inspecting, and comparing gometry's seven geometry types, plus the canonical XY/XYZ/XYM/XYZM dimension model — what Z and M mean and how they survive operations.
+description: Constructing, inspecting, and comparing gometry's seven geometry types, plus XY/XYZ/XYM/XYZM layouts and Z/M behavior through operations.
 ---
 
 # Geometry & dimensions
@@ -7,13 +7,7 @@ description: Constructing, inspecting, and comparing gometry's seven geometry ty
 Every value in gometry is a `Geometry`: one of exactly **seven** immutable,
 hashable [OGC Simple Features](https://www.ogc.org/standard/sfa/) types, each
 optionally carrying a CRS and per-vertex Z (elevation) and M (measure)
-ordinates. This page is both the construction-and-inspection reference — how to
-build each type, take it apart, and compare it by value — and the canonical home
-for the **dimension model**: what XY/XYZ/XYM/XYZM mean and how Z and M flow
-through (or drop out of) operations. Read the first half for the type zoo and
-inspection vocabulary; read from [Dimensions](#dimensions-xy-xyz-xym-xyzm)
-onward for everything ordinate-related. The naming conventions behind these APIs
-are collected in [Design principles](../about/design.md).
+ordinates.
 
 | Type | Made of | Constructor |
 |------|---------|-------------|
@@ -25,9 +19,6 @@ are collected in [Design principles](../about/design.md).
 | `MultiPolygon` | many polygons | [`gm.MultiPolygon`][gometry.MultiPolygon] |
 | `GeometryCollection` | any mix | [`gm.GeometryCollection`][gometry.GeometryCollection] |
 
-The CRS is the hinge between the planar and geodesic worlds — see the
-[CRS, units & measurement](crs.md) for why that matters and the model itself.
-
 !!! tip "Always (x, y) — lon/lat only under a geographic CRS"
     Every constructor takes coordinates in **(x, y)** order. Under a
     **geographic** CRS those axes are **(longitude, latitude)**; under a
@@ -35,11 +26,12 @@ The CRS is the hinge between the planar and geodesic worlds — see the
     axes); CRS-free geometries stay in raw coordinate units. The lon/lat
     reading is not universal — it is the geographic case. Pass `crs=4326` (or
     another geographic CRS) on [`gm.Point`][gometry.Point] and the bulk builders
-    whenever geographic axis order is in doubt.
+    when the input is geographic.
 
 ## Points
 
-The simplest geometry. `gm.Point(lon, lat)` — note the order.
+Construct a point with `gm.Point(x, y)`; under a geographic CRS, `(x, y)` is
+`(longitude, latitude)`.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -59,7 +51,7 @@ print(figure(gm.Point(2.3522, 48.8566), "Point(lon, lat)"))
 ```
 
 !!! note "`.x` / `.y` are for single points only"
-    A `Point` exposes `.x`, `.y` (and `.z` / `.m` when present) for quick
+    A `Point` exposes `.x`, `.y` (and `.z` / `.m` when present) for scalar
     scalar access. For any other geometry, pull every vertex out with
     [`geom.coords`][gometry.Geometry.coords] (see
     [Inspecting geometries](#inspecting-geometries)).
@@ -200,8 +192,7 @@ print(gc.to_wkt())
 
 ## Inspecting geometries
 
-Once built, a small, uniform vocabulary lets you take any geometry apart.
-These work on every type:
+These properties and functions apply to every geometry type:
 
 | Call | Returns |
 |------|---------|
@@ -273,8 +264,8 @@ print(isinstance(gm.box(0, 0, 1, 1), gm.Polygon))   # True
 
 ```
 
-That precision unlocks **type-specific accessors**. A `Point` exposes
-`.x`/`.y`/`.z`/`.m`; a `Polygon` exposes `.exterior` (a closed `LineString`) and
+A `Point` exposes `.x`/`.y`/`.z`/`.m`; a `Polygon` exposes `.exterior` (a closed
+`LineString`) and
 `.interiors` (its holes); and the multi-part / collection types are real
 sequences — iterate them, index them, and take `len(...)`, with each part typed:
 
@@ -289,7 +280,7 @@ print("parts:", len(mp), "| first:", mp[0].geometry_type, "| areas:", [p.area fo
 
 ```
 
-Accessing a member on the wrong type fails fast: `line.x` raises `AttributeError`
+Accessing a member on the wrong type raises `AttributeError`: `line.x` fails
 (only points have coordinates).
 
 ### Equality and hashing
@@ -316,15 +307,12 @@ This `==` is **structural** (vertex-order sensitive). For the topological
 
 ## Dimensions: XY, XYZ, XYM, XYZM
 
-gometry supports four coordinate layouts as first-class data — **XY, XYZ, XYM, and XYZM** —
-from the constructors all the way through IO. This is the canonical reference for what those
-ordinates mean, how to build geometry with them unambiguously, and what happens to Z and M
-under operations that cannot carry them.
+gometry supports four coordinate layouts — **XY, XYZ, XYM, and XYZM** — from the
+constructors through IO.
 
-### Don't overload the word "dimension"
+### Three meanings of "dimension"
 
-"Dimension" means three different things in GIS, and gometry keeps them separate so the API
-is precise:
+"Dimension" has three distinct meanings in GIS, and gometry keeps them separate:
 
 | Concept | Property | Example value |
 |---|---|---|
@@ -350,10 +338,8 @@ print("has_z / has_m:        ", trace.has_z, "/", trace.has_m)
 
 ### Z is a spatial axis; M is a measure
 
-This distinction is the heart of the dimension model:
-
 - **Z** is an additional *spatial* ordinate, usually elevation or height. gometry does **not**
-  assume Z is in meters unless a vertical CRS says so — Z is just a third spatial number
+  assume Z is in meters unless a vertical CRS says so — Z is a third spatial number
   until a CRS gives it units.
 - **M** is a *measure* ordinate. It commonly carries linear-referencing values, route
   measures, distance-along-line, per-vertex timestamps, or application-specific event
@@ -362,7 +348,7 @@ This distinction is the heart of the dimension model:
   epoch is a single decimal year that dates the whole geometry's CRS realization, whereas M is
   a free per-vertex value with no datum.
 
-This matters for real workloads. A GPX track or vehicle trace has both elevation (Z) and a
+A GPX track or vehicle trace has both elevation (Z) and a
 capture timestamp or route measure (M) aligned to each vertex. gometry lets you store both on
 the geometry instead of the common workaround of a 2D line plus side arrays:
 
@@ -382,10 +368,10 @@ for x, y, z, m in coords:
 
 ```
 
-### Explicit constructors beat ambiguous tuples
+### Explicit constructors identify ambiguous tuples
 
-A bare 3-tuple `(x, y, v)` is ambiguous — it could be XYZ or XYM. gometry accepts tuples for
-compatibility but gives you **unambiguous constructors** so you never have to guess:
+A bare 3-tuple `(x, y, v)` is ambiguous — it could be XYZ or XYM. Use the
+`z=` and `m=` keywords to identify the layout:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -402,7 +388,7 @@ for p in (p_xy, p_xyz, p_xym, p_xyzm):
 
 For arrays and lines, pass `z=` and `m=` keywords to [gm.points][gometry.points] and [gm.LineString][gometry.LineString]:
 
-```python
+```python title="partial: requires coordinate arrays from the surrounding application"
 points_xy = gm.points(lons, lats, crs=4326)
 points_zm = gm.points(lons, lats, z=elevations, m=timestamps, crs=4326)
 line      = gm.LineString(xy, z=elevations, m=timestamps, crs=4326)
@@ -414,7 +400,7 @@ line      = gm.LineString(xy, z=elevations, m=timestamps, crs=4326)
     `LineString` cannot mix XY and XYZM vertices. A `GeometryCollection` may hold children
     with different layouts, but the API makes that explicit rather than silent.
 
-WKT carries the modern dimensional tags, which round-trip through gometry:
+WKT carries the `Z`, `M`, and `ZM` dimensional tags, which round-trip through gometry:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -427,8 +413,6 @@ print(gm.from_wkt("POINT ZM (1 2 3 7.5)").coordinate_axes)
 
 ## Measuring with Z and M
 
-Z and M are not just carried — gometry measures with them directly.
-
 **3D spatial measurement** uses the Z axis. `length_3d` and point-to-point
 `distance_3d(other)` include the vertical component, and `min_z` / `max_z` /
 `z_range` (properties) plus `bounds_3d` (a 6-tuple `(minx, miny, minz, maxx, maxy,
@@ -438,18 +422,16 @@ CRS); a geographic CRS mixes degrees and metre heights and raises under every `u
 reproject first.
 
 They report the CRS's own linear unit, exactly like their 2D siblings: a US-survey-foot
-CRS gives feet from `length_3d` just as it does from `length`. The free functions
+CRS gives feet from `length_3d`, as it does from `length`. The free functions
 [`gm.length_3d`][gometry.length_3d] and [`gm.distance_3d`][gometry.distance_3d] take the
 same `unit=` override as [`gm.length`][gometry.length] and
 [`gm.distance`][gometry.distance] when you want SI metres or raw coordinate units.
 
-On a geometry that carries no Z, the two halves of the family answer differently, by
-design. The **accessors** (`min_z` / `max_z` / `z_range` / `bounds_3d`) describe what is
+On a geometry without Z, accessors and metrics have different results. The
+**accessors** (`min_z` / `max_z` / `z_range` / `bounds_3d`) describe what is
 there, returning `None` for a scalar or `nan` for an array element. The **metrics**
 (`length_3d` / `distance_3d`) require Z to compute: a scalar **raises**, while an array
-**degrades per element to `nan`** for the rows that lack Z — the same ergonomic-scalar /
-columnar-array split used by `shortest_line` and the three linear-referencing verbs
-below (a single bad row never fails the rest of a batch).
+**degrades per element to `nan`** for the rows that lack Z.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -464,8 +446,7 @@ print('distance_3d:', gm.distance_3d(a, b))
 
 ## Linear referencing
 
-The same three verbs cover both ways of locating along a line. The default
-`basis='distance'` follows the geometry's CRS metric rule: values are absolute
+Linear referencing uses the geometry's CRS metric by default. Values are absolute
 distances unless `normalized=True`, when `0.0` and `1.0` mean the start and end.
 Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
@@ -505,10 +486,10 @@ array element, when no vertex carries M).
 failure (`EmptyLinework`, `MissingMeasure`, or `NonMonotonicMeasure`) degrades
 to `nan` (for `line_locate`) or a typed EMPTY geometry (for
 `line_interpolate` / `line_substring`) rather than aborting the batch. The
-scalar forms of the same verbs still raise `InvalidGeometryError`. Wrong-kind
-and parameter errors raise on both paths — only those three data conditions
-degrade. Treat `POINT EMPTY` / `LINESTRING EMPTY` rows in array LRS output as
-degraded failures, not as input data.
+    scalar forms of the same verbs still raise `InvalidGeometryError`. Wrong-kind
+    and parameter errors raise on both paths — only those three data conditions
+    degrade. `POINT EMPTY` / `LINESTRING EMPTY` rows in array LRS output represent
+    degraded failures, not input data.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -523,12 +504,10 @@ print("m 20..80:", route.line_substring(20.0, 80.0, basis='m'))
 ## Z/M under operations
 
 Planar Simple Features predicates are **XY topology** predicates. Whether `a` contains `b` is
-decided in X/Y; Z and M are ignored for the truth value but preserved on the geometry. The
-interesting question is what happens to Z/M under operations that *construct new vertices*.
+decided in X/Y; Z and M are ignored for the truth value but preserved on the geometry.
 
-gometry has one fixed rule: preserve ordinates wherever they are derivable,
-otherwise return an honest 2D result. There is no per-call policy matrix to
-remember:
+Constructive operations preserve ordinates wherever they are derivable and
+return 2D results when they cannot source them:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
   `simplify`, `convex_hull`, `concave_hull`, and
@@ -549,16 +528,13 @@ track = gm.LineString(
     z=[10.0, 20.0, 30.0], m=[0.0, 1.0, 2.0], crs=4326,
 )
 
-# centroid invents a new point, so it returns an honest 2D result
+# centroid returns 2D because it invents a new point
 print("centroid:", track.centroid().coordinate_axes)
 
-# force_2d is the one obvious way to flatten any geometry
+# force_2d drops both optional ordinates
 print("force_2d:", track.force_2d().coordinate_axes)
 
 ```
-
-`centroid` invents a new point with no Z/M to source — the 3D track flattens to a
-2D centroid:
 
 ```python exec="on" html="true"
 from _figures import before_after
@@ -573,10 +549,10 @@ print(before_after(track, track.centroid(),
 
 ```
 
-For a permanent 2D conversion, use [`force_2d`][gometry.Geometry.force_2d] — the one obvious way to
-drop Z and M. To lift to 3D, [`force_3d`][gometry.Geometry.force_3d] fills only the vertices that lack
-Z (keeping any existing Z). [`set_z`][gometry.Geometry.set_z] / [`set_m`][gometry.Geometry.set_m] assign an
-ordinate at *every* vertex (overwriting), or clear it with `None`:
+For a permanent 2D conversion, use [`force_2d`][gometry.Geometry.force_2d] to
+drop Z and M. [`force_3d`][gometry.Geometry.force_3d] fills only vertices that
+lack Z, while [`set_z`][gometry.Geometry.set_z] and [`set_m`][gometry.Geometry.set_m]
+assign an ordinate at every vertex or clear it with `None`:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -591,45 +567,23 @@ print("set_m: ", flat.set_m(0.0).coordinate_axes)
 
 ```
 
-## IO and the limits of each format
+## IO and format limits
 
-Z and M are first-class for storage, but the wire formats differ in what they can carry.
-Native storage and WKT/WKB/EWKB/GeoArrow preserve M; **GeoJSON-shaped surfaces do not**
-(GeoJSON has no M ordinate):
-
-| Format | Z | M | Coordinate epoch | Notes |
-|---|---|---|---|---|
-| [WKT](https://www.ogc.org/standard/sfa/) (`Z`/`M`/`ZM` tags) | yes | yes | no | Human/debug/interchange format. Dimensional empties (`POINT Z EMPTY`) round-trip. |
-| ISO WKB / SQL-MM | yes | yes | no | Portable binary (`+1000/+2000/+3000` type codes); no SRID. Use `to_wkb()`. Dimensional empties round-trip. |
-| EWKB (PostGIS-specific) | yes | yes | no | High-bit flags + optional SRID. Use `to_wkb(include_srid=True)`. |
-| [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) (RFC 7946) | optional | **no** | no | Third element is altitude only; M-carrying input to `to_geojson` **raises**. |
-| `__geo_interface__` | optional | **no** | no | GeoJSON-shaped protocol mapping; **raises** for M or coordinate epoch (keeps Z when present). |
-| [GeoArrow](https://geoarrow.org/) | yes | yes | yes | Separated `x`/`y`/`z`/`m` child arrays plus epoch metadata — the preferred lossless columnar contract. |
-
-!!! warning "GeoJSON-shaped surfaces are not M- or epoch-preserving"
-    [RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946) defines a position as lon/lat plus an optional altitude, and treats any fourth
-    element as ambiguous. GeoJSON also has no coordinate-epoch metadata. gometry follows
-    the spec: `to_geojson()` writes XY or XYZ and **raises** on M-carrying input, while
-    `__geo_interface__` **raises** for M or epoch rather than silently discarding either.
-    Clear M with `set_m(None)` and epoch with `set_epoch(None)` only when that loss is
-    intended. WKB/EWKB preserves M but not epoch; for lossless M/epoch data, use
-    GeoArrow. See [Text & binary formats](../ecosystem/text-formats.md) and
-    [Arrow & storage](../ecosystem/arrow.md).
-
-!!! note "Dimensional empties"
-    WKT/WKB preserve empty **axes** (`POINT Z EMPTY` stays XYZ; `equals_identical`
-    distinguishes it from `POINT EMPTY`). GeoJSON has no dimensional-empty tag —
-    `to_geojson()` flattens to a coordinate-less empty (`"coordinates": []`), so
-    Z/M identity is lost on that path.
+WKT, WKB/EWKB, and GeoArrow preserve both ordinates. `to_geojson()` raises on M, and `__geo_interface__` raises on M or a
+coordinate epoch because GeoJSON has no slots for them. WKB/EWKB preserve M but
+not epoch; GeoArrow preserves epoch metadata. WKT/WKB preserve dimensional-empty
+axes, while GeoJSON does not. Format details are in [Text & binary
+formats](../ecosystem/text-formats.md); GeoArrow's columnar metadata is described
+in [Arrow & storage](../ecosystem/arrow.md).
 
 ## Enforcing a dimension contract
 
 Validity and storage-dimension are separate contracts. Use `axes=` with
 [gm.require][gometry.require] on an existing geometry or while parsing untrusted
-input to assert the layout at a boundary — catching the classic bug where a
-"2D" validator quietly lets Z/M through:
+input to assert the layout at a boundary, including a strict XY contract for data
+that must not carry Z or M:
 
-```python
+```python title="partial: requires an input object from the surrounding application"
 # Web bbox: strictly XY lon/lat
 area = gm.require(obj, crs=4326, axes="XY")
 
@@ -645,6 +599,6 @@ ingestion patterns.
 
 - [Predicates](predicates.md) — spatial relationships (`contains`, `intersects`, [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM)).
 - [Constructive operations](constructive.md) — buffers, overlays, hulls, and how they carry Z/M.
-- [CRS](crs.md) — the metric hinge; area, length, and distance done correctly for lon/lat.
+- [CRS](crs.md) — the metric frame for lon/lat area, length, and distance.
 - [Arrays](arrays.md) — vectorized `GeometryArray` columns and the missing-row rule.
 - [Validation](validation.md) — the OGC validity side of the storage contract.

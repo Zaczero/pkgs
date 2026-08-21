@@ -242,7 +242,9 @@ if TYPE_CHECKING:
     scalar_array: np.ndarray[tuple[()], np.dtype[np.float64]] = np.array(90.0)
     assert_type(POINT.destination(scalar_array, 1_000.0), gm.Point)
     assert_type(gm.point_between(POINT, POINT, scalar_array), gm.Point)
-    scalar_float32: np.ndarray[tuple[()], np.dtype[np.float32]] = np.array(90.0, dtype=np.float32)
+    scalar_float32: np.ndarray[tuple[()], np.dtype[np.float32]] = np.array(
+        90.0, dtype=np.float32
+    )
     scalar_int: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(90, dtype=np.int64)
     assert_type(POINT.destination(scalar_float32, 1_000.0), gm.Point)
     assert_type(POINT.destination(scalar_int, 1_000.0), gm.Point)
@@ -497,12 +499,8 @@ assert_type(gm.relate(_PREP_POLY, POINTS), list[str])
 assert_type(gm.relate(POINTS, _PREP_POLY), list[str])
 assert_type(gm.relate_pattern(_PREP_POLY, POLY, 'T********'), bool)
 assert_type(gm.relate_pattern(POLY, _PREP_POLY, 'T********'), bool)
-assert_type(
-    gm.relate_pattern(_PREP_POLY, POINTS, 'T********'), npt.NDArray[np.bool_]
-)
-assert_type(
-    gm.relate_pattern(POINTS, _PREP_POLY, 'T********'), npt.NDArray[np.bool_]
-)
+assert_type(gm.relate_pattern(_PREP_POLY, POINTS, 'T********'), npt.NDArray[np.bool_])
+assert_type(gm.relate_pattern(POINTS, _PREP_POLY, 'T********'), npt.NDArray[np.bool_])
 assert_type(gm.disjoint(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
 assert_type(gm.disjoint(POINTS, _PREP_POLY), npt.NDArray[np.bool_])
 assert_type(gm.touches(_PREP_POLY, POINTS), npt.NDArray[np.bool_])
@@ -544,9 +542,7 @@ assert_type(POINT.coords.__array__(), npt.NDArray[np.float64])
 assert_type(POINT.coords.__array__(dtype=np.dtype(np.float32)), npt.NDArray[np.float32])
 assert_type(POINTS.__array__(), npt.NDArray[np.object_])
 assert_type(POINTS.to_numpy(), npt.NDArray[np.object_])
-assert_type(
-    h3_cells.__array__(), npt.NDArray[np.uint64] | npt.NDArray[np.object_]
-)
+assert_type(h3_cells.__array__(), npt.NDArray[np.uint64] | npt.NDArray[np.object_])
 assert_type(h3_cells.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])
 assert_type(h3_vertices.__array__(), npt.NDArray[np.uint64])
 assert_type(h3_vertices.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])

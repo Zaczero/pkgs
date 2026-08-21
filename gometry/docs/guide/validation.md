@@ -1,23 +1,17 @@
 ---
-description: Validating, repairing, and contract-checking geometries in gometry — construction-time validity reports, require() fail-fast guards, repair() methods, precision/quantize, and remove_repeated_points.
+description: Validating, repairing, and contract-checking geometries in gometry — structural construction checks, validate() reports, require() boundary contracts, repair(), quantize, and remove_repeated_points.
 ---
 
 # Validation & repair
 
-Real-world geometry is messy: self-intersecting polygons, disconnected
-interiors, non-finite coordinates, missing CRS, and coordinates carrying more
-decimal digits than the data deserves. gometry treats reliability as a product
-feature, and this page is the ingestion playbook: where the fail-fast line is
-drawn, how to *detect* invalidity with `validate()`, how to *fix* it with
-`repair()`, how to hold a boundary contract with the `require_*` guards, and how
-to tame coordinate noise with `quantize` and `remove_repeated_points` — read it
-top to bottom as one defensive-import pipeline.
+Real-world geometry includes self-intersections, disconnected interiors,
+non-finite coordinates, missing CRS metadata, and excess coordinate precision.
 
 ## Construction validates structure, not topology
 
-The first guardrail is the constructors themselves. They reject *structurally*
-malformed input immediately — coordinates that are not finite, or rings with too
-few vertices, have no valid interpretation, so they raise at the door:
+Constructors reject *structurally* malformed input immediately. Non-finite
+coordinates and rings with too few vertices have no valid interpretation and
+raise `InvalidGeometryError`:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -43,27 +37,25 @@ print("built:", bowtie.geometry_type, "| valid:", bowtie.validate().valid)   # F
 
 ```
 
-That split is deliberate: topological validation performs nontrivial spatial
-work whose cost depends on geometry structure, and you rarely
-want to pay it on every constructor call. The same invalid geometry also arrives
+Topological validation performs spatial work whose cost depends on geometry
+structure, and constructors do not run it on every call. The same invalid geometry also arrives
 from the outside — parsing foreign data with [`gm.from_wkt`][gometry.from_wkt],
 [`gm.from_wkb`][gometry.from_wkb], or [`gm.from_geojson`][gometry.from_geojson],
 which accept what they are given. Either way, you **detect** invalidity with
-`validate()` and **fix** it with `repair()` — the rest of this page.
+`validate()` and **fix** it with `repair()`.
 
 Cosmetic noise that does *not* change the shape is, by contrast, **valid**: a
 repeated consecutive vertex or a clockwise shell describes a perfectly good
 region — ring orientation does not affect validity — and `remove_repeated_points`
-and `orient_polygons` clean it when you want a canonical form.
+and `orient_polygons` can canonicalize it when required.
 
 ## Diagnosing: `is_valid` and `validate`
 
-The quick check is the [`Geometry.is_valid`][gometry.Geometry.is_valid]
-property (a plain `bool`); vectorized code uses
-[`is_valid`][gometry.Geometry.is_valid] or the `GeometryArray.is_valid` mask. When
-you need to know *why*, [`validate`][gometry.Geometry.validate]
-returns a [`ValidationReport`][gometry.ValidationReport] without raising —
-use it to branch on validity, log diagnostics, or repair only bad records
+The [`Geometry.is_valid`][gometry.Geometry.is_valid] property returns a plain
+`bool`; vectorized code uses the `GeometryArray.is_valid` mask.
+[`validate`][gometry.Geometry.validate] returns a
+[`ValidationReport`][gometry.ValidationReport] without raising. The report
+supports branching on validity, logging diagnostics, and repairing only bad records
 (`GeometryArray.validate()` yields one report per element).
 
 ```python exec="on" source="block" result="text"
@@ -86,27 +78,24 @@ The returned [`ValidationReport`][gometry.ValidationReport] exposes `.valid`,
 self-intersection in the exterior ring), `.location` (the `(x, y)` coordinate of
 the first problem), and `.path` (a structural path to it, e.g. `'$.shell'`). For
 an OGC-valid geometry `.reason`, `.location`, and `.path` are all `None`; they
-carry detail when topology validation finds a problem — turning a "geometry is
-invalid" mystery into a fixable one.
+carry detail when topology validation finds a problem.
 
 Geographic validity follows the same frame-aware topology as predicates. When
 a geometry has a geographic CRS and crosses the antimeridian, gometry validates
 its seam-normalized shape; this includes pole-enclosing shells and polar holes.
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
-planar coordinates. This distinction is intentional: attaching a geographic
-frame changes what ±180° means, while a planar frame has no identified seam.
+planar coordinates. Attaching a geographic frame changes what ±180° means, while
+a planar frame has no identified seam.
 `is_valid`, `is_simple`, `is_ring`, `validate`, `require`, and
 `self_intersections` all share that rule. `repair` uses the same normalized
 validity verdict before rebuilding, and `snap_to_grid(..., repair=True)` checks
 each snapped result in that same frame.
 
-!!! note "Use the check that matches the invariant"
-    Returning `valid=False` invites callers to forget the check and march on
-    with corrupt geometry. Raising forces the decision at the point of entry:
-    catch it, repair, and continue — or let it abort the bad batch. If you only
-    need a report without raising, use `validate()`. `is_simple` and `is_ring`
-    answer narrower topological questions; neither is a general structural
-    sanity check or a replacement for polygon validity.
+!!! note "Validation reports and boundary errors"
+    `validate()` returns a report without raising. `require()` raises the
+    matching domain exception when its validity, CRS, or axes contract fails.
+    `is_simple` and `is_ring` answer narrower topological questions; neither is
+    a general structural check or a replacement for polygon validity.
 
 ## Fixing: `repair`
 
@@ -133,11 +122,6 @@ print(fixed_struct.geometry_type, "valid:", fixed_struct.validate().valid)
 
 ```
 
-Drawing each vertex as a dot makes the fix concrete: the bow-tie's four corners
-gain a fifth vertex at the self-intersection, where `repair` splits the single
-twisted ring into two clean triangles. The invalid input renders **red**, the
-repaired result **green** (left → right):
-
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices
 import gometry as gm
@@ -163,33 +147,31 @@ print("structure:", overlap.repair(method="structure").area)  # union: 28
 
 ```
 
-Repair is cheap to call defensively: already-valid input is returned as-is at
-validation cost, on every surface — `geom.repair()`,
-`array.repair()` (valid rows are reused). Z/M
+Already-valid input is returned as-is after the validation check on every surface:
+`geom.repair()` and `array.repair()` reuse valid rows. Z/M
 ordinates are carried through the rebuild, and the output is deterministic
 byte-for-byte run to run.
 
 For a geographic antimeridian crossing, the validity check runs before any
 rebuild. A valid input therefore keeps its original coordinates exactly; an
-actually invalid crossing is repaired from the seam-split topology. The same
+invalid crossing is repaired from the seam-split topology. The same
 rule powers `snap_to_grid(..., repair=True)`.
 
-!!! warning "Repair changes geometry — validate the result, don't trust blindly"
-    `repair` can split, merge, or drop parts to reach validity. Re-`validate`
-    the output if correctness matters, and prefer fixing data at its source.
-    The two methods can yield different results on the same input; pick the one
-    whose invariant (boundary vs area) matches your domain.
+!!! note "Repair output and revalidation"
+    `repair` can split, merge, or drop parts to reach validity. Re-run
+    `validate()` on the output when downstream correctness depends on it. The
+    two methods can yield different results on the same input; choose the one
+    whose invariant (boundary versus area) matches the domain.
 
 ## Enforcing contracts at the boundary
 
-Beyond OGC validity, you often need to assert that a geometry has a CRS, is
-valid, or has a particular dimensionality before trusting it.
+Beyond OGC validity, a boundary can require a CRS, valid topology, or a
+particular dimensionality.
 [`gm.require`][gometry.require] is the single boundary API: it accepts an
 existing geometry or an external geometry-like object, returns the geometry
 unchanged on success, and raises the matching specific exception otherwise —
 [`CRSMismatchError`][gometry.CRSMismatchError] for a frame contract,
-[`InvalidGeometryError`][gometry.InvalidGeometryError] for validity and axes — ideal at
-the top of a function (design-by-contract).
+[`InvalidGeometryError`][gometry.InvalidGeometryError] for validity and axes.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -221,28 +203,26 @@ print("meets contract:", area.crs == 4326, area.coordinate_axes)
 
 ```
 
-This fixes the classic pitfall where a validator checks only X/Y topology but
-accidentally lets Z/M through into a nominally 2D storage path. Validate
-untrusted input once at the edge, then trust the invariant internally — no need
-to re-check the same geometry deep in your call stack.
+The `axes=` argument prevents a validator from accepting Z/M into a nominally 2D
+storage path. Validate untrusted input at the boundary, then consume that
+invariant internally without repeating the boundary check.
 
-!!! tip "Fail fast on programmer error, repair on data error"
-    Treat *invalid input data* as something to validate and repair at the
-    boundary. Treat *internal misuse* — the wrong type, an impossible
-    argument — as a bug that should raise immediately. gometry's APIs validate
-    untrusted input and then trust internal invariants, so you get clear errors
-    at the edge and fast paths in the core.
+!!! note "Ingress and programmer-error behavior"
+    `gm.require` parses or validates external geometry-like input at the
+    boundary. Invalid geometry data follows the validation or explicit repair
+    path. Wrong types and impossible argument values raise immediately. After
+    the boundary, native operations rely on the established type and validity
+    invariants.
 
 ## Cleaning: `quantize` and `remove_repeated_points`
 
-Floating-point coordinates carry more digits than most data deserves, and those
-extra digits are where snapping and overlay instability hide. Two targeted
-cleaners handle the most common coordinate noise without a full repair.
+Floating-point coordinates can carry more digits than the data requires, affecting
+snapping and overlay results. Two targeted cleaners handle common coordinate noise
+without a full repair.
 
 `geom.quantize(precision)` rounds every coordinate to `precision` decimal
-places, giving a controlled precision model — invaluable for shrinking precision
-so coordinates from different sources align, for stabilizing robust overlays,
-and for making equality checks, deduplication, and interchange reproducible.
+places. It gives coordinates from different sources a common precision for
+overlay, equality, deduplication, and interchange.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -250,8 +230,6 @@ noisy = gm.LineString([(1.11119, 2.22229), (3.33339, 4.44449)])
 print((noisy.quantize(2)).to_wkt())
 
 ```
-
-Snapped coordinates are easier to see when each vertex is drawn as a dot:
 
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices
@@ -264,7 +242,7 @@ print(before_after(with_vertices(noisy), with_vertices(cleaned), before_caption=
 
 [`remove_repeated_points`][gometry.Geometry.remove_repeated_points] drops consecutive
 duplicate vertices. The optional `tolerance` also collapses vertices closer than
-that distance — handy for thinning oversampled tracks.
+that distance, allowing oversampled tracks to be thinned.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -272,8 +250,6 @@ dup = gm.LineString([(0, 0), (0, 0), (1, 1), (1, 1), (2, 2)])
 print(dup.remove_repeated_points())
 
 ```
-
-Dropped vertices are easier to see when each coordinate is drawn as a dot:
 
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices
@@ -294,14 +270,13 @@ order / ring orientation).
     Overlay operations are sensitive to near-coincident vertices. An explicit
     `quantize` / `snap_to_grid` pass can help sources align — but it can also
     *create* invalidity on tight geometries (see [choosing](choosing.md)). Prefer
-    a deliberate precision workflow followed by `validate` / `repair` rather than
+    a precision workflow followed by `validate` / `repair` rather than
     treating quantize as a universal sliver cure — see
     [constructive operations](constructive.md#dissolving-many-geometries-union_all).
 
 ## A typical ingest pipeline
 
-Putting it together, a defensive import that turns the fail-fast raise into a
-repair-and-continue combines a dimension contract, validity checking, and
+An ingest pipeline can combine a dimension contract, validity checking, and
 repair:
 
 ```python exec="on" source="block" result="text"

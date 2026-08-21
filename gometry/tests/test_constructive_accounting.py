@@ -15,7 +15,7 @@ import pytest
 
 
 def _stored(value: float) -> Fraction:
-    return Fraction.from_float(value)
+    return Fraction(value)
 
 
 def _diagonal_ordinate(

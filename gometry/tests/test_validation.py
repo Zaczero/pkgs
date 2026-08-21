@@ -119,9 +119,7 @@ def test_validation_reports_and_repairs_self_intersecting_polygons() -> None:
     assert planar_repaired.geometry_type == 'MultiPolygon'
     assert planar_repaired.validate().valid
     assert planar_repaired.area == pytest.approx(2)
-    geographic_bowtie = gm.Polygon(
-        [(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)], crs=4326
-    )
+    geographic_bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)], crs=4326)
     geographic_repaired = geographic_bowtie.repair()
     assert geographic_repaired.crs == 'EPSG:4326'
     assert geographic_repaired.validate().valid

@@ -31,7 +31,10 @@ _PUBLIC_TYPEVAR_NAMES = {
 
 def _is_never(function: griffe.Function) -> bool:
     returns = function.returns
-    return isinstance(returns, griffe.ExprName) and returns.name in {'Never', 'NoReturn'}
+    return isinstance(returns, griffe.ExprName) and returns.name in {
+        'Never',
+        'NoReturn',
+    }
 
 
 def _public_annotation(annotation: str) -> str:
@@ -82,7 +85,8 @@ def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
     result: dict[str, tuple[str, tuple[str, ...]]] = {}
     for path, defs in groups:
         overloads = [
-            node for node in defs
+            node
+            for node in defs
             if any(
                 isinstance(decorator, ast.Name) and decorator.id == 'overload'
                 for decorator in node.decorator_list
@@ -91,7 +95,8 @@ def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
         if not overloads:
             continue
         concrete = [
-            node for node in overloads
+            node
+            for node in overloads
             if ast.unparse(node.returns) not in {'Never', 'NoReturn'}
         ]
         if not concrete:
@@ -99,7 +104,11 @@ def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
         final = concrete[-1]
         params = tuple(
             argument.arg
-            for argument in [*final.args.posonlyargs, *final.args.args, *final.args.kwonlyargs]
+            for argument in [
+                *final.args.posonlyargs,
+                *final.args.args,
+                *final.args.kwonlyargs,
+            ]
             if argument.arg not in {'self', 'cls'}
         )
         result[path] = (ast.unparse(final.returns), params)
@@ -158,7 +167,8 @@ def collect_errors() -> list[str]:
         if expected := stub_overloads.get(function.canonical_path):
             expected_return, expected_params = expected
             actual_params = tuple(
-                parameter.name for parameter in function.parameters
+                parameter.name
+                for parameter in function.parameters
                 if parameter.name not in {'self', 'cls'}
             )
             if (
@@ -180,7 +190,9 @@ def collect_errors() -> list[str]:
                 if expr.name.startswith('_')
             })
             if private:
-                errors.append(f'{function.canonical_path}: private annotations {private}')
+                errors.append(
+                    f'{function.canonical_path}: private annotations {private}'
+                )
 
     for module_name in ('_lib', '_types'):
         module = pkg.members.get(module_name)

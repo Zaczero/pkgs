@@ -1,23 +1,13 @@
 example.com {
-    # Caddy cannot carry a WebSocket to an h2c upstream: it forwards the
-    # client's `Upgrade` header as-is instead of translating it to the RFC 8441
-    # extended CONNECT that HTTP/2 requires, and its own HTTP/2 transport then
-    # rejects it ("http2: invalid Upgrade request header"). Route upgrades over
-    # HTTP/1.1 and everything else over h2c — which means h2corn keeps HTTP/1
-    # enabled, so no `--no-http1`.
-    @websockets header Connection *Upgrade*
-    reverse_proxy @websockets 127.0.0.1:8000 {
-        header_up -Forwarded
-        header_up -X-Forwarded-Prefix
-    }
+	# This split route sends WebSocket upgrades over HTTP/1.1; keep h2corn
+	# HTTP/1 enabled. Use --no-http1 only with a separately verified pure h2c
+	# route whose proxy translates upgrades to RFC 8441 extended CONNECT.
+	@websockets header Connection *Upgrade*
+	reverse_proxy @websockets 127.0.0.1:8000 {
+		# h2corn strips recognized forwarding headers it does not consume.
+	}
 
-    reverse_proxy h2c://127.0.0.1:8000 {
-        # Caddy replaces X-Forwarded-For, -Proto and -Host with what it
-        # actually observed, but passes these two straight through from the
-        # client — and h2corn, told to trust this hop, believes them. Forwarded
-        # additionally outranks every X-Forwarded-* header, so a client sending
-        # one overrides all three of the headers Caddy just set correctly.
-        header_up -Forwarded
-        header_up -X-Forwarded-Prefix
-    }
+	reverse_proxy h2c://127.0.0.1:8000 {
+		# h2corn strips recognized forwarding headers it does not consume.
+	}
 }

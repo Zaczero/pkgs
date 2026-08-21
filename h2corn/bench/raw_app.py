@@ -3,7 +3,7 @@
 The cross-server plots run Starlette, because that is what people deploy and it
 is the same for every server. But it dominates the measurement: on this host a
 plaintext GET costs about 111k instructions through Starlette and about 34k
-through this app, so roughly two thirds of the published number is framework.
+through this app, so roughly two thirds of the chart value is framework.
 
 Point `compare.py --app bench.raw_app:app` at this when measuring a change to
 the server itself — a saving worth 1 % here is diluted to 0.3 % behind

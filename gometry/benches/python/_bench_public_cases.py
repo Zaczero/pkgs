@@ -929,21 +929,37 @@ def build_contains_xy() -> PublicCase:
 
 def build_intersects_polygon_points() -> PublicCase:
     data = intersects_polygon_and_points()
+
     def gometry_call():
         import gometry as gm
+
         return gm.intersects(data['gm_polygon'], data['gm_points'])
+
     def competitor_call():
         import shapely
+
         return shapely.intersects(data['sh_polygon'], data['sh_points'])
+
     def precondition() -> None:
         result = np.asarray(gometry_call())
-        for category, expected in (('interior', True), ('boundary', True), ('exterior', False)):
+        for category, expected in (
+            ('interior', True),
+            ('boundary', True),
+            ('exterior', False),
+        ):
             values = result[np.asarray([label == category for label in data['labels']])]
             if values.size == 0 or not np.all(values == expected):
                 raise OracleMismatch('intersects category coverage', details=category)
+
     _reg('gometry.intersects/irregular_polygon_point_array', gometry_call)
     _reg('shapely.intersects/irregular_polygon_point_array', competitor_call)
-    return _case(gometry_call, competitor_call, exact_mask, kind='exact_mask', preconditions=(precondition,))
+    return _case(
+        gometry_call,
+        competitor_call,
+        exact_mask,
+        kind='exact_mask',
+        preconditions=(precondition,),
+    )
 
 
 def build_dwithin() -> PublicCase:
@@ -1484,41 +1500,71 @@ def build_join_within() -> PublicCase:
 
     def gometry_call():
         import gometry as gm
+
         return gm.join(pois_gm, countries, predicate='within')
 
     def competitor_call():
         tree = shapely.STRtree(sh_parts)
         pairs = tree.query(pois_sh, predicate='within')
         return pairs[0], pairs[1]
+
     _reg('gometry.join.within/10k_pois_217_countries', gometry_call)
-    _reg('shapely.STRtree.query.one_shot.within/10k_pois_217_countries', competitor_call)
-    return _case(gometry_call, competitor_call, _compare_join, kind='normalized_index_pairs')
+    _reg(
+        'shapely.STRtree.query.one_shot.within/10k_pois_217_countries', competitor_call
+    )
+    return _case(
+        gometry_call, competitor_call, _compare_join, kind='normalized_index_pairs'
+    )
 
 
 def build_geohash_encode() -> PublicCase:
     data = geohash_encode_inputs()
+
     def gometry_tokens(lon, lat, precision):
         import gometry as gm
+
         return list(gm.geohash_cells(lon, lat, precision=precision).token)
+
     def gometry_call():
         return gometry_tokens(data['lon'], data['lat'], 6)
+
     def competitor_call():
         import pygeohash
-        return [pygeohash.encode(float(lat), float(lon), precision=6)
-                for lon, lat in zip(data['lon'], data['lat'], strict=True)]
+
+        return [
+            pygeohash.encode(float(lat), float(lon), precision=6)
+            for lon, lat in zip(data['lon'], data['lat'], strict=True)
+        ]
+
     def precondition() -> None:
         import pygeohash
+
         for precision in (1, 6, 12):
-            expected = [pygeohash.encode(float(lat), float(lon), precision=precision)
-                        for lon, lat in zip(data['edge_lon'], data['edge_lat'], strict=True)]
-            if gometry_tokens(data['edge_lon'], data['edge_lat'], precision) != expected:
-                raise OracleMismatch('geohash edge probe mismatch', details=str(precision))
+            expected = [
+                pygeohash.encode(float(lat), float(lon), precision=precision)
+                for lon, lat in zip(data['edge_lon'], data['edge_lat'], strict=True)
+            ]
+            if (
+                gometry_tokens(data['edge_lon'], data['edge_lat'], precision)
+                != expected
+            ):
+                raise OracleMismatch(
+                    'geohash edge probe mismatch', details=str(precision)
+                )
+
     def compare(left, right, context):
         if list(left) != list(right):
             raise OracleMismatch('geohash token list mismatch')
+
     _reg('gometry.geohash_encode/10k_precision6', gometry_call)
     _reg('pygeohash.encode/10k_precision6', competitor_call)
-    return _case(gometry_call, competitor_call, compare, kind='exact_token_list', preconditions=(precondition,))
+    return _case(
+        gometry_call,
+        competitor_call,
+        compare,
+        kind='exact_token_list',
+        preconditions=(precondition,),
+    )
 
 
 def build_index_candidates() -> PublicCase:

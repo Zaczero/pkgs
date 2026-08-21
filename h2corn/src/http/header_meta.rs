@@ -4,8 +4,9 @@ use bitflags::bitflags;
 use bytes::Bytes;
 
 use crate::base64;
+use crate::config::ForwardedFields;
 use crate::http::header::protocol_token_is_valid;
-use crate::http::types::{BytesStr, KnownRequestHeaderName};
+use crate::http::types::{BytesStr, KnownRequestHeaderName, RequestHeaderNameRef};
 use crate::websocket::{
     ParsedRequestedSubprotocols, ParsedWebSocketRequestMeta, WEBSOCKET_KEY_LEN, WEBSOCKET_VERSION,
     WebSocketKey, offers_compatible_permessage_deflate,
@@ -20,6 +21,72 @@ pub(crate) struct ProxyHeaderSlots {
     pub(crate) x_forwarded_host: Option<NonZeroU32>,
     pub(crate) x_forwarded_port: Option<NonZeroU32>,
     pub(crate) x_forwarded_prefix: Option<NonZeroU32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProxyHeaderKind {
+    Forwarded,
+    For,
+    Proto,
+    Host,
+    Port,
+    Prefix,
+}
+
+impl ProxyHeaderKind {
+    pub(crate) const fn field(self) -> ForwardedFields {
+        match self {
+            Self::Forwarded => ForwardedFields::FORWARDED,
+            Self::For => ForwardedFields::FOR,
+            Self::Proto => ForwardedFields::PROTO,
+            Self::Host => ForwardedFields::HOST,
+            Self::Port => ForwardedFields::PORT,
+            Self::Prefix => ForwardedFields::PREFIX,
+        }
+    }
+
+    pub(crate) const fn index(self, slots: &ProxyHeaderSlots) -> Option<usize> {
+        ProxyHeaderSlots::index(match self {
+            Self::Forwarded => slots.forwarded,
+            Self::For => slots.x_forwarded_for,
+            Self::Proto => slots.x_forwarded_proto,
+            Self::Host => slots.x_forwarded_host,
+            Self::Port => slots.x_forwarded_port,
+            Self::Prefix => slots.x_forwarded_prefix,
+        })
+    }
+}
+
+/// Classify standard forwarding names and the underscore spellings accepted by
+/// the HTTP field-name grammar. Underscore names are never consumable facts;
+/// they are only recognized so proxy-header mode can remove them.
+pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(ProxyHeaderKind, bool)> {
+    match name {
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::Forwarded) => {
+            Some((ProxyHeaderKind::Forwarded, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedFor) => {
+            Some((ProxyHeaderKind::For, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedProto) => {
+            Some((ProxyHeaderKind::Proto, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedHost) => {
+            Some((ProxyHeaderKind::Host, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPort) => {
+            Some((ProxyHeaderKind::Port, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPrefix) => {
+            Some((ProxyHeaderKind::Prefix, true))
+        },
+        RequestHeaderNameRef::Other("x_forwarded_for") => Some((ProxyHeaderKind::For, false)),
+        RequestHeaderNameRef::Other("x_forwarded_proto") => Some((ProxyHeaderKind::Proto, false)),
+        RequestHeaderNameRef::Other("x_forwarded_host") => Some((ProxyHeaderKind::Host, false)),
+        RequestHeaderNameRef::Other("x_forwarded_port") => Some((ProxyHeaderKind::Port, false)),
+        RequestHeaderNameRef::Other("x_forwarded_prefix") => Some((ProxyHeaderKind::Prefix, false)),
+        _ => None,
+    }
 }
 
 impl ProxyHeaderSlots {

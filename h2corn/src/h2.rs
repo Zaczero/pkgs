@@ -830,7 +830,7 @@ where
                     block,
                     header_limits,
                     state.context.security.is_tls(),
-                    state.context.info.proxy_headers_trusted,
+                    state.context.config.proxy.trust_headers,
                 ),
             )
             .await?;

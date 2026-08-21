@@ -16,8 +16,8 @@ use crate::bridge::PayloadBytes;
 use crate::config::ServerConfig;
 #[cfg(test)]
 use crate::config::{
-    BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig,
-    WebSocketConfig,
+    BindTarget, ForwardedFields, Http1Config, Http2Config, LogFormat, ProxyConfig,
+    ResponseHeaderConfig, WebSocketConfig,
 };
 use crate::error::H2CornError;
 use crate::h2::deadline::DeadlineQueue;
@@ -269,6 +269,7 @@ where
                 proxy: ProxyConfig {
                     trust_headers: false,
                     trusted_peers: Box::new([]),
+                    forwarded_fields: ForwardedFields::default(),
                     protocol: ProxyProtocolMode::Off,
                 },
                 tls: None,

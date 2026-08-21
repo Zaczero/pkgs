@@ -1,6 +1,6 @@
 [project]
 name = "gometry"
-description = "Rust-first geometry, CRS, geodesy, discrete grids, and spatial indexing for Python"
+description = "A blazing-fast geospatial engine for Python, written in Rust"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 OR MIT"

@@ -44,25 +44,42 @@ def _normalized_edges(
     return tuple(sorted(normalized))
 
 
-def test_combinatorial_dual_is_byte_identical_to_live_reference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def outcome(points: list[tuple[float, float]], clip: str) -> tuple[str, object]:
-        try:
-            source = gm.MultiPoint(points)
-            return (
-                'ok',
-                tuple(cell.to_wkb() for cell in source.voronoi_polygons(clip=clip)),
-                tuple(edge.to_wkb() for edge in source.voronoi_edges(clip=clip)),
-            )
-        except gm.InvalidGeometryError as error:
-            return ('error', str(error))
+def _outcome(points: list[tuple[float, float]], clip: str) -> tuple[str, object]:
+    try:
+        source = gm.MultiPoint(points)
+        return (
+            'ok',
+            tuple(cell.to_wkb() for cell in source.voronoi_polygons(clip=clip)),
+            tuple(edge.to_wkb() for edge in source.voronoi_edges(clip=clip)),
+        )
+    except gm.InvalidGeometryError as error:
+        return ('error', str(error))
 
-    cases: list[tuple[list[tuple[float, float]], str]] = []
-    for count in (7, 20, 60, 137, 400, 1_000):
-        for seed in (0, 1, 2):
-            points = (np.random.default_rng(seed).random((count, 2)) * 1_000.0).tolist()
-            cases.extend((points, clip) for clip in ('envelope', 'padded'))
+
+def _random_sites(count: int, seed: int) -> list[tuple[float, float]]:
+    return (np.random.default_rng(seed).random((count, 2)) * 1_000.0).tolist()
+
+
+def _reference_cases() -> list[tuple[str, list[tuple[float, float]], str]]:
+    cases: list[tuple[str, list[tuple[float, float]], str]] = []
+    # 1000 previously appeared in two separate loops with seeds 0 and 1, running
+    # four of the dearest cases twice for identical inputs and assertions.
+    for count, seeds in (
+        (7, (0, 1, 2)),
+        (20, (0, 1, 2)),
+        (60, (0, 1, 2)),
+        (137, (0, 1, 2)),
+        (400, (0, 1, 2)),
+        (1_000, (0, 1, 2)),
+        (2_000, (0, 1)),
+    ):
+        for seed in seeds:
+            points = _random_sites(count, seed)
+            cases.extend(
+                (f'random{count}-seed{seed}-{clip}', points, clip)
+                for clip in ('envelope', 'padded')
+            )
+
     grid12 = [(float(x), float(y)) for x in range(12) for y in range(12)]
     grid30 = [(float(x), float(y)) for x in range(30) for y in range(30)]
     cocircular13 = [
@@ -77,12 +94,13 @@ def test_combinatorial_dual_is_byte_identical_to_live_reference(
         for index in range(40)
     ] + [(0.0, 0.0)]
     cases.extend([
-        (grid12, 'envelope'),
-        (grid12, 'padded'),
-        (grid30, 'envelope'),
-        (cocircular13, 'envelope'),
-        (cocircular41, 'envelope'),
+        ('grid12-envelope', grid12, 'envelope'),
+        ('grid12-padded', grid12, 'padded'),
+        ('grid30-envelope', grid30, 'envelope'),
+        ('cocircular13-envelope', cocircular13, 'envelope'),
+        ('cocircular41-envelope', cocircular41, 'envelope'),
         (
+            'near-overflow-envelope',
             [
                 (0.0, 0.0),
                 (1.7e308, 0.0),
@@ -93,6 +111,7 @@ def test_combinatorial_dual_is_byte_identical_to_live_reference(
             'envelope',
         ),
         (
+            'subnormal-envelope',
             [
                 (0.0, 0.0),
                 (5e-324, 0.0),
@@ -103,35 +122,64 @@ def test_combinatorial_dual_is_byte_identical_to_live_reference(
             'envelope',
         ),
     ])
-    for count in (1_000, 2_000):
-        for seed in (0, 1):
-            points = (np.random.default_rng(seed).random((count, 2)) * 1_000.0).tolist()
-            cases.extend((points, clip) for clip in ('envelope', 'padded'))
+    return cases
 
-    for points, clip in cases:
-        monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-        reference = outcome(points, clip)
-        monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
-        dual = outcome(points, clip)
-        assert dual == reference, (len(points), clip, points[:3])
 
-    families = [
-        tuple((np.random.default_rng(9).random((5, 2)) * 100).tolist()),
+REFERENCE_CASES = _reference_cases()
+
+PERMUTATION_FAMILIES: list[tuple[str, tuple[tuple[float, float], ...]]] = [
+    ('random5', tuple((np.random.default_rng(9).random((5, 2)) * 100).tolist())),
+    (
+        'cocircular4',
         tuple(
             (math.cos(index * math.pi / 2) * 10, math.sin(index * math.pi / 2) * 10)
             for index in range(4)
         ),
+    ),
+    (
+        'collinear-triple-plus-2',
         ((0.0, 0.0), (0.09, 0.0), (0.18, 0.0), (0.0, 1.0), (1.0, 0.0)),
-    ]
-    for family in families:
-        orders = itertools.permutations(family)
-        monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
-        reference = tuple(outcome(list(order), 'envelope') for order in orders)
-        monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
-        dual = tuple(
-            outcome(list(order), 'envelope') for order in itertools.permutations(family)
-        )
-        assert dual == reference
+    ),
+]
+
+
+# One case per input rather than one for the whole sweep. As a single test this
+# ran 53 seconds against the suite's 60-second budget on the debug arm the
+# free-threaded cell builds, and a divergence surfaced as an equality failure
+# over tuples of WKB for up to 2000 cells. Split this way the case names the
+# input that diverged and the sweep spreads across xdist workers.
+@pytest.mark.parametrize(
+    ('points', 'clip'),
+    [pytest.param(points, clip, id=label) for label, points, clip in REFERENCE_CASES],
+)
+def test_combinatorial_dual_is_byte_identical_to_live_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    points: list[tuple[float, float]],
+    clip: str,
+) -> None:
+    monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
+    reference = _outcome(points, clip)
+    monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
+    assert _outcome(points, clip) == reference
+
+
+@pytest.mark.parametrize(
+    'family',
+    [pytest.param(family, id=label) for label, family in PERMUTATION_FAMILIES],
+)
+def test_dual_is_byte_identical_to_the_reference_under_every_site_order(
+    monkeypatch: pytest.MonkeyPatch,
+    family: tuple[tuple[float, float], ...],
+) -> None:
+    monkeypatch.setenv('GOMETRY_VORO_REFERENCE', '1')
+    reference = tuple(
+        _outcome(list(order), 'envelope') for order in itertools.permutations(family)
+    )
+    monkeypatch.delenv('GOMETRY_VORO_REFERENCE')
+    dual = tuple(
+        _outcome(list(order), 'envelope') for order in itertools.permutations(family)
+    )
+    assert dual == reference
 
 
 def _assert_topological_partition(

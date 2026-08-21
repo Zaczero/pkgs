@@ -269,7 +269,9 @@ def test_prepared_and_free_contains_xy_results_match():
     big = _big_polygon(2000)
     prep = big.prepare()
     xs, ys = _PREPARED_PROBES.T
-    np.testing.assert_array_equal(gm.contains_xy(prep, xs, ys), gm.contains_xy(big, xs, ys))
+    np.testing.assert_array_equal(
+        gm.contains_xy(prep, xs, ys), gm.contains_xy(big, xs, ys)
+    )
     np.testing.assert_array_equal(
         gm.intersects_xy(prep, xs, ys), gm.intersects_xy(big, xs, ys)
     )

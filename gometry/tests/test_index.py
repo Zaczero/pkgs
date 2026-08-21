@@ -662,7 +662,9 @@ def test_geometry_array_prepared_contains_and_index() -> None:
         gm.equals(gm.Point(0, 0, crs=4326), values), [True, False, False, False]
     )
     prepared = polygon.prepare()
-    np.testing.assert_array_equal(gm.contains(prepared, values), [True, False, True, False])
+    np.testing.assert_array_equal(
+        gm.contains(prepared, values), [True, False, True, False]
+    )
     assert gm.contains_xy(prepared, 0, 0)
     family = (
         'contains',
@@ -753,9 +755,7 @@ def test_spatial_index_completeness_len_batch_pairs_and_nearest_distance() -> No
         gm.box(5, 5, 6, 6),
     ])
     assert pair_rows(gm.SpatialIndex(boxes).self_join()) == [(0, 1)]
-    assert pair_rows(gm.SpatialIndex(boxes).self_join(predicate='overlaps')) == [
-        (0, 1)
-    ]
+    assert pair_rows(gm.SpatialIndex(boxes).self_join(predicate='overlaps')) == [(0, 1)]
     probe = gm.Point(1.1, 0)
     assert ids(index.nearest(probe, k=2)) == [1, 2]
     indices, distances = index.nearest(probe, k=1, return_distance=True)

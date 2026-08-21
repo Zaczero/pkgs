@@ -56,7 +56,9 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     midpoint = gm.point_between(start, end, 0.5, normalized=True)
     assert midpoint.x == pytest.approx(0.5)
     assert midpoint.y == pytest.approx(0.0)
-    batch_bearings = wgs84.geodesic_inverse([0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0])
+    batch_bearings = wgs84.geodesic_inverse(
+        [0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0]
+    )
     assert batch_bearings['forward_azimuth'][0] == pytest.approx(90.0)
     batch_midpoints = wgs84.geodesic_interpolate(
         [0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 0.5, normalized=True

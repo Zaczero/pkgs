@@ -150,6 +150,32 @@ def _normalize_forwarded_allow_ips(value: _StringTupleValue) -> tuple[str, ...]:
     )
 
 
+_FORWARDED_FIELD_NAMES = ('for', 'proto', 'host', 'port', 'prefix', 'forwarded')
+
+
+def _normalize_forwarded_fields(value: _StringTupleValue) -> tuple[str, ...]:
+    fields = tuple(
+        dict.fromkeys(
+            entry.strip().lower()
+            for entry in _normalize_str_tuple(value)
+            if entry.strip()
+        )
+    )
+    unknown = tuple(field for field in fields if field not in _FORWARDED_FIELD_NAMES)
+    if unknown:
+        raise ValueError(
+            f'invalid forwarded_fields entry: {unknown[0]!r}; '
+            f'accepted values are: {", ".join(_FORWARDED_FIELD_NAMES)}'
+        )
+    x_family = tuple(field for field in fields if field != 'forwarded')
+    if 'forwarded' in fields and x_family:
+        raise ValueError(
+            "forwarded_fields cannot combine 'forwarded' with "
+            f'X-family field(s): {", ".join(repr(field) for field in x_family)}'
+        )
+    return fields
+
+
 def _optional_path(value: _PathValue):
     if value is None or isinstance(value, Path):
         return value
@@ -642,6 +668,7 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
         (
             'proxy_headers',
             'forwarded_allow_ips',
+            'forwarded_fields',
             'proxy_protocol',
             'server_header',
             'date_header',
@@ -1057,14 +1084,14 @@ class Config:
     )
     websocket_ping_timeout: float = _option(
         default=30.0,
-        doc='Time limit in seconds to wait for a pong after a server WebSocket ping. Use 0 to disable.',
+        doc='Time limit in seconds to wait for a pong after a server WebSocket ping. Use 0 to disable. No effect while `websocket_ping_interval` is 0.',
         env_parse=float,
         converter=_non_negative_float('websocket_ping_timeout'),
         cli_type=float,
     )
     proxy_headers: bool = _option(
         default=False,
-        doc='Trust proxy headers (e.g., Forwarded, X-Forwarded-*) if the client IP is in `forwarded_allow_ips`.',
+        doc='Enable forwarding-header processing for peers in `forwarded_allow_ips`; `forwarded_fields` selects the facts and dialect.',
         env_parse=_parse_bool,
         converter=_exact_bool('proxy_headers'),
         cli_action='bool',
@@ -1074,6 +1101,17 @@ class Config:
         doc="Allowed IPs or networks (in CIDR notation) for proxy headers. Use '*' to trust all.",
         env_parse=_parse_csv_tuple,
         converter=_normalize_forwarded_allow_ips,
+        cli_type=_parse_csv_tuple,
+    )
+    forwarded_fields: tuple[str, ...] = _option(
+        default_factory=lambda: ('for', 'proto'),
+        doc=(
+            'Forwarding facts to interpret from a trusted proxy: `for`, `proto`, '
+            '`host`, `port`, `prefix` select X-Forwarded-* fields; `forwarded` '
+            'selects RFC 7239 Forwarded. The dialects cannot be combined.'
+        ),
+        env_parse=_parse_csv_tuple,
+        converter=_normalize_forwarded_fields,
         cli_type=_parse_csv_tuple,
     )
     proxy_protocol: ProxyProtocolMode = _option(
@@ -1170,6 +1208,21 @@ class Config:
                         pass
         if self.max_requests_jitter > 0 and self.max_requests == 0:
             raise ValueError('max_requests_jitter requires max_requests')
+        # `proxy_headers` is the only spelling of "believe this peer's
+        # forwarding headers". Turning it on while nothing can be believed, or
+        # while no peer can ever be trusted, is the same state as leaving it
+        # off, described by a configuration that claims the opposite.
+        if self.proxy_headers:
+            if not self.forwarded_fields:
+                raise ValueError(
+                    'proxy_headers requires at least one forwarded_fields entry '
+                    '— use proxy_headers=False to process no forwarding headers'
+                )
+            if not self.forwarded_allow_ips:
+                raise ValueError(
+                    'proxy_headers requires at least one forwarded_allow_ips entry '
+                    '— use proxy_headers=False to trust no peer'
+                )
         if self.h2_initial_stream_window_size > self.h2_initial_connection_window_size:
             raise ValueError(
                 'h2_initial_stream_window_size '
@@ -1232,11 +1285,14 @@ class Config:
         The file must be a flat table whose keys correspond to `Config`
         field names. Example:
 
-            bind = ["127.0.0.1:8000"]
-            workers = 4
-            proxy_headers = true
-            forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
-            http1 = false
+        ```toml
+        bind = ["127.0.0.1:8000"]
+        workers = 4
+        proxy_headers = true
+        forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
+        forwarded_fields = ["for", "proto"]
+        http1 = false
+        ```
         """
         import tomllib
 

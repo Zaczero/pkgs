@@ -1072,6 +1072,7 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
         port=0,
         root_path='/root',
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     async with running_server(app, config) as server:
@@ -1097,7 +1098,7 @@ async def test_websocket_proxy_headers_rewrite_scope_from_trusted_peer(
     assert state['client'][0] == '203.0.113.10'
     assert isinstance(state['client'][1], int)
     assert state['server'] == ('example.com', 9443)
-    assert state['root_path'] == '/api/root'
+    assert state['root_path'] == '/root'
     assert state['contract_keys'] == set(), (
         f'websocket scope is missing required keys: {state["contract_keys"]}'
     )

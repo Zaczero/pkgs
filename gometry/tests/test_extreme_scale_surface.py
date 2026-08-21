@@ -43,7 +43,7 @@ def _scale_ids() -> list[str]:
 
 def frac(x: float) -> Fraction:
     """Exact rational of a stored IEEE-754 value."""
-    return Fraction.from_float(x)
+    return Fraction(x)
 
 
 def float_from_frac(q: Fraction) -> float:

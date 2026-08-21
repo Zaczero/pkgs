@@ -150,9 +150,7 @@ def serialize_snapshot_value(value: object) -> object:
             for cell in value
         ]
         return {'kind': 'cell_list', 'cells': cells, 'system': system}
-    if isinstance(
-        value, (gm.CellArray, gm.Groups)
-    ):
+    if isinstance(value, (gm.CellArray, gm.Groups)):
         cells = value
         if not cells:
             return {'kind': 'cell_list', 'cells': [], 'system': 'empty'}

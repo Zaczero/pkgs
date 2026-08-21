@@ -17,8 +17,8 @@ use tokio::task::{JoinError, JoinSet, spawn_blocking};
 
 use crate::config;
 use crate::config::{
-    BindTarget, ClientCertMode, ConfiguredResponseHeader, Http1Config, Http2Config, ProxyConfig,
-    ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
+    BindTarget, ClientCertMode, ConfiguredResponseHeader, ForwardedFields, Http1Config,
+    Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
 };
 use crate::error::{ConfigError, H2CornError, IntoPyResult as _, into_pyerr};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
@@ -189,6 +189,29 @@ impl<'py> PyConfig<'py> {
         Ok(peers.into_vec().into_boxed_slice())
     }
 
+    fn forwarded_fields(&self) -> PyResult<ForwardedFields> {
+        let mut fields = ForwardedFields::empty();
+        for item in self.attr("forwarded_fields")?.try_iter()? {
+            let item = item?;
+            let field = item.extract::<&str>()?;
+            let flag = match field {
+                "for" => ForwardedFields::FOR,
+                "proto" => ForwardedFields::PROTO,
+                "host" => ForwardedFields::HOST,
+                "port" => ForwardedFields::PORT,
+                "prefix" => ForwardedFields::PREFIX,
+                "forwarded" => ForwardedFields::FORWARDED,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "invalid forwarded_fields entry: {other:?}"
+                    )));
+                },
+            };
+            fields.insert(flag);
+        }
+        Ok(fields)
+    }
+
     fn websocket_message_size_limit(&self) -> PyResult<Option<NonZeroUsize>> {
         Ok(NonZeroUsize::new(self.get("websocket_max_message_size")?))
     }
@@ -249,6 +272,7 @@ impl<'py> PyConfig<'py> {
         Ok(ProxyConfig {
             trust_headers: self.get("proxy_headers")?,
             trusted_peers: self.trusted_peers()?,
+            forwarded_fields: self.forwarded_fields()?,
             protocol: self.proxy_protocol()?,
         })
     }
@@ -1110,6 +1134,12 @@ mod tests {
         config
             .setattr("forwarded_allow_ips", ("127.0.0.1", "10.0.0.0/8", "unix"))
             .unwrap();
+        config
+            .setattr(
+                "forwarded_fields",
+                ("for", "proto", "host", "port", "prefix"),
+            )
+            .unwrap();
         config.setattr("proxy_protocol", "v2").unwrap();
         config.setattr("certfile", py.None()).unwrap();
         config.setattr("keyfile", py.None()).unwrap();
@@ -1228,6 +1258,14 @@ mod tests {
         assert_eq!(keep_alive.interval, Duration::from_secs_f64(9.5));
         assert_eq!(keep_alive.timeout, Some(Duration::from_secs_f64(11.5)));
         assert!(extracted.proxy.trust_headers);
+        assert_eq!(
+            extracted.proxy.forwarded_fields,
+            ForwardedFields::FOR
+                | ForwardedFields::PROTO
+                | ForwardedFields::HOST
+                | ForwardedFields::PORT
+                | ForwardedFields::PREFIX,
+        );
         assert_eq!(extracted.proxy.protocol, ProxyProtocolMode::V2);
         assert_eq!(extracted.proxy.trusted_peers.len(), 3);
         assert_eq!(

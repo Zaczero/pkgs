@@ -53,12 +53,10 @@ def test_compress_responses(test_client_factory: TestClientFactory):
         try:
             assert response.text == 'x' * 4000
         except AssertionError:
-            # TODO: remove after new zstd support in httpx
-            if encoding != 'zstd' or sys.version_info < (3, 14):
+            if encoding != 'zstd':
                 raise
-            from compression import zstd
 
-            assert zstd.decompress(response.content) == b'x' * 4000
+            assert _decompress_zstd(response.content) == b'x' * 4000
 
         assert response.headers['Content-Encoding'] == encoding
         assert int(response.headers['Content-Length']) < 4000
@@ -139,12 +137,10 @@ def test_compress_streaming_response(
         try:
             assert len(response.content) == chunk_count * chunk_size
         except AssertionError:
-            # TODO: remove after new zstd support in httpx
-            if encoding != 'zstd' or sys.version_info < (3, 14):
+            if encoding != 'zstd':
                 raise
-            from compression import zstd
 
-            assert len(zstd.decompress(response.content)) == chunk_count * chunk_size
+            assert len(_decompress_zstd(response.content)) == chunk_count * chunk_size
 
         assert response.headers['Content-Encoding'] == encoding
         assert 'Content-Length' not in response.headers
@@ -495,6 +491,11 @@ def _make_incremental_decompressor(encoding: str):
         return feed
 
     raise ValueError(encoding)
+
+
+def _decompress_zstd(data: bytes) -> bytes:
+    """Decode a complete zstd frame, including frames without a size header."""
+    return _make_incremental_decompressor('zstd')(data)
 
 
 async def run_asgi(
@@ -1339,7 +1340,7 @@ def test_legacy_zstd_sse_mismatched_content_length_roundtrip():
 
     wire = b''.join(m.get('body', b'') for m in bodies)
     expected = b''.join(events)
-    plain = zstd_mod.ZstdDecompressor().decompress(wire, max_output_size=len(expected))
+    plain = _decompress_zstd(wire)
     assert plain == expected
 
 
@@ -1569,25 +1570,14 @@ def test_sse_testclient_roundtrip(
     assert response.headers['Content-Encoding'] == encoding
     assert 'Content-Length' not in response.headers
 
-    # httpx/TestClient auto-decompresses gzip and br; zstd may need manual decode
+    # httpx/TestClient may return raw zstd when its decoder is unavailable.
     try:
         assert response.content == b'data: one\n\ndata: two\n\n'
     except AssertionError:
-        # TODO: remove after new zstd support in httpx
-        if encoding != 'zstd' or sys.version_info < (3, 14):
-            if encoding == 'zstd':
-                import zstandard as zstd_mod
+        if encoding != 'zstd':
+            raise
 
-                assert (
-                    zstd_mod.ZstdDecompressor().decompress(response.content)
-                    == b'data: one\n\ndata: two\n\n'
-                )
-            else:
-                raise
-        else:
-            from compression import zstd
-
-            assert zstd.decompress(response.content) == b'data: one\n\ndata: two\n\n'
+        assert _decompress_zstd(response.content) == b'data: one\n\ndata: two\n\n'
 
 
 def test_mixed_case_managed_headers_oneshot():

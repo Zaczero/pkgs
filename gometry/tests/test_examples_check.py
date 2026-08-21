@@ -15,3 +15,10 @@ def test_deprecated_source_display_matches_only_fence_options() -> None:
         '```python exec="on"\nprint(\'source="material-block"\')\n```\n'
     )
     assert not pattern.search('```python exec="on" source="block"\n')
+
+
+def test_plain_python_fence_requires_execution_or_nonrunnable_label() -> None:
+    gate = load_tool('_check_examples')
+    assert gate._NONRUNNABLE_LABEL.search('title="partial: source example"')
+    assert not gate._NONRUNNABLE_LABEL.search('title="copy this"')
+    assert gate._PYTHON_FENCE.search('```python title="partial: source example"\n')

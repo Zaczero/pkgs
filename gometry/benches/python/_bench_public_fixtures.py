@@ -471,38 +471,56 @@ def prepared_polygon_and_probes():
 
 def intersects_polygon_and_points():
     """Irregular polygon with deterministic interior, boundary, and exterior points."""
+
     def build():
         import gometry as gm
         import shapely
 
-        ring = [(-4.0, -2.0), (-1.0, -4.0), (3.0, -3.0), (5.0, 0.0),
-                (2.0, 4.0), (-2.0, 3.0), (-5.0, 1.0)]
-        categories = [('interior', (0.0, 0.0)), ('interior', (1.0, 1.0)),
-                      ('boundary', ring[0]), ('boundary', (1.0, -3.5)),
-                      ('exterior', (10.0, 10.0)), ('exterior', (-10.0, -10.0))]
+        ring = [
+            (-4.0, -2.0),
+            (-1.0, -4.0),
+            (3.0, -3.0),
+            (5.0, 0.0),
+            (2.0, 4.0),
+            (-2.0, 3.0),
+            (-5.0, 1.0),
+        ]
+        categories = [
+            ('interior', (0.0, 0.0)),
+            ('interior', (1.0, 1.0)),
+            ('boundary', ring[0]),
+            ('boundary', (1.0, -3.5)),
+            ('exterior', (10.0, 10.0)),
+            ('exterior', (-10.0, -10.0)),
+        ]
         coords = [point for _category, point in categories] * 2_000
         return {
             'gm_polygon': gm.Polygon(ring),
             'gm_points': gm.GeometryArray([gm.Point(x, y) for x, y in coords]),
             'sh_polygon': shapely.Polygon(ring),
-            'sh_points': shapely.points(np.asarray([x for x, _ in coords]),
-                                        np.asarray([y for _, y in coords])),
+            'sh_points': shapely.points(
+                np.asarray([x for x, _ in coords]), np.asarray([y for _, y in coords])
+            ),
             'labels': [category for category, _ in categories] * 2_000,
         }
+
     return _cached('intersects_polygon_points', build)
 
 
 def geohash_encode_inputs():
     """Deterministic bulk inputs plus edge probes for precisions 1, 6, and 12."""
+
     def build():
         n = _N10K
         lon = np.asarray([-179.999 + 359.998 * _halton(i + 1, 2) for i in range(n)])
         lat = np.asarray([-89.999 + 179.998 * _halton(i + 1, 3) for i in range(n)])
         return {
-            'lon': lon, 'lat': lat,
+            'lon': lon,
+            'lat': lat,
             'edge_lon': np.asarray([-180.0, 180.0, 0.0, 179.999999, -179.999999]),
             'edge_lat': np.asarray([-90.0, 90.0, 0.0, 89.999999, -89.999999]),
         }
+
     return _cached('geohash_encode_10k', build)
 
 

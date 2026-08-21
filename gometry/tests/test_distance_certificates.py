@@ -20,7 +20,7 @@ def _hausdorff_case(
         bent = [(y, x) for x, y in bent]
     # The oracle is the exact rational value of the stored apex ordinate, not
     # the decimal literal used to construct it.
-    expected = float(Fraction.from_float(abs(bent[1][0 if swap_axes else 1])))
+    expected = float(Fraction(abs(bent[1][0 if swap_axes else 1])))
     return gm.LineString(baseline), gm.LineString(bent), expected
 
 

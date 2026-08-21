@@ -3,17 +3,21 @@
 Captures every public kernel output on a fixed input corpus so later plumbing
 slices can prove behavior is unchanged within tolerance. Re-capture with:
 
-    RECAPTURE_KERNEL_GOLDEN=1 .venv/bin/python -m pytest tests/test_kernel_parity_snapshot.py -q
+    .venv/bin/python -m tests.test_kernel_parity_snapshot
+
+Recapture rewrites a checked-in golden, so it is its own command rather than a
+mode of the suite: one process, one write, and no way to trigger it by setting
+something in the environment of an ordinary run.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import gometry as gm
+import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -24,7 +28,6 @@ from tests._oracles_support import (
 )
 
 GOLDEN_PATH = Path(__file__).resolve().parent / 'data' / 'kernel_parity_golden.json'
-RECAPTURE = os.environ.get('RECAPTURE_KERNEL_GOLDEN') == '1'
 
 
 def _staircase(
@@ -466,33 +469,48 @@ def test_kernel_parity_op_registry_is_auditable() -> None:
     print(f'kernel parity ops: {OP_COUNT}')
 
 
-def test_kernel_parity_snapshot() -> None:
-    if RECAPTURE:
-        payload = write_golden()
-    else:
-        if not GOLDEN_PATH.is_file():
-            raise AssertionError(
-                f'missing kernel golden {GOLDEN_PATH}; set RECAPTURE_KERNEL_GOLDEN=1 '
-                'to recapture intentionally (silent recapture is forbidden)'
-            )
-        payload = load_golden()
-    assert payload['op_count'] == OP_COUNT
-    assert payload['ops'] == list(OP_NAMES)
-    assert payload['inputs'] == list(INPUT_BUILDERS)
-    entries = payload['entries']
-    assert isinstance(entries, dict)
-    expected_keys = {_entry_key(op, name) for op in OP_NAMES for name in INPUT_BUILDERS}
-    assert set(entries) == expected_keys
-    mismatches: list[str] = []
-    for key in sorted(expected_keys):
-        op, input_name = key.split(':', 1)
-        actual = _capture_entry(op, input_name)
-        try:
-            snapshot_values_match(entries[key], actual)
-        except AssertionError as exc:
-            mismatches.append(f'{key}: {exc}')
-    if mismatches:
-        sample = '\n'.join(mismatches[:20])
+@pytest.fixture(scope='module')
+def golden() -> dict[str, Any]:
+    if not GOLDEN_PATH.is_file():
         raise AssertionError(
-            f'{len(mismatches)} kernel parity mismatches (first 20):\n{sample}'
+            f'missing kernel golden {GOLDEN_PATH}; recapture intentionally with '
+            '`python -m tests.test_kernel_parity_snapshot` (silent recapture is forbidden)'
         )
+    return load_golden()
+
+
+def test_kernel_parity_golden_covers_the_registry(golden: dict[str, Any]) -> None:
+    """The golden's header and key set stay in step with the runner table."""
+    assert golden['op_count'] == OP_COUNT
+    assert golden['ops'] == list(OP_NAMES)
+    assert golden['inputs'] == list(INPUT_BUILDERS)
+    entries = golden['entries']
+    assert isinstance(entries, dict)
+    assert set(entries) == {
+        _entry_key(op, name) for op in OP_NAMES for name in INPUT_BUILDERS
+    }
+
+
+CASES = [(op, input_name) for op in OP_NAMES for input_name in INPUT_BUILDERS]
+
+
+# One case per golden entry rather than one for the corpus. As a single test the
+# comparison ran 74 seconds against a 60-second budget, and cost is not spread
+# across it: `h3_cover` alone accounts for 72 of those seconds, so splitting per
+# op would still leave one case over the timeout. Per entry the dearest case is
+# `h3_cover-antimeridian_line`, the corpus spreads across xdist workers, and a
+# divergence names the kernel and the input instead of arriving as a truncated
+# mismatch list.
+@pytest.mark.parametrize(('op', 'input_name'), CASES)
+def test_kernel_parity_snapshot(
+    golden: dict[str, Any], op: str, input_name: str
+) -> None:
+    entries = golden['entries']
+    key = _entry_key(op, input_name)
+    assert key in entries, f'{key} is absent from the golden'
+    snapshot_values_match(entries[key], _capture_entry(op, input_name))
+
+
+if __name__ == '__main__':
+    payload = write_golden()
+    print(f'recaptured {len(payload["entries"])} entries to {GOLDEN_PATH}')

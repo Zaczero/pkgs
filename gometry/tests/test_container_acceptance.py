@@ -25,9 +25,9 @@ def test_float_lanes_accept_iterators_and_buffers() -> None:
     )
     out = gm.crs_transform(4326, 4326, iter([1.0]), iter([2.0]))
     assert out[:, 0].tolist() == [1.0]
-    assert gm.CRS(4326).geodesic_inverse(iter([0.0]), iter([0.0]), iter([1.0]), iter([0.0]))[
-        'distance'
-    ][0] == pytest.approx(111319.49, rel=0.0001)
+    assert gm.CRS(4326).geodesic_inverse(
+        iter([0.0]), iter([0.0]), iter([1.0]), iter([0.0])
+    )['distance'][0] == pytest.approx(111319.49, rel=0.0001)
 
 
 def test_lanes_and_batches_accept_generators() -> None:

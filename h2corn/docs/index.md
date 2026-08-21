@@ -11,11 +11,11 @@ hide:
 
 # Blazing-fast Python ASGI
 
-<p class="hero-stats"><strong>~84%</strong> lower latency at p50, ~82% at p99</p>
+<p class="hero-stats"><strong>70–95% lower latency</strong> at p50–p99</p>
 
-A drop-in server for FastAPI, Starlette, Django, Litestar and any ASGI 3
-app — same `module:app` start line, same `--workers`, plus end-to-end
-HTTP/2.
+Switch the server, not your app. h2corn runs FastAPI, Starlette, Django,
+Litestar and any ASGI 3 app, with end-to-end HTTP/2 and a production
+worker supervisor.
 
 [Get started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [Why h2corn](#why-h2corn){ .md-button }

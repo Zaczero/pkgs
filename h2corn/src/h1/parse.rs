@@ -1310,8 +1310,8 @@ mod tests {
         read_chunk_size_line, read_chunked_body, read_request, read_request_head,
     };
     use crate::config::{
-        BindTarget, Http1Config, Http2Config, LogFormat, ProxyConfig, ResponseHeaderConfig,
-        ServerConfig, WebSocketConfig,
+        BindTarget, ForwardedFields, Http1Config, Http2Config, LogFormat, ProxyConfig,
+        ResponseHeaderConfig, ServerConfig, WebSocketConfig,
     };
     use crate::error::{ErrorKind, H2CornError, Http1Error};
     use crate::h1::{ConnectionPersistence, RequestBodyKind, RequestRoute, UpgradeRequest};
@@ -1360,6 +1360,7 @@ mod tests {
             proxy: ProxyConfig {
                 trust_headers: false,
                 trusted_peers: Box::new([]),
+                forwarded_fields: ForwardedFields::default(),
                 protocol: ProxyProtocolMode::Off,
             },
             tls: None,

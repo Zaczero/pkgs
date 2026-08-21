@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     import pandas as pd
     import pyarrow as pa
     from pandas._typing import ListLike
+
     _ArrowArray: TypeAlias = pa.Array | pa.ChunkedArray
 
     # pandas' public stubs model several extension-protocol members more
@@ -235,9 +236,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         # readonly (only real views/slices share the parent flag).
         return type(self)(self._geoms[key_arr])
 
-    def __setitem__(
-        self, key: int | np.integer[Any] | ListLike, value: object
-    ) -> None:
+    def __setitem__(self, key: int | np.integer[Any] | ListLike, value: object) -> None:
         from pandas.api.indexers import check_array_indexer
 
         if self._readonly:

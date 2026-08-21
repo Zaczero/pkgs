@@ -6,7 +6,7 @@ statistic is the *paired* per-round delta, so slow drift on a shared host
 cancels instead of being read as a code change. Rounds continue until the
 delta's bootstrap confidence interval is narrow enough to act on, or the time
 budget runs out — in which case the result is reported as inconclusive rather
-than rounded into a claim.
+than rounded into a win.
 
     # two builds, same scenario
     uv run python bench/compare.py \

@@ -131,7 +131,7 @@ def test_s2_bounds_coverage_membership() -> None:
     np.testing.assert_array_equal(
         gm.contains(
             polygon.to_crs(32634),
-            gm.points([21.0, 30.0], [52.0, 52.0], crs=4326).to_crs(32634)
+            gm.points([21.0, 30.0], [52.0, 52.0], crs=4326).to_crs(32634),
         ),
         [True, False],
     )
@@ -560,9 +560,7 @@ def test_s2_pole_ulp_point_owners_match_literal_closed_cell_oracles(
 def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     line = gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326)
     coverage = gm.s2_cover(line, level=6, max_cells=16)
-    _ = gm.s2_cover(
-        gm.box(-200, -10, 200, 10, crs=4326, wrap='split'), level=6
-    )
+    _ = gm.s2_cover(gm.box(-200, -10, 200, 10, crs=4326, wrap='split'), level=6)
     _ = gm.s2_cover(gm.box(-180, -10, 180, 10, crs=4326), level=6)
     assert line.crosses_antimeridian
     assert gm.contains(line, gm.Point(0.0, 0.0056, crs=4326)) == gm.intersects(
@@ -578,14 +576,14 @@ def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     np.testing.assert_array_equal(
         gm.covers(
             gm.box(-200, -10, 200, 10, crs=4326, wrap='split'),
-            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326)
+            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326),
         ),
         [True, True, True],
     )
     np.testing.assert_array_equal(
         gm.covers(
             gm.box(-180, -10, 180, 10, crs=4326),
-            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326)
+            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326),
         ),
         [True, True, True],
     )
@@ -795,12 +793,8 @@ def test_s2_cover_partial_polar_overlap_fails_open_without_vertex_negative() -> 
 
     # Non-polar within: interior ⊆ overlap (Berlin box has interior cells at L12).
     berlin = gm.box(13.3, 52.4, 13.5, 52.6, crs=4326)
-    b_within = {
-        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within')
-    }
-    b_overlap = {
-        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap')
-    }
+    b_within = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within')}
+    b_overlap = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap')}
     assert b_within
     assert b_within <= b_overlap
 
@@ -826,12 +820,8 @@ def test_s2_cover_within_polar_and_antimeridian_honors_source_geometry() -> None
 
     # Non-polar within: interior ⊆ overlap (Berlin box has interior cells at L12).
     berlin = gm.box(13.3, 52.4, 13.5, 52.6, crs=4326)
-    b_within = {
-        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within')
-    }
-    b_overlap = {
-        c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap')
-    }
+    b_within = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='within')}
+    b_overlap = {c.token for c in gm.s2_cover(berlin, level=12, cell_rule='overlap')}
     assert b_within
     assert b_within <= b_overlap
 

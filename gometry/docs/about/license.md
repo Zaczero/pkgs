@@ -1,93 +1,41 @@
 ---
-description: gometry licensing — Apache-2.0 OR MIT dual license, third-party notices, the bundled libPROJ backend, and the Rust dependency posture.
+description: gometry 1.0.0 licensing, bundled CRS resources, and third-party notices.
 ---
 
 # License
 
-gometry is distributed under the **Apache-2.0 OR MIT** dual license. You may use it
-under the terms of either license, at your option — the standard permissive
-licensing convention in the Rust ecosystem, chosen for maximum downstream
-compatibility.
+gometry 1.0.0 is distributed under the **Apache-2.0 OR MIT** dual license. You
+may use it under the terms of either license, at your option.
 
-```toml
-# in pyproject.toml
+```toml title="configuration: package license metadata"
 license = "Apache-2.0 OR MIT"
 ```
 
-The full license texts ship with release packages as `LICENSE-APACHE.md` and
-`LICENSE-MIT.md`. CI generates these files before release builds; for a local release
-build, run the shared `.github/scripts/gen_licenses.py` first. The generated files are
-never committed.
+The release package includes the complete `LICENSE-APACHE.md` and
+`LICENSE-MIT.md` texts. Keep the applicable license text and notices when you
+redistribute gometry or an artifact that bundles it.
 
-## Third-party components
+## Third-party notices
 
-gometry statically links a set of third-party Rust crates into its compiled
-extension, each under its own permissive license. The authoritative inventory is
-`LICENSE-THIRD-PARTY.md` — generated from the linked dependency graph and shipped
-inside release wheels under `*.dist-info/licenses/` (alongside `LICENSE-APACHE.md`
-and `LICENSE-MIT.md`); the summary below reflects the 1.0.0 dependency graph.
+The authoritative third-party inventory is `LICENSE-THIRD-PARTY.md`, shipped in
+release packages with the license texts. It records the exact components,
+versions, and license notices present in each release artifact.
 
-### Bundled native components
+## Bundled CRS resources
 
-The wheel also bundles the native sources pulled in by the vendored `proj-sys`
-path fork: PROJ 9.6.2, libtiff 4.7.2 (including its LZW codec), and stock zlib
-1.3.2. PROJ and libtiff carry their upstream MIT/BSD-style notices; zlib is
-under the Zlib license. The complete inventory, including exact notice text,
-is authoritative in the generated `LICENSE-THIRD-PARTY.md`, not this summary.
+Release wheels bundle the PROJ CRS authority backend and the data resources that
+ship with it, so a core installation does not require a system PROJ shared
+library. PROJ and any transformation grid or other data resource retain their
+upstream license terms. If you add or redistribute caller-supplied grid files,
+check the terms from the provider of each file.
 
-### Bundled libPROJ (CRS authority backend)
+Optional integrations such as PyArrow, pandas, Polars, GeoPandas, and lonboard
+remain separately licensed by their respective projects. Installing an extra
+does not change gometry's license.
 
-gometry bundles **libPROJ** (via the GeoRust `proj-sys` crate) as its CRS authority
-backend, so release wheels do **not** require a system PROJ shared library. This is
-the deliberate exception to gometry's pure-Rust preference: CRS transformation is a
-deep, standards-heavy domain where an authority backend is the correct product
-boundary. gometry's admitted closed-form fast paths do not replace PROJ's CRS
-database, parsing, datum/grid pipelines, or general fallback.
+## See also
 
-- libPROJ is distributed under the **MIT/X11** license.
-- PROJ resource files — the bundled CRS database and any local transformation grids —
-  carry their **own licenses** from their respective data providers. If you redistribute
-  a grid, check its upstream terms.
-
-### GeoRust PROJ binding
-
-The CRS boundary uses a vendored path fork of GeoRust's `proj-sys` 0.27.0,
-distributed under the permissive **MIT / Apache-2.0** licenses. Its bundled
-TIFF integration is part of the native payload described above; network
-downloads remain disabled.
-Geometry, indexing, grid, and codec kernels are gometry-owned Rust
-implementations; the release does not link `geo` or `geo-types`.
-
-### PyO3 and maturin
-
-The Python bindings use **PyO3** (`MIT OR Apache-2.0`). **maturin** (same dual
-license) is build tooling for the wheel/sdist — it is not a statically linked
-runtime component of the extension.
-
-### Production Rust implementations of reference libraries
-
-Several pure-Rust crates implement algorithms whose *reference* implementations
-are C/C++:
-
-| Reference (dev oracle / research) | Production Rust dep | Role |
-|---|---|---|
-| H3 (Uber C library / h3-py) | **`h3o`** | H3 cell math in the release wheel |
-| GeographicLib (C++) | **`geographiclib-rs`** | Ellipsoidal geodesic/rhumb math |
-| S2 Geometry (C++ / s2sphere) | gometry's own `src/grid/s2/` | Production S2; the `s2` crate is **dev-only** differential oracle |
-
-Official C/C++ libraries (GEOS, JTS, the H3 C core, GeographicLib, S2) and their
-Python bindings remain **development-time oracles** for differential testing —
-they are **not** linked into the release wheel. The pure-Rust ports above *are*
-production dependencies and appear in `LICENSE-THIRD-PARTY.md`.
-
-## Rust dependency posture
-
-gometry prefers pure-Rust, permissively-licensed (MIT / Apache-2.0) dependencies.
-Heavy C/C++ libraries are avoided except where an authority backend is the correct
-product boundary — as with libPROJ for CRS semantics.
-
-A gometry release wheel therefore carries no mandatory GEOS/GDAL dependency and no
-system PROJ shared-library requirement.
-
-See the [design page](design.md#reliability-and-supply-chain-posture) for the
-reasoning behind this supply-chain posture.
+- [Compatibility](compatibility.md) — supported runtimes and optional boundaries.
+- [Installation](../get-started/installation.md) — core and optional installs.
+- [GitHub repository](https://github.com/Zaczero/pkgs/tree/main/gometry) — source
+  distribution and release files.

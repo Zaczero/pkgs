@@ -396,9 +396,7 @@ def test_groups_copy_deepcopy_and_pickle_preserve_value_container_protocols() ->
         gm.Point(2, 2),
         gm.Point(3, 3),
     ])
-    cell_values = gm.h3_cells(
-        [0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], resolution=1
-    )
+    cell_values = gm.h3_cells([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], resolution=1)
     groups = (
         _lib._unpickle_int64_groups([1, 2, 3, 4], [0, 2, 4]),
         _lib._unpickle_geometry_groups(geometry_values, [0, 2, 4]),
@@ -432,11 +430,15 @@ def test_multipart_direct_membership_index_count_use_part_semantics() -> None:
         (gm.MultiPoint([(0, 0), (1, 1), (0, 0)]), 2, -1),
         (gm.MultiLineString([line, line, gm.LineString([(2, 2), (3, 3)])]), 1, -2),
         (gm.MultiPolygon([polygon, polygon, gm.box(2, 2, 3, 3)]), 1, -2),
-        (gm.GeometryCollection([
-            gm.Point(0, 0),
-            line,
-            gm.Point(0, 0),
-        ]), 2, -1),
+        (
+            gm.GeometryCollection([
+                gm.Point(0, 0),
+                line,
+                gm.Point(0, 0),
+            ]),
+            2,
+            -1,
+        ),
     )
     for owner, duplicate_index, negative_start in owners:
         first = owner[0]
@@ -574,7 +576,9 @@ def test_cells_sort_by_id_and_reject_foreign_comparisons() -> None:
         h3_cells.index(None)
     s2_cells = gm.s2_cover(gm.box(0, 0, 2, 2, crs=4326), target_cells=8)
     assert sorted(s2_cells) == sorted(s2_cells, key=int)
-    assert min(s2_cells) == sorted(s2_cells)[0]
+    # FURB192 would rewrite the right-hand side to min() as well, which is
+    # the one thing this line cannot say: that the two agree.
+    assert min(s2_cells) == sorted(s2_cells)[0]  # noqa: FURB192
     with pytest.raises(TypeError):
         _ = h3_cells[0] < 5
     assert hex(h3_cells[0]).startswith('0x')

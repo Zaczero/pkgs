@@ -1325,7 +1325,7 @@ mod tests {
         request_path_is_valid, request_scheme_is_valid, trailer_field_name_is_forbidden,
     };
     use crate::config::{
-        ConfiguredResponseHeader, ProxyConfig, ResponseHeaderConfig, ServerConfig,
+        ConfiguredResponseHeader, ForwardedFields, ProxyConfig, ResponseHeaderConfig, ServerConfig,
     };
     use crate::http::header_value::header_value_is_valid;
     use crate::http::types::ResponseHeaders;
@@ -1493,6 +1493,7 @@ mod tests {
             proxy: ProxyConfig {
                 trust_headers: true,
                 trusted_peers: Box::new([parse_trusted_peer("unix").unwrap()]),
+                forwarded_fields: ForwardedFields::default(),
                 protocol: ProxyProtocolMode::Off,
             },
             ..test_fixtures::server_config_parts()
@@ -1510,6 +1511,7 @@ mod tests {
             proxy: ProxyConfig {
                 trust_headers: true,
                 trusted_peers: Box::new([parse_trusted_peer("unix").unwrap()]),
+                forwarded_fields: ForwardedFields::default(),
                 protocol: ProxyProtocolMode::Off,
             },
             ..test_fixtures::server_config_parts()

@@ -6,22 +6,22 @@ description: Short answers about h2c, HTTP/1.1, HTTP/3, Windows, Django, gRPC, a
 
 ## Should I expose `h2corn` directly to the internet?
 
-Either works. The common topology runs `h2corn` behind a reverse
-proxy that handles TLS and public-edge hardening — see
-[Behind a proxy](deployment/proxy.md). When that isn't a fit, `h2corn`
-can terminate TLS itself with [Direct TLS](deployment/tls.md). Browsers
-don't speak cleartext `h2c`, so the edge has to advertise HTTPS one way
-or the other.
+Direct public exposure requires h2corn to terminate TLS. The deployment then
+supplies certificate renewal, ALPN, firewall policy, request limits, abuse
+controls, and edge observability. A reverse proxy keeps those controls at the
+edge; see [Behind a proxy](deployment/proxy.md). Direct exposure uses
+[Direct TLS](deployment/tls.md).
 
 ## Why prefer `h2c` upstream instead of HTTP/1.1?
 
-It keeps the proxy → app hop on a modern protocol instead of
-translating requests back down to HTTP/1.1 before they reach the
-application server, removing a protocol-conversion boundary where
+It keeps the proxy → app hop on HTTP/2 instead of translating requests
+back down to HTTP/1.1 before they reach the application server, removing
+a protocol-conversion boundary where
 HTTP/1.1 framing ambiguity and connection-reuse issues can reappear.
-PortSwigger's [request smuggling](https://portswigger.net/web-security/request-smuggling)
+TLS, peer isolation, and application validation remain required.
+PortSwigger documents [request smuggling](https://portswigger.net/web-security/request-smuggling)
 and [HTTP/2 downgrading](https://portswigger.net/web-security/request-smuggling/advanced/http2-downgrading)
-material is a useful reference.
+risks.
 
 ## Why not HTTP/3?
 
@@ -30,26 +30,26 @@ handshakes — mostly matter at the public edge, where network
 conditions vary and clients churn. On a short, trusted internal
 connection between a reverse proxy and an application server, the
 benefits shrink while the cost (UDP, QUIC stack, broader attack
-surface) does not. `h2c` is simpler, more widely supported, and a
-better fit for that hop.
+surface) does not, and `h2c` has wider proxy support.
 
 ## Why is HTTP/1.1 even an option?
 
 Browsers do not speak cleartext `h2c`. Without TLS in front, a browser
 cannot talk directly to an `h2c`-only server, so HTTP/1.1 is kept
-available for **local development and testing**. In production,
-disable it with `--no-http1`.
+available for **local development and testing**. In production, HTTP/1.1 is
+disabled with `--no-http1` when every upstream client speaks h2c or HTTP/2; it
+remains enabled when a proxy uses an HTTP/1.1 WebSocket upgrade route, as
+described in [Behind a reverse proxy](deployment/proxy.md).
 
 ## Is HTTP/1.0 supported?
 
 No. `h2corn` speaks HTTP/1.1 and HTTP/2; an `HTTP/1.0` request-line is
 answered with `400 Bad Request`.
 
-HTTP/1.0 is a second framing regime — responses delimited by connection
-close, no chunked transfer coding, no keep-alive by default, no
-`100-continue` — and carrying it through the whole response path costs
-more than the remaining HTTP/1.0 clients are worth. If something in front
-of `h2corn` still speaks it, terminate it at the proxy.
+HTTP/1.0 is a second framing regime: responses are delimited by connection
+close, with no chunked transfer coding, no keep-alive by default, and no
+`100-continue`. HTTP/1.0 clients in front of `h2corn` require termination at
+the proxy.
 
 ## Does this work on Windows?
 
@@ -60,13 +60,15 @@ scaling.
 
 ## Can I use it with Django?
 
-Yes — point `h2corn` at the Django ASGI application:
+Yes — point `h2corn` at the Django ASGI application. Replace
+`myproject.asgi:application` with your project's import target:
 
 ```bash
 h2corn myproject.asgi:application --workers 4 --no-http1
 ```
 
-Django channels and any other ASGI 3 framework work the same way.
+Django Channels and other ASGI frameworks can use the same ASGI boundary;
+validate their lifespan, WebSocket, and middleware behavior before deployment.
 
 ## Which ASGI extensions are supported?
 
@@ -84,10 +86,12 @@ each — it differs from Uvicorn, which reports several malformed values as
 
 ## Does `h2corn` support gRPC?
 
-`h2corn` is an ASGI server, not a gRPC server. It speaks HTTP/2 framing
-correctly, but there is no built-in gRPC dispatcher; if your application
-exposes gRPC endpoints via an ASGI-compatible bridge, those will work
-like any other ASGI handler.
+`h2corn` is an ASGI server, not a gRPC server. It has no built-in gRPC
+dispatcher, and no gRPC-to-ASGI bridge is verified by this project. A
+bridge may be usable if it exposes a conforming ASGI application, but treat
+that combination as unverified: test HTTP/2 trailers, streaming, deadlines,
+metadata, and cancellation with the specific bridge and framework before
+deploying it.
 
 ## Where do I report bugs or request features?
 

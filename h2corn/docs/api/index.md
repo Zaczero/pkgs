@@ -1,12 +1,12 @@
 ---
-description: The public Python API of h2corn at a glance.
+description: Public Python API reference for h2corn.
 ---
 
 # API reference
 
-The public Python API is intentionally small. Most users only touch
-the top-level [`serve()`][h2corn.serve] function and a
-[`Config`][h2corn.Config] instance.
+Use [`serve()`][h2corn.serve] with a [`Config`][h2corn.Config] for the standard
+server entrypoint, or [`Server`][h2corn.Server] to embed one worker in an
+existing event loop.
 
 ::: h2corn
     options:

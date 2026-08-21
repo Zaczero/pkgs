@@ -279,6 +279,7 @@ async def test_tls_http2_trusted_forwarded_proto_overrides_tls_scheme(
         certfile=certfile,
         keyfile=keyfile,
         proxy_headers=True,
+        forwarded_fields=('forwarded',),
         forwarded_allow_ips=('127.0.0.1',),
     )
     context = client_context(certfile, alpn=['h2'])

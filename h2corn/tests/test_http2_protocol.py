@@ -2617,21 +2617,23 @@ async def test_window_update_for_finished_streams_allocates_nothing() -> None:
     sys.platform != 'linux' or sys.implementation.name != 'cpython',
     reason='requires Linux CPython RSS accounting',
 )
-async def test_header_only_responses_retain_no_more_than_body_responses() -> None:
+async def test_header_only_responses_retain_nothing_per_stream() -> None:
     """
     A response that ends with its HEADERS — empty, HEAD, 204, 304 — used to
     create writer state and never reach the flush pass that removes it, so it
-    sat there for the life of the connection. Comparing against a response
-    that does go through that pass needs no magic threshold: the two should
-    cost the same, and the defect made the header-only one several times
-    dearer.
-    """
-    batches, batch = 100, 100
+    sat there for the life of the connection.
 
-    async def growth_over(body: bytes) -> int:
+    Retention of that kind is linear in the number of requests, while the
+    allocator noise it has to be told apart from is not: the arenas a run
+    grows depend on how much is in flight at once, which is the same in both
+    runs here. So the same path measured at two sizes separates them by shape.
+    """
+    batches, batch = 50, 100
+
+    async def growth_over(rounds: int) -> int:
         async def app(scope, receive, send):
             await send({'type': 'http.response.start', 'status': 200, 'headers': []})
-            await send({'type': 'http.response.body', 'body': body})
+            await send({'type': 'http.response.body', 'body': b''})
 
         async with running_server(app, Config(port=0, access_log=False)) as server:
             reader, writer, conn, authority = await open_h2_connection(
@@ -2641,7 +2643,7 @@ async def test_header_only_responses_retain_no_more_than_body_responses() -> Non
             before = 0
             try:
                 # One warm-up batch first, so arena growth is not counted.
-                for round_index in range(batches + 1):
+                for round_index in range(rounds + 1):
                     if round_index == 1:
                         before = _resident_kib()
                     ended = 0
@@ -2668,20 +2670,21 @@ async def test_header_only_responses_retain_no_more_than_body_responses() -> Non
                 writer.close()
                 await writer.wait_closed()
 
-    # The body-bearing run goes first: it warms every allocator arena the
-    # two share, so what the second run adds is attributable to it rather
-    # than to whatever the process happened to do beforehand.
-    with_body = await growth_over(b'x')
-    header_only = await growth_over(b'')
+    # The smaller run goes first so the larger one measures a warm process:
+    # the reverse would charge first-touch arena growth to the run whose
+    # size the assertion is about.
+    base = await growth_over(batches)
+    quadrupled = await growth_over(batches * 4)
 
-    # Equal in principle; the defect made header-only several times dearer.
-    # A body-bearing control can return allocator arenas and therefore report
-    # negative RSS growth. It is not evidence that the header-only variant may
-    # retain more; use zero as the floor before applying the measured noise
-    # allowance.
-    assert header_only <= max(with_body, 0) + 2048, (
-        f'header-only responses retained {header_only} KiB against '
-        f'{with_body} KiB for body-bearing ones'
+    # Four times the requests retaining four times the memory is the defect;
+    # retaining about the same is arena noise, whatever its absolute size. The
+    # gate sits between the two. A run that hands arenas back reports negative
+    # growth, which is not licence for the larger run to retain more, so zero
+    # floors it — and the allowance keeps a near-zero base from making the
+    # bound impossibly tight.
+    assert quadrupled <= 2 * max(base, 0) + 2048, (
+        f'{batches * 4 * batch} requests retained {quadrupled} KiB against '
+        f'{base} KiB for {batches * batch}'
     )
 
 

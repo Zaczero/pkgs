@@ -2,6 +2,7 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bitflags::bitflags;
 use bytes::Bytes;
 use pyo3::Py;
 use pyo3::sync::PyOnceLock;
@@ -55,6 +56,24 @@ pub(crate) struct Http2Config {
     pub timeout_response_stall: Option<Duration>,
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) struct ForwardedFields: u8 {
+        const FOR = 1 << 0;
+        const PROTO = 1 << 1;
+        const HOST = 1 << 2;
+        const PORT = 1 << 3;
+        const PREFIX = 1 << 4;
+        const FORWARDED = 1 << 5;
+    }
+}
+
+impl Default for ForwardedFields {
+    fn default() -> Self {
+        Self::FOR | Self::PROTO
+    }
+}
+
 impl Default for Http2Config {
     fn default() -> Self {
         Self {
@@ -76,6 +95,7 @@ impl Default for Http2Config {
 pub(crate) struct ProxyConfig {
     pub trust_headers: bool,
     pub trusted_peers: Box<[TrustedPeer]>,
+    pub forwarded_fields: ForwardedFields,
     pub protocol: ProxyProtocolMode,
 }
 

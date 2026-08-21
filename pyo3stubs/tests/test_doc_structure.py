@@ -117,16 +117,21 @@ def inherited(self, value: int, flag: bool = False) -> int:
 
 
 def test_stub_only_inherited_override_uses_final_stub_signature() -> None:
-    assert _check(
-        'Child.inherited',
-        _RuntimeChild.inherited,
-        ast.get_docstring(STUB_OVERRIDE) or '',
-        parameters=_stub_parameters(STUB_OVERRIDE),
-    ) == []
+    assert (
+        _check(
+            'Child.inherited',
+            _RuntimeChild.inherited,
+            ast.get_docstring(STUB_OVERRIDE) or '',
+            parameters=_stub_parameters(STUB_OVERRIDE),
+        )
+        == []
+    )
 
 
 def test_stub_only_inherited_override_flags_stub_default_mismatch() -> None:
-    doc = (ast.get_docstring(STUB_OVERRIDE) or '').replace('default False', 'default True')
+    doc = (ast.get_docstring(STUB_OVERRIDE) or '').replace(
+        'default False', 'default True'
+    )
     assert _check(
         'Child.inherited',
         _RuntimeChild.inherited,

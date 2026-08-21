@@ -1,17 +1,53 @@
-# gometry
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="gometry" width="180">
+</p>
 
-**gometry** is a Rust-backed Python geospatial package for day-to-day geometry,
-CRS, geodesy, H3/S2 grids, spatial indexing, and [GeoArrow](https://geoarrow.org/) interchange. It
-replaces the practical stack of Shapely, pyproj, h3-py, s2sphere, and rtree with
-one coherent, fast, typed API.
+<h1 align="center">gometry</h1>
 
-- **Apache-2.0 OR MIT** · **Python ≥ 3.11** · **Docs:** <https://gometry.monicz.dev/>
+<p align="center">
+  <strong>Blazing-fast geospatial engine for Python</strong>, written in Rust.<br>
+  One package for geometry, CRS, geodesy, grids, and spatial indexing.
+</p>
 
-It is designed around one rule: **the CRS decides the measure.** Distance returns
-geodesic metres and area returns geodesic **square metres** on a geographic CRS,
-native units on a projected one, and raw coordinate units on a CRS-free geometry —
-with a per-call `unit='planar'` escape. Grid coverage uses `gm.h3_cover` /
-`gm.s2_cover` / `gm.geohash_cover` / `gm.tile_cover`.
+<p align="center">
+  <a href="https://pypi.org/p/gometry"><img src="https://shields.monicz.dev/pypi/pyversions/gometry" alt="PyPI - Python Version"></a>
+  <a href="https://liberapay.com/Zaczero/"><img src="https://shields.monicz.dev/liberapay/patrons/Zaczero?logo=liberapay&amp;label=Patrons" alt="Liberapay Patrons"></a>
+  <a href="https://github.com/sponsors/Zaczero"><img src="https://shields.monicz.dev/github/sponsors/Zaczero?logo=github&amp;label=Sponsors&amp;color=%23db61a2" alt="GitHub Sponsors"></a>
+</p>
+
+<p align="center">
+  <a href="https://gometry.monicz.dev/">Documentation</a> ·
+  <a href="https://gometry.monicz.dev/get-started/quickstart/">Quickstart</a> ·
+  <a href="https://gometry.monicz.dev/api/">API reference</a> ·
+  <a href="https://gometry.monicz.dev/migrating/">Migrating</a>
+</p>
+
+---
+
+- **One package instead of six** — Shapely, pyproj, h3-py, s2sphere, rtree,
+  mercantile, and pygeohash, with no GEOS, no GDAL, and no system PROJ
+- **The CRS decides the measure** — geodesic metres on a geographic CRS, native
+  linear units on a projected one, raw coordinate units without one. See the
+  [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
+- **Vectorized in Rust** — predicates, overlays, buffering, geodesics, and
+  coverage run as batched kernels over packed buffers and return NumPy arrays.
+  The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
+- **Interchange without conversion** — [GeoArrow](https://geoarrow.org/) packed
+  arrays for homogeneous XY/XYZ/XYM/XYZM geometries, WKB fallback for mixed
+  types, and WKT/WKB/EWKB/GeoJSON codecs
+- **Grids and indexes on one geometry type** — H3, S2, geohash, and XYZ tiles
+  share a typed `CellArray`; spatial indexes keep bounding-box `candidates`
+  separate from exact `query`
+- **Millimetre-accurate geodesics** on the ellipsoid, with coordinate-epoch
+  support and `unit='planar'` / `unit='meters'` overrides
+- **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
+  structured exception hierarchy
+- **Apache-2.0 OR MIT** · **Python ≥ 3.11**
+
+## gometry in action
+
+One `area` call, two answers: the geometry carries `crs=4326`, so it measures in
+geodesic **square metres**, and `unit='planar'` drops to raw coordinate units.
 
 ```python
 import gometry as gm
@@ -28,13 +64,13 @@ Arrays return NumPy ndarrays instead of Python-object lists:
 ```python
 import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
+points = gm.points([2.35, 30.0], [48.85, 52.0], crs=4326)
 mask = gm.contains(area, points)
 print(type(mask).__name__, mask.tolist())                  # ndarray [True, False]
 bounds = points.bounds
 print(type(bounds).__name__, bounds.shape, bounds.dtype)   # ndarray (2, 4) float64
 cover = gm.s2_cover(area, level=10, max_cells=None)
-print(len(cover), gm.covers(area, points).tolist())         # 1 [True, False]
+print(len(cover), gm.covers(area, points).tolist())         # 160 [True, False]
 
 ```
 
@@ -43,55 +79,30 @@ print(len(cover), gm.covers(area, points).tolist())         # 1 [True, False]
 Install the core package from PyPI:
 
 ```bash
-python -m pip install gometry
-# or
-uv add gometry
+uv add gometry # or: pip install gometry
 ```
 
-Optional integrations stay explicit; install only what the application uses:
+Optional integrations are available as extras:
 
 ```bash
-python -m pip install "gometry[arrow]"       # PyArrow / GeoArrow objects
-python -m pip install "gometry[pandas]"      # pandas extension storage
-python -m pip install "gometry[polars]"      # Polars binary columns
-python -m pip install "gometry[geopandas]"   # GeoPandas conversion
-python -m pip install "gometry[viz]"         # lonboard exploration
+uv add "gometry[arrow]"         # PyArrow / GeoArrow objects
+uv add "gometry[pandas]"        # pandas extension storage
+uv add "gometry[polars]"        # Polars binary columns
+uv add "gometry[geopandas]"     # GeoPandas conversion
+uv add "gometry[viz]"           # lonboard exploration
 ```
 
 With the `arrow` extra installed, `to_arrow` materializes pyarrow objects; without
 it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 
-## The footgun it removes
-
-Bare planar metrics on lon/lat data silently return square degrees. gometry makes
-the CRS decide, so the default is the real-world answer:
-
-```python
-import gometry as gm
-
-area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(f"{area.area:.0f} m^2")                          # 30562197104 m^2
-print(f"{gm.area(area, unit='planar'):.1f} degree^2")  # 4.0 degree^2
-
-```
-
-The default measures for the CRS — geodesic metres (and square metres for area) on
-a geographic CRS, native linear units on a projected one, coordinate units when
-CRS-free. Pass `unit='meters'` for SI on a non-meter projected CRS, `unit='planar'`
-for raw coordinate math, or `to_crs(geom.estimate_local_crs())` for a local metric
-frame.
-
 ## What it replaces
-
-One coherent API for workflows that otherwise require a stack of separate
-libraries:
 
 | Instead of | use |
 |---|---|
 | Shapely geometry, predicates, overlays, constructive ops | `gm.Point/box/...`, `gm.contains(a, b)`, `geom.buffer(...)` |
 | pyproj transforms and CRS introspection | `geom.to_crs(...)`, `gm.CRS(...)`, `gm.crs_*` |
 | geographiclib / haversine geodesy | CRS-aware `area`/`length`/`distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
-| h3-py, s2sphere | `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`, typed cells and coverage |
+| h3-py, s2sphere | `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`, typed cell arrays |
 | pygeohash, mercantile | `gm.geohash_cover(geom, ...)` / `gm.tile_cover(geom, ...)` |
 | rtree | `gm.SpatialIndex(values)` with exact-predicate refinement |
 | polyline, openlocationcode | `gm.from_polyline(...)`, `gm.pluscode_*` |
@@ -99,38 +110,32 @@ libraries:
 See the [migration guide](https://gometry.monicz.dev/migrating/) for symbol-level
 mappings.
 
-## Highlights
+## Is gometry right for you?
 
-- **Scalar and vectorized** construction, predicates, measures, overlays, and
-  constructive operations — the same names work on a `Geometry` or a
-  Rust-owned `GeometryArray`.
-- **CRS-aware metrics**, native by default, with `unit='planar'` / `unit='meters'`
-  overrides and first-class coordinate-epoch support.
-- **Grid cell covers** — H3, S2, geohash, and XYZ tiles share one typed
-  `CellArray` shape; keep source geometry with the caller for exact predicates.
-- **Spatial index** with explicit candidate vs exact-predicate refinement and
-  CRS-aware distance queries.
-- **GeoArrow** packed arrays for homogeneous XY/XYZ/XYM/XYZM geometries, with
-  WKB fallback for mixed types, and WKT/WKB/EWKB/GeoJSON codecs.
-- **Typed end to end** — a complete type stub, precisely narrowed signatures,
-  public cross-grid protocols, and a structured exception hierarchy.
+gometry is a good choice when:
 
-## Boundaries
+- you work with CRS-aware geometry and want the metric to follow the data
+- you want one dependency rather than a stack of six, with no GEOS, GDAL, or
+  system PROJ to install
+- you process geometry in bulk and want packed arrays instead of Python-object
+  loops
+- you need H3, S2, geohash, or tile covers alongside ordinary geometry, and
+  CRS-aware distance queries from one spatial index
 
-gometry measures and indexes geometry; it is not a dataframe or a data-loading
-layer. `GeometryArray` requires a coherent CRS, S2 support is cell/coverage
-oriented rather than a full spherical boolean engine, and GeoParquet/dataframe
-engines are integration boundaries rather than bundled dependencies.
+gometry is not the right choice when:
 
-## Documentation
+- you need a dataframe or a data-loading layer. GeoParquet and dataframe
+  engines are integration boundaries rather than bundled dependencies
+- you need spherical boolean operations. S2 support is oriented to cells and
+  covers
+- you need mixed-CRS collections. A `GeometryArray` requires a shared CRS
 
-The full guide, migration notes, and API reference are available at
-<https://gometry.monicz.dev/>. Their canonical sources live under
-`docs/` and build with `properdocs build --strict`.
+## Support
 
-## License
+Bug reports, feature requests, and questions go in the
+[GitHub issue tracker](https://github.com/Zaczero/pkgs/issues). Include the
+gometry version, Python version, platform, and a minimal reproduction.
 
-Distributed under the **Apache-2.0 OR MIT** dual license; use it under the terms
-of either license, at your option. gometry bundles libPROJ — see
-[the license page](https://gometry.monicz.dev/about/license/) for third-party
-notices.
+The [installation guide](https://gometry.monicz.dev/get-started/installation/)
+covers PyPI and source installation, and the
+[API reference](https://gometry.monicz.dev/api/) is the canonical lookup surface.

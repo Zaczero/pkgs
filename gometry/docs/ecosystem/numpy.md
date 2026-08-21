@@ -1,10 +1,10 @@
 ---
-description: NumPy is gometry's mandatory, first-class interchange boundary — typed read-only ndarrays for every bulk result, zero-copy coordinate columns, the buffer protocol, and clean handoffs to SciPy and scikit-learn.
+description: NumPy interchange in gometry — typed read-only ndarrays for every bulk result, zero-copy coordinate columns, the buffer protocol, and coordinate handoffs to SciPy and scikit-learn.
 ---
 
 # NumPy arrays & coordinates
 
-NumPy is the one **required** runtime dependency, and it is first-class by design.
+NumPy is the one **required** runtime dependency.
 Geometry containers in Shapely and GeoPandas represent geometry objects rather
 than pretending they are numeric dtypes. For gometry's *numeric bulk results*,
 gometry returns fixed-width **typed `numpy.ndarray`s** straight from Rust — `float64` for
@@ -31,7 +31,7 @@ print("pairs:", left.dtype, list(zip(left.tolist(), right.tolist())))
 
 The arrays come back read-only and already in the right dtype, so
 `numpy.asarray(result)` is a **zero-copy view** when the dtype matches and
-`.tolist()` is there when you want plain Python. Per-row bounds are `(rows, 4)`
+`.tolist()` returns plain Python lists. Per-row bounds are `(rows, 4)`
 `float64` matrices (`nan` rows for empty geometries); array index queries return
 [`Groups`][gometry.Groups], a CSR wrapper whose `.values`/`.offsets` and
 per-row views are `int64` ndarrays. Text outputs (`to_wkt`, geohash tokens), byte
@@ -113,9 +113,9 @@ print("object:", type(np.asarray(cells, dtype=object)[0]).__name__)
 ## Handing off to SciPy and scikit-learn
 
 Scattered-data interpolation (IDW, kriging, natural-neighbor) and coordinate
-clustering (k-means, DBSCAN, hierarchical) deliberately live in SciPy,
-scikit-gstat, and scikit-learn — gometry extracts the coordinates and gets out of
-the way. Pull a `float64` matrix with [`get_coordinates`][gometry.get_coordinates]
+clustering (k-means, DBSCAN, hierarchical) live in SciPy, scikit-gstat, and
+scikit-learn; gometry supplies their coordinate input.
+Pull a `float64` matrix with [`get_coordinates`][gometry.get_coordinates]
 (or per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
 first when planar XY is wrong for geographic data:
 
@@ -135,12 +135,15 @@ print("labels:", labels.tolist())
 The same pattern feeds SciPy's `cKDTree`, `cdist`, and interpolators — the ndarray
 is the contract, so anything in the scientific stack consumes it directly.
 
-!!! note "gometry is not an Array API provider"
-    gometry implements the NumPy interchange protocols and returns typed ndarrays,
-    but does not expose `__array_namespace__` — the
-    [Array API standard](https://data-apis.org/array-api/) targets numeric array
-    libraries, and a gometry array holds geometries or cells, not numbers. See the
-    [ecosystem overview](index.md#a-note-on-the-numpy-array-api-standard).
+## Python Array API compatibility
+
+gometry implements the NumPy interchange protocols (`__array__`,
+`__array_ufunc__ = None`, and the buffer protocol) and returns typed ndarrays, but
+it is **not** a [Python Array API](https://data-apis.org/array-api/) provider and
+does not expose `__array_namespace__`. The Array API standard targets numeric
+array libraries for elementwise math and linear algebra; gometry arrays hold
+geometries or cells, not numbers. Use gometry to produce coordinate arrays, then
+pass them to NumPy, SciPy, or scikit-learn.
 
 ## See also
 

@@ -208,7 +208,6 @@ __all__ = [
     'Features',
     'FloatColumn',
     'FloatInput',
-    'ParseFormat',
     'GeoJsonFeature',
     'GeoJsonFeatureCollection',
     'GeoJsonFeatureNonNull',
@@ -225,6 +224,7 @@ __all__ = [
     'PandasDataFrame',
     'PandasIndex',
     'PandasSeries',
+    'ParseFormat',
     'PolarsSeries',
     'PolygonizeResult',
     'Predicate',
@@ -762,8 +762,20 @@ FloatColumn: TypeAlias = Iterable[float] | Buffer
 FloatInput: TypeAlias = float | FloatColumn
 
 ParseFormat: TypeAlias = Literal[
-    'wkt', 'wkb', 'geojson', 'geoarrow', 'geoparquet', 'h3', 's2', 'geohash',
-    'tile', 'quadkey', 'polyline', 'pluscode', 'osm_shortlink', 'pickle',
+    'wkt',
+    'wkb',
+    'geojson',
+    'geoarrow',
+    'geoparquet',
+    'h3',
+    's2',
+    'geohash',
+    'tile',
+    'quadkey',
+    'polyline',
+    'pluscode',
+    'osm_shortlink',
+    'pickle',
 ]
 
 #: Anything accepted where a CRS is expected: an authority string

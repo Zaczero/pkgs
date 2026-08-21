@@ -5,7 +5,18 @@
 <h1 align="center">h2corn</h1>
 
 <p align="center">
-  <strong>High-performance HTTP/2 ASGI server</strong> for FastAPI, Starlette, and similar applications.<br>
+  <strong>Blazing-fast HTTP/2 ASGI server for Python</strong>, written in Rust.<br>
+  Switch the server, not your app — FastAPI, Starlette, Django, Litestar,<br>
+  and any other ASGI 3 application.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/p/h2corn"><img src="https://shields.monicz.dev/pypi/pyversions/h2corn" alt="PyPI - Python Version"></a>
+  <a href="https://liberapay.com/Zaczero/"><img src="https://shields.monicz.dev/liberapay/patrons/Zaczero?logo=liberapay&amp;label=Patrons" alt="Liberapay Patrons"></a>
+  <a href="https://github.com/sponsors/Zaczero"><img src="https://shields.monicz.dev/github/sponsors/Zaczero?logo=github&amp;label=Sponsors&amp;color=%23db61a2" alt="GitHub Sponsors"></a>
+</p>
+
+<p align="center">
   <a href="https://h2corn.monicz.dev/">Documentation</a> ·
   <a href="https://h2corn.monicz.dev/quickstart/">Quickstart</a> ·
   <a href="https://h2corn.monicz.dev/configuration/">Configuration</a> ·
@@ -14,21 +25,21 @@
 
 ---
 
-`h2corn` keeps application traffic on **HTTP/2 end-to-end** instead of
-downgrading to HTTP/1.1 inside your trust boundary. It is built around `h2c`
-behind a trusted reverse proxy, with optional direct TLS for TCP listeners.
+![Requests per second and peak memory by server for a plaintext HTTP/1 GET on four workers: h2corn 242,313 RPS at p99 0.821 ms, gunicorn 47,414 RPS at p99 4.218 ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
 
-- **Better security** for the proxy → application connection (no HTTP/1.1 downgrade)
-- **Higher throughput** and lower latency from a Rust engine on Tokio
-- **Compatible** with any ASGI 3 application — FastAPI, Starlette, Django, Litestar
-- **Direct TLS** with Rustls and modern defaults, including mutual TLS with the client identity exposed to the application
-- **[RFC 8441 WebSockets](https://h2corn.monicz.dev/websockets/)** over HTTP/2
-- **Operator-friendly**: multi-worker supervisor with graceful shutdown, rolling reload, live scaling, worker recycling, and health checks
+*Plaintext HTTP/1 GET, four workers, one Starlette application.*
+
+- **[Lowest latency in all 20 benchmark scenarios](https://h2corn.monicz.dev/benchmarks/)** with a comparator — against `uvicorn`, `hypercorn`, and `gunicorn` on one Starlette application
+- **HTTP/2 end-to-end** — the proxy speaks `h2c` straight into the application instead of downgrading to HTTP/1.1 inside your trust boundary, so the last hop stops being the weak one
+- **Drop-in** — same `module:app` start line, same `--workers`, no application changes
+- **[WebSockets over HTTP/2](https://h2corn.monicz.dev/websockets/)** — RFC 8441 extended `CONNECT` on the same connection, not a hijacked HTTP/1.1 socket
+- **Direct TLS** — Rustls on TLS 1.2 and 1.3 only, including mutual TLS with the client identity exposed to the application
+- **Built for operators** — rolling reload, live scaling, worker recycling, health checks, and bounded graceful shutdown
 
 ## Install
 
 ```bash
-uv add h2corn         # or: pip install h2corn
+uv add h2corn fastapi # or: pip install h2corn fastapi
 ```
 
 ## A 60-second start
@@ -49,21 +60,36 @@ async def index():
 h2corn hello:app
 ```
 
-For production, put `h2corn` behind a reverse proxy that speaks `h2c`
-upstream, and add `--no-http1` to drop the HTTP/1.1 surface entirely.
-HAProxy does that end to end, WebSockets included; Caddy needs upgrades
-routed over HTTP/1.1 because it cannot translate them for an HTTP/2
-upstream. The full deployment recipes live in
+For production, put `h2corn` behind a reverse proxy that speaks `h2c` upstream,
+and use `--no-http1` when every upstream client speaks HTTP/2. Deployment
+recipes for nginx, HAProxy, and Caddy live in
 [the docs](https://h2corn.monicz.dev/deployment/proxy/).
+
+## Is h2corn right for you?
+
+h2corn is a good choice when:
+
+- you terminate TLS at a reverse proxy and want the last hop to stay on HTTP/2
+- you serve WebSockets and want them multiplexed onto the same connection as
+  ordinary requests
+- you run long-lived deployments that need rolling reload, live scaling, worker
+  recycling, and a bounded shutdown budget
+- throughput and tail latency are what you are optimizing for
+
+h2corn is not the right choice when:
+
+- your proxy cannot speak `h2c` upstream. Caddy's documented split route sends
+  WebSocket upgrades over HTTP/1.1 while ordinary requests use h2c; HAProxy is
+  the candidate pure-HTTP/2 WebSocket topology
+- you need gRPC, which h2corn does not serve
+- you want a pure-Python server
 
 ## Benchmarks
 
-In local runs comparing `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn`
-across baseline GETs, Unix sockets, static files, streaming, and
-WebSockets, `h2corn` leads every scenario that has a comparator — in one,
-HTTP/2 multiplexed, no other server completed the workload:
-
-![HTTP/1 GET, 4 workers. h2corn ~242k RPS p99 0.8ms.](bench/results/plots/benchmark_http_1_get_4_workers.svg)
+One local run compared `h2corn`, `uvicorn`, `hypercorn`, and `gunicorn` across
+baseline GETs, Unix sockets, static files, streaming, and WebSockets, on one
+host and one Starlette application. No other server completed the separate
+HTTP/2 multiplexed workload.
 
 Full plots and methodology: [Benchmarks](https://h2corn.monicz.dev/benchmarks/).
 
@@ -77,9 +103,5 @@ work, commercial support is available through
 [monicz.dev](https://monicz.dev). See the
 [Support page](https://h2corn.monicz.dev/support/) for details.
 
-Security disclosures: use GitHub's
+Security disclosures use GitHub's
 [private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new).
-
-## License
-
-MIT.

@@ -590,8 +590,12 @@ def test_xy_predicates_are_vectorized_on_every_surface() -> None:
     np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
     np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
     prepared = square.prepare()
-    np.testing.assert_array_equal(gm.contains_xy(prepared, xs, ys), [True, False, False])
-    np.testing.assert_array_equal(gm.intersects_xy(prepared, xs, ys), [True, True, False])
+    np.testing.assert_array_equal(
+        gm.contains_xy(prepared, xs, ys), [True, False, False]
+    )
+    np.testing.assert_array_equal(
+        gm.intersects_xy(prepared, xs, ys), [True, True, False]
+    )
     assert gm.intersects_xy(prepared, 0, 5) is True
     np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
     np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
@@ -787,9 +791,7 @@ def test_dwithin_accepts_prepared_operands_in_both_positions() -> None:
     b = gm.box(1.5, 0, 2.5, 1)
     distance = 0.5
 
-    assert gm.dwithin(a.prepare(), b.prepare(), distance) == gm.dwithin(
-        a, b, distance
-    )
+    assert gm.dwithin(a.prepare(), b.prepare(), distance) == gm.dwithin(a, b, distance)
     assert gm.dwithin(a.prepare(), b, distance) == gm.dwithin(a, b, distance)
     assert gm.dwithin(a, b.prepare(), distance) == gm.dwithin(a, b, distance)
 

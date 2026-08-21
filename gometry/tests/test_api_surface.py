@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import cast
 
 import gometry as gm
-from gometry import _lib
 import numpy as np
 import pytest
+from gometry import _lib
 
 FLAT_FAMILY_EXPORTS = {
     'crs_apply',

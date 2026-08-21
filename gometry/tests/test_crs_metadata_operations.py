@@ -110,7 +110,9 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
         math.radians(cast('float', utm_factors['meridian_convergence']))
     )
     crs_geodesic = gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0)
-    crs_geodesic_3d = gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0)
+    crs_geodesic_3d = gm.CRS(4326).geodesic_inverse(
+        -73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0
+    )
     crs_geodesic_radians = gm.CRS(4326).geodesic_inverse(
         math.radians(-73.0),
         math.radians(41.0),
@@ -362,7 +364,9 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert broadcast_apply_from_z[0] == pytest.approx([2.0, 2.0])
     assert broadcast_apply_from_z[1] == pytest.approx([7.0, 7.0])
     assert broadcast_apply_from_z[2] == pytest.approx([13.0, 23.0])
-    broadcast_geodesic = gm.CRS(4326).geodesic_inverse(-73.0, [41.0, 42.0], -74.0, [42.0, 43.0])
+    broadcast_geodesic = gm.CRS(4326).geodesic_inverse(
+        -73.0, [41.0, 42.0], -74.0, [42.0, 43.0]
+    )
     assert len(broadcast_geodesic['distance']) == 2
     broadcast_geodesic_from_z = gm.CRS(4326).geodesic_inverse(
         -73.0, 41.0, -74.0, 42.0, z1=[10.0, 20.0], z2=[110.0, 20.0]

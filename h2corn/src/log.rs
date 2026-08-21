@@ -977,7 +977,7 @@ mod tests {
         RequestSummaryKind, append_client_label, append_connection_client_label, write_bytes_to,
         write_duration_to, write_io_summary_to,
     };
-    use crate::config::{ProxyConfig, ServerConfig};
+    use crate::config::{ForwardedFields, ProxyConfig, ServerConfig};
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
         BytesStr, H1RequestHeaders, HttpVersion, RequestHead, RequestHeaders, RequestTarget,
@@ -1108,6 +1108,7 @@ mod tests {
                 proxy: ProxyConfig {
                     trust_headers: true,
                     trusted_peers: Box::new([parse_trusted_peer("127.0.0.1").unwrap()]),
+                    forwarded_fields: ForwardedFields::default(),
                     protocol: ProxyProtocolMode::Off,
                 },
                 ..test_fixtures::server_config_parts()
@@ -1169,6 +1170,7 @@ mod tests {
                 proxy: ProxyConfig {
                     trust_headers: true,
                     trusted_peers: Box::new([parse_trusted_peer("127.0.0.1").unwrap()]),
+                    forwarded_fields: ForwardedFields::default(),
                     protocol: ProxyProtocolMode::Off,
                 },
                 ..test_fixtures::server_config_parts()

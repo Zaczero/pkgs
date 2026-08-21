@@ -4,8 +4,9 @@ description: gometry's exception hierarchy — catching errors, error attributes
 
 # Errors & exceptions
 
-gometry raises a small, purpose-built exception hierarchy instead of a wall of
-generic `ValueError`s. Every class is available directly from `gometry`, such as
+gometry exposes a typed exception hierarchy rooted at `GeometryError` rather than
+using generic `ValueError`s for every domain failure. Every class is available
+directly from `gometry`, such as
 [`gm.CRSMismatchError`][gometry.CRSMismatchError].
 
 ```text
@@ -25,17 +26,17 @@ parameter value), while an invalid cell id, token, or quadkey is a
 `ParseError` whose `.format` tag names the system (`'h3'`, `'s2'`,
 `'geohash'`, `'tile'`, `'quadkey'`); codec tags are lowercase machine keys.
 
-Two guarantees shape the design:
+## Built-in exception compatibility
 
-1. **Everything is a `ValueError`.** The base class subclasses `ValueError`
-   (the `json.JSONDecodeError` precedent), so a broad `except ValueError`
-   keeps working — precision is opt-in, never a migration.
+1. **Domain errors are also `ValueError`s.** The base class subclasses
+   `ValueError` (the `json.JSONDecodeError` precedent), so a broad
+   `except ValueError` catches them while specific classes preserve recovery detail.
 2. **Python protocol semantics stay builtin.** A non-number where a number is
    required is a plain `TypeError` (floats *and* integers); an out-of-range
    `arr[i]` is an `IndexError`; an exhausted iterator is `StopIteration`.
    Those protocol failures are not rewrapped.
 
-`GeometryTypeError` is the deliberate dual-base exception: handing
+`GeometryTypeError` is a dual-base exception: handing
 `line_substring` a `Polygon` is *both* a gometry domain error and a Python type
 error, so it subclasses both `GeometryError` and `TypeError` (so either `except`
 clause catches it). That is the one place gometry subclasses `TypeError` —
@@ -43,7 +44,7 @@ wrong-kind domain failures, not protocol coercion.
 
 ## Catching errors
 
-Catch the most specific class that matches your recovery strategy:
+The most specific exception class identifies the recovery strategy:
 
 | I want to… | catch |
 |---|---|
@@ -88,8 +89,6 @@ print(len(parsed), 'of', len(rows), 'rows parsed')
 
 ```
 
-The wrong-kind dual base in action — both idioms catch the same error:
-
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -104,24 +103,22 @@ for catch in (TypeError, gm.GeometryTypeError):
 
 ## Troubleshooting common errors
 
-The errors users actually hit, what they mean, and the fix:
-
 | You see | It means | Fix |
 |---|---|---|
 | `CRSMismatchError: ... CRS-free vs "EPSG:4326"` | one operand carries a CRS and the other doesn't (or they differ) | tag the bare one with `set_crs(...)`, or reproject with `to_crs(...)` — gometry never coerces frames |
-| `CRSError: set_crs would re-tag CRS ... without moving coordinates` | you asked to *relabel* a geometry that already has a CRS | `to_crs(...)` to actually reproject; `set_crs(..., overwrite=True)` only if the original tag was wrong |
+| `CRSError: set_crs would re-tag CRS ... without moving coordinates` | you asked to *relabel* a geometry that already has a CRS | `to_crs(...)` to reproject; `set_crs(..., overwrite=True)` only if the original tag was wrong |
 | `CRSError: ... epoch requires a CRS` | a coordinate epoch is meaningless without a frame | set the CRS first (or together: `Point(..., crs=..., epoch=...)`) |
-| `InvalidGeometryError: ... cannot carry Z/M` (`to_geojson` on M or `to_polyline` on Z/M) | the target format has no honest slot for those ordinates | use WKB/WKT/GeoArrow, or explicitly clear dimensions with `set_m(None)` / `force_2d()` when loss is intended |
+| `InvalidGeometryError: ... cannot carry Z/M` (`to_geojson` on M or `to_polyline` on Z/M) | the target format has no slot for those ordinates | use WKB/WKT/GeoArrow, or explicitly clear dimensions with `set_m(None)` / `force_2d()` when loss is intended |
 | `ParseError` with `.format` set | a serialized input (WKT/WKB/GeoJSON/cell id/quadkey) is malformed | check `e.format` for which codec rejected it; a batch fails as a unit and attaches the failing row as a note |
 | `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call `drop_missing()` first or `fill_missing(...)` with an explicit replacement |
 | `GeometryError: ... must be between ... got ...` | a parameter value is out of its documented range | the message names the kwarg and the valid range |
 | `GeometryError: unknown ... did you mean ...?` | a token typo (`'mitter'` vs `'miter'`, …) | take the suggestion; tokens are also `Literal`-typed, so a type checker catches this before runtime |
 | `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside ±180/±90 | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)`; `swap_xy()` repairs latitude-first data |
-| metric looks ~111,000× too large/small | degrees treated as meters somewhere | let the CRS drive (no `unit=`), and check the geometry actually carries the CRS you think it does |
+| metric looks unexpectedly large or small | degrees treated as meters somewhere | let the CRS drive (no `unit=`), and check the geometry carries the intended CRS |
 
 ## Error attributes
 
-Operation-raised errors carry the interesting values as attributes, so
+Operation-raised errors carry operation values as attributes, so
 handlers act on data instead of parsing messages. Class-level defaults are
 `None` on instances from a different lane (hand-constructed instances too):
 
@@ -181,8 +178,8 @@ public keyword names, `repr` for user-supplied strings, no trailing period:
 - `invalid <FORMAT>: <detail>` — `invalid WKT: unbalanced parentheses`
 - `unknown <concept> <value>; expected …` — `unknown buffer cap_style "fancy"; expected 'round', 'flat', or 'square'` — with a `did you mean '<closest>'?` clause when the value looks like a typo
 
-Focused regression tests pin public messages and exception classes at the
-boundaries where callers realistically depend on them.
+Callers can branch on exception classes, structured attributes, and message
+shapes.
 
 ## Pickling
 

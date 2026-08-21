@@ -4,18 +4,22 @@ description: Install h2corn, run your first ASGI app, and understand the flags a
 
 # Quickstart
 
+This tutorial runs a FastAPI application under h2corn, proves both the HTTP/1.1
+and cleartext `h2c` paths against it, and ends with the flags a production start
+line needs.
+
 ## Install
 
 === "uv"
 
     ```bash
-    uv add h2corn
+    uv add h2corn fastapi
     ```
 
 === "pip"
 
     ```bash
-    pip install h2corn
+    pip install h2corn fastapi
     ```
 
 `h2corn` requires **Python 3.11+**. Wheels are published for Linux,
@@ -38,27 +42,39 @@ object inside it:
 h2corn hello:app
 ```
 
-You'll see something like this in your terminal:
+Visit <http://127.0.0.1:8000/> in your browser. The response is
+`{"message": "hello from h2corn"}`.
 
-```text
-h2corn v1.6.0 • HTTP/2 ASGI
-Listening on http://127.0.0.1:8000
-HTTP/1 compatibility is enabled; disable with http1=False (--no-http1)
+For a repeatable terminal check, leave that process running and use a second
+terminal:
 
-Started worker [12345]
-127.0.0.1:54321 "GET / HTTP/1.1" 200 0.42ms tx=25b
+```bash
+curl --http1.1 --fail http://127.0.0.1:8000/
 ```
 
-Visit <http://127.0.0.1:8000/> in your browser. You should see
-`{"message": "hello from h2corn"}` come back.
+The request succeeds because the default `http1` setting is enabled.
 
-!!! note "Why does the response say HTTP/1.1?"
-    Browsers do not speak cleartext `h2c`, so the development server
-    keeps HTTP/1.1 enabled for local testing. In production, the edge
-    advertises HTTPS — either through a
-    [reverse proxy](deployment/proxy.md) or `h2corn`'s own
-    [Direct TLS](deployment/tls.md) — and you turn HTTP/1.1 off with
-    `--no-http1`.
+!!! note "Why does the browser use HTTP/1.1?"
+    Browsers do not speak cleartext `h2c` with prior knowledge. The
+    development server therefore keeps HTTP/1.1 enabled for local browser
+    testing. A cleartext browser success is HTTP/1.1, not HTTP/2. In
+    production, HTTPS is exposed through a [reverse proxy](deployment/proxy.md)
+    or h2corn's own [Direct TLS](deployment/tls.md). `--no-http1` applies only
+    when the client or proxy is configured for HTTP/2.
+
+## Prove h2c with prior knowledge
+
+An HTTP/2 client must opt into cleartext prior knowledge. Use a curl build that
+lists HTTP/2 in `curl --version`:
+
+```bash
+curl --version | grep -q 'HTTP2'
+curl --http2-prior-knowledge --fail http://127.0.0.1:8000/
+```
+
+`--http2-prior-knowledge` sends the HTTP/2 connection preface straight to
+h2corn with no `Upgrade` handshake, on the same listener the HTTP/1.1 request
+used.
 
 ## Hot reload
 
@@ -76,8 +92,8 @@ cannot be combined with multiple workers.
 ## Application factories
 
 Some applications expose their ASGI object through a factory function
-rather than a module-level attribute. Pass `--factory` and `h2corn`
-will call it for you:
+rather than a module-level attribute. `--factory` makes `h2corn` call the
+target:
 
 ```python title="factory.py"
 --8<-- "factory.py"
@@ -91,7 +107,7 @@ h2corn factory:create_app --factory
 
 In production, `h2corn` typically sits behind a reverse proxy that
 terminates browser-facing TLS. The application server itself runs on a
-local listener with several workers, looking something like this:
+local listener with several workers. A production start line can use:
 
 ```bash
 h2corn hello:app \
@@ -102,24 +118,77 @@ h2corn hello:app \
   --no-http1
 ```
 
-What each flag buys:
+Production flags:
 
 - **`--bind 127.0.0.1:8000`** listens on loopback only so the proxy can
-  reach it locally. Use `0.0.0.0:port` if you want a public-facing TCP
-  listener instead.
-- **`--workers 4`** is a reasonable starting point on a 4-core box.
-  Size it to your workload and revisit after measuring.
-- **`--proxy-headers`** trusts standard `Forwarded` and `X-Forwarded-*`
-  headers, but only when they come from the peers listed in
-  `--forwarded-allow-ips`. Set that list to wherever your proxy
-  actually connects from.
-- **`--no-http1`** is a fail-closed hardening flag. Once the upstream
-  is configured to speak `h2c`, an accidental fallback fails
-  immediately instead of quietly serving traffic on the older protocol.
+  reach it locally. Use `0.0.0.0:port` for a public-facing TCP listener.
+- **`--workers 4`** runs four worker processes; size it to the core count and
+  the application's concurrency.
+- **`--proxy-headers`** interprets `X-Forwarded-For` and
+  `X-Forwarded-Proto` from peers listed in `--forwarded-allow-ips`. Use
+  `--forwarded-fields` to select additional X-Forwarded fields or the RFC
+  7239 `Forwarded` dialect.
+- **`--no-http1`** rejects HTTP/1.1 connections outright, so once the upstream
+  is configured to speak `h2c`, an accidental fallback fails immediately
+  instead of serving at the lower protocol.
 
-Once you have more than a handful of flags, prefer a
-[TOML config file](deployment/operations.md#toml-config-files) — same
-keys, single source of truth, easier to review in a pull request.
+For larger command lines, use a
+[TOML config file](deployment/operations.md#toml-config-files) with the same
+keys.
+
+## Migrate from another ASGI server
+
+ASGI entrypoint mapping does not include options, protocol limits, lifespan,
+WebSockets, forwarded identity, or shutdown behavior; those differ between
+servers. `myapp:app` is the application import target.
+
+### From Uvicorn
+
+```bash
+# Uvicorn
+uvicorn myapp:app --host 127.0.0.1 --port 8000 --workers 4
+
+# h2corn
+h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
+```
+
+Use `--loop asyncio` or `--loop uvloop` to choose the callback loop.
+`--reload` is a development-only watcher and is limited to one worker.
+
+### From Hypercorn
+
+```bash
+# Hypercorn
+hypercorn myapp:app --bind 127.0.0.1:8000 --workers 4
+
+# h2corn
+h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
+```
+
+Both serve HTTP/2. Port the remaining settings through the
+[Configuration reference](configuration.md), then test the protocol path you
+deploy.
+
+### From Gunicorn
+
+```bash
+# Gunicorn with its ASGI worker
+gunicorn myapp:app -k uvicorn.workers.UvicornWorker --workers 4 \
+  --bind 127.0.0.1:8000
+
+# h2corn
+h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
+```
+
+h2corn does not load Gunicorn worker classes or Gunicorn configuration. Its
+worker lifecycle, signals, and resource limits are documented in
+[Operations](deployment/operations.md).
+
+## Framework boundary
+
+h2corn accepts ASGI 3 callables. Django (`asgi:application`), Litestar, Quart,
+and similar frameworks work when their exported callable meets the ASGI
+contract; validate lifespan, WebSockets, and middleware behavior.
 
 ## Next steps
 

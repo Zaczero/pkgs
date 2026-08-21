@@ -5,7 +5,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use atoi_simd::parse_pos;
 
-use crate::config::{BindTarget, ServerConfig};
+use crate::config::{BindTarget, ForwardedFields, ServerConfig};
 use crate::http::header::{
     header_value_text, last_csv_token, normalize_scheme, parse_forwarded_value, parse_host_port,
     parse_x_forwarded_for_value,
@@ -71,7 +71,6 @@ pub(crate) struct ScopeView<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 struct ProxyHeaderView<'a> {
     forwarded: Option<&'a str>,
-    forwarded_present: bool,
     forwarded_duplicate: bool,
     x_forwarded_for: Option<&'a str>,
     x_forwarded_proto: Option<&'a str>,
@@ -131,20 +130,24 @@ pub(crate) fn scope_view_with_defaults<'a>(
     request: &'a RequestHead,
     config: &'a ServerConfig,
     info: &'a ConnectionInfo,
-) -> (ScopeView<'a>, ScopeView<'a>) {
+) -> (ScopeView<'a>, ScopeView<'a>, ForwardedFields) {
     let defaults = default_scope_view(request.scheme_str(), config, info);
 
     if !info.proxy_headers_trusted {
-        return (defaults.clone(), defaults);
+        return (defaults.clone(), defaults, ForwardedFields::empty());
     }
     let mut view = defaults.clone();
+    let mut consumed_fields = ForwardedFields::empty();
 
     let proxy_headers = request_proxy_headers(request);
-    if !proxy_headers.forwarded_duplicate
+    let forwarded_fields = config.proxy.forwarded_fields;
+    if forwarded_fields.contains(ForwardedFields::FORWARDED)
+        && !proxy_headers.forwarded_duplicate
         && let Some(forwarded) = proxy_headers
             .forwarded
             .and_then(|value| parse_forwarded_value(value, config))
     {
+        consumed_fields.insert(ForwardedFields::FORWARDED);
         if let Some(host) = forwarded.client_host {
             let port = view.client.as_ref().map_or(0, |(_, port)| *port);
             view.client = Some((ScopeHost::Text(host), port));
@@ -164,51 +167,59 @@ pub(crate) fn scope_view_with_defaults<'a>(
         }
     }
 
-    if !proxy_headers.forwarded_present {
-        if let Some(host) = proxy_headers
+    if forwarded_fields.contains(ForwardedFields::FOR)
+        && let Some(host) = proxy_headers
             .x_forwarded_for
             .and_then(|value| parse_x_forwarded_for_value(value, config))
-        {
-            let port = view.client.as_ref().map_or(0, |(_, port)| *port);
-            view.client = Some((ScopeHost::Text(Cow::Borrowed(host)), port));
-        }
-        if let Some(proto) = proxy_headers
+    {
+        consumed_fields.insert(ForwardedFields::FOR);
+        let port = view.client.as_ref().map_or(0, |(_, port)| *port);
+        view.client = Some((ScopeHost::Text(Cow::Borrowed(host)), port));
+    }
+    if forwarded_fields.contains(ForwardedFields::PROTO)
+        && let Some(proto) = proxy_headers
             .x_forwarded_proto
             .map(last_csv_token)
             .filter(|value| !value.is_empty())
-        {
-            view.scheme = normalize_scheme(proto);
-        }
-        if let Some(host) = proxy_headers
+    {
+        consumed_fields.insert(ForwardedFields::PROTO);
+        view.scheme = normalize_scheme(proto);
+    }
+    if forwarded_fields.contains(ForwardedFields::HOST)
+        && let Some(host) = proxy_headers
             .x_forwarded_host
             .map(last_csv_token)
             .filter(|value| !value.is_empty())
-            && let Some((host, port)) = parse_host_port(host)
-        {
-            view.server = (
-                ScopeHost::Text(Cow::Borrowed(host)),
-                port.or_else(|| default_port_for_scheme(&view.scheme))
-                    .or(view.server.1),
-            );
-        }
-        if let Some(port) = proxy_headers
+        && let Some((host, port)) = parse_host_port(host)
+    {
+        consumed_fields.insert(ForwardedFields::HOST);
+        view.server = (
+            ScopeHost::Text(Cow::Borrowed(host)),
+            port.or_else(|| default_port_for_scheme(&view.scheme))
+                .or(view.server.1),
+        );
+    }
+    if forwarded_fields.contains(ForwardedFields::PORT)
+        && let Some(port) = proxy_headers
             .x_forwarded_port
             .map(last_csv_token)
             .and_then(|value| parse_pos::<u16, false>(value.as_bytes()).ok())
-        {
-            view.server.1 = Some(port);
-        }
+    {
+        consumed_fields.insert(ForwardedFields::PORT);
+        view.server.1 = Some(port);
     }
 
-    if let Some(prefix) = proxy_headers
-        .x_forwarded_prefix
-        .map(last_csv_token)
-        .filter(|value| !value.is_empty())
+    if forwarded_fields.contains(ForwardedFields::PREFIX)
+        && let Some(prefix) = proxy_headers
+            .x_forwarded_prefix
+            .map(last_csv_token)
+            .filter(|value| !value.is_empty())
     {
+        consumed_fields.insert(ForwardedFields::PREFIX);
         view.root_path = join_root_path(prefix, config.root_path.as_ref());
     }
 
-    (view, defaults)
+    (view, defaults, consumed_fields)
 }
 
 /// The request's scope view alone, for callers with no use for the defaults.
@@ -228,7 +239,6 @@ fn request_proxy_headers(request: &RequestHead) -> ProxyHeaderView<'_> {
 
     ProxyHeaderView {
         forwarded: proxy_header_value(headers, slots.forwarded),
-        forwarded_present: slots.forwarded.is_some(),
         forwarded_duplicate: slots.forwarded_duplicate,
         x_forwarded_for: proxy_header_value(headers, slots.x_forwarded_for),
         x_forwarded_proto: proxy_header_value(headers, slots.x_forwarded_proto),
@@ -289,7 +299,7 @@ mod tests {
     use http::Method;
 
     use super::resolve_scope_view;
-    use crate::config::ServerConfig;
+    use crate::config::{ForwardedFields, ServerConfig};
     use crate::http::header_meta::RequestHeaderMeta;
     use crate::http::types::{
         BytesStr, H1RequestHeaders, HttpVersion, KnownRequestHeaderName, RequestHead,
@@ -324,10 +334,11 @@ mod tests {
             client: None,
             server: None,
         };
-        let config = ServerConfig {
+        let mut config = ServerConfig {
             root_path: Box::from(""),
             ..test_fixtures::server_config_parts()
         };
+        config.proxy.forwarded_fields = ForwardedFields::PREFIX;
 
         let view = resolve_scope_view(&request, &config, &info);
         assert!(matches!(view.root_path, Cow::Borrowed("/edge")));
@@ -356,7 +367,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one shared request setup keeps the malformed and valid Forwarded cases comparable"
     )]
-    fn malformed_present_forwarded_keeps_transport_defaults_but_accepts_prefix() {
+    fn malformed_forwarded_dialect_changes_nothing_and_never_applies_prefix() {
         for (forwarded, valid) in [
             (Bytes::from_static(b"for=203.0.113.10;proto=\"https"), false),
             (
@@ -450,10 +461,11 @@ mod tests {
                 }),
                 server: None,
             };
-            let config = ServerConfig {
+            let mut config = ServerConfig {
                 root_path: Box::from(""),
                 ..test_fixtures::server_config_parts()
             };
+            config.proxy.forwarded_fields = ForwardedFields::FORWARDED;
             let view = resolve_scope_view(&request, &config, &info);
             if valid {
                 assert_eq!(view.scheme, "https");
@@ -465,7 +477,7 @@ mod tests {
                     .0
                     .with_text(|host| assert_eq!(host, "good.example"));
                 assert_eq!(view.server.1, Some(8443));
-                assert_eq!(view.root_path, "/edge");
+                assert_eq!(view.root_path, "");
                 continue;
             }
             assert_eq!(view.scheme, "http");
@@ -477,7 +489,7 @@ mod tests {
                 .0
                 .with_text(|host| assert_eq!(host, "198.51.100.20"));
             assert_eq!(view.server.1, Some(8443));
-            assert_eq!(view.root_path, "/edge");
+            assert_eq!(view.root_path, "");
         }
     }
 }

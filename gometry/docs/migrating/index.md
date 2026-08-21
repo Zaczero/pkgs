@@ -1,184 +1,24 @@
 ---
-description: Migrating to gometry from Shapely, pyproj, h3-py, s2sphere, and rtree — philosophy, the per-library mapping, and your first ten minutes.
+description: Migrating to gometry from Shapely, pyproj, h3-py, s2sphere, and rtree with per-library symbol mappings and behavior notes.
 ---
 
 # Migrating to gometry
 
-gometry replaces the practical day-to-day Python geospatial stack — **Shapely + pyproj + h3-py + s2sphere + rtree** — with one Rust-backed package and one coherent API:
+gometry provides geometry, CRS, geodesy, grid, and spatial-index APIs for workflows
+commonly split across **Shapely + pyproj + h3-py + s2sphere + rtree**. Canonical
+symbol mappings are in the [cheatsheet](cheatsheet.md).
 
-```python
-import gometry as gm
-
-```
-
-Every old pattern maps to one canonical gometry spelling, and the mapping is
-exhaustive and searchable. If you want a single lookup table, jump to the
-[cheatsheet](cheatsheet.md). Otherwise, retrain the five habits below, then read
-the per-library section — [Shapely](#coming-from-shapely),
-[pyproj](#coming-from-pyproj), [h3-py & s2sphere](#coming-from-h3-py-s2sphere),
-[rtree & STRtree](#coming-from-rtree-strtree) — for side-by-side examples.
-
-## Why a clean break
-
-The incumbent stack forces you to track which *model* every call assumes: planar geometry, ellipsoidal geodesy, CRS transforms, bounding-box indexing,
-or discrete cell grids. The cost of a wrong guess is silent: `.area` in degrees²,
-`.buffer(100)` in degree-units, an index `query` that returned only bounding-box
-candidates, an H3 polyfill that meant "center containment" when you assumed "covers".
-
-gometry's design makes the model explicit and lets the pieces compose:
-
-- **One canonical spelling per operation.** No `make_valid` *and* `repair`; it is
-  [`repair`][gometry.Geometry.repair]. No `STRtree` *and* `Rtree` *and* `sjoin`; it is
-  [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join].
-- **The CRS is the single knob; metrics are native.** There is one `geom.area`, one
-  `geom.length`, one `gm.distance(a, b)`. The geometry's CRS decides — geographic →
-  geodesic meters, projected → planar **native linear units** (feet stay feet),
-  none → coordinate units — so the dangerous "square degrees" result of measuring
-  lon/lat as if it were planar cannot happen. Pass `unit='meters'` for forced SI.
-  For discrete cells, `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`.
-- **Explicit CRS.** CRS is metadata you attach (`set_crs`) or transform through
-  (`to_crs`) — never an opaque object you carry around. The transform layer is
-  always **X/Y** regardless of the authority's declared axis order.
-- **Candidate / refine is first-class.** Spatial indexes expose
-  `idx.candidates(...)` (bbox prefilter) and `idx.query(..., predicate=...)`
-  (exact refine) as separate, obviously-named operations, plus `idx.explain(...)`.
-- **Covers materialize cells.** A grid cover names its `cell_rule`; keep the
-  source geometry and use free predicates (`covers`/`contains`/`intersects`)
-  for exact membership.
-
-## First ten minutes coming from the old stack
-
-If you have written the old stack, these are the five habits to retrain. Each
-gometry block below is executed and its output captured at build time.
-
-### 1. Attach a CRS at construction
-
-Shapely geometry is CRS-blind. gometry geometry carries CRS metadata, and metric
-operations rely on it.
-
-=== "Shapely"
-
-    ```python
-    from shapely.geometry import Point, box
-    pt = Point(21.0, 52.0)          # no CRS; "what do these numbers mean?"
-    area = box(20.0, 51.0, 22.0, 53.0)
-    ```
-
-=== "gometry"
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    pt = gm.Point(21.0, 52.0, crs=4326)
-    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    print(pt.crs, area.geometry_type)
-    ```
-
-### 2. The CRS decides the measurement
-
-There is one `geom.area`. The geometry's CRS alone decides how it is measured, and
-the result is native by default — no per-call model choice.
-
-=== "Shapely + pyproj"
-
-    ```python
-    geom.area                       # degrees² on lon/lat — almost always wrong
-    from pyproj import Geod
-    Geod(ellps="WGS84").geometry_area_perimeter(geom)  # the value you wanted
-    ```
-
-=== "gometry"
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    # Geographic CRS -> geodesic m^2, automatically.
-    print("geodesic (m^2):  ", round(area.area))
-    # Reproject to measure planar meters instead.
-    print("projected (m^2): ", round(area.to_crs(area.estimate_local_crs()).area))
-    ```
-
-### 3. `set_crs` declares, `to_crs` transforms
-
-=== "GeoPandas / pyproj"
-
-    ```python
-    gdf = gdf.set_crs(4326)         # declare meaning of existing coords
-    gdf = gdf.to_crs(3857)          # transform coords
-    ```
-
-=== "gometry"
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    raw = gm.Point(21.0, 52.0)        # CRS-free
-    declared = raw.set_crs(4326)       # same numbers, now they mean lon/lat
-    transformed = declared.to_crs(3857)  # numbers change
-    print(declared.to_wkt())
-    print(transformed.to_wkt())
-    ```
-
-### 4. Index queries name the stage — candidates vs refined
-
-Shapely's `STRtree.query` already has two modes: **no predicate** returns bbox
-candidates; **`predicate=`** (Shapely 2.x) refines exactly. gometry makes that
-split explicit with two method names so you cannot confuse them.
-
-=== "Shapely STRtree"
-
-    ```python
-    from shapely import STRtree
-    idx = STRtree(geoms)
-    candidates = idx.query(area)                          # bbox candidates
-    hits = idx.query(area, predicate="intersects")        # exact refine (2.x)
-    ```
-
-=== "gometry"
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    pts = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    idx = gm.SpatialIndex(pts)
-    print("candidates:", idx.candidates(area))               # bbox prefilter
-    print("refined:   ", idx.query(area, predicate="contains"))  # exact
-    ```
-
-### 5. Grid covers name their rule
-
-=== "h3-py"
-
-    ```python
-    import h3
-    cells = h3.polygon_to_cells(h3.LatLngPoly(shell), 8)  # which rule? (implicit)
-    ```
-
-=== "gometry"
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    cov = gm.h3_cover(area, resolution=5)
-    print("cells:", len(cov))
-    print("exact membership:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
-    ```
-
-Once these five are reflexes, the per-library sections below and the
-[cheatsheet](cheatsheet.md) cover the rest of the surface.
+[CRS, units & measurement](../guide/crs.md), [Spatial indexing & joins](../guide/indexing.md),
+and [Grids & geocodes](../guide/grids.md) define the core contracts.
 
 ## Coming from Shapely
 
 gometry keeps Shapely's role as the in-process geometry type system — the same
 seven [Simple Features](https://www.ogc.org/standard/sfa/) families, the same
 predicates and constructive operations, the same WKB/WKT/GeoJSON interop and
-`__geo_interface__`. What changes is what made Shapely error-prone: scalar
-predicates become **free functions** (`gm.contains(a, b)`, vectorized over
-arrays), metrics read the CRS, and the kernels are GEOS-free. Three changes bite
-most often — validity, the `.area` footgun, and the STRtree refine step.
+`__geo_interface__`. Scalar predicates become **free functions** (`gm.contains(a, b)`, vectorized over
+arrays), metrics read the CRS, and the kernels are GEOS-free. Behavior differences
+are validity, CRS-aware metrics, and index refinement.
 
 ### `make_valid` → `repair`
 
@@ -189,7 +29,7 @@ job across `is_valid`, `explain_validity`, and `make_valid`.
 
 === "Shapely"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     from shapely import make_valid
     from shapely.validation import explain_validity
     if not geom.is_valid:
@@ -210,9 +50,9 @@ job across `is_valid`, `explain_validity`, and `make_valid`.
     print("repaired:", fixed.geometry_type, "| now valid:", fixed.is_valid)
     ```
 
-### The `.area` / `.distance` / `.buffer` footgun
+### CRS-aware `.area`, `.distance`, and `.buffer`
 
-The single most important behavioral change. On lon/lat data Shapely's bare
+On lon/lat data Shapely's bare
 `.area` returns degrees², `.distance` returns degrees, and `.buffer(100)` buffers
 by 100 *degrees*. gometry has one `geom.area` (and one `gm.distance` /
 `Geometry.buffer`) whose answer is decided by the geometry's CRS and is native by
@@ -221,7 +61,7 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
 
 === "Shapely (silently wrong on lon/lat)"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     poly.area          # degrees^2 — meaningless as an area
     a.distance(b)      # degrees
     poly.buffer(100)   # 100 degrees ≈ the whole hemisphere
@@ -245,7 +85,7 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
 ### STRtree → SpatialIndex (+ PreparedGeometry)
 
 Shapely already refines when you pass `predicate=` to `STRtree.query`. gometry
-keeps **two acceleration shapes**, not one collapse:
+exposes **two acceleration paths**:
 
 - [`SpatialIndex`][gometry.SpatialIndex] — many geometries, query/join/nearest
   with explicit `candidates` vs `query(..., predicate=...)`, plus frame checks,
@@ -255,14 +95,14 @@ keeps **two acceleration shapes**, not one collapse:
 
 === "Shapely"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     from shapely import STRtree, prepare
     tree = STRtree(geoms)
     candidates = tree.query(area)                       # bbox candidates
     hits = tree.query(area, predicate="contains")       # refined (2.x)
 
     prepare(poly)
-    poly.contains(pt)                                   # prepared fast path
+    poly.contains(pt)                                   # prepared predicate path
     ```
 
 === "gometry"
@@ -279,7 +119,7 @@ keeps **two acceleration shapes**, not one collapse:
     print("prepared contains first point:", gm.contains(prep, pts[0]))
     ```
 
-Construction and IO map across directly. Build through the geometry classes
+Build through the geometry classes
 (`gm.Point`, `gm.Polygon`, …) with explicit `crs=`, pack arrays with the plural
 builders (`gm.points`, `gm.polygons`) or `gm.GeometryArray([...])`, and ingest
 GeoJSON / `__geo_interface__` with `gm.from_geojson`. Readers are verb-prefixed
@@ -287,7 +127,7 @@ free functions (`gm.from_wkb`, `gm.from_wkt`), and encoders are methods on the
 geometry (`geom.to_wkb(include_srid=True)`, `geom.to_wkt()`, `geom.to_geojson()`,
 `geom.to_arrow()` for [GeoArrow](https://geoarrow.org/) columnar interchange).
 Vertex-subset ops (`simplify`, `convex_hull`, triangulation) preserve Z/M where
-Shapely drops it. The full Shapely symbol table — construction, inspection,
+Shapely drops it. The Shapely symbol table — construction, inspection,
 predicates, constructive ops, linear referencing, validation, and IO — is in the
 [cheatsheet](cheatsheet.md#shapely).
 
@@ -295,11 +135,10 @@ predicates, constructive ops, linear referencing, validation, and IO — is in t
 
 pyproj owns two jobs: **CRS transformation** (the `CRS` / `Transformer` objects
 over libPROJ) and **geodesy** (the `Geod` object). gometry keeps
-[PROJ](https://proj.org/) as the authority backend — bundled behind the API — but
-drops the objects you carried around. Transform through the geometry (`to_crs`) or
-the stateless [`gm.crs_transform`][gometry.crs_transform]; get geodesy from
-point-navigation free functions on any geographic CRS. The boundary is always
-X/Y — no `always_xy=True` ceremony.
+[PROJ](https://proj.org/) as the authority backend, bundled behind the API, and
+exposes transformations through `to_crs` or the stateless
+[`gm.crs_transform`][gometry.crs_transform]. Point-navigation free functions
+provide geodesy on geographic CRSs. Coordinate boundaries are always X/Y.
 
 ### `Transformer` → `to_crs` and `gm.crs_transform`
 
@@ -309,7 +148,7 @@ object to construct, cache, or reuse.
 
 === "pyproj"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     t = Transformer.from_crs(4326, 3857, always_xy=True)
     x2, y2 = t.transform(21.0, 52.0)
     minx2, miny2, maxx2, maxy2 = t.transform_bounds(20, 51, 22, 53)
@@ -345,7 +184,7 @@ geodesic problem on that CRS's own ellipsoid.
 
 === "pyproj Geod"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     from pyproj import Geod
     g = Geod(ellps="WGS84")
     dist = g.inv(lon1, lat1, lon2, lat2)[2]          # distance (m)
@@ -373,9 +212,9 @@ geodesic problem on that CRS's own ellipsoid.
     print("perimeter (m):", round(area.length))
     ```
 
-The full `gm.CRS` object surface (`is_*` classification, `to_wkt`/`to_proj`/
-`to_projjson`, catalog discovery, coordinate operations) and the complete `Geod`
-symbol map are in the [cheatsheet](cheatsheet.md#pyproj).
+The `gm.CRS` surface (`is_*` classification, standards export, catalog discovery,
+and coordinate operations) and the common `Geod` mappings are in the
+[cheatsheet](cheatsheet.md#pyproj).
 
 ## Coming from h3-py & s2sphere
 
@@ -392,7 +231,7 @@ gometry names the rule and returns a typed `CellArray`.
 
 === "h3-py"
 
-    ```python
+    ```python title="partial: h3-py example"
     import h3
     cells = h3.polygon_to_cells(h3.LatLngPoly(shell), 8)  # which rule? center? overlap?
     # exact membership? do it yourself, per point, with another library.
@@ -406,7 +245,6 @@ gometry names the rule and returns a typed `CellArray`.
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     cov = gm.h3_cover(area, resolution=5)
     print("cells:", len(cov))             # overlap is the default factory rule
-    print("cells:", len(cov))
 
     # Keep the source geometry for exact checks:
     print("covers:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
@@ -424,10 +262,10 @@ is the S2 analogue.
 Every grid family exposes its own prefixed `union` / `intersection` /
 `difference` functions (`h3_*`, `s2_*`, `geohash_*`, `tile_*`). `CellArray`s
 also carry `compact()` / `uncompact(...)` for multi-resolution
-rollups. Prefer the family algebra over plain Python `set`s so hierarchy-aware
-behavior stays consistent.
+rollups. Family algebra preserves hierarchy-aware behavior that plain Python
+`set`s do not.
 
-```python
+```python title="partial: source ecosystem example"
 import gometry as gm
 
 a = gm.s2_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), level=8)
@@ -445,7 +283,6 @@ _ = gm.h3_union(h3_a_present, h3_b_present)
 
 ```
 
-Beyond covering, the typed cells carry the rest of the ecosystem surface:
 `H3Cell` exposes adjacency and local indexing (`neighbors`, `is_neighbor`,
 `local_ij`, `base_cell`), with resolution metadata in the H3 function family
 (`gm.h3_pentagons(resolution)`, `gm.h3_base_cells()`); `.polygon` returns one
@@ -459,12 +296,12 @@ compact/uncompact — are in the
 rtree, Shapely's `STRtree`, and GeoPandas `sjoin` all accelerate spatial
 predicates with a bounding-box prefilter. **Shapely 2.x and GeoPandas already
 refine exactly** when you pass a predicate (`STRtree.query(..., predicate=...)`,
-`sjoin(..., predicate=...)`); rtree's classic `intersection` path is bbox-only
-unless you refine yourself. gometry's differentiators are not "we refine and they
-don't" — they are:
+`sjoin(..., predicate=...)`); rtree's `intersection` path is bbox-only
+unless you refine yourself. gometry exposes the corresponding stages and adds
+frame, row-identity, and plan diagnostics:
 
 - **Explicit stage names** — `candidates` (bbox) vs `query(..., predicate=...)`
-  (exact), so the stage cannot be ambiguous.
+  (exact).
 - **Strict frame checks** — CRS and epoch must match; mixed frames raise rather
   than silently comparing across datums.
 - **Missing-row semantics** — sparse/right-missing handles preserve row identity
@@ -476,17 +313,17 @@ don't" — they are:
 - **`idx.explain(...)`** — a query plan for debugging candidate vs refine cost.
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
-unified surfaces ([habit 4](#4-index-queries-name-the-stage-candidates-vs-refined)).
+unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
+candidate/refine contract.
 
 ### Nearest
 
 rtree (`Index.nearest`), Shapely (`STRtree.nearest` / `query_nearest`), and
-gometry all expose nearest-neighbour APIs. Compare on ties, distances, return
-shapes, mutability, and geodesic behavior — not on whether nearest exists.
+gometry all expose nearest-neighbour APIs.
 
 === "rtree / Shapely"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     # rtree — bbox-based nearest by envelope
     nearest = list(idx.nearest(point.bounds, num_results=5))
 
@@ -508,9 +345,9 @@ shapes, mutability, and geodesic behavior — not on whether nearest exists.
     ```
 
 `idx.nearest(query, k=..., unit=...)` returns the `k` closest indices
-(`num_results` → `k`). Use `unit="planar"` for projected or CRS-free coordinates;
-on a geographic CRS, metric units select geodesic point-nearest ordering. The
-index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
+(`num_results` → `k`). `unit="planar"` selects projected or CRS-free coordinate
+units; on a geographic CRS, metric units select geodesic point-nearest ordering.
+The index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
 `STRtree` is bulk-built and immutable after construction.
 
 ### Explainable plans
@@ -535,17 +372,16 @@ for step in idx.explain(area, predicate="contains"):
 GeoPandas [`sjoin`](https://geopandas.org/en/latest/docs/reference/api/geopandas.sjoin.html)
 **does** apply the binary `predicate=` exactly (it is not a candidates-only API).
 [`gm.join`][gometry.join] is the geometry-array analogue: prefilter → exact refine,
-returning matched **index pairs** (not a joined DataFrame). Real differentiators
-vs GeoPandas `sjoin`:
+returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 
-- pure geometry inputs / index-pair outputs (bring your own table join);
+- pure geometry inputs and index-pair outputs (bring your own table join);
 - CRS/epoch frame checks on both sides;
 - query-plan diagnostics live on `SpatialIndex.explain(...)`;
 - no pandas/GeoPandas dependency for the join itself.
 
 === "GeoPandas"
 
-    ```python
+    ```python title="partial: source ecosystem example"
     import geopandas
     result = geopandas.sjoin(points, polygons, predicate="within")
     ```
@@ -565,14 +401,13 @@ vs GeoPandas `sjoin`:
 static, query-heavy workloads — while `idx.insert(geometry)` / `idx.remove(...)`
 handle dynamic sets without a full rebuild. The index is always in memory; gometry
 never writes index files, so persisting across processes means rebuilding from the
-source geometries (or their stored WKB/EWKB bytes). The full index/join symbol
+source geometries (or their stored WKB/EWKB bytes). The index/join symbol
 table is in the [cheatsheet](cheatsheet.md#rtree-strtree-geopandas).
 
 ## What gometry covers
 
-The table maps common specialized tools to the gometry surface that owns the
-same **workflow**. Data-modeling layers (GeoJSON object models, dataframe
-integrations like GeoPandas) stay adjacent: gometry is the engine they sit on.
+Data-modeling layers (GeoJSON object models and dataframe integrations such as
+GeoPandas) remain adjacent; gometry is the geometry engine they use.
 
 | Package | What it does | gometry surface for the same workflow |
 | --- | --- | --- |
@@ -589,7 +424,3 @@ integrations like GeoPandas) stay adjacent: gometry is the engine they sit on.
 | `openlocationcode` | plus codes | `gm.pluscode_encode`, `gm.pluscode_polygon`, `gm.pluscode_shorten`/`recover` |
 | `utm` | lat/lon ↔ UTM | `geom.estimate_local_crs()` + `geom.to_crs(...)` |
 | `rtree` / Shapely `STRtree` | bounding-box index | [`gm.SpatialIndex`][gometry.SpatialIndex], [`gm.join`][gometry.join] |
-
-Every spelling on the right is a runnable call in this documentation — the
-[cheatsheet](cheatsheet.md) lists the per-name mapping, and the sections above
-walk the migration with side-by-side examples.

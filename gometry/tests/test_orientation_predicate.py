@@ -8,7 +8,7 @@ import pytest
 
 
 def _fraction(value: float) -> Fraction:
-    return Fraction.from_float(value)
+    return Fraction(value)
 
 
 def test_mixed_scale_diagonal_predicates_and_overlay_use_exact_turn() -> None:

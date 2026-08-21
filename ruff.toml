@@ -1,5 +1,12 @@
 target-version = "py310"
 
+# libtiff is an upstream submodule checked out under gometry/native, so its build
+# and documentation scripts are another project's source: holding them to our
+# style makes every upstream sync a conflict over whitespace. `extend-exclude`
+# rather than `exclude`, which would replace ruff's own defaults instead of
+# adding to them.
+extend-exclude = ["gometry/native/libtiff-sys/libtiff/**"]
+
 [per-file-target-version]
 ".github/scripts/**" = "py311"
 "gometry/**" = "py311"
@@ -121,5 +128,12 @@ ban-relative-imports = "all"
 max-args = 10
 
 [format]
+# Ruff formats Python code blocks inside Markdown. The docs embed their examples
+# with pymdownx snippets -- `--8<-- "hello.py"` inside a ```python fence -- which
+# is not Python, and formatting rewrites it to `--8 < --'hello.py'`, breaking the
+# include. The fence has to stay `python` for syntax highlighting, so the
+# exclusion is what keeps both. It also stops published examples being rewritten
+# from double to single quotes into internal house style.
+exclude = ["**/*.md"]
 quote-style = "single"
 preview = true

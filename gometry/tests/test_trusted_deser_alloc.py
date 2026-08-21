@@ -286,6 +286,8 @@ def test_d30_positive_validation_report_roundtrip():
         out = pickle.loads(pickle.dumps(report))
         assert out.valid == report.valid == geom.is_valid
         assert out.reason == report.reason
+
+
 # D32 — empty Groups offsets
 # ---------------------------------------------------------------------------
 

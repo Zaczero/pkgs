@@ -357,6 +357,7 @@ group = "www-data"
 umask = "027"
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1"]
+forwarded_fields = ["for", "proto", "host"]
 timeout_keep_alive = 1.5
 timeout_request_header = 2.5
 timeout_request_body_idle = 3.5
@@ -392,6 +393,7 @@ response_headers = ["x-demo: one", "x-extra: two"]
     assert config.group == 'www-data'
     assert config.umask == 0o27
     assert config.proxy_headers is True
+    assert config.forwarded_fields == ('for', 'proto', 'host')
     assert config.timeout_keep_alive == 1.5
     assert config.timeout_request_header == 2.5
     assert config.timeout_request_body_idle == 3.5
@@ -438,6 +440,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('H2CORN_ACCESS_LOG', 'false')
     monkeypatch.setenv('H2CORN_PROXY_HEADERS', 'true')
     monkeypatch.setenv('H2CORN_FORWARDED_ALLOW_IPS', '127.0.0.1,unix')
+    monkeypatch.setenv('H2CORN_FORWARDED_FIELDS', 'FOR,PROTO,HOST')
     monkeypatch.setenv('H2CORN_PROXY_PROTOCOL', 'v1')
     monkeypatch.setenv('H2CORN_TIMEOUT_HANDSHAKE', '3.5')
     monkeypatch.setenv('H2CORN_TIMEOUT_KEEP_ALIVE', '1.5')
@@ -480,6 +483,7 @@ def test_config_from_env_reads_layered_values(monkeypatch: pytest.MonkeyPatch) -
     assert config.access_log is False
     assert config.proxy_headers is True
     assert config.forwarded_allow_ips == ('127.0.0.1', 'unix')
+    assert config.forwarded_fields == ('for', 'proto', 'host')
     assert config.proxy_protocol == 'v1'
     assert config.timeout_handshake == 3.5
     assert config.timeout_keep_alive == 1.5
@@ -599,6 +603,15 @@ def test_parse_cli_accepts_tls_options() -> None:
     assert config.cert_reqs == 'optional'
 
 
+def test_parse_cli_accepts_forwarded_fields() -> None:
+    _cli_settings, _import_settings, config = parse_cli(
+        ['--proxy-headers', '--forwarded-fields', 'host,port', 'example:app'],
+        {},
+    )
+
+    assert config.forwarded_fields == ('host', 'port')
+
+
 def test_config_rejects_invalid_trusted_proxy_entry() -> None:
     with pytest.raises(ValueError, match='forwarded_allow_ips'):
         Config(forwarded_allow_ips=('example.invalid',))
@@ -608,6 +621,55 @@ def test_config_allows_empty_trusted_proxy_set() -> None:
     config = Config(forwarded_allow_ips=())
 
     assert config.forwarded_allow_ips == ()
+
+
+def test_config_normalizes_forwarded_fields_and_allows_empty() -> None:
+    assert Config(forwarded_fields='FOR, proto, for').forwarded_fields == (
+        'for',
+        'proto',
+    )
+    assert Config.from_mapping({'forwarded_fields': 'HOST,PORT'}).forwarded_fields == (
+        'host',
+        'port',
+    )
+    assert Config(forwarded_fields=()).forwarded_fields == ()
+
+
+def test_config_rejects_unknown_forwarded_field_with_accepted_values() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r'invalid forwarded_fields entry.*for.*proto.*host.*port.*prefix.*forwarded',
+    ):
+        Config(forwarded_fields=('for', 'authority'))
+
+
+def test_config_rejects_mixed_forwarding_dialects() -> None:
+    with pytest.raises(ValueError, match=r"forwarded.*'host'"):
+        Config(forwarded_fields=('forwarded', 'host'))
+
+
+def test_config_rejects_proxy_headers_that_can_believe_nothing() -> None:
+    with pytest.raises(ValueError, match=r'proxy_headers requires.*forwarded_fields'):
+        Config(proxy_headers=True, forwarded_fields=())
+
+
+def test_config_rejects_proxy_headers_that_can_trust_no_peer() -> None:
+    with pytest.raises(
+        ValueError, match=r'proxy_headers requires.*forwarded_allow_ips'
+    ):
+        Config(proxy_headers=True, forwarded_allow_ips=())
+
+
+def test_forwarding_options_stay_inert_while_proxy_headers_is_off() -> None:
+    """
+    Both forwarding options default to a non-empty value, so a symmetric check
+    on the other direction would reject the default configuration itself. A
+    boundary described but not in force is also how one file serves several
+    environments.
+    """
+    assert Config(proxy_headers=False, forwarded_fields=()).forwarded_fields == ()
+    assert Config(proxy_headers=False, forwarded_allow_ips=()).forwarded_allow_ips == ()
+    assert Config(forwarded_fields=('host',)).forwarded_fields == ('host',)
 
 
 def test_config_normalizes_multiple_bind_entries() -> None:

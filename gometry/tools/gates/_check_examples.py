@@ -25,6 +25,10 @@ _BLOCK = re.compile(
     '```python([^\\n]*)\\bexec=[\\"\']on[\\"\']([^\\n]*)\\n(.*?)```', re.DOTALL
 )
 _PYTHON_BLOCK = re.compile('```python([^\\n]*)\\n(.*?)```', re.DOTALL)
+_PYTHON_FENCE = re.compile(r'^[ \t]*```python(?P<options>[^\n]*)\n', re.MULTILINE)
+_NONRUNNABLE_LABEL = re.compile(
+    r'\b(?:partial|pseudocode|template|configuration|output)\b', re.IGNORECASE
+)
 _SESSION = re.compile('\\bsession=[\\"\']([^\\"\']+)[\\"\']')
 _DEPRECATED_SOURCE_DISPLAY = re.compile(
     '^[ \\t]*```[^\\n]*\\bsource=([\\"\'])material-block\\1(?:\\s|$)',
@@ -59,6 +63,17 @@ def main() -> int:
         sessions: dict[str, dict[str, object]] = {}
         is_docs = p.is_relative_to(Path('docs'))
         block_re = _BLOCK if is_docs else _PYTHON_BLOCK
+        if is_docs:
+            for fence in _PYTHON_FENCE.finditer(text):
+                options = fence.group('options')
+                if 'exec=' in options or _NONRUNNABLE_LABEL.search(options):
+                    continue
+                failures += 1
+                line_no = text[: fence.start()].count('\n') + 1
+                print(
+                    f'\n### FAIL {p}:{line_no}  plain Python fence is neither '
+                    'executable nor labelled partial/pseudocode/template/configuration/output'
+                )
         readme_ns: dict[str, object] = {'__name__': '__main__'}
         for i, m in enumerate(block_re.finditer(text)):
             code = textwrap.dedent(m.group(3 if is_docs else 2))

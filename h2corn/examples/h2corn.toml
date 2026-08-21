@@ -4,6 +4,7 @@ http1 = false
 
 proxy_headers = true
 forwarded_allow_ips = ["127.0.0.1", "::1", "unix"]
+forwarded_fields = ["for", "proto"]
 
 # Rolling worker recycling: each worker retires after handling
 # 50_000 ± 5_000 requests, so retirements stagger naturally.

@@ -1,11 +1,13 @@
 site_name: gometry
-site_description: A high-performance Rust geospatial engine with a Pythonic API — geometry, geodesy, CRS, H3/S2 grids, and spatial indexing in one coherent package.
+site_description: A blazing-fast geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
 site_url: https://gometry.monicz.dev/
 repo_url: https://github.com/Zaczero/pkgs/tree/main/gometry
 repo_name: Zaczero/pkgs
 
 docs_dir: docs
 site_dir: site
+hooks:
+  - ../tools/docs/check_frontmatter.py
 
 theme:
   name: material

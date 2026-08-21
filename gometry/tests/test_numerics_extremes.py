@@ -15,7 +15,7 @@ import pytest
 
 
 def _stored(value: float) -> Fraction:
-    return Fraction.from_float(value)
+    return Fraction(value)
 
 
 def _assert_close_to_stored_reference(actual: float, expected: Fraction) -> None:

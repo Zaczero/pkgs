@@ -179,7 +179,7 @@ where
                 connection.security.h1_scheme(),
                 request_head_timeout(&connection.config, first_request),
                 first_request,
-                connection.info.proxy_headers_trusted,
+                connection.config.proxy.trust_headers,
             ) => parsed,
         }?;
 

@@ -179,20 +179,25 @@ def test_griffe_uses_final_concrete_overload_as_canonical() -> None:
     )
     pkg = loader.load('gometry')
     loader.resolve_aliases(external=False)
-    doc_model = load_tool('check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py')
+    doc_model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
     expected = doc_model._stub_overloads()
     for member in pkg.members.values():
         if not isinstance(member, griffe.Function) or not member.overloads:
             continue
         expected_return, expected_params = expected[member.canonical_path]
+        assert doc_model._public_annotation(
+            str(member.returns)
+        ) == doc_model._public_annotation(expected_return), member.name
         assert (
-            doc_model._public_annotation(str(member.returns))
-            == doc_model._public_annotation(expected_return)
+            tuple(
+                parameter.name
+                for parameter in member.parameters
+                if parameter.name not in {'self', 'cls'}
+            )
+            == expected_params
         ), member.name
-        assert tuple(
-            parameter.name for parameter in member.parameters
-            if parameter.name not in {'self', 'cls'}
-        ) == expected_params, member.name
         assert all(
             getattr(getattr(variant, 'returns', None), 'name', None)
             not in {'Never', 'NoReturn'}

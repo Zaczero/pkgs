@@ -1,5 +1,5 @@
 ---
-description: Constructive geometry operations in gometry — buffer, overlay (intersection/union/difference), simplify, offset curves, snap and segmentize, hulls, centroids, triangulation and Voronoi — with before/after pictures and CRS-aware buffer distances.
+description: Constructive geometry operations in gometry — buffers, overlays, simplify, offset curves, snap and segmentize, hulls, centroids, triangulation, Voronoi, and CRS-aware distances.
 ---
 
 # Constructive operations
@@ -8,18 +8,11 @@ Constructive operations take geometries and produce **new** geometries:
 buffers, set-theoretic overlays, simplifications, hulls, and tessellations.
 All inputs are immutable, so every operation returns a fresh value.
 
-!!! note "Topology is planar; distances follow the CRS"
-    Like [predicates](predicates.md), the set-theoretic overlays
-    (`intersection`/`union`/`difference`) and shape operations work on the
-    **coordinates held**, after strict frame matching. That is not
-    "frame-independent topology" — reprojecting changes vertices, edges, seams,
-    and sometimes the realized relation. The operations that take a
-    **distance**, [`buffer`][gometry.Geometry.buffer] and [`offset_curve`][gometry.Geometry.offset_curve],
-    read the geometry's CRS instead: on a geographic CRS the distance is meters
-    (local projection), on a projected CRS it is the CRS's **native linear units**
-    (feet stay feet; pass `unit='meters'` for SI), and on CRS-free geometry it is
-    bare coordinate units. To change that,
-    [reproject first](crs.md).
+Overlays and shape operations use stored XY coordinates after strict frame
+matching; reprojecting can change vertices, seams, and topology. `buffer` and
+`offset_curve` take distances in the CRS-natural units described in [CRS, units
+& measurement](crs.md). Geographic buffers use a local projection and are not
+exact ellipsoidal offsets.
 
 ## Buffer
 
@@ -55,7 +48,7 @@ print(before_after(line, line.buffer(1.0), after_caption="buffer(1.0)"))
 | `side` | `'both'` | stroke side for linework: `'both'`, `'left'`, or `'right'` |
 
 A round cap adds a half-disc at each line end; a flat cap stops dead at the
-endpoint. The difference is visible in the area:
+endpoint.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -65,8 +58,6 @@ print("round cap:", round(line.buffer(1.0, cap_style="round").area, 3))
 print("flat cap: ", round(line.buffer(1.0, cap_style="flat", join_style="miter").area, 3))
 
 ```
-
-The source line is drawn inside each buffer:
 
 ```python exec="on" html="true"
 from _figures import panels
@@ -83,36 +74,19 @@ print(panels([
 
 ```
 
-!!! note "Buffer distance follows the CRS"
-    The buffer distance is interpreted through the geometry's CRS, like every other
-    metric. On a **geographic** CRS, `pt.buffer(100)` is a **100-meter**
-    local-projection buffer — not "100 degrees":
-
-    ```python exec="on" source="block" result="text"
-    import gometry as gm
-
-    pt = gm.Point(2.0, 49.0, crs=4326)
-    meters = pt.buffer(100)          # 100 m, local projection
-    print(meters.geometry_type, "area m^2:", round(meters.area))
-    ```
-
-    On a **projected** CRS the distance is in that CRS's **native linear units**
-    (not always meters — use `unit='meters'` when you need SI). On **CRS-free**
-    geometry it is bare coordinate units. Reproject with
-    [`to_crs`][gometry.Geometry.to_crs] when you want a different frame —
-    `(pt.to_crs(32631)).buffer(100)` buffers in UTM meters.
-
 !!! warning "Geographic buffers use a local projection approximation"
     On a geographic CRS, `buffer` and `offset_curve` are **not** exact
     ellipsoidal offsets. gometry picks one bounded local frame with
     [`estimate_local_crs()`][gometry.Geometry.estimate_local_crs], reprojects, runs the
     planar constructive kernel at the requested meter distance, then
-    reprojects back to the source CRS. That is fast and accurate for
-    city-scale features and modest radii, but distortion grows when the
+    reprojects back to the source CRS. It is intended for city-scale features
+    and modest radii; distortion grows when the
     geometry spans many UTM zones, sits far from the anchor, or the buffer
-    radius is large relative to the feature. For continent-scale work or
-    sub-percent accuracy, reproject to an appropriate projected CRS first
-    (or tile the operation) instead of relying on the automatic local frame.
+    radius is large relative to the feature. For continent-scale work or a
+    strict accuracy budget, reproject to an appropriate projected CRS first
+    (or tile the operation) instead of relying on the automatic local frame. If a
+    specific accuracy budget matters, choose and validate the projected frame
+    explicitly.
 
 ## Overlay (set operations)
 
@@ -146,9 +120,6 @@ is restored wherever the result vertex can be sourced from an input segment.
 share a border intersect in that border (a `LineString`), and a corner-only
 touch yields the corner `Point` — so a non-empty `intersects(a, b)` always has
 a non-empty `intersection(a, b)`.
-
-Both inputs are outlined in every panel; the filled region is the result of
-each overlay:
 
 ```python exec="on" html="true"
 from _figures import panels
@@ -186,17 +157,15 @@ print(merged.to_wkt())        # one 5x1 rectangle, shared edges dissolved
 
 ```
 
-When the values are already a `GeometryArray`, use its discoverable method:
-`array = gm.GeometryArray(tiles); array.union_all()`. Grouped aggregation is a
-separate operation: `array.dissolve(by=groups)` returns one geometry per first-seen group together
-with the corresponding group keys. Requiring `by` keeps `dissolve` unambiguously
-grouped; whole-column aggregation is always `union_all()`.
+For a `GeometryArray`, `array.union_all()` performs whole-column aggregation.
+Grouped aggregation is a separate operation: `array.dissolve(by=groups)` returns
+one geometry per first-seen group with the corresponding group keys. `dissolve`
+requires `by`; whole-column aggregation uses `union_all()`.
 
-!!! note "`union_all([])` raises by design"
+!!! note "`union_all([])` raises"
     An empty sequence has no CRS, no dimensionality, and no natural identity
-    element — any silent default (an empty `GeometryCollection`? in which
-    frame?) would smuggle wrong metadata into downstream ops. Filter first,
-    or branch on emptiness at the call site where the right answer is known.
+    element, so `union_all([])` raises instead of selecting default metadata.
+    Filter the sequence or branch on emptiness before aggregation.
 
 ## Simplify and offset
 
@@ -210,9 +179,6 @@ wiggly = gm.LineString([(0, 0), (1, 0.01), (2, -0.01), (3, 0.01), (4, 0)])
 print(wiggly.simplify(0.5))   # collapses to the straight run
 
 ```
-
-Each surviving vertex is drawn as a dot, so a larger `tolerance` visibly drops
-more of them while the shape's real corners endure:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
@@ -234,14 +200,11 @@ print(panels(panes))
 [`simplify`][gometry.Geometry.simplify] takes a `method`: the default `'vw'`
 ([Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm))
 drops the *least visually significant* vertices first (the ones spanning the
-smallest effective triangle), which reads best cartographically, while `'dp'`
+smallest effective triangle), while `'dp'`
 ([Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm))
-drops vertices within a perpendicular-distance band of the retained chord. Both read the same
-distance-scale `tolerance` (for `'vw'` the effective-area threshold is
-`tolerance**2 / 2`) and share the `preserve_topology=True` default, so the
-two are directly comparable. The default `'vw'` gives the smoothest
-decimation out of the box; pass `method='dp'` when you have a strict
-positional-error budget.
+drops vertices within a perpendicular-distance band of the retained chord. Both
+use the distance-scale `tolerance` (for `'vw'` the effective-area threshold is
+`tolerance**2 / 2`) and share the `preserve_topology=True` default.
 
 [`offset_curve`][gometry.Geometry.offset_curve] produces a line parallel to a
 `LineString` at a signed distance (positive = left of the direction of
@@ -255,8 +218,7 @@ print((gm.LineString([(0, 0), (5, 0)])).offset_curve(1.0))
 
 ```
 
-A positive distance offsets to the left of travel, a negative one to the right;
-the source line is drawn inside each panel:
+A positive distance offsets to the left of travel, and a negative one to the right.
 
 ```python exec="on" html="true"
 from _figures import panels
@@ -282,8 +244,8 @@ when a shell pinches.
 [`snap`][gometry.snap] moves vertices of `geom` onto a `reference` geometry's
 vertices when they fall within `tolerance` (planar units). Kind is preserved for the
 typed free function (`LineString` in → `LineString` out); only the vertex
-coordinates change. It is the standard fix for two layers whose shared border is
-*almost* but not exactly coincident:
+coordinates change. It handles two layers whose shared border is almost but not
+exactly coincident:
 
 ```python exec="on" html="true"
 from _figures import before_after, with_vertices
@@ -301,7 +263,8 @@ print(before_after(with_vertices(noisy), with_vertices(snapped),
 positional `max_length` when every output segment must be no longer than that
 distance, or pass `fraction=` to split every input segment into equal pieces
 (`fraction=0.25` produces four pieces). Both preserve the represented shape and
-only raise vertex density:
+only raise vertex density. See [CRS, units & measurement](crs.md) for the
+`max_length` metric. `fraction=` has no unit and cannot be combined with `unit=`:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices
@@ -342,7 +305,7 @@ scale-aware `tolerance=None` default derived from each geometry's extent. Pass a
 positive tolerance only when you need an explicit error bound; array methods
 also accept one tolerance per row.
 
-The filled disk and the radius property are both directly usable:
+The circle result is a geometry, and the radius result is numeric:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -365,9 +328,6 @@ print("concave:", cloud.concave_hull(concavity=0.5))
 
 ```
 
-The input points are drawn inside each hull — the concave hull follows the
-dent the convex hull bridges over:
-
 ```python exec="on" html="true"
 from _figures import panels
 import gometry as gm
@@ -382,9 +342,8 @@ print(panels([
 
 !!! tip "`centroid` can land outside the shape"
     For a C-shaped or ring polygon the center of mass may fall in a hole or
-    outside the geometry entirely. When you need a representative point that is
-    *guaranteed* interior — e.g. for placing a label —
-    [`point_on_surface`][gometry.Geometry.point_on_surface] is the right tool.
+    outside the geometry entirely. [`point_on_surface`][gometry.Geometry.point_on_surface]
+    returns a representative point guaranteed to lie in the interior.
 
 ## Tessellation: triangulate, Voronoi, polygonize
 
@@ -429,7 +388,7 @@ read-only `float64` NumPy column.
     as lines, and
     [`polygonize_full`][gometry.polygonize_full] additionally reports dangles,
     cut edges, and invalid rings for pooled raw linework.
-    `GeometryArray.polygonize()` is deliberately row-wise and returns
+    `GeometryArray.polygonize()` is row-wise and returns
     `Groups`; pass the array directly to either free function to opt into one
     pooled graph. CDT
     `min_angle`/`max_area` refinement targets are best-effort on degenerate or
@@ -437,9 +396,7 @@ read-only `float64` NumPy column.
 
 ## Z and M through constructive ops
 
-Operations preserve Z/M wherever it is honestly derivable. Operations that
-invent brand-new points return a 2D result. See the canonical
-[Z/M rules](geometry.md#zm-under-operations) for the full doctrine.
+Constructive operation Z/M behavior follows the [geometry guide's rules](geometry.md#zm-under-operations).
 
 ## See also
 

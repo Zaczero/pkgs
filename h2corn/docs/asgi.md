@@ -4,10 +4,9 @@ description: The ASGI surface h2corn presents to an application — advertised e
 
 # ASGI surface
 
-`h2corn` implements [ASGI 3](https://asgi.readthedocs.io/en/latest/specs/main.html), so any
-application written against the specification runs unchanged. This page covers the parts where a
-server has latitude: which extensions it offers, how to send a file, and what `await send(...)`
-raises when a message is wrong.
+`h2corn` implements [ASGI 3](https://asgi.readthedocs.io/en/latest/specs/main.html).
+Server-specific behavior is its advertised extensions, file-send paths, and
+the exceptions raised by invalid `await send(...)` messages.
 
 ## Extensions
 
@@ -36,7 +35,7 @@ should open the file, and `zerocopysend` when you already hold a descriptor, or 
 raises. `zerocopysend` is not — it may be sent repeatedly and interleaved with
 `http.response.body`:
 
-```python
+```python title="partial application fragment"
 async def app(scope, receive, send):
     await send({"type": "http.response.start", "status": 200, "headers": []})
     with open("/srv/media/clip.mp4", "rb") as handle:
@@ -56,17 +55,18 @@ The range is sized from the descriptor's reported size, so a file whose size is 
 anything under `/proc` or `/sys` — is rejected rather than served as an empty body. Read those and
 send them with `http.response.body`.
 
-Zero-copy is best-effort, and the buffered path is byte-for-byte identical on the wire. TLS, Unix
-sockets, non-Linux platforms and small ranges take it — as does, on HTTP/1, any segment that is not
-the entire body: one mixed with `http.response.body`, or followed by trailers, is streamed through a
+Zero-copy is best-effort, and the buffered path is byte-for-byte identical on
+the wire. TLS, Unix sockets, non-Linux platforms, and small ranges use the
+buffered path. On HTTP/1, a segment that is not the entire body — one mixed with
+`http.response.body` or followed by trailers — is also streamed through a
 rolling read rather than `sendfile`.
 
 ## Lifespan state
 
-The lifespan scope has no `extensions` key at all. What it has is `scope["state"]`, a namespace an
-application fills during startup:
+The lifespan scope has no `extensions` key. `scope["state"]` is the namespace
+the application fills during startup:
 
-```python
+```python title="partial lifespan fragment"
 async def lifespan(scope, receive, send):
     message = await receive()          # lifespan.startup
     scope["state"]["pool"] = await open_pool()

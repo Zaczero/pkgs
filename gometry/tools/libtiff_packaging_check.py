@@ -34,14 +34,24 @@ def initialized_check() -> None:
     )
     source = source_members(LIBTIFF)
     parent_pin = run(
-        ['git', 'ls-tree', 'HEAD', 'gometry/native/libtiff-sys/libtiff'], cwd=ROOT.parent
+        ['git', 'ls-tree', 'HEAD', 'gometry/native/libtiff-sys/libtiff'],
+        cwd=ROOT.parent,
     )
-    assert COMMIT in run(['git', '-C', str(LIBTIFF), 'rev-parse', 'HEAD'], cwd=ROOT).stdout
+    assert (
+        COMMIT in run(['git', '-C', str(LIBTIFF), 'rev-parse', 'HEAD'], cwd=ROOT).stdout
+    )
     assert f'160000 commit {COMMIT}\t' in parent_pin.stdout
     assert_clean_submodule(LIBTIFF)
 
     package = run(
-        ['cargo', 'package', '--list', '--allow-dirty', '--manifest-path', 'Cargo.toml'],
+        [
+            'cargo',
+            'package',
+            '--list',
+            '--allow-dirty',
+            '--manifest-path',
+            'Cargo.toml',
+        ],
         cwd=CRATE,
     )
     assert package.returncode == 0, package.stderr
@@ -59,7 +69,14 @@ def negative_check() -> None:
         shutil.rmtree(copy / 'libtiff')
 
         package = run(
-            ['cargo', 'package', '--list', '--allow-dirty', '--manifest-path', 'Cargo.toml'],
+            [
+                'cargo',
+                'package',
+                '--list',
+                '--allow-dirty',
+                '--manifest-path',
+                'Cargo.toml',
+            ],
             cwd=copy,
         )
         assert package.returncode == 0, package.stderr
@@ -82,8 +99,12 @@ def source_members(path: Path) -> set[str]:
 
 
 def package_members(lines: list[str]) -> set[str]:
-    members = [line.removeprefix('libtiff/') for line in lines if line.startswith('libtiff/')]
-    assert len(members) == len(set(members)), 'Cargo package list contains duplicate libtiff paths'
+    members = [
+        line.removeprefix('libtiff/') for line in lines if line.startswith('libtiff/')
+    ]
+    assert len(members) == len(set(members)), (
+        'Cargo package list contains duplicate libtiff paths'
+    )
     for member in members:
         path = Path(member)
         assert member and not path.is_absolute() and '..' not in path.parts
@@ -95,7 +116,8 @@ def assert_clean_submodule(path: Path) -> None:
         result = run(['git', '-C', str(path), *diff_args], cwd=ROOT)
         assert result.returncode == 0, result.stdout + result.stderr
     status = run(
-        ['git', '-C', str(path), 'status', '--porcelain', '--untracked-files=all'], cwd=ROOT
+        ['git', '-C', str(path), 'status', '--porcelain', '--untracked-files=all'],
+        cwd=ROOT,
     )
     assert status.returncode == 0, status.stderr
     assert not status.stdout, status.stdout
@@ -104,7 +126,9 @@ def assert_clean_submodule(path: Path) -> None:
 def dirty_check() -> None:
     with tempfile.TemporaryDirectory(prefix='gometry-libtiff-dirty-') as temporary:
         crate = Path(temporary) / 'libtiff-sys'
-        shutil.copytree(CRATE, crate, ignore=shutil.ignore_patterns('target', 'libtiff'))
+        shutil.copytree(
+            CRATE, crate, ignore=shutil.ignore_patterns('target', 'libtiff')
+        )
         copy = crate / 'libtiff'
         clone = run(['git', 'clone', '--no-local', str(LIBTIFF), str(copy)], cwd=ROOT)
         assert clone.returncode == 0, clone.stderr

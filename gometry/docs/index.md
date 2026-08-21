@@ -1,4 +1,5 @@
 ---
+description: A blazing-fast geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
 hide:
   - navigation
   - toc
@@ -10,9 +11,9 @@ hide:
 
 # One geospatial engine, one mental model
 
-A high-performance **Rust** geometry engine with a **Pythonic** API. gometry replaces the
-day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent,
-fast, hard-to-misuse package — no GEOS, no GDAL, no system PROJ.
+A **blazing-fast** geospatial engine for Python, written in Rust. gometry replaces the
+day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
+package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
 [Why gometry](#why-gometry){ .md-button }
@@ -20,7 +21,7 @@ fast, hard-to-misuse package — no GEOS, no GDAL, no system PROJ.
 </div>
 
 ```bash
-pip install gometry
+uv add gometry
 ```
 
 ```python exec="on" source="block" result="text"
@@ -82,7 +83,6 @@ they are computed and the result is **native** for that CRS: a geographic CRS me
 geodesically in meters, a projected CRS uses its native linear units (feet stay feet;
 meters stay meters), and a CRS-free geometry stays in coordinate units. Pass
 `unit='meters'` for forced SI, or reproject with `geom.to_crs(...)` to change the frame.
-There is no "square degrees" footgun to commit.
 
 ### Fast without awkwardness
 
@@ -91,12 +91,12 @@ batched kernels over packed, GeoArrow-compatible buffers — so a million-point 
 is one call, not a Python loop. Grid `cover` factories materialize typed cell arrays;
 use free geometry predicates for exact source checks.
 
-### Hard to misuse
+### Declare, transform, refine
 
 `set_crs` declares; `to_crs` transforms — and they can't be confused. Spatial indexes
 expose `candidates` vs `query` (exact refine) instead of hiding the prefilter. Grid
-cover factories materialize cells with an explicit `cell_rule`; use free predicates so you never mistake a
-cover for exact geometry.
+cover factories materialize cells with an explicit `cell_rule`; a cover is a set of
+candidate cells, and exact membership stays a predicate on the source geometry.
 
 ### One spelling per operation
 

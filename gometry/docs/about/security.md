@@ -4,19 +4,19 @@ description: gometry's security posture for untrusted geometry input, parsing, p
 
 # Security & untrusted input
 
-gometry is a local geometry engine, not a sandbox. The security boundary is the
-data format you choose at ingress and the validation you run before trusting
-the parsed geometry.
+Security decisions depend on the data format chosen at ingress and the validation
+run before trusting parsed geometry.
 
 ## Accepted untrusted formats
 
-Use these formats for untrusted data:
+Use these formats for untrusted data contents:
 
 - WKB/EWKB via `gm.from_wkb`;
 - WKT/EWKT via `gm.from_wkt`;
 - GeoJSON via `gm.from_geojson` or `gm.from_features`;
-- Arrow/GeoArrow/GeoParquet when the producer is a data system, not arbitrary
-  Python code.
+- Arrow/GeoArrow/GeoParquet after accepting the provider as a trusted ABI
+  participant; the buffers and geometry values are still treated as untrusted
+  contents.
 
 The readers fail fast with structured `ParseError`, `CRSError`,
 `InvalidGeometryError`, or `GeometryError` lanes. Parse untrusted bytes with these
@@ -41,8 +41,8 @@ for payload in payloads:
 
 ```
 
-Validate topology with `geom.validate()` / `arr.is_valid` and repair deliberately
-with `repair()` when your workflow accepts repaired shapes.
+Validate topology with `geom.validate()` / `arr.is_valid`, and call `repair()`
+where the workflow accepts repaired shapes.
 
 ## Ingress threat model
 
@@ -54,18 +54,12 @@ monotonicity, BinaryView prefixes, validity bitmaps, exact encoding shapes)
 rejects **hidden/forged** sizes; it does **not** wall off merely-large-and-valid
 payloads.
 
-What gometry **does** guarantee:
+For an ABI-conforming Arrow provider, memory and work stay **bounded relative to
+the input** actually supplied, without attacker leverage from tiny forged
+declarations:
 
-- Memory and work stay **bounded relative to the input** you actually supplied
-  (no attacker leverage from tiny forged declarations).
-- For ABI-conforming Arrow input, gometry copies the selected geometry schema
-  and every visible buffer span it will validate or decode into owned storage.
-  Validation and decoding then use only that snapshot. Native Arrow-C providers
-  must not modify exported structs, pointer tables, schema memory, or buffers
-  before gometry invokes their release callback; direct PyArrow objects must not
-  be mutated while `from_arrow` is importing them. Malformed owned layout or
-  data raises a typed domain error. Forged pointers, false capacities, and
-  non-conforming release callbacks remain outside the threat model.
+- Arrow providers must obey the exported structures, readable spans, capsule
+  names, and release callbacks; see [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsule-trust-model).
 - Coverage factories expose one overridable size knob, `max_cells` (default
   `1_000_000` on H3, S2, geohash, and tile cover; pass `None` for unlimited).
   Parsers impose no flat byte or feature-count ceiling,
@@ -73,60 +67,38 @@ What gometry **does** guarantee:
   Generated-work and result-count limits also protect expansion, grid collection,
   transform-bounds densification, and CRS search. `CellArray.uncompact` is a
   caller-directed, unlimited transform and is not protected by factory
-  result-count limits. Bare
-  unsized/infinite input iterables remain deliberately supported without an
-  element ceiling (a lying `__len__` only tempers the reservation; it never caps
-  or rejects).
+  result-count limits.
 
-What is **out of the threat model** (document, do not chase):
+Proportionally large input can still abort on genuine OOM when its bytes are
+comparable to required memory and the process rlimit is below what it needs.
+Callers parsing untrusted data **must bound input size at the trust boundary**
+(`len(payload)`, feature count, decompressed size), reject oversized payloads
+before parsing, cap decompressed input separately, and bound batch and feature
+counts. Making every `Vec` / string allocation fallible under arbitrary rlimits
+is neither achievable nor required. A bare unsized stream with no `__len__` can
+also consume memory proportionally to its input. In particular, each
+`Polygon(..., holes=stream)` hole owns `CoordSeq` columns backed by `Arc<[f64]>`;
+std has no fallible Arc-slice constructor, so under a hard `RLIMIT_AS` its inner
+allocation can abort before the outer fallible collector reports `MemoryError`.
 
-- **Abort on genuine OOM** when the input is proportionally large (bytes ≈
-  memory) and the process rlimit is below what that input needs. Callers
-  parsing untrusted data **must bound input size at the trust boundary**
-  (`len(payload)`, feature count, decompressed size). Making every `Vec` /
-  string allocation fallible under arbitrary rlimits is neither achievable nor
-  required. This includes a bare unsized stream with no `__len__` consumed to
-  memory exhaustion: it is proportional input, not amplification. In
-  particular, each `Polygon(..., holes=stream)` hole owns `CoordSeq` columns
-  backed by `Arc<[f64]>`; std has no fallible Arc-slice constructor, so under a
-  hard `RLIMIT_AS` its inner allocation can abort before the outer fallible
-  collector reports `MemoryError`.
-- **Sized inputs and lying-`__len__` inputs** retain the catchable
-  `MemoryError` guarantee for capacity growth: untrusted length hints are
-  clamped before fallible reservation, so they cannot force an oversized
-  up-front allocation.
-- **Forged/lying duck-typed Arrow-C producers** that violate the C Data
-  Interface ABI (no buffer capacity in the format). See
-  [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsule-trust-model).
-
-## Resource limits belong at the caller boundary
+Bare unsized and infinite input iterables are supported without an element
+ceiling. Sized inputs and lying-`__len__` inputs retain the catchable
+`MemoryError` guarantee for capacity growth. The length hint is clamped before
+fallible reservation, so it only tempers the reservation and never caps or
+rejects input or forces an oversized up-front allocation.
 
 Syntactically valid geometry can still exhaust CPU or memory through enormous
-payloads, vertex counts, feature collections, or expensive topology. WKT, WKB,
-and GeoJSON nesting is rejected at a fixed defensive ceiling; generated-work and
-result-count limits also bound selected expansion, grid, transform, and catalog
-operations. Those safeguards do not replace an application's byte, vertex,
-feature-count, memory, or execution-time budget.
-
-Reject oversized payloads before parsing, cap decompressed input separately,
-bound batch and feature counts, and run hostile or multi-tenant workloads in a
-process with OS memory/CPU limits and a timeout. Treat `repair`, overlay,
-validation, and exact spatial refinement as potentially expensive work after a
-successful parse. Never rely on a Python thread timeout as hard isolation.
+payloads, vertex counts, feature collections, or expensive topology. Run hostile
+or multi-tenant workloads in a process with OS memory/CPU limits and a timeout.
+Treat `repair`, overlay, validation, and exact spatial refinement as potentially
+expensive work after a successful parse.
+Python thread timeouts are not hard isolation.
 
 ## No-panic invariant
 
 Malformed content, huge-but-finite coordinates, missing rows, CRS mismatch, and
 invalid dimensionality must raise Python exceptions or return documented null
 lanes; they must not panic across the FFI boundary.
-
-## Testing approach
-
-gometry does not ship or run a fuzzing campaign. The suite is a hand-written
-deterministic corpus: malformed-input handling is covered by focused regression
-tests that pin each specific defect, rather than by randomized mutation. This is
-a deliberate choice — generated campaigns are slow, and every defect one finds
-has to be pinned as a deterministic test anyway.
 
 ## Never unpickle untrusted data
 

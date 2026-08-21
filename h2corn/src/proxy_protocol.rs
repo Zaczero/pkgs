@@ -589,7 +589,7 @@ mod tests {
     use tokio::io::{AsyncWriteExt as _, duplex};
 
     use super::*;
-    use crate::config::ProxyConfig;
+    use crate::config::{ForwardedFields, ProxyConfig};
     use crate::error::ErrorKind;
     use crate::h2_frame::BufferedConnectionReader;
 
@@ -629,6 +629,7 @@ mod tests {
         let trusted = ProxyConfig {
             trust_headers: true,
             trusted_peers: Box::new([parse_trusted_peer("192.0.2.10").unwrap()]),
+            forwarded_fields: ForwardedFields::default(),
             protocol: ProxyProtocolMode::Off,
         };
         assert!(ConnectionInfo::from_peer(peer, None, &trusted).proxy_headers_trusted);
@@ -636,6 +637,7 @@ mod tests {
         let opt_out = ProxyConfig {
             trust_headers: false,
             trusted_peers: Box::new([parse_trusted_peer("192.0.2.10").unwrap()]),
+            forwarded_fields: ForwardedFields::default(),
             protocol: ProxyProtocolMode::Off,
         };
         assert!(!ConnectionInfo::from_peer(peer, None, &opt_out).proxy_headers_trusted);
@@ -643,6 +645,7 @@ mod tests {
         let untrusted = ProxyConfig {
             trust_headers: true,
             trusted_peers: Box::new([parse_trusted_peer("192.0.2.11").unwrap()]),
+            forwarded_fields: ForwardedFields::default(),
             protocol: ProxyProtocolMode::Off,
         };
         assert!(!ConnectionInfo::from_peer(peer, None, &untrusted).proxy_headers_trusted);

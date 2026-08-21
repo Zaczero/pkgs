@@ -469,7 +469,9 @@ def test_crs_geodesic_inverse_matches_pyproj_ellipsoid_oracle() -> None:
         )
         expected = geod.inv(-73.0, 41.0, -74.0, 42.0)
         actual = gm.CRS(crs).geodesic_inverse(-73.0, 41.0, -74.0, 42.0)
-        actual_3d = gm.CRS(crs).geodesic_inverse(-73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0)
+        actual_3d = gm.CRS(crs).geodesic_inverse(
+            -73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0
+        )
         expected_direct = geod.fwd(-73.0, 41.0, 45.0, 1000.0)
         actual_direct = gm.CRS(crs).geodesic_direct(-73.0, 41.0, 45.0, 1000.0)
         assert actual['forward_azimuth'] == pytest.approx(expected[0])

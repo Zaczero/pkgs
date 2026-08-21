@@ -313,14 +313,16 @@ class Server:
 
     Example:
 
-        import asyncio
-        from h2corn import Config, Server
+    ```python
+    import asyncio
+    from h2corn import Config, Server
 
-        async def main():
-            server = Server(app, Config(bind=('127.0.0.1:8000',)))
-            await server.serve()
+    async def main():
+        server = Server(app, Config(bind=('127.0.0.1:8000',)))
+        await server.serve()
 
-        asyncio.run(main())
+    asyncio.run(main())
+    ```
     """
 
     app: Application
@@ -382,9 +384,11 @@ class Server:
 
         Example:
 
-            serving = asyncio.create_task(server.serve())
-            await server.wait_started()
-            # the port is open here
+        ```python
+        serving = asyncio.create_task(server.serve())
+        await server.wait_started()
+        # the port is open here
+        ```
         """
         loop = asyncio.get_running_loop()
         with self._state_lock:
@@ -427,10 +431,12 @@ class Server:
         Unlike `Config.bind`, these carry the port the kernel actually
         assigned — bind to port `0` and read the address back from here:
 
-            server = Server(app, Config(bind=('127.0.0.1:0',)))
-            serving = asyncio.create_task(server.serve())
-            await server.wait_started()
-            host, _, port = server.addresses[0].rpartition(':')
+        ```python
+        server = Server(app, Config(bind=('127.0.0.1:0',)))
+        serving = asyncio.create_task(server.serve())
+        await server.wait_started()
+        host, _, port = server.addresses[0].rpartition(':')
+        ```
         """
         with self._state_lock:
             return self._addresses
@@ -1146,10 +1152,12 @@ def serve(app: Application, config: Config | None = None) -> None:
 
     Example:
 
-        from h2corn import Config, serve
-        from myapp import app
+    ```python
+    from h2corn import Config, serve
+    from myapp import app
 
-        serve(app, Config(bind=('127.0.0.1:8000',), workers=4))
+    serve(app, Config(bind=('127.0.0.1:8000',), workers=4))
+    ```
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':

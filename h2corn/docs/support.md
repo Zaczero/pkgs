@@ -6,28 +6,22 @@ description: Where to file bugs and security reports, and what commercial suppor
 
 ## Issues, questions, and feature requests
 
-The [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues) is the
-home for everything from bug reports to design discussions. Reports get
-triaged and rolled into the next release.
+Bug reports, questions, feature requests, and design discussions go to the
+[GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 
-A report lands fastest with `h2corn --version`, the relevant CLI flags or
-`h2corn.toml`, the reverse proxy in front (if any), and a minimal reproducer.
-
-For feature requests, describe the use case rather than the
-implementation you have in mind — that leaves the most room for the
-right shape of fix.
+Issue reports include `h2corn --version`, the relevant CLI flags or
+`h2corn.toml`, any reverse proxy in front, and a minimal reproducer.
 
 ## Security disclosures
 
-Use GitHub's [private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new)
-for potentially exploitable issues. Do not file these on the public
-tracker.
+GitHub's [private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new)
+is the channel for potentially exploitable issues; the public tracker is not.
 
 ## Premium support
 
 Paid engineering support is available for teams running `h2corn` in
-production — typically including the surrounding Python application,
-since the server is rarely the only moving part.
+production, covering the surrounding Python application as well as the
+server.
 
 Common scopes:
 
@@ -40,6 +34,3 @@ Common scopes:
 - **Prioritized fixes and features** on a defined timeline.
 
 Reach out at [monicz.dev](https://monicz.dev/#get-in-touch).
-
-If you are still evaluating, the [FAQ](faq.md) and [Behind a proxy](deployment/proxy.md)
-cover most of what comes up first.

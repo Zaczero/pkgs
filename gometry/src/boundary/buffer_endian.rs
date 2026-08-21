@@ -29,32 +29,25 @@ use crate::py::vectors::Float64Buffer;
     not(Py_GIL_DISABLED),
     expect(
         clippy::missing_const_for_fn,
-        clippy::unnecessary_wraps,
         clippy::needless_return,
-        reason = "the GIL build is a no-op while the free-threaded build validates provenance"
+        reason = "the GIL build always answers true while the free-threaded build walks the chain"
     )
 )]
-pub(crate) fn require_immutable_exporter<T>(
+pub(crate) fn exporter_storage_is_stable<T>(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<T>,
-) -> PyResult<()> {
+) -> bool {
     #[cfg(not(Py_GIL_DISABLED))]
     {
-        let _ = (py, value, buffer);
-        return Ok(());
+        let _ = (py, buffer);
+        return true;
     }
     #[cfg(Py_GIL_DISABLED)]
     {
-        let mut owner = buffer
-            .obj(py)
-            .ok_or_else(|| {
-                PyBufferError::new_err(
-                    "mutable buffer exporters are not supported on free-threaded Python",
-                )
-            })?
-            .clone()
-            .unbind();
+        let Some(exporter) = buffer.obj(py) else {
+            return false;
+        };
+        let mut owner = exporter.clone().unbind();
         // PyBuffer reports a memoryview as the exporter for typed views. Only
         // follow the exact built-in memoryview's own obj link; never invoke an
         // attribute supplied by an arbitrary exporter.
@@ -63,24 +56,16 @@ pub(crate) fn require_immutable_exporter<T>(
             if owner_bound.is_exact_instance_of::<PyBytes>()
                 || owner_bound.is_exact_instance_of::<Float64Buffer>()
             {
-                break;
+                return true;
             }
             if !owner_bound.is_exact_instance_of::<PyMemoryView>() {
-                let _ = value;
-                return Err(PyBufferError::new_err(
-                    "mutable buffer exporters are not supported on free-threaded Python",
-                ));
+                return false;
             }
-            owner = owner_bound
-                .getattr("obj")
-                .map_err(|_| {
-                    PyBufferError::new_err(
-                        "mutable buffer exporters are not supported on free-threaded Python",
-                    )
-                })?
-                .unbind();
+            let Ok(next) = owner_bound.getattr("obj") else {
+                return false;
+            };
+            owner = next.unbind();
         }
-        Ok(())
     }
 }
 
@@ -109,19 +94,20 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
 
 /// Copy a C-contiguous `f64` buffer into an `Arc<[f64]>` in host-native order.
 ///
-/// Reads each element through [`pyo3::buffer::ReadOnlyCell`]. The immutable
-/// exporter gate above establishes that the captured storage cannot be mutated
-/// during the copy; the result is then retained in an owned `Arc`.
+/// Reads each element through [`pyo3::buffer::ReadOnlyCell`], forming a Rust
+/// slice over the exporter's storage. That is only sound while nothing else can
+/// write it, so an exporter failing [`exporter_storage_is_stable`] takes
+/// CPython's own contiguous copy instead: the same answer, no data race.
 ///
 /// # Safety contract
 /// Caller must only pass a C-contiguous `f64` buffer held for this scope.
-/// The buffer must have passed [`require_immutable_exporter`].
 pub(crate) fn buffer_to_arc_f64(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<f64>,
 ) -> PyResult<Arc<[f64]>> {
-    require_immutable_exporter(py, value, buffer)?;
+    if !exporter_storage_is_stable(py, buffer) {
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
+    }
     let len = buffer.item_count();
     let mut arc: Arc<[MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
     let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
@@ -147,10 +133,8 @@ pub(crate) fn buffer_to_arc_f64(
 /// the PEP 3118 format is non-native).
 pub(crate) fn buffer_to_vec_f64(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<f64>,
 ) -> PyResult<Vec<f64>> {
-    require_immutable_exporter(py, value, buffer)?;
     let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
@@ -163,10 +147,8 @@ pub(crate) fn buffer_to_vec_f64(
 /// Copy buffer elements to a `Vec<u64>` in host-native order.
 pub(crate) fn buffer_to_vec_u64(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<u64>,
 ) -> PyResult<Vec<u64>> {
-    require_immutable_exporter(py, value, buffer)?;
     let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
@@ -179,11 +161,9 @@ pub(crate) fn buffer_to_vec_u64(
 /// `copy_to_slice` then byteswap if the buffer format is non-native.
 pub(crate) fn buffer_copy_to_slice_u64(
     py: Python<'_>,
-    value: &Bound<'_, PyAny>,
     buffer: &PyBuffer<u64>,
     target: &mut [u64],
 ) -> PyResult<()> {
-    require_immutable_exporter(py, value, buffer)?;
     buffer.copy_to_slice(py, target)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in target.iter_mut() {

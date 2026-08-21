@@ -48,15 +48,20 @@ def _svg(obj: Any) -> str:
     raise TypeError(f'cannot render {type(obj).__name__} as SVG')
 
 
-def figure(obj: Any, caption: str | None = None) -> str:
+def figure(
+    obj: Any,
+    caption: str | None = None,
+) -> str:
     """One captioned SVG panel.
 
     ``obj`` is a geometry/array, a raw SVG string, or a list of geometries to
-    overlay in a single frame. ``caption`` renders as a ``<figcaption>``.
+    overlay in a single frame. ``caption`` renders as a ``<figcaption>`` and
+    names the SVG for assistive technology.
     """
-    label = caption or 'Geometry visualization'
+    if not caption:
+        raise ValueError('a figure needs a non-empty caption')
     svg = _svg(obj).replace(
-        '<svg', f'<svg role="img" aria-label="{escape(label, quote=True)}"', 1
+        '<svg', f'<svg role="img" aria-label="{escape(caption, quote=True)}"', 1
     )
     cap = f'<figcaption><code>{escape(caption)}</code></figcaption>' if caption else ''
     return f'<figure class="gometry-figure">{cap}{svg}</figure>'
@@ -65,9 +70,9 @@ def figure(obj: Any, caption: str | None = None) -> str:
 def panels(items: Iterable[Any]) -> str:
     """A responsive row of captioned panels.
 
-    Each item is either an ``obj`` (rendered uncaptioned) or a
-    ``(caption, obj)`` pair. ``obj`` may be a geometry, an SVG string, or a list
-    of geometries to overlay.
+    Each item is a ``(caption, obj)`` pair. ``obj`` may be a geometry, an SVG
+    string, or a list of geometries to overlay. Captions are required so every
+    panel has useful equivalent text.
     """
     figs = []
     for item in items:
@@ -79,6 +84,8 @@ def panels(items: Iterable[Any]) -> str:
             caption, obj = item
         else:
             caption, obj = None, item
+        if not caption:
+            raise ValueError('each panel needs a non-empty caption')
         figs.append(figure(obj, caption))
     return (
         '<div class="gometry-panels" '

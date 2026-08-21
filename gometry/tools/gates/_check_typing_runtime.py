@@ -116,7 +116,10 @@ def _check_annotated_members(label: str, obj: object, errors: list[str]) -> None
     if not inspect.isclass(obj):
         _check_get_type_hints(label, obj, errors)
         return
-    if obj.__dict__.get('__annotations__'):
+    # Own annotations only, never the base classes' — `get_annotations` reads
+    # them without the MRO walk a plain attribute access would do, and without
+    # forcing the deferred evaluation PEP 649 introduced.
+    if inspect.get_annotations(obj):
         _check_get_type_hints(label, obj, errors)
     for member_name, member in vars(obj).items():
         target = member.fget if isinstance(member, property) else member
@@ -211,11 +214,14 @@ def _check_overload_witnesses(errors: list[str]) -> None:
             'destination method: missing Point and GeometryArray positive '
             f'witnesses in {_CONFORMANCE.relative_to(_ROOT)}'
         )
-    if re.search(
-        r'POINT\.destination\s*\([^\n]*path\s*=\s*[\'\"]rhumb[\'\"][^\n]*'
-        r'unit\s*=\s*[\'\"]meters[\'\"]',
-        neg,
-    ) is None:
+    if (
+        re.search(
+            r'POINT\.destination\s*\([^\n]*path\s*=\s*[\'\"]rhumb[\'\"][^\n]*'
+            r'unit\s*=\s*[\'\"]meters[\'\"]',
+            neg,
+        )
+        is None
+    ):
         errors.append(
             'destination method: missing rhumb-unit negative type:ignore '
             f'witness in {_NEGATIVES.relative_to(_ROOT)}'

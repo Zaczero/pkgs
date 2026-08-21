@@ -1,11 +1,13 @@
 site_name: h2corn
-site_description: High-performance HTTP/2 ASGI server for FastAPI, Starlette, and similar apps.
+site_description: A blazing-fast HTTP/2 ASGI server for Python, written in Rust. Runs FastAPI, Starlette, Django, Litestar, and any other ASGI 3 application.
 site_url: https://h2corn.monicz.dev/
 repo_url: https://github.com/Zaczero/pkgs/tree/main/h2corn
 repo_name: Zaczero/pkgs
 
 docs_dir: docs
 site_dir: site
+hooks:
+  - ../tools/docs/check_frontmatter.py
 
 theme:
   name: material
@@ -57,6 +59,15 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+# Material renders ```mermaid fences itself, but its bundle lazy-loads the
+# library from unpkg.com unless a global `mermaid` already exists. Serving a
+# pinned copy keeps readers off a third-party CDN, keeps the site working
+# offline, and stops an upstream 11.x release from re-laying-out the diagrams.
+# Not under assets/vendor/: the repository ignores `vendor/`, so a copy there
+# would never be committed and every published build would fall back to the CDN.
+extra_javascript:
+  - assets/javascripts/mermaid-11.17.0.min.js
+
 extra:
   social:
     - icon: fontawesome/brands/github
@@ -100,6 +111,7 @@ plugins:
             signature_crossrefs: true
             merge_init_into_class: true
             members_order: source
+            members: true
             heading_level: 2
             filters:
               - '!^_'
@@ -124,8 +136,6 @@ markdown_extensions:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
   - pymdownx.highlight:
-      anchor_linenums: true
-      line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.keys
@@ -136,7 +146,11 @@ markdown_extensions:
         - .
         - examples
       check_paths: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
       slugify: !!python/object/apply:pymdownx.slugs.slugify
@@ -165,8 +179,10 @@ nav:
       - Types: api/types.md
     - Benchmarks: benchmarks.md
   - Help:
+    - Release notes: releases.md
     - Support: support.md
     - FAQ: faq.md
+    - Troubleshooting: troubleshooting.md
 
 watch:
   - python/h2corn

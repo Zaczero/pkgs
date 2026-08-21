@@ -18,9 +18,9 @@ registry.
 Install only the boundary you use:
 
 ```bash
-pip install 'gometry[pandas]'
-pip install 'gometry[polars]'
-pip install 'gometry[geopandas]'
+uv add "gometry[pandas]"
+uv add "gometry[polars]"
+uv add "gometry[geopandas]"
 ```
 
 ## pandas extension storage
@@ -42,12 +42,12 @@ print("rows:", len(series))
 print("frame:", restored.crs.to_authority())
 ```
 
-The internal dtype object reports a descriptive name, but gometry does not
+The extension dtype reports a descriptive name, but gometry does not
 register it with pandas or expose a second construction API. Construct geometry
 columns through `array.to_pandas()`. This keeps imports and conversions free of
 global side effects.
 
-Missing rows remain first-class native `GeometryArray` state. `None` and
+Missing rows are native `GeometryArray` state. `None` and
 `pd.NA` are missing; an empty geometry is a value. pandas operations such as
 `dropna`, `factorize`, `groupby`, and `value_counts` use the extension-array
 protocol directly.
@@ -55,7 +55,7 @@ protocol directly.
 To calculate a new column, convert once, compute in gometry, then attach the
 result:
 
-```python
+```python title="partial: continues the preceding pandas example"
 points = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
 series = points.to_pandas(name="geometry")
 frame = series.to_frame()
@@ -84,14 +84,13 @@ print("areas:", areas.tolist())
 ```
 
 An EPSG CRS rides as an EWKB SRID. Other CRS definitions and coordinate epochs
-do not fit WKB: acknowledge their loss with `drop_crs=True` or
-`drop_epoch=True`, then restore them explicitly through `gm.from_polars(...,
-crs=..., epoch=...)`. Missing rows encode as Polars nulls and round-trip as
-missing geometry rows.
+are not representable in WKB. `drop_crs=True` removes non-EPSG CRS metadata and
+`drop_epoch=True` removes the coordinate epoch; restore them explicitly through
+`gm.from_polars(..., crs=..., epoch=...)`. Missing rows encode as Polars nulls
+and round-trip as missing geometry rows.
 
-There is deliberately no Polars Series or Expr namespace. A single statically
-typed gometry API is easier to discover and keeps lazy-plan behavior free of
-Python UDF magic.
+gometry registers no Polars Series or Expr namespace. Conversion goes through
+`to_polars()` and `gm.from_polars()`, which keeps lazy plans free of Python UDFs.
 
 ## GeoPandas interchange
 

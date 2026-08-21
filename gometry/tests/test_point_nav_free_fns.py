@@ -37,9 +37,7 @@ def test_destination_scalar_and_array() -> None:
         points[0].destination(90.0, 111_000.0).to_wkb(),
         points[1].destination(0.0, 110_600.0).to_wkb(),
     ]
-    scalar_point_vector_outs = start.destination(
-        [90.0, 0.0], [111_000.0, 110_600.0]
-    )
+    scalar_point_vector_outs = start.destination([90.0, 0.0], [111_000.0, 110_600.0])
     assert isinstance(scalar_point_vector_outs, gm.GeometryArray)
     assert _wkb_rows(scalar_point_vector_outs) == [
         start.destination(90.0, 111_000.0).to_wkb(),

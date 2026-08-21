@@ -154,3 +154,28 @@ with mkdocs_gen_files.open('api/index.md', 'w') as file:
     )
     for page in PAGES:
         file.write(f'| [{page.title}]({page.path}.md) | {page.description} |\n')
+    file.write(
+        '\n'
+        '## Route by result shape\n\n'
+        'Use the operation pages above for signatures. These links route by the '
+        'shape and boundary contract of the result without repeating those signatures.\n\n'
+        '| Need | Start here | Contract |\n'
+        '|---|---|---|\n'
+        '| One scalar geometry or scalar fact | [Geometry](geometry/geometry.md) | A scalar input returns a scalar value or geometry. |\n'
+        '| Packed array and dense numeric result | [GeometryArray](geometry/geometryarray.md) | Array operations return row-aligned read-only NumPy arrays or a `GeometryArray`. |\n'
+        '| Missing rows | [Missing rows](../guide/arrays.md#missing-rows) | Missing rows remain row-aligned; fixed-width lanes use sentinels and `.is_missing` is authoritative. |\n'
+        '| Coordinate axes | [Coordinates & dimensions](geometry/coordinates.md) | Scalar `coordinate_axes` is one layout; array `coordinate_axes` is per row and `common_coordinate_axes` is shared-or-`None`. |\n'
+        '| Ragged matches or grouped output | [Groups](geometry/coordinates.md#gometry.Groups) · [Features](results.md#gometry.Features) | `Groups` stores row offsets; named result records keep related fields together. |\n'
+        '| Optional dataframe, storage, or map interop | [Optional interoperability](interop.md) | Optional adapters are explicit extras; each page states copy, CRS, epoch, missing-row, and loss behavior. |\n'
+        '\n'
+        '## Route by operation\n\n'
+        '- [Measure or navigate](toplevel/measurement.md) returns scalar or array numeric values; '
+        'geodesy and metric units are described in [CRS, units & measurement](../guide/crs.md).\n'
+        '- [Build, transform, or edit geometry](toplevel/constructors-bulk-factories.md) starts with '
+        'constructors and continues through [Geometry](geometry/geometry.md).\n'
+        '- [Relate geometries](toplevel/predicates.md) uses free predicates and strict scalar/array broadcasting.\n'
+        '- [Find candidates, refine, or join](toplevel/index-join.md) returns integer arrays or '
+        '[`Groups`](geometry/coordinates.md#gometry.Groups); candidates are not exact matches.\n'
+        '- [Exchange data](toplevel/io-interop.md) covers text, binary, GeoJSON, and Arrow; '
+        '[optional interop](interop.md) covers dataframe and map adapters.\n'
+    )

@@ -4,29 +4,43 @@ description: Arrow C Data Interface and GeoArrow interchange for gometry — dep
 
 # Arrow & storage
 
-This page covers the columnar end of the pipeline: the Arrow C Data Interface and
-[GeoArrow](https://geoarrow.org/) layouts that `Geometry` and `GeometryArray`
-export, and the two durable-storage extras that build on them — **GeoParquet**
-files and **lonboard** maps. Read the capsule and round-trip sections first for
-the in-memory boundary, then the GeoParquet and lonboard sections for the two ends
-of a persisted pipeline.
+`Geometry` and `GeometryArray` export Arrow C Data Interface capsules in
+[GeoArrow](https://geoarrow.org/) layouts. GeoParquet files and lonboard maps
+build on those same capsules.
 
-## PyCapsules first, pyarrow when you ask for it
+## Arrow PyCapsules without pyarrow
 
 `Geometry` and `GeometryArray` implement the Arrow PyCapsule protocol with no
 optional dependency:
 
 - `__arrow_c_schema__` → a capsule named `arrow_schema`
-- `__arrow_c_array__` → a capsule named `arrow_array`
+- `__arrow_c_array__` → a `(schema_capsule, array_capsule)` tuple named
+  `arrow_schema` and `arrow_array`
 - `__arrow_c_stream__` → a capsule named `arrow_array_stream`
 
-Any capsule-aware consumer — Polars, DuckDB, lonboard — imports the GeoArrow
-buffers straight from these capsules **without pyarrow installed**. Install
-`gometry[arrow]` only when you want `(...).to_arrow()` to hand back a concrete
-pyarrow array, or when you need to ingest an older pyarrow-only object.
+A consumer that implements the Arrow C Data Interface can import the GeoArrow
+buffers straight from these capsules **without pyarrow installed**. Whether a
+consumer preserves GeoArrow extension metadata is version- and adapter-specific;
+see the [compatibility matrix](../about/compatibility.md) for deployed
+integration details. Install `gometry[arrow]` for `(...).to_arrow()` to return
+a concrete pyarrow array or to ingest an older pyarrow-only object.
+
+The tuple is the Arrow C Data Interface boundary; it is not a geometry result
+that can be passed to `from_arrow` directly. A consumer receives the object
+implementing `__arrow_c_array__`, calls it, and owns the two capsules for the
+duration of the import.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+values = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
+schema_capsule, array_capsule = values.__arrow_c_array__()
+print('schema:', 'arrow_schema' in repr(schema_capsule))
+print('array:', 'arrow_array' in repr(array_capsule))
+```
 
 ```bash
-pip install 'gometry[arrow]'
+uv add "gometry[arrow]"
 ```
 
 ## Round-trip
@@ -70,44 +84,23 @@ collections fall back to GeoArrow **WKB** encoding so nothing is lost.
 `from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
 batches through the PyArrow path. Other objects implementing
 `__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
-capsule path.
+capsule path; the provider's data contents are still validated after gometry
+copies the admitted spans into owned storage.
 
 ### Arrow C capsule trust model
 
 The [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html)
-carries **no buffer capacity except BinaryView's mandatory variadic-sizes
-buffer**, which gometry decodes and enforces. A producer that lies about other
-buffer sizes or metadata cannot be made fully memory-safe from inside the
-consumer alone. Every Arrow consumer works this way (including pyarrow).
+does not provide general buffer capacities. Providers must obey its exported
+structures, pointer tables, readable spans, capsule names, and release-callback
+rules; a provider that forges pointers or capacities is outside this boundary.
+Native producers must keep exported memory valid until release, and PyArrow
+objects must not be modified during `from_arrow`.
 
-gometry therefore draws an explicit line:
-
-- **ABI-conforming means** that the exported structures, pointer tables,
-  layout-implied readable capacities, and release callbacks obey the Arrow C
-  Data Interface. It does **not** mean that gometry has exclusive buffer
-  ownership or that retained aliases are immutable. A native producer must not
-  modify exported memory before its release callback runs; a PyArrow object
-  must not be modified during `from_arrow`. Changes after native admission and
-  release cannot affect the result. A provider that forges pointers or
-  capacities is outside the threat model.
-- **Data and layout are validated defensively on the owned snapshot.** Schema
-  formats, nested offset monotonicity **including null slots**, null bitmaps,
-  BinaryView prefix and inline padding, coordinate finiteness, and GeoArrow
-  encoding/storage pairs are checked; malformed *owned* data raises a clean
-  domain error rather than panicking or accepting garbage. Zero-length
-  chunks/batches are discarded after type/frame validation so empty storage is
-  not retained for a zero-row result.
-- **No amplification.** Import work and retained memory stay bounded relative
-  to the input you supplied. Like every native extension, a proportionally
-  huge valid column can still OOM the process — callers parsing untrusted
-  Arrow must bound **input size** at the trust boundary. See
-  [Security & untrusted input](../about/security.md#ingress-threat-model).
-- **`__arrow_c_array__` / `__arrow_c_stream__` producers are trusted to be
-  ABI-conforming.** A deliberately hostile duck-typed object that forges
-  capsules or lies about its own buffers, `column_names`,
-  `__arrow_ext_serialize__`, or `type.names` is **out of the threat model** —
-  the same posture as pyarrow itself. Do not expect gometry to harden against
-  that class of producer.
+Gometry copies the admitted schema and visible spans into owned storage, then
+validates schema formats, offsets (including null slots), null bitmaps,
+BinaryView padding, coordinate finiteness, and GeoArrow encoding/storage pairs.
+Malformed owned data raises a domain error. Resource budgets and untrusted-input
+limits are documented in [Security & untrusted input](../about/security.md).
 
 ## CRS as PROJJSON, epoch as a gometry extension
 
@@ -132,11 +125,12 @@ gometry is the consumer, `from_arrow` accepts those capsules too and copies the
 selected schema plus visible validity, offset, view, variadic-size, coordinate,
 and WKB spans into gometry-owned storage before validation and decode.
 
-DuckDB, raw `polars.from_arrow(...)` calls, and lonboard can consume these
-capsules directly. gometry's supported `to_polars()` / `from_polars()` adapter
-instead uses a batched WKB/EWKB `Binary` Series so it remains independent of
-PyArrow; that boundary is covered in [DataFrames](dataframes.md). The lonboard
-map path below uses the direct capsule handoff.
+Consumers with Arrow-C support can consume these capsules directly, subject to
+their own GeoArrow and extension-type support. Gometry's supported
+`to_polars()` / `from_polars()` adapter instead uses a batched WKB/EWKB `Binary`
+Series so it remains independent of PyArrow; that boundary is covered in
+[DataFrames](dataframes.md). The lonboard adapter uses the direct capsule handoff
+and falls back to GeoJSON when that handoff is unavailable.
 
 ## GeoParquet — durable columnar storage
 
@@ -147,7 +141,7 @@ embedded as **PROJJSON** in the column header, geometry is written with **WKB**
 encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arrow
 validity bits instead of sentinel geometries. GeoParquet builds on pyarrow (the
 `arrow` extra provides it); for an in-memory handoff without a file, use
-[`to_arrow`][gometry.Geometry.to_arrow] above.
+[`to_arrow`][gometry.Geometry.to_arrow].
 
 ```python exec="on" source="block" result="text"
 import tempfile
@@ -182,8 +176,8 @@ print("attribute columns:", attributes.column_names)
 Install `gometry[viz]` for interactive maps.
 [`GeometryArray._repr_html_`][gometry.GeometryArray] embeds a lonboard preview in
 Jupyter when lonboard is available; it uses lonboard's standalone HTML export so the
-same preview works wherever notebook HTML is rendered. Otherwise it falls back to the
-SVG grid used elsewhere in this documentation.
+same preview works wherever notebook HTML is rendered. Without lonboard, it falls
+back to an SVG grid preview.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -194,8 +188,8 @@ print("notebook HTML bytes:", len(html) if html else 0)
 print("explore available:", callable(gm.explore))
 ```
 
-`gm.explore` hands lonboard a **zero-copy GeoArrow capsule** when possible (the
-same capsule path as above); a GeoJSON feature-collection fallback runs only if the
+`gm.explore` hands lonboard a **zero-copy GeoArrow capsule** when possible; a
+GeoJSON feature-collection fallback runs only if the
 capsule handoff fails. Inputs need a CRS and finite bounds. By default it presents
 a map where points, lines, and polygons remain distinct and features are inspectable
 on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
@@ -210,7 +204,7 @@ on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
 
 ## See also
 
-- [DataFrames](dataframes.md) — pandas / polars / GeoPandas, built on this layer.
+- [DataFrames](dataframes.md) — pandas / polars / GeoPandas storage boundaries.
 - [Text & binary formats](text-formats.md) — WKB/EWKB for database boundaries.
 - [NumPy arrays & coordinates](numpy.md) — extracting raw coordinate buffers.
 - [Ecosystem & interoperability](index.md) — the partner matrix.

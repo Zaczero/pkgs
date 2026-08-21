@@ -863,7 +863,9 @@ def test_observer_admitted_pairs_match_pyproj(chunk: int) -> None:
         oracle_results.append(
             _assert_pair_parity_both_directions(source, target, lon, lat)
         )
-    assert scanned >= 500, f'expected one-eighth of full projected catalog, got {scanned}'
+    assert scanned >= 500, (
+        f'expected one-eighth of full projected catalog, got {scanned}'
+    )
     assert admitted == len(oracle_results) > 0, (
         f'catalog chunk={chunk} scan={scanned} admitted={admitted} '
         f'non_metre_admitted={non_metre_admitted} methods={admitted_by_method} '

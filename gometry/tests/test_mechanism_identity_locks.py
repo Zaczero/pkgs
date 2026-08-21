@@ -128,12 +128,10 @@ def test_prepared_tall_edge_masks_match_unprepared():
     ys = np.linspace(0, 1000, 200)
     gx, gy = np.meshgrid(xs, ys, indexing='xy')
     prepared = gm.contains_xy(prep, gx.ravel(), gy.ravel())
-    scalar = np.array(
-        [
-            gm.contains(poly, gm.Point(float(x), float(y)))
-            for x, y in zip(gx.ravel(), gy.ravel(), strict=True)
-        ]
-    )
+    scalar = np.array([
+        gm.contains(poly, gm.Point(float(x), float(y)))
+        for x, y in zip(gx.ravel(), gy.ravel(), strict=True)
+    ])
     np.testing.assert_array_equal(prepared, scalar)
     np.testing.assert_array_equal(
         prepared,

@@ -1,5 +1,5 @@
 ---
-description: The CRS is gometry's single metric knob — set_crs declares, to_crs transforms, and a geometry's frame decides how area, length, and distance are measured (geodesic on a geographic CRS, native linear units when projected) and what units buffer distances mean.
+description: CRS declaration and transformation in gometry, metric units for area, length, distance, and buffers, projected CRS selection, coordinate epochs, and antimeridian behavior.
 ---
 
 # CRS, units & measurement
@@ -7,15 +7,11 @@ description: The CRS is gometry's single metric knob — set_crs declares, to_cr
 A coordinate reference system (CRS) is the contract that says what your numbers
 *mean*: whether `(21.0, 52.0)` is "21 degrees east, 52 degrees north on the
 [WGS 84](https://epsg.org/crs_4326/WGS-84.html) ellipsoid" or "21 meters east of
-some local origin." The CRS is also gometry's **single metric knob** — a
-geometry's frame alone decides how it is measured, so `area`/`length`/`distance`
-cannot silently return a meaningless "square-degrees" number. This page is the
-canonical home for declaring and transforming frames (`set_crs` vs `to_crs`), for
-how each frame is measured, for picking a projected CRS automatically, and for
-working across the antimeridian. Read it top-to-bottom the first time; jump to a
-section by frame kind after that.
+some local origin." The CRS is also gometry's metric selector: geographic CRSs
+use geodesic metres and square metres, projected CRSs use native linear units
+and their squared area units, and CRS-free geometries use coordinate units.
 
-Two ideas carry almost all of the weight:
+CRS assignment and transformation have different effects:
 
 - **[`set_crs`][gometry.Geometry.set_crs] *declares*** what existing coordinates
   already mean. It never moves a coordinate.
@@ -24,18 +20,22 @@ Two ideas carry almost all of the weight:
   moves a number). Identity pipelines, fixed points, carried M, and sometimes
   unchanged Z mean not every ordinate always changes.
 
-## The frame doctrine at a glance
+## Operation families
 
 A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
-into a few families rather than one exception-free slogan. Keep **exact geodesic
-measures** separate from **planar constructive** work that only *sizes* inputs in
-CRS-natural units:
+into a few families rather than one exception-free slogan. The first family is
+the only one that computes geodesic measures. Topology remains a planar X/Y
+operation after any documented geographic seam normalization; it is not a
+geodesic operation. Metric constructive operations use CRS-native distance
+inputs but can construct in a local projection. Coordinate edits and planar
+construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
 | **Exact geodesic measures** | `area`, `length`, `distance`, `dwithin`, LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian |
 | **Metric constructive** | `buffer`, `offset_curve` | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
 | **Topology** | predicates, overlay, `relate`, `clip_by_rect` | strict frame match; geographic seams auto-split-normalize |
+| **Coordinate refinement** | `segmentize(max_length)`, `line_interpolate` | `max_length` and distances follow the CRS metric; `fraction=` is unitless; original vertices are retained |
 | **Coordinate edit** | `quantize`, `snap_to_grid`, affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | `convex_hull`, `concave_hull`, `simplify`, Voronoi, Delaunay | operate on stored XY; may need local projection or `split_antimeridian` |
 
@@ -43,8 +43,7 @@ CRS-natural units:
 distance is metres, but the produced outline is a local-projection approximation
 (see [Across the antimeridian](#across-the-antimeridian)).
 
-The CRS-units table and the candidate-vs-exact doctrine live in
-[the mental model](../get-started/mental-model.md). The shared frame rules:
+## Frame rules
 
 - **Everything requires one frame — but a frame, not a spelling.** Mixing CRSs —
   or mixing epochs on the same CRS — raises
@@ -65,30 +64,28 @@ The CRS-units table and the candidate-vs-exact doctrine live in
   exists: ellipsoidal meters on a geographic CRS, native units on a projected
   CRS, raw coordinate units when CRS-free. Asking a CRS-free geometry for
   `unit='meters'` raises — there is no frame to give meters meaning.
-- **`to_crs` transforms X/Y; Z and M follow the ordinate rules below** — Z is
+- **`to_crs` transforms X/Y; Z and M follow the [ordinate rules](#z-and-m-under-transformation)** — Z is
   carried unchanged through horizontal projections and transformed when the
   pipeline consumes it; M is always carried unchanged. Serialization
   constraints are separate: `to_geojson` always raises on M because GeoJSON
-  has no M slot. See
-  [Z and M under transformation](#z-and-m-under-transformation).
+  has no M slot.
 - **Epoch requires a CRS** (`epoch ⟹ crs`): CRS-free constructors reject
   `epoch=`, and clearing the CRS clears the epoch. See
   [Coordinate epochs](#coordinate-epochs).
 
 ## `set_crs` vs `to_crs`
 
-!!! warning "The single most important CRS rule"
-    `set_crs` relabels; `to_crs` reprojects. If you call `set_crs` when you meant
-    `to_crs`, your coordinates keep their old numeric values but claim a new
-    meaning — a silent corruption that no exception will catch. When in doubt: did
-    the points physically move? If yes, you want `to_crs`.
+!!! warning "Relabeling is not reprojection"
+    `set_crs` relabels; `to_crs` reprojects. `set_crs` leaves numeric coordinates
+    unchanged, so using it for a transformation changes the coordinates' claimed
+    meaning without moving them. Use `to_crs` when the coordinates must move.
 
 Consider a point digitized as lon/lat but handed to you with no CRS attached.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-raw = gm.Point(21.0, 52.0)          # no CRS yet — just two numbers
+raw = gm.Point(21.0, 52.0)          # no CRS yet — two numbers
 print("crs before:", raw.crs)
 
 # DECLARE: the numbers are already WGS84 lon/lat. Coordinates do not move.
@@ -108,11 +105,11 @@ print("coords after to_crs:", list(projected.coords))
 numbers are completely different even though both geometries describe the same
 place on Earth.
 
-!!! danger "What misuse looks like"
+!!! danger "A wrong CRS label changes the data's meaning"
     Calling `set_crs(3857)` on lon/lat data would *claim* `(21, 52)` is "21 meters
     east, 52 meters north" — a point in the Atlantic off the coast of Africa
-    instead of Poland. gometry guards the classic slip: replacing one declared CRS
-    with a *different* one raises unless you pass `overwrite=True` (re-tagging is
+    instead of Poland. Replacing one declared CRS with a *different* one raises
+    unless you pass `overwrite=True` (re-tagging is
     almost always a `to_crs` mistake). Use `set_crs` only to attach the CRS the
     coordinates were authored in.
 
@@ -149,7 +146,7 @@ print(area.crs, area.bounds)   # bounds are still the lon/lat degrees you passed
 
 !!! tip "Troubleshooting a `CRSMismatchError`"
     Binary operations require both operands to share the same CRS and coordinate
-    epoch; a mismatch is never guessed or coerced. Repair the metadata (`set_crs`,
+    epoch; gometry does not coerce a mismatch. Repair the metadata (`set_crs`,
     when only the tag is missing) or transform the coordinates (`to_crs`, when the
     numbers must move), then retry. The structured
     [`CRSMismatchError`][gometry.CRSMismatchError] carries `.left` / `.right`
@@ -177,9 +174,8 @@ print(area.crs, area.bounds)   # bounds are still the lon/lat degrees you passed
 
 There is exactly one [`geom.area`][gometry.Geometry.area], one
 [`geom.length`][gometry.Geometry.length], one [`distance()`][gometry.distance].
-You do not pick a separate "planar vs geodesic" engine per call — a geometry's CRS
-alone decides the default metric frame (see
-[the frame table](../get-started/mental-model.md)). Override the *unit system* with
+The geometry's CRS selects the default metric frame (see
+the [operation-family table](#operation-families)). Override the *unit system* with
 `unit=`, or reproject with [`to_crs`][gometry.Geometry.to_crs] to change the
 *coordinate frame*. The same rule governs
 [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve]
@@ -241,13 +237,11 @@ that intended algorithm** before construction — ordinary densify interpolates 
 stored edge model and does not synthesize a rhumb route. Split or otherwise
 disambiguate antipodal and antimeridian-sensitive paths.
 
-!!! note "Why geodesic beats \"just use Web Mercator\""
-    [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) badly
-    distorts area and distance away from the equator — the same polygon over Poland
-    measures about 2.3x larger in planar Web Mercator than its true ellipsoidal
-    area. A geographic CRS measures geodesically with no such distortion because it
-    never projects. Keep the geometry geographic whenever you want a truthful
-    metric and do not specifically need a projected coordinate frame.
+!!! note "Why geodesic and projected answers differ"
+    [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
+    display and tile CRS whose scale varies with latitude. A geographic CRS
+    measures on its ellipsoid without first projecting; a projected CRS measures
+    the coordinates in that chosen frame.
 
 ### Bearing and destination — point navigation
 
@@ -280,11 +274,11 @@ print(arrival.to_wkt())
 !!! warning "Argument order: bearing first, then distance"
     `pt.destination(bearing, distance)` takes the **bearing in degrees first**
     and the **distance in meters second**. Swapping them produces a
-    plausible-but-wrong point with no error, so keep the order straight.
+    plausible-but-wrong point with no error.
 
 ## Projected CRS → native linear units
 
-The same operations on a *projected* geometry are fast planar maths in the CRS's
+The same operations on a *projected* geometry are planar arithmetic in the CRS's
 **native linear units** — feet stay feet, meters stay meters. Reproject to an
 **appropriate projected CRS first**, then measure. Pass `unit='meters'` when you
 need SI meters or square meters from a non-meter projected CRS.
@@ -300,7 +294,7 @@ print(f"area: {projected.area/1e6:.0f} km^2")
 
 ```
 
-!!! warning "Why the projection choice matters — the size of the error"
+!!! warning "Why the projection choice matters"
     The same 1° tile over Paris, measured under three CRSs:
 
     ```python exec="on" source="block" result="text"
@@ -312,19 +306,17 @@ print(f"area: {projected.area/1e6:.0f} km^2")
     web = city.to_crs(3857).area / 1e6        # Web Mercator
     utm = city.to_crs(32631).area / 1e6       # UTM 31N
 
-    print(f"geodesic (truth): {geo:8.0f} km^2")
-    print(f"Web Mercator:     {web:8.0f} km^2")   # >2x too big!
-    print(f"UTM 31N:          {utm:8.0f} km^2")   # accurate
+    print(f"geodesic:         {geo:8.0f} km^2")
+    print(f"Web Mercator:     {web:8.0f} km^2")
+    print(f"UTM 31N:          {utm:8.0f} km^2")
     ```
 
-    [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) overstates
-    the area by more than a factor of two at this latitude — and that error grows
-    toward the poles. Reprojecting is how you choose the answer; choose a projection
-    suited to the job.
+    [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) has
+    latitude-dependent scale. Reprojecting selects the coordinate frame used for
+    the result.
 
-The same tile drawn in each frame shows where that error comes from — Web Mercator
-stretches the box vertically away from the equator, inflating its area, while UTM
-keeps true local proportions:
+Web Mercator stretches the box vertically away from the equator, inflating its
+area, while UTM keeps true local proportions:
 
 ```python exec="on" html="true"
 from _figures import panels
@@ -340,15 +332,14 @@ print(panels([
 ```
 
 !!! tip "Choose the projection for the job"
-    There is no single "correct" projection. For local area/length, pick a UTM zone
-    or a national grid covering your region — measurement on those is accurate and
-    fast. Avoid Web Mercator (`EPSG:3857`) for measurement: it is for tiles, not
-    areas. For global or trans-continental measurement, keep the geometry
-    geographic and let `geom.area` / `geom.length` measure geodesically.
+    Local area/length operations use a UTM zone or national grid covering the
+    region. Web Mercator (`EPSG:3857`) is intended for tiles rather than area
+    measurement. Global or trans-continental measurement can remain in a
+    geographic CRS, where `geom.area` / `geom.length` measure geodesically.
 
 ## CRS-free measurement
 
-With no CRS attached, a geometry is just numbers on a flat plane, and measurement
+With no CRS attached, a geometry is a set of numbers on a flat plane, and measurement
 is in whatever unit those coordinates are in.
 
 ```python exec="on" source="block" result="text"
@@ -362,7 +353,7 @@ print("distance: ", gm.distance(gm.Point(0, 0), gm.Point(3, 4)))      # 5
 ```
 
 `unit='planar'` forces this raw coordinate Cartesian math even on a CRS-bearing
-geometry — useful for comparing against a geodesic answer:
+geometry — comparable with a geodesic answer:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -377,9 +368,8 @@ Every distance is *realized* by an actual pair of points —
 [`nearest_points`][gometry.nearest_points] returns it, and
 [`shortest_line`][gometry.shortest_line] returns the same answer as the connecting
 `LineString` (its `length` is exactly `distance(a, b)`). All three work on **any**
-geometry pair, not just points, and find the *true* closest approach: the witness
-can land on an **edge interior**, not only a vertex. Here the square's nearest
-point to the rotated diamond is mid-edge at `(2, 1)`, not a corner:
+geometry pair and find the closest approach: the witness
+can land on an **edge interior**, not only a vertex.
 
 ```python exec="on" html="true"
 from _figures import figure
@@ -417,11 +407,10 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     [`nearest_points`][gometry.nearest_points] — is CRS-aware with a
     `unit='planar'` escape (and `unit='meters'` for forced SI).
 
-!!! note "`segmentize` is CRS-aware, because it only inserts"
-    [`segmentize`][gometry.Geometry.segmentize] does **not** belong to the list
-    above: it only *inserts* vertices along existing segments, so every original
-    survives untouched and the reprojection argument never applied to it. Its
-    `max_length` is therefore a real-world distance measured exactly like
+!!! note "`segmentize` inserts vertices without moving originals"
+    [`segmentize`][gometry.Geometry.segmentize] only *inserts* vertices along
+    existing segments, so every original survives untouched. Its `max_length` is
+    a real-world distance measured like
     [`length`][gometry.length] — meters along the ellipsoid on a geographic CRS,
     native units on a projected one, coordinate units when CRS-free — with the
     same `unit='planar'` / `unit='meters'` escapes as every other metric.
@@ -458,15 +447,14 @@ print("projected area m^2:", round(warsaw.to_crs(local).area))
 
 ```
 
-The projected planar area and the ellipsoidal geodesic area agree closely — exactly
-because the estimator chose an appropriate local projection. It normalizes
-projected inputs to lon/lat for extent planning while preserving datum-specific
-authority choices (for example NAD83 UTM) where available.
+The projected planar area is an answer in the selected local frame. The estimator
+normalizes projected inputs to lon/lat for extent planning while preserving
+datum-specific authority choices where available.
 
 ### Reproject to a local UTM zone
 
-The end-to-end recipe: let gometry pick the zone, `to_crs` into it, then every
-metric is plain planar meters in that fixed frame.
+A local projected metric workflow uses `estimate_local_crs()` followed by
+`to_crs`; metrics then use planar meters in the selected frame.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -480,9 +468,6 @@ print('local CRS:', local.to_authority())
 print('planar area m^2:', round(projected.area))
 
 ```
-
-Once projected, a `buffer(500)` is a 500-meter buffer, `distance` is in meters,
-`area` in square meters:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -506,17 +491,6 @@ print(result_over_input(projected, ring, after_caption="buffer(500 m)"))
 
 ```
 
-!!! tip "You often don't need this — and buffering follows the CRS either way"
-    On a geographic CRS, `area` / `length` / `distance` are already **geodesic
-    meters**, and `geom.buffer(1000)` is a **1000-meter** local-projection buffer
-    (an approximation — not an ellipsoidal offset). On a projected geometry the
-    distance is in that CRS's **native linear units** (feet stay feet;
-    `unit='meters'` for SI); on a CRS-free geometry it is bare coordinate units.
-    Reproject only when you want repeated planar math in a fixed local frame, or to
-    feed code that requires projected coordinates. See the
-    [degrees-vs-meters trap in bulk code](arrays.md) and
-    [Constructive operations](constructive.md).
-
 The *same* metric distance draws differently depending on **where** it is measured.
 A 250 km buffer at the equator and at 55°N — both `250_000` meters through the local
 projection — become ellipses of different shapes once drawn back in lon/lat, because
@@ -528,9 +502,6 @@ import gometry as gm
 print(panels([(f'250 km buffer at {lat}°N (drawn in lon/lat)', gm.Point(3, lat, crs=4326).buffer(250000)) for lat in (0, 55)]))
 
 ```
-
-This distortion is exactly why gometry measures through the CRS instead of in raw
-degrees.
 
 ## Across the antimeridian
 
@@ -581,15 +552,15 @@ print("point matches:", matches.values.tolist())
 
 Spatial indexes widen antimeridian-crossing envelopes before candidate search and
 still run exact refinement, so the middle-of-map false positives are removed by the
-predicate step. The auto-split-vs-planar rule above is the complete per-op story:
-topology and indexing normalize for you; the planar constructive ops listed there
-are the only places manual splitting is still required.
+predicate step. Topology and indexing normalize for you; the planar constructive
+ops listed in the operation-family table are the places manual splitting is still
+required.
 
 ## Z and M under transformation
 
 `to_crs` transforms X and Y. It carries **Z** through unchanged when the target is
 a horizontal projection (e.g. Web Mercator), and transforms Z through the pipeline
-when the operation actually consumes it (geocentric, vertical-capable, and
+when the operation consumes it (geocentric, vertical-capable, and
 compound workflows). It never invents or silently drops Z. **M** (the measure
 ordinate — timestamps, route distances) is not a spatial axis, so a coordinate
 transform has no defined action for it and `to_crs` carries M through
@@ -614,15 +585,14 @@ print(trace.coordinate_axes, "| m unchanged:", trace.m)
 ```
 
 !!! note "M is application data, not a coordinate"
-    A timestamp or route measure has no datum, so no pipeline can "reproject" it —
-    carrying it through verbatim is the only honest action. If the measures should
-    not survive a reprojection in your model, drop them explicitly with
+    A timestamp or route measure has no datum, so no pipeline reprojects it;
+    `to_crs` carries it through unchanged. Drop measures explicitly with
     `set_m(None)` (or `force_2d()` to drop both Z and M) before or after the
     transform.
 
 ## Coordinate epochs
 
-Dynamic reference frames (ITRF, the WGS 84 realizations, modern national datums)
+Dynamic reference frames (ITRF, the WGS 84 realizations, current national datums)
 keep moving with the tectonic plates, so a coordinate is only fully defined
 together with the **decimal year** it was observed — its *coordinate epoch*.
 gometry carries that as first-class metadata, `geom.epoch`, distinct from Z and M.
@@ -665,12 +635,11 @@ print("output epoch:", geocentric.epoch)
 
 ```
 
-When you omit `epoch=`, the source epoch survives **exactly while it still
-means something**: it is kept when the target CRS is *dynamic* (ITRF, the
-WGS 84 ensemble — coordinates there stay time-dependent) and cleared
-automatically when the target is *static* (plate-fixed national frames, where
-an epoch adds nothing and would only block strict frame checks against
-ordinary epoch-free data in the same CRS).
+When you omit `epoch=`, the source epoch is kept when the target CRS is *dynamic*
+(ITRF, the WGS 84 ensemble — coordinates there stay time-dependent) and cleared
+when the target is *static* (plate-fixed national frames, where an epoch adds
+nothing and would block strict frame checks against ordinary epoch-free data in
+the same CRS).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -683,10 +652,9 @@ print("to Poland CS92 (static):", observed.to_crs(2180).epoch)
 
 ## The `CRS` object and standards export
 
-`geom.crs` returns a first-class [`gm.CRS`][gometry.CRS] — not a bare string. It
-compares equal to the spellings you expect and carries PROJ's whole introspection
-surface as properties and methods, so you query a CRS without reaching for a
-separate global utility.
+`geom.crs` returns a [`gm.CRS`][gometry.CRS] object rather than a string. It
+compares equal to both its authority string and its EPSG code, and exposes PROJ's
+introspection surface as properties and methods.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -712,10 +680,8 @@ Per-CRS introspection lives on the object as properties — `is_geographic`,
 `area_of_use`, `ellipsoid`, `datum`, and more — plus methods like
 [`to_wkt`][gometry.CRS.to_wkt], [`to_proj`][gometry.CRS.to_proj],
 [`identify`][gometry.CRS.identify], and [`same_as`][gometry.CRS.same_as]. EPSG:4326's
-*native* axis order is latitude-first (its declared axis abbreviations are
-`Lat, Lon`), but **gometry's geometry and transform APIs ignore that and are always
-X/Y (lon, lat)** — a deliberate safety choice, so you never have to ask "does this
-function want lat first or lon first?"
+*native* axis order is latitude-first, but **gometry's geometry and transform APIs
+are always X/Y (lon, lat)**.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -735,8 +701,8 @@ print("gometry reads as (lon, lat):", list(p.coords))
     `(easting, northing)` for projected ones — there is no axis-order mode switch.
     If you are porting pyproj code, drop the lat/lon swaps.
     [`gm.crs_info(x)`][gometry.crs_info] returns a plain dictionary of PROJ
-    metadata when you want raw fields to iterate or serialize, but for everyday work
-    prefer the typed [`CRS`][gometry.CRS] properties above.
+    metadata for iterating or serializing raw fields; the typed
+    [`CRS`][gometry.CRS] properties expose the same metadata.
 
 Round-trip a CRS to the standard text formats with
 [`CRS.to_wkt`][gometry.CRS.to_wkt] ([ISO 19162](https://www.iso.org/standard/76496.html)
@@ -776,11 +742,10 @@ print(gm.crs_transform_bounds(4326, 3857, (20.0, 51.0, 22.0, 53.0)))
 [`gm.crs_transform`][gometry.crs_transform] accepts optional `z=` and `t=` (time)
 ordinates for 3D/4D pipelines; `t` selects the time-dependent operation but is not
 returned. [`gm.crs_apply`][gometry.crs_apply] runs an explicit PROJ
-operation/pipeline string. For everyday geometry work prefer
-[`geom.to_crs`][gometry.Geometry.to_crs]; reach for the raw functions only when you
-are moving bare numbers.
+operation/pipeline string. [`geom.to_crs`][gometry.Geometry.to_crs] transforms
+geometry values; the raw functions transform bare coordinate numbers.
 
-Transforms sometimes need regional grid files. If the best operation's grid is
+Transforms sometimes need regional grid files. If the highest-ranked operation's grid is
 unavailable, every Python-visible transform surface — `geom.to_crs(...)`,
 `GeometryArray.to_crs(...)`, `gm.crs_transform(...)`, and
 `gm.crs_transform_bounds(...)` — uses PROJ's valid lower-accuracy fallback and emits
@@ -789,7 +754,7 @@ the missing grid and links to PROJ's resource-file guidance. Pass
 `only_best=True` when fallback is unacceptable: the same condition then raises
 [`TransformError`][gometry.TransformError].
 
-[`CRS.operations`][gometry.CRS.operations] deliberately enumerates PROJ's
+[`CRS.operations`][gometry.CRS.operations] enumerates PROJ's
 ranked candidates even when their grids are not installed. This keeps the
 operation list complete; each grid's `available` field states whether that
 candidate can run in the current configuration. [`gm.crs_grid`][gometry.crs_grid]
@@ -806,20 +771,18 @@ calls, so empty or validation-rejected input does not claim an execution. This
 observes the engine selected by the transform itself; it does not infer
 execution from whether a PROJ cache entry remains.
 
-[PROJ](https://proj.org/) is the bundled authority backend, so [EPSG](https://epsg.org/)
+[PROJ](https://proj.org/) is the bundled authority backend. [EPSG](https://epsg.org/)
 codes, datum pipelines, grid-aware transforms, [WKT](https://www.ogc.org/standard/sfa/),
-and PROJJSON behave as you expect — without requiring a system PROJ shared library
-in the wheel.
+and PROJJSON are available without requiring a system PROJ shared library in the
+wheel.
 
 Coming from pyproj? See [Migrating](../migrating/index.md#coming-from-pyproj).
 
 ## See also
 
-- [The mental model](../get-started/mental-model.md) — the frame-doctrine table
-  and the candidate-vs-exact rule.
+- [The mental model](../get-started/mental-model.md) — the three operation models.
 - [Geometry](geometry.md) — construction, dimensions, and the full Z/M rules.
-- [Arrays](arrays.md) — columnar `.area` / `.length` and the degrees-vs-meters
-  trap in bulk code.
+- [Arrays](arrays.md) — columnar `.area` / `.length` and packed batch results.
 - [Constructive operations](constructive.md) — `buffer`, `offset_curve` (same
   metric rule).
 - [Validation & repair](validation.md) — `crosses_antimeridian` and

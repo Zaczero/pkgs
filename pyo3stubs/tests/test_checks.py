@@ -230,7 +230,12 @@ def test_parser_gates_skip_on_pypy_before_importing_their_parser(tmp_path, monke
         'pyo3stubs.gates.platform.python_implementation', lambda: 'PyPy'
     )
     cfg = make_config(tmp_path)
-    for name in ('text-signature', 'token-vocabulary', 'leaked-types', 'rust-nullability'):
+    for name in (
+        'text-signature',
+        'token-vocabulary',
+        'leaked-types',
+        'rust-nullability',
+    ):
         result = gate(name).run(cfg)
         assert result.status is Status.SKIPPED
         assert 'Rust source parser has no PyPy wheel' in result.line

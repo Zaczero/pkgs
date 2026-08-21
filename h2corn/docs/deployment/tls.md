@@ -8,6 +8,10 @@ description: Terminate TLS in h2corn itself with Rustls, including mutual TLS an
 This fits single-server deployments, sidecar-fronted services, or any
 environment where running an extra edge process isn't worthwhile.
 
+`hello:app` is the import target from the [Quickstart](../quickstart.md).
+Replace it and the `/etc/ssl/example/` paths with the application's import
+target and certificate files used by the deployment.
+
 Direct TLS is opt-in. Configure a certificate chain and private key
 (typically obtained from [Let's Encrypt](https://letsencrypt.org/) or a
 similar ACME provider):
@@ -20,11 +24,16 @@ h2corn hello:app \
 ```
 
 `h2corn` uses [Rustls](https://github.com/rustls/rustls) with **TLS 1.2
-and TLS 1.3 only**. ALPN advertises `h2,http/1.1` by default, or only
-`h2` when `--no-http1` is set. OpenSSL cipher strings, legacy TLS
-versions, and encrypted private-key files are intentionally not
-supported — pre-decrypt your key files with operator tooling instead of
-shipping a passphrase to a long-running server.
+and TLS 1.3 only**. ALPN advertises `h2,http/1.1` by default, or only `h2` when
+`--no-http1` is set. OpenSSL cipher strings, legacy TLS versions, and encrypted
+private-key files are unsupported. Decrypt key files with operator tooling
+before starting the server.
+
+With direct exposure, h2corn is the TLS edge. The deployment must provide
+certificate issuance and renewal, private-key permissions, DNS and firewall
+policy, ALPN/client compatibility, request limits, abuse controls, and edge
+observability. A reverse proxy keeps those responsibilities at the proxy; see
+[Behind a reverse proxy](proxy.md).
 
 ## Mutual TLS (client certificates)
 
@@ -41,7 +50,7 @@ h2corn hello:app \
 
 | `--cert-reqs` | Behavior                                                     |
 | ------------- | ------------------------------------------------------------ |
-| `none`        | Do not request client certificates. Default.                 |
+| `none`        | No client certificate is requested. Default.                 |
 | `optional`    | Request a client certificate and verify it if presented.     |
 | `required`    | Reject the handshake when no valid client certificate is presented. |
 
@@ -51,12 +60,12 @@ key configured.
 
 ## Reading the connection from an application
 
-Verification decides whether a client gets in. To decide what it may
-*do*, the application needs to know who it is — so h2corn implements the
-[ASGI TLS extension](https://asgi.readthedocs.io/en/latest/specs/tls.html),
-which puts the negotiated parameters under `scope["extensions"]["tls"]`:
+When a client certificate is presented, its verification decides whether the
+handshake succeeds. The [ASGI TLS extension](https://asgi.readthedocs.io/en/latest/specs/tls.html)
+exposes the verified identity and negotiated parameters under
+`scope["extensions"]["tls"]`:
 
-```python
+```python title="partial application fragment"
 async def app(scope, receive, send):
     tls = scope['extensions'].get('tls')
     if tls is None:
@@ -85,10 +94,29 @@ verification fails the handshake and never reaches an application.
 The dictionary is built once per connection, so every request on a keep-alive
 or multiplexed HTTP/2 connection is handed the same object.
 
+The known extension mappings, including `scope["extensions"]["tls"]`, are
+shared and read-only. The outer `scope["extensions"]` mapping is per-scope and
+may receive application namespaced keys. Copy a known mapping before mutating
+it. The `tls` extension is absent when h2corn did not terminate the connection.
+
 Certificate and key files are read once, while the process is still
 privileged, and every worker reuses what the supervisor read. No worker
 reopens a PEM path after dropping privileges or when it is replaced, so the
 key may stay `root:root` mode `0600`.
+
+## Rotation and restart
+
+The supervisor reads the certificate chain, private key, and client CA bundle
+once at startup. It does not watch PEM paths, and `SIGHUP` only reloads the
+application. Rotate a direct-TLS certificate by writing complete files beside
+the old ones, setting ownership and permissions, atomically renaming them,
+running `h2corn --check-config` with the same TLS options, and restarting the
+supervisor. The preflight catches parse and permission errors; a full restart
+follows service-manager stop/start behavior and may have downtime. A rolling
+application reload preserves the old worker until its replacement is ready.
+
+When a reverse proxy terminates TLS, rotate and validate the certificate there.
+h2corn sees h2c, so its `tls` ASGI extension is absent on that hop.
 
 ## Restrictions
 
@@ -98,7 +126,6 @@ key may stay `root:root` mode `0600`.
 - Encrypted private-key files (passphrase-protected PEM) are not
   supported.
 
-If you need anything outside these constraints — uncommon ciphers,
-client-cert revocation lists, or SNI multiplexing — terminate TLS at a
-dedicated proxy and run `h2corn` on `h2c` upstream as described in
+Uncommon ciphers, client-cert revocation lists, and SNI multiplexing require a
+dedicated TLS proxy. Run `h2corn` on `h2c` upstream as described in
 [Behind a proxy](proxy.md).

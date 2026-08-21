@@ -59,7 +59,7 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
             command += ['--config-file', str(cfg.mypy_config)]
         result = subprocess.run(
             command,
-            cwd='/tmp',  # noqa: S108 - neutral cwd is part of the gate contract
+            cwd=cache_dir,  # neutral cwd is part of the gate contract
             capture_output=True,
             text=True,
             check=False,
@@ -76,27 +76,28 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
 
     The stub resolves via ``MYPYPATH`` pointed at the stub's package root, so
     the gate checks the working tree even under an editable install. Runtime
-    imports use the installed environment only; ambient ``PYTHONPATH`` and the
-    gate process's mutated ``sys.path`` are excluded. Allowlist entries that no
-    longer match fail the run (no rot).
+    imports use this process's explicit import path, which also supports test
+    fixtures and config shims that add an uninstalled package to ``sys.path``.
+    Allowlist entries that no longer match fail the run (no rot).
     """
     command = [sys.executable, '-m', 'mypy.stubtest', cfg.module]
     if cfg.stubtest_allowlist is not None:
         command += ['--allowlist', str(cfg.stubtest_allowlist)]
     if cfg.mypy_config is not None:
         command += ['--mypy-config-file', str(cfg.mypy_config)]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            **os.environ,
-            'MYPYPATH': str(_stub_root(cfg)),
-            'PYTHONPATH': '',
-        },
-        cwd='/tmp',  # noqa: S108 - neutral cwd is part of the gate contract
-    )
+    with TemporaryDirectory() as cwd:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                'MYPYPATH': str(_stub_root(cfg)),
+                'PYTHONPATH': os.pathsep.join(path for path in sys.path if path),
+            },
+            cwd=cwd,
+        )
     if result.returncode == 0:
         return []
     output = (result.stdout + result.stderr).strip()

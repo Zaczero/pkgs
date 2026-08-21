@@ -11,8 +11,8 @@ envelopes and returns a [`SpatialIndex`][gometry.SpatialIndex]. The index expose
 [`crs`][gometry.SpatialIndex.crs] and [`epoch`][gometry.SpatialIndex.epoch] for
 the shared frame of its rows (the same metadata gate that binary ops enforce).
 
-The defining feature of gometry's index is that it refuses to hide the most common
-GIS bug: confusing *candidates* (bounding-box matches) with *exact* matches.
+The index exposes the distinction between *candidates* (bounding-box matches) and
+*exact* matches.
 
 !!! warning "Candidates are not matches"
     `idx.candidates(q)` returns everything whose **bounding box** overlaps the
@@ -20,12 +20,9 @@ GIS bug: confusing *candidates* (bounding-box matches) with *exact* matches.
     actually intersect — especially for sparse multipolygons and diagonal lines. If
     you treat candidates as answers, you get false positives. `idx.query(q,
     predicate=...)` runs the **exact** predicate on those candidates and returns only
-    true matches. When in doubt, use `query`.
+    true matches. Use `query` when exact matches are required.
 
 ## Candidates vs query
-
-This is the centerpiece. Build an index, then compare the two query styles against
-the same geometry.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -39,8 +36,8 @@ geoms = gm.GeometryArray([
 ])
 idx = gm.SpatialIndex(geoms)
 
-cands = idx.candidates(query)                     # bbox prefilter — a SUPERSET
-hits = idx.query(query, predicate="intersects")   # exact refine — the TRUTH
+cands = idx.candidates(query)                     # bbox prefilter — candidate superset
+hits = idx.query(query, predicate="intersects")   # exact refine — matching rows
 
 print("candidates (bbox):", list(cands))   # [0, 1, 2]
 print("exact intersects :", list(hits))    # [0, 2]
@@ -49,12 +46,9 @@ print("exact intersects :", list(hits))    # [0, 2]
 
 `candidates` returns positional indices into the input array whose envelopes overlap
 the query envelope. `query` takes that same candidate set and applies the exact
-predicate, so it is always a subset. The gap between the two lists *is* the false
-positives you would have shipped by trusting the prefilter — here geometry **1**, a
-diagonal triangle whose bounding box overlaps the query but whose shape does not.
-
-The candidate set (left) carries that false positive; the exact `intersects` set
-(right) drops it. The query box is drawn as an outline:
+predicate, so it is always a subset. In this example, geometry **1** is a false
+positive because its diagonal triangle's bounding box overlaps the query while the
+shape does not.
 
 ```python exec="on" html="true"
 from _figures import panels
@@ -79,11 +73,8 @@ print(panels([
 
 ```
 
-!!! note "Why expose candidates at all?"
-    Because sometimes the prefilter *is* what you want — e.g. you have your own
-    refine step, or you only need a coarse "what might be nearby" set. gometry exposes
-    both so the choice is explicit — a prefilter that returns bbox candidates should
-    never be mistaken for exact matches.
+`candidates` supplies rows for caller-owned refinement or a coarse spatial key.
+`query` performs the exact predicate refinement.
 
 ## Predicates
 
@@ -127,15 +118,8 @@ print("within 1 deg:", list(idx.query(probe, predicate="dwithin", distance=1.0, 
 
 ```
 
-!!! note "Distance `unit=` follows the same CRS-natural rule as metrics"
-    Omit `unit=` (or pass `None`) for the index's CRS-natural metric: geodesic
-    meters on a geographic CRS, **native linear units** on a projected one,
-    coordinate units when CRS-free. Pass `unit='meters'` to force SI (raises
-    without a CRS) or `unit='planar'` for raw coordinate Cartesian (on lon/lat
-    that is *degrees* — a different ground distance at every latitude). Choosing
-    the wrong override is the distance-query analogue of the degrees-vs-meters
-    buffer trap; see [Arrays & performance](arrays.md) and
-    [CRS, units & measurement](crs.md).
+Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.md).
+The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
 
 ## Nearest neighbors
 
@@ -159,17 +143,17 @@ print("nearest 2 indices (closest first):", list(ids))
 
 ```
 
-Geographic nearest queries are *accelerated*, not scanned: for point data the
-index prunes with a sound lower bound on the geodesic distance (exact results,
-orders of magnitude fewer [Karney](https://geographiclib.sourceforge.io/) evaluations).
+Geographic nearest queries use a sound lower bound on geodesic distance for
+candidate pruning before exact distance evaluation. The returned ordering is
+exact; the number of evaluations depends on the data and query.
 
 - `max_distance=` caps the search radius.
 - `return_distance=True` returns `(indices, distances)` for a scalar query or
   `(matches, distances)` for an array query; scalar `indices` is a read-only
   `int64` NumPy array, array `matches` is CSR [`Groups`][gometry.Groups], and `distances` is a
   read-only `float64` NumPy array aligned with the ids.
-- `exclusive=True` skips candidates structurally equal to the query — "the nearest
-  *other* feature", the self-join idiom:
+- `exclusive=True` skips candidates structurally equal to the query and returns the
+  nearest other features:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -183,15 +167,13 @@ for i, station in enumerate(list(stations)):
 
 ```
 
-The equivalent top-level function is
-`gm.nearest(values, geometry, k=..., unit=...)`, which builds the
-index for you for one-shot queries.
+The top-level function `gm.nearest(values, geometry, k=..., unit=...)` builds an
+index for one-shot queries.
 
-## Explain: see the plan
+## Explain query plans
 
-[`idx.explain`][gometry.SpatialIndex.explain] returns the steps the query runs — load,
-bulk-load, envelope lookup, exact refine — so you can confirm the prefilter is doing
-its job and the refine stays selective.
+[`idx.explain`][gometry.SpatialIndex.explain] returns the steps the query runs:
+load, bulk-load, envelope lookup, and exact refine.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -205,20 +187,18 @@ for step in idx.explain(box, predicate="contains"):
 
 ```
 
-Predicate-refined explanations include the same operand rule, so directional
-predicates are visible before you inspect the result rows.
+Predicate-refined explanations include the operand order for directional
+predicates.
 
-If `explain` shows the index refining nearly every geometry, your envelopes overlap
-too much (common with large, sparse multipolygons) — a signal to split features or
-add a grid prefilter (see [Grids](grids.md)).
+When `explain` reports refinement of nearly every geometry, the envelopes overlap
+too much; large sparse multipolygons are a common cause.
 
 ## Joins: many-to-many done right
 
-When you need *every* matching pair across two collections — the spatial equivalent
-of a SQL join — do **not** nest index queries in a Python loop. Use [`gm.join`][gometry.join],
-which runs the bbox prefilter and the exact refine in Rust and returns a
-`(left, right)` pair of read-only `int64` NumPy columns. Zip the columns when
-you want row pairs.
+[`gm.join`][gometry.join] returns every matching pair across two collections. It
+runs the bbox prefilter and exact refine in Rust and returns a
+`(left, right)` pair of read-only `int64` NumPy columns. Zipping the columns
+produces row pairs.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -236,84 +216,19 @@ for li, ri in zip(left, right, strict=True):
 
 ```
 
-`join` refines to exact predicates — there is no "candidates-only" join that
-silently returns false positives. Use `distance=`/`unit=` for a
-`predicate="dwithin"` join. When you need to inspect candidate and refinement
-cost, build a `SpatialIndex` and call its dedicated `explain(...)` method. See
-[Build a spatial join end-to-end](#build-a-spatial-join-end-to-end) below for a
-full walkthrough.
+`join` refines to exact predicates. Use `distance=`/`unit=` for a
+`predicate="dwithin"` join. `SpatialIndex.explain(...)` reports candidate and
+refinement cost for an index query.
 
-!!! danger "Don't build Cartesian products by hand"
+!!! note "Many-to-many query cost"
     The brute-force `for a in polys: for b in points: if gm.contains(a, b)` pattern is
     O(N·M) and allocates a Python object per test. `gm.join` builds and queries
     an index in Rust, then refines candidates exactly. Its cost is driven by
     bounding-box selectivity and candidate count; worst-case overlap can still
-    approach O(N·M). For two non-scalar arrays the vectorized predicates
-    *intentionally* refuse mismatched lengths (see [Arrays](arrays.md)) to
-    push you toward `join`.
+    approach O(N·M). Vectorized predicates reject mismatched non-scalar lengths;
+    `join` returns the many-to-many result.
 
-## Build a spatial join end-to-end
-
-You have two sets of geometry and want every pair that satisfies a spatial
-predicate — points within areas, areas intersecting a region, and so on. Use
-[`gm.join`][gometry.join] for a one-shot match between two sets; build a reusable
-[`gm.SpatialIndex`][gometry.SpatialIndex] when you will query the same set many
-times.
-
-### One-shot join
-
-[`gm.join`][gometry.join] returns two parallel `int64` ndarrays
-`(left_rows, right_rows)`, using a spatial index internally:
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-points = gm.points([2.35, 2.30, 2.50], [48.86, 48.85, 48.80], crs=4326)
-areas = gm.GeometryArray([
-    gm.box(2.32, 48.84, 2.40, 48.88, crs=4326),
-    gm.box(2.45, 48.78, 2.55, 48.83, crs=4326),
-])
-
-left, right = gm.join(points, areas, predicate='within')
-print('(point_row, area_row) pairs:', list(zip(left.tolist(), right.tolist(), strict=True)))
-
-```
-
-```python exec="on" html="true"
-from _figures import figure
-import gometry as gm
-
-points = gm.points([2.35, 2.30, 2.50], [48.86, 48.85, 48.80], crs=4326)
-areas = gm.GeometryArray([
-    gm.box(2.32, 48.84, 2.40, 48.88, crs=4326),
-    gm.box(2.45, 48.78, 2.55, 48.83, crs=4326),
-])
-print(figure([*list(areas), *list(points)], 'points and candidate areas for the spatial join'))
-
-```
-
-### Index for repeated queries
-
-For many queries against the same set, build the index once with
-[`gm.SpatialIndex`][gometry.SpatialIndex] and reuse it; `query(...)` does the exact predicate
-refinement and `explain(...)` prints the plan:
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-points = gm.points([2.35, 2.30, 2.50], [48.86, 48.85, 48.80], crs=4326)
-region = gm.box(2.32, 48.84, 2.40, 48.88, crs=4326)
-
-idx = gm.SpatialIndex(points)
-print('rows within region:', list(idx.query(region, predicate='contains')))
-
-```
-
-For a reused polygon index and point queries, invert the directional predicate:
-`gm.SpatialIndex(areas).query(point, predicate='within')` tests
-`gm.within(point, area)` for each indexed row.
-
-### Insert and remove
+## Insert and remove
 
 Bulk construction is the common path, but the index is **mutable** for dynamic
 sets: [`insert`][gometry.SpatialIndex.insert] appends a geometry (same frame as

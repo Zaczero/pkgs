@@ -212,7 +212,13 @@ def build_parser(base: Config, config_path: Path | None) -> argparse.ArgumentPar
 
     parser = argparse.ArgumentParser(
         prog='h2corn',
-        description=f'High-performance HTTP/2 ASGI server (v{version})',
+        # argparse spells out every flag it knows, which is 47 wrapped lines
+        # here. It prints that before the description and before a parse
+        # error, so both arrive below the fold -- a rejected option reads as
+        # a wall of syntax with the reason buried under it. The grouped
+        # option sections below carry the same information where it is read.
+        usage='h2corn [OPTIONS] [target]',
+        description=f'h2corn v{version}: a blazing-fast HTTP/2 ASGI server for Python, written in Rust',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

@@ -98,8 +98,6 @@ from gometry._types import (
     Features,
     FloatColumn,
     FloatInput,
-    ParseFormat,
-    ScalarFloatArray,
     GeoJsonFeature,
     GeoJsonFeatureCollection,
     GeoJsonFeatureNonNull,
@@ -112,6 +110,7 @@ from gometry._types import (
     NestedCoordinates,
     Origin,
     PandasSeries,
+    ParseFormat,
     PolarsSeries,
     PolygonizeResult,
     PyArrowArray,
@@ -121,6 +120,7 @@ from gometry._types import (
     PyArrowSchemaCapsule,
     PyArrowTable,
     RepairMethod,
+    ScalarFloatArray,
     SimplifyMethod,
     SmoothMethod,
     SpatialCurve,
@@ -4466,7 +4466,9 @@ class MultiLineString(Geometry):
     @overload
     def __getitem__(self, index: slice, /) -> list[LineString]: ...
     @overload
-    def __getitem__(self, index: SupportsIndex | slice, /) -> LineString | list[LineString]:
+    def __getitem__(
+        self, index: SupportsIndex | slice, /
+    ) -> LineString | list[LineString]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -5006,7 +5008,9 @@ class GeometryParts(Sequence[_GeometryT_co], Generic[_GeometryT_co]):
     @overload
     def __getitem__(self, index: slice, /) -> list[_GeometryT_co]: ...
     @overload
-    def __getitem__(self, index: SupportsIndex | slice, /) -> _GeometryT_co | list[_GeometryT_co]:
+    def __getitem__(
+        self, index: SupportsIndex | slice, /
+    ) -> _GeometryT_co | list[_GeometryT_co]:
         """Select parts by integer or slice.
 
         An ``int`` returns one component geometry. A ``slice`` returns a
@@ -9004,7 +9008,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @overload
     def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
     @overload
-    def to_list(self: Groups[GeometryArray[_GeometryT_co]]) -> list[list[_GeometryT_co]]: ...
+    def to_list(
+        self: Groups[GeometryArray[_GeometryT_co]],
+    ) -> list[list[_GeometryT_co]]: ...
     @overload
     def to_list(self: Groups[CellArray[_CellT_co]]) -> list[list[_CellT_co]]:
         """Copy into a plain nested Python list.
@@ -9106,7 +9112,9 @@ class PreparedGeometry:
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
-    def __reduce__(self) -> tuple[Callable[[Geometry], PreparedGeometry], tuple[Geometry]]:
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[[Geometry], PreparedGeometry], tuple[Geometry]]:
         """Pickles as the source geometry plus a re-`prepare()` on load: the
         cached indexes are transient state, rebuilt cheaply on first use in
         the new process (`multiprocessing`/`dask` round-trips just work).
@@ -11270,7 +11278,7 @@ class CellArray(Sequence[_CellT_co | None]):
         | _IndexLane
         | npt.NDArray[np.int64],
         /,
-        ) -> _CellT_co | CellArray[_CellT_co]:
+    ) -> _CellT_co | CellArray[_CellT_co]:
         """Select logical rows by integer, slice, or fancy index.
 
         An ``int`` returns one cell object or ``None`` for a missing row. A
@@ -11960,7 +11968,6 @@ class H3EdgeArray(Sequence[H3Edge]):
         H3Edge or H3Vertex or H3EdgeArray or H3VertexArray
         """
 
-
 class _Cell:
     """Stub-only generic base for shared scalar cell members."""
     @property
@@ -12061,7 +12068,6 @@ class _NumericCell(_Cell):
     def __index__(self) -> int:
         """Return self converted to an integer, if self is suitable for use as an index into a list."""
 
-
 @final
 class H3Vertex:
     """A canonical H3 topological vertex.
@@ -12108,7 +12114,6 @@ class H3Vertex:
         """
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
-
     @property
     def id(self) -> int:
         """The vertex's 64-bit H3 index.
@@ -12209,7 +12214,6 @@ class H3Edge:
         """
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
-
     @property
     def id(self) -> int:
         """The edge's 64-bit H3 index.
@@ -12519,7 +12523,6 @@ class GeohashCell(_Cell):
         """
     def __reduce__(self) -> tuple[object, tuple[str]]:
         """Pickle support: a cell is its identity value."""
-
 
 @final
 class H3Cell(_NumericCell):
@@ -13007,7 +13010,6 @@ class H3Cell(_NumericCell):
         2
         """
 
-
 @final
 class S2Cell(_NumericCell):
     """One S2 cell: a level-addressed quadrilateral tile on the sphere.
@@ -13329,7 +13331,6 @@ class Tile(_NumericCell):
         int
         """
 
-
 @final
 class ValidationReport:
     """A structured geometry-validity verdict.
@@ -13398,6 +13399,7 @@ class ValidationReport:
         -------
         str or None
         """
+
 @overload
 def box(
     minx: float,
@@ -14469,7 +14471,9 @@ def contains(
     left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def contains(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def contains(
+    left: _PredicateOperand, right: GeometryArray
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
     left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
@@ -14660,7 +14664,9 @@ def covered_by(
     left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def covered_by(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def covered_by(
+    left: _PredicateOperand, right: GeometryArray
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
     left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
@@ -14812,7 +14818,9 @@ def intersects(
     left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def intersects(
+    left: _PredicateOperand, right: GeometryArray
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
     left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
@@ -14856,7 +14864,9 @@ def disjoint(
     left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def disjoint(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def disjoint(
+    left: _PredicateOperand, right: GeometryArray
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
     left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray
@@ -14984,7 +14994,9 @@ def overlaps(
     left: GeometryArray, right: _PredicateOperand | GeometryArray
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def overlaps(left: _PredicateOperand, right: GeometryArray) -> npt.NDArray[np.bool_]: ...
+def overlaps(
+    left: _PredicateOperand, right: GeometryArray
+) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
     left: _PredicateOperand | GeometryArray, right: _PredicateOperand | GeometryArray

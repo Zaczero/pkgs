@@ -4,15 +4,8 @@ description: H3, S2, geohash, and XYZ-tile grids in gometry plus the point geoco
 
 # Grids & geocodes
 
-Discrete global grids turn geometry into compact cell IDs — the backbone of
-geospatial analytics: group-by-cell aggregation, cheap candidate filtering
-before exact geometry, heatmaps, and lakehouse partitioning. This page covers
-the four grids gometry unifies under one API (H3, S2, geohash, XYZ tiles), the
-point geocodes (plus codes, OSM shortlinks), the spherical model that makes
-global covering seam-safe, the space-filling-curve keys that give cells their
-locality-preserving order, and the aggregate-then-refine workflow. Read the cell
-and coverage sections first — learn the H3 surface and the other three follow —
-then reach for ordering and geocodes as needed.
+Discrete global grids turn geometry into compact cell IDs for grouping and
+candidate filtering before exact geometry.
 
 gometry covers four grids in one API — [H3](https://h3geo.org/),
 [S2](https://s2geometry.io/), [Geohash](https://en.wikipedia.org/wiki/Geohash),
@@ -21,22 +14,21 @@ and XYZ tiles — that other ecosystems split across separate packages:
 - **H3** — Uber's hexagonal grid, addressed by *resolution* (0 coarse … 15 fine).
 - **S2** — Google's quadrilateral grid on the sphere, addressed by *level*
   (0 coarse … 30 fine).
-- **Geohash** — the classic base-32 lon/lat bisection code, addressed by
+- **Geohash** — the base-32 lon/lat bisection code, addressed by
   *precision* (1 coarse … 12 fine).
 - **XYZ tiles** — the slippy-map [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) grid, addressed by *zoom*
   (0 coarse … 29 fine).
 
-All four share **one cell-array shape** and the same `cell_rule` semantics. Learn
-the H3 surface and you already know the other three — [`gm.Cell`][gometry.Cell]
-is the structural protocol every cell type satisfies.
+All four share **one cell-array shape** and the same `cell_rule` semantics.
+[`gm.Cell`][gometry.Cell] is the structural protocol every cell type satisfies.
 
 Cover factories materialize cell keys. Keep the source geometry separately and
 use the free `gm.*` predicates when an exact geometry question is needed.
 
 ## Cells from points
 
-The simplest grid operation: which cell contains a point? Use
-[`gm.H3Cell(...)`][gometry.H3Cell] and [`gm.h3_cells(...)`][gometry.h3_cells] (likewise
+Point cells are constructed with [`gm.H3Cell(...)`][gometry.H3Cell] and
+[`gm.h3_cells(...)`][gometry.h3_cells] (likewise
 [`gm.S2Cell(...)`][gometry.S2Cell] / [`gm.s2_cells(...)`][gometry.s2_cells]). The scalar
 constructor returns a typed cell object; the plural `cells(...)` function returns a
 typed [`CellArray`][gometry.CellArray] (one cell per coordinate).
@@ -56,7 +48,7 @@ print("parent (level 10) token:", s.parent(10).token)
 
 ```
 
-Cell arrays include first-class grouping helpers for “count by cell” analytics:
+Cell arrays include grouping helpers for “count by cell” analytics:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -109,8 +101,7 @@ is rejected because it cannot say which frame those numbers occupy.
 
 ### The geometry behind a cell ID
 
-A cell ID is shorthand for an area on the ground. Convert one back to geometry
-to sanity-check it before partitioning a dataset — scalar cells expose `.polygon`,
+A cell ID is shorthand for an area on the ground. Scalar cells expose `.polygon`,
 and `CellArray.polygon` returns a whole batch:
 
 ```python exec="on" source="block" result="text"
@@ -125,7 +116,7 @@ print('batch:', type(cell.grid_disk(1).polygon).__name__)
 
 For H3 and S2 that polygon is a planar lon/lat chord proxy rather than the
 spherical cell boundary. Adjacency and
-local indexing are first-class on the cell: `neighbors` lists the edge-adjacent ring,
+local indexing are cell methods: `neighbors` lists the edge-adjacent ring,
 `is_neighbor` tests one candidate, and `local_ij`/`cell_from_local_ij` move through
 the local grid-algebra space around an anchor. Resolution metadata lives in the
 H3-prefixed global family — [`gm.h3_pentagons`][gometry.h3_pentagons] and
@@ -152,9 +143,6 @@ print("pentagons at res 4:", len(gm.h3_pentagons(4)))
 
 ```
 
-Rendering a cell together with its ring of neighbors (`grid_disk`) shows the
-hexagonal tiling:
-
 ```python exec="on" html="true"
 from _figures import cell_polys, figure
 import gometry as gm
@@ -166,12 +154,9 @@ print(figure([cell.polygon, *cell_polys(cell.neighbors), cell.center], "neighbor
 
 ## The spherical model
 
-The spherical model is geometry on a **sphere**, where there are no projection
-discontinuities and the antimeridian is not special. gometry exposes this through **S2** —
-typed cells and explicit cell sets — rather than as a general spherical boolean-topology
-engine. The value is global correctness: an S2 cell or covering behaves the same near the
-antimeridian or the poles as it does over the equator, which is exactly where planar
-reasoning and projected frames break down.
+S2 uses a spherical model for cells and coverings, so the antimeridian and poles
+do not create a longitude seam in cell selection. gometry exposes typed cells and
+cell sets rather than a general spherical boolean-topology engine.
 
 ```python exec="on" html="true"
 from _figures import cell_polys, figure
@@ -200,10 +185,10 @@ print("covering cells:", len(covering))
 ```
 
 !!! note "S2 covers cells and coverings, not boolean topology"
-    gometry's S2 surface provides cells, cell hierarchies, and exact
-    coverings — not a spherical intersection/union engine. For exact metric truth
-    use the geodesic model; for exact planar topology, project into a local CRS
-    and use the planar model.
+    gometry's S2 surface provides cells, cell hierarchies, and deterministic
+    coverings — not a spherical intersection/union engine. Metric calculations use
+    the geodesic model; planar topology uses a local projected CRS and the planar
+    model.
 
 ## Covering an area
 
@@ -216,7 +201,6 @@ import gometry as gm
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 cov = gm.h3_cover(area, resolution=5)
 
-print("cells:", len(cov))             # cells materialized by the factory
 print("# cells:", len(cov))
 print("first cell id:", cov[0].id)
 
@@ -224,17 +208,16 @@ print("first cell id:", cov[0].id)
 
 ### `cell_rule` is explicit semantics
 
-The `cell_rule` argument decides which cells `cells` materializes — the same four
-modes across H3, S2, geohash, and tiles, from strictest (fewest cells) to loosest.
-It defaults to `"overlap"` — the complete-coverage superset, the safe choice for
-candidate keys — but pick it deliberately: different rules answer different questions.
+The `cell_rule` argument selects which cells `cells` materializes. The same four
+modes apply to H3, S2, geohash, and tiles. It defaults to `"overlap"`, the
+complete-coverage superset used for candidate keys.
 
 | `cell_rule` | A cell is included when… | Typical use |
 | --- | --- | --- |
 | `"center"` | the cell's **center** falls inside the geometry | h3-py-style polygon-to-cell selection; boundary cells may be omitted |
 | `"within"` | the cell lies **entirely inside** the geometry | a *subset* — cells the area fully owns |
 | `"overlap"` (default) | the cell **intersects** the geometry at any point (interior or boundary) | a *superset* — safe join/prefilter keys, never misses a true hit |
-| `"bbox"` | the cell's **bounding box** overlaps the geometry | loosest/fastest (for geohash & tiles a cell *is* its bbox, so same as `"overlap"`) |
+| `"bbox"` | the cell's **bounding box** overlaps the geometry | loosest candidate rule (for geohash & tiles a cell *is* its bbox, so same as `"overlap"`) |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -247,8 +230,8 @@ for rule in ("within", "center", "overlap", "bbox"):
 ```
 
 The counts differ because the rules mean different things: `"within"` ⊆
-`"center"` ⊆ `"overlap"` ⊆ `"bbox"` for the same geometry and resolution. The cells
-(grey) over the source box (outline) make the difference visible:
+`"center"` ⊆ `"overlap"` ⊆ `"bbox"` for the same geometry and resolution. The
+selected cell sets form these nested sets:
 
 ```python exec="on" html="true"
 from _figures import cell_polys, panels
@@ -262,8 +245,8 @@ print(panels([
 
 ```
 
-The rule shapes the visible cell set. Keep the source geometry separately when
-you need exact geometry predicates.
+The returned cell set depends on `cell_rule`; exact geometry predicates require
+the source geometry.
 
 ### Projected input is normalized to lon/lat
 
@@ -272,10 +255,9 @@ transform supported projected input into that domain first). The grids themselve
 are not one model: H3 is an icosahedral discrete global grid, S2 a spherical
 cube, geohash a lon/lat rectangle hierarchy, and tiles the Web Mercator XYZ
 scheme. If you hand `gm.h3_cover` / `gm.s2_cover` a geometry in a supported
-projected CRS, gometry transforms it to WGS 84 lon/lat first, so you do
-not have to remember to `to_crs(4326)` yourself — and membership candidates follow
-the same policy (WGS 84 and CRS-free lon/lat pass through, anything else is
-reprojected):
+projected CRS, gometry transforms it to WGS 84 lon/lat first. WGS 84 and CRS-free
+lon/lat pass through; other supported frames are reprojected before cover keys
+are generated.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -289,13 +271,10 @@ print('projected candidate:', gm.covers(projected, gm.Point(21.0, 52.0, crs=4326
 
 ## Exact membership with the source geometry
 
-Cells never align with a geometry's boundary, so cell membership alone can never
-answer "is this point really in my area". Keep the source geometry and use the
-same predicate verbs the rest of the library uses:
-
-The returned `CellArray` does not retain the source geometry. If you export cells
-as join keys, refine candidate matches against the original geometries before
-treating them as exact.
+The returned `CellArray` contains the cell keys selected by `cell_rule`; it does
+not retain the source geometry or provide exact source-membership results. Keep
+the source geometry and apply `gm.covers`, `gm.contains`, or `gm.intersects` to
+refine cell candidates into exact predicate results.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -307,9 +286,6 @@ print('edge point:', gm.covers(area, gm.Point(20.0, 52.0, crs=4326)), '| strictl
 print('raw lon/lat stream:', gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0]))
 
 ```
-
-The returned cells are the public grid representation. Keep the source geometry
-separately when an exact predicate is needed:
 
 ```python exec="on" html="true"
 from _figures import figure
@@ -328,14 +304,14 @@ print(figure([*cells.polygon, area], 'H3 cells'))
 
 ## From cells back to geometry
 
-A cell ID is shorthand for a polygon, and a covering is a mesh of them. Two moves
-recover geometry: the single cell that *bounds* an input, and dissolving a whole
-covering back to one outline.
+A cell ID is shorthand for a polygon, and a covering is a mesh of them. A
+single-cell bound or a dissolved covering recovers geometry.
 
 ### The single cell that bounds a geometry
 
-A covering returns *many* cells. The complement is the **one** cell that wholly
-contains a geometry — useful as a coarse partition key or a quick spatial bucket.
+A covering returns *many* cells. A bounding-cell operation returns the **one** cell
+that wholly contains a geometry, which serves as a coarse partition key or spatial
+bucket.
 Each grid spells it by return type: `gm.h3_bounding_cell` / `gm.s2_bounding_cell`
 / `gm.geohash_bounding_cell` return their cell type, and `gm.tile_bounding_cell`
 returns a [`Tile`][gometry.Tile].
@@ -359,8 +335,7 @@ an array, or a raw `(minx, miny, maxx, maxy)` bounds tuple.
 
 ### Dissolving a covering back to one outline
 
-Sometimes you want the cells *as a single geometry* — to render the covered region
-or hand a polygon to another tool. `to_polygon()` dissolves the covering into one
+To recover one geometry from a covering, `to_polygon()` dissolves it into one
 outline; shared cell edges cancel, so the interior costs no geometry:
 
 ```python exec="on" source="block" result="text"
@@ -405,8 +380,8 @@ zoom 8.
 Every grid family exposes the same **factories + set-algebra** shape: prefixed
 `union`, `intersection`, and `difference` functions on cell sets (H3, S2,
 geohash, and tiles). Hierarchy behavior still differs per system (S2 range nesting,
-H3 resolution parents, geohash/tile prefix parents), but you do **not** drop
-to plain Python `set` for H3 — use the hierarchy-aware free functions.
+H3 resolution parents, geohash/tile prefix parents). H3 cell sets require
+hierarchy-aware free functions rather than plain Python `set` arithmetic.
 
 **H3 resolution normalization** (`gm.h3_union` / `gm.h3_intersection` /
 `gm.h3_difference`): inputs may mix resolutions. The result is cell-ID algebra
@@ -414,7 +389,7 @@ under the compact contract — sorted, with descendants absorbed by ancestors an
 complete sibling groups merged into parents — so mixed-resolution operands are
 normalized rather than rejected. This is identity algebra (an H3 child's *geometry*
 does not nest exactly inside its parent, but its id does). S2 algebra is
-range-nesting exact (see below); geohash/tile algebra is prefix-based.
+range-nesting exact; geohash/tile algebra is prefix-based.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -433,9 +408,9 @@ print("s2 union sample:", len(gm.s2_union(
 
 ## S2 coverings: budget and multi-resolution
 
-S2's covering algorithm is multi-resolution, and S2 cell ids nest as ranges — two
-properties that give it a budget knob on `cover` and efficient whole-set algebra
-without touching geometry.
+S2 coverings are multi-resolution, and S2 cell IDs nest as ranges. These
+properties provide a `cover` budget and whole-set algebra without touching
+geometry.
 
 ### A budget and a rule
 
@@ -482,17 +457,16 @@ print('difference:  ', len(gm.s2_difference([cell], children[:1])), 'cells remai
 
 ```
 
-Prefer [`gm.h3_union`][gometry.h3_union] / [`gm.h3_intersection`][gometry.h3_intersection]
-/ [`gm.h3_difference`][gometry.h3_difference] over plain Python `set` arithmetic:
-those free functions already normalize mixed resolutions under the compact
-contract. A fixed-resolution `set` of raw ids is fine only when you intentionally
-want identity equality with no parent/child absorption.
+[`gm.h3_union`][gometry.h3_union] / [`gm.h3_intersection`][gometry.h3_intersection]
+/ [`gm.h3_difference`][gometry.h3_difference] normalize mixed resolutions under
+the compact contract. A fixed-resolution `set` of raw IDs performs identity
+equality without parent/child absorption.
 
 ## Geohash and XYZ tiles
 
 Geohash and tiles are *rectangular* grids — every cell is an exact lon/lat
-rectangle — so their coverages are true spatial keys, not bounding-box
-supersets. They wear the same API as H3 and S2.
+rectangle, and their cover keys use those rectangles rather than a separate
+bounding-box approximation. They wear the same API as H3 and S2.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -509,8 +483,8 @@ print('# tiles:', len(tiles), 'first quadkey:', tiles[0].token)
 ```
 
 A geohash or tile cover is built as a **uniform single-depth tiling** —
-every cell is the same precision/zoom, which makes the returned `CellArray` a
-clean spatial key. Exact predicates test the source geometry supplied by the caller;
+    every cell is the same precision/zoom, which makes the returned `CellArray` a
+    uniform spatial key. Exact predicates test the source geometry supplied by the caller;
 token lookup alone is not the answer. Cell-set methods operate on the returned
 `CellArray` directly.
 
@@ -525,9 +499,8 @@ clamp coordinates.
 
 ## Aggregate by cell, then refine
 
-Use cell arrays for fast global bucketing, then use a spatial index when the
-answer must be exact against polygons. The grid step groups cheaply; the refine
-step keeps topology honest.
+Cell arrays provide global bucketing, while a spatial index provides exact
+polygon refinement. The grid step groups rows before the geometry predicate.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -566,19 +539,17 @@ to a DataFrame or lakehouse, refine matched rows with `SpatialIndex.query`,
 
 ## Ordering & locality
 
-A [space-filling curve](https://en.wikipedia.org/wiki/Hilbert_curve) threads a single line through a 2-D grid so that points
-close on the line are close in space. Encode each geometry as its position
-along that curve and you get an **integer key whose sort order preserves
-locality** — the one trick behind [GeoParquet](https://geoparquet.org/) row-group packing, spatial
-shuffles, cache-friendly index builds, and "give me a deterministic but
-spatially-coherent order" requests.
+A [space-filling curve](https://en.wikipedia.org/wiki/Hilbert_curve) threads a
+single line through a 2-D grid so that points close on the line are close in
+space. Encoding each geometry as its position along that curve produces an
+**integer key whose sort order preserves locality** for [GeoParquet](https://geoparquet.org/)
+row-group packing, spatial shuffles, and index builds.
 
-gometry exposes one keying and sorting API with an explicit `curve=` choice,
-plus the observation that two of the grid systems already *are* these
-orderings:
+gometry exposes one keying and sorting API with an explicit `curve=` choice.
+S2 and tile cell identifiers also encode locality-preserving orderings:
 
-- **Hilbert** — the default `curve='hilbert'`. The best locality of any
-  practical curve (no long jumps), and the order GeoParquet writers use.
+- **Hilbert** — the default `curve='hilbert'`, a recursive locality-preserving
+  order.
 - **Morton (Z-order)** — `curve='morton'`. Cheaper to compute (bit
   interleave), with one diagonal jump per quadrant — the [Z-order curve](https://en.wikipedia.org/wiki/Z-order_curve).
 
@@ -599,8 +570,8 @@ print(keys)
 
 The default `level=16` is **gometry's default only**. GeoParquet does not define a
 Hilbert level or a canonical key algorithm. Bit-identical ordering across tools
-requires matching bounds, level, quantization, coordinate convention, and algorithm
-explicitly — do not assume another writer uses the same defaults.
+requires matching bounds, level, quantization, coordinate convention, and
+algorithm. Another writer may use different defaults.
 
 ### Sorting an array
 
@@ -614,14 +585,8 @@ import gometry as gm
 grid = gm.GeometryArray([gm.Point(x, y) for y in range(4) for x in range(4)])
 ordered = grid.sort_by_spatial_key(level=8)
 print([(round(p.x), round(p.y)) for p in ordered])
-# The walk snakes through the grid: consecutive rows are spatial neighbors,
-# never a jump across the whole extent.
 
 ```
-
-Tracing the sorted order as a path makes the locality concrete. Hilbert and
-Morton both preserve neighborhoods, but the path shape shows why Hilbert is the
-default when row groups should stay as compact as possible:
 
 ```python exec="on" html="true"
 from _figures import curve_through, panels
@@ -635,13 +600,13 @@ print(panels([
 
 ```
 
-Write that order to GeoParquet (or feed it to `gm.SpatialIndex`) and every
-block holds a spatially compact run of geometries.
+The sorted order can be written to GeoParquet or passed to `gm.SpatialIndex`; each
+block then contains a spatially compact run of geometries.
 
 ### The grids are curves too
 
-Two of the discrete grids above already encode these orderings, so you
-rarely need a separate sort once you are working in cells:
+S2, tile, and geohash identifiers encode these orderings, so a separate sort is unnecessary
+when data already uses those cells:
 
 - **[S2](https://s2geometry.io/) cell ids are Hilbert order.** `sorted(s2_cells)` groups spatial
   neighbors, because an S2 id is the cell's position along the face Hilbert
@@ -652,16 +617,15 @@ rarely need a separate sort once you are working in cells:
   lexicographically into a locality-preserving order — which is exactly why a
   `GeohashCell`'s token carries that ordering directly.
 
-So the choice is: key your geometries explicitly with `spatial_key()` for
-GeoParquet/index packing (pass `curve='morton'` when its cheaper ordering is
-the fit), or address them as cells and let their identity value carry the ordering
-for free.
+Geometry rows use `spatial_key()` for GeoParquet or index packing, with
+`curve='morton'` selecting Morton order. Cell identities carry their grid's
+ordering directly.
 
 ## Point geocodes
 
 [Open Location Code](https://github.com/google/open-location-code) (plus codes)
-and OSM shortlinks are compact point codes rather than cell systems — small enough
-to expose as direct, codec-named functions:
+and OSM shortlinks are compact point codes rather than cell systems. gometry
+exposes them as direct, codec-named functions:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -679,7 +643,7 @@ print("decoded:  ", gm.osm_shortlink_location(link))
 ```
 
 `pluscode` also accepts a `Point` or array (CRS-aware), and
-`pluscode_shorten` / `pluscode_recover` handle the short-code dance against a
+`pluscode_shorten` / `pluscode_recover` encode and recover short codes against a
 reference location. `osm_shortlink_location` accepts the legacy `@` spelling.
 
 Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from-h3-py-s2sphere).
@@ -688,8 +652,7 @@ Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from
 
 - [Spatial indexing](indexing.md) — candidate vs exact refine on geometry, and
   rebuilding an index after a spatial sort.
-- [The mental model](../get-started/mental-model.md) — the candidates-vs-exact
-  doctrine and the decision table for which model to reach for.
+- [The mental model](../get-started/mental-model.md) — the three operation models.
 - [API: h3_cover][gometry.h3_cover] · [s2_cover][gometry.s2_cover] ·
   [H3Cell][gometry.H3Cell] · [S2Cell][gometry.S2Cell] ·
   [SpatialIndex][gometry.SpatialIndex] ·

@@ -4,23 +4,28 @@ description: Install gometry from PyPI or a source checkout — NumPy is require
 
 # Installation
 
-gometry is a compiled Rust extension behind a thin Python facade. Install the
-matching wheel from PyPI with one command; there is no system GIS library to
-track down first:
+gometry is a compiled Rust extension behind a Python facade. Install the matching
+wheel from PyPI:
 
-```bash
-python -m pip install gometry
-# or
-uv add gometry
-```
+=== "uv"
+
+    ```bash
+    uv add gometry
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install gometry
+    ```
 
 ## Development install
 
 From a clone of this repository, with Python **3.11+** and a project virtualenv:
 
 ```bash
-# create / activate a venv, then:
-uv sync                                  # or: python -m venv .venv && .venv/bin/pip install -e .
+# create a venv, then install all project groups:
+uv sync --all-groups                     # or: python -m venv .venv && .venv/bin/pip install -e .
 uv run --no-project --python .venv/bin/python \
   --with maturin==1.14.1 maturin develop --release
 ```
@@ -35,17 +40,16 @@ That builds and installs the native extension into `.venv`. Verify with:
 
 | Requirement | Detail |
 |---|---|
-| Python | **3.11 or newer.** gometry uses modern `X | Y` unions and assumes 3.11+ typing throughout. |
-| Platform | Prebuilt wheels cover the CI-supported tags listed below. |
+| Python | **3.11 or newer.** The stubs use `X | Y` unions and 3.11+ typing throughout. |
 | Runtime dependencies | **NumPy.** Required for native numeric bulk outputs. |
 | System libraries | **None.** No GEOS, GDAL, or system PROJ. |
 | Build (from source) | Recent nightly Rust toolchain, a C/C++ toolchain, Python headers, and network/cache access to the dependency graph. |
 
 ## No system GIS stack to install
 
-The usual Python geospatial install fails at the C library boundary: Shapely needs GEOS,
-pyproj needs PROJ, and a mismatched system package turns a one-line install into an
-afternoon. gometry removes that failure mode by design.
+The core wheel carries the native geometry engine and its CRS authority resources
+at the package boundary, so the application does not need to provision GEOS,
+GDAL, or a system PROJ installation separately.
 
 - The geometry, geodesy, indexing, and grid kernels are **implemented in Rust**, not bound
   to GEOS or GDAL.
@@ -53,11 +57,6 @@ afternoon. gometry removes that failure mode by design.
   bundled PROJ database, supported datum pipelines, and the grid files shipped with the package without a
   system PROJ shared library or a `PROJ_LIB` data directory. Additional caller-supplied grids can be made
   visible with `gm.crs_configure(search_paths=...)`; gometry does not download grids at runtime.
-
-!!! note "Why this matters"
-    A gometry wheel is self-contained. CI images, slim containers, and lambda-style
-    deployments do not need `apt-get install libgeos-dev libproj-dev gdal-bin` — the
-    geometry engine and the CRS database travel with the package.
 
 ## Required Python dependency
 
@@ -68,15 +67,14 @@ index, and coordinate results are native read-only `numpy.ndarray` objects:
 python -c "import gometry, numpy"
 ```
 
-This keeps the runtime dependency surface small while making the common
-vectorized path first-class in the Python numeric ecosystem. pandas,
-GeoPandas, and PyArrow remain things you *may* hand data to or from, not
-things gometry forces into your environment.
+NumPy keeps the runtime dependency surface limited while providing native
+ndarray results; pandas, GeoPandas, and PyArrow are optional data interchange
+dependencies.
 
 ## Optional extras
 
-Core install is NumPy + the Rust extension. Everything else is opt-in and
-imported lazily — see [DataFrames](../ecosystem/dataframes.md).
+Core install is NumPy plus the Rust extension. Optional integrations are opt-in
+and imported lazily; see [DataFrames](../ecosystem/dataframes.md).
 
 | Extra | Purpose |
 |---|---|
@@ -89,20 +87,26 @@ imported lazily — see [DataFrames](../ecosystem/dataframes.md).
 ### The `arrow` extra
 
 [PyArrow](https://arrow.apache.org/docs/python/) is enabled through the `arrow`
-extra. Install it when you want gometry itself to materialize or consume
-`pyarrow` arrays, chunked arrays, tables, and record batches:
+extra. The extra lets gometry materialize or consume `pyarrow` arrays, chunked
+arrays, tables, and record batches:
 
-```bash
-python -m pip install "gometry[arrow]"
-# or
-uv add "gometry[arrow]"
-```
+=== "uv"
+
+    ```bash
+    uv add "gometry[arrow]"
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install "gometry[arrow]"
+    ```
 
 With the extra installed, [geom.to_arrow][gometry.Geometry.to_arrow] and
 [gm.from_arrow][gometry.from_arrow] exchange pyarrow objects carrying
 [GeoArrow](https://geoarrow.org/)-compatible buffers:
 
-```python
+```python exec="on" source="block" result="text"
 import gometry as gm
 
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
@@ -113,11 +117,11 @@ roundtrip = gm.from_arrow(ga)
 
 PyArrow is imported lazily, so `import gometry` never requires it. Geometry
 objects still expose dependency-free Arrow PyCapsules without the extra; see the
-[Arrow & storage](../ecosystem/arrow.md) for the full columnar boundary.
+[Arrow & storage](../ecosystem/arrow.md) for the columnar boundary.
 
 ## Prebuilt wheels
 
-Release wheels target these CI-supported tags:
+Release wheels target these platform and interpreter tags:
 
 | Platform | Architecture | Python tags |
 |---|---|---|
@@ -130,9 +134,8 @@ Release wheels target these CI-supported tags:
 | Windows | `win_amd64` | `cp311`, `cp312`, `cp313`, `cp314` |
 | Windows | `win_arm64` | `cp311`, `cp312`, `cp313`, `cp314` |
 
-CI also tests free-threaded `cp314t` on Linux and cibuildwheel 4 builds its
-supported free-threaded wheel tags (including musllinux alongside manylinux).
-PyPy and `cp313t` are not part of the current matrix.
+Free-threaded `cp314t` wheels are supported on Linux in manylinux and musllinux
+variants. PyPy and `cp313t` are unsupported.
 
 If a target has no matching wheel, pip falls back to a source build. Source
 builds require a recent nightly Rust toolchain, a working C/C++ build
@@ -141,9 +144,6 @@ access to the Rust/Python dependency graph. The wheel still bundles libPROJ; you
 do not need system GEOS, GDAL, or PROJ.
 
 ## Verify your install
-
-Run this once after installing to confirm the native extension, the bundled PROJ database,
-and the geometry kernels are all wired up:
 
 ```python exec="on" source="block" result="text"
 import importlib.metadata as md
@@ -160,12 +160,9 @@ print(f"geodesic area: {poly.area:,.0f} m^2")
 
 ```
 
-If that prints a version, a PROJ version, and an area in square meters, you are ready.
-
 ## Next steps
 
-- New to the model-explicit design? Start with the [mental model](mental-model.md) — it is
-  the one page that makes everything else click.
-- Want a fast tour of the API? See the [quickstart](quickstart.md).
-- Coming from Shapely, pyproj, H3, S2, or rtree? The [migration guides](../migrating/index.md)
-  map each tool's patterns onto one gometry spelling.
+- The [mental model](mental-model.md) defines CRS and frame rules.
+- The [quickstart](quickstart.md) constructs a spatial query.
+- The [migration guides](../migrating/index.md) map Shapely, pyproj, H3, S2, and rtree
+  patterns onto gometry spellings.
