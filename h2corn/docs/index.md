@@ -64,7 +64,7 @@ application server ever sees it. That translation is what
 research targets, and it is the hop most deployments never think about.
 
 h2corn removes it. The proxy speaks `h2c` straight into the application, with
-[WebSockets](websockets.md) on that same connection
+[WebSockets](websockets.md#why-the-http2-transport-matters) on that same connection
 ([RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)) instead of a
 hijacked HTTP/1.1 socket. The edge keeps doing what edges are good at; the last
 hop stops being the weak one.

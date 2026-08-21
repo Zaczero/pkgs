@@ -199,12 +199,12 @@ nav:
     - migrating/index.md
     - Migration cheatsheet: migrating/cheatsheet.md
   - About:
+    - Support: about/support.md
     - Benchmarks: about/benchmarks.md
     - Design principles: about/design.md
     - Internals: about/internals.md
     - Security & untrusted input: about/security.md
     - Compatibility & deprecation policy: about/compatibility.md
-    - Changelog: about/changelog.md
     - License & notices: about/license.md
 
 watch:

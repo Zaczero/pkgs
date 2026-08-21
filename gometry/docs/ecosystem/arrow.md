@@ -1,16 +1,16 @@
 ---
-description: Arrow C Data Interface and GeoArrow interchange for gometry — dependency-free PyCapsules, native packed layouts, pyarrow via gometry[arrow], plus durable GeoParquet storage and lonboard maps.
+description: Arrow C Data Interface and GeoArrow interchange in gometry — dependency-free PyCapsules, packed layouts, pyarrow via gometry[arrow], and GeoParquet.
 ---
 
 # Arrow & storage
 
-`Geometry` and `GeometryArray` export Arrow C Data Interface capsules in
+[`Geometry`][gometry.Geometry] and [`GeometryArray`][gometry.GeometryArray] export Arrow C Data Interface capsules in
 [GeoArrow](https://geoarrow.org/) layouts. GeoParquet files and lonboard maps
 build on those same capsules.
 
 ## Arrow PyCapsules without pyarrow
 
-`Geometry` and `GeometryArray` implement the Arrow PyCapsule protocol with no
+[`Geometry`][gometry.Geometry] and [`GeometryArray`][gometry.GeometryArray] implement the Arrow PyCapsule protocol with no
 optional dependency:
 
 - `__arrow_c_schema__` → a capsule named `arrow_schema`
@@ -22,11 +22,11 @@ A consumer that implements the Arrow C Data Interface can import the GeoArrow
 buffers straight from these capsules **without pyarrow installed**. Whether a
 consumer preserves GeoArrow extension metadata is version- and adapter-specific;
 see the [compatibility matrix](../about/compatibility.md) for deployed
-integration details. Install `gometry[arrow]` for `(...).to_arrow()` to return
+integration details. Install `gometry[arrow]` for [`(...).to_arrow()`][gometry.Geometry.to_arrow] to return
 a concrete pyarrow array or to ingest an older pyarrow-only object.
 
 The tuple is the Arrow C Data Interface boundary; it is not a geometry result
-that can be passed to `from_arrow` directly. A consumer receives the object
+that can be passed to [`from_arrow`][gometry.from_arrow] directly. A consumer receives the object
 implementing `__arrow_c_array__`, calls it, and owns the two capsules for the
 duration of the import.
 
@@ -81,7 +81,7 @@ snapshot. Unrelated table columns, BinaryView size entries, and payload ranges
 are not retained. Mixed geometry types, mixed coordinate axes, and geometry
 collections fall back to GeoArrow **WKB** encoding so nothing is lost.
 
-`from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
+[`from_arrow`][gometry.from_arrow] handles PyArrow-shaped arrays, chunked arrays, tables, and record
 batches through the PyArrow path. Other objects implementing
 `__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
 capsule path; the provider's data contents are still validated after gometry
@@ -121,21 +121,21 @@ gometry GeoArrow extension field and GeoParquet column metadata do.
 For dependency-free producers, pass the gometry object itself to any consumer that
 understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
 or `__arrow_c_stream__` and imports the GeoArrow buffers **zero-copy**. When
-gometry is the consumer, `from_arrow` accepts those capsules too and copies the
+gometry is the consumer, [`from_arrow`][gometry.from_arrow] accepts those capsules too and copies the
 selected schema plus visible validity, offset, view, variadic-size, coordinate,
 and WKB spans into gometry-owned storage before validation and decode.
 
 Consumers with Arrow-C support can consume these capsules directly, subject to
 their own GeoArrow and extension-type support. Gometry's supported
-`to_polars()` / `from_polars()` adapter instead uses a batched WKB/EWKB `Binary`
+[`to_polars()`][gometry.GeometryArray.to_polars] / [`from_polars()`][gometry.from_polars] adapter instead uses a batched WKB/EWKB `Binary`
 Series so it remains independent of PyArrow; that boundary is covered in
 [DataFrames](dataframes.md). The lonboard adapter uses the direct capsule handoff
 and falls back to GeoJSON when that handoff is unavailable.
 
 ## GeoParquet — durable columnar storage
 
-Install `gometry[arrow]` for `GeometryArray.to_geoparquet()` /
-`gm.from_geoparquet`. Write a [`GeometryArray`][gometry.GeometryArray] to a
+Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
+[`gm.from_geoparquet`][gometry.from_geoparquet]. Write a [`GeometryArray`][gometry.GeometryArray] to a
 [GeoParquet](https://geoparquet.org/) file and read it back — CRS metadata is
 embedded as **PROJJSON** in the column header, geometry is written with **WKB**
 encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arrow
@@ -188,7 +188,7 @@ print("notebook HTML bytes:", len(html) if html else 0)
 print("explore available:", callable(gm.explore))
 ```
 
-`gm.explore` hands lonboard a **zero-copy GeoArrow capsule** when possible; a
+[`gm.explore`][gometry.explore] hands lonboard a **zero-copy GeoArrow capsule** when possible; a
 GeoJSON feature-collection fallback runs only if the
 capsule handoff fails. Inputs need a CRS and finite bounds. By default it presents
 a map where points, lines, and polygons remain distinct and features are inspectable
@@ -199,7 +199,7 @@ on hover. Pass lonboard's `scatterplot_kwargs`, `path_kwargs`,
     lonboard expects WGS 84 longitude/latitude display coordinates. Arrays whose
     CRS is not equivalent to EPSG:4326 / OGC:CRS84 (including non-WGS84
     geographic frames such as NAD83, and all projected frames) should be
-    reprojected with `to_crs(4326)` before display. The viz helper normalizes
+    reprojected with [`to_crs(4326)`][gometry.Geometry.to_crs] before display. The viz helper normalizes
     non-WGS84 geographic CRS the same way as projected ones.
 
 ## See also

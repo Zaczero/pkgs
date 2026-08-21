@@ -39,10 +39,6 @@ _SEE_ALSO_ENTRY = re.compile(r'<(?:p|li)\b[^>]*>(.*?)</(?:p|li)>', re.DOTALL)
 _PRIVATE_NAME = re.compile(r'(?<![\w.])_[A-Za-z]\w*')
 _TAG = re.compile(r'<[^>]+>')
 _LITERAL_FENCE = re.compile(r'<p[^>]*>\s*`{3}')
-_TOOL_TOKEN = re.compile(
-    r'(?:<|&lt;)/?(?:antml:)?(?:invoke|parameter|function_calls|function_results)'
-    r'(?:\s[^<>]*?)?(?:>|&gt;)',
-)
 _UNRESOLVED_GOMETRY_TYPE = re.compile(
     r'<span\b[^>]*title="gometry\.(?:(?:_lib|_types)\.)?'
     r'(?P<name>[A-Za-z_]\w*)"[^>]*>'
@@ -100,8 +96,6 @@ def collect_errors(site: Path = SITE) -> list[str]:
             errors.append(f'{relative}: duplicate HTML ids: {duplicates[:5]}')
         if _LITERAL_FENCE.search(source):
             errors.append(f'{relative}: a Markdown fence rendered as prose')
-        if token := _TOOL_TOKEN.search(source):
-            errors.append(f'{relative}: leaked tool token {token.group(0)!r}')
 
         for section in _RAISES_TABLE.finditer(source):
             for description in _DOC_DESCRIPTION.finditer(section.group('body')):

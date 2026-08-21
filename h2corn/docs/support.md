@@ -9,7 +9,7 @@ description: Where to file bugs and security reports, and what commercial suppor
 Bug reports, questions, feature requests, and design discussions go to the
 [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 
-Issue reports include `h2corn --version`, the relevant CLI flags or
+Issue reports include `h2corn` [`--version`](configuration.md#command-version), the relevant CLI flags or
 `h2corn.toml`, any reverse proxy in front, and a minimal reproducer.
 
 ## Security disclosures

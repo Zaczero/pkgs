@@ -284,3 +284,18 @@ def test_examples_compile_and_embedded_example_requests_then_stops() -> None:
         timeout=30,
     )
     assert 'embedded request: 200' in result.stdout
+
+
+def test_public_docstrings_match_behavior() -> None:
+    """This test exists so documented output cannot drift from behavior."""
+    import doctest
+
+    import h2corn._config as config_module
+    import h2corn._server as server_module
+    import h2corn._types as types_module
+
+    for module in (h2corn, config_module, server_module, types_module):
+        result = doctest.testmod(module, optionflags=doctest.ELLIPSIS)
+        assert result.failed == 0, (
+            f'{module.__name__}: {result.failed} doctest(s) failed'
+        )

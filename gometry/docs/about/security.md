@@ -11,15 +11,15 @@ run before trusting parsed geometry.
 
 Use these formats for untrusted data contents:
 
-- WKB/EWKB via `gm.from_wkb`;
-- WKT/EWKT via `gm.from_wkt`;
-- GeoJSON via `gm.from_geojson` or `gm.from_features`;
+- WKB/EWKB via [`gm.from_wkb`][gometry.from_wkb];
+- WKT/EWKT via [`gm.from_wkt`][gometry.from_wkt];
+- GeoJSON via [`gm.from_geojson`][gometry.from_geojson] or [`gm.from_features`][gometry.from_features];
 - Arrow/GeoArrow/GeoParquet after accepting the provider as a trusted ABI
   participant; the buffers and geometry values are still treated as untrusted
   contents.
 
-The readers fail fast with structured `ParseError`, `CRSError`,
-`InvalidGeometryError`, or `GeometryError` lanes. Parse untrusted bytes with these
+The readers fail fast with structured [`ParseError`][gometry.ParseError], [`CRSError`][gometry.CRSError],
+[`InvalidGeometryError`][gometry.InvalidGeometryError], or [`GeometryError`][gometry.GeometryError] lanes. Parse untrusted bytes with these
 readers, catch the structured exception, then validate or repair only the rows
 your workflow accepts:
 
@@ -41,7 +41,7 @@ for payload in payloads:
 
 ```
 
-Validate topology with `geom.validate()` / `arr.is_valid`, and call `repair()`
+Validate topology with [`geom.validate()`][gometry.Geometry.validate] / [`arr.is_valid`][gometry.GeometryArray.is_valid], and call [`repair()`][gometry.Geometry.repair]
 where the workflow accepts repaired shapes.
 
 ## Ingress threat model
@@ -65,7 +65,7 @@ declarations:
   Parsers impose no flat byte or feature-count ceiling,
   but WKT, WKB, and GeoJSON ingestion reject excessive recursive nesting.
   Generated-work and result-count limits also protect expansion, grid collection,
-  transform-bounds densification, and CRS search. `CellArray.uncompact` is a
+  transform-bounds densification, and CRS search. [`CellArray.uncompact`][gometry.CellArray.uncompact] is a
   caller-directed, unlimited transform and is not protected by factory
   result-count limits.
 
@@ -77,7 +77,7 @@ before parsing, cap decompressed input separately, and bound batch and feature
 counts. Making every `Vec` / string allocation fallible under arbitrary rlimits
 is neither achievable nor required. A bare unsized stream with no `__len__` can
 also consume memory proportionally to its input. In particular, each
-`Polygon(..., holes=stream)` hole owns `CoordSeq` columns backed by `Arc<[f64]>`;
+[`Polygon(..., holes=stream)`][gometry.Polygon] hole owns `CoordSeq` columns backed by `Arc<[f64]>`;
 std has no fallible Arc-slice constructor, so under a hard `RLIMIT_AS` its inner
 allocation can abort before the outer fallible collector reports `MemoryError`.
 
@@ -90,7 +90,7 @@ rejects input or forces an oversized up-front allocation.
 Syntactically valid geometry can still exhaust CPU or memory through enormous
 payloads, vertex counts, feature collections, or expensive topology. Run hostile
 or multi-tenant workloads in a process with OS memory/CPU limits and a timeout.
-Treat `repair`, overlay, validation, and exact spatial refinement as potentially
+Treat [`repair`][gometry.Geometry.repair], overlay, validation, and exact spatial refinement as potentially
 expensive work after a successful parse.
 Python thread timeouts are not hard isolation.
 
@@ -108,17 +108,16 @@ GeoArrow, or GeoParquet.
 
 ## Reporting vulnerabilities
 
-Do not post suspected vulnerabilities with exploit details in a public issue.
-Use GitHub private vulnerability reporting on the monorepo that hosts gometry:
-
-- [github.com/Zaczero/pkgs/security](https://github.com/Zaczero/pkgs/security)
+A suspected vulnerability goes to GitHub's
+[private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new)
+on the monorepo that hosts gometry, not to the public issue tracker — a public
+issue publishes the exploit detail alongside the report.
 
 If private reporting is unavailable, contact the maintainers listed in package
-metadata rather than filing a public issue with exploit detail. Security fixes
-target the supported release line documented in
-[Compatibility](compatibility.md).
+metadata. Security fixes ship in a normal release;
+[Compatibility](compatibility.md) states the supported runtimes.
 
 ## See also
 
-- [Errors & exceptions](../guide/errors.md) — `ParseError`, `InvalidGeometryError`, structured attrs.
-- [Validation & repair](../guide/validation.md) — `validate` / `repair` at the boundary.
+- [Errors & exceptions](../guide/errors.md) — [`ParseError`][gometry.ParseError], [`InvalidGeometryError`][gometry.InvalidGeometryError], structured attrs.
+- [Validation & repair](../guide/validation.md) — [`validate`][gometry.Geometry.validate] / [`repair`][gometry.Geometry.repair] at the boundary.

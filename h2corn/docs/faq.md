@@ -9,8 +9,8 @@ description: Short answers about h2c, HTTP/1.1, HTTP/3, Windows, Django, gRPC, a
 Direct public exposure requires h2corn to terminate TLS. The deployment then
 supplies certificate renewal, ALPN, firewall policy, request limits, abuse
 controls, and edge observability. A reverse proxy keeps those controls at the
-edge; see [Behind a proxy](deployment/proxy.md). Direct exposure uses
-[Direct TLS](deployment/tls.md).
+edge; see [Behind a proxy](deployment/proxy.md#behind-a-reverse-proxy). Direct exposure uses
+[Direct TLS](deployment/tls.md#direct-tls).
 
 ## Why prefer `h2c` upstream instead of HTTP/1.1?
 
@@ -37,9 +37,9 @@ surface) does not, and `h2c` has wider proxy support.
 Browsers do not speak cleartext `h2c`. Without TLS in front, a browser
 cannot talk directly to an `h2c`-only server, so HTTP/1.1 is kept
 available for **local development and testing**. In production, HTTP/1.1 is
-disabled with `--no-http1` when every upstream client speaks h2c or HTTP/2; it
+disabled with [`--no-http1`](configuration.md#option-http1) when every upstream client speaks h2c or HTTP/2; it
 remains enabled when a proxy uses an HTTP/1.1 WebSocket upgrade route, as
-described in [Behind a reverse proxy](deployment/proxy.md).
+described in [Behind a reverse proxy](deployment/proxy.md#behind-a-reverse-proxy).
 
 ## Is HTTP/1.0 supported?
 
@@ -97,4 +97,4 @@ deploying it.
 
 In the project's [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues).
 For paid help with deployment, upgrades, or performance work, see the
-[Support](support.md) page.
+[Support](support.md#support) page.

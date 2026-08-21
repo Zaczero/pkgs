@@ -24,7 +24,7 @@ into H3 cells. It needs **Python 3.11+**.
 
 ## 1. A transit stop
 
-Create a `Point` for a transit stop from its
+Create a [`Point`][gometry.Point] for a transit stop from its
 longitude and latitude, and tag it with a CRS so gometry knows the coordinates are
 degrees on the WGS 84 ellipsoid (EPSG:4326):
 
@@ -45,7 +45,7 @@ print(figure(stop, 'the transit stop'))
 ## 2. A proximity radius
 
 A buffer models straight-line proximity, not travel time or route distance. On a
-[geographic CRS](../guide/crs.md), `buffer(500)` uses a local-projection radial
+[geographic CRS](../guide/crs.md), [`buffer(500)`][gometry.Geometry.buffer] uses a local-projection radial
 distance of 500 meters rather than 500 degrees; `unit='planar'` selects raw
 coordinate units:
 
@@ -62,7 +62,7 @@ print(figure([catchment, stop], 'the 500 m catchment'))
 
 ## 3. Ingest named neighborhoods
 
-`gm.from_features` parses a GeoJSON feature collection into a [`Features`][gometry.Features]
+[`gm.from_features`][gometry.from_features] parses a GeoJSON feature collection into a [`Features`][gometry.Features]
 result with geometries in a [`GeometryArray`][gometry.GeometryArray] and parallel
 properties as ordinary Python mappings.
 
@@ -90,9 +90,9 @@ print(figure([catchment, *hoods, stop], 'the catchment and three neighborhoods')
 
 ## 4. Which neighborhoods are in reach?
 
-Build a spatial index over the neighborhoods, then ask which ones `intersects`
+Build a spatial index over the neighborhoods, then ask which ones [`intersects`][gometry.intersects]
 the catchment. The index runs a bounding-box prefilter and then an exact
-geometry test; `query` returns row indices for intersecting geometries rather
+geometry test; [`query`][gometry.SpatialIndex.query] returns row indices for intersecting geometries rather
 than candidate envelopes, while [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates]
 returns prefilter row indices:
 
@@ -114,8 +114,8 @@ print(figure([catchment, *matched, stop], 'neighborhoods intersecting a 500 m ra
 
 ## 5. Bucket the catchment into grid cells
 
-`gm.h3_cover` returns H3 cells for joining tiled datasets or binning at global
-scale; exact membership uses the source geometry with `gm.covers`:
+[`gm.h3_cover`][gometry.h3_cover] returns H3 cells for joining tiled datasets or binning at global
+scale; exact membership uses the source geometry with [`gm.covers`][gometry.covers]:
 
 ```python exec="on" source="block" result="text" session="catchment"
 import gometry as gm

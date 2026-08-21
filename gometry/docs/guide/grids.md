@@ -1,5 +1,5 @@
 ---
-description: H3, S2, geohash, and XYZ-tile grids in gometry plus the point geocodes (plus codes, OSM shortlinks), the spherical model, and the space-filling-curve keys that order cells — typed cells and explicit cell-selection rules.
+description: H3, S2, geohash, and XYZ tile grids in gometry, plus point geocodes, the spherical model, space-filling-curve keys, and explicit cell-selection rules.
 ---
 
 # Grids & geocodes
@@ -62,20 +62,20 @@ print("codes:", codes.tolist(), "| uniques:", uniques.token)
 
 ```
 
-Every cell class shares one uniform surface — `.token`, `.center`, `.polygon`,
-`.neighbors`, `.area`, `.parent(...)`, `.children(...)`, and
-cell-hierarchy `.contains(...)` / `.intersects(...)` — captured by the
+Every cell class shares one uniform surface — [`.token`][gometry.Cell.token], [`.center`][gometry.Cell.center], [`.polygon`][gometry.Cell.polygon],
+[`.neighbors`][gometry.Cell.neighbors], [`.area`][gometry.Cell.area], [`.parent(...)`][gometry.Cell.parent], [`.children(...)`][gometry.Cell.children], and
+cell-hierarchy [`.contains(...)`][gometry.Cell.contains] / [`.intersects(...)`][gometry.Cell.intersects] — captured by the
 [`gm.Cell`][gometry.Cell] protocol, so grid-system-agnostic
 code type-checks against any of them. Each cell class is constructed directly —
-`H3Cell(value)` / `S2Cell(value)` / `Tile(value)` — accepting a cell object,
+`H3Cell(value)` / `S2Cell(value)` / [`Tile(value)`][gometry.Tile] — accepting a cell object,
 a numeric id (where the system has one), or a token string. H3 topological
-vertices and directed edges are separate scalar identities (`H3Vertex(value)`,
-`H3Edge(value)`) with fixed arrays (`H3VertexArray`, `H3EdgeArray`) because
+vertices and directed edges are separate scalar identities ([`H3Vertex(value)`][gometry.H3Vertex],
+[`H3Edge(value)`][gometry.H3Edge]) with fixed arrays ([`H3VertexArray`][gometry.H3VertexArray], [`H3EdgeArray`][gometry.H3EdgeArray]) because
 they do not have cell hierarchy or area/polygon operations. Each system adds
-its own vocabulary on top: `H3Cell.resolution`,
-`.grid_disk(k)` / `.grid_ring(k)` / `.grid_path(...)`; `S2Cell.level`.
+its own vocabulary on top: [`H3Cell.resolution`][gometry.H3Cell.resolution],
+[`.grid_disk(k)`][gometry.H3Cell.grid_disk] / [`.grid_ring(k)`][gometry.H3Cell.grid_ring] / [`.grid_path(...)`][gometry.H3Cell.grid_path]; [`S2Cell.level`][gometry.S2Cell.level].
 Arbitrary [`CellArray`][gometry.CellArray] sets roll up and down with
-`cells.compact()` / `cells.uncompact(depth)`.
+[`cells.compact()`][gometry.CellArray.compact] / [`cells.uncompact(depth)`][gometry.CellArray.uncompact].
 
 For a tile coordinate, name its frame: use `Tile(lon=..., lat=..., zoom=...)`
 for WGS84 coordinates or `Tile(x=..., y=..., zoom=...)` for XYZ indices.
@@ -102,7 +102,7 @@ is rejected because it cannot say which frame those numbers occupy.
 ### The geometry behind a cell ID
 
 A cell ID is shorthand for an area on the ground. Scalar cells expose `.polygon`,
-and `CellArray.polygon` returns a whole batch:
+and [`CellArray.polygon`][gometry.CellArray.polygon] returns a whole batch:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -117,7 +117,7 @@ print('batch:', type(cell.grid_disk(1).polygon).__name__)
 For H3 and S2 that polygon is a planar lon/lat chord proxy rather than the
 spherical cell boundary. Adjacency and
 local indexing are cell methods: `neighbors` lists the edge-adjacent ring,
-`is_neighbor` tests one candidate, and `local_ij`/`cell_from_local_ij` move through
+[`is_neighbor`][gometry.H3Cell.is_neighbor] tests one candidate, and [`local_ij`][gometry.H3Cell.local_ij]/[`cell_from_local_ij`][gometry.H3Cell.cell_from_local_ij] move through
 the local grid-algebra space around an anchor. Resolution metadata lives in the
 H3-prefixed global family — [`gm.h3_pentagons`][gometry.h3_pentagons] and
 [`gm.h3_base_cells`][gometry.h3_base_cells]:
@@ -192,8 +192,8 @@ print("covering cells:", len(covering))
 
 ## Covering an area
 
-`gm.h3_cover(geom, resolution=...)` and `gm.s2_cover(geom, level=...)` return a
-typed `CellArray` directly:
+[`gm.h3_cover(geom, resolution=...)`][gometry.h3_cover] and [`gm.s2_cover(geom, level=...)`][gometry.s2_cover] return a
+typed [`CellArray`][gometry.CellArray] directly:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -271,9 +271,9 @@ print('projected candidate:', gm.covers(projected, gm.Point(21.0, 52.0, crs=4326
 
 ## Exact membership with the source geometry
 
-The returned `CellArray` contains the cell keys selected by `cell_rule`; it does
+The returned [`CellArray`][gometry.CellArray] contains the cell keys selected by `cell_rule`; it does
 not retain the source geometry or provide exact source-membership results. Keep
-the source geometry and apply `gm.covers`, `gm.contains`, or `gm.intersects` to
+the source geometry and apply [`gm.covers`][gometry.covers], [`gm.contains`][gometry.contains], or [`gm.intersects`][gometry.intersects] to
 refine cell candidates into exact predicate results.
 
 ```python exec="on" source="block" result="text"
@@ -312,8 +312,8 @@ single-cell bound or a dissolved covering recovers geometry.
 A covering returns *many* cells. A bounding-cell operation returns the **one** cell
 that wholly contains a geometry, which serves as a coarse partition key or spatial
 bucket.
-Each grid spells it by return type: `gm.h3_bounding_cell` / `gm.s2_bounding_cell`
-/ `gm.geohash_bounding_cell` return their cell type, and `gm.tile_bounding_cell`
+Each grid spells it by return type: [`gm.h3_bounding_cell`][gometry.h3_bounding_cell] / [`gm.s2_bounding_cell`][gometry.s2_bounding_cell]
+/ [`gm.geohash_bounding_cell`][gometry.geohash_bounding_cell] return their cell type, and [`gm.tile_bounding_cell`][gometry.tile_bounding_cell]
 returns a [`Tile`][gometry.Tile].
 
 ```python exec="on" source="block" result="text"
@@ -335,7 +335,7 @@ an array, or a raw `(minx, miny, maxx, maxy)` bounds tuple.
 
 ### Dissolving a covering back to one outline
 
-To recover one geometry from a covering, `to_polygon()` dissolves it into one
+To recover one geometry from a covering, [`to_polygon()`][gometry.CellArray.to_polygon] dissolves it into one
 outline; shared cell edges cancel, so the interior costs no geometry:
 
 ```python exec="on" source="block" result="text"
@@ -348,7 +348,7 @@ print("dissolved:", cov.to_polygon().geometry_type)
 
 When you have a *detached* list of cell IDs rather than a coverage — rows from a
 database, the output of `compact`/`union`, a hand-built set — build a
-`CellArray` and call `cells.to_polygon()` (mixed resolutions allowed, so
+[`CellArray`][gometry.CellArray] and call `cells.to_polygon()` (mixed resolutions allowed, so
 compacted sets work as-is):
 
 ```python exec="on" source="block" result="text"
@@ -368,8 +368,8 @@ zoom 8.
 !!! warning "`cov.to_polygon()` is not `coverage_*`"
     `to_polygon()` dissolves *grid cells* — an approximate outline of the
     source under the grid. The polygonal-coverage operators
-    ([`coverage_union`][gometry.coverage_union], `coverage_simplify`,
-    `coverage_clean`) validate and repair an *arbitrary source polygon fabric*
+    ([`coverage_union`][gometry.coverage_union], [`coverage_simplify`][gometry.coverage_simplify],
+    [`coverage_clean`][gometry.coverage_clean]) validate and repair an *arbitrary source polygon fabric*
     (parcels, admin boundaries) with edge-matched interfaces. A DGGS
     Cell arrays are a different domain: same-resolution H3/S2 tessellations do
     share boundaries, but hierarchy, compact/uncompact, and cell-set algebra
@@ -383,8 +383,8 @@ geohash, and tiles). Hierarchy behavior still differs per system (S2 range nesti
 H3 resolution parents, geohash/tile prefix parents). H3 cell sets require
 hierarchy-aware free functions rather than plain Python `set` arithmetic.
 
-**H3 resolution normalization** (`gm.h3_union` / `gm.h3_intersection` /
-`gm.h3_difference`): inputs may mix resolutions. The result is cell-ID algebra
+**H3 resolution normalization** ([`gm.h3_union`][gometry.h3_union] / [`gm.h3_intersection`][gometry.h3_intersection] /
+[`gm.h3_difference`][gometry.h3_difference]): inputs may mix resolutions. The result is cell-ID algebra
 under the compact contract — sorted, with descendants absorbed by ancestors and
 complete sibling groups merged into parents — so mixed-resolution operands are
 normalized rather than rejected. This is identity algebra (an H3 child's *geometry*
@@ -435,8 +435,8 @@ the result has at most `max_cells` cells. It raises only when even the
 admissible starting cover cannot fit or another coverage error occurs.
 `target_cells` remains the adaptive refinement target; it is distinct from the
 hard cap. The cells are a spatial key materialized according to `cell_rule`;
-exact geometry predicates remain free functions such as `gm.covers` and
-`gm.contains_xy`.
+exact geometry predicates remain free functions such as [`gm.covers`][gometry.covers] and
+[`gm.contains_xy`][gometry.contains_xy].
 
 ### Cell-set algebra
 
@@ -444,7 +444,7 @@ S2 cell ids nest as ranges, so whole-set operations stay exact without touching
 geometry: [`gm.s2_union`][gometry.s2_union] absorbs descendants and merges complete
 sibling groups, [`gm.s2_intersection`][gometry.s2_intersection] keeps the finer cell
 of an ancestor/descendant overlap, and [`gm.s2_difference`][gometry.s2_difference]
-splits partially-covered cells exactly (`gm.S2Cell` takes a `Point` or a
+splits partially-covered cells exactly ([`gm.S2Cell`][gometry.S2Cell] takes a [`Point`][gometry.Point] or a
 bare ``lon, lat`` pair):
 
 ```python exec="on" source="block" result="text"
@@ -483,15 +483,15 @@ print('# tiles:', len(tiles), 'first quadkey:', tiles[0].token)
 ```
 
 A geohash or tile cover is built as a **uniform single-depth tiling** —
-    every cell is the same precision/zoom, which makes the returned `CellArray` a
+    every cell is the same precision/zoom, which makes the returned [`CellArray`][gometry.CellArray] a
     uniform spatial key. Exact predicates test the source geometry supplied by the caller;
 token lookup alone is not the answer. Cell-set methods operate on the returned
 `CellArray` directly.
 
-`GeohashCell` and `Tile` carry the full cell surface — `center`,
-`polygon`, `area`, `parent`/`children`/`neighbors`, ordering, and pickle —
-and `CellArray` adds the set operations (`cells.compact()` /
-`cells.uncompact(depth)`) while H3 vertex/edge arrays expose only their valid
+[`GeohashCell`][gometry.GeohashCell] and [`Tile`][gometry.Tile] carry the full cell surface — [`center`][gometry.Cell.center],
+[`polygon`][gometry.Cell.polygon], [`area`][gometry.Cell.area], [`parent`][gometry.Cell.parent]/[`children`][gometry.Cell.children]/[`neighbors`][gometry.Cell.neighbors], ordering, and pickle —
+and [`CellArray`][gometry.CellArray] adds the set operations ([`cells.compact()`][gometry.CellArray.compact] /
+[`cells.uncompact(depth)`][gometry.CellArray.uncompact]) while H3 vertex/edge arrays expose only their valid
 topological surfaces. `Tile` keeps the quadkey constructor
 (`gm.Tile('0313102310')`). Tiles reject latitudes outside the Web Mercator
 domain (±85.0511°), the limit where the projection stays finite; they do not
@@ -529,13 +529,13 @@ print("refined district rows:", point_to_district.values.tolist())
 
 ```
 
-`value_counts()` is the direct aggregation primitive. `factorize()` is the
+[`value_counts()`][gometry.CellArray.value_counts] is the direct aggregation primitive. [`factorize()`][gometry.CellArray.factorize] is the
 handoff shape for pandas/NumPy-style grouping: `codes[i]` points at a row in the
-returned unique `CellArray`.
+returned unique [`CellArray`][gometry.CellArray].
 
 Cell equality is a candidate join, not polygon truth. After exporting cells
-to a DataFrame or lakehouse, refine matched rows with `SpatialIndex.query`,
-`gm.join`, or the corresponding exact predicate against the original geometry.
+to a DataFrame or lakehouse, refine matched rows with [`SpatialIndex.query`][gometry.SpatialIndex.query],
+[`gm.join`][gometry.join], or the corresponding exact predicate against the original geometry.
 
 ## Ordering & locality
 
@@ -556,7 +556,7 @@ S2 and tile cell identifiers also encode locality-preserving orderings:
 ### Keys from geometries
 
 [`spatial_key`][gometry.Geometry.spatial_key] discretizes a geometry's
-bounding-box center onto a `2**level × 2**level` grid over `bounds` and returns
+bounding-box center onto a `2**level × 2**level` grid over [`bounds`][gometry.Geometry.bounds] and returns
 its distance along the selected curve. Keys that are numerically close imply
 locations that are close.
 
@@ -600,7 +600,7 @@ print(panels([
 
 ```
 
-The sorted order can be written to GeoParquet or passed to `gm.SpatialIndex`; each
+The sorted order can be written to GeoParquet or passed to [`gm.SpatialIndex`][gometry.SpatialIndex]; each
 block then contains a spatially compact run of geometries.
 
 ### The grids are curves too
@@ -611,11 +611,11 @@ when data already uses those cells:
 - **[S2](https://s2geometry.io/) cell ids are Hilbert order.** `sorted(s2_cells)` groups spatial
   neighbors, because an S2 id is the cell's position along the face Hilbert
   curve. The cell-set algebra relies on it.
-- **Tile ids and [quadkeys](https://learn.microsoft.com/en-us/bingmaps/articles/bing-maps-tile-system) are Morton order.** A `Tile`'s packed id interleaves
-  `x`/`y` so it sorts in quadkey order; `tile.morton` is that index directly.
+- **Tile ids and [quadkeys](https://learn.microsoft.com/en-us/bingmaps/articles/bing-maps-tile-system) are Morton order.** A [`Tile`][gometry.Tile]'s packed id interleaves
+  [`x`][gometry.Tile.x]/[`y`][gometry.Tile.y] so it sorts in quadkey order; [`tile.morton`][gometry.Tile.morton] is that index directly.
 - **[Geohash](https://en.wikipedia.org/wiki/Geohash) token order is a Z-ish curve.** Base-32 tokens sort
   lexicographically into a locality-preserving order — which is exactly why a
-  `GeohashCell`'s token carries that ordering directly.
+  [`GeohashCell`][gometry.GeohashCell]'s token carries that ordering directly.
 
 Geometry rows use `spatial_key()` for GeoParquet or index packing, with
 `curve='morton'` selecting Morton order. Cell identities carry their grid's
@@ -642,9 +642,9 @@ print("decoded:  ", gm.osm_shortlink_location(link))
 
 ```
 
-`pluscode` also accepts a `Point` or array (CRS-aware), and
-`pluscode_shorten` / `pluscode_recover` encode and recover short codes against a
-reference location. `osm_shortlink_location` accepts the legacy `@` spelling.
+`pluscode` also accepts a [`Point`][gometry.Point] or array (CRS-aware), and
+[`pluscode_shorten`][gometry.pluscode_shorten] / [`pluscode_recover`][gometry.pluscode_recover] encode and recover short codes against a
+reference location. [`osm_shortlink_location`][gometry.osm_shortlink_location] accepts the legacy `@` spelling.
 
 Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from-h3-py-s2sphere).
 

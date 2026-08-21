@@ -15,12 +15,12 @@ where they can be delivered:
 
 | Extension | Scope | Offered when |
 | --------- | ----- | ------------ |
-| `http.response.pathsend` | HTTP | Always |
-| `http.response.zerocopysend` | HTTP | Unix only |
-| `http.response.trailers` | HTTP | The client sent `TE: trailers` |
-| `http.response.early_hint` | HTTP | The request is HTTP/2 |
-| `websocket.http.response` | WebSocket | Always |
-| `tls` | HTTP and WebSocket | `h2corn` terminated the TLS itself |
+| [`http.response.pathsend`](api/scopes.md#h2corn.HTTPExtensions.http.response.pathsend) | HTTP | Always |
+| [`http.response.zerocopysend`](api/scopes.md#h2corn.HTTPExtensions.http.response.zerocopysend) | HTTP | Unix only |
+| [`http.response.trailers`](api/scopes.md#h2corn.HTTPExtensions.http.response.trailers) | HTTP | The client sent `TE: trailers` |
+| [`http.response.early_hint`](api/scopes.md#h2corn.HTTPExtensions.http.response.early_hint) | HTTP | The request is HTTP/2 |
+| [`websocket.http.response`](api/scopes.md#h2corn.WebSocketExtensions.websocket.http.response) | WebSocket | Always |
+| [`tls`](api/scopes.md#h2corn.HTTPExtensions.tls) | HTTP and WebSocket | `h2corn` terminated the TLS itself |
 
 The `tls` entry carries the negotiated connection parameters, including any client certificate —
 see [Direct TLS](deployment/tls.md#reading-the-connection-from-an-application).

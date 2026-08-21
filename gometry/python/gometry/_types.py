@@ -309,20 +309,61 @@ class Cell(Protocol):
     """
 
     @property
-    def token(self) -> str: ...
+    def token(self) -> str:
+        """The cell id in its system's canonical lowercase text form."""
+        ...
+
     @property
-    def center(self) -> Point: ...
+    def center(self) -> Point:
+        """Cell center as a WGS 84 ``Point`` (lon/lat)."""
+        ...
+
     @property
-    def polygon(self) -> Polygon: ...
+    def polygon(self) -> Polygon:
+        """The cell as a filled WGS 84 ``Polygon`` (lon/lat).
+
+        H3 and S2 emit planar chord proxies for their true spherical edges.
+        """
+        ...
+
     @property
-    def neighbors(self) -> CellArray[Self]: ...
+    def neighbors(self) -> CellArray[Self]:
+        """The edge-adjacent cells at this cell's depth.
+
+        How many there are is system-specific, and can vary with position:
+        six around an H3 hexagon but five around a pentagon, four for S2,
+        eight for geohash away from the poles.
+        """
+        ...
+
     @property
-    def area(self) -> float: ...
-    def parent(self, depth: int | None = None, /) -> Self: ...
-    def children(self, depth: int | None = None, /) -> CellArray[Self]: ...
-    def children_count(self, depth: int | None = None, /) -> int: ...
-    def contains(self, other: Self | str) -> bool: ...
-    def intersects(self, other: Self | str) -> bool: ...
+    def area(self) -> float:
+        """Geodesic area of the cell in square meters."""
+        ...
+
+    def parent(self, depth: int | None = None, /) -> Self:
+        """Parent cell at a coarser depth, one step coarser by default."""
+        ...
+
+    def children(self, depth: int | None = None, /) -> CellArray[Self]:
+        """Child cells at a finer depth, one step finer by default."""
+        ...
+
+    def children_count(self, depth: int | None = None, /) -> int:
+        """Count descendants at a finer depth without materializing them."""
+        ...
+
+    def contains(self, other: Self | str) -> bool:
+        """Whether this cell is, or is an ancestor of, ``other``."""
+        ...
+
+    def intersects(self, other: Self | str) -> bool:
+        """Whether this cell and ``other`` share any area.
+
+        Hierarchy cells cannot partially overlap, so this holds exactly when
+        one of the two contains the other.
+        """
+        ...
 
 
 #: Topology-preserving nested coordinate payload from ``Coordinates.to_nested``.
@@ -482,8 +523,19 @@ class Features:
     __match_args__ = ('geometries', 'properties', 'ids')
 
     geometries: GeometryArray[Geometry]
+    """The parsed geometries, one row per feature."""
+
     properties: tuple[dict[str, Any] | None, ...]
+    """Per-feature property mappings, row-aligned with ``geometries``.
+
+    An entry is ``None`` where the feature carried no properties.
+    """
+
     ids: tuple[FeatureId, ...]
+    """Per-feature ids, row-aligned with ``geometries``.
+
+    An entry is ``None`` where the feature carried no id.
+    """
 
     def __init__(
         self,

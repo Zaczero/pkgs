@@ -16,7 +16,7 @@ and [Grids & geocodes](../guide/grids.md) define the core contracts.
 gometry keeps Shapely's role as the in-process geometry type system — the same
 seven [Simple Features](https://www.ogc.org/standard/sfa/) families, the same
 predicates and constructive operations, the same WKB/WKT/GeoJSON interop and
-`__geo_interface__`. Scalar predicates become **free functions** (`gm.contains(a, b)`, vectorized over
+`__geo_interface__`. Scalar predicates become **free functions** ([`gm.contains(a, b)`][gometry.contains], vectorized over
 arrays), metrics read the CRS, and the kernels are GEOS-free. Behavior differences
 are validity, CRS-aware metrics, and index refinement.
 
@@ -54,8 +54,8 @@ job across `is_valid`, `explain_validity`, and `make_valid`.
 
 On lon/lat data Shapely's bare
 `.area` returns degrees², `.distance` returns degrees, and `.buffer(100)` buffers
-by 100 *degrees*. gometry has one `geom.area` (and one `gm.distance` /
-`Geometry.buffer`) whose answer is decided by the geometry's CRS and is native by
+by 100 *degrees*. gometry has one [`geom.area`][gometry.Geometry.area] (and one [`gm.distance`][gometry.distance] /
+[`Geometry.buffer`][gometry.Geometry.buffer]) whose answer is decided by the geometry's CRS and is native by
 default — a geographic CRS measures geodesically (meters), a projected CRS in its
 **native linear units**, CRS-free geometry in bare coordinate units.
 
@@ -120,12 +120,12 @@ exposes **two acceleration paths**:
     ```
 
 Build through the geometry classes
-(`gm.Point`, `gm.Polygon`, …) with explicit `crs=`, pack arrays with the plural
-builders (`gm.points`, `gm.polygons`) or `gm.GeometryArray([...])`, and ingest
-GeoJSON / `__geo_interface__` with `gm.from_geojson`. Readers are verb-prefixed
-free functions (`gm.from_wkb`, `gm.from_wkt`), and encoders are methods on the
-geometry (`geom.to_wkb(include_srid=True)`, `geom.to_wkt()`, `geom.to_geojson()`,
-`geom.to_arrow()` for [GeoArrow](https://geoarrow.org/) columnar interchange).
+([`gm.Point`][gometry.Point], [`gm.Polygon`][gometry.Polygon], …) with explicit `crs=`, pack arrays with the plural
+builders ([`gm.points`][gometry.points], [`gm.polygons`][gometry.polygons]) or [`gm.GeometryArray([...])`][gometry.GeometryArray], and ingest
+GeoJSON / `__geo_interface__` with [`gm.from_geojson`][gometry.from_geojson]. Readers are verb-prefixed
+free functions ([`gm.from_wkb`][gometry.from_wkb], [`gm.from_wkt`][gometry.from_wkt]), and encoders are methods on the
+geometry ([`geom.to_wkb(include_srid=True)`][gometry.Geometry.to_wkb], [`geom.to_wkt()`][gometry.Geometry.to_wkt], [`geom.to_geojson()`][gometry.Geometry.to_geojson],
+[`geom.to_arrow()`][gometry.Geometry.to_arrow] for [GeoArrow](https://geoarrow.org/) columnar interchange).
 Vertex-subset ops (`simplify`, `convex_hull`, triangulation) preserve Z/M where
 Shapely drops it. The Shapely symbol table — construction, inspection,
 predicates, constructive ops, linear referencing, validation, and IO — is in the
@@ -143,7 +143,7 @@ provide geodesy on geographic CRSs. Coordinate boundaries are always X/Y.
 ### `Transformer` → `to_crs` and `gm.crs_transform`
 
 For geometry, transform via the geometry. For raw coordinate values, use the
-stateless [`gm.crs_transform`][gometry.crs_transform] — there is no transformer
+stateless `gm.crs_transform` — there is no transformer
 object to construct, cache, or reuse.
 
 === "pyproj"
@@ -176,8 +176,8 @@ preserved unchanged — never invented, never silently dropped.
 ### `Geod` → point navigation
 
 pyproj's `Geod` (Karney/[GeographicLib](https://geographiclib.sourceforge.io/)
-WGS 84 ellipsoidal geodesy) maps onto `gm.bearing`, `point.destination`,
-`gm.point_between`, and the geometry metrics. On a **geographic** CRS these compute
+WGS 84 ellipsoidal geodesy) maps onto [`gm.bearing`][gometry.bearing], `point.destination`,
+[`gm.point_between`][gometry.point_between], and the geometry metrics. On a **geographic** CRS these compute
 geodesically on the ellipsoid; there is no `Geod` object to construct. For a
 non-WGS 84 ellipsoid, [`gm.CRS`][gometry.CRS]`(code).geodesic_inverse(...)` runs the
 geodesic problem on that CRS's own ellipsoid.
@@ -227,7 +227,7 @@ candidate keys; keep the source geometry for exact predicates.
 ### `polyfill` → `cover` with an explicit rule
 
 h3-py's `polygon_to_cells` (formerly `polyfill`) has an implicit containment rule.
-gometry names the rule and returns a typed `CellArray`.
+gometry names the rule and returns a typed [`CellArray`][gometry.CellArray].
 
 === "h3-py"
 
@@ -253,8 +253,8 @@ gometry names the rule and returns a typed `CellArray`.
 `cell_rule` is `"center"` (h3-py's binning behavior), `"within"` (cells the area
 fully owns), `"overlap"` (default — a complete-coverage superset, safe candidate
 keys), or `"bbox"` (loosest). Use the free predicates
-`gm.covers(...)` / `gm.contains(...)` / `gm.intersects(...)` against the source
-geometry when exact geometry answers are needed. `gm.s2_cover(geom, level=...)`
+[`gm.covers(...)`][gometry.covers] / [`gm.contains(...)`][gometry.contains] / [`gm.intersects(...)`][gometry.intersects] against the source
+geometry when exact geometry answers are needed. [`gm.s2_cover(geom, level=...)`][gometry.s2_cover]
 is the S2 analogue.
 
 ### Cell-set algebra
@@ -283,9 +283,9 @@ _ = gm.h3_union(h3_a_present, h3_b_present)
 
 ```
 
-`H3Cell` exposes adjacency and local indexing (`neighbors`, `is_neighbor`,
+[`H3Cell`][gometry.H3Cell] exposes adjacency and local indexing (`neighbors`, `is_neighbor`,
 `local_ij`, `base_cell`), with resolution metadata in the H3 function family
-(`gm.h3_pentagons(resolution)`, `gm.h3_base_cells()`); `.polygon` returns one
+([`gm.h3_pentagons(resolution)`][gometry.h3_pentagons], [`gm.h3_base_cells()`][gometry.h3_base_cells]); `.polygon` returns one
 cell's boundary polygon and `cells.polygon` a whole [`GeometryArray`][gometry.GeometryArray].
 The h3-py and s2sphere symbol tables — point → cell, boundaries, and
 compact/uncompact — are in the
@@ -306,11 +306,11 @@ frame, row-identity, and plan diagnostics:
   than silently comparing across datums.
 - **Missing-row semantics** — sparse/right-missing handles preserve row identity
   instead of dropping identity in the result.
-- **Prepared caches** on boxed rows, plus a separate `geom.prepare()` for the
+- **Prepared caches** on boxed rows, plus a separate [`geom.prepare()`][gometry.Geometry.prepare] for the
   one-geometry-many-tests shape.
 - **Geodesic nearest / dwithin lanes** when the index frame is geographic
   (`unit=` selects CRS-natural meters vs planar).
-- **`idx.explain(...)`** — a query plan for debugging candidate vs refine cost.
+- **[`idx.explain(...)`][gometry.SpatialIndex.explain]** — a query plan for debugging candidate vs refine cost.
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
 unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
@@ -344,7 +344,7 @@ gometry all expose nearest-neighbour APIs.
     print("nearest 2 (planar):", idx.nearest(target, k=2, unit="planar"))
     ```
 
-`idx.nearest(query, k=..., unit=...)` returns the `k` closest indices
+[`idx.nearest(query, k=..., unit=...)`][gometry.SpatialIndex.nearest] returns the `k` closest indices
 (`num_results` → `k`). `unit="planar"` selects projected or CRS-free coordinate
 units; on a geographic CRS, metric units select geodesic point-nearest ordering.
 The index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
@@ -371,7 +371,7 @@ for step in idx.explain(area, predicate="contains"):
 
 GeoPandas [`sjoin`](https://geopandas.org/en/latest/docs/reference/api/geopandas.sjoin.html)
 **does** apply the binary `predicate=` exactly (it is not a candidates-only API).
-[`gm.join`][gometry.join] is the geometry-array analogue: prefilter → exact refine,
+`gm.join` is the geometry-array analogue: prefilter → exact refine,
 returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 
 - pure geometry inputs and index-pair outputs (bring your own table join);
@@ -398,7 +398,7 @@ returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 
 `gm.SpatialIndex(geometries)` bulk-loads a balanced in-memory
 [R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry envelopes — suited to
-static, query-heavy workloads — while `idx.insert(geometry)` / `idx.remove(...)`
+static, query-heavy workloads — while [`idx.insert(geometry)`][gometry.SpatialIndex.insert] / [`idx.remove(...)`][gometry.SpatialIndex.remove]
 handle dynamic sets without a full rebuild. The index is always in memory; gometry
 never writes index files, so persisting across processes means rebuilding from the
 source geometries (or their stored WKB/EWKB bytes). The index/join symbol
@@ -411,16 +411,16 @@ GeoPandas) remain adjacent; gometry is the geometry engine they use.
 
 | Package | What it does | gometry surface for the same workflow |
 | --- | --- | --- |
-| `shapely` | planar geometry, predicates, overlay | the whole geometry surface — `gm.Point`, `geom.buffer(...)`, `gm.intersection`, `gm.contains`, … |
-| `pyproj` | CRS transforms, projection | `geom.to_crs`, [`gm.CRS`][gometry.CRS], `gm.crs_transform` |
-| `geographiclib` | geodesic & rhumb solutions | `gm.rhumb_distance(point, other)`; use `path='rhumb'` with `gm.bearing`, `point.destination`, or `gm.point_between` for constant-bearing navigation. |
-| `pyclipper` | polygon buffer / offset / clip | `Geometry.buffer`, `Geometry.offset_curve`, `Geometry.clip_by_rect`, the overlay ops |
-| `pygeohash` family | geohash encode/decode | `gm.GeohashCell`, `cell.polygon`, `gm.geohash_cover(geom, ...)` |
-| `haversine` | point-to-point distance | `gm.distance(a, b)` on a geographic CRS ([exact geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |
-| `polyline` | Google encoded polyline | `gm.from_polyline`, `Geometry.to_polyline` |
-| `mercantile` | XYZ tiles / quadkeys | `gm.Tile`, `gm.tile_cover(geom, ...)` |
-| `s2sphere` | S2 cells & coverings | `gm.s2_*`, `gm.s2_cover(geom, ...)` |
-| `h3` | H3 hexagonal cells | `gm.h3_*`, `gm.h3_cover(geom, ...)` |
-| `openlocationcode` | plus codes | `gm.pluscode_encode`, `gm.pluscode_polygon`, `gm.pluscode_shorten`/`recover` |
-| `utm` | lat/lon ↔ UTM | `geom.estimate_local_crs()` + `geom.to_crs(...)` |
+| `shapely` | planar geometry, predicates, overlay | the whole geometry surface — [`gm.Point`][gometry.Point], [`geom.buffer(...)`][gometry.Geometry.buffer], [`gm.intersection`][gometry.intersection], [`gm.contains`][gometry.contains], … |
+| `pyproj` | CRS transforms, projection | [`geom.to_crs`][gometry.Geometry.to_crs], [`gm.CRS`][gometry.CRS], [`gm.crs_transform`][gometry.crs_transform] |
+| `geographiclib` | geodesic & rhumb solutions | [`gm.rhumb_distance(point, other)`][gometry.rhumb_distance]; use `path='rhumb'` with [`gm.bearing`][gometry.bearing], `point.destination`, or [`gm.point_between`][gometry.point_between] for constant-bearing navigation. |
+| `pyclipper` | polygon buffer / offset / clip | `Geometry.buffer`, [`Geometry.offset_curve`][gometry.Geometry.offset_curve], [`Geometry.clip_by_rect`][gometry.Geometry.clip_by_rect], the overlay ops |
+| `pygeohash` family | geohash encode/decode | [`gm.GeohashCell`][gometry.GeohashCell], [`cell.polygon`][gometry.Cell.polygon], [`gm.geohash_cover(geom, ...)`][gometry.geohash_cover] |
+| `haversine` | point-to-point distance | [`gm.distance(a, b)`][gometry.distance] on a geographic CRS ([exact geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |
+| `polyline` | Google encoded polyline | [`gm.from_polyline`][gometry.from_polyline], [`Geometry.to_polyline`][gometry.Geometry.to_polyline] |
+| `mercantile` | XYZ tiles / quadkeys | [`gm.Tile`][gometry.Tile], [`gm.tile_cover(geom, ...)`][gometry.tile_cover] |
+| `s2sphere` | S2 cells & coverings | `gm.s2_*`, [`gm.s2_cover(geom, ...)`][gometry.s2_cover] |
+| `h3` | H3 hexagonal cells | `gm.h3_*`, [`gm.h3_cover(geom, ...)`][gometry.h3_cover] |
+| `openlocationcode` | plus codes | [`gm.pluscode_encode`][gometry.pluscode_encode], [`gm.pluscode_polygon`][gometry.pluscode_polygon], [`gm.pluscode_shorten`][gometry.pluscode_shorten]/`recover` |
+| `utm` | lat/lon ↔ UTM | [`geom.estimate_local_crs()`][gometry.Geometry.estimate_local_crs] + `geom.to_crs(...)` |
 | `rtree` / Shapely `STRtree` | bounding-box index | [`gm.SpatialIndex`][gometry.SpatialIndex], [`gm.join`][gometry.join] |

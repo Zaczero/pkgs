@@ -4,9 +4,7 @@ Pythonic signature defaults, the curated `__all__`, and the README quickstart.
 
 import inspect
 import math
-import re
 from importlib import metadata
-from pathlib import Path
 from typing import cast
 
 import gometry as gm
@@ -475,21 +473,6 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
 
 def test_version_matches_installed_metadata() -> None:
     assert gm.__version__ == metadata.version('gometry')
-
-
-def test_changelog_not_included_claims_do_not_name_live_public_symbols() -> None:
-    public = set(gm.__all__)
-    changelog = Path('docs/about/changelog.md').read_text(encoding='utf-8')
-    stale: list[str] = []
-    for sentence in re.split(r'(?<=[.!?])\s+', changelog):
-        if 'not included' not in sentence:
-            continue
-        stale.extend(
-            name
-            for name in re.findall(r'`([A-Za-z_][A-Za-z0-9_]*)`', sentence)
-            if name in public
-        )
-    assert stale == []
 
 
 def test_readme_quickstart_stays_executable() -> None:

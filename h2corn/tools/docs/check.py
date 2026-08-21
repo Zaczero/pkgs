@@ -257,8 +257,15 @@ def check_examples() -> None:
 
 
 def check_proxy_syntax() -> None:
-    """Validate proxy syntax when a local validator exists."""
-    if shutil.which('caddy') is not None:
+    """Validate the shipped Caddyfile through caddy's own parser.
+
+    Opportunistic: caddy is not in the development shell, so this passes
+    trivially where it is absent. It says so rather than reporting a silent
+    success, because a gate that cannot tell those apart is worse than none.
+    """
+    if shutil.which('caddy') is None:
+        print('h2corn docs: caddy is not on PATH; examples/Caddyfile was NOT validated')
+    else:
         subprocess.run(
             [
                 'caddy',

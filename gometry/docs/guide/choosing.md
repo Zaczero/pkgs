@@ -19,7 +19,7 @@ different tools.
 
 `prepare()` is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
 is per-collection state (there is no free `gm.index`). For one polygon against one
-large array, `gm.contains(polygon, arr)` uses the prepared path.
+large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared path.
 
 ## Containment: `contains`, `contains_properly`, `covers`, `within`
 
@@ -52,7 +52,7 @@ There is no separate `clip(mask)`: it would be `intersection` by another name.
 | snap onto a grid **and** guarantee validity | [`snap_to_grid`][gometry.Geometry.snap_to_grid] with `repair=True` | grid-aligned, valid output (snap → repair → re-snap to a fixpoint); the geometry kind may change |
 | drop consecutive duplicate (or near-duplicate) vertices | [`remove_repeated_points`][gometry.Geometry.remove_repeated_points] | the geometry kind, with consecutive runs collapsed |
 | reduce vertex count while keeping shape | [`simplify`][gometry.Geometry.simplify] (`method='vw'` [Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm) by default, or `method='dp'` [Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) for a distance band; `preserve_topology=True` keeps polygons valid and simple lines simple) | a vertex subset within tolerance |
-| collect the distinct vertices themselves | [`unique_points`][gometry.Geometry.unique_points] | a `MultiPoint` of first-occurrence distinct vertices |
+| collect the distinct vertices themselves | [`unique_points`][gometry.Geometry.unique_points] | a [`MultiPoint`][gometry.MultiPoint] of first-occurrence distinct vertices |
 | fix actual invalidity (self-intersections, bad rings) | [`repair`][gometry.Geometry.repair] | a valid geometry, rebuilt |
 
 `quantize` and `snap_to_grid` can *create* invalidity on tight geometries —
@@ -95,17 +95,17 @@ print(before_after(with_vertices(off_grid), with_vertices(snapped),
 
 DGGS cell covers and polygonal coverages use different representations:
 
-- **DGGS cells** — `gm.h3_cover`, `gm.s2_cover`, `gm.geohash_cover`, and
-  `gm.tile_cover` return typed `CellArray` values. Keep the source geometry
+- **DGGS cells** — [`gm.h3_cover`][gometry.h3_cover], [`gm.s2_cover`][gometry.s2_cover], [`gm.geohash_cover`][gometry.geohash_cover], and
+  [`gm.tile_cover`][gometry.tile_cover] return typed [`CellArray`][gometry.CellArray] values. Keep the source geometry
   and use the top-level predicates for exact membership.
-- **A polygonal coverage** — a `GeometryArray` of polygons that tile a region
+- **A polygonal coverage** — a [`GeometryArray`][gometry.GeometryArray] of polygons that tile a region
   without gaps or overlaps (parcels, admin boundaries). Operations on these are
   array methods named `coverage_*`.
 
 If you are bucketing geometry into a global grid, you want those `*_cover`
 factories. If you are validating or simplifying a parcel fabric, build a
 [`GeometryArray`][gometry.GeometryArray] and call the column-native methods —
-`arr.coverage_is_valid()`, `arr.coverage_simplify(tolerance)`, and so on. The
+[`arr.coverage_is_valid()`][gometry.GeometryArray.coverage_is_valid], [`arr.coverage_simplify(tolerance)`][gometry.GeometryArray.coverage_simplify], and so on. The
 free `gm.coverage_*(values)` forms accept arrays and general iterables:
 
 ```python exec="on" source="block" result="text"
@@ -119,8 +119,8 @@ print("same as free fn:", gm.coverage_is_valid(list(grid)))
 ### Validate, inspect, then clean
 
 Coverage operations validate their tiling precondition before processing.
-`coverage_invalid_edges` returns diagnostic edges for a bad parcel fabric, and
-`coverage_clean` applies the selected cleaning policy. Snapping is opt-in: the
+[`coverage_invalid_edges`][gometry.coverage_invalid_edges] returns diagnostic edges for a bad parcel fabric, and
+[`coverage_clean`][gometry.coverage_clean] applies the selected cleaning policy. Snapping is opt-in: the
 default `grid_size=0.0` preserves existing coordinates.
 
 ```python exec="on" html="true"

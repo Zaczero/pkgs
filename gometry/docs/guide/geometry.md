@@ -4,20 +4,20 @@ description: Constructing, inspecting, and comparing gometry's seven geometry ty
 
 # Geometry & dimensions
 
-Every value in gometry is a `Geometry`: one of exactly **seven** immutable,
+Every value in gometry is a [`Geometry`][gometry.Geometry]: one of exactly **seven** immutable,
 hashable [OGC Simple Features](https://www.ogc.org/standard/sfa/) types, each
 optionally carrying a CRS and per-vertex Z (elevation) and M (measure)
 ordinates.
 
 | Type | Made of | Constructor |
 |------|---------|-------------|
-| `Point` | one coordinate | [`gm.Point`][gometry.Point] |
-| `LineString` | ordered vertices | [`gm.LineString`][gometry.LineString] |
-| `Polygon` | a shell + holes | [`gm.Polygon`][gometry.Polygon] / [`gm.box`][gometry.box] |
-| `MultiPoint` | many points | [`gm.MultiPoint`][gometry.MultiPoint] |
-| `MultiLineString` | many lines | [`gm.MultiLineString`][gometry.MultiLineString] |
-| `MultiPolygon` | many polygons | [`gm.MultiPolygon`][gometry.MultiPolygon] |
-| `GeometryCollection` | any mix | [`gm.GeometryCollection`][gometry.GeometryCollection] |
+| [`Point`][gometry.Point] | one coordinate | [`gm.Point`][gometry.Point] |
+| [`LineString`][gometry.LineString] | ordered vertices | [`gm.LineString`][gometry.LineString] |
+| [`Polygon`][gometry.Polygon] | a shell + holes | [`gm.Polygon`][gometry.Polygon] / [`gm.box`][gometry.box] |
+| [`MultiPoint`][gometry.MultiPoint] | many points | [`gm.MultiPoint`][gometry.MultiPoint] |
+| [`MultiLineString`][gometry.MultiLineString] | many lines | [`gm.MultiLineString`][gometry.MultiLineString] |
+| [`MultiPolygon`][gometry.MultiPolygon] | many polygons | [`gm.MultiPolygon`][gometry.MultiPolygon] |
+| [`GeometryCollection`][gometry.GeometryCollection] | any mix | [`gm.GeometryCollection`][gometry.GeometryCollection] |
 
 !!! tip "Always (x, y) — lon/lat only under a geographic CRS"
     Every constructor takes coordinates in **(x, y)** order. Under a
@@ -30,7 +30,7 @@ ordinates.
 
 ## Points
 
-Construct a point with `gm.Point(x, y)`; under a geographic CRS, `(x, y)` is
+Construct a point with [`gm.Point(x, y)`][gometry.Point]; under a geographic CRS, `(x, y)` is
 `(longitude, latitude)`.
 
 ```python exec="on" source="block" result="text"
@@ -51,14 +51,14 @@ print(figure(gm.Point(2.3522, 48.8566), "Point(lon, lat)"))
 ```
 
 !!! note "`.x` / `.y` are for single points only"
-    A `Point` exposes `.x`, `.y` (and `.z` / `.m` when present) for scalar
+    A `Point` exposes [`.x`][gometry.Point.x], [`.y`][gometry.Point.y] (and [`.z`][gometry.Point.z] / [`.m`][gometry.Point.m] when present) for scalar
     scalar access. For any other geometry, pull every vertex out with
     [`geom.coords`][gometry.Geometry.coords] (see
     [Inspecting geometries](#inspecting-geometries)).
 
 ## LineStrings
 
-A `LineString` is an ordered sequence of vertices. Pass any sequence of
+A [`LineString`][gometry.LineString] is an ordered sequence of vertices. Pass any sequence of
 `(x, y)` pairs or an `(N, 2)` NumPy-style array — gometry copies the coordinates
 once into its Rust geometry representation, so large inputs avoid per-point
 Python object construction.
@@ -83,7 +83,7 @@ print(figure(gm.LineString([(0, 0), (1, 2), (3, 1), (4, 3)]), "LineString(...)")
 
 ## Polygons
 
-A `Polygon` is a **shell** (exterior ring) plus zero or more **holes**
+A [`Polygon`][gometry.Polygon] is a **shell** (exterior ring) plus zero or more **holes**
 (interior rings). Rings are closed automatically — you do not need to repeat
 the first vertex at the end, though it is harmless if you do.
 
@@ -116,7 +116,7 @@ print(figure(gm.Polygon(
     [`InvalidGeometryError`][gometry.InvalidGeometryError].
     It does **not** run full OGC validity, so a self-intersecting "bowtie" is
     built as an *invalid* geometry rather than rejected. Detect it with
-    `geom.validate()` and fix it with [`repair`][gometry.Geometry.repair] — see
+    [`geom.validate()`][gometry.Geometry.validate] and fix it with [`repair`][gometry.Geometry.repair] — see
     [Validation](validation.md).
 
 ### Boxes
@@ -147,7 +147,7 @@ print(cloud.geometry_type, "with", len(cloud), "points")
 
 ```
 
-`MultiLineString` and `MultiPolygon` take sequences of part-coordinate
+[`MultiLineString`][gometry.MultiLineString] and [`MultiPolygon`][gometry.MultiPolygon] take sequences of part-coordinate
 sequences and part geometries respectively:
 
 ```python exec="on" source="block" result="text"
@@ -168,7 +168,7 @@ print(mp.to_wkt())
 
 ### GeometryCollections
 
-When parts have **mixed** types, use a `GeometryCollection`:
+When parts have **mixed** types, use a [`GeometryCollection`][gometry.GeometryCollection]:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -183,7 +183,7 @@ print(gc.to_wkt())
 ```
 
 !!! note "Mixed-dimension collections sum area and length"
-    `.area` and `.length` on a `GeometryCollection` **sum** each part's
+    [`.area`][gometry.Geometry.area] and [`.length`][gometry.Geometry.length] on a `GeometryCollection` **sum** each part's
     contribution (points and lines add zero area; polygon rings add their area).
     Prefer homogeneous multi-types when you want a single-kind column; reserve
     collections for genuinely heterogeneous
@@ -196,13 +196,13 @@ These properties and functions apply to every geometry type:
 
 | Call | Returns |
 |------|---------|
-| `geom.geometry_type` | the type name, e.g. `"Polygon"` |
-| `geom.coordinate_axes` | ordinate layout: `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"` |
-| `geom.is_empty` | whether the geometry holds no coordinates |
+| [`geom.geometry_type`][gometry.Geometry.geometry_type] | the type name, e.g. `"Polygon"` |
+| [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | ordinate layout: `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"` |
+| [`geom.is_empty`][gometry.Geometry.is_empty] | whether the geometry holds no coordinates |
 | [`bounds`][gometry.Geometry.bounds] | `(minx, miny, maxx, maxy)` tuple |
-| `geom.coords` | every vertex as a flat, indexable `Coordinates` view |
+| [`geom.coords`][gometry.Geometry.coords] | every vertex as a flat, indexable [`Coordinates`][gometry.Coordinates] view |
 | [`gm.parts`][gometry.parts] | component geometries of a multi-part |
-| [`gm.rings`][gometry.rings] | rings of a `Polygon` (exterior first) |
+| [`gm.rings`][gometry.rings] | rings of a [`Polygon`][gometry.Polygon] (exterior first) |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -239,10 +239,10 @@ print("dict keys:  ", list(coords.to_dict().keys()))   # ready for pd.DataFrame
 
 ```
 
-`.x`/`.y` (and `.z`/`.m` when present) are zero-copy columns; `.to_dict()` returns
+[`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y] (and [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m] when present) are zero-copy columns; [`.to_dict()`][gometry.Coordinates.to_dict] returns
 read-only NumPy columns such as `{'x': ndarray, 'y': ndarray}` for direct use
 with `pd.DataFrame` or `pl.DataFrame` (forced Z/M use `NaN` where absent);
-`np.asarray(coords)` materializes an `(N, dims)` array; and `.index` tags each vertex
+`np.asarray(coords)` materializes an `(N, dims)` array; and [`.index`][gometry.Coordinates.index] tags each vertex
 with its source row when the geometry is a [`GeometryArray`](arrays.md).
 
 ## Geometry types
@@ -264,9 +264,9 @@ print(isinstance(gm.box(0, 0, 1, 1), gm.Polygon))   # True
 
 ```
 
-A `Point` exposes `.x`/`.y`/`.z`/`.m`; a `Polygon` exposes `.exterior` (a closed
+A `Point` exposes [`.x`][gometry.Point.x]/[`.y`][gometry.Point.y]/[`.z`][gometry.Point.z]/[`.m`][gometry.Point.m]; a `Polygon` exposes [`.exterior`][gometry.Polygon.exterior] (a closed
 `LineString`) and
-`.interiors` (its holes); and the multi-part / collection types are real
+[`.interiors`][gometry.Polygon.interiors] (its holes); and the multi-part / collection types are real
 sequences — iterate them, index them, and take `len(...)`, with each part typed:
 
 ```python exec="on" source="block" result="text"
@@ -316,9 +316,9 @@ constructors through IO.
 
 | Concept | Property | Example value |
 |---|---|---|
-| **Topological dimension** | `geom.topological_dimension` | `0` (Point), `1` (LineString), `2` (Polygon) |
-| **Coordinate axes / ordinate layout** | `geom.coordinate_axes` | `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"` |
-| **Has-ordinate flags** | `geom.has_z`, `geom.has_m` | `True` / `False` |
+| **Topological dimension** | [`geom.topological_dimension`][gometry.Geometry.topological_dimension] | `0` (Point), `1` (LineString), `2` (Polygon) |
+| **Coordinate axes / ordinate layout** | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"` |
+| **Has-ordinate flags** | [`geom.has_z`][gometry.Geometry.has_z], [`geom.has_m`][gometry.Geometry.has_m] | `True` / `False` |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -344,7 +344,7 @@ print("has_z / has_m:        ", trace.has_z, "/", trace.has_m)
 - **M** is a *measure* ordinate. It commonly carries linear-referencing values, route
   measures, distance-along-line, per-vertex timestamps, or application-specific event
   alignment. **M is not a spatial axis** and must never be silently treated as Z. M is also
-  distinct from the [coordinate epoch](crs.md#coordinate-epochs) (`geom.epoch`): the
+  distinct from the [coordinate epoch](crs.md#coordinate-epochs) ([`geom.epoch`][gometry.Geometry.epoch]): the
   epoch is a single decimal year that dates the whole geometry's CRS realization, whereas M is
   a free per-vertex value with no datum.
 
@@ -397,7 +397,7 @@ line      = gm.LineString(xy, z=elevations, m=timestamps, crs=4326)
 
 !!! note "Consistent layout per scalar geometry"
     A non-collection geometry must use one coordinate-axis layout for every vertex — a
-    `LineString` cannot mix XY and XYZM vertices. A `GeometryCollection` may hold children
+    [`LineString`][gometry.LineString] cannot mix XY and XYZM vertices. A [`GeometryCollection`][gometry.GeometryCollection] may hold children
     with different layouts, but the API makes that explicit rather than silent.
 
 WKT carries the `Z`, `M`, and `ZM` dimensional tags, which round-trip through gometry:
@@ -413,9 +413,9 @@ print(gm.from_wkt("POINT ZM (1 2 3 7.5)").coordinate_axes)
 
 ## Measuring with Z and M
 
-**3D spatial measurement** uses the Z axis. `length_3d` and point-to-point
-`distance_3d(other)` include the vertical component, and `min_z` / `max_z` /
-`z_range` (properties) plus `bounds_3d` (a 6-tuple `(minx, miny, minz, maxx, maxy,
+**3D spatial measurement** uses the Z axis. [`length_3d`][gometry.Geometry.length_3d] and point-to-point
+[`distance_3d(other)`][gometry.distance_3d] include the vertical component, and [`min_z`][gometry.Geometry.min_z] / [`max_z`][gometry.Geometry.max_z] /
+[`z_range`][gometry.Geometry.z_range] (properties) plus [`bounds_3d`][gometry.Geometry.bounds_3d] (a 6-tuple `(minx, miny, minz, maxx, maxy,
 maxz)`, or `None` when empty) summarize the Z extent. Because a 3D length only makes
 sense when every axis shares one linear unit, these require a **projected** CRS (or no
 CRS); a geographic CRS mixes degrees and metre heights and raises under every `unit=` —
@@ -452,13 +452,13 @@ Pass `basis='m'` when the line's M ordinate is the route measure instead.
 
 | Task | Distance basis (default) | M basis |
 | --- | --- | --- |
-| point at a location | `line_interpolate(at)` | `line_interpolate(at, basis='m')` |
-| location nearest a point | `line_locate(point)` | `line_locate(point, basis='m')` |
-| portion between two locations | `line_substring(start, end)` | `line_substring(start, end, basis='m')` |
+| point at a location | [`line_interpolate(at)`][gometry.Geometry.line_interpolate] | `line_interpolate(at, basis='m')` |
+| location nearest a point | [`line_locate(point)`][gometry.Geometry.line_locate] | `line_locate(point, basis='m')` |
+| portion between two locations | [`line_substring(start, end)`][gometry.Geometry.line_substring] | `line_substring(start, end, basis='m')` |
 
 `line_interpolate` also accepts a sequence of locations or `count=` for evenly
-spaced samples. A scalar line produces a `GeometryArray` for those plural
-forms; an array receiver returns row-aligned points or `Groups` when each row
+spaced samples. A scalar line produces a [`GeometryArray`][gometry.GeometryArray] for those plural
+forms; an array receiver returns row-aligned points or [`Groups`][gometry.Groups] when each row
 has its own sample count. `normalized` and `unit` belong only to the distance
 basis, so a measured route never silently mixes two coordinate systems.
 
@@ -479,14 +479,14 @@ point at a given measure, `line_locate(geom, basis='m')` returns the measure
 nearest a point, and `line_substring(start_m, end_m, basis='m')` cuts the
 section between two measures. They require every vertex to carry a monotonic,
 non-decreasing M. The extent accessors mirror the Z family:
-`min_m` / `max_m` / `m_range` summarize the measure span (`None` for a scalar, `nan` for an
+[`min_m`][gometry.Geometry.min_m] / [`max_m`][gometry.Geometry.max_m] / [`m_range`][gometry.Geometry.m_range] summarize the measure span (`None` for a scalar, `nan` for an
 array element, when no vertex carries M).
 
 **Array degrade vs scalar raise.** On a `GeometryArray`, a per-row geometry-data
 failure (`EmptyLinework`, `MissingMeasure`, or `NonMonotonicMeasure`) degrades
 to `nan` (for `line_locate`) or a typed EMPTY geometry (for
 `line_interpolate` / `line_substring`) rather than aborting the batch. The
-    scalar forms of the same verbs still raise `InvalidGeometryError`. Wrong-kind
+    scalar forms of the same verbs still raise [`InvalidGeometryError`][gometry.InvalidGeometryError]. Wrong-kind
     and parameter errors raise on both paths — only those three data conditions
     degrade. `POINT EMPTY` / `LINESTRING EMPTY` rows in array LRS output represent
     degraded failures, not input data.
@@ -510,15 +510,15 @@ Constructive operations preserve ordinates wherever they are derivable and
 return 2D results when they cannot source them:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
-  `simplify`, `convex_hull`, `concave_hull`, and
+  [`simplify`][gometry.Geometry.simplify], [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], and
   the triangulations keep every surviving vertex's ordinates.
 - Operations whose new vertices are **resolvable against the input** — overlay,
-  `clip_by_rect`, linear referencing — interpolate Z/M along source segments. If
+  [`clip_by_rect`][gometry.Geometry.clip_by_rect], linear referencing — interpolate Z/M along source segments. If
   any output vertex genuinely cannot be sourced (such as a clip-rectangle corner
   entering the output), the result is 2D.
-- Operations that **compute brand-new points** — `centroid`, `point_on_surface`, `envelope`,
-  `buffer`, `minimum_rotated_rectangle`, `maximum_inscribed_circle`, `voronoi_*`,
-  `polylabel` — cannot source Z/M for invented vertices, so they return 2D.
+- Operations that **compute brand-new points** — [`centroid`][gometry.Geometry.centroid], [`point_on_surface`][gometry.Geometry.point_on_surface], [`envelope`][gometry.Geometry.envelope],
+  [`buffer`][gometry.Geometry.buffer], [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
+  [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -569,7 +569,7 @@ print("set_m: ", flat.set_m(0.0).coordinate_axes)
 
 ## IO and format limits
 
-WKT, WKB/EWKB, and GeoArrow preserve both ordinates. `to_geojson()` raises on M, and `__geo_interface__` raises on M or a
+WKT, WKB/EWKB, and GeoArrow preserve both ordinates. [`to_geojson()`][gometry.Geometry.to_geojson] raises on M, and `__geo_interface__` raises on M or a
 coordinate epoch because GeoJSON has no slots for them. WKB/EWKB preserve M but
 not epoch; GeoArrow preserves epoch metadata. WKT/WKB preserve dimensional-empty
 axes, while GeoJSON does not. Format details are in [Text & binary
@@ -597,8 +597,8 @@ ingestion patterns.
 
 ## See also
 
-- [Predicates](predicates.md) — spatial relationships (`contains`, `intersects`, [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM)).
+- [Predicates](predicates.md) — spatial relationships ([`contains`][gometry.contains], [`intersects`][gometry.intersects], [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM)).
 - [Constructive operations](constructive.md) — buffers, overlays, hulls, and how they carry Z/M.
 - [CRS](crs.md) — the metric frame for lon/lat area, length, and distance.
-- [Arrays](arrays.md) — vectorized `GeometryArray` columns and the missing-row rule.
+- [Arrays](arrays.md) — vectorized [`GeometryArray`][gometry.GeometryArray] columns and the missing-row rule.
 - [Validation](validation.md) — the OGC validity side of the storage contract.

@@ -8,28 +8,28 @@ Many gometry operations on one geometry also accept a whole column and keep the
 per-row traversal in native code.
 
 The core symmetry is that a scalar call and its array form run the **same kernel** —
-only the receiver and the return shape change. State is a property (`geom.area`), a
-unary transform or measure is a method (`geom.buffer(d)`, `arr.buffer(d)`), and a binary
-relationship is a free function (`gm.contains(a, b)`):
+only the receiver and the return shape change. State is a property ([`geom.area`][gometry.Geometry.area]), a
+unary transform or measure is a method ([`geom.buffer(d)`][gometry.Geometry.buffer], [`arr.buffer(d)`][gometry.GeometryArray.buffer]), and a binary
+relationship is a free function ([`gm.contains(a, b)`][gometry.contains]):
 
 | Call shape | Input | Output |
 | --- | --- | --- |
-| `geom.area` | scalar `Geometry` | `float` |
-| `arr.area` | `GeometryArray` | `float64` ndarray |
-| `geom.buffer(d)` | scalar | `Polygon` / `MultiPolygon` |
+| `geom.area` | scalar [`Geometry`][gometry.Geometry] | `float` |
+| `arr.area` | [`GeometryArray`][gometry.GeometryArray] | `float64` ndarray |
+| `geom.buffer(d)` | scalar | [`Polygon`][gometry.Polygon] / [`MultiPolygon`][gometry.MultiPolygon] |
 | `arr.buffer(d)` | array | `GeometryArray[Polygon \| MultiPolygon]` |
 | `gm.contains(poly, pt)` | scalar pair | `bool` |
 | `gm.contains(poly, pts)` | scalar × array | `bool_` ndarray |
-| `idx.query(scalar)` | one geometry | `int64` ndarray |
-| `idx.query(arr)` | `GeometryArray` | `Groups[int64]` |
+| [`idx.query(scalar)`][gometry.SpatialIndex.query] | one geometry | `int64` ndarray |
+| `idx.query(arr)` | `GeometryArray` | [`Groups[int64]`][gometry.Groups] |
 
 ## GeometryArray
 
 [`gm.GeometryArray`][gometry.GeometryArray] builds a packed, typed container of
 geometries that every vectorized function consumes. It behaves like a sequence
 (indexing, iteration, `len`) while keeping geometry storage in Rust-owned objects rather
-than a Python list. It carries one CRS for the column. `coordinate_axes` reports the
-layout of each row; `common_coordinate_axes` reports
+than a Python list. It carries one CRS for the column. [`coordinate_axes`][gometry.GeometryArray.coordinate_axes] reports the
+layout of each row; [`common_coordinate_axes`][gometry.GeometryArray.common_coordinate_axes] reports
 one shared layout for present rows, or `None` when those layouts differ:
 
 ```python exec="on" source="block" result="text"
@@ -51,7 +51,7 @@ print("areas (geodesic m^2):", arr.area)
 
 Read its state as a property (`arr.area`), call a method (`arr.buffer(d)`), or pass it to
 a binary free function (`gm.contains(arr, pts)`) — each runs over the whole batch in one
-pass. `GeometryArray.total_bounds` is the combined `(minx, miny, maxx, maxy)` tuple, or
+pass. [`GeometryArray.total_bounds`][gometry.GeometryArray.total_bounds] is the combined `(minx, miny, maxx, maxy)` tuple, or
 `None` for an empty/fully-empty array.
 
 ### Packed constructors
@@ -59,7 +59,7 @@ pass. `GeometryArray.total_bounds` is the combined `(minx, miny, maxx, maxy)` tu
 The packed constructors take parallel coordinate arrays and build a
 `GeometryArray` directly. [`gm.points`][gometry.points] accepts optional `z=` and `m=`
 arrays, so you can construct XY, XYZ, XYM, or XYZM arrays in one call — the bulk analogue
-of `gm.Point(..., z=..., m=...)`:
+of [`gm.Point(..., z=..., m=...)`][gometry.Point]:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -74,9 +74,9 @@ print("XYZ per row:", pts_z.coordinate_axes, "shared:", pts_z.common_coordinate_
 
 ```
 
-The sibling column factories `gm.line_strings`, `gm.polygons`, and the rest skip the
-per-row Python object loop the same way; IO parsers (`from_wkb`, `from_wkt`,
-`from_geojson`) also return packed arrays directly.
+The sibling column factories [`gm.line_strings`][gometry.line_strings], [`gm.polygons`][gometry.polygons], and the rest skip the
+per-row Python object loop the same way; IO parsers ([`from_wkb`][gometry.from_wkb], [`from_wkt`][gometry.from_wkt],
+[`from_geojson`][gometry.from_geojson]) also return packed arrays directly.
 
 ### Per-row axes and missing rows
 
@@ -98,7 +98,7 @@ print("missing:", mixed.is_missing.tolist())
 
 ### Indexing, slicing, and element types
 
-Indexing with an integer returns a single typed `Geometry`; **slicing** returns a new
+Indexing with an integer returns a single typed [`Geometry`][gometry.Geometry]; **slicing** returns a new
 `GeometryArray`. Iteration yields typed elements:
 
 ```python exec="on" source="block" result="text"
@@ -115,7 +115,7 @@ The container is **generic over its element type**: `gm.points(...)` and
 `gm.GeometryArray([pt, ...])` are typed `GeometryArray[Point]`, so a type checker knows
 `arr[0]` is a `Point` and `for g in arr` yields `Point`. Heterogeneous arrays widen to
 `GeometryArray[Geometry]`. Operations narrow too: `arr.buffer(...)` is a
-`GeometryArray[Polygon | MultiPolygon]`, `arr.area` is a `float64` ndarray while
+[`GeometryArray[Polygon | MultiPolygon]`][gometry.GeometryArray], `arr.area` is a `float64` ndarray while
 `geom.area` is `float`, and so on across the whole surface.
 
 The public classes and cross-grid protocols can be used directly in your own
@@ -135,7 +135,7 @@ print(round(cell_area(gm.H3Cell("871fb4662ffffff"))))
 
 [`to_numpy`][gometry.GeometryArray.to_numpy] materializes an `object` ndarray of geometry
 handles; [`gm.GeometryArray`][gometry.GeometryArray] is the inverse for object ndarrays
-and `__geo_interface__` rows. Coordinate columns live on `.coords` (`.x`/`.y`/`.z`/`.m`
+and `__geo_interface__` rows. Coordinate columns live on [`.coords`][gometry.GeometryArray.coords] ([`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]/[`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m]
 are read-only `float64` ndarrays):
 
 ```python exec="on" source="block" result="text"
@@ -187,14 +187,14 @@ Vectorized bulk lanes follow a fixed return contract:
 
 | Kind | Return shape | Examples |
 | --- | --- | --- |
-| Numbers | `float64` / `int64` / `uint64` ndarray | `area`, `distance`, `line_locate`, spatial keys |
-| Masks | `bool_` ndarray | `contains`, `intersects`, `within`, … |
-| Bounds | `(n, 4)` `float64` ndarray | `bounds` rows (`nan` for empty) |
-| Id pairs | `(left, right)` pair of `int64` ndarrays | `join`, `self_join` |
-| Ragged matches | [`Groups`][gometry.Groups] (CSR) | array-form `index.query` |
-| Geometries | [`GeometryArray`][gometry.GeometryArray] | `buffer`, `to_crs`, …; overlays via `&` / `|` |
-| Coordinates | [`Coordinates`][gometry.Coordinates] view or [`gm.get_coordinates`][gometry.get_coordinates] | `geom.coords`, packed point columns |
-| Witness pairs | `(left, right)` pair of point `GeometryArray` columns | `nearest_points` |
+| Numbers | `float64` / `int64` / `uint64` ndarray | [`area`][gometry.area], [`distance`][gometry.distance], [`line_locate`][gometry.Geometry.line_locate], spatial keys |
+| Masks | `bool_` ndarray | [`contains`][gometry.contains], [`intersects`][gometry.intersects], [`within`][gometry.within], … |
+| Bounds | `(n, 4)` `float64` ndarray | [`bounds`][gometry.Geometry.bounds] rows (`nan` for empty) |
+| Id pairs | `(left, right)` pair of `int64` ndarrays | [`join`][gometry.join], [`self_join`][gometry.SpatialIndex.self_join] |
+| Ragged matches | [`Groups`][gometry.Groups] (CSR) | array-form [`index.query`][gometry.SpatialIndex.query] |
+| Geometries | [`GeometryArray`][gometry.GeometryArray] | [`buffer`][gometry.Geometry.buffer], [`to_crs`][gometry.Geometry.to_crs], …; overlays via `&` / `\|` |
+| Coordinates | [`Coordinates`][gometry.Coordinates] view or [`gm.get_coordinates`][gometry.get_coordinates] | [`geom.coords`][gometry.Geometry.coords], packed point columns |
+| Witness pairs | `(left, right)` pair of point `GeometryArray` columns | [`nearest_points`][gometry.nearest_points] |
 
 Text/bytes and ragged diagnostic lanes stay ordinary Python lists because they have no
 single dense ndarray representation.
@@ -209,7 +209,7 @@ shapes are allowed:
 | scalar | array (n) | array (n) | test the scalar against each element |
 | array (n) | scalar | array (n) | test each element against the scalar |
 | array (n) | array (n) | array (n) | **pairwise** — element *i* vs element *i* |
-| array (n) | array (m), n≠m | **`GeometryError`** | refused — use [`index`](indexing.md)/[`join`](indexing.md) |
+| array (n) | array (m), n≠m | **[`GeometryError`][gometry.GeometryError]** | refused — use [`index`](indexing.md)/[`join`](indexing.md) |
 
 ### Scalar × array
 
@@ -275,11 +275,11 @@ strict equal-length / scalar-vs-array broadcast rules without n×m expansion.
 ## CellArray
 
 [`CellArray`][gometry.CellArray] is a homogeneous sequence of typed cells. Hierarchy ops
-on a cell object return one — `H3Cell.children()`, `.neighbors`, and the S2/geohash/tile
+on a cell object return one — [`H3Cell.children()`][gometry.H3Cell.children], [`.neighbors`][gometry.Cell.neighbors], and the S2/geohash/tile
 mirrors materialize `CellArray[H3Cell]` (or the matching cell type) instead of a bare
-Python list. Accessors mirror the scalar cell name: `cells.token`, `cells.center`, and
-`cells.area` stay singular while returning columnar/list results. Cell geometry is
-explicit through accessors such as `.polygon`, `.center`, and `.to_polygon()`; cells do
+Python list. Accessors mirror the scalar cell name: [`cells.token`][gometry.CellArray.token], [`cells.center`][gometry.CellArray.center], and
+[`cells.area`][gometry.CellArray.area] stay singular while returning columnar/list results. Cell geometry is
+explicit through accessors such as [`.polygon`][gometry.CellArray.polygon], `.center`, and [`.to_polygon()`][gometry.CellArray.to_polygon]; cells do
 not carry an OGC `geometry_type` because they are grid identifiers, not geometry objects.
 
 Construct one directly from a non-empty homogeneous iterable of cell objects and gometry
@@ -312,23 +312,23 @@ print("ids:", [c.id for c in children[:3]])
 
 ```
 
-H3 topological vertices and directed edges are not cells: `H3Cell.vertices` returns
-`H3VertexArray` and `H3Cell.edges` returns `H3EdgeArray`. Those arrays keep the same
+H3 topological vertices and directed edges are not cells: [`H3Cell.vertices`][gometry.H3Cell.vertices] returns
+[`H3VertexArray`][gometry.H3VertexArray] and [`H3Cell.edges`][gometry.H3Cell.edges] returns [`H3EdgeArray`][gometry.H3EdgeArray]. Those arrays keep the same
 sequence and uint64 id-column ergonomics but only expose valid topology operations such
-as `vertices.point`, `edges.origin`, `edges.destination`, `edges.line`, and
-`edges.length`. Bulk point→cell construction uses the prefixed plural builders —
-[`gm.h3_cells`][gometry.h3_cells], `gm.s2_cells`, and the geohash/tile twins. Grid cover
-factories return `CellArray` for one geometry and `Groups` of `CellArray` for geometry
+as [`vertices.point`][gometry.H3VertexArray.point], [`edges.origin`][gometry.H3EdgeArray.origin], [`edges.destination`][gometry.H3EdgeArray.destination], [`edges.line`][gometry.H3EdgeArray.line], and
+[`edges.length`][gometry.H3EdgeArray.length]. Bulk point→cell construction uses the prefixed plural builders —
+[`gm.h3_cells`][gometry.h3_cells], [`gm.s2_cells`][gometry.s2_cells], and the geohash/tile twins. Grid cover
+factories return `CellArray` for one geometry and [`Groups`][gometry.Groups] of `CellArray` for geometry
 arrays; hierarchy transforms on that set may return `CellArray` when the engine can keep
 a packed id column. For exact membership, keep the source geometry separately and use
-free predicates such as `gm.covers` or `gm.contains`.
+free predicates such as [`gm.covers`][gometry.covers] or [`gm.contains`][gometry.contains].
 
 ## Groups (ragged CSR)
 
 Some operations return **one variable-length result per input row** — spatial index
 queries against an array of probes, or multi-hit predicate scans. A flat `list[list[int]]`
 would work in Python but loses ndarray zero-copy sharing. [`Groups`][gometry.Groups]
-stores those results in **CSR form**: a single `int64` `.values` vector plus `.offsets`
+stores those results in **CSR form**: a single `int64` [`.values`][gometry.Groups.values] vector plus [`.offsets`][gometry.Groups.offsets]
 that bound each row.
 
 ```python exec="on" source="block" result="text"
@@ -354,17 +354,17 @@ print("offsets:", groups.offsets.tolist())
 results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
 
 !!! tip "Scalar vs array index query"
-    A scalar `idx.query(geom, predicate=...)` returns a dense `int64` ndarray. Pass an
+    A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an
     array of query geometries and you get `Groups` — one result row per element. See
     [Spatial indexing](indexing.md).
 
 ## Missing rows
 
-`None` is a missing row; empty geometry is a real geometry value. `GeometryArray` carries
+`None` is a missing row; empty geometry is a real geometry value. [`GeometryArray`][gometry.GeometryArray] carries
 missing rows natively using a validity model. A dense array stores packed columns
 without a missing-row marker when no row is missing. This
 distinction is preserved across arrays, dataframe handoff, Arrow, GeoParquet, and most
-vectorized operations. Batch ingest (`from_wkt` / `from_wkb` / `from_geojson` /
+vectorized operations. Batch ingest ([`from_wkt`][gometry.from_wkt] / [`from_wkb`][gometry.from_wkb] / [`from_geojson`][gometry.from_geojson] /
 `GeometryArray([...])`) keeps native GeoArrow typing when some rows are missing rather
 than downgrading the whole column to WKB:
 
@@ -389,8 +389,8 @@ One rule set everywhere: **predicates → `False`, measures → `NaN`, geometry 
 missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
 `None` keep their ndarray shape with **sentinels** — for example bounds use `NaN`,
 topological dimensions use `-1`, and some curve-key lanes use `0`. Those sentinels can
-collide with valid values, so **`is_missing` is authoritative**. Flattening and
-explode-style operations (`parts`, `rings`, triangulations, sampled points) skip missing
+collide with valid values, so **[`is_missing`][gometry.GeometryArray.is_missing] is authoritative**. Flattening and
+explode-style operations ([`parts`][gometry.parts], [`rings`][gometry.rings], triangulations, sampled points) skip missing
 rows entirely.
 
 Missing rows enter through any constructor or importer (`GeometryArray([g, None])`,
@@ -399,15 +399,15 @@ validity bitmaps, geopandas/pandas/polars nulls) and survive every row-aligned o
 slice, fancy indexing (`arr[[0, 2]]`), pickle, and Arrow round-trip.
 
 !!! note "Coordinates flatten present rows"
-    `arr.coords` and [`gm.get_coordinates(arr)`][gometry.get_coordinates] are vertex
+    [`arr.coords`][gometry.GeometryArray.coords] and [`gm.get_coordinates(arr)`][gometry.get_coordinates] are vertex
     streams, not row-aligned arrays. Missing rows contribute no vertices. Use
     `return_index=True` with `get_coordinates` when you need to map each coordinate back
-    to its source row, or call `drop_missing()` first when a dense coordinate-only
+    to its source row, or call [`drop_missing()`][gometry.GeometryArray.drop_missing] first when a dense coordinate-only
     workflow is clearer.
 
-`drop_missing()` and `fill_missing(value)` convert back to dense. `fill_missing` accepts
+`drop_missing()` and [`fill_missing(value)`][gometry.GeometryArray.fill_missing] convert back to dense. `fill_missing` accepts
 one scalar geometry or a row-aligned `GeometryArray` fill source; indexes and
-`GeometryCollection` construction require dense input (their error says so). Drop or fill
+[`GeometryCollection`][gometry.GeometryCollection] construction require dense input (their error says so). Drop or fill
 Missingness must be dropped or filled when the next boundary cannot represent it.
 
 ## Batching choices
@@ -461,7 +461,7 @@ print(gm.contains(prepared, probes).tolist())  # array path — no Python loop
 ```
 
 [`PreparedGeometry`][gometry.PreparedGeometry] is an operand for the free predicate
-family and `contains_xy`; pass it as either argument to `gm.*` (including XY
+family and [`contains_xy`][gometry.contains_xy]; pass it as either argument to `gm.*` (including XY
 predicates), never as a method receiver. These functions accept a single geometry or
 an array (returning `bool` or a `bool_` ndarray mask) and reuse one cached prepared
 spatial/segment index. Prepare when the
@@ -521,10 +521,10 @@ print("batch result:", batch_result)
 
 ```
 
-The same holds for every reader. `from_wkb`/`from_wkt`/`from_geojson` all take an
+The same holds for every reader. [`from_wkb`][gometry.from_wkb]/[`from_wkt`][gometry.from_wkt]/[`from_geojson`][gometry.from_geojson] all take an
 **iterable** and return a packed [`GeometryArray`][gometry.GeometryArray] in one pass; the
-geodesic/CRS batches (`destination`, `point_between`, `CRS.geodesic*`,
-`gm.crs_transform_bounds`) are vectorized the same way, so a whole column of ingest
+geodesic/CRS batches ([`destination`][gometry.GeometryArray.destination], [`point_between`][gometry.point_between], `CRS.geodesic*`,
+[`gm.crs_transform_bounds`][gometry.crs_transform_bounds]) are vectorized the same way, so a whole column of ingest
 and downstream transform stays in Rust:
 
 ```python exec="on" source="block" result="text"
@@ -567,14 +567,14 @@ overhead.
 
 | Ingest | Per-item or expanded form | Batched/direct form |
 | --- | --- | --- |
-| GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
-| Many points | `GeometryArray([Point(x, y) for ...])` | `gm.points(xs, ys)` |
+| GeoJSON | [`from_geojson(json.loads(s))`][gometry.from_geojson] | `from_geojson(s)` — `str`/`bytes` |
+| Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
 | Features + attributes | `json.loads` + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
 
 When you need the per-feature `properties`/`id` alongside geometry,
 [`gm.from_features`][gometry.from_features] parses the whole FeatureCollection in Rust and
-hands back a validated `Features(geometries, properties, ids)` record — one crossing instead of
+hands back a validated [`Features(geometries, properties, ids)`][gometry.Features] record — one crossing instead of
 a Python loop.
 
 ## Crossing the dataframe / Arrow boundary
@@ -582,15 +582,15 @@ a Python loop.
 Per-row interop conversion changes a columnar boundary into Python object work. Bulk
 converters accept whole columns.
 
-- **pandas:** `arr.to_pandas()` stores the native array behind a concrete extension dtype;
-  `gm.from_pandas()` returns that same `GeometryArray` **zero-copy**.
-- **Polars:** `arr.to_polars()` / `gm.from_polars()` encode and decode a whole WKB/EWKB Binary
+- **pandas:** [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] stores the native array behind a concrete extension dtype;
+  `gm.from_pandas()` returns that same [`GeometryArray`][gometry.GeometryArray] **zero-copy**.
+- **Polars:** [`arr.to_polars()`][gometry.GeometryArray.to_polars] / `gm.from_polars()` encode and decode a whole WKB/EWKB Binary
   Series in native batched calls. The boundary does not require PyArrow.
-- **GeoPandas:** `gm.from_geopandas()` / `arr.to_geopandas()` convert a `GeoSeries` in one
+- **GeoPandas:** `gm.from_geopandas()` / [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] convert a `GeoSeries` in one
   vectorized WKB step. Avoid rebuilding a `GeoSeries` element by element (`[g.wkb for g in
   series]`); that per-row hop into Shapely is the per-item path the vectorized helpers exist to
   replace.
-- **Arrow:** `array.to_arrow()` and [`gm.from_arrow`][gometry.from_arrow] move whole arrays
+- **Arrow:** [`array.to_arrow()`][gometry.GeometryArray.to_arrow] and [`gm.from_arrow`][gometry.from_arrow] move whole arrays
   as GeoArrow through the C data interface — no WKB round-trip and no `pyarrow` needed on
   the import side for capsule-producing sources (`polars`, `duckdb`, `nanoarrow`). It avoids
   decoding row-by-row through WKB.
@@ -598,9 +598,9 @@ converters accept whole columns.
 ## See also
 
 - [Mental model](../get-started/mental-model.md) — the three operation models.
-- [Spatial indexing & joins](indexing.md) — `Groups` from array queries, index reuse.
+- [Spatial indexing & joins](indexing.md) — [`Groups`][gometry.Groups] from array queries, index reuse.
 - [CRS, units & measurement](crs.md) — projecting for planar speed and metric units.
-- [Grids](grids.md) — `CellArray`, coverages, and grid pre-filtering.
+- [Grids](grids.md) — [`CellArray`][gometry.CellArray], coverages, and grid pre-filtering.
 - [Arrow & interop](../ecosystem/index.md) — zero-copy GeoArrow / dataframe handoff.
 - [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
 - [Benchmarks](../about/benchmarks.md) — current release status.

@@ -176,10 +176,14 @@ nav:
       - api/index.md
       - Server entrypoints: api/server.md
       - Config: api/config.md
-      - Types: api/types.md
+      - Types:
+        - ASGI applications and aliases: api/applications.md
+        - Scopes and extensions: api/scopes.md
+        - HTTP scope and messages: api/http.md
+        - WebSocket scope and messages: api/websockets.md
+        - Lifespan scope and messages: api/lifespan.md
     - Benchmarks: benchmarks.md
   - Help:
-    - Release notes: releases.md
     - Support: support.md
     - FAQ: faq.md
     - Troubleshooting: troubleshooting.md

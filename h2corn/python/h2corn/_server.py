@@ -311,18 +311,9 @@ class Server:
     `timeout_worker_healthcheck` only say when a supervisor would replace a
     worker, so [`serve()`][h2corn.Server.serve] warns and carries on.
 
-    Example:
-
-    ```python
-    import asyncio
-    from h2corn import Config, Server
-
-    async def main():
-        server = Server(app, Config(bind=('127.0.0.1:8000',)))
-        await server.serve()
-
-    asyncio.run(main())
-    ```
+    Examples:
+        `examples/embedded.py` runs one worker on an ephemeral port, sends a
+        request through it, and shuts it down.
     """
 
     app: Application
@@ -382,7 +373,7 @@ class Server:
         `RuntimeError` if it is already shutting down — a server on its way
         down is not one that is about to come up.
 
-        Example:
+        Illustrative (not executable):
 
         ```python
         serving = asyncio.create_task(server.serve())
@@ -430,6 +421,8 @@ class Server:
         Empty until [`serve()`][h2corn.Server.serve] has bound the listeners.
         Unlike `Config.bind`, these carry the port the kernel actually
         assigned — bind to port `0` and read the address back from here:
+
+        Illustrative (not executable):
 
         ```python
         server = Server(app, Config(bind=('127.0.0.1:0',)))
@@ -1130,7 +1123,8 @@ class _StartupAborted(BaseException):
 def serve(app: Application, config: Config | None = None) -> None:
     """
     Start the server. This is the primary programmatic entrypoint and matches
-    the behavior of the `h2corn` CLI.
+    the behavior of the `h2corn` CLI. For an in-process lifecycle, use
+    [`Server`][h2corn.Server].
 
     On Unix, the call goes through the multi-worker supervisor, even for
     `workers=1`, so signal handling, inherited listeners, and worker lifecycle
@@ -1150,14 +1144,10 @@ def serve(app: Application, config: Config | None = None) -> None:
         config: Server configuration. Defaults to `Config()` (one worker,
             bound to `127.0.0.1:8000`).
 
-    Example:
-
-    ```python
-    from h2corn import Config, serve
-    from myapp import app
-
-    serve(app, Config(bind=('127.0.0.1:8000',), workers=4))
-    ```
+    Examples:
+        `examples/embedded.py` shows the [`Server`][h2corn.Server] alternative:
+        one worker inside an event loop you already own, rather than the
+        supervisor this starts.
     """
     config = Config() if config is None else config
     if sys.platform != 'win32':

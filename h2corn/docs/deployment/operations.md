@@ -10,12 +10,12 @@ description: "The multi-worker supervisor: signals, rolling reload, live scaling
   spawns and supervises one or more worker processes. It is the production
   deployment mode.
 - The **embedded server** ([`Server`][h2corn.Server]) runs a single
-  worker inside your own event loop — see [Embedding](../embedding.md).
+  worker inside your own event loop — see [Embedding](../embedding.md#inside-an-asyncio-app).
 
-The supervisor is **POSIX-only**. On Windows, `serve()` automatically
+The supervisor is **POSIX-only**. On Windows, [`serve()`][h2corn.serve] automatically
 falls back to single-worker, in-process mode.
 
-`hello:app` is the import target from the [Quickstart](../quickstart.md).
+`hello:app` is the import target from the [Quickstart](../quickstart.md#run-your-first-server).
 Substitute the import target for your application.
 
 <figure markdown>
@@ -63,7 +63,7 @@ user-space accept queue.
 h2corn hello:app --reuse-port
 ```
 
-`--reuse-port` sets `SO_REUSEPORT` on the TCP listeners so another server
+[`--reuse-port`](../configuration.md#option-reuse_port) sets `SO_REUSEPORT` on the TCP listeners so another server
 process can bind the same port: start a new generation during a
 zero-downtime deploy and stop the old one, or run several independently
 managed processes behind one port. Workers of a single server always share
@@ -72,7 +72,7 @@ up a connection. TCP listeners only.
 
 ## Event loop
 
-`--loop` selects the Python event-loop implementation:
+[`--loop`](../configuration.md#option-loop) selects the Python event-loop implementation:
 
 ```bash
 h2corn hello:app --loop auto      # default
@@ -113,20 +113,22 @@ resources should create them during lifespan startup; startup and shutdown
 side effects therefore run once per loop and must be safe to repeat.
 
 On a regular (GIL)
-build `loop_threads` above 1 is a no-op — the GIL would serialize the
-loops anyway, so a single loop is used. Combine with `--runtime-threads`
+build [`loop_threads`](../configuration.md#option-loop_threads) above 1 is a no-op — the GIL would serialize the
+loops anyway, so a single loop is used. Combine with [`--runtime-threads`](../configuration.md#option-runtime_threads)
 to scale the I/O side accordingly. Secondary loops require the built-in
 `asyncio` or `uvloop` factory; h2corn rejects multiple loop threads when
 embedded in an unknown custom loop rather than silently changing topology.
 
-`--loop-threads` composes with `--workers`: each forked worker runs its
+[`--loop-threads`](../configuration.md#option-loop_threads) composes with [`--workers`](../configuration.md#option-workers): each forked worker runs its
 own set of loop threads, so `-w 4 --loop-threads 4` is 16 event loops.
 Loop threads share the process heap but require the application and its
 dependencies to support concurrent execution on free-threaded Python. Workers
 provide stronger isolation and independent application state. Choose the mix
 from application behavior and measured throughput, latency, and memory; keep
-`workers × loop_threads` at or below the machine's core count unless a
-workload-specific measurement supports oversubscription.
+[`workers`](../configuration.md#option-workers) times
+[`loop_threads`](../configuration.md#option-loop_threads) at or below the
+machine's core count unless a workload-specific measurement supports
+oversubscription.
 
 ## Signals
 
@@ -150,7 +152,7 @@ kill -SIGTTIN $(cat /var/run/h2corn.pid)
 kill -SIGTTOU $(cat /var/run/h2corn.pid)
 ```
 
-Use `--pid /var/run/h2corn.pid` so deployment tooling can find the
+Use [`--pid`](../configuration.md#option-pid) `/var/run/h2corn.pid` so deployment tooling can find the
 supervisor reliably.
 
 ### What `SIGHUP` reloads
@@ -162,15 +164,15 @@ workers.
 | State or input | SIGHUP behavior | Apply a change with |
 | --- | --- | --- |
 | Python module and application state | Re-imported in each replacement worker | `kill -HUP <supervisor-pid>` |
-| TOML configuration (`--config`) | **Not re-read** | Validate, then restart the supervisor |
+| TOML configuration ([`--config`](../configuration.md#command-config)) | **Not re-read** | Validate, then restart the supervisor |
 | `H2CORN_*` environment variables | **Not re-read** | Restart with the new environment |
-| `--env-file` application environment | **Not re-read**; the supervisor loads it once before forking | Restart with the replacement file |
+| [`--env-file`](../configuration.md#command-env_file) application environment | **Not re-read**; the supervisor loads it once before forking | Restart with the replacement file |
 | bind addresses, worker count, resource limits | **Not re-read** | Restart, or use the documented scale signals for worker count only |
 | TLS certificate, key, CA bundle, and ALPN choice | **Not re-read**; the acceptor is prepared once | Replace files atomically, then restart |
 
 `SIGHUP` does not re-read TOML, environment, listener, resource-limit, or TLS
 settings. Rotate a reverse-proxy certificate at the TLS-owning proxy. For
-direct TLS, atomically replace complete PEM files, run `--check-config`, and
+direct TLS, atomically replace complete PEM files, run [`--check-config`](../configuration.md#command-check_config), and
 restart h2corn. A failed rolling worker replacement preserves the old worker;
 a full restart follows the service manager's stop/start behavior and may have
 downtime.
@@ -187,7 +189,7 @@ h2corn hello:app \
   --max-requests-jitter 5000
 ```
 
-The supervisor adds up to `--max-requests-jitter` extra requests to each
+The supervisor adds up to [`--max-requests-jitter`](../configuration.md#option-max_requests_jitter) extra requests to each
 worker's budget, so retirements are spread out over time rather than
 firing at the same instant on every worker.
 
@@ -205,7 +207,7 @@ Set `--timeout-worker-healthcheck 0` to disable.
 ## Shutdown budget
 
 Shutdown has two request phases and one lifespan phase. Native request draining
-uses `timeout_graceful_shutdown`; cancellation-resistant request cleanup can
+uses [`timeout_graceful_shutdown`](../configuration.md#option-timeout_graceful_shutdown); cancellation-resistant request cleanup can
 use it again; lifespan shutdown starts after requests release. The supervisor's
 stop budget is:
 
@@ -258,7 +260,7 @@ ENTRYPOINT ["/srv/app/.venv/bin/h2corn", "myapp.asgi:application", "--config", "
 If a wrapper is used, it must finish with `exec`. `READY=1` is a systemd
 contract; Kubernetes does not consume it. Readiness therefore comes from an
 application route or ingress using the listener's protocol. Kubernetes HTTP
-probes use HTTP/1.1, so a listener started with `--no-http1` needs a TCP probe,
+probes use HTTP/1.1, so a listener started with [`--no-http1`](../configuration.md#option-http1) needs a TCP probe,
 an HTTP/1.1-capable proxy endpoint, or a separate probe listener.
 
 Liveness, readiness, and worker heartbeats have separate meanings:
@@ -267,7 +269,7 @@ Liveness, readiness, and worker heartbeats have separate meanings:
 | --- | --- | --- |
 | Liveness | The process can answer the platform's bounded process check. It is not proof that dependencies are healthy. | Restart only after a check that cannot be served without a restart. |
 | Readiness | The application is ready for new traffic, including any dependency policy owned by the app. h2corn's internal readiness waits for listeners, lifespan startup, and every worker, but does not publish a Kubernetes route. | Remove the endpoint from service routing while draining. |
-| Worker heartbeat | The supervisor sees a worker heartbeat within `timeout_worker_healthcheck`. | Replace the worker; repeated never-ready failures stop the supervisor. |
+| Worker heartbeat | The supervisor sees a worker heartbeat within [`timeout_worker_healthcheck`](../configuration.md#option-timeout_worker_healthcheck). | Replace the worker; repeated never-ready failures stop the supervisor. |
 
 Kubernetes sends `SIGTERM`, removes a ready pod from endpoints asynchronously,
 then waits `terminationGracePeriodSeconds` before `SIGKILL`. The period must
@@ -281,15 +283,15 @@ stop budget. h2corn's signal handler stops acceptance; a fixed `sleep` in
 The server separately limits connection count, concurrent ASGI tasks, HTTP/2
 streams, request bodies and headers, request-body idle time, handshakes,
 keep-alive, response stalls, and WebSocket messages. Defaults, units, zero
-semantics, and failure behavior are in the [Configuration reference](../configuration.md).
+semantics, and failure behavior are in the [HTTP and resource limit options](../configuration.md#http-and-resource-limits).
 Slow clients consume connection and stream capacity until the relevant timeout;
-`limit_connections` and `limit_concurrency` bound a worker's admission, and a
+[`limit_connections`](../configuration.md#option-limit_connections) and [`limit_concurrency`](../configuration.md#option-limit_concurrency) bound a worker's admission, and a
 proxy request/body timeout must cover the application path it protects.
 
 ## systemd readiness
 
 Under a `Type=notify` unit, `h2corn` sends `READY=1` when it is actually
-accepting connections — with `--workers`, once *every* worker is serving, not
+accepting connections — with [`--workers`](../configuration.md#option-workers), once *every* worker is serving, not
 when the supervisor process starts. `STOPPING=1` goes out when shutdown begins,
 before draining, so the unit's published state matches what the process is
 actually doing. It reports state; `systemd` runs `TimeoutStopSec` independently
@@ -317,7 +319,7 @@ inputs before startup, `ExecReload` forwards `systemctl reload` as the app-only
 [shutdown budget](#shutdown-budget).
 The service user must be able to read the configured certificate and key. For a
 root-only key, run h2corn as a root-owned supervisor and use its
-`--user`/`--group` drop instead.
+[`--user`](../configuration.md#option-user)/[`--group`](../configuration.md#option-group) drop instead.
 
 ```ini title="myapp.service (configuration template)"
 [Unit]
@@ -403,9 +405,9 @@ sudo h2corn hello:app \
 ```
 
 The supervisor binds the listeners as root, then resolves
-`--user`/`--group` and switches identity in the workers before the
+[`--user`](../configuration.md#option-user)/[`--group`](../configuration.md#option-group) and switches identity in the workers before the
 ASGI app is imported. Unix sockets created by the supervisor inherit
-the same ownership, with permissions controlled by `--uds-permissions`.
+the same ownership, with permissions controlled by [`--uds-permissions`](../configuration.md#option-uds_permissions).
 
 Everything that needs root is acquired before that switch. The private key may
 stay `root:root` mode `0600`; the supervisor reads it once at startup and every
@@ -418,7 +420,7 @@ immediately, naming the setting and the path, before any handshake.
 
 ### Structured logs
 
-`--log-format json` encodes everything h2corn writes to stderr — the startup
+[`--log-format`](../configuration.md#option-log_format) `json` encodes everything h2corn writes to stderr — the startup
 banner, worker lifecycle, errors and access records — as one JSON object per
 line for log shipping.
 
@@ -433,8 +435,8 @@ Numbers stay numbers, so a collector does not have to strip `ms` off
 Docker and Kubernetes stamp arrival time, and one timestamp source keeps
 pipeline debugging unambiguous.
 
-`--access-log` and `--log-format` are independent — `--no-access-log
---log-format json` keeps the diagnostics machine-readable while dropping the
+[`--access-log`](../configuration.md#option-access_log) and `--log-format` are independent — [`--no-access-log`](../configuration.md#option-access_log)
+`--log-format json` keeps the diagnostics machine-readable while dropping the
 per-request records.
 
 ### Metrics and tracing
@@ -470,4 +472,4 @@ h2corn app:app --workers 4
 
 Every option is documented with its CLI flag, environment variable, TOML key,
 and default in the
-[Configuration reference](../configuration.md).
+[Configuration reference](../configuration.md#option-index).

@@ -136,6 +136,14 @@ Bug reports, feature requests, and questions go in the
 [GitHub issue tracker](https://github.com/Zaczero/pkgs/issues). Include the
 gometry version, Python version, platform, and a minimal reproduction.
 
+For correctness review, migration help, performance audits, or prioritized
+work, commercial support is available through
+[monicz.dev](https://monicz.dev). See the
+[Support page](https://gometry.monicz.dev/about/support/) for details.
+
+Security disclosures use GitHub's
+[private vulnerability reporting](https://github.com/Zaczero/pkgs/security/advisories/new).
+
 The [installation guide](https://gometry.monicz.dev/get-started/installation/)
 covers PyPI and source installation, and the
 [API reference](https://gometry.monicz.dev/api/) is the canonical lookup surface.

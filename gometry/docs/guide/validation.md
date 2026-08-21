@@ -1,5 +1,5 @@
 ---
-description: Validating, repairing, and contract-checking geometries in gometry — structural construction checks, validate() reports, require() boundary contracts, repair(), quantize, and remove_repeated_points.
+description: Validating and repairing geometries in gometry — construction checks, validate() reports, require() contracts, repair(), and remove_repeated_points.
 ---
 
 # Validation & repair
@@ -11,7 +11,7 @@ non-finite coordinates, missing CRS metadata, and excess coordinate precision.
 
 Constructors reject *structurally* malformed input immediately. Non-finite
 coordinates and rings with too few vertices have no valid interpretation and
-raise `InvalidGeometryError`:
+raise [`InvalidGeometryError`][gometry.InvalidGeometryError]:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -42,21 +42,21 @@ structure, and constructors do not run it on every call. The same invalid geomet
 from the outside — parsing foreign data with [`gm.from_wkt`][gometry.from_wkt],
 [`gm.from_wkb`][gometry.from_wkb], or [`gm.from_geojson`][gometry.from_geojson],
 which accept what they are given. Either way, you **detect** invalidity with
-`validate()` and **fix** it with `repair()`.
+[`validate()`][gometry.Geometry.validate] and **fix** it with [`repair()`][gometry.Geometry.repair].
 
 Cosmetic noise that does *not* change the shape is, by contrast, **valid**: a
 repeated consecutive vertex or a clockwise shell describes a perfectly good
-region — ring orientation does not affect validity — and `remove_repeated_points`
-and `orient_polygons` can canonicalize it when required.
+region — ring orientation does not affect validity — and [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]
+and [`orient_polygons`][gometry.Geometry.orient_polygons] can canonicalize it when required.
 
 ## Diagnosing: `is_valid` and `validate`
 
 The [`Geometry.is_valid`][gometry.Geometry.is_valid] property returns a plain
-`bool`; vectorized code uses the `GeometryArray.is_valid` mask.
+`bool`; vectorized code uses the [`GeometryArray.is_valid`][gometry.GeometryArray.is_valid] mask.
 [`validate`][gometry.Geometry.validate] returns a
 [`ValidationReport`][gometry.ValidationReport] without raising. The report
 supports branching on validity, logging diagnostics, and repairing only bad records
-(`GeometryArray.validate()` yields one report per element).
+([`GeometryArray.validate()`][gometry.GeometryArray.validate] yields one report per element).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -73,10 +73,10 @@ print("valid box ->", report.valid)
 
 ```
 
-The returned [`ValidationReport`][gometry.ValidationReport] exposes `.valid`,
-`.reason` (a human-readable message that names the actual fault — e.g. a
-self-intersection in the exterior ring), `.location` (the `(x, y)` coordinate of
-the first problem), and `.path` (a structural path to it, e.g. `'$.shell'`). For
+The returned [`ValidationReport`][gometry.ValidationReport] exposes [`.valid`][gometry.ValidationReport.valid],
+[`.reason`][gometry.ValidationReport.reason] (a human-readable message that names the actual fault — e.g. a
+self-intersection in the exterior ring), [`.location`][gometry.ValidationReport.location] (the `(x, y)` coordinate of
+the first problem), and [`.path`][gometry.ValidationReport.path] (a structural path to it, e.g. `'$.shell'`). For
 an OGC-valid geometry `.reason`, `.location`, and `.path` are all `None`; they
 carry detail when topology validation finds a problem.
 
@@ -86,9 +86,9 @@ its seam-normalized shape; this includes pole-enclosing shells and polar holes.
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
 planar coordinates. Attaching a geographic frame changes what ±180° means, while
 a planar frame has no identified seam.
-`is_valid`, `is_simple`, `is_ring`, `validate`, `require`, and
-`self_intersections` all share that rule. `repair` uses the same normalized
-validity verdict before rebuilding, and `snap_to_grid(..., repair=True)` checks
+`is_valid`, [`is_simple`][gometry.Geometry.is_simple], [`is_ring`][gometry.Geometry.is_ring], `validate`, [`require`][gometry.require], and
+[`self_intersections`][gometry.Geometry.self_intersections] all share that rule. [`repair`][gometry.Geometry.repair] uses the same normalized
+validity verdict before rebuilding, and [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid] checks
 each snapped result in that same frame.
 
 !!! note "Validation reports and boundary errors"
@@ -155,7 +155,7 @@ byte-for-byte run to run.
 For a geographic antimeridian crossing, the validity check runs before any
 rebuild. A valid input therefore keeps its original coordinates exactly; an
 invalid crossing is repaired from the seam-split topology. The same
-rule powers `snap_to_grid(..., repair=True)`.
+rule powers [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid].
 
 !!! note "Repair output and revalidation"
     `repair` can split, merge, or drop parts to reach validity. Re-run
@@ -220,7 +220,7 @@ Floating-point coordinates can carry more digits than the data requires, affecti
 snapping and overlay results. Two targeted cleaners handle common coordinate noise
 without a full repair.
 
-`geom.quantize(precision)` rounds every coordinate to `precision` decimal
+[`geom.quantize(precision)`][gometry.Geometry.quantize] rounds every coordinate to `precision` decimal
 places. It gives coordinates from different sources a common precision for
 overlay, equality, deduplication, and interchange.
 
@@ -262,15 +262,15 @@ print(before_after(with_vertices(dup), with_vertices(cleaned),
 
 ```
 
-The related tools `snap` and `normalize` handle the other common sources of
+The related tools [`snap`][gometry.snap] and [`normalize`][gometry.Geometry.normalize] handle the other common sources of
 geometric noise (near-misses that should coincide, and non-canonical vertex
 order / ring orientation).
 
 !!! tip "Precision workflow before overlay"
     Overlay operations are sensitive to near-coincident vertices. An explicit
-    `quantize` / `snap_to_grid` pass can help sources align — but it can also
+    `quantize` / [`snap_to_grid`][gometry.Geometry.snap_to_grid] pass can help sources align — but it can also
     *create* invalidity on tight geometries (see [choosing](choosing.md)). Prefer
-    a precision workflow followed by `validate` / `repair` rather than
+    a precision workflow followed by [`validate`][gometry.Geometry.validate] / [`repair`][gometry.Geometry.repair] rather than
     treating quantize as a universal sliver cure — see
     [constructive operations](constructive.md#dissolving-many-geometries-union_all).
 
@@ -298,8 +298,8 @@ print(result.geometry_type, "valid:", result.validate().valid)
 
 ```
 
-Parse failures (`ParseError`) stay separate from geometric invalidity
-(`InvalidGeometryError` / repair). The detect → repair → assert flow keeps invalid
+Parse failures ([`ParseError`][gometry.ParseError]) stay separate from geometric invalidity
+([`InvalidGeometryError`][gometry.InvalidGeometryError] / repair). The detect → repair → assert flow keeps invalid
 geometry from ever reaching your [predicates](predicates.md),
 [overlays](constructive.md), or [measurements](crs.md), where it would otherwise
 produce subtly wrong answers. See [Security](../about/security.md) for the

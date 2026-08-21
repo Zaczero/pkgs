@@ -15,11 +15,11 @@ The index exposes the distinction between *candidates* (bounding-box matches) an
 *exact* matches.
 
 !!! warning "Candidates are not matches"
-    `idx.candidates(q)` returns everything whose **bounding box** overlaps the
+    [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
     actually intersect — especially for sparse multipolygons and diagonal lines. If
-    you treat candidates as answers, you get false positives. `idx.query(q,
-    predicate=...)` runs the **exact** predicate on those candidates and returns only
+    you treat candidates as answers, you get false positives. [`idx.query(q,
+    predicate=...)`][gometry.SpatialIndex.query] runs the **exact** predicate on those candidates and returns only
     true matches. Use `query` when exact matches are required.
 
 ## Candidates vs query
@@ -44,8 +44,8 @@ print("exact intersects :", list(hits))    # [0, 2]
 
 ```
 
-`candidates` returns positional indices into the input array whose envelopes overlap
-the query envelope. `query` takes that same candidate set and applies the exact
+[`candidates`][gometry.SpatialIndex.candidates] returns positional indices into the input array whose envelopes overlap
+the query envelope. [`query`][gometry.SpatialIndex.query] takes that same candidate set and applies the exact
 predicate, so it is always a subset. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
@@ -99,9 +99,9 @@ for pred in ("intersects", "contains", "contains_properly", "covers"):
 ```
 
 The full vocabulary is the same as the [top-level predicates](predicates.md)
-— `intersects` (the default), `contains`, `contains_properly`, `covers`,
-`within`, `covered_by`, `equals`, `touches`, `crosses`, `overlaps`, plus the
-metric `dwithin`. Only `disjoint` is rejected: it matches everything far
+— [`intersects`][gometry.intersects] (the default), [`contains`][gometry.contains], [`contains_properly`][gometry.contains_properly], [`covers`][gometry.covers],
+[`within`][gometry.within], [`covered_by`][gometry.covered_by], [`equals`][gometry.equals], [`touches`][gometry.touches], [`crosses`][gometry.crosses], [`overlaps`][gometry.overlaps], plus the
+metric [`dwithin`][gometry.dwithin]. Only [`disjoint`][gometry.disjoint] is rejected: it matches everything far
 away, which no envelope index can accelerate.
 
 For distance predicates, pass `distance=` and `unit=`:
@@ -125,7 +125,7 @@ The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate 
 
 [`idx.nearest`][gometry.SpatialIndex.nearest] finds the `k` closest indexed geometries to a query
 geometry and returns their positional indices (nearest first). Distance uses the
-same `unit=` rule as `query` / free `dwithin` (CRS-natural by default).
+same `unit=` rule as [`query`][gometry.SpatialIndex.query] / free [`dwithin`][gometry.dwithin] (CRS-natural by default).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -167,7 +167,7 @@ for i, station in enumerate(list(stations)):
 
 ```
 
-The top-level function `gm.nearest(values, geometry, k=..., unit=...)` builds an
+The top-level function [`gm.nearest(values, geometry, k=..., unit=...)`][gometry.nearest] builds an
 index for one-shot queries.
 
 ## Explain query plans
@@ -217,7 +217,7 @@ for li, ri in zip(left, right, strict=True):
 ```
 
 `join` refines to exact predicates. Use `distance=`/`unit=` for a
-`predicate="dwithin"` join. `SpatialIndex.explain(...)` reports candidate and
+`predicate="dwithin"` join. [`SpatialIndex.explain(...)`][gometry.SpatialIndex.explain] reports candidate and
 refinement cost for an index query.
 
 !!! note "Many-to-many query cost"
@@ -261,9 +261,9 @@ print("after remove handle", handle, "→ nearest still works:",
 
 ## See also
 
-- [Predicates](predicates.md) — the exact relationships `query` refines with.
+- [Predicates](predicates.md) — the exact relationships [`query`][gometry.SpatialIndex.query] refines with.
 - [Discrete grids](grids.md) — cell coverages as another candidate layer.
-- [Arrays & performance](arrays.md) — array query → `Groups`, vectorized refine.
+- [Arrays & performance](arrays.md) — array query → [`Groups`][gometry.Groups], vectorized refine.
 - [API: SpatialIndex][gometry.SpatialIndex] ·
   [SpatialIndex.candidates][gometry.SpatialIndex.candidates] ·
   [SpatialIndex.query][gometry.SpatialIndex.query] ·

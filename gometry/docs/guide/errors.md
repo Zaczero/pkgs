@@ -4,7 +4,7 @@ description: gometry's exception hierarchy — catching errors, error attributes
 
 # Errors & exceptions
 
-gometry exposes a typed exception hierarchy rooted at `GeometryError` rather than
+gometry exposes a typed exception hierarchy rooted at [`GeometryError`][gometry.GeometryError] rather than
 using generic `ValueError`s for every domain failure. Every class is available
 directly from `gometry`, such as
 [`gm.CRSMismatchError`][gometry.CRSMismatchError].
@@ -23,7 +23,7 @@ ValueError
 Grid-cell surfaces follow the same split as everything else: an out-of-range
 `resolution`/`level`/`precision`/`zoom` is a plain `GeometryError` (a bad
 parameter value), while an invalid cell id, token, or quadkey is a
-`ParseError` whose `.format` tag names the system (`'h3'`, `'s2'`,
+[`ParseError`][gometry.ParseError] whose `.format` tag names the system (`'h3'`, `'s2'`,
 `'geohash'`, `'tile'`, `'quadkey'`); codec tags are lowercase machine keys.
 
 ## Built-in exception compatibility
@@ -36,9 +36,9 @@ parameter value), while an invalid cell id, token, or quadkey is a
    `arr[i]` is an `IndexError`; an exhausted iterator is `StopIteration`.
    Those protocol failures are not rewrapped.
 
-`GeometryTypeError` is a dual-base exception: handing
-`line_substring` a `Polygon` is *both* a gometry domain error and a Python type
-error, so it subclasses both `GeometryError` and `TypeError` (so either `except`
+[`GeometryTypeError`][gometry.GeometryTypeError] is a dual-base exception: handing
+[`line_substring`][gometry.Geometry.line_substring] a [`Polygon`][gometry.Polygon] is *both* a gometry domain error and a Python type
+error, so it subclasses both [`GeometryError`][gometry.GeometryError] and `TypeError` (so either `except`
 clause catches it). That is the one place gometry subclasses `TypeError` —
 wrong-kind domain failures, not protocol coercion.
 
@@ -48,12 +48,12 @@ The most specific exception class identifies the recovery strategy:
 
 | I want to… | catch |
 |---|---|
-| reject a malformed scalar or batch ingest | `ParseError` |
-| reproject and retry on frame disagreements | `CRSMismatchError` |
-| fall back when a transform cannot be built or run | `TransformError` |
-| handle any CRS trouble in one place | `CRSError` |
-| reject anything gometry complained about | `GeometryError` |
-| treat a wrong geometry kind as a type bug | `TypeError` *(or `GeometryTypeError`)* |
+| reject a malformed scalar or batch ingest | [`ParseError`][gometry.ParseError] |
+| reproject and retry on frame disagreements | [`CRSMismatchError`][gometry.CRSMismatchError] |
+| fall back when a transform cannot be built or run | [`TransformError`][gometry.TransformError] |
+| handle any CRS trouble in one place | [`CRSError`][gometry.CRSError] |
+| reject anything gometry complained about | [`GeometryError`][gometry.GeometryError] |
+| treat a wrong geometry kind as a type bug | `TypeError` *(or [`GeometryTypeError`][gometry.GeometryTypeError])* |
 | treat any bad value like the stdlib does | `ValueError` |
 
 
@@ -109,11 +109,11 @@ for catch in (TypeError, gm.GeometryTypeError):
 | `CRSError: set_crs would re-tag CRS ... without moving coordinates` | you asked to *relabel* a geometry that already has a CRS | `to_crs(...)` to reproject; `set_crs(..., overwrite=True)` only if the original tag was wrong |
 | `CRSError: ... epoch requires a CRS` | a coordinate epoch is meaningless without a frame | set the CRS first (or together: `Point(..., crs=..., epoch=...)`) |
 | `InvalidGeometryError: ... cannot carry Z/M` (`to_geojson` on M or `to_polyline` on Z/M) | the target format has no slot for those ordinates | use WKB/WKT/GeoArrow, or explicitly clear dimensions with `set_m(None)` / `force_2d()` when loss is intended |
-| `ParseError` with `.format` set | a serialized input (WKT/WKB/GeoJSON/cell id/quadkey) is malformed | check `e.format` for which codec rejected it; a batch fails as a unit and attaches the failing row as a note |
-| `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call `drop_missing()` first or `fill_missing(...)` with an explicit replacement |
+| [`ParseError`][gometry.ParseError] with `.format` set | a serialized input (WKT/WKB/GeoJSON/cell id/quadkey) is malformed | check `e.format` for which codec rejected it; a batch fails as a unit and attaches the failing row as a note |
+| `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call [`drop_missing()`][gometry.GeometryArray.drop_missing] first or [`fill_missing(...)`][gometry.GeometryArray.fill_missing] with an explicit replacement |
 | `GeometryError: ... must be between ... got ...` | a parameter value is out of its documented range | the message names the kwarg and the valid range |
 | `GeometryError: unknown ... did you mean ...?` | a token typo (`'mitter'` vs `'miter'`, …) | take the suggestion; tokens are also `Literal`-typed, so a type checker catches this before runtime |
-| `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside ±180/±90 | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)`; `swap_xy()` repairs latitude-first data |
+| `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside ±180/±90 | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)`; [`swap_xy()`][gometry.Geometry.swap_xy] repairs latitude-first data |
 | metric looks unexpectedly large or small | degrees treated as meters somewhere | let the CRS drive (no `unit=`), and check the geometry carries the intended CRS |
 
 ## Error attributes
@@ -124,17 +124,17 @@ handlers act on data instead of parsing messages. Class-level defaults are
 
 | Attribute | Classes | Meaning |
 |---|---|---|
-| `field` | `CRSMismatchError` | Which metadata disagreed: `'crs'` or `'epoch'` |
-| `left` / `right` | `CRSMismatchError` | Raw conflicting values (CRS identifiers or epoch floats; not quoted presentation strings) |
-| `index` | `CRSMismatchError` | Collection item that disagreed (when applicable) |
-| `format` | `ParseError` | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
-| `position` | `ParseError` | WKT reports the UTF-8 input length for every failure; cursor-based codecs such as WKB report the byte offset where parsing detected it |
-| `param` / `value` | `GeometryError` (value lanes) | Offending keyword and value |
-| `parameter` / `produced` / `limit` | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
-| `expected` / `got` | `GeometryTypeError` | Required and received geometry kinds |
-| `source` / `target` | `TransformError` | Source and target CRS of a failed transform |
-| `operation` | `InvalidGeometryError` (overlay) | Overlay op name |
-| `crs` | `CRSError` | CRS involved in a unit/authority mismatch |
+| [`field`][gometry.CRSMismatchError.field] | [`CRSMismatchError`][gometry.CRSMismatchError] | Which metadata disagreed: `'crs'` or `'epoch'` |
+| [`left`][gometry.CRSMismatchError.left] / [`right`][gometry.CRSMismatchError.right] | `CRSMismatchError` | Raw conflicting values (CRS identifiers or epoch floats; not quoted presentation strings) |
+| [`index`][gometry.CRSMismatchError.index] | `CRSMismatchError` | Collection item that disagreed (when applicable) |
+| [`format`][gometry.ParseError.format] | [`ParseError`][gometry.ParseError] | Lowercase space-free codec key, including `'pickle'` alongside `'wkt'`, `'wkb'`, `'geojson'`, `'geoarrow'`, `'geoparquet'`, grid codecs, and geocoders |
+| [`position`][gometry.ParseError.position] | `ParseError` | WKT reports the UTF-8 input length for every failure; cursor-based codecs such as WKB report the byte offset where parsing detected it |
+| [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
+| [`parameter`][gometry.GeometryError.parameter] / [`produced`][gometry.GeometryError.produced] / [`limit`][gometry.GeometryError.limit] | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
+| [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |
+| [`source`][gometry.TransformError.source] / [`target`][gometry.TransformError.target] | [`TransformError`][gometry.TransformError] | Source and target CRS of a failed transform |
+| [`operation`][gometry.InvalidGeometryError.operation] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (overlay) | Overlay op name |
+| [`crs`][gometry.CRSError.crs] | [`CRSError`][gometry.CRSError] | CRS involved in a unit/authority mismatch |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -154,7 +154,7 @@ except gm.ParseError as e:
 ## Rows in array errors
 
 A per-element failure in an array operation keeps its class and message —
-so `except ParseError` still catches — and names the failing row as a
+so [`except ParseError`][gometry.ParseError] still catches — and names the failing row as a
 [PEP 678](https://peps.python.org/pep-0678/) note that tracebacks display:
 
 ```python exec="on" source="block" result="text"
@@ -200,6 +200,6 @@ print(type(clone).__name__, '|', clone)
 ## See also
 
 - [Validation & repair](validation.md) — turning invalid geometry into a report, then a fix.
-- [CRS, units & measurement](crs.md) — the frame rules behind `CRSMismatchError`.
-- [Security & untrusted input](../about/security.md) — catching `ParseError` at trust boundaries.
+- [CRS, units & measurement](crs.md) — the frame rules behind [`CRSMismatchError`][gometry.CRSMismatchError].
+- [Security & untrusted input](../about/security.md) — catching [`ParseError`][gometry.ParseError] at trust boundaries.
 - [API: errors](../api/errors.md) — the full class reference.

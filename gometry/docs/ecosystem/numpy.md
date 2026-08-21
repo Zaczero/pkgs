@@ -1,5 +1,5 @@
 ---
-description: NumPy interchange in gometry — typed read-only ndarrays for every bulk result, zero-copy coordinate columns, the buffer protocol, and coordinate handoffs to SciPy and scikit-learn.
+description: NumPy interchange in gometry — read-only typed ndarrays for every bulk result, zero-copy coordinate columns, the buffer protocol, and SciPy handoffs.
 ---
 
 # NumPy arrays & coordinates
@@ -33,15 +33,15 @@ The arrays come back read-only and already in the right dtype, so
 `numpy.asarray(result)` is a **zero-copy view** when the dtype matches and
 `.tolist()` returns plain Python lists. Per-row bounds are `(rows, 4)`
 `float64` matrices (`nan` rows for empty geometries); array index queries return
-[`Groups`][gometry.Groups], a CSR wrapper whose `.values`/`.offsets` and
-per-row views are `int64` ndarrays. Text outputs (`to_wkt`, geohash tokens), byte
-outputs (`to_wkb`), and ragged diagnostics stay Python lists because they have no
+[`Groups`][gometry.Groups], a CSR wrapper whose [`.values`][gometry.Groups.values]/[`.offsets`][gometry.Groups.offsets] and
+per-row views are `int64` ndarrays. Text outputs ([`to_wkt`][gometry.Geometry.to_wkt], geohash tokens), byte
+outputs ([`to_wkb`][gometry.Geometry.to_wkb]), and ragged diagnostics stay Python lists because they have no
 single dense ndarray shape.
 
 ## Coordinate columns, zero-copy
 
-[`geom.coords`][gometry.Coordinates] exposes per-axis columns directly. `.x`/`.y`
-are always read-only `float64` ndarrays; `.z`/`.m` appear when any coordinate
+[`geom.coords`][gometry.Coordinates] exposes per-axis columns directly. [`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]
+are always read-only `float64` ndarrays; [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m] appear when any coordinate
 carries that ordinate, with `NaN` for rows that lack it on a mixed-dimension
 [`GeometryArray`][gometry.GeometryArray].
 
@@ -62,7 +62,7 @@ print("source row per vertex:", index)
 
 `coords.x` shares storage; `np.asarray(coords)` materializes a dense
 `(N, dims)` matrix (a copy, since storage is column-major) with `NaN`
-for absent Z/M; `coords.to_dict()` returns read-only ndarray columns such as
+for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns read-only ndarray columns such as
 `{'x': ndarray, 'y': ndarray}` for direct pandas/Polars construction (forced
 Z/M columns use `NaN` where absent). [`get_coordinates`][gometry.get_coordinates] takes
 `axes=` / `return_index=` for bulk extraction across a geometry
@@ -77,7 +77,7 @@ builds slow object arrays behind your back. The inverse is the
 ndarray (or any iterable) of gometry geometries **or** `__geo_interface__` objects,
 including Shapely geometries.
 
-`Geometry`, `GeometryArray`, and `Coordinates` set `__array_ufunc__ = None`, so
+[`Geometry`][gometry.Geometry], [`GeometryArray`][gometry.GeometryArray], and [`Coordinates`][gometry.Coordinates] set `__array_ufunc__ = None`, so
 NumPy ufuncs defer with a clear `TypeError` instead of forcing an implicit
 conversion. `GeometryArray` and `Coordinates` implement `__array__`, so
 `np.asarray(arr)` gives an `object` array and `np.asarray(coords)` gives an
@@ -86,14 +86,14 @@ conversion. `GeometryArray` and `Coordinates` implement `__array__`, so
 ## Cell arrays
 
 [`CellArray`][gometry.CellArray] exposes H3, S2, and tile ids as `uint64`
-through `.to_numpy()` (zero-copy when contiguous) and NumPy's array protocol.
+through [`.to_numpy()`][gometry.CellArray.to_numpy] (zero-copy when contiguous) and NumPy's array protocol.
 For those numeric grids, `np.asarray(cells)` gives raw ids, while
 `np.asarray(cells, dtype=object)` gives typed cell objects. Geohash's public
 identity is its base-32 string token, not an implementation integer, so
 `geohash_cells.to_numpy()` and `np.asarray(geohash_cells)` return a read-only
-object array of `GeohashCell` values; use `.token` for strings.
+object array of [`GeohashCell`][gometry.GeohashCell] values; use [`.token`][gometry.Cell.token] for strings.
 
-Cell arrays with missing rows are logical sequences of `Cell | None`. Their
+Cell arrays with missing rows are logical sequences of [`Cell | None`][gometry.Cell]. Their
 default NumPy export is a read-only object array containing the typed cells and
 `None`; `dtype=object` always has this behavior. Explicit `dtype=uint64` is
 rejected for a masked array, and `copy=False` is rejected whenever an object,
@@ -116,7 +116,7 @@ Scattered-data interpolation (IDW, kriging, natural-neighbor) and coordinate
 clustering (k-means, DBSCAN, hierarchical) live in SciPy, scikit-gstat, and
 scikit-learn; gometry supplies their coordinate input.
 Pull a `float64` matrix with [`get_coordinates`][gometry.get_coordinates]
-(or per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
+(or per-axis [`.coords.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]) and pass it straight in. Project to a metric CRS
 first when planar XY is wrong for geographic data:
 
 ```python exec="on" source="block" result="text"
@@ -149,4 +149,4 @@ pass them to NumPy, SciPy, or scikit-learn.
 
 - [Arrow & storage](arrow.md) — columnar, zero-copy interchange beyond raw coordinates.
 - [DataFrames](dataframes.md) — store geometry columns in pandas/polars.
-- [Arrays & performance](../guide/arrays.md) — the `GeometryArray`/`CellArray`/`Groups` model.
+- [Arrays & performance](../guide/arrays.md) — the [`GeometryArray`][gometry.GeometryArray]/[`CellArray`][gometry.CellArray]/[`Groups`][gometry.Groups] model.

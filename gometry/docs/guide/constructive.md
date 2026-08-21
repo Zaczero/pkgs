@@ -1,5 +1,5 @@
 ---
-description: Constructive geometry operations in gometry — buffers, overlays, simplify, offset curves, snap and segmentize, hulls, centroids, triangulation, Voronoi, and CRS-aware distances.
+description: Constructive geometry in gometry — buffers, overlays, simplify, offset curves, snap, segmentize, hulls, centroids, triangulation, and Voronoi.
 ---
 
 # Constructive operations
@@ -9,8 +9,8 @@ buffers, set-theoretic overlays, simplifications, hulls, and tessellations.
 All inputs are immutable, so every operation returns a fresh value.
 
 Overlays and shape operations use stored XY coordinates after strict frame
-matching; reprojecting can change vertices, seams, and topology. `buffer` and
-`offset_curve` take distances in the CRS-natural units described in [CRS, units
+matching; reprojecting can change vertices, seams, and topology. [`buffer`][gometry.Geometry.buffer] and
+[`offset_curve`][gometry.Geometry.offset_curve] take distances in the CRS-natural units described in [CRS, units
 & measurement](crs.md). Geographic buffers use a local projection and are not
 exact ellipsoidal offsets.
 
@@ -117,8 +117,8 @@ and arrays broadcast identically, CRS conflicts raise the same error, and Z/M
 is restored wherever the result vertex can be sourced from an input segment.
 
 `intersection` keeps every dimension of contact: two polygons that merely
-share a border intersect in that border (a `LineString`), and a corner-only
-touch yields the corner `Point` — so a non-empty `intersects(a, b)` always has
+share a border intersect in that border (a [`LineString`][gometry.LineString]), and a corner-only
+touch yields the corner [`Point`][gometry.Point] — so a non-empty [`intersects(a, b)`][gometry.intersects] always has
 a non-empty `intersection(a, b)`.
 
 ```python exec="on" html="true"
@@ -137,7 +137,7 @@ print(panels([
 ```
 
 !!! note "Overlay guards your CRS"
-    Overlay and `union_all` reject inputs with **conflicting** CRS metadata
+    Overlay and [`union_all`][gometry.union_all] reject inputs with **conflicting** CRS metadata
     rather than silently dropping it or stamping a wrong CRS on the result.
     Reproject both operands to a common CRS first — see the [CRS, units & measurement](crs.md).
 
@@ -157,8 +157,8 @@ print(merged.to_wkt())        # one 5x1 rectangle, shared edges dissolved
 
 ```
 
-For a `GeometryArray`, `array.union_all()` performs whole-column aggregation.
-Grouped aggregation is a separate operation: `array.dissolve(by=groups)` returns
+For a [`GeometryArray`][gometry.GeometryArray], [`array.union_all()`][gometry.GeometryArray.union_all] performs whole-column aggregation.
+Grouped aggregation is a separate operation: [`array.dissolve(by=groups)`][gometry.GeometryArray.dissolve] returns
 one geometry per first-seen group with the corresponding group keys. `dissolve`
 requires `by`; whole-column aggregation uses `union_all()`.
 
@@ -207,8 +207,8 @@ use the distance-scale `tolerance` (for `'vw'` the effective-area threshold is
 `tolerance**2 / 2`) and share the `preserve_topology=True` default.
 
 [`offset_curve`][gometry.Geometry.offset_curve] produces a line parallel to a
-`LineString` at a signed distance (positive = left of the direction of
-travel), with the same corner vocabulary as `buffer` — round fillet arcs
+[`LineString`][gometry.LineString] at a signed distance (positive = left of the direction of
+travel), with the same corner vocabulary as [`buffer`][gometry.Geometry.buffer] — round fillet arcs
 by default, `join_style='miter'`/`'bevel'` and `quadrant_segments` on demand:
 
 ```python exec="on" source="block" result="text"
@@ -238,12 +238,12 @@ These reshape a geometry's **vertices** — aligning almost-coincident edges bef
 an overlay, or adding intermediate vertices so a later planar reproject or overlay
 tracks a curve more closely. They do **not** promise a bit-identical representation
 or an unchanged geometry kind: snapped coordinates may collapse duplicates, and
-related repair paths (for example `snap_to_grid(..., repair=True)`) can change kind
+related repair paths (for example [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) can change kind
 when a shell pinches.
 
 [`snap`][gometry.snap] moves vertices of `geom` onto a `reference` geometry's
 vertices when they fall within `tolerance` (planar units). Kind is preserved for the
-typed free function (`LineString` in → `LineString` out); only the vertex
+typed free function ([`LineString`][gometry.LineString] in → `LineString` out); only the vertex
 coordinates change. It handles two layers whose shared border is almost but not
 exactly coincident:
 
@@ -388,8 +388,8 @@ read-only `float64` NumPy column.
     as lines, and
     [`polygonize_full`][gometry.polygonize_full] additionally reports dangles,
     cut edges, and invalid rings for pooled raw linework.
-    `GeometryArray.polygonize()` is row-wise and returns
-    `Groups`; pass the array directly to either free function to opt into one
+    [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize] is row-wise and returns
+    [`Groups`][gometry.Groups]; pass the array directly to either free function to opt into one
     pooled graph. CDT
     `min_angle`/`max_area` refinement targets are best-effort on degenerate or
     sliver inputs; the result is still a valid conforming triangulation.

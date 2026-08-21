@@ -36,16 +36,16 @@ HTTP/1.1 split route and the pure HTTP/2 requirements.
 
 The relevant configuration knobs share a `websocket_*` prefix; full
 descriptions, defaults, and CLI flags live in the
-[Configuration reference](configuration.md):
+[WebSocket options](configuration.md#websocket):
 
-- `websocket_max_message_size` caps a reassembled message, not one
+- [`websocket_max_message_size`](configuration.md#option-websocket_max_message_size) caps a reassembled message, not one
   frame: fragments are accounted as they arrive, and a compressed
   message is measured after decompression. The default is 16 MiB; set it
   to `0` to remove the cap entirely.
-- `websocket_per_message_deflate` controls whether the server accepts
+- [`websocket_per_message_deflate`](configuration.md#option-websocket_per_message_deflate) controls whether the server accepts
   the [permessage-deflate](https://datatracker.ietf.org/doc/html/rfc7692)
   compression extension when a client offers it.
-- `websocket_ping_interval` and `websocket_ping_timeout` keep idle
+- [`websocket_ping_interval`](configuration.md#option-websocket_ping_interval) and [`websocket_ping_timeout`](configuration.md#option-websocket_ping_timeout) keep idle
   connections alive and detect dead peers. Set `websocket_ping_interval`
   to `0` to turn keep-alive off entirely — that is the single off switch;
   no pings are sent, and the timeout is irrelevant while keep-alive is
@@ -81,10 +81,10 @@ Once the peer is gone, `send()` raises `OSError` — see
 h2corn ws:app --no-http1
 ```
 
-With `--no-http1`, the server only accepts the HTTP/2 WebSocket
+With [`--no-http1`](configuration.md#option-http1), the server only accepts the HTTP/2 WebSocket
 bootstrap — the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441)
 extended `CONNECT`. Browser WebSocket APIs and the reverse proxy need support
 for the upgrade translation. If the proxy does not provide it, route WebSocket
 upgrades over HTTP/1.1 and ordinary requests over `h2c`, and keep HTTP/1
 enabled there. See [Behind a reverse
-proxy](deployment/proxy.md) before dropping HTTP/1.
+proxy](deployment/proxy.md#behind-a-reverse-proxy) before dropping HTTP/1.

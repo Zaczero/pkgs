@@ -1,10 +1,10 @@
 ---
-description: Current gometry 1.0.0 benchmark status.
+description: Current gometry benchmark status.
 ---
 
 # Benchmarks
 
-No comparative benchmark artifact is published for gometry 1.0.0.
+No comparative benchmark artifact is published.
 
 The implementation properties users can rely on without a timing claim are:
 

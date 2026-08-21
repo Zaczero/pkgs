@@ -700,6 +700,10 @@ class Config:
     """
     Immutable server configuration.
 
+    Configuration can be loaded with [`Config.from_env`][h2corn.Config.from_env],
+    [`Config.from_mapping`][h2corn.Config.from_mapping], or
+    [`Config.from_toml`][h2corn.Config.from_toml].
+
     Every option is also exposed as a CLI flag and an `H2CORN_*` environment
     variable. The full list and defaults are documented in the configuration
     reference of the project documentation.
@@ -717,6 +721,20 @@ class Config:
 
     Unix listeners (`unix:PATH`) and the `user`/`group`/`umask` options
     are POSIX-only.
+
+    Examples:
+        Configure an option without starting a server:
+
+        >>> config = Config(bind=('127.0.0.1:0',), access_log=False)
+        >>> (config.bind, config.access_log)
+        (('127.0.0.1:0',), False)
+
+        Invalid combinations fail during construction:
+
+        >>> Config(certfile='server.pem')
+        Traceback (most recent call last):
+        ...
+        ValueError: certfile and keyfile must be configured together
     """
 
     root_path: str = _option(
@@ -1235,7 +1253,7 @@ class Config:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Self:
         """
-        Build a `Config` from `H2CORN_*` environment variables.
+        Build a [`Config`][h2corn.Config] from `H2CORN_*` environment variables.
 
         Each option's environment variable name is its field name in upper
         case, prefixed with `H2CORN_` (for example, `H2CORN_BIND`,
@@ -1244,19 +1262,38 @@ class Config:
 
         The convenience pair `H2CORN_HOST` / `H2CORN_PORT` is accepted only
         when `H2CORN_BIND` is unset.
+
+        Examples:
+            Pass an explicit mapping so the process environment is not involved:
+
+            >>> config = Config.from_env(
+            ...     {'H2CORN_BIND': '127.0.0.1:9000', 'H2CORN_WORKERS': '2'}
+            ... )
+            >>> (config.bind, config.workers)
+            (('127.0.0.1:9000',), 2)
         """
         return cls(**env_values(env))
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> Self:
         """
-        Build a `Config` from a plain mapping (e.g. parsed JSON or TOML).
+        Build a [`Config`][h2corn.Config] from a plain mapping (e.g. parsed JSON
+        or TOML).
 
         Keys must match either a field name on `Config` or the convenience
         keys `host`/`port`. Unknown keys raise `ValueError`. String values
         are coerced through the same parsing rules as the matching
         environment variable; non-string values are passed through and
         validated by `__post_init__`.
+
+        Examples:
+            String values use the same parsing rules as environment values:
+
+            >>> config = Config.from_mapping(
+            ...     {'workers': '2', 'access_log': 'false'}
+            ... )
+            >>> (config.workers, config.access_log)
+            (2, False)
         """
         option_map = {option.name: option for option in config_options()}
         if unknown := sorted(data.keys() - option_map.keys() - CONVENIENCE_KEYS):
@@ -1280,7 +1317,7 @@ class Config:
     @classmethod
     def from_toml(cls, path: str | os.PathLike[str]) -> Self:
         """
-        Build a `Config` from a TOML file.
+        Build a [`Config`][h2corn.Config] from a TOML file.
 
         The file must be a flat table whose keys correspond to `Config`
         field names. Example:
@@ -1293,6 +1330,18 @@ class Config:
         forwarded_fields = ["for", "proto"]
         http1 = false
         ```
+
+        Examples:
+            Load a flat TOML file without using process-wide configuration:
+
+            >>> from pathlib import Path
+            >>> from tempfile import TemporaryDirectory
+            >>> with TemporaryDirectory() as directory:
+            ...     path = Path(directory) / 'config.toml'
+            ...     _ = path.write_text('workers = 2\\n', encoding='utf-8')
+            ...     config = Config.from_toml(path)
+            >>> config.workers
+            2
         """
         import tomllib
 

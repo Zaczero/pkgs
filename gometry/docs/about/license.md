@@ -1,10 +1,10 @@
 ---
-description: gometry 1.0.0 licensing, bundled CRS resources, and third-party notices.
+description: gometry licensing, bundled CRS resources, and third-party notices.
 ---
 
 # License
 
-gometry 1.0.0 is distributed under the **Apache-2.0 OR MIT** dual license. You
+gometry is distributed under the **Apache-2.0 OR MIT** dual license. You
 may use it under the terms of either license, at your option.
 
 ```toml title="configuration: package license metadata"

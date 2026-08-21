@@ -52,7 +52,7 @@ provide no HTTP/2 listener in this harness.
 ## Static file
 
 The workload serves a 128 KiB Starlette `FileResponse`, using the ASGI
-`http.response.pathsend` extension where supported.
+[`http.response.pathsend`](asgi.md#sending-a-file) extension where supported.
 
 ![HTTP/1 static file, 1 worker: requests per second and peak memory (PSS) by server.](assets/benchmarks/benchmark_http_1_static_file_1_worker.svg)
 

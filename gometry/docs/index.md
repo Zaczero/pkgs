@@ -9,7 +9,7 @@ hide:
 
 <img src="assets/logo.svg" alt="gometry" class="hero-logo">
 
-# One geospatial engine, one mental model
+# One engine, one mental model
 
 A **blazing-fast** geospatial engine for Python, written in Rust. gometry replaces the
 day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
@@ -47,7 +47,7 @@ print("nearby neighborhood rows:", nearby.tolist())
     ---
 
     The CRS decides every metric, and the result is **native** for that CRS. No guessing whether
-    `area` is degrees² or m², or whether `buffer(100)` means meters.
+    [`area`][gometry.Geometry.area] is degrees² or m², or whether [`buffer(100)`][gometry.Geometry.buffer] means meters.
 
     [:octicons-arrow-right-24: Measurement & the CRS](guide/crs.md)
 
@@ -65,7 +65,7 @@ print("nearby neighborhood rows:", nearby.tolist())
     ---
 
     H3 & S2 cell covers with explicit `cell_rule`, spatial indexing with
-    `explain`, and millimeter-accurate [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
+    [`explain`][gometry.SpatialIndex.explain], and millimeter-accurate [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
 
     [:octicons-arrow-right-24: Discrete grids](guide/grids.md)
 
@@ -78,23 +78,23 @@ print("nearby neighborhood rows:", nearby.tolist())
 ### The CRS is the single knob
 
 The usual stack makes you remember whether a metric means degrees or meters. gometry has one
-`geom.area`, one `geom.length`, one `gm.distance(a, b)` — the geometry's CRS decides how
+[`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
 they are computed and the result is **native** for that CRS: a geographic CRS measures
 geodesically in meters, a projected CRS uses its native linear units (feet stay feet;
 meters stay meters), and a CRS-free geometry stays in coordinate units. Pass
-`unit='meters'` for forced SI, or reproject with `geom.to_crs(...)` to change the frame.
+`unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
 
 ### Fast without awkwardness
 
 The hot paths are Rust. Predicates, overlay, buffering, geodesics, and coverage run as
-batched kernels over packed, GeoArrow-compatible buffers — so a million-point `contains`
+batched kernels over packed, GeoArrow-compatible buffers — so a million-point [`contains`][gometry.contains]
 is one call, not a Python loop. Grid `cover` factories materialize typed cell arrays;
 use free geometry predicates for exact source checks.
 
 ### Declare, transform, refine
 
-`set_crs` declares; `to_crs` transforms — and they can't be confused. Spatial indexes
-expose `candidates` vs `query` (exact refine) instead of hiding the prefilter. Grid
+[`set_crs`][gometry.Geometry.set_crs] declares; `to_crs` transforms — and they can't be confused. Spatial indexes
+expose [`candidates`][gometry.SpatialIndex.candidates] vs [`query`][gometry.SpatialIndex.query] (exact refine) instead of hiding the prefilter. Grid
 cover factories materialize cells with an explicit `cell_rule`; a cover is a set of
 candidate cells, and exact membership stays a predicate on the source geometry.
 

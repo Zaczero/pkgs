@@ -7,7 +7,7 @@ description: Run h2corn inside your own event loop with the Server class — sta
 The CLI (`h2corn module:app`) and the [`serve()`][h2corn.serve] function
 start the server as a top-level process. Use the [`Server`][h2corn.Server]
 class inside an existing event loop or test harness. Full signatures are in
-the [API reference](api/index.md).
+the [API reference](api/index.md#api-reference).
 
 ## Inside an asyncio app
 
@@ -20,8 +20,8 @@ until the server is asked to shut down. It runs one worker in the calling
 process; [`serve()`][h2corn.serve] runs several through the same multi-process
 supervisor as the CLI.
 
-`Server.serve()` owns an in-process lifecycle, so it rejects a configuration
-that combines `pid` with `user` or `group`: the pidfile and privilege change
+[`Server.serve()`][h2corn.Server.serve] owns an in-process lifecycle, so it rejects a configuration
+that combines [`pid`](configuration.md#option-pid) with [`user`](configuration.md#option-user) or [`group`](configuration.md#option-group): the pidfile and privilege change
 need one supervisor to own their ordering. On Unix, use
 [`h2corn.serve()`][h2corn.serve] or the CLI for that topology; their
 supervisor owns the pidfile and manages worker privilege changes.
@@ -30,10 +30,10 @@ supervisor owns the pidfile and manages worker privilege changes.
 
 Call [`shutdown()`][h2corn.Server.shutdown] from any thread or
 coroutine to begin a graceful stop. In-flight requests get up to
-`Config.timeout_graceful_shutdown` seconds to complete, and their
+[`timeout_graceful_shutdown`](configuration.md#option-timeout_graceful_shutdown) seconds to complete, and their
 cleanup gets the same budget again once they are cancelled.
 
-`serve()` stops waiting when that budget is spent, whatever the
+[`serve()`][h2corn.Server.serve] stops waiting when that budget is spent, whatever the
 application does — one that catches `CancelledError` and never finishes
 cannot hold it open. An **explicit** `shutdown()` that hits the deadline
 raises `RuntimeError` rather than returning as if the stop had succeeded.
@@ -43,7 +43,7 @@ waits for them, [`releasing`][h2corn.Server.releasing] stays true, and a
 `serve()` call made in that window raises
 `RuntimeError: this Server is still releasing a previous serve() call`.
 
-Using the `hello.py` application from the [Quickstart](quickstart.md):
+Using the `hello.py` application from the [Quickstart](quickstart.md#run-your-first-server):
 
 ```python title="shutdown.py (requires hello.py)"
 import asyncio
@@ -66,7 +66,7 @@ asyncio.run(main())
 
 ## Lifecycle
 
-One `serve()` call at a time, and a `Server` can be reused once that call has
+One [`serve()`][h2corn.Server.serve] call at a time, and a [`Server`][h2corn.Server] can be reused once that call has
 let go of everything it held.
 
 - **Sequential reuse works.** After `shutdown()`, cancellation, or a startup
@@ -83,12 +83,15 @@ let go of everything it held.
   `shutdown()`. The difference is what surfaces: cancellation always re-raises
   `CancelledError` once the drain finishes or its budget runs out, never the
   over-budget `RuntimeError`.
-- **The public surface is five names:** `serve`, `shutdown`, `wait_started`,
-  `addresses`, and `releasing`.
+- **The public surface is five names:** [`serve()`][h2corn.Server.serve],
+  [`shutdown()`][h2corn.Server.shutdown],
+  [`wait_started()`][h2corn.Server.wait_started],
+  [`addresses`][h2corn.Server.addresses], and
+  [`releasing`][h2corn.Server.releasing].
 
 ## Knowing when the server is up
 
-`serve()` runs until the server stops, so run it as a task when readiness is
+[`serve()`][h2corn.Server.serve] runs until the server stops, so run it as a task when readiness is
 needed. [`Server.wait_started()`][h2corn.Server.wait_started] resolves once the
 server is accepting requests:
 
@@ -135,5 +138,5 @@ plus `[::]:0`), they share one kernel-assigned port.
 | ---------------------------------------------------- | ------------------------------------ |
 | The standard CLI experience, multi-worker            | `h2corn module:app`                  |
 | The same behavior from Python                        | [`h2corn.serve(app, config)`][h2corn.serve] |
-| A single worker inside your own event loop           | [`h2corn.Server(app, config).serve()`][h2corn.Server] |
-| To embed in a test harness with programmatic stop    | [`Server`][h2corn.Server] + `shutdown()` |
+| A single worker inside your own event loop           | [`h2corn.Server(app, config).serve()`][h2corn.Server.serve] |
+| To embed in a test harness with programmatic stop    | [`Server`][h2corn.Server] + [`shutdown()`][h2corn.Server.shutdown] |

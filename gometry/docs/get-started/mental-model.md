@@ -1,5 +1,5 @@
 ---
-description: The three models behind gometry — CRS-decided measurement, S2 spherical reasoning, and discrete grid cells — plus set_crs versus to_crs, geometries as Python values, and the property/method/free-function API shape.
+description: The three models behind gometry — CRS-decided measurement, S2 spherical reasoning, and discrete grid cells, plus set_crs versus to_crs and the API shape.
 ---
 
 # The mental model
@@ -20,7 +20,7 @@ gometry's operations use one of three:
 
 ## `set_crs` declares, `to_crs` transforms
 
-`set_crs` attaches metadata to existing coordinates. `to_crs` transforms those
+[`set_crs`][gometry.Geometry.set_crs] attaches metadata to existing coordinates. [`to_crs`][gometry.Geometry.to_crs] transforms those
 coordinates through a PROJ operation:
 
 ```python title="partial: API placement example"
@@ -64,7 +64,7 @@ Equality is **value** equality (same CRS, epoch, and exact coordinates), and has
 agrees with it. Geometries and arrays can key dictionaries and live in sets.
 `pickle`/`copy`/`deepcopy` apply to durable value and container types; pickle is
 for trusted data only ([security](../about/security.md#never-unpickle-untrusted-data)).
-`Coordinates` and iterator types are not picklable. Geometries,
+[`Coordinates`][gometry.Coordinates] and iterator types are not picklable. Geometries,
 arrays, and CRS support `weakref`; cell wrappers do not. Cells sort by their id
 (`sorted(cells)`);
 for the numeric-id systems (H3, S2, tiles) `int(cell)` bridges to h3-py /
@@ -73,7 +73,7 @@ s2sphere raw ids, while a geohash cell is keyed by its text token instead.
 ## The shape of the API
 
 Facts are properties, unary operations are methods, and binary relationships are
-free functions. Measurement overrides use the free `area` and `length` functions
+free functions. Measurement overrides use the free [`area`][gometry.area] and [`length`][gometry.length] functions
 with `unit=`. Naming and placement rules are in [Design principles](../about/design.md).
 
 ## Where to go next

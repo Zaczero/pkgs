@@ -46,7 +46,7 @@ requires TLS, the cleartext hop requires peer isolation, and the application
 remains responsible for request validation.
 
 A separate proxy is optional: `h2corn` can terminate TLS itself; see
-[Direct TLS](tls.md).
+[Direct TLS](tls.md#direct-tls).
 
 ## Compatibility boundaries
 
@@ -59,15 +59,15 @@ A separate proxy is optional: `h2corn` can terminate TLS itself; see
 ## Proxy headers and PROXY protocol
 
 `h2corn` accepts two kinds of trust hop metadata, both opt-in and
-gated by `--forwarded-allow-ips`:
+gated by [`--forwarded-allow-ips`](../configuration.md#option-forwarded_allow_ips):
 
-- **`--proxy-headers`** enables standard `Forwarded` and `X-Forwarded-*`
+- **[`--proxy-headers`](../configuration.md#option-proxy_headers)** enables standard `Forwarded` and `X-Forwarded-*`
   processing for peers in `--forwarded-allow-ips`. By default it interprets
   `X-Forwarded-For` and `X-Forwarded-Proto`. Use
-  `--forwarded-fields for,proto,host,port,prefix` to select additional
+  [`--forwarded-fields`](../configuration.md#option-forwarded_fields) `for,proto,host,port,prefix` to select additional
   `X-Forwarded-*` facts, or `--forwarded-fields forwarded` to select the RFC
   7239 dialect. The two dialects cannot be combined.
-- **`--proxy-protocol v1|v2`** parses HAProxy's
+- **[`--proxy-protocol`](../configuration.md#option-proxy_protocol) `v1|v2`** parses HAProxy's
   [PROXY protocol](https://github.com/haproxy/haproxy/blob/master/doc/proxy-protocol.txt)
   on inbound connections. It carries transport-level peer information
   on the connection itself for original source IP metrics or per-IP limits.
@@ -88,6 +88,19 @@ with `option forwarded`. The selected fields are applied only for a peer in
 recognized forwarding header that is not selected or does not come from a
 trusted peer before building `scope["headers"]`. Selected, consumed headers
 remain visible to the application.
+
+Removal covers the underscore spellings the HTTP field-name grammar permits, so
+`X_Forwarded_For` cannot slip past a check written for `X-Forwarded-For`. It
+also reaches an application that reads a forwarding header itself instead of
+through the scope — Django under `USE_X_FORWARDED_HOST`, or a proxy middleware
+in the stack. Naming the field in
+[`--forwarded-fields`](../configuration.md#option-forwarded_fields) keeps it.
+
+[`--proxy-headers`](../configuration.md#option-proxy_headers) with an empty
+`--forwarded-fields`, or an empty
+[`--forwarded-allow-ips`](../configuration.md#option-forwarded_allow_ips), is
+rejected at startup. Each describes a trust boundary that can never act, which
+is what leaving `--proxy-headers` off already spells.
 
 With `--proxy-headers` disabled, forwarded headers are not trusted.
 
@@ -115,7 +128,7 @@ and unambiguous framing, while the browser-facing hop multiplexes normally.
 !!! warning "WebSockets need their own HTTP/1.1 location"
     nginx performs the HTTP/1.1 `Upgrade` handshake and does not translate it
     into the [RFC 8441](https://datatracker.ietf.org/doc/html/rfc8441) extended
-    `CONNECT` that HTTP/2 requires (see [WebSockets](../websockets.md)). An
+     `CONNECT` that HTTP/2 requires (see [WebSockets](../websockets.md#http2-only-deployment)). An
     HTTP/2 upstream cannot carry this handshake. Route `/ws` over HTTP/1.1 and
     all other requests over `h2c`. HTTP/1 must remain enabled when nginx serves
     WebSockets. For WebSockets over a pure HTTP/2 upstream, use
@@ -173,7 +186,7 @@ for the full directive set.
 
 HAProxy's documented HTTP/2 support can translate a browser's HTTP/1.1
 `Upgrade` handshake into the RFC 8441 extended `CONNECT` that h2corn accepts
-over h2c. `--no-http1` is valid only when the deployed HAProxy version provides
+over h2c. [`--no-http1`](../configuration.md#option-http1) is valid only when the deployed HAProxy version provides
 that translation.
 
 ```text title="haproxy.cfg (configuration template)"
@@ -196,4 +209,4 @@ h2corn hello:app \
 
 Other proxies need the same h2c, forwarding-header, and WebSocket checks. If a
 proxy cannot speak h2c, HTTP/1.1 remains the alternative private-hop protocol
-and `--no-http1` must be omitted.
+and [`--no-http1`](../configuration.md#option-http1) must be omitted.

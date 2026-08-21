@@ -12,7 +12,12 @@ filterwarnings = [
   # from gometry.
   "ignore:Best transformation is not available:UserWarning",
 ]
-faulthandler_timeout = "30"
+# Diagnostic, not a budget: pytest arms this with exit=False, so it dumps every
+# thread's stack and the test still runs to completion. Below --timeout it fires
+# on merely slow tests and buries passing runs in stack traces. Its value is the
+# case --timeout cannot reach, a native call that never returns to the
+# interpreter and so never lets the timeout thread run.
+faulthandler_timeout = "90"
 markers = [
   "exhaustive: catalog-wide / combinatorial sweeps; opt in explicitly",
 ]

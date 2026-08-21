@@ -1,5 +1,5 @@
 ---
-description: Spatial predicates in gometry — contains, contains_properly, intersects, touches, crosses, overlaps, equals — their boundary semantics, robust arithmetic, DE-9IM model, and vectorized forms.
+description: Spatial predicates in gometry — contains, intersects, touches, crosses, overlaps, and equals, with boundary semantics, DE-9IM, and vectorized forms.
 ---
 
 # Spatial predicates
@@ -12,7 +12,7 @@ distance. They are model-sensitive: the
 planar edge model must match the intended geometry (projection, densification,
 seams, and domains can change realized topology). That planar computation does
 **not** relax metadata rules — operand CRS and coordinate-epoch tags must still
-match, or you get `CRSMismatchError` like every other binary op. It is also
+match, or you get [`CRSMismatchError`][gometry.CRSMismatchError] like every other binary op. It is also
 **robust**: the orientation and intersection tests underneath are
 adaptive-precision, so boundary-touching and near-degenerate input answer
 consistently rather than flickering with floating-point noise.
@@ -99,7 +99,7 @@ compared pairwise; mismatched non-scalar lengths raise. Many-to-many work uses a
 
 ### The `_xy` coordinate path
 
-When you are testing against raw coordinates rather than `Point` objects,
+When you are testing against raw coordinates rather than [`Point`][gometry.Point] objects,
 [`contains_xy`][gometry.contains_xy] and [`intersects_xy`][gometry.intersects_xy]
 skip constructing the point entirely:
 
@@ -126,7 +126,7 @@ nearly-collinear points turn left, turn right, or not at all depending on
 evaluation order; a naive intersection can place a crossing on the wrong side
 of an endpoint. Degenerate and near-degenerate input is the *normal* case in
 real data, so the topological building blocks gometry relies on
-(point-in-polygon, segment crossing, [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM) `relate`) give the geometrically
+(point-in-polygon, segment crossing, [DE-9IM](https://en.wikipedia.org/wiki/DE-9IM) [`relate`][gometry.relate]) give the geometrically
 correct answer even when points are collinear, coincident, or vanishingly
 close.
 
@@ -144,7 +144,7 @@ print('intersects:     ', gm.intersects(square, on_edge))
     gometry guarantees *predictable* results on degenerate input rather than
     undefined ones. Empty geometries are representable — typed `POINT EMPTY` /
     `POLYGON EMPTY`, empty lines and multi-geometries, an empty
-    `GeometryCollection` — and flow through predicates, metrics, overlay, and
+    [`GeometryCollection`][gometry.GeometryCollection] — and flow through predicates, metrics, overlay, and
     I/O rather than crashing. Boundary-touching cases resolve consistently
     through the robust predicates. Constructive operations that cannot produce a
     result raise a clear error instead of returning corrupt
@@ -152,7 +152,7 @@ print('intersects:     ', gm.intersects(square, on_edge))
 
 ## Boundary points are not contained
 
-The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines `contains`
+The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines [`contains`][gometry.contains]
 requires the contained geometry to share the container's
 **interior** — a point sitting exactly on an edge does not qualify. Use
 [`covers`][gometry.covers] when you want the boundary-inclusive answer.
@@ -200,9 +200,9 @@ shapes). Empties have **total** DE-9IM semantics — they are not "undefined":
 
 | Pairing | Typical result |
 |---|---|
-| `equals(empty, empty)` | **True** (compatible empty kinds) |
-| `disjoint(empty, anything)` incl. empty–empty | **True** |
-| `contains` / `within` / `intersects` / `touches` / … | **False** |
+| [`equals(empty, empty)`][gometry.equals] | **True** (compatible empty kinds) |
+| [`disjoint(empty, anything)`][gometry.disjoint] incl. empty–empty | **True** |
+| [`contains`][gometry.contains] / [`within`][gometry.within] / [`intersects`][gometry.intersects] / [`touches`][gometry.touches] / … | **False** |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -216,7 +216,7 @@ print("contains empty:", gm.contains(gm.box(0, 0, 1, 1), empty))
 
 ```
 
-Applications that treat emptiness specially can branch on `geom.is_empty` (for
+Applications that treat emptiness specially can branch on [`geom.is_empty`][gometry.Geometry.is_empty] (for
 example, to skip rows or substitute a sentinel). The empty-input predicate table
 defines the behavior.
 

@@ -78,6 +78,8 @@ ASGIVersions = HTTPASGIVersions | LifespanASGIVersions
 
 
 class HTTPScope(TypedDict):
+    """An HTTP request scope in [`Scope`][h2corn.Scope]."""
+
     type: Literal['http']
     asgi: HTTPASGIVersions
     http_version: Literal['1.1', '2']
@@ -95,6 +97,8 @@ class HTTPScope(TypedDict):
 
 
 class WebSocketScope(TypedDict):
+    """A WebSocket scope in [`Scope`][h2corn.Scope]."""
+
     type: Literal['websocket']
     asgi: HTTPASGIVersions
     http_version: Literal['1.1', '2']
@@ -112,54 +116,84 @@ class WebSocketScope(TypedDict):
 
 
 class LifespanScope(TypedDict):
+    """A lifespan scope in [`Scope`][h2corn.Scope]."""
+
     type: Literal['lifespan']
     asgi: LifespanASGIVersions
     state: State
 
 
+#: A request scope, one of [`HTTPScope`][h2corn.HTTPScope],
+#: [`WebSocketScope`][h2corn.WebSocketScope], or
+#: [`LifespanScope`][h2corn.LifespanScope].
 Scope = HTTPScope | WebSocketScope | LifespanScope
 
 
 class HTTPRequest(TypedDict):
+    """An HTTP request event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['http.request']
     body: NotRequired[bytes]
     more_body: NotRequired[bool]
 
 
 class HTTPDisconnect(TypedDict):
+    """An HTTP disconnect event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['http.disconnect']
 
 
 class WebSocketConnect(TypedDict):
+    """A WebSocket connect event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['websocket.connect']
 
 
 class WebSocketReceiveBytes(TypedDict):
+    """A binary WebSocket event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['websocket.receive']
     bytes: bytes
     text: NotRequired[None]
 
 
 class WebSocketReceiveText(TypedDict):
+    """A text WebSocket event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['websocket.receive']
     text: str
     bytes: NotRequired[None]
 
 
 class WebSocketDisconnect(TypedDict):
+    """A WebSocket disconnect event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['websocket.disconnect']
     code: int
     reason: NotRequired[str]
 
 
 class LifespanStartup(TypedDict):
+    """A lifespan startup event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['lifespan.startup']
 
 
 class LifespanShutdown(TypedDict):
+    """A lifespan shutdown event in [`ReceiveMessage`][h2corn.ReceiveMessage]."""
+
     type: Literal['lifespan.shutdown']
 
 
+#: An incoming ASGI message, one of [`HTTPRequest`][h2corn.HTTPRequest],
+#: [`HTTPDisconnect`][h2corn.HTTPDisconnect],
+#: [`WebSocketConnect`][h2corn.WebSocketConnect],
+#: [`WebSocketReceiveBytes`][h2corn.WebSocketReceiveBytes],
+#: [`WebSocketReceiveText`][h2corn.WebSocketReceiveText],
+#: [`WebSocketDisconnect`][h2corn.WebSocketDisconnect],
+#: [`LifespanStartup`][h2corn.LifespanStartup], or
+#: [`LifespanShutdown`][h2corn.LifespanShutdown]. [`Message`][h2corn.Message]
+#: combines these with outgoing messages.
 ReceiveMessage = (
     HTTPRequest
     | HTTPDisconnect
@@ -173,6 +207,8 @@ ReceiveMessage = (
 
 
 class HTTPResponseStart(TypedDict):
+    """An HTTP response-start event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['http.response.start']
     status: int
     headers: NotRequired[Headers]
@@ -180,12 +216,16 @@ class HTTPResponseStart(TypedDict):
 
 
 class HTTPResponseBody(TypedDict):
+    """An HTTP response-body event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['http.response.body']
     body: NotRequired[bytes]
     more_body: NotRequired[bool]
 
 
 class HTTPResponseTrailers(TypedDict):
+    """An HTTP response-trailers event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['http.response.trailers']
     headers: Headers
     more_trailers: NotRequired[bool]
@@ -206,12 +246,14 @@ class SupportsFileno(Protocol):
 
 
 class HTTPResponsePathsend(TypedDict):
+    """An HTTP path-send event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['http.response.pathsend']
     path: str
 
 
 class HTTPResponseZeroCopySend(TypedDict):
-    """A response body segment read straight from an open file.
+    """A response body segment in [`SendMessage`][h2corn.SendMessage], read straight from an open file.
 
     Sent after `http.response.start`, as many times as wanted, and freely
     interleaved with `http.response.body`. `offset` defaults to the
@@ -230,7 +272,7 @@ class HTTPResponseZeroCopySend(TypedDict):
 
 
 class HTTPResponseEarlyHint(TypedDict):
-    """An RFC 8297 `103 Early Hints` interim response.
+    """An RFC 8297 `103 Early Hints` interim response in [`SendMessage`][h2corn.SendMessage].
 
     Sent after `http.response.start` and before the final body, as many times
     as wanted. Each value becomes one `link` field; ordering and duplicates are
@@ -242,59 +284,96 @@ class HTTPResponseEarlyHint(TypedDict):
 
 
 class WebSocketAccept(TypedDict):
+    """A WebSocket accept event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.accept']
     subprotocol: NotRequired[str | None]
     headers: NotRequired[Headers]
 
 
 class WebSocketSendBytes(TypedDict):
+    """A binary WebSocket event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.send']
     bytes: bytes
     text: NotRequired[None]
 
 
 class WebSocketSendText(TypedDict):
+    """A text WebSocket event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.send']
     text: str
     bytes: NotRequired[None]
 
 
 class WebSocketClose(TypedDict):
+    """A WebSocket close event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.close']
     code: NotRequired[int]
     reason: NotRequired[str | None]
 
 
 class WebSocketHTTPResponseStart(TypedDict):
+    """A WebSocket HTTP response-start event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.http.response.start']
     status: int
     headers: NotRequired[Headers]
 
 
 class WebSocketHTTPResponseBody(TypedDict):
+    """A WebSocket HTTP response-body event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['websocket.http.response.body']
     body: NotRequired[bytes]
     more_body: NotRequired[bool]
 
 
 class LifespanStartupComplete(TypedDict):
+    """A lifespan startup-complete event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['lifespan.startup.complete']
 
 
 class LifespanStartupFailed(TypedDict):
+    """A lifespan startup-failed event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['lifespan.startup.failed']
     message: NotRequired[str]
 
 
 class LifespanShutdownComplete(TypedDict):
+    """A lifespan shutdown-complete event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['lifespan.shutdown.complete']
 
 
 class LifespanShutdownFailed(TypedDict):
+    """A lifespan shutdown-failed event in [`SendMessage`][h2corn.SendMessage]."""
+
     type: Literal['lifespan.shutdown.failed']
     message: NotRequired[str]
 
 
+#: An outgoing ASGI message, one of [`HTTPResponseStart`][h2corn.HTTPResponseStart],
+#: [`HTTPResponseBody`][h2corn.HTTPResponseBody],
+#: [`HTTPResponseTrailers`][h2corn.HTTPResponseTrailers],
+#: [`HTTPResponsePathsend`][h2corn.HTTPResponsePathsend],
+#: [`HTTPResponseZeroCopySend`][h2corn.HTTPResponseZeroCopySend],
+#: [`HTTPResponseEarlyHint`][h2corn.HTTPResponseEarlyHint],
+#: [`WebSocketAccept`][h2corn.WebSocketAccept],
+#: [`WebSocketSendBytes`][h2corn.WebSocketSendBytes],
+#: [`WebSocketSendText`][h2corn.WebSocketSendText],
+#: [`WebSocketClose`][h2corn.WebSocketClose],
+#: [`WebSocketHTTPResponseStart`][h2corn.WebSocketHTTPResponseStart],
+#: [`WebSocketHTTPResponseBody`][h2corn.WebSocketHTTPResponseBody],
+#: [`LifespanStartupComplete`][h2corn.LifespanStartupComplete],
+#: [`LifespanStartupFailed`][h2corn.LifespanStartupFailed],
+#: [`LifespanShutdownComplete`][h2corn.LifespanShutdownComplete], or
+#: [`LifespanShutdownFailed`][h2corn.LifespanShutdownFailed].
+#: [`Message`][h2corn.Message] combines these with incoming messages.
 SendMessage = (
     HTTPResponseStart
     | HTTPResponseBody
@@ -313,6 +392,8 @@ SendMessage = (
     | LifespanShutdownComplete
     | LifespanShutdownFailed
 )
+#: Any incoming or outgoing ASGI message: [`ReceiveMessage`][h2corn.ReceiveMessage]
+#: or [`SendMessage`][h2corn.SendMessage].
 Message = ReceiveMessage | SendMessage
 Receive = Callable[[], Awaitable[ReceiveMessage]]
 Send = Callable[[SendMessage], Awaitable[None]]

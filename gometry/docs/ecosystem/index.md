@@ -1,5 +1,5 @@
 ---
-description: How gometry fits into the Python geospatial stack — NumPy, Arrow/GeoArrow, GeoParquet, pandas, polars, GeoPandas, lonboard, databases, and the scientific ecosystem, with explicit ownership and copy behavior.
+description: How gometry fits the Python geospatial stack — NumPy, Arrow/GeoArrow, GeoParquet, pandas, polars, GeoPandas, and lonboard, with explicit copy behavior.
 ---
 
 # Ecosystem & interoperability
@@ -31,17 +31,17 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and pickle. See the
 
 | Partner | Install | → gometry | gometry → | CRS carried | Zero-copy path |
 | --- | --- | --- | --- | --- | --- |
-| **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, `geom.coords.x`/`.y`, [`get_coordinates`][gometry.get_coordinates] | n/a | read-only views |
+| **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, [`geom.coords.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y], [`get_coordinates`][gometry.get_coordinates] | n/a | read-only views |
 | **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export `__arrow_c_*__` capsules | PROJJSON | native packed layouts |
 | **pyarrow** | `gometry[arrow]` | [`from_arrow`][gometry.from_arrow] | [`to_arrow`][gometry.Geometry.to_arrow] | PROJJSON | native layouts |
-| **GeoParquet** | `gometry[arrow]` | `from_geoparquet` | `arr.to_geoparquet()` | PROJJSON header | via pyarrow |
-| **pandas** | `gometry[pandas]` | `from_pandas` | `arr.to_pandas()` | dtype object | native extension storage |
-| **polars** | `gometry[polars]` | `gm.from_polars(series)` | `arr.to_polars()` | EWKB EPSG SRID only | encode/decode copy |
-| **GeoPandas** | `gometry[geopandas]` | `from_geopandas` | `arr.to_geopandas()` | from frame | vectorized WKB |
+| **GeoParquet** | `gometry[arrow]` | [`from_geoparquet`][gometry.from_geoparquet] | [`arr.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] | PROJJSON header | via pyarrow |
+| **pandas** | `gometry[pandas]` | [`from_pandas`][gometry.from_pandas] | [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] | dtype object | native extension storage |
+| **polars** | `gometry[polars]` | [`gm.from_polars(series)`][gometry.from_polars] | [`arr.to_polars()`][gometry.GeometryArray.to_polars] | EWKB EPSG SRID only | encode/decode copy |
+| **GeoPandas** | `gometry[geopandas]` | [`from_geopandas`][gometry.from_geopandas] | [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] | from frame | vectorized WKB |
 | **Arrow C consumers** | *(none)* | — | consume gometry `__arrow_c_*__` | metadata | capsule path |
-| **lonboard** | `gometry[viz]` | — | `explore`, `_repr_html_` | reprojects toward WGS84 | GeoArrow capsule |
-| **Shapely** | *(none)* | `__geo_interface__`, `GeometryArray([...])` | `geom.__geo_interface__` | no (GeoJSON) | — |
-| **pyproj** | *(none)* | `CRS(pyproj_crs)` (duck-typed) | `crs.to_wkt()` / `to_authority()` | — | — |
+| **lonboard** | `gometry[viz]` | — | [`explore`][gometry.explore], notebook `_repr_html_` | reprojects toward WGS84 | GeoArrow capsule |
+| **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | `geom.__geo_interface__` | no (GeoJSON) | — |
+| **pyproj** | *(none)* | [`CRS(pyproj_crs)`][gometry.CRS] (duck-typed) | [`crs.to_wkt()`][gometry.CRS.to_wkt] / [`to_authority()`][gometry.CRS.to_authority] | — | — |
 | **scipy / scikit-learn** | *(none)* | — | [`get_coordinates`][gometry.get_coordinates] → ndarray | project first | NumPy view |
 | **pickle / multiprocessing** | *(none)* | `pickle.loads` | `pickle.dumps` | preserved (+ epoch) | — |
 
@@ -53,12 +53,12 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and pickle. See the
 | `pandas` | `uv add "gometry[pandas]"` | concrete pandas extension storage + converters |
 | `polars` | `uv add "gometry[polars]"` | WKB/EWKB Binary Series converters |
 | `geopandas` | `uv add "gometry[geopandas]"` | vectorized GeoSeries/GeoDataFrame conversion |
-| `viz` | `uv add "gometry[viz]"` | `gm.explore` + notebook `_repr_html_` maps |
+| `viz` | `uv add "gometry[viz]"` | [`gm.explore`][gometry.explore] + notebook `_repr_html_` maps |
 
 ### Zero import cost when unused
 
 `import gometry` never pulls pandas, Polars, PyArrow, GeoPandas, or lonboard. A
-script that only calls `gm.Point`, `gm.distance`, and `gm.h3_cover` imports none
+script that only calls [`gm.Point`][gometry.Point], [`gm.distance`][gometry.distance], and [`gm.h3_cover`][gometry.h3_cover] imports none
 of them. Converter calls import only the requested framework and never mutate
 framework classes or registries.
 

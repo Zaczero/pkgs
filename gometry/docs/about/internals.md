@@ -1,5 +1,5 @@
 ---
-description: "Durable gometry architecture: Rust-owned geometry semantics, a typed Python facade, bundled CRS authority, GeoArrow interchange, and runtime concurrency boundaries."
+description: Durable gometry architecture — Rust-owned geometry, a typed Python facade, bundled CRS authority, GeoArrow interchange, and concurrency boundaries.
 ---
 
 # Internals
@@ -56,14 +56,14 @@ for the trust and resource boundaries.
 
 ## Runtime concurrency
 
-The supported free-threaded target is CPython `cp314t`. On standard CPython,
-bulk array operations can release the interpreter lock for their native pass;
-scalar calls retain ordinary Python call behavior. On a free-threaded build,
-the same public API is used without separate thread-specific entry points.
+On standard CPython, bulk array operations can release the interpreter lock for
+their native pass; scalar calls retain ordinary Python call behavior. On a
+[free-threaded build](compatibility.md#runtime-and-platform-matrix), the same
+public API is used without separate thread-specific entry points.
 
 Immutable geometries, arrays, cells, CRS values, and grouped containers can be
-shared after construction. `PreparedGeometry` retains immutable source state
-and can be queried from multiple threads. `SpatialIndex` supports concurrent
+shared after construction. [`PreparedGeometry`][gometry.PreparedGeometry] retains immutable source state
+and can be queried from multiple threads. [`SpatialIndex`][gometry.SpatialIndex] supports concurrent
 query-only use; callers should serialize writes and queries that must observe a
 particular write boundary.
 
