@@ -38,15 +38,15 @@ import gometry as gm
 
 paris = gm.Point(2.3522, 48.8566, crs=4326)
 print(paris.to_wkt())
-print("x =", paris.x, " y =", paris.y)
-print("crs =", paris.crs, " coordinate_axes =", paris.coordinate_axes)
+print("x:", paris.x, "y:", paris.y)
+print("crs:", paris.crs, "coordinate_axes:", paris.coordinate_axes)
 
 ```
 
 ```python exec="on" html="true"
 from _figures import figure
 import gometry as gm
-print(figure(gm.Point(2.3522, 48.8566), "Point(lon, lat)"))
+print(figure(gm.Point(2.3522, 48.8566, crs=4326), "Point (longitude, latitude)"))
 
 ```
 
@@ -77,7 +77,7 @@ print("length:", line.length)
 ```python exec="on" html="true"
 from _figures import figure
 import gometry as gm
-print(figure(gm.LineString([(0, 0), (1, 2), (3, 1), (4, 3)]), "LineString(...)"))
+print(figure(gm.LineString([(0, 0), (1, 2), (3, 1), (4, 3)]), "LineString vertices"))
 
 ```
 
@@ -91,12 +91,12 @@ the first vertex at the end, though it is harmless if you do.
 import gometry as gm
 
 square_with_hole = gm.Polygon(
-    [(0, 0), (4, 0), (4, 4), (0, 4)],          # shell (auto-closed)
-    holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],   # one square hole
+    [(0, 0), (4, 0), (4, 4), (0, 4)],
+    holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
 )
 print(square_with_hole.to_wkt())
-print("rings:", len(gm.rings(square_with_hole)))  # exterior + 1 hole
-print("area:", square_with_hole.area)                 # 16 - 1 = 15
+print("rings:", len(gm.rings(square_with_hole)))
+print("area:", square_with_hole.area)
 
 ```
 
@@ -106,7 +106,7 @@ import gometry as gm
 print(figure(gm.Polygon(
     [(0, 0), (4, 0), (4, 4), (0, 4)],
     holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
-), "Polygon(shell, holes)"))
+), "Polygon shell with a hole"))
 
 ```
 
@@ -212,11 +212,11 @@ poly = gm.Polygon(
     holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
 )
 
-print("type:     ", poly.geometry_type)
+print("type:", poly.geometry_type)
 print("coordinate_axes:", poly.coordinate_axes)
-print("bounds:   ", poly.bounds)
-print("vertices: ", len(poly.coords))   # all rings, flattened
-print("rings:    ", len(gm.rings(poly)))
+print("bounds:", poly.bounds)
+print("vertices:", len(poly.coords))
+print("rings:", len(gm.rings(poly)))
 
 ```
 
@@ -231,11 +231,11 @@ import gometry as gm
 
 coords = gm.LineString([(0, 0), (1, 2), (3, 1)], z=[10.0, 20.0, 30.0]).coords
 
-print("len:        ", len(coords))
+print("len:", len(coords))
 print("first tuple:", coords[0])
-print("axes:       ", coords.coordinate_axes)    # "XYZ"
-print("x column:   ", np.asarray(coords.x))      # zero-copy ndarray
-print("dict keys:  ", list(coords.to_dict().keys()))   # ready for pd.DataFrame
+print("axes:", coords.coordinate_axes)
+print("x column:", repr(np.asarray(coords.x)))  # zero-copy ndarray
+print("dict keys:", list(coords.to_dict().keys()))
 
 ```
 
@@ -258,9 +258,9 @@ constructors/operations return the precise type:
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-print(type(gm.Point(1, 2)).__name__)            # Point
-print(type(gm.box(0, 0, 1, 1)).__name__)  # Polygon
-print(isinstance(gm.box(0, 0, 1, 1), gm.Polygon))   # True
+print(type(gm.Point(1, 2)).__name__)
+print(type(gm.box(0, 0, 1, 1)).__name__)
+print(isinstance(gm.box(0, 0, 1, 1), gm.Polygon))
 
 ```
 
@@ -295,15 +295,16 @@ import gometry as gm
 a = gm.LineString([(0, 0), (1, 1)])
 b = gm.LineString([(0, 0), (1, 1)])
 reversed_ = gm.LineString([(1, 1), (0, 0)])
-print("a == b:", a == b, "| a == reversed:", a == reversed_)   # True False
-print("distinct:", len({a, b, reversed_}))                     # 2
+print("a == b:", a == b, "| a == reversed:", a == reversed_)
+print("distinct:", len({a, b, reversed_}))
 
 ```
 
 This `==` is **structural** (vertex-order sensitive). For the topological
 "same shape on the map" test that ignores vertex order, use
-[`gm.equals`][gometry.equals]; for a representation-independent vertex check, normalize first:
-`a.normalize().equals_exact(b.normalize())`.
+[`gm.equals`][gometry.equals]; for a representation-independent vertex check,
+apply [`normalize`][gometry.Geometry.normalize] to both inputs before calling
+[`gm.equals_exact`][gometry.equals_exact].
 
 ## Dimensions: XY, XYZ, XYM, XYZM
 
@@ -329,10 +330,10 @@ trace = gm.LineString(
     m=[0.0, 1.0, 2.0],
     crs=4326,
 )
-print("geometry_type:        ", trace.geometry_type)
+print("geometry_type:", trace.geometry_type)
 print("topological_dimension:", trace.topological_dimension)
-print("coordinate_axes:      ", trace.coordinate_axes)
-print("has_z / has_m:        ", trace.has_z, "/", trace.has_m)
+print("coordinate_axes:", trace.coordinate_axes)
+print("has_z / has_m:", trace.has_z, "/", trace.has_m)
 
 ```
 
@@ -357,8 +358,8 @@ import gometry as gm
 
 track = gm.LineString(
     [(21.00, 52.00), (21.01, 52.01), (21.02, 52.00)],
-    z=[105.0, 118.0, 110.0],                            # elevation (Z)
-    m=[1_700_000_000, 1_700_000_030, 1_700_000_060],    # unix capture time (M)
+    z=[105.0, 118.0, 110.0],
+    m=[1_700_000_000, 1_700_000_030, 1_700_000_060],
     crs=4326,
 )
 coords = list(track.coords.select('XYZM'))
@@ -382,7 +383,7 @@ p_xym  = gm.Point(21.0, 52.0, m=1_700_000_000.0, crs=4326)
 p_xyzm = gm.Point(21.0, 52.0, z=105.0, m=1_700_000_000.0, crs=4326)
 
 for p in (p_xy, p_xyz, p_xym, p_xyzm):
-    print(p.coordinate_axes, "->", p.to_wkt())
+    print(p.coordinate_axes, "→", p.to_wkt())
 
 ```
 
@@ -437,7 +438,7 @@ there, returning `None` for a scalar or `nan` for an array element. The **metric
 import gometry as gm
 climb = gm.LineString([(0.0, 0.0), (3.0, 4.0), (3.0, 4.0)], z=[0.0, 0.0, 10.0], crs=32634)
 print('length_3d:', climb.length_3d)
-print('z_range: ', climb.z_range, '| bounds_3d:', climb.bounds_3d)
+print('z_range:', climb.z_range, '| bounds_3d:', climb.bounds_3d)
 a = gm.Point(0.0, 0.0, z=0.0, crs=32634)
 b = gm.Point(3.0, 4.0, z=12.0, crs=32634)
 print('distance_3d:', gm.distance_3d(a, b))
@@ -469,7 +470,7 @@ line = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=32634)
 midpoint = line.line_interpolate(0.5, normalized=True)
 samples = line.line_interpolate(count=3)
 print('midpoint:', midpoint.to_wkt())
-print('samples: ', [point.to_wkt() for point in samples])
+print('samples:', [point.to_wkt() for point in samples])
 
 ```
 
@@ -495,8 +496,8 @@ to `nan` (for `line_locate`) or a typed EMPTY geometry (for
 import gometry as gm
 
 route = gm.LineString([(0.0, 0.0), (10.0, 0.0)], m=[0.0, 100.0], crs=32634)
-print("at m=50: ", route.line_interpolate(50.0, basis='m'))
-print("locate:  ", route.line_locate(gm.Point(5.0, 0.0, crs=32634), basis='m'))
+print("at m=50:", route.line_interpolate(50.0, basis='m'))
+print("locate:", route.line_locate(gm.Point(5.0, 0.0, crs=32634), basis='m'))
 print("m 20..80:", route.line_substring(20.0, 80.0, basis='m'))
 
 ```
@@ -528,11 +529,11 @@ track = gm.LineString(
     z=[10.0, 20.0, 30.0], m=[0.0, 1.0, 2.0], crs=4326,
 )
 
-# centroid returns 2D because it invents a new point
-print("centroid:", track.centroid().coordinate_axes)
+centroid = track.centroid()
+print("centroid:", centroid.geometry_type, centroid.coordinate_axes)
 
-# force_2d drops both optional ordinates
-print("force_2d:", track.force_2d().coordinate_axes)
+flat = track.force_2d()
+print("force_2d:", flat.geometry_type, flat.coordinate_axes)
 
 ```
 
@@ -563,7 +564,7 @@ print("force_2d axes:", flat.coordinate_axes)
 print("flat centroid:", (flat.centroid()).to_wkt())
 print("force_3d axes:", flat.force_3d().coordinate_axes)
 print("set_z:", flat.set_z(10.0))
-print("set_m: ", flat.set_m(0.0).coordinate_axes)
+print("set_m:", flat.set_m(0.0).coordinate_axes)
 
 ```
 
@@ -584,10 +585,8 @@ input to assert the layout at a boundary, including a strict XY contract for dat
 that must not carry Z or M:
 
 ```python title="partial: requires an input object from the surrounding application"
-# Web bbox: strictly XY lon/lat
 area = gm.require(obj, crs=4326, axes="XY")
 
-# Trace ingestion: require full XYZM
 trace = gm.require(obj, crs=4326, axes="XYZM")
 
 ```

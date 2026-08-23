@@ -10,19 +10,23 @@ use crate::geometry::{Bounds, CoordSeq, Coordinates, Point, Shape};
 /// Pixel budget for the longest side of a rendered SVG.
 const SVG_MAX_PX: f64 = 300.0;
 
-/// Padded bounds `(minx, miny, maxx, maxy)` with ~5% margin. Degenerate
-/// (point / zero-extent) inputs are widened so the `viewBox` is never empty.
-/// Extreme-but-finite coordinates are admitted only when the padded width
-/// and height stay finite (otherwise the SVG path uses a local unit frame).
-fn svg_padded_bounds(shape: &Shape) -> Option<Bounds> {
+/// Margin around the drawing, in the pixel frame. See `render_shape_svg` for
+/// why it cannot be a fraction of the world extent.
+const SVG_PAD_PX: f64 = SVG_MAX_PX * 0.05;
+
+/// Bounds `(minx, miny, maxx, maxy)` for the drawing. Degenerate (point /
+/// zero-extent) inputs are widened so the `viewBox` is never empty. Extreme-
+/// but-finite coordinates are admitted only when the width and height stay
+/// finite (otherwise the SVG path uses a local unit frame).
+fn svg_bounds(shape: &Shape) -> Option<Bounds> {
     let bounds = shape.bounds()?;
     let (mut minx, mut miny, mut maxx, mut maxy) =
         (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     if ![minx, miny, maxx, maxy].iter().all(|v| v.is_finite()) {
         return None;
     }
-    let mut width = maxx - minx;
-    let mut height = maxy - miny;
+    let width = maxx - minx;
+    let height = maxy - miny;
     if !width.is_finite() || !height.is_finite() {
         return None;
     }
@@ -30,17 +34,14 @@ fn svg_padded_bounds(shape: &Shape) -> Option<Bounds> {
         let pad = if height > 0.0 { height * 0.5 } else { 1.0 };
         minx -= pad;
         maxx += pad;
-        width = maxx - minx;
     }
     if height <= 0.0 {
-        let pad = if width > 0.0 { width * 0.5 } else { 1.0 };
+        let widened = maxx - minx;
+        let pad = if widened > 0.0 { widened * 0.5 } else { 1.0 };
         miny -= pad;
         maxy += pad;
-        height = maxy - miny;
     }
-    let pad_x = width * 0.05;
-    let pad_y = height * 0.05;
-    let out = Bounds::new_unchecked(minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y);
+    let out = Bounds::new_unchecked(minx, miny, maxx, maxy);
     let (min_x, min_y, max_x, max_y) = out.into_tuple();
     ([min_x, min_y, max_x, max_y].iter().all(|v| v.is_finite())
         && (max_x - min_x).is_finite()
@@ -93,7 +94,7 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> String {
     if shape.is_empty() {
         return EMPTY.to_owned();
     }
-    let Some(bounds) = svg_padded_bounds(shape) else {
+    let Some(bounds) = svg_bounds(shape) else {
         return EMPTY.to_owned();
     };
     let (minx, miny, maxx, maxy) = bounds.into_tuple();
@@ -115,6 +116,15 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> String {
     }
     let sw = 1.5_f64;
     let r = 3.0_f64;
+    // The margin lives in the pixel frame because the things it has to contain
+    // do: strokes and vertex markers are sized in pixels, while a margin taken
+    // as a fraction of each world axis is scaled by that axis. On a shape much
+    // wider than it is tall the vertical share shrinks below the marker radius
+    // and the browser clips half a marker off the edge.
+    let pad = SVG_PAD_PX.max(r + sw);
+    let box_w = px_w + 2.0 * pad;
+    let box_h = px_h + 2.0 * pad;
+    let flip_y = px_h + pad;
     let valid = shape.validate().is_none();
     let stroke = if valid { "#22c55e" } else { "#ef4444" };
     let fill = if valid {
@@ -123,12 +133,13 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> String {
         "rgba(239,68,68,0.25)"
     };
     let body = svg_elements_local(shape, stroke, fill, sw, r, minx, miny, scale);
-    // Local frame already puts y increasing up after flip about px_h.
+    // The flip about `flip_y` puts y increasing up and insets the drawing by
+    // `pad` on every side of the viewBox.
     format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\" \
-         width=\"{px_w:.0}\" height=\"{px_h:.0}\" viewBox=\"0 0 {px_w:.6} {px_h:.6}\" \
+         width=\"{box_w:.0}\" height=\"{box_h:.0}\" viewBox=\"0 0 {box_w:.6} {box_h:.6}\" \
          preserveAspectRatio=\"xMidYMid meet\">\
-         <g transform=\"matrix(1 0 0 -1 0 {px_h:.6})\">{body}</g></svg>"
+         <g transform=\"matrix(1 0 0 -1 {pad:.6} {flip_y:.6})\">{body}</g></svg>"
     )
 }
 

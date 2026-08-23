@@ -6,7 +6,8 @@ description: Run h2corn inside your own event loop with the Server class — sta
 
 The CLI (`h2corn module:app`) and the [`serve()`][h2corn.serve] function
 start the server as a top-level process. Use the [`Server`][h2corn.Server]
-class inside an existing event loop or test harness. Full signatures are in
+class inside an existing [asyncio](https://docs.python.org/3/library/asyncio.html)
+event loop or test harness. Full signatures are in
 the [API reference](api/index.md#api-reference).
 
 ## Inside an asyncio app
@@ -17,13 +18,13 @@ the [API reference](api/index.md#api-reference).
 
 [`Server.serve()`][h2corn.Server.serve] is an async function that runs
 until the server is asked to shut down. It runs one worker in the calling
-process; [`serve()`][h2corn.serve] runs several through the same multi-process
+process; `serve()` runs several through the same multi-process
 supervisor as the CLI.
 
-[`Server.serve()`][h2corn.Server.serve] owns an in-process lifecycle, so it rejects a configuration
+`Server.serve()` owns an in-process lifecycle, so it rejects a configuration
 that combines [`pid`](configuration.md#option-pid) with [`user`](configuration.md#option-user) or [`group`](configuration.md#option-group): the pidfile and privilege change
 need one supervisor to own their ordering. On Unix, use
-[`h2corn.serve()`][h2corn.serve] or the CLI for that topology; their
+`h2corn.serve()` or the CLI for that topology; their
 supervisor owns the pidfile and manages worker privilege changes.
 
 ## Programmatic shutdown
@@ -33,7 +34,7 @@ coroutine to begin a graceful stop. In-flight requests get up to
 [`timeout_graceful_shutdown`](configuration.md#option-timeout_graceful_shutdown) seconds to complete, and their
 cleanup gets the same budget again once they are cancelled.
 
-[`serve()`][h2corn.Server.serve] stops waiting when that budget is spent, whatever the
+`serve()` stops waiting when that budget is spent, whatever the
 application does — one that catches `CancelledError` and never finishes
 cannot hold it open. An **explicit** `shutdown()` that hits the deadline
 raises `RuntimeError` rather than returning as if the stop had succeeded.
@@ -66,7 +67,7 @@ asyncio.run(main())
 
 ## Lifecycle
 
-One [`serve()`][h2corn.Server.serve] call at a time, and a [`Server`][h2corn.Server] can be reused once that call has
+One `serve()` call at a time, and a `Server` can be reused once that call has
 let go of everything it held.
 
 - **Sequential reuse works.** After `shutdown()`, cancellation, or a startup
@@ -76,7 +77,7 @@ let go of everything it held.
   still running, or still winding down, raises
   `RuntimeError: this Server already has an active serve() call` or
   `RuntimeError: this Server is still releasing a previous serve() call`.
-  [`releasing`][h2corn.Server.releasing] distinguishes these states:
+  `releasing` distinguishes these states:
   it stays true after `serve()` returns until reuse is safe.
 - **Cancellation drains gracefully.** Cancelling the task running `serve()`
   does not abort in-flight work — it starts the same bounded drain as
@@ -91,8 +92,8 @@ let go of everything it held.
 
 ## Knowing when the server is up
 
-[`serve()`][h2corn.Server.serve] runs until the server stops, so run it as a task when readiness is
-needed. [`Server.wait_started()`][h2corn.Server.wait_started] resolves once the
+`serve()` runs until the server stops, so run it as a task when readiness is
+needed. `Server.wait_started()` resolves once the
 server is accepting requests:
 
 ```python title="partial readiness fragment"
@@ -114,7 +115,7 @@ Readiness is a fact about the process rather than about one event loop, so a
 ## Binding to any free port
 
 Bind port `0` and read the kernel-assigned address back from
-[`Server.addresses`][h2corn.Server.addresses] — ideal for test harnesses
+`Server.addresses` — ideal for test harnesses
 and service discovery:
 
 The printed port is assigned by the operating system and is different on each

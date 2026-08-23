@@ -1,5 +1,5 @@
 ---
-description: Validating and repairing geometries in gometry — construction checks, validate() reports, require() contracts, repair(), and remove_repeated_points.
+description: Validate and repair gometry geometries, enforce CRS and axes contracts, and remove repeated points or excess coordinate precision.
 ---
 
 # Validation & repair
@@ -33,7 +33,7 @@ geometry** rather than rejected:
 import gometry as gm
 
 bowtie = gm.Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
-print("built:", bowtie.geometry_type, "| valid:", bowtie.validate().valid)   # False
+print("built:", bowtie.geometry_type, "| valid:", bowtie.validate().valid)
 
 ```
 
@@ -53,7 +53,7 @@ and [`orient_polygons`][gometry.Geometry.orient_polygons] can canonicalize it wh
 
 The [`Geometry.is_valid`][gometry.Geometry.is_valid] property returns a plain
 `bool`; vectorized code uses the [`GeometryArray.is_valid`][gometry.GeometryArray.is_valid] mask.
-[`validate`][gometry.Geometry.validate] returns a
+`validate` returns a
 [`ValidationReport`][gometry.ValidationReport] without raising. The report
 supports branching on validity, logging diagnostics, and repairing only bad records
 ([`GeometryArray.validate()`][gometry.GeometryArray.validate] yields one report per element).
@@ -66,14 +66,14 @@ bowtie = gm.Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
 try:
     gm.require(bowtie)
 except gm.InvalidGeometryError as e:
-    print("invalid:", e)        # 'exterior ring has a self-intersection'
+    print("invalid:", e)
 
 report = (gm.box(0, 0, 1, 1)).validate()
-print("valid box ->", report.valid)
+print("valid box →", report.valid)
 
 ```
 
-The returned [`ValidationReport`][gometry.ValidationReport] exposes [`.valid`][gometry.ValidationReport.valid],
+The returned `ValidationReport` exposes [`.valid`][gometry.ValidationReport.valid],
 [`.reason`][gometry.ValidationReport.reason] (a human-readable message that names the actual fault — e.g. a
 self-intersection in the exterior ring), [`.location`][gometry.ValidationReport.location] (the `(x, y)` coordinate of
 the first problem), and [`.path`][gometry.ValidationReport.path] (a structural path to it, e.g. `'$.shell'`). For
@@ -87,7 +87,7 @@ The same coordinates without a CRS, or under a projected CRS, remain ordinary
 planar coordinates. Attaching a geographic frame changes what ±180° means, while
 a planar frame has no identified seam.
 `is_valid`, [`is_simple`][gometry.Geometry.is_simple], [`is_ring`][gometry.Geometry.is_ring], `validate`, [`require`][gometry.require], and
-[`self_intersections`][gometry.Geometry.self_intersections] all share that rule. [`repair`][gometry.Geometry.repair] uses the same normalized
+[`self_intersections`][gometry.Geometry.self_intersections] all share that rule. `repair` uses the same normalized
 validity verdict before rebuilding, and [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid] checks
 each snapped result in that same frame.
 
@@ -99,7 +99,7 @@ each snapped result in that same frame.
 
 ## Fixing: `repair`
 
-[`repair`][gometry.Geometry.repair] returns a valid copy. It
+`repair` returns a valid copy. It
 offers two strategies via `method`:
 
 | `method` | Strategy |
@@ -114,7 +114,7 @@ import gometry as gm
 
 bowtie = gm.Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
 
-fixed = bowtie.repair()                       # method='linework'
+fixed = bowtie.repair()
 print(fixed.geometry_type, "valid:", fixed.validate().valid)
 
 fixed_struct = bowtie.repair(method="structure")
@@ -142,20 +142,19 @@ import gometry as gm
 overlap = gm.from_wkt(
     "MULTIPOLYGON (((0 0, 4 0, 4 4, 0 4, 0 0)), ((2 2, 6 2, 6 6, 2 6, 2 2)))"
 )
-print("linework: ", overlap.repair().area)                      # XOR: 24
-print("structure:", overlap.repair(method="structure").area)  # union: 28
+print("linework:", overlap.repair().area)
+print("structure:", overlap.repair(method="structure").area)
 
 ```
 
 Already-valid input is returned as-is after the validation check on every surface:
-`geom.repair()` and `array.repair()` reuse valid rows. Z/M
-ordinates are carried through the rebuild, and the output is deterministic
-byte-for-byte run to run.
+`geom.repair()` and `array.repair()` reuse valid rows. Z/M ordinates are carried
+through the rebuild.
 
 For a geographic antimeridian crossing, the validity check runs before any
 rebuild. A valid input therefore keeps its original coordinates exactly; an
 invalid crossing is repaired from the seam-split topology. The same
-rule powers [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid].
+rule powers `snap_to_grid(..., repair=True)`.
 
 !!! note "Repair output and revalidation"
     `repair` can split, merge, or drop parts to reach validity. Re-run
@@ -167,24 +166,24 @@ rule powers [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid].
 
 Beyond OGC validity, a boundary can require a CRS, valid topology, or a
 particular dimensionality.
-[`gm.require`][gometry.require] is the single boundary API: it accepts an
+`gm.require` is the single boundary API: it accepts an
 existing geometry or an external geometry-like object, returns the geometry
 unchanged on success, and raises the matching specific exception otherwise —
 [`CRSMismatchError`][gometry.CRSMismatchError] for a frame contract,
-[`InvalidGeometryError`][gometry.InvalidGeometryError] for validity and axes.
+`InvalidGeometryError` for validity and axes.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 def geodesic_area_km2(poly):
-    poly = gm.require(poly, crs=4326)       # parse + valid + CRS contract
-    return poly.area / 1e6                  # geographic CRS -> geodesic m^2
+    poly = gm.require(poly, crs=4326)
+    return poly.area / 1e6
 
 ok = gm.box(2, 48, 3, 49, crs=4326)
 print(f"{geodesic_area_km2(ok):.1f} km^2")
 
 try:
-    geodesic_area_km2(gm.box(2, 48, 3, 49))   # no CRS
+    geodesic_area_km2(gm.box(2, 48, 3, 49))
 except gm.CRSMismatchError as e:
     print("rejected:", e)
 
@@ -196,7 +195,6 @@ that same validation call:
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# Untrusted WKT at the boundary: parse + CRS + axes in one call
 raw = "POLYGON ((2 48, 3 48, 3 49, 2 49, 2 48))"
 area = gm.require(raw, crs=4326, axes="XY")
 print("meets contract:", area.crs == 4326, area.coordinate_axes)
@@ -240,14 +238,14 @@ print(before_after(with_vertices(noisy), with_vertices(cleaned), before_caption=
 
 ```
 
-[`remove_repeated_points`][gometry.Geometry.remove_repeated_points] drops consecutive
+`remove_repeated_points` drops consecutive
 duplicate vertices. The optional `tolerance` also collapses vertices closer than
 that distance, allowing oversampled tracks to be thinned.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 dup = gm.LineString([(0, 0), (0, 0), (1, 1), (1, 1), (2, 2)])
-print(dup.remove_repeated_points())
+print(dup.remove_repeated_points().to_wkt())
 
 ```
 
@@ -268,9 +266,9 @@ order / ring orientation).
 
 !!! tip "Precision workflow before overlay"
     Overlay operations are sensitive to near-coincident vertices. An explicit
-    `quantize` / [`snap_to_grid`][gometry.Geometry.snap_to_grid] pass can help sources align — but it can also
+    `quantize` / `snap_to_grid` pass can help sources align — but it can also
     *create* invalidity on tight geometries (see [choosing](choosing.md)). Prefer
-    a precision workflow followed by [`validate`][gometry.Geometry.validate] / [`repair`][gometry.Geometry.repair] rather than
+    a precision workflow followed by `validate` / `repair` rather than
     treating quantize as a universal sliver cure — see
     [constructive operations](constructive.md#dissolving-many-geometries-union_all).
 
@@ -283,7 +281,6 @@ repair:
 import gometry as gm
 
 def ingest(payload):
-    # 1) Parse foreign text first — ParseError is distinct from validity repair
     try:
         geom = gm.from_wkt(payload, crs=4326)
     except gm.ParseError:
@@ -291,15 +288,15 @@ def ingest(payload):
     geom = geom.remove_repeated_points()
     if not geom.is_valid:
         geom = geom.repair()
-    return gm.require(geom, crs=4326, axes="XY")  # contract after repair
+    return gm.require(geom, crs=4326, axes="XY")
 
-result = ingest("POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))")  # self-intersecting
+result = ingest("POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))")
 print(result.geometry_type, "valid:", result.validate().valid)
 
 ```
 
 Parse failures ([`ParseError`][gometry.ParseError]) stay separate from geometric invalidity
-([`InvalidGeometryError`][gometry.InvalidGeometryError] / repair). The detect → repair → assert flow keeps invalid
+(`InvalidGeometryError` / repair). The detect → repair → assert flow keeps invalid
 geometry from ever reaching your [predicates](predicates.md),
 [overlays](constructive.md), or [measurements](crs.md), where it would otherwise
 produce subtly wrong answers. See [Security](../about/security.md) for the

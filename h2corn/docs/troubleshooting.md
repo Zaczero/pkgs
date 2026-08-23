@@ -197,7 +197,7 @@ Windows, and some free-threaded combinations lack a usable uvloop package.
 the same interpreter as the `h2corn` executable, and check `h2corn` [`--version`](configuration.md#command-version).
 
 **Fix:** Install `h2corn[uvloop]` on a supported Unix CPython environment, or
-choose [`--loop`](configuration.md#option-loop) `asyncio`. `auto` selects uvloop when installed and otherwise
+choose [`--loop`](configuration.md#option-loop) [`asyncio`](https://docs.python.org/3/library/asyncio.html). `auto` selects uvloop when installed and otherwise
 uses the standard-library loop; h2corn's network I/O remains in Rust either
 way.
 

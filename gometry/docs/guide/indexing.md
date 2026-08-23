@@ -1,5 +1,5 @@
 ---
-description: gometry spatial indexing — candidates (bbox prefilter) vs query (exact refine), nearest with units, explain plans, and join for many-to-many work.
+description: gometry spatial indexing — candidates (bbox prefilter) vs query (exact refine), nearest with units, and joins for many-to-many work.
 ---
 
 # Spatial indexing & joins
@@ -7,7 +7,7 @@ description: gometry spatial indexing — candidates (bbox prefilter) vs query (
 A spatial index makes brute-force geometry practical: instead of testing a query
 against every feature, you test it against the few whose bounding boxes could
 possibly match. [`gm.SpatialIndex`][gometry.SpatialIndex] builds a bulk-loaded in-memory [R-tree](https://en.wikipedia.org/wiki/R-tree) over geometry
-envelopes and returns a [`SpatialIndex`][gometry.SpatialIndex]. The index exposes
+envelopes. The index exposes
 [`crs`][gometry.SpatialIndex.crs] and [`epoch`][gometry.SpatialIndex.epoch] for
 the shared frame of its rows (the same metadata gate that binary ops enforce).
 
@@ -29,23 +29,23 @@ import gometry as gm
 
 query = gm.box(0.0, 0.0, 1.0, 1.0)
 geoms = gm.GeometryArray([
-    gm.box(0.2, 0.2, 0.8, 0.8),                        # 0: fully inside
-    gm.Polygon([(0.5, 2.0), (2.0, 2.0), (2.0, 0.5)]),  # 1: bbox overlaps, shape misses
-    gm.box(0.9, 0.9, 1.6, 1.6),                         # 2: clips the corner
-    gm.box(3.0, 3.0, 4.0, 4.0),                         # 3: far away
+    gm.box(0.2, 0.2, 0.8, 0.8),
+    gm.Polygon([(0.5, 2.0), (2.0, 2.0), (2.0, 0.5)]),
+    gm.box(0.9, 0.9, 1.6, 1.6),
+    gm.box(3.0, 3.0, 4.0, 4.0),
 ])
 idx = gm.SpatialIndex(geoms)
 
 cands = idx.candidates(query)                     # bbox prefilter — candidate superset
 hits = idx.query(query, predicate="intersects")   # exact refine — matching rows
 
-print("candidates (bbox):", list(cands))   # [0, 1, 2]
-print("exact intersects :", list(hits))    # [0, 2]
+print("candidates (bbox):", list(cands))
+print("exact intersects:", list(hits))
 
 ```
 
-[`candidates`][gometry.SpatialIndex.candidates] returns positional indices into the input array whose envelopes overlap
-the query envelope. [`query`][gometry.SpatialIndex.query] takes that same candidate set and applies the exact
+`candidates` returns positional indices into the input array whose envelopes overlap
+the query envelope. `query` takes that same candidate set and applies the exact
 predicate, so it is always a subset. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
@@ -78,7 +78,7 @@ print(panels([
 
 ## Predicates
 
-[`query`][gometry.SpatialIndex.query] accepts any of the standard spatial predicates via
+`query` accepts any of the standard spatial predicates via
 `predicate=`. The default is `"intersects"`.
 
 The operand order is always `predicate(query_geom, indexed_row)`. For example,
@@ -113,7 +113,6 @@ pts = gm.points([21.0, 21.5, 30.0], [52.0, 52.1, 52.0], crs=4326)
 idx = gm.SpatialIndex(pts)
 probe = gm.Point(21.0, 52.0, crs=4326)
 
-# Within 1 degree (planar coordinate units) of the probe point.
 print("within 1 deg:", list(idx.query(probe, predicate="dwithin", distance=1.0, unit="planar")))
 
 ```
@@ -125,7 +124,7 @@ The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate 
 
 [`idx.nearest`][gometry.SpatialIndex.nearest] finds the `k` closest indexed geometries to a query
 geometry and returns their positional indices (nearest first). Distance uses the
-same `unit=` rule as [`query`][gometry.SpatialIndex.query] / free [`dwithin`][gometry.dwithin] (CRS-natural by default).
+same `unit=` rule as `query` / free `dwithin` (CRS-natural by default).
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -163,35 +162,38 @@ idx = gm.SpatialIndex(stations)
 
 for i, station in enumerate(list(stations)):
     nearest_other = idx.nearest(station, exclusive=True)[0]
-    print(f"station {i} -> nearest other station {nearest_other}")
+    print(f"station {i} → nearest other station {nearest_other}")
 
 ```
 
 The top-level function [`gm.nearest(values, geometry, k=..., unit=...)`][gometry.nearest] builds an
 index for one-shot queries.
 
-## Explain query plans
+## Measure candidate selectivity
 
-[`idx.explain`][gometry.SpatialIndex.explain] returns the steps the query runs:
-load, bulk-load, envelope lookup, and exact refine.
+Compare the number of bounding-box candidates with the exact result for the
+same query and predicate:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-pts = gm.points([21.0, 30.0, 21.5], [52.0, 52.0, 52.1], crs=4326)
-idx = gm.SpatialIndex(pts)
-box = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+q = gm.box(0.0, 0.0, 1.0, 1.0)
+geoms = gm.GeometryArray([
+    gm.box(0.2, 0.2, 0.8, 0.8),
+    gm.Polygon([(0.5, 2.0), (2.0, 2.0), (2.0, 0.5)]),
+    gm.box(0.9, 0.9, 1.6, 1.6),
+    gm.box(3.0, 3.0, 4.0, 4.0),
+])
+idx = gm.SpatialIndex(geoms)
 
-for step in idx.explain(box, predicate="contains"):
-    print("-", step)
+candidate_count = len(idx.candidates(q))
+refined_count = len(idx.query(q, predicate="intersects"))
+print(f"candidates: {candidate_count} → refined intersects: {refined_count}")
 
 ```
 
-Predicate-refined explanations include the operand order for directional
-predicates.
-
-When `explain` reports refinement of nearly every geometry, the envelopes overlap
-too much; large sparse multipolygons are a common cause.
+A large candidate count relative to the refined count means the envelopes are
+not selective; large sparse multipolygons are a common cause.
 
 ## Joins: many-to-many done right
 
@@ -212,13 +214,14 @@ areas = gm.GeometryArray([
 left, right = gm.join(points, areas, predicate="within")
 print("matched (point, area) pairs:", list(zip(left, right, strict=True)))
 for li, ri in zip(left, right, strict=True):
-    print(f"  point {li} within area {ri}")
+    print(f"point {li} within area {ri}")
 
 ```
 
 `join` refines to exact predicates. Use `distance=`/`unit=` for a
-`predicate="dwithin"` join. [`SpatialIndex.explain(...)`][gometry.SpatialIndex.explain] reports candidate and
-refinement cost for an index query.
+`predicate="dwithin"` join. For a direct index query, compare
+`len(idx.candidates(q))` with `len(idx.query(q, predicate=...))` to measure the
+candidate superset and its exact refinement.
 
 !!! note "Many-to-many query cost"
     The brute-force `for a in polys: for b in points: if gm.contains(a, b)` pattern is

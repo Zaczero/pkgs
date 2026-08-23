@@ -55,7 +55,7 @@ import gometry as gm
 
 line = gm.LineString([(0, 0), (5, 0)])
 print("round cap:", round(line.buffer(1.0, cap_style="round").area, 3))
-print("flat cap: ", round(line.buffer(1.0, cap_style="flat", join_style="miter").area, 3))
+print("flat cap:", round(line.buffer(1.0, cap_style="flat", join_style="miter").area, 3))
 
 ```
 
@@ -96,7 +96,7 @@ available for the named methods:
 | Operation | Operator | Result |
 |-----------|----------|--------|
 | [`intersection`][gometry.intersection] | `a & b` | the shared region (`left ∩ right`) |
-| [`union`][gometry.union] | `a \| b` | everything in either (`left ∪ right`) |
+| [`union`][gometry.union] | <code>a \| b</code> | everything in either (`left ∪ right`) |
 | [`difference`][gometry.difference] | `a - b` | `left` with `right` cut out (`left − right`) |
 | [`symmetric_difference`][gometry.symmetric_difference] | `a ^ b` | in exactly one of the two |
 
@@ -106,9 +106,9 @@ import gometry as gm
 a = gm.box(0, 0, 2, 2)
 b = gm.box(1, 1, 3, 3)
 
-print("intersection:", (a & b))
-print("union:       ", (a | b))
-print("difference:  ", (a - b))
+print("intersection:", a & b)
+print("union:", a | b)
+print("difference:", a - b)
 
 ```
 
@@ -128,10 +128,10 @@ import gometry as gm
 a, b = gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3)
 frame = [a.exterior, b.exterior]
 print(panels([
-    ("a & b  (intersection)", frame + [a & b]),
-    ("a | b  (union)", frame + [a | b]),
-    ("a - b  (difference)", frame + [a - b]),
-    ("a ^ b  (symmetric_difference)", frame + [a ^ b]),
+    ("a & b (intersection)", frame + [a & b]),
+    ("a | b (union)", frame + [a | b]),
+    ("a - b (difference)", frame + [a - b]),
+    ("a ^ b (symmetric_difference)", frame + [a ^ b]),
 ]))
 
 ```
@@ -153,7 +153,7 @@ import gometry as gm
 
 tiles = [gm.box(i, 0, i + 1, 1) for i in range(5)]
 merged = gm.union_all(tiles)
-print(merged.to_wkt())        # one 5x1 rectangle, shared edges dissolved
+print(merged.to_wkt())
 
 ```
 
@@ -176,7 +176,7 @@ shape recognizable while shrinking it.
 import gometry as gm
 
 wiggly = gm.LineString([(0, 0), (1, 0.01), (2, -0.01), (3, 0.01), (4, 0)])
-print(wiggly.simplify(0.5))   # collapses to the straight run
+print(wiggly.simplify(0.5))
 
 ```
 
@@ -226,8 +226,8 @@ import gometry as gm
 
 line = gm.LineString([(0, 0), (3, 0), (3, 3)])
 print(panels([
-    ("offset_curve(0.5)  (left)", [line, line.offset_curve(0.5)]),
-    ("offset_curve(-0.5)  (right)", [line, line.offset_curve(-0.5)]),
+    ("offset_curve(0.5) (left)", [line, line.offset_curve(0.5)]),
+    ("offset_curve(-0.5) (right)", [line, line.offset_curve(-0.5)]),
 ]))
 
 ```
@@ -296,7 +296,7 @@ print(panels([
 import gometry as gm
 cloud = gm.MultiPoint([(0, 0), (2, 0), (3, 2), (1, 3), (0, 2), (1, 1)])
 print('convex hull:', cloud.convex_hull())
-print('centroid:   ', (cloud.centroid()).to_wkt())
+print('centroid:', (cloud.centroid()).to_wkt())
 
 ```
 
@@ -323,7 +323,7 @@ points more closely.
 import gometry as gm
 
 cloud = gm.MultiPoint([(0, 0), (4, 0), (4, 4), (0, 4), (2, 1.2), (2, 0.8)])
-print("convex: ", cloud.convex_hull())
+print("convex:", cloud.convex_hull())
 print("concave:", cloud.concave_hull(concavity=0.5))
 
 ```
@@ -334,8 +334,8 @@ import gometry as gm
 
 cloud = gm.MultiPoint([(0, 0), (4, 0), (4, 4), (0, 4), (2, 1.2), (2, 0.8)])
 print(panels([
-    ("convex_hull", [cloud.convex_hull(), cloud]),
-    ('concave_hull(concavity=0.5)', [cloud.concave_hull(concavity=0.5), cloud]),
+    ("convex hull (encloses all points)", [cloud.convex_hull(), cloud]),
+    ("concave hull (follows inward points)", [cloud.concave_hull(concavity=0.5), cloud]),
 ]))
 
 ```

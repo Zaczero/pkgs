@@ -55,7 +55,7 @@ pub(crate) use pymethods::{_unpickle_spatial_index, PySpatialIndexIter};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
-/// `query`/`self_join`/`explain`/`join`, and the topological side reads its
+/// `query`/`self_join`/`join`, and the topological side reads its
 /// facts from [`Predicate::spec`], so the index cannot drift from the
 /// broadcast/prepared surfaces in which predicates it accepts or how they
 /// refine.
@@ -108,11 +108,6 @@ impl IndexPredicate {
         Ok(Self::Topological(predicate))
     }
 
-    /// Parse an optional token (`None` = candidate-only / index default).
-    pub(crate) fn parse_opt(token: Option<&str>) -> PyResult<Option<Self>> {
-        token.map(Self::parse).transpose()
-    }
-
     /// The canonical token (inverse of [`parse`](Self::parse)).
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -125,30 +120,6 @@ impl IndexPredicate {
     pub(crate) fn requires_distance(self) -> bool {
         self == Self::Dwithin
     }
-}
-
-pub(crate) fn dwithin_candidate_step(
-    index: &PySpatialIndex,
-    metric: &crs::MetricModel,
-    query: Option<&Shape>,
-    distance: NonNegative,
-) -> String {
-    let distance = distance.get();
-    if metric.coordinate_radius(distance).is_some() {
-        return format!("bounds envelope candidate filter expanded by {distance}");
-    }
-    if query.is_some_and(|shape| {
-        index
-            .geodesic_pruner(metric, shape_pruner_point(shape))
-            .is_some()
-    }) {
-        return "geodesic lower-bound candidate window".to_owned();
-    }
-    if index.non_prunable_live == 0 {
-        return "geodesic lower-bound candidate window (point queries; global scan otherwise)"
-            .to_owned();
-    }
-    "global candidate scan (exact geodesic distances)".to_owned()
 }
 
 /// Resolve the `distance` argument for a query: `dwithin` requires one,
@@ -178,7 +149,7 @@ pub(crate) fn query_distance(
 }
 
 /// Validated, frame-level query state shared by scalar, bulk, join, self-join,
-/// candidate-only, and explain lanes. Geometry-specific bounds/pruner state is
+/// candidate-only lanes. Geometry-specific bounds/pruner state is
 /// prepared separately per row so hot bulk loops reuse predicate and metric
 /// resolution without allocating a `PyGeometry` wrapper.
 pub(crate) enum PreparedIndexQuery {
@@ -382,23 +353,6 @@ impl PreparedIndexQuery {
             bounds,
             pruner_point,
             cap,
-        }
-    }
-
-    pub(crate) fn candidate_step(&self, index: &PySpatialIndex, query: Option<&Shape>) -> String {
-        match self {
-            Self::CandidatesDwithin { distance, metric }
-            | Self::Dwithin {
-                distance, metric, ..
-            } => dwithin_candidate_step(index, metric, query, *distance),
-            Self::Topological { predicate }
-                if predicate.spec().index_envelope == Some(IndexEnvelope::ContainedInQuery) =>
-            {
-                "bounds envelope containment filter".to_owned()
-            },
-            Self::Candidates | Self::Topological { .. } => {
-                "bounds envelope candidate filter".to_owned()
-            },
         }
     }
 }

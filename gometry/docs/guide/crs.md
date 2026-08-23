@@ -85,15 +85,13 @@ Consider a point digitized as lon/lat but handed to you with no CRS attached.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-raw = gm.Point(21.0, 52.0)          # no CRS yet — two numbers
+raw = gm.Point(21.0, 52.0)
 print("crs before:", raw.crs)
 
-# DECLARE: the numbers are already WGS84 lon/lat. Coordinates do not move.
 declared = raw.set_crs(4326)
 print("crs after set_crs:", declared.crs)
 print("coords after set_crs:", list(declared.coords))
 
-# TRANSFORM: reproject those lon/lat degrees into Web Mercator meters.
 projected = declared.to_crs(3857)
 print("crs after to_crs:", projected.crs)
 print("coords after to_crs:", list(projected.coords))
@@ -123,7 +121,7 @@ import gometry as gm
 
 p = gm.Point(21.0, 52.0)
 for crs in (4326, "EPSG:4326", "WGS 84"):
-    print(repr(crs), "->", p.set_crs(crs).crs)
+    print(repr(crs), "→", p.set_crs(crs).crs)
 
 try:
     p.set_crs(999999)
@@ -140,7 +138,7 @@ passed:
 import gometry as gm
 
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(area.crs, area.bounds)   # bounds are still the lon/lat degrees you passed
+print(area.crs, area.bounds)
 
 ```
 
@@ -206,9 +204,9 @@ import gometry as gm
 paris  = gm.Point(2.3522, 48.8566, crs=4326)
 london = gm.Point(-0.1276, 51.5072, crs=4326)
 
-d = gm.distance(paris, london)                        # meters (SI), ellipsoidal
-print(f"distance: {d/1000:.1f} km")             # ~344 km
-print(f"bearing:  {gm.bearing(paris, london):.1f}°")  # initial heading, degrees
+d = gm.distance(paris, london)
+print(f"distance: {d/1000:.1f} km")
+print(f"bearing: {gm.bearing(paris, london):.1f}°")
 
 ```
 
@@ -224,7 +222,7 @@ route = gm.LineString(
 print(f"route length: {route.length/1000:.1f} km")
 
 city = gm.box(2, 48, 3, 49, crs=4326)
-print(f"city area:    {city.area/1e6:.0f} km^2")
+print(f"city area: {city.area/1e6:.0f} km^2")
 
 ```
 
@@ -266,7 +264,7 @@ available only on the receiver.
 import gometry as gm
 
 start = gm.Point(2.3522, 48.8566, crs=4326)
-arrival = start.destination(45.0, 100_000.0)   # bearing 45°, 100 km
+arrival = start.destination(45.0, 100_000.0)
 print(arrival.to_wkt())
 
 ```
@@ -287,7 +285,7 @@ need SI meters or square meters from a non-meter projected CRS.
 import gometry as gm
 
 city = gm.box(2, 48, 3, 49, crs=4326)
-projected = city.to_crs(32631)   # UTM zone 31N, meters
+projected = city.to_crs(32631)
 
 print("crs:", projected.crs)
 print(f"area: {projected.area/1e6:.0f} km^2")
@@ -302,13 +300,13 @@ print(f"area: {projected.area/1e6:.0f} km^2")
 
     city = gm.box(2, 48, 3, 49, crs=4326)
 
-    geo = city.area / 1e6                          # geographic CRS -> geodesic
-    web = city.to_crs(3857).area / 1e6        # Web Mercator
-    utm = city.to_crs(32631).area / 1e6       # UTM 31N
+    geo = city.area / 1e6
+    web = city.to_crs(3857).area / 1e6
+    utm = city.to_crs(32631).area / 1e6
 
-    print(f"geodesic:         {geo:8.0f} km^2")
-    print(f"Web Mercator:     {web:8.0f} km^2")
-    print(f"UTM 31N:          {utm:8.0f} km^2")
+    print(f"geodesic: {geo:.0f} km^2")
+    print(f"Web Mercator: {web:.0f} km^2")
+    print(f"UTM 31N: {utm:.0f} km^2")
     ```
 
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) has
@@ -324,9 +322,9 @@ import gometry as gm
 
 city = gm.box(2, 48, 3, 49, crs=4326)
 print(panels([
-    ("EPSG:4326 (lon/lat)", city),
-    ("EPSG:3857 Web Mercator", city.to_crs(3857)),
-    ("EPSG:32631 UTM 31N", city.to_crs(32631)),
+    ("EPSG:4326 (geodesic lon/lat)", city),
+    ("EPSG:3857 (north-south stretch)", city.to_crs(3857)),
+    ("EPSG:32631 (local metric proportions)", city.to_crs(32631)),
 ]))
 
 ```
@@ -345,10 +343,10 @@ is in whatever unit those coordinates are in.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-plot = gm.box(0, 0, 30, 20)        # e.g. meters on a local grid
-print("area:     ", plot.area)                                    # 600
-print("length:   ", plot.length)                                  # 100
-print("distance: ", gm.distance(gm.Point(0, 0), gm.Point(3, 4)))      # 5
+plot = gm.box(0, 0, 30, 20)
+print("area:", plot.area)
+print("length:", plot.length)
+print("distance:", gm.distance(gm.Point(0, 0), gm.Point(3, 4)))
 
 ```
 
@@ -359,8 +357,8 @@ geometry — comparable with a geodesic answer:
 import gometry as gm
 
 city = gm.box(2.3, 48.8, 2.4, 48.9, crs=4326)
-print("geodesic m^2: ", round(city.area))
-print("planar deg^2:", gm.area(city, unit='planar'))  # coordinate Cartesian
+print("geodesic m^2:", round(city.area))
+print("planar deg^2:", gm.area(city, unit='planar'))
 
 ```
 
@@ -376,7 +374,7 @@ from _figures import figure
 import gometry as gm
 
 a = gm.from_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")
-b = gm.from_wkt("POLYGON ((4 1, 5 0, 6 1, 5 2, 4 1))")  # a 45°-rotated square
+b = gm.from_wkt("POLYGON ((4 1, 5 0, 6 1, 5 2, 4 1))")
 pa, pb = gm.nearest_points(a, b)
 bridge = gm.shortest_line(a, b)
 print(figure([a, b, bridge, pa, pb], f"shortest_line(a, b) = {bridge.to_wkt()}"))
@@ -421,7 +419,7 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     line = gm.LineString([(0, 0), (1, 0)], crs=4326)
     print(f"length: {gm.length(line):,.0f} m")
     print(f"segmentize(20_000): {len(list(line.segmentize(20_000).coords))} vertices")
-    print(f"unit='planar':      {len(list(line.segmentize(0.25, unit='planar').coords))} vertices")
+    print(f"unit='planar': {len(list(line.segmentize(0.25, unit='planar').coords))} vertices")
     ```
 
 ## Picking a projected CRS automatically
@@ -439,9 +437,7 @@ import gometry as gm
 
 warsaw = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 local = warsaw.estimate_local_crs()
-print("local:", local)                         # EPSG:32634 (UTM zone 34N)
-
-# Geographic CRS measures geodesically; the UTM frame measures planar meters.
+print("local:", local)
 print("geodesic area m^2:", round(warsaw.area))
 print("projected area m^2:", round(warsaw.to_crs(local).area))
 
@@ -459,9 +455,9 @@ A local projected metric workflow uses `estimate_local_crs()` followed by
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)  # central Paris, lon/lat
+area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)
 
-local = area.estimate_local_crs()        # picks the right UTM zone
+local = area.estimate_local_crs()
 projected = area.to_crs(local)
 
 print('local CRS:', local.to_authority())
@@ -475,7 +471,7 @@ import gometry as gm
 area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)
 projected = area.to_crs(area.estimate_local_crs())
 
-ring = projected.buffer(500)              # 500 meters in the local UTM frame
+ring = projected.buffer(500)
 print('500 m buffer area m^2:', round(ring.area))
 
 ```
@@ -487,7 +483,7 @@ import gometry as gm
 area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)
 projected = area.to_crs(area.estimate_local_crs())
 ring = projected.buffer(500)
-print(result_over_input(projected, ring, after_caption="buffer(500 m)"))
+print(result_over_input(projected, ring, before_caption="projected input", after_caption="buffer(500 m)"))
 
 ```
 
@@ -570,15 +566,12 @@ transform has no defined action for it and `to_crs` carries M through
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# 2D transform: Z absent, nothing to carry.
 flat = gm.Point(21.0, 52.0, crs=4326).to_crs(3857)
-print("XY  ->", flat.coordinate_axes, "| has_z:", flat.has_z)
+print("XY →", flat.coordinate_axes, "| has_z:", flat.has_z)
 
-# XYZ transform: Z survives the reprojection.
 elev = gm.Point(21.0, 52.0, z=100.0, crs=4979).to_crs(3857)
-print("XYZ ->", elev.coordinate_axes, "| has_z:", elev.has_z)
+print("XYZ →", elev.coordinate_axes, "| has_z:", elev.has_z)
 
-# M is application data: carried verbatim, never reprojected.
 trace = gm.Point(21.0, 52.0, m=1_700_000_000.0, crs=4326).to_crs(3857)
 print(trace.coordinate_axes, "| m unchanged:", trace.m)
 
@@ -602,18 +595,15 @@ gometry enforces `epoch ⟹ crs` at every entry point.
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# Stamp / clear the epoch without moving coordinates (mirrors set_crs).
 station = gm.Point(21.0, 52.0, z=100.0, crs=4979)
 observed = station.set_epoch(2020.0)
 print("epoch:", observed.epoch, "| coords unchanged:", list(observed.coords) == list(station.coords))
 
-# A CRS-free coordinate has no frame to date — an epoch is rejected.
 try:
     gm.Point(21.0, 52.0).set_epoch(2020.0)
 except gm.CRSError as error:
     print("rejected:", error)
 
-# Clearing the CRS clears the epoch (CRS-free + epoch is incoherent).
 print("after set_crs(None):", observed.set_crs(None).epoch)
 
 ```
@@ -628,7 +618,6 @@ geometry surface (those live on the raw [`gm.crs_transform(...)`][gometry.crs_tr
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# Source epoch comes from the geometry; epoch= sets the output epoch.
 observed = gm.Point(21.0, 52.0, z=100.0, crs=4979, epoch=2010.0)
 geocentric = observed.to_crs(4978, epoch=2020.0)
 print("output epoch:", geocentric.epoch)
@@ -645,7 +634,7 @@ the same CRS).
 import gometry as gm
 
 observed = gm.Point(21.0, 52.0, crs=4326, epoch=2010.0)
-print("to ITRF2014 (dynamic): ", observed.to_crs(9000).epoch)
+print("to ITRF2014 (dynamic):", observed.to_crs(9000).epoch)
 print("to Poland CS92 (static):", observed.to_crs(2180).epoch)
 
 ```
@@ -660,8 +649,8 @@ introspection surface as properties and methods.
 import gometry as gm
 
 c = gm.Point(21.0, 52.0, crs=4326).crs
-print(repr(c))                 # CRS("EPSG:4326")
-print(c == "EPSG:4326", c == 4326)   # True True
+print(repr(c))
+print(c == "EPSG:4326", c == 4326)
 print("name:", c.name, "| kind:", c.kind)
 print("geographic?", c.is_geographic, "| projected?", gm.CRS(3857).is_projected)
 print("normalize 'epsg:4326':", gm.CRS("epsg:4326").canonical)
@@ -687,10 +676,9 @@ are always X/Y (lon, lat)**.
 import gometry as gm
 
 c = gm.CRS(4326)
-print("EPSG:4326 native axes:", [ax["abbreviation"] for ax in c.axes])  # ['Lat', 'Lon']
-print("axis_order:", c.axis_order)                                      # ['lat', 'lon']
+print("EPSG:4326 native axes:", [ax["abbreviation"] for ax in c.axes])
+print("axis_order:", c.axis_order)
 
-# gometry is X/Y regardless: Point(x=lon, y=lat).
 p = gm.Point(21.0, 52.0, crs=4326)
 print("gometry reads as (lon, lat):", list(p.coords))
 
@@ -734,7 +722,6 @@ print("3857:", round(x), round(y))
 xy = gm.crs_transform(4326, 3857, [21.0, 22.0], [52.0, 53.0])
 print("bulk x:", [round(v) for v in xy[:, 0]])
 
-# Reproject a bounding box (with edge densification for accuracy):
 print(gm.crs_transform_bounds(4326, 3857, (20.0, 51.0, 22.0, 53.0)))
 
 ```

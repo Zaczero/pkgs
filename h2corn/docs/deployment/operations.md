@@ -12,7 +12,7 @@ description: "The multi-worker supervisor: signals, rolling reload, live scaling
 - The **embedded server** ([`Server`][h2corn.Server]) runs a single
   worker inside your own event loop — see [Embedding](../embedding.md#inside-an-asyncio-app).
 
-The supervisor is **POSIX-only**. On Windows, [`serve()`][h2corn.serve] automatically
+The supervisor is **POSIX-only**. On Windows, `serve()` automatically
 falls back to single-worker, in-process mode.
 
 `hello:app` is the import target from the [Quickstart](../quickstart.md#run-your-first-server).
@@ -80,8 +80,8 @@ h2corn hello:app --loop auto      # default
 
 | Value     | Behavior                                                              |
 | --------- | -------------------------------------------------------------------- |
-| `auto`    | Use `uvloop` if it is installed, otherwise the stdlib asyncio loop.  |
-| `asyncio` | Always the standard-library asyncio loop.                            |
+| `auto`    | Use `uvloop` if it is installed, otherwise the stdlib [`asyncio`](https://docs.python.org/3/library/asyncio.html) loop.  |
+| `asyncio` | Always the standard-library [`asyncio`](https://docs.python.org/3/library/asyncio.html) loop.                            |
 | `uvloop`  | Always `uvloop`; errors at startup if it is not installed.           |
 
 `uvloop` is an optional dependency — install it with the extra:

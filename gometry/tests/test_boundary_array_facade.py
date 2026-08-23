@@ -186,13 +186,12 @@ def test_integer_parameter_errors_expose_param_and_value() -> None:
     assert err.value == 20
 
 
-# --- F3: explain reports live rows, not allocated slots ----------------------
+# --- F3: index length reports live rows, not allocated slots ------------------
 
 
-def test_spatial_index_explain_live_rows_not_slots() -> None:
+def test_spatial_index_len_counts_live_rows_not_slots() -> None:
     idx = gm.SpatialIndex([gm.Point(0, 0), None, gm.Point(1, 1)])
-    lines = idx.explain()
-    assert lines[0] == 'loaded 2 geometries'
+    assert len(idx) == 2
 
 
 # --- F1: affine origin propagates provider exceptions ------------------------

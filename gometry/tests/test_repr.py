@@ -9,11 +9,28 @@ GREEN = '#22c55e'
 RED = '#ef4444'
 
 
+MARKER_RADIUS = 3.0
+
+
 def _viewbox(svg: str) -> tuple[float, float, float, float]:
     match = re.search('viewBox="([^"]+)"', svg)
     assert match, f'no viewBox in {svg!r}'
     x, y, w, h = (float(v) for v in match.group(1).split())
     return (x, y, w, h)
+
+
+def _content_bounds(svg: str) -> tuple[float, float, float, float]:
+    """Path extent in viewBox coordinates, after the y-flip transform."""
+    flip = re.search('matrix\\(1 0 0 -1 ([-\\d.]+) ([-\\d.]+)\\)', svg)
+    assert flip is not None, f'no flip transform in {svg!r}'
+    offx, offy = (float(flip.group(1)), float(flip.group(2)))
+    points = [
+        (float(x) + offx, offy - float(y))
+        for x, y in re.findall('[ML]([-\\d.]+) ([-\\d.]+)', svg)
+    ]
+    assert points, f'no path coordinates in {svg!r}'
+    xs, ys = zip(*points, strict=True)
+    return (min(xs), min(ys), max(xs), max(ys))
 
 
 def test_valid_geometry_renders_green():
@@ -32,29 +49,41 @@ def test_invalid_self_intersecting_polygon_renders_red():
 
 
 def test_viewbox_derives_from_bounds():
-    # Geometry is rendered in a local pixel frame (origin at padded min) so
-    # extreme world coordinates stay finite in the SVG; the viewBox is the
-    # pixel canvas, not the world bounds. Aspect follows the padded extent.
+    # Geometry is rendered in a local pixel frame (origin at the drawing's min)
+    # so extreme world coordinates stay finite in the SVG; the viewBox is the
+    # pixel canvas, not the world bounds. The margin is uniform in that frame,
+    # so the world aspect belongs to the drawing rather than to the viewBox.
     svg = gm.box(10, 20, 12, 24)._repr_svg_()
     minx, miny, w, h = _viewbox(svg)
     assert minx == pytest.approx(0.0)
     assert miny == pytest.approx(0.0)
-    # Pad is 5% of each side (world 2x4 → padded 2.2x4.4); pixel scale fits
-    # the longer axis into the fixed SVG slot with aspect preserved.
-    assert w > 0.0 and h > 0.0
-    assert h / w == pytest.approx(4.4 / 2.2, rel=1e-6)
+    left, bottom, right, top = _content_bounds(svg)
+    margins = (left - minx, bottom - miny, minx + w - right, miny + h - top)
+    assert margins == pytest.approx((left,) * 4)
+    assert (top - bottom) / (right - left) == pytest.approx(4.0 / 2.0, rel=1e-6)
 
 
-def test_flipped_content_stays_inside_the_viewbox():
-    svg = gm.box(20.85, 52.1, 21.25, 52.35)._repr_svg_()
+@pytest.mark.parametrize(
+    'bounds',
+    [
+        (20.85, 52.1, 21.25, 52.35),
+        (0.0, 0.0, 100.0, 1.0),
+        (0.0, 0.0, 1.0, 100.0),
+    ],
+)
+def test_flipped_content_stays_inside_the_viewbox(bounds):
+    # A vertex marker is a full-radius disc centred on a path point, so the
+    # drawing has to clear the frame by at least that radius. The extreme
+    # aspect ratios are the cases a margin taken per world axis cannot hold:
+    # its share of the short axis shrinks with the aspect, while the marker
+    # does not, and the browser clips half a marker off the edge.
+    svg = gm.box(*bounds)._repr_svg_()
     minx, miny, w, h = _viewbox(svg)
-    flip_match = re.search('matrix\\(1 0 0 -1 0 ([-\\d.]+)\\)', svg)
-    assert flip_match is not None
-    flip = float(flip_match.group(1))
-    for x, y in re.findall('[ML]([-\\d.]+) ([-\\d.]+)', svg):
-        tx, ty = (float(x), flip - float(y))
-        assert minx <= tx <= minx + w
-        assert miny <= ty <= miny + h
+    left, bottom, right, top = _content_bounds(svg)
+    assert left - minx >= MARKER_RADIUS
+    assert bottom - miny >= MARKER_RADIUS
+    assert minx + w - right >= MARKER_RADIUS
+    assert miny + h - top >= MARKER_RADIUS
 
 
 @pytest.mark.parametrize(

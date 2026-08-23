@@ -10,9 +10,9 @@ use crate::collections::sort_row_ids;
 use crate::parse_spatial_index_handle;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexEntry,
-    IndexEnvelope, IndexPredicate, IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py,
-    PyAny, PyAnyMethods as _, PyGeometry, PyResult, PySpatialIndex, Python, Shape,
-    build_spatial_index, exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows,
+    IndexPredicate, IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py, PyAny,
+    PyAnyMethods as _, PyResult, PySpatialIndex, Python, Shape, build_spatial_index,
+    exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows,
     geodesic_prunable_point, geometry_items, index_envelope, join_indexed, parse_max_distance,
     pyfunction, pymethods, query_distance, resolve_metric, restore_spatial_index, spatial_index,
     usize_array, validate_nearest_k,
@@ -680,105 +680,6 @@ impl PySpatialIndex {
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
-    }
-
-    /// Describe the query plan steps.
-    ///
-    /// Parameters
-    /// ----------
-    /// geom : Geometry, optional
-    ///     The query to plan for; omitted, the index itself is described.
-    /// predicate : str, optional
-    ///     Spatial relation the plan would refine with; omitted, the plan
-    ///     stops at the candidate filter.
-    /// distance : float, optional
-    ///     ``'dwithin'`` distance threshold (or envelope expansion), in ``unit``.
-    /// unit : {'planar', 'meters'}, default None
-    ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
-    ///     units on a projected one, coordinate units without a CRS.
-    ///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
-    ///     geographic CRS — only for deliberate coordinate-space math);
-    ///     ``'meters'`` forces the CRS metric and raises without a CRS.
-    ///
-    /// Returns
-    /// -------
-    /// list of str
-    ///     One line per plan step.
-    ///
-    /// Raises
-    /// ------
-    /// CRSMismatchError
-    ///     If the query does not share the index's CRS/epoch frame.
-    /// GeometryError
-    ///     If ``predicate`` is unknown, ``distance`` is invalid, or
-    ///     ``unit='meters'`` is requested for a CRS-free geometry.
-    #[pyo3(signature = (geom = None, *, predicate = None, distance = None, unit = None))]
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)]).explain()[0]
-    /// 'loaded 2 geometries'
-    /// >>> gm.SpatialIndex([gm.box(0, 0, 1, 1)]).explain()[0]
-    /// 'loaded 1 geometry'
-    pub(crate) fn explain(
-        &self,
-        geom: Option<&PyGeometry>,
-        predicate: Option<&str>,
-        distance: Option<&Bound<'_, PyAny>>,
-        unit: Option<DistanceUnit>,
-    ) -> PyResult<Vec<String>> {
-        let predicate = IndexPredicate::parse_opt(predicate)?;
-        let distance = query_distance(predicate, distance)?;
-        // Live geometries only — allocated slots include tombstones / missing
-        // rows that were never indexed.
-        let n = self.__len__();
-        let loaded = if n == 1 {
-            format!("loaded {n} geometry")
-        } else {
-            format!("loaded {n} geometries")
-        };
-        let mut steps = vec![loaded, "bulk-loaded packed STR envelope index".to_owned()];
-        let Some(geom) = geom else {
-            // No query geometry: describe the index itself, not a plan for a
-            // query that does not exist.
-            return Ok(steps);
-        };
-        let plan = PreparedIndexQuery::for_geometry(self, geom, predicate, distance, unit)?;
-        // No predicate = the `candidates(...)` plan: the envelope filter
-        // (optionally distance-expanded) with no exact refine step.
-        match &plan {
-            PreparedIndexQuery::Candidates | PreparedIndexQuery::CandidatesDwithin { .. } => {
-                steps.push(plan.candidate_step(self, Some(geom.shape.shape())));
-                return Ok(steps);
-            },
-            PreparedIndexQuery::Dwithin {
-                distance, metric, ..
-            } => {
-                steps.push("predicate operands: predicate(query_geom, indexed_row)".to_owned());
-                steps.push(plan.candidate_step(self, Some(geom.shape.shape())));
-                steps.push(format!(
-                    "exact {} distance refine within {}",
-                    metric.explain_label(),
-                    distance.get()
-                ));
-            },
-            PreparedIndexQuery::Topological { predicate } => {
-                steps.push("predicate operands: predicate(query_geom, indexed_row)".to_owned());
-                let envelope = predicate
-                    .spec()
-                    .index_envelope
-                    .expect("IndexPredicate::parse rejects non-indexable predicates");
-                steps.push(match envelope {
-                    IndexEnvelope::ContainedInQuery => {
-                        "bounds envelope containment filter".to_owned()
-                    },
-                    IndexEnvelope::Intersecting => "bounds envelope candidate filter".to_owned(),
-                });
-                steps.push(format!("exact {} predicate refine", predicate.token()));
-            },
-        }
-        Ok(steps)
     }
 
     /// Nearest indexed geometries to the query.

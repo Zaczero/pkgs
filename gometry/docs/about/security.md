@@ -102,7 +102,7 @@ lanes; they must not panic across the FFI boundary.
 
 ## Never unpickle untrusted data
 
-Pickle is for trusted Python object persistence only. It can execute Python code
+[`pickle`](https://docs.python.org/3/library/pickle.html) is for trusted Python object persistence only. It can execute Python code
 while loading. For untrusted or cross-service data, use WKB, WKT, GeoJSON,
 GeoArrow, or GeoParquet.
 

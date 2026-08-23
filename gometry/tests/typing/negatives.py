@@ -155,8 +155,6 @@ if TYPE_CHECKING:
     INDEX.join(POINTS, predicate='within', distance=1.0)  # type: ignore[call-overload]
     INDEX.self_join(predicate='dwithin')  # type: ignore[call-overload]
     INDEX.self_join(predicate='equals', distance=1.0)  # type: ignore[call-overload]
-    INDEX.explain(predicate='dwithin')  # type: ignore[call-overload]
-    INDEX.explain(predicate='intersects', distance=1.0)  # type: ignore[call-overload]
     gm.join(POINTS, POINTS, predicate='dwithin')  # type: ignore[call-overload]
     gm.join(POINTS, POINTS, predicate='overlaps', distance=1.0)  # type: ignore[call-overload]
 

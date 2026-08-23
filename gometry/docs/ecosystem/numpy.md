@@ -20,12 +20,12 @@ import gometry as gm
 
 zones = gm.GeometryArray([gm.box(i, 0, i + 2, 2) for i in range(4)])
 
-areas = zones.area                                   # float64 ndarray
-mask = gm.intersects(zones, gm.box(1, 1, 3, 3))    # bool_ ndarray
-left, right = gm.SpatialIndex(zones).self_join()         # (left, right) int64 ndarrays
+areas = zones.area
+mask = gm.intersects(zones, gm.box(0.5, 1, 1.5, 3))
+left, right = gm.SpatialIndex(zones).self_join()
 
-print("areas:", areas.dtype, areas)
-print("mask :", mask.dtype, mask)
+print("areas:", areas.dtype, repr(areas))
+print("mask:", mask.dtype, repr(mask))
 print("pairs:", left.dtype, list(zip(left.tolist(), right.tolist())))
 ```
 
@@ -51,13 +51,12 @@ import gometry as gm
 
 line = gm.LineString([(0.0, 0.0), (3.0, 4.0), (6.0, 8.0)])
 xs = line.coords.x                 # read-only float64 view
-print("x column:", xs, "| shares storage:", np.asarray(xs).base is not None)
+print("x column:", repr(xs), "| shares storage:", np.asarray(xs).base is not None)
 
-# Bulk extraction across a whole array, with the source-row index:
 arr = gm.GeometryArray([gm.Point(1, 2), gm.LineString([(0, 0), (1, 1)])])
 coords, index = gm.get_coordinates(arr, return_index=True)
-print("coords:\n", coords)
-print("source row per vertex:", index)
+print("coords:\n", repr(coords))
+print("source row per vertex:", repr(index))
 ```
 
 `coords.x` shares storage; `np.asarray(coords)` materializes a dense
@@ -73,11 +72,11 @@ or array.
 [`GeometryArray.to_numpy`][gometry.GeometryArray.to_numpy] is the explicit escape
 hatch to an `object` ndarray of geometry handles — there is no silent path that
 builds slow object arrays behind your back. The inverse is the
-[`GeometryArray`][gometry.GeometryArray] constructor, which accepts an object
+`GeometryArray` constructor, which accepts an object
 ndarray (or any iterable) of gometry geometries **or** `__geo_interface__` objects,
 including Shapely geometries.
 
-[`Geometry`][gometry.Geometry], [`GeometryArray`][gometry.GeometryArray], and [`Coordinates`][gometry.Coordinates] set `__array_ufunc__ = None`, so
+[`Geometry`][gometry.Geometry], `GeometryArray`, and `Coordinates` set `__array_ufunc__ = None`, so
 NumPy ufuncs defer with a clear `TypeError` instead of forcing an implicit
 conversion. `GeometryArray` and `Coordinates` implement `__array__`, so
 `np.asarray(arr)` gives an `object` array and `np.asarray(coords)` gives an
@@ -104,8 +103,8 @@ only present rows can use the ordinary zero-copy numeric export.
 import numpy as np
 import gometry as gm
 
-cells = gm.h3_cells([21.0, 22.0], [52.0, 52.5], resolution=7)  # CellArray[H3Cell]
-ids = cells.to_numpy()             # uint64 ndarray, zero-copy view
+cells = gm.h3_cells([21.0, 22.0], [52.0, 52.5], resolution=7)
+ids = cells.to_numpy()             # zero-copy ndarray
 print("dtype:", ids.dtype, "| n:", ids.size)
 print("object:", type(np.asarray(cells, dtype=object)[0]).__name__)
 ```
@@ -115,15 +114,14 @@ print("object:", type(np.asarray(cells, dtype=object)[0]).__name__)
 Scattered-data interpolation (IDW, kriging, natural-neighbor) and coordinate
 clustering (k-means, DBSCAN, hierarchical) live in SciPy, scikit-gstat, and
 scikit-learn; gometry supplies their coordinate input.
-Pull a `float64` matrix with [`get_coordinates`][gometry.get_coordinates]
-(or per-axis [`.coords.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]) and pass it straight in. Project to a metric CRS
+Pull a `float64` matrix with `get_coordinates`
+(or per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
 first when planar XY is wrong for geographic data:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 from sklearn.cluster import KMeans          # not a gometry dependency
 
-# two spatial clusters (west vs east), not one point per cluster
 lons = [13.35, 13.36, 13.37, 13.50, 13.51, 13.52]
 lats = [52.48, 52.49, 52.50, 52.51, 52.52, 52.53]
 pts = gm.points(lons, lats, crs=4326)
@@ -149,4 +147,4 @@ pass them to NumPy, SciPy, or scikit-learn.
 
 - [Arrow & storage](arrow.md) — columnar, zero-copy interchange beyond raw coordinates.
 - [DataFrames](dataframes.md) — store geometry columns in pandas/polars.
-- [Arrays & performance](../guide/arrays.md) — the [`GeometryArray`][gometry.GeometryArray]/[`CellArray`][gometry.CellArray]/[`Groups`][gometry.Groups] model.
+- [Arrays & performance](../guide/arrays.md) — the `GeometryArray`/`CellArray`/`Groups` model.

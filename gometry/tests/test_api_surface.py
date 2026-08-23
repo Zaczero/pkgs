@@ -520,10 +520,6 @@ def test_readme_quickstart_stays_executable() -> None:
     np.testing.assert_allclose(
         idx.query(point, predicate='dwithin', distance=1.0, unit='planar'), [0]
     )
-    assert (
-        idx.explain(point, predicate='dwithin', distance=1.0, unit='planar')[-1]
-        == 'exact planar distance refine within 1'
-    )
     projected = area.to_crs(area.estimate_local_crs())
     assert projected.crs and str(projected.crs).startswith('EPSG:')
     wkb = gm.Point(21.012345, 52.987654, crs=4326).to_wkb(

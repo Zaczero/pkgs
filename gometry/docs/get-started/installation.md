@@ -63,17 +63,18 @@ arrays, tables, and record batches:
     pip install "gometry[arrow]"
     ```
 
-With the extra installed, [geom.to_arrow][gometry.Geometry.to_arrow] and
-[gm.from_arrow][gometry.from_arrow] exchange pyarrow objects carrying
-[GeoArrow](https://geoarrow.org/)-compatible buffers:
+With the extra installed, `geom.to_arrow` and `gm.from_arrow` exchange pyarrow
+objects carrying [GeoArrow](https://geoarrow.org/)-compatible buffers:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-ga = points.to_arrow()           # requires pyarrow / gometry[arrow]
+ga = points.to_arrow()
 roundtrip = gm.from_arrow(ga)
-
+print("type:", type(roundtrip).__name__)
+print("crs:", roundtrip.crs.to_authority())
+print("equal:", roundtrip == points)
 ```
 
 PyArrow is imported lazily, so `import gometry` never requires it. Geometry
@@ -87,11 +88,7 @@ import importlib.metadata as md
 import gometry as gm
 
 print("gometry", md.version("gometry"))
-
-# bundled PROJ is available without any system library
 print("PROJ", gm.crs_engine()["version"])
-
-# a CRS-driven measurement runs end to end (geographic CRS -> geodesic m^2)
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 print(f"geodesic area: {poly.area:,.0f} m^2")
 

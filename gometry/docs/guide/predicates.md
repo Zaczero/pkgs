@@ -1,5 +1,5 @@
 ---
-description: Spatial predicates in gometry — contains, intersects, touches, crosses, overlaps, and equals, with boundary semantics, DE-9IM, and vectorized forms.
+description: gometry spatial predicates — contains, intersects, touches, crosses, overlaps, equals, boundary semantics, DE-9IM, and vectorized forms.
 ---
 
 # Spatial predicates
@@ -40,7 +40,7 @@ region = gm.box(0, 0, 10, 10)
 inside = gm.Point(5, 5)
 outside = gm.Point(20, 20)
 
-print("contains inside: ", gm.contains(region, inside))
+print("contains inside:", gm.contains(region, inside))
 print("contains outside:", gm.contains(region, outside))
 print("disjoint outside:", gm.disjoint(region, outside))
 
@@ -61,15 +61,17 @@ print(panels([(caption, [a.exterior, b]) for caption, b in cases]))
 
 ```
 
-Binary predicates are free functions: `gm.contains(left, right)`. The same
-spelling covers scalar and array combinations. A [`PreparedGeometry`][gometry.PreparedGeometry]
+Binary predicates are free functions: [`gm.contains(left, right)`][gometry.contains]. The same
+spelling handles scalar and array combinations; [`covers`][gometry.covers] is also
+available as a free function. A [`PreparedGeometry`][gometry.PreparedGeometry]
 is an operand to these functions when repeated probing is needed.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
-print(gm.contains(region, gm.Point(5, 5)))   # True — the point lies inside the box
+prepared = region.prepare()
+print("prepared contains:", gm.contains(prepared, gm.Point(5, 5)))
 
 ```
 
@@ -87,7 +89,7 @@ region = gm.box(0, 0, 10, 10)
 probes = gm.GeometryArray([gm.Point(5, 5), gm.Point(20, 20), gm.Point(4, 4)])
 
 hits = gm.contains(region, probes)
-print(hits)
+print(repr(hits))
 print("matching indices:", [i for i, h in enumerate(hits) if h])
 
 ```
@@ -108,13 +110,13 @@ import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
 print(gm.contains_xy(region, 5, 5))
-print(gm.intersects_xy(region, [5, 30], [5, 5]))   # vectorized over coordinates
+print(repr(gm.intersects_xy(region, [5, 30], [5, 5])))
 
 ```
 
 The coordinates are interpreted in the geometry's CRS. Geographic inputs use
 the same antimeridian and pole topology as predicates against explicit
-[`Point`][gometry.Point] objects, including strict interior versus boundary
+`Point` objects, including strict interior versus boundary
 contact at ±180° and ±90°.
 
 ## Robust predicates
@@ -136,7 +138,7 @@ square = gm.box(0.0, 0.0, 1.0, 1.0)
 on_edge = gm.Point(0.5, 0.0)
 print('contains (open):', gm.contains(square, on_edge))
 print('covers (closed):', gm.covers(square, on_edge))
-print('intersects:     ', gm.intersects(square, on_edge))
+print('intersects:', gm.intersects(square, on_edge))
 
 ```
 
@@ -152,20 +154,20 @@ print('intersects:     ', gm.intersects(square, on_edge))
 
 ## Boundary points are not contained
 
-The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines [`contains`][gometry.contains]
+The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines `contains`
 requires the contained geometry to share the container's
 **interior** — a point sitting exactly on an edge does not qualify. Use
-[`covers`][gometry.covers] when you want the boundary-inclusive answer.
+`covers` when you want the boundary-inclusive answer.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
-on_edge = gm.Point(0, 5)        # exactly on the left edge
+on_edge = gm.Point(0, 5)
 
-print("contains:", gm.contains(region, on_edge))   # False!
-print("covers:  ", gm.covers(region, on_edge))     # True
-print("touches: ", gm.touches(region, on_edge))    # True
+print("contains:", gm.contains(region, on_edge))
+print("covers:", gm.covers(region, on_edge))
+print("touches:", gm.touches(region, on_edge))
 
 ```
 
@@ -181,11 +183,11 @@ import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
 inner = gm.box(2, 2, 8, 8)
-flush = gm.box(0, 0, 5, 5)     # shares two edges with the region
+flush = gm.box(0, 0, 5, 5)
 
-print("contains:         ", gm.contains(region, flush))
+print("contains:", gm.contains(region, flush))
 print("contains_properly:", gm.contains_properly(region, flush))
-print("properly inside:  ", gm.contains_properly(region, inner))
+print("properly inside:", gm.contains_properly(region, inner))
 
 ```
 
@@ -229,9 +231,9 @@ If you need ordinate-level identity, ask for it explicitly:
 import gometry as gm
 a = gm.Point(1.0, 2.0, z=10.0)
 b = gm.Point(1.0, 2.0, z=99.0)
-print('equals (XY topology):  ', gm.equals(a, b))
-print('equals_exact (with Z): ', gm.equals_exact(a, b, include_z=True))
-print('== (value identity):    ', a == b)
+print('equals (XY topology):', gm.equals(a, b))
+print('equals_exact (with Z):', gm.equals_exact(a, b, include_z=True))
+print('== (value identity):', a == b)
 
 ```
 
@@ -259,10 +261,10 @@ geometries are hashable; a frame difference returns `False` rather than raising.
 import gometry as gm
 forward = gm.LineString([(0, 0), (1, 1), (2, 2)])
 backward = gm.LineString([(2, 2), (1, 1), (0, 0)])
-print('equals:           ', gm.equals(forward, backward))
-print('equals_exact:     ', gm.equals_exact(forward, backward))
-print('equals_identical: ', gm.equals_identical(forward, backward))
-print('==:               ', forward == backward)
+print('equals:', gm.equals(forward, backward))
+print('equals_exact:', gm.equals_exact(forward, backward))
+print('equals_identical:', gm.equals_identical(forward, backward))
+print('==:', forward == backward)
 
 ```
 
@@ -275,7 +277,7 @@ matrix flattened to a 9-character string. Each cell is `F` (no intersection),
 `0`/`1`/`2` (intersection of that dimension), `T` (any intersection), or `*`
 (don't care).
 
-[`relate`][gometry.relate] returns the matrix; [`relate_pattern`][gometry.relate_pattern]
+`relate` returns the matrix; [`relate_pattern`][gometry.relate_pattern]
 tests it against a mask.
 
 ```python exec="on" source="block" result="text"
@@ -287,7 +289,6 @@ probe = gm.Point(5, 5)
 matrix = gm.relate(region, probe)
 print("DE-9IM:", matrix)
 
-# "T*****FF*" is exactly the definition of `contains`
 print("matches contains pattern:", gm.relate_pattern(region, probe, "T*****FF*"))
 
 ```

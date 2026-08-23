@@ -1,5 +1,5 @@
-"""Spatial index and joins — candidates vs exact queries, explain plans,
-nearest (planar and geodesic), mutability, and prepared geometry.
+"""Spatial index and joins — candidates vs exact queries, nearest (planar and
+geodesic), mutability, and prepared geometry.
 """
 
 import copy
@@ -457,7 +457,7 @@ def test_index_predicate_controls_are_keyword_only() -> None:
         gm.join([point], [point], 'intersects')  # type: ignore[call-arg]
 
 
-def test_spatial_index_explains_and_refines_dwithin_queries() -> None:
+def test_spatial_index_refines_dwithin_queries() -> None:
     values = [gm.Point(0, 0), gm.Point(2, 0), gm.LineString([(4, 0), (4, 4)])]
     idx = gm.SpatialIndex(values)
     query = gm.Point(1, 0)
@@ -472,26 +472,6 @@ def test_spatial_index_explains_and_refines_dwithin_queries() -> None:
     assert ids(idx.query(query, predicate='dwithin', distance=0.5)) == []
     np.testing.assert_allclose(ids(idx.candidates(query, distance=1.1)), [0, 1])
     assert ids(idx.candidates(query, distance=0.5)) == []
-    assert idx.explain(query, predicate='dwithin', distance=1.1) == [
-        'loaded 3 geometries',
-        'bulk-loaded packed STR envelope index',
-        'predicate operands: predicate(query_geom, indexed_row)',
-        'bounds envelope candidate filter expanded by 1.1',
-        'exact planar distance refine within 1.1',
-    ]
-    assert idx.explain(query) == [
-        'loaded 3 geometries',
-        'bulk-loaded packed STR envelope index',
-        'bounds envelope candidate filter',
-    ]
-    assert (
-        gm.SpatialIndex(gm.points([0.0], [0.0])).explain(gm.Point(0, 0))[0]
-        == 'loaded 1 geometry'
-    )
-    assert (
-        idx.explain(query, distance=1.1)[-1]
-        == 'bounds envelope candidate filter expanded by 1.1'
-    )
     with pytest.raises(gm.GeometryError, match='non-negative distance'):
         idx.query(query, predicate='dwithin')
     with pytest.raises(ValueError, match='unknown predicate'):
@@ -1159,22 +1139,6 @@ def test_index_rejects_disjoint_with_guidance() -> None:
         idx.query(gm.Point(0, 0), predicate=cast('Any', 'disjoint'))
 
 
-def test_explain_validates_the_query_frame_and_reports_real_plans() -> None:
-    idx = gm.SpatialIndex(gm.points([0.0, 1.0], [0.0, 0.0], crs=4326))
-    with pytest.raises(gm.CRSMismatchError, match='share the index CRS'):
-        idx.explain(gm.Point(0, 0, crs=3857))
-    plan = idx.explain()
-    assert plan == ['loaded 2 geometries', 'bulk-loaded packed STR envelope index']
-    plan = idx.explain(
-        gm.Point(0.5, 0.0, crs=4326), predicate='dwithin', distance=1000.0
-    )
-    assert 'predicate operands: predicate(query_geom, indexed_row)' in plan
-    assert 'geodesic lower-bound candidate window' in plan
-    assert any('exact CRS-aware distance refine' in step for step in plan)
-    candidate_plan = idx.explain(gm.Point(0.5, 0.0, crs=4326), distance=1000.0)
-    assert candidate_plan[-1] == 'geodesic lower-bound candidate window'
-
-
 def test_join_packed_point_fast_path_matches_per_row_join() -> None:
     values = [
         (1, 1),
@@ -1296,8 +1260,9 @@ def test_packed_point_query_lane_matches_per_row_queries() -> None:
     assert geo_idx.query(
         packed, predicate='dwithin', distance=100000.0
     ) == geo_idx.query(mixed, predicate='dwithin', distance=100000.0)
-    plan = geo_idx.explain(packed[0], predicate='dwithin', distance=1000.0)
-    assert any('geodesic lower-bound candidate window' in step for step in plan)
+    assert ids(geo_idx.candidates(packed, distance=1000.0)) == ids(
+        geo_idx.candidates(mixed, distance=1000.0)
+    )
 
 
 def test_empty_index_answers_every_method_gracefully() -> None:
@@ -1347,16 +1312,11 @@ def test_insert_of_a_polygon_disables_geodesic_pruning_without_changing_results(
 def test_remove_restores_geodesic_pruning_after_non_point_removed() -> None:
     idx = gm.SpatialIndex(gm.points([0.0, 10.0], [0.0, 0.0], crs=4326))
     probe = gm.Point(0.5, 0.0, crs=4326)
-    pruned = 'geodesic lower-bound candidate window'
-    full_scan = 'global candidate scan (exact geodesic distances)'
-    plan_before = idx.explain(probe, predicate='dwithin', distance=1000.0)
-    assert pruned in plan_before
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 2
     poly_handle = idx.insert(gm.box(50, 50, 51, 51, crs=4326))
-    plan_degraded = idx.explain(probe, predicate='dwithin', distance=1000.0)
-    assert full_scan in plan_degraded
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 3
     assert idx.remove(poly_handle)
-    plan_restored = idx.explain(probe, predicate='dwithin', distance=1000.0)
-    assert pruned in plan_restored
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 2
 
 
 def test_remove_bulk_non_point_restores_geodesic_pruning() -> None:
@@ -1366,11 +1326,9 @@ def test_remove_bulk_non_point_restores_geodesic_pruning() -> None:
         gm.Point(10.0, 0.0, crs=4326),
     ])
     probe = gm.Point(0.5, 0.0, crs=4326)
-    full_scan = 'global candidate scan (exact geodesic distances)'
-    pruned = 'geodesic lower-bound candidate window'
-    assert full_scan in idx.explain(probe, predicate='dwithin', distance=1000.0)
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 3
     assert idx.remove(1)
-    assert pruned in idx.explain(probe, predicate='dwithin', distance=1000.0)
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 2
 
 
 def test_remove_restores_pruning_only_after_every_non_point_is_gone() -> None:
@@ -1378,13 +1336,11 @@ def test_remove_restores_pruning_only_after_every_non_point_is_gone() -> None:
     first = idx.insert(gm.box(20.0, 20.0, 21.0, 21.0, crs=4326))
     second = idx.insert(gm.LineString([(30.0, 30.0), (31.0, 31.0)], crs=4326))
     probe = gm.Point(0.5, 0.0, crs=4326)
-    full_scan = 'global candidate scan (exact geodesic distances)'
-    pruned = 'geodesic lower-bound candidate window'
-    assert full_scan in idx.explain(probe, predicate='dwithin', distance=1000.0)
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 4
     assert idx.remove(first)
-    assert full_scan in idx.explain(probe, predicate='dwithin', distance=1000.0)
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 3
     assert idx.remove(second)
-    assert pruned in idx.explain(probe, predicate='dwithin', distance=1000.0)
+    assert len(idx.candidates(probe, distance=10_000_000.0)) == 2
 
 
 def test_geodesic_nearest_max_distance_interacts_with_pruning() -> None:

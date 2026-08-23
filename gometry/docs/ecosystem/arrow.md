@@ -10,7 +10,7 @@ build on those same capsules.
 
 ## Arrow PyCapsules without pyarrow
 
-[`Geometry`][gometry.Geometry] and [`GeometryArray`][gometry.GeometryArray] implement the Arrow PyCapsule protocol with no
+`Geometry` and `GeometryArray` implement the Arrow PyCapsule protocol with no
 optional dependency:
 
 - `__arrow_c_schema__` → a capsule named `arrow_schema`
@@ -45,8 +45,8 @@ uv add "gometry[arrow]"
 
 ## Round-trip
 
-A [`GeometryArray`][gometry.GeometryArray] converts to an Arrow array with
-[`to_arrow`][gometry.Geometry.to_arrow] and back with [`gm.from_arrow`][gometry.from_arrow],
+A `GeometryArray` converts to an Arrow array with
+`to_arrow` and back with `gm.from_arrow`,
 preserving geometry, CRS, and coordinate epoch:
 
 ```python exec="on" source="block" result="text"
@@ -57,8 +57,8 @@ arr = gm.GeometryArray([
     gm.Point(22.0, 52.0, crs=4326),
 ])
 
-ga = arr.to_arrow()           # pyarrow array, GeoArrow layout
-print("arrow type:", ga.type)    # packed point layout
+ga = arr.to_arrow()
+print("arrow type:", ga.type)
 
 restored = gm.from_arrow(ga)
 print("round-trip:", [g.to_wkt() for g in restored])
@@ -81,7 +81,7 @@ snapshot. Unrelated table columns, BinaryView size entries, and payload ranges
 are not retained. Mixed geometry types, mixed coordinate axes, and geometry
 collections fall back to GeoArrow **WKB** encoding so nothing is lost.
 
-[`from_arrow`][gometry.from_arrow] handles PyArrow-shaped arrays, chunked arrays, tables, and record
+`from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
 batches through the PyArrow path. Other objects implementing
 `__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
 capsule path; the provider's data contents are still validated after gometry
@@ -121,7 +121,7 @@ gometry GeoArrow extension field and GeoParquet column metadata do.
 For dependency-free producers, pass the gometry object itself to any consumer that
 understands the Arrow PyCapsule protocol; the consumer calls `__arrow_c_array__`
 or `__arrow_c_stream__` and imports the GeoArrow buffers **zero-copy**. When
-gometry is the consumer, [`from_arrow`][gometry.from_arrow] accepts those capsules too and copies the
+gometry is the consumer, `from_arrow` accepts those capsules too and copies the
 selected schema plus visible validity, offset, view, variadic-size, coordinate,
 and WKB spans into gometry-owned storage before validation and decode.
 
@@ -135,13 +135,13 @@ and falls back to GeoJSON when that handoff is unavailable.
 ## GeoParquet — durable columnar storage
 
 Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
-[`gm.from_geoparquet`][gometry.from_geoparquet]. Write a [`GeometryArray`][gometry.GeometryArray] to a
+[`gm.from_geoparquet`][gometry.from_geoparquet]. Write a `GeometryArray` to a
 [GeoParquet](https://geoparquet.org/) file and read it back — CRS metadata is
 embedded as **PROJJSON** in the column header, geometry is written with **WKB**
 encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arrow
 validity bits instead of sentinel geometries. GeoParquet builds on pyarrow (the
 `arrow` extra provides it); for an in-memory handoff without a file, use
-[`to_arrow`][gometry.Geometry.to_arrow].
+`to_arrow`.
 
 ```python exec="on" source="block" result="text"
 import tempfile
@@ -153,6 +153,7 @@ geoms = gm.GeometryArray([
     None,
     gm.Point(22.0, 52.5, crs=4326),
 ])
+attributes = {"name": ["west", None, "east"]}
 
 arrow = geoms.to_arrow()
 from_arrow = gm.from_arrow(arrow)
@@ -161,8 +162,7 @@ print("Arrow mask:", from_arrow.is_missing.tolist())
 
 with tempfile.TemporaryDirectory() as tmp:
     path = f"{tmp}/places.parquet"
-    geoms.to_geoparquet(path)
-    # A GeoParquet file is a feature table: geometry column + attribute table.
+    geoms.to_geoparquet(path, attributes=attributes)
     from_file, attributes = gm.from_geoparquet(path)
 
 print("GeoParquet:", from_file, from_file.crs.to_authority())

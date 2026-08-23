@@ -79,7 +79,7 @@ Conventions:
 | Shapely | gometry | Notes |
 |---|---|---|
 | `a.intersection(b)` / `shapely.intersection(a, b)` / `a & b` | [`gm.intersection(a, b)`][gometry.intersection] / `a & b` | |
-| `a.union(b)` / `shapely.union(a, b)` / `a \| b` | [`gm.union(a, b)`][gometry.union] / `a \| b` | |
+| `a.union(b)` / `shapely.union(a, b)` / <code>a \| b</code> | [`gm.union(a, b)`][gometry.union] / <code>a \| b</code> | Requires matching CRS and coordinate epoch. |
 | `a.difference(b)` / `shapely.difference(a, b)` / `a - b` | [`gm.difference(a, b)`][gometry.difference] / `a - b` | |
 | `a.symmetric_difference(b)` / `a ^ b` | [`gm.symmetric_difference(a, b)`][gometry.symmetric_difference] / `a ^ b` | |
 | `unary_union(geoms)` | [`gm.union_all(geoms)`][gometry.union_all] | Rejects conflicting CRS. |
@@ -231,7 +231,6 @@ geodesic, so there is no `Geod` object to construct.
 | `list(idx.intersection(bbox))` | [`idx.candidates(geom)`][gometry.SpatialIndex.candidates] | bbox candidates |
 | candidates + manual refine | [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] | exact refine |
 | `idx.nearest(bbox, n)` | [`idx.nearest(geom, k=n, unit=...)`][gometry.SpatialIndex.nearest] | |
-| `idx.explain` (n/a) | [`idx.explain(geom, predicate=...)`][gometry.SpatialIndex.explain] | Query plan steps. |
 | `STRtree(geoms)` | `gm.SpatialIndex(geoms)` | |
 | `geopandas.sjoin(a, b, predicate=...)` | [`gm.join(a, b, predicate=...)`][gometry.join] | Prefilter + refine; returns index pairs. |
 

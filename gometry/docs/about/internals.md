@@ -68,7 +68,7 @@ query-only use; callers should serialize writes and queries that must observe a
 particular write boundary.
 
 Use processes when hard isolation, independent resource budgets, or standard
-CPython process-level parallelism is the requirement. Pickle carries the durable
+CPython process-level parallelism is the requirement. [`pickle`](https://docs.python.org/3/library/pickle.html) carries the durable
 geometry values and containers, while derived index or prepared state is
 reconstructed when loaded.
 

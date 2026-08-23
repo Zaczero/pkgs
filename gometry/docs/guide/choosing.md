@@ -17,7 +17,7 @@ different tools.
 | one collection grouped by mutual relationships | connected components under a geometric predicate | build a pair graph with [`gm.join`][gometry.join] / [`SpatialIndex.self_join`][gometry.SpatialIndex.self_join], then run a graph connected-components algorithm (networkx / scipy.sparse); reserve coordinate clustering ([NumPy handoff](../ecosystem/numpy.md#handing-off-to-scipy-and-scikit-learn)) for point features only |
 | a cheap pre-group before exact work | bounding-box candidates only | [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates] |
 
-`prepare()` is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
+[`prepare()`][gometry.Geometry.prepare] is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
 is per-collection state (there is no free `gm.index`). For one polygon against one
 large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared path.
 
@@ -30,8 +30,10 @@ large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared p
 | "is the candidate inside without touching my boundary at all?" | [`contains_properly`][gometry.contains_properly] |
 | the same questions, asked from the candidate's side | [`covered_by`][gometry.covered_by] / [`within`][gometry.within] |
 
-The boundary rule: a point **on** a polygon's edge is *not* contained —
-use `covers` for boundary-inclusive membership. See
+The containment family includes [`contains`][gometry.contains],
+[`contains_properly`][gometry.contains_properly], [`covers`][gometry.covers],
+and [`within`][gometry.within]. The boundary rule: a point **on** a polygon's
+edge is *not* contained — use `covers` for boundary-inclusive membership. See
 [the predicate boundary rules](predicates.md#boundary-points-are-not-contained).
 
 ## Clipping: `clip_by_rect` vs `intersection`
@@ -41,7 +43,8 @@ use `covers` for boundary-inclusive membership. See
 | crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
-There is no separate `clip(mask)`: it would be `intersection` by another name.
+There is no separate `clip(mask)`: use [`clip_by_rect`][gometry.Geometry.clip_by_rect] for a
+rectangle and [`intersection`][gometry.intersection] for an arbitrary mask.
 
 ## Vertex cleaning: seven different jobs
 
@@ -55,7 +58,7 @@ There is no separate `clip(mask)`: it would be `intersection` by another name.
 | collect the distinct vertices themselves | [`unique_points`][gometry.Geometry.unique_points] | a [`MultiPoint`][gometry.MultiPoint] of first-occurrence distinct vertices |
 | fix actual invalidity (self-intersections, bad rings) | [`repair`][gometry.Geometry.repair] | a valid geometry, rebuilt |
 
-`quantize` and `snap_to_grid` can *create* invalidity on tight geometries —
+[`quantize`][gometry.Geometry.quantize] and [`snap_to_grid`][gometry.Geometry.snap_to_grid] can *create* invalidity on tight geometries —
 pass `repair=True` to `snap_to_grid` (or follow `quantize` with
 [`repair`][gometry.Geometry.repair]) when downstream code needs validity, and use
 [`validate`][gometry.Geometry.validate] to see exactly what broke.
@@ -104,7 +107,7 @@ DGGS cell covers and polygonal coverages use different representations:
 
 If you are bucketing geometry into a global grid, you want those `*_cover`
 factories. If you are validating or simplifying a parcel fabric, build a
-[`GeometryArray`][gometry.GeometryArray] and call the column-native methods —
+  [`GeometryArray`][gometry.GeometryArray] and call the column-native methods —
 [`arr.coverage_is_valid()`][gometry.GeometryArray.coverage_is_valid], [`arr.coverage_simplify(tolerance)`][gometry.GeometryArray.coverage_simplify], and so on. The
 free `gm.coverage_*(values)` forms accept arrays and general iterables:
 

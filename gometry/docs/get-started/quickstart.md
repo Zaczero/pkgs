@@ -31,7 +31,7 @@ degrees on the WGS 84 ellipsoid (EPSG:4326):
 ```python exec="on" source="block" result="text" session="catchment"
 import gometry as gm
 
-stop = gm.Point(2.3479, 48.8589, crs=4326)  # Châtelet, Paris — (lon, lat)
+stop = gm.Point(2.3479, 48.8589, crs=4326)
 print(stop)
 
 ```
@@ -50,8 +50,8 @@ distance of 500 meters rather than 500 degrees; `unit='planar'` selects raw
 coordinate units:
 
 ```python exec="on" source="block" result="text" session="catchment"
-catchment = stop.buffer(500)                          # 500 meters, the CRS decides
-print('catchment area m^2:', round(catchment.area))  # ~ pi * 500^2
+catchment = stop.buffer(500)
+print('catchment area m^2:', round(catchment.area))
 
 ```
 
@@ -101,7 +101,6 @@ idx = gm.SpatialIndex(hoods)
 reachable = idx.query(catchment, predicate='intersects')
 print('rows intersecting the radius:', reachable.tolist())
 print('matched names:', [names[i]['name'] for i in reachable])
-# row ids → geometries (or use gm.join for two-array attribute joins)
 print('matched count:', len(reachable))
 
 ```

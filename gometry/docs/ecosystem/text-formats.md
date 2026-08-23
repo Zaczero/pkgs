@@ -5,7 +5,7 @@ description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, Ge
 # Text & binary formats
 
 gometry moves geometry in and out as WKB, EWKB, WKT, EWKT, GeoJSON, the
-`__geo_interface__` protocol, and pickle. Each format carries CRS, Z, and M
+`__geo_interface__` protocol, and [pickle](https://docs.python.org/3/library/pickle.html). Each format carries CRS, Z, and M
 differently. Z is preserved unless you ask to drop it; M is preserved in formats
 that can hold it and **rejected** in formats that can't (rather than silently
 discarded); SRID is embedded only when you
@@ -46,7 +46,6 @@ print('from EWKB crs:', gm.from_wkb(ewkb).crs)
 
     ```python title="partial: requires the preceding WKB setup"
     from_wkb(Point(10, 50, crs="OGC:CRS84").to_wkb(include_srid=True)).crs
-    # EPSG:4326
     ```
 
     Pass `crs="OGC:CRS84"` at decode to restore the alias when the embedded SRID
@@ -61,7 +60,7 @@ extension-aware. **EWKB** is the PostGIS-compatible option when the peer is Post
 another system that documents EWKB SRID support — not a universal "what every
 database expects." gometry core ships **no database adapters**. Keep the boundary
 binary and columnar — write bytes out, read bytes back, and decode the whole
-column in one [`gm.from_wkb`][gometry.from_wkb] call rather than a per-row geometry
+ column in one `gm.from_wkb` call rather than a per-row geometry
 loop:
 
 ```python exec="on" source="block" result="text"
@@ -100,8 +99,7 @@ packed GeoArrow layout.
 import gometry as gm
 
 geoms = gm.points([21.0, 22.0], [52.0, 53.0], crs=4326)
-# GeoArrow-native by default; WKB encoding for peers that want binary geometry:
-wkb_arrow = geoms.to_arrow(encoding="wkb")  # requires gometry[arrow] / pyarrow
+wkb_arrow = geoms.to_arrow(encoding="wkb")
 ```
 
 
@@ -116,9 +114,9 @@ the text round-trip.
 import gometry as gm
 
 pz = gm.Point(21.0, 52.0, z=100.0, crs=4979)
-print("default:", pz.to_wkt())                       # POINT Z (21 52 100)
-print("force 2D:", pz.to_wkt(output_dimension=2))  # POINT (21 52) — Z dropped explicitly
-print("EWKT:", pz.to_wkt(include_srid=True))       # SRID=4979;POINT Z (...)
+print("default:", pz.to_wkt())
+print("force 2D:", pz.to_wkt(output_dimension=2))
+print("EWKT:", pz.to_wkt(include_srid=True))
 
 print("parse:", gm.from_wkt("POINT ZM (1 2 3 4)").coordinate_axes)
 ```
@@ -142,7 +140,7 @@ p = gm.Point(21.0, 52.0, crs=4326)
 print("2D:", p.to_geojson())
 
 pz = gm.Point(21.0, 52.0, z=100.0, crs=4979)
-print("with Z:", pz.to_geojson(include_z=True))   # third element = elevation
+print("with Z:", pz.to_geojson(include_z=True))
 ```
 
 Construction accepts M; the restriction applies at **serialization** time:
@@ -150,9 +148,9 @@ Construction accepts M; the restriction applies at **serialization** time:
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-pm = gm.Point(21.0, 52.0, m=5.0, crs=4326)   # construction is fine
+pm = gm.Point(21.0, 52.0, m=5.0, crs=4326)
 try:
-    pm.to_geojson()                          # serialization rejects M
+    pm.to_geojson()
 except gm.InvalidGeometryError as e:
     print("M ordinate raises on to_geojson:", type(e).__name__)
 ```
@@ -179,7 +177,6 @@ p = gm.Point(21.0, 52.0, crs=4326)
 mapping = p.__geo_interface__
 print("mapping:", mapping)
 
-# Rebuild from the mapping, or from a GeoJSON Feature dict:
 back = gm.from_geojson(mapping, crs=4326)
 feat = gm.from_geojson({"type": "Feature", "properties": {}, "geometry": mapping}, crs=4326)
 print("round-trip:", back.to_wkt(), "| from Feature:", feat.to_wkt())
@@ -219,7 +216,7 @@ fc = {
     ],
 }
 print(gm.from_geojson(fc))
-features = gm.from_features(fc)  # validated Features record
+features = gm.from_features(fc)
 geoms, props, ids = features
 print(features.properties, ids, len(features.geometries))
 ```
@@ -239,7 +236,7 @@ geometries plus keyword-only `properties` (and optional `ids`) and it assembles 
 `FeatureCollection` mapping whose geometry members are JSON-ready. The mapping is
 suitable for `json.dumps` **only when every property value is JSON-serializable**
 (strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
-Python objects in `properties` raise `TypeError` at dump time. [`to_geojson`][gometry.Geometry.to_geojson] honors
+Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
 the WGS84 contract on the way out too: reproject with [`to_crs(4326)`][gometry.Geometry.to_crs] first if your
 geometry is in another frame.
 
@@ -251,11 +248,12 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 ## Pickle, multiprocessing, and copies
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
-[`GeometryArray`][gometry.GeometryArray] (packed point, line, and polygon columns round-trip as raw
-coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups], [`CRS`][gometry.CRS], [`H3Cell`][gometry.H3Cell], and [`S2Cell`][gometry.S2Cell].
+`GeometryArray` (packed point, line, and polygon columns round-trip as raw
+coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups], `CRS`, [`H3Cell`][gometry.H3Cell], and [`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
-protocol supports `multiprocessing`, `concurrent.futures`, joblib, and cache
-storage; `copy`/`deepcopy` use it as well. Spatial indexes and prepared
+protocol supports [`multiprocessing`](https://docs.python.org/3/library/multiprocessing.html),
+[`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
+storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepcopy`](https://docs.python.org/3/library/copy.html#copy.deepcopy) use it as well. Spatial indexes and prepared
 geometries serialize durable input state and rebuild derived acceleration
 structures when loaded; loaded objects do not contain warm-cache snapshots. There is
 no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
@@ -287,7 +285,7 @@ print(restored == point, restored.crs, restored.epoch)
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |
 | GeoPandas | [`to_geopandas`][gometry.GeometryArray.to_geopandas] | GeoSeries | yes | no (requires `drop_epoch=True` when present) | yes | yes where the peer stores them |
 | polars | [`to_polars`][gometry.GeometryArray.to_polars] | [`from_polars`][gometry.from_polars] | optional (`drop_crs`) | no (requires `drop_epoch=True` when present) | yes (EWKB) | yes (EWKB) |
-| Pickle (durable values/containers) | `pickle.dumps` | `pickle.loads` | yes | yes | yes | yes (trusted Python only) |
+| Pickle (durable values/containers) | [`pickle.dumps`](https://docs.python.org/3/library/pickle.html#pickle.dumps) | [`pickle.loads`](https://docs.python.org/3/library/pickle.html#pickle.loads) | yes | yes | yes | yes (trusted Python only) |
 
 !!! note "Dimensional empties"
     WKT and WKB preserve empty axes (`POINT Z EMPTY` stays XYZ). GeoJSON has no

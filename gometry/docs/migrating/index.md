@@ -43,8 +43,8 @@ job across `is_valid`, `explain_validity`, and `make_valid`.
     import gometry as gm
 
     bowtie = gm.from_wkt("POLYGON((0 0, 1 1, 1 0, 0 1, 0 0))")
-    print("valid:", bowtie.is_valid)        # the quick bool, like Shapely
-    report = bowtie.validate()              # the reason and location
+    print("valid:", bowtie.is_valid)
+    report = bowtie.validate()
     print("reason:", report.reason)
     fixed = bowtie.repair()
     print("repaired:", fixed.geometry_type, "| now valid:", fixed.is_valid)
@@ -62,9 +62,9 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
 === "Shapely (silently wrong on lon/lat)"
 
     ```python title="partial: source ecosystem example"
-    poly.area          # degrees^2 — meaningless as an area
-    a.distance(b)      # degrees
-    poly.buffer(100)   # 100 degrees ≈ the whole hemisphere
+    poly.area
+    a.distance(b)
+    poly.buffer(100)
     ```
 
 === "gometry (the CRS decides)"
@@ -75,11 +75,9 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     a = gm.Point(21.0, 52.0, crs=4326)
     b = gm.Point(22.0, 52.0, crs=4326)
-    # Geographic CRS -> geodesic meters, automatically.
-    print("geodesic area (m^2):  ", round(area.area))
+    print("geodesic area (m^2):", round(area.area))
     print("geodesic distance (m):", round(gm.distance(a, b)))
-    # Reproject to measure planar native units (meters for UTM) instead.
-    print("projected area (m^2): ", round(area.to_crs(area.estimate_local_crs()).area))
+    print("projected area (m^2):", round(area.to_crs(area.estimate_local_crs()).area))
     ```
 
 ### STRtree → SpatialIndex (+ PreparedGeometry)
@@ -98,11 +96,11 @@ exposes **two acceleration paths**:
     ```python title="partial: source ecosystem example"
     from shapely import STRtree, prepare
     tree = STRtree(geoms)
-    candidates = tree.query(area)                       # bbox candidates
-    hits = tree.query(area, predicate="contains")       # refined (2.x)
+    candidates = tree.query(area)
+    hits = tree.query(area, predicate="contains")
 
     prepare(poly)
-    poly.contains(pt)                                   # prepared predicate path
+    poly.contains(pt)
     ```
 
 === "gometry"
@@ -110,11 +108,15 @@ exposes **two acceleration paths**:
     ```python exec="on" source="block" result="text"
     import gometry as gm
 
-    pts = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-    area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+    pts = gm.points([20.25, 21.0, 30.0], [51.25, 52.0, 52.0], crs=4326)
+    area = gm.Polygon(
+        [(20.0, 51.0), (22.0, 51.0), (22.0, 53.0), (20.0, 53.0), (20.0, 51.0)],
+        holes=[[(20.5, 51.5), (21.5, 51.5), (21.5, 52.5), (20.5, 52.5), (20.5, 51.5)]],
+        crs=4326,
+    )
     idx = gm.SpatialIndex(pts)
-    print("candidates:", idx.candidates(area))                  # bbox prefilter
-    print("refined:   ", idx.query(area, predicate="contains")) # exact
+    print("candidates:", idx.candidates(area).tolist())
+    print("refined:", idx.query(area, predicate="contains").tolist())
     prep = area.prepare()
     print("prepared contains first point:", gm.contains(prep, pts[0]))
     ```
@@ -187,12 +189,12 @@ geodesic problem on that CRS's own ellipsoid.
     ```python title="partial: source ecosystem example"
     from pyproj import Geod
     g = Geod(ellps="WGS84")
-    dist = g.inv(lon1, lat1, lon2, lat2)[2]          # distance (m)
-    az = g.inv(lon1, lat1, lon2, lat2)[0]            # forward azimuth
-    lon2, lat2, _ = g.fwd(lon1, lat1, az, dist)      # direct problem
-    length = g.line_length(lons, lats)               # polyline length
-    area, perim = g.geometry_area_perimeter(poly)    # signed area, perimeter
-    pts = g.npts(lon1, lat1, lon2, lat2, n)          # intermediate points
+    dist = g.inv(lon1, lat1, lon2, lat2)[2]
+    az = g.inv(lon1, lat1, lon2, lat2)[0]
+    lon2, lat2, _ = g.fwd(lon1, lat1, az, dist)
+    length = g.line_length(lons, lats)
+    area, perim = g.geometry_area_perimeter(poly)
+    pts = g.npts(lon1, lat1, lon2, lat2, n)
     ```
 
 === "gometry"
@@ -204,11 +206,11 @@ geodesic problem on that CRS's own ellipsoid.
     b = gm.Point(22.0, 52.0, crs=4326)
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 
-    print("distance (m): ", round(gm.distance(a, b)))            # geographic -> geodesic
+    print("distance (m):", round(gm.distance(a, b)))  # geographic → geodesic
     print("bearing (deg):", round(gm.bearing(a, b), 1))
-    print("destination:  ", a.destination(90.0, 1000.0))
-    print("midpoint:     ", gm.point_between(a, b, 0.5, normalized=True))
-    print("area (m^2):   ", round(area.area))
+    print("destination:", a.destination(90.0, 1000.0))
+    print("midpoint:", gm.point_between(a, b, 0.5, normalized=True))
+    print("area (m^2):", round(area.area))
     print("perimeter (m):", round(area.length))
     ```
 
@@ -233,8 +235,8 @@ gometry names the rule and returns a typed [`CellArray`][gometry.CellArray].
 
     ```python title="partial: h3-py example"
     import h3
-    cells = h3.polygon_to_cells(h3.LatLngPoly(shell), 8)  # which rule? center? overlap?
-    # exact membership? do it yourself, per point, with another library.
+    cells = h3.polygon_to_cells(h3.LatLngPoly(shell), 8)  # containment rule is implicit
+    # Exact membership is not provided.
     ```
 
 === "gometry"
@@ -244,9 +246,9 @@ gometry names the rule and returns a typed [`CellArray`][gometry.CellArray].
 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     cov = gm.h3_cover(area, resolution=5)
-    print("cells:", len(cov))             # overlap is the default factory rule
+    print("cells:", len(cov))
 
-    # Keep the source geometry for exact checks:
+    # A cover is a candidate set; retain the source for exact predicates.
     print("covers:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
     ```
 
@@ -272,8 +274,8 @@ a = gm.s2_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), level=8)
 b = gm.s2_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), level=8)
 a_present = [cell for cell in a if cell is not None]
 b_present = [cell for cell in b if cell is not None]
-shared = gm.s2_intersection(a_present, b_present)  # also gm.s2_union / gm.s2_difference
-rollup = shared.compact()             # coarsen full parents to one cell
+shared = gm.s2_intersection(a_present, b_present)
+rollup = shared.compact()
 
 h3_a = gm.h3_cover(gm.box(0.0, 0.0, 2.0, 2.0, crs=4326), resolution=5)
 h3_b = gm.h3_cover(gm.box(1.0, 1.0, 3.0, 3.0, crs=4326), resolution=5)
@@ -298,7 +300,7 @@ predicates with a bounding-box prefilter. **Shapely 2.x and GeoPandas already
 refine exactly** when you pass a predicate (`STRtree.query(..., predicate=...)`,
 `sjoin(..., predicate=...)`); rtree's `intersection` path is bbox-only
 unless you refine yourself. gometry exposes the corresponding stages and adds
-frame, row-identity, and plan diagnostics:
+frame and row-identity checks:
 
 - **Explicit stage names** — `candidates` (bbox) vs `query(..., predicate=...)`
   (exact).
@@ -310,7 +312,6 @@ frame, row-identity, and plan diagnostics:
   one-geometry-many-tests shape.
 - **Geodesic nearest / dwithin lanes** when the index frame is geographic
   (`unit=` selects CRS-natural meters vs planar).
-- **[`idx.explain(...)`][gometry.SpatialIndex.explain]** — a query plan for debugging candidate vs refine cost.
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
 unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
@@ -341,7 +342,7 @@ gometry all expose nearest-neighbour APIs.
     pts = gm.points([21.0, 30.0, 21.2], [52.0, 52.0, 52.1], crs=4326)
     target = gm.Point(21.0, 52.0, crs=4326)
     idx = gm.SpatialIndex(pts)
-    print("nearest 2 (planar):", idx.nearest(target, k=2, unit="planar"))
+    print("nearest 2 (planar):", idx.nearest(target, k=2, unit="planar").tolist())
     ```
 
 [`idx.nearest(query, k=..., unit=...)`][gometry.SpatialIndex.nearest] returns the `k` closest indices
@@ -350,20 +351,26 @@ units; on a geographic CRS, metric units select geodesic point-nearest ordering.
 The index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
 `STRtree` is bulk-built and immutable after construction.
 
-### Explainable plans
+### Candidate selectivity
 
-`idx.explain(...)` reports the steps the query planner took — candidate count,
-refine predicate, geodesic vs planar path. That debugging surface has no direct
-rtree/STRtree equivalent.
+`idx.candidates(...)` exposes the bounding-box prefilter, while
+`idx.query(..., predicate=...)` performs exact refinement. Compare their lengths
+to see how much work the envelope filter leaves for the predicate:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-pts = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+pts = gm.points([20.25, 21.0, 30.0], [51.25, 52.0, 52.0], crs=4326)
+area = gm.Polygon(
+    [(20.0, 51.0), (22.0, 51.0), (22.0, 53.0), (20.0, 53.0), (20.0, 51.0)],
+    holes=[[(20.5, 51.5), (21.5, 51.5), (21.5, 52.5), (20.5, 52.5), (20.5, 51.5)]],
+    crs=4326,
+)
 idx = gm.SpatialIndex(pts)
-for step in idx.explain(area, predicate="contains"):
-    print("-", step)
+candidate_count = len(idx.candidates(area))
+refined_count = len(idx.query(area, predicate="contains"))
+print("candidate count:", candidate_count)
+print("refined count:", refined_count)
 
 ```
 
@@ -376,7 +383,7 @@ returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 
 - pure geometry inputs and index-pair outputs (bring your own table join);
 - CRS/epoch frame checks on both sides;
-- query-plan diagnostics live on `SpatialIndex.explain(...)`;
+- candidate and refined counts are directly observable with `len(idx.candidates(query))` and `len(idx.query(query, predicate=...))`;
 - no pandas/GeoPandas dependency for the join itself.
 
 === "GeoPandas"
@@ -393,7 +400,8 @@ returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 
     pts = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
     polys = gm.GeometryArray([gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)])
-    print("pairs:", gm.join(pts, polys, predicate="within"))
+    left, right = gm.join(pts, polys, predicate="within")
+    print("pairs:", list(zip(left.tolist(), right.tolist(), strict=True)))
     ```
 
 `gm.SpatialIndex(geometries)` bulk-loads a balanced in-memory

@@ -24,8 +24,8 @@ gometry's operations use one of three:
 coordinates through a PROJ operation:
 
 ```python title="partial: API placement example"
-geom.set_crs(4326)   # "these existing numbers are lon/lat" — no coordinates change
-geom.to_crs(3857)    # "reproject these coordinates" — every coordinate changes
+geom.set_crs(4326)
+geom.to_crs(3857)
 
 ```
 
@@ -41,29 +41,30 @@ testing, structural matching, sequence operations, and bitwise overlays:
 import gometry as gm
 
 geom = gm.from_wkt("POINT (1.20517 5)")
-print(str(geom))                  # str() is bare WKT (repr keeps the frame)
-print(f"{geom:.2f}")              # format specs round for display
-print(bool(gm.from_wkt("POINT EMPTY")))  # empty geometries are falsy
+print(str(geom))
+print(f"{geom:.2f}")
+print(bool(gm.from_wkt("POINT EMPTY")))
 
-match geom:                       # structural pattern matching destructures
+match geom:
     case gm.Point(x, y):
         print("matched point at", x, y)
 
 arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(3, 4)])
-match arr:                        # arrays are sequences
+match arr:
     case [gm.Point(), gm.Point() as far]:
         print("two points; the far one is", far.to_wkt())
 print(gm.Point(3, 4) in arr, arr.index(gm.Point(3, 4)))
 
 a, b = gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3)
-print((a & b).area, (a | b).area)   # & is intersection, | is union
+print((a & b).area, (a | b).area)
 
 ```
 
 Equality is **value** equality (same CRS, epoch, and exact coordinates), and hash
 agrees with it. Geometries and arrays can key dictionaries and live in sets.
-`pickle`/`copy`/`deepcopy` apply to durable value and container types; pickle is
-for trusted data only ([security](../about/security.md#never-unpickle-untrusted-data)).
+[`pickle`](https://docs.python.org/3/library/pickle.html)/[`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepcopy`](https://docs.python.org/3/library/copy.html#copy.deepcopy)
+apply to durable value and container types; pickle is for trusted data only
+([security](../about/security.md#never-unpickle-untrusted-data)).
 [`Coordinates`][gometry.Coordinates] and iterator types are not picklable. Geometries,
 arrays, and CRS support `weakref`; cell wrappers do not. Cells sort by their id
 (`sorted(cells)`);

@@ -38,7 +38,7 @@ parameter value), while an invalid cell id, token, or quadkey is a
 
 [`GeometryTypeError`][gometry.GeometryTypeError] is a dual-base exception: handing
 [`line_substring`][gometry.Geometry.line_substring] a [`Polygon`][gometry.Polygon] is *both* a gometry domain error and a Python type
-error, so it subclasses both [`GeometryError`][gometry.GeometryError] and `TypeError` (so either `except`
+error, so it subclasses both `GeometryError` and `TypeError` (so either `except`
 clause catches it). That is the one place gometry subclasses `TypeError` —
 wrong-kind domain failures, not protocol coercion.
 
@@ -56,17 +56,16 @@ The most specific exception class identifies the recovery strategy:
 | treat a wrong geometry kind as a type bug | `TypeError` *(or [`GeometryTypeError`][gometry.GeometryTypeError])* |
 | treat any bad value like the stdlib does | `ValueError` |
 
-
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-square = gm.box(0, 0, 2, 2)                 # CRS-free
+square = gm.box(0, 0, 2, 2)
 tagged = gm.Point(1, 1, crs=4326)
 
 try:
     gm.contains(square, tagged)
 except gm.CRSMismatchError as e:
-    print(type(e).__name__, '->', e)
+    print(type(e).__name__, '→', e)
 
 ```
 
@@ -84,7 +83,7 @@ for row in rows:
     try:
         parsed.append(gm.from_wkt(row))
     except gm.ParseError:
-        pass  # skip malformed rows
+        pass
 print(len(parsed), 'of', len(rows), 'rows parsed')
 
 ```
@@ -154,7 +153,7 @@ except gm.ParseError as e:
 ## Rows in array errors
 
 A per-element failure in an array operation keeps its class and message —
-so [`except ParseError`][gometry.ParseError] still catches — and names the failing row as a
+so `except ParseError` still catches — and names the failing row as a
 [PEP 678](https://peps.python.org/pep-0678/) note that tracebacks display:
 
 ```python exec="on" source="block" result="text"

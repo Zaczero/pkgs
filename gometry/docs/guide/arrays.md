@@ -17,7 +17,7 @@ relationship is a free function ([`gm.contains(a, b)`][gometry.contains]):
 | `geom.area` | scalar [`Geometry`][gometry.Geometry] | `float` |
 | `arr.area` | [`GeometryArray`][gometry.GeometryArray] | `float64` ndarray |
 | `geom.buffer(d)` | scalar | [`Polygon`][gometry.Polygon] / [`MultiPolygon`][gometry.MultiPolygon] |
-| `arr.buffer(d)` | array | `GeometryArray[Polygon \| MultiPolygon]` |
+| `arr.buffer(d)` | array | <code>GeometryArray[Polygon \| MultiPolygon]</code> |
 | `gm.contains(poly, pt)` | scalar pair | `bool` |
 | `gm.contains(poly, pts)` | scalar × array | `bool_` ndarray |
 | [`idx.query(scalar)`][gometry.SpatialIndex.query] | one geometry | `int64` ndarray |
@@ -37,7 +37,7 @@ import gometry as gm
 
 arr = gm.GeometryArray([
     gm.box(20.0, 51.0, 22.0, 53.0, crs=4326),
-    gm.box(29.0, 51.0, 31.0, 53.0, crs=4326),
+    gm.box(29.0, 51.0, 32.0, 53.0, crs=4326),
 ])
 print("len:", len(arr))
 print("crs:", arr.crs)
@@ -45,7 +45,7 @@ print("coordinate_axes:", arr.coordinate_axes)
 print("common_coordinate_axes:", arr.common_coordinate_axes)
 print("element types:", arr.geometry_type)
 print("combined bounds:", arr.total_bounds)
-print("areas (geodesic m^2):", arr.area)
+print("areas (geodesic m^2):", repr(arr.area))
 
 ```
 
@@ -64,11 +64,9 @@ of [`gm.Point(..., z=..., m=...)`][gometry.Point]:
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-# 2D points from lon/lat arrays:
 pts = gm.points([21.0, 22.0, 23.0], [52.0, 52.5, 53.0], crs=4326)
 print("2D per row:", pts.coordinate_axes, "shared:", pts.common_coordinate_axes, "len", len(pts))
 
-# XYZ points: add a parallel z array (note crs=4979, the 3D WGS84 CRS):
 pts_z = gm.points([21.0, 22.0], [52.0, 52.5], z=[100.0, 200.0], crs=4979)
 print("XYZ per row:", pts_z.coordinate_axes, "shared:", pts_z.common_coordinate_axes)
 
@@ -105,8 +103,8 @@ Indexing with an integer returns a single typed [`Geometry`][gometry.Geometry]; 
 import gometry as gm
 
 arr = gm.GeometryArray([gm.Point(i, i) for i in range(5)])
-print("element:", type(arr[0]).__name__, arr[0].x)         # Point
-print("slice:  ", type(arr[1:4]).__name__, len(arr[1:4]))  # GeometryArray of 3
+print("element:", type(arr[0]).__name__, arr[0].x)
+print("slice:", type(arr[1:4]).__name__, len(arr[1:4]))
 print("strided:", [g.x for g in arr[::2]])
 
 ```
@@ -145,13 +143,13 @@ import gometry as gm
 arr = gm.points([0.0, 1.0, 2.0], [0.0, 1.0, 2.0])
 obj = arr.to_numpy()
 back = gm.GeometryArray(obj)
-print("round-trip len:", len(back), "| x column:", np.asarray(back.coords.x))
+print("round-trip len:", len(back), "| x column:", repr(np.asarray(back.coords.x)))
 
 ```
 
 Like scalar geometries, a geographic array previews itself with lonboard when the
-optional visualization extra is installed; otherwise it uses a capped SVG grid,
-so the preview remains bounded for large arrays:
+optional visualization extra is installed. `_repr_html_svg` renders the capped SVG grid
+used without it, bounded so a large array never renders thousands of elements:
 
 ```python exec="on" html="true"
 import gometry as gm
@@ -162,7 +160,7 @@ arr = gm.GeometryArray([
     gm.LineString([(0, 0), (1, 2), (2, 0)], crs=4326),
     gm.Polygon([(0, 0), (2, 0), (1, 2)], crs=4326),
 ], crs=4326)
-print(arr._repr_html_())
+print(arr._repr_html_svg())
 
 ```
 
@@ -178,8 +176,8 @@ import gometry as gm
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 points = gm.points([21.0, 30.0, 21.5], [52.0, 52.0, 52.1], crs=4326)
 
-mask = gm.contains(poly, points)   # -> ndarray[bool]
-print(type(mask).__name__, mask)
+mask = gm.contains(poly, points)
+print(type(mask).__name__, repr(mask))
 
 ```
 
@@ -192,7 +190,7 @@ Vectorized bulk lanes follow a fixed return contract:
 | Bounds | `(n, 4)` `float64` ndarray | [`bounds`][gometry.Geometry.bounds] rows (`nan` for empty) |
 | Id pairs | `(left, right)` pair of `int64` ndarrays | [`join`][gometry.join], [`self_join`][gometry.SpatialIndex.self_join] |
 | Ragged matches | [`Groups`][gometry.Groups] (CSR) | array-form [`index.query`][gometry.SpatialIndex.query] |
-| Geometries | [`GeometryArray`][gometry.GeometryArray] | [`buffer`][gometry.Geometry.buffer], [`to_crs`][gometry.Geometry.to_crs], …; overlays via `&` / `\|` |
+| Geometries | [`GeometryArray`][gometry.GeometryArray] | [`buffer`][gometry.Geometry.buffer], [`to_crs`][gometry.Geometry.to_crs], …; overlays via <code>&amp; / \|</code> |
 | Coordinates | [`Coordinates`][gometry.Coordinates] view or [`gm.get_coordinates`][gometry.get_coordinates] | [`geom.coords`][gometry.Geometry.coords], packed point columns |
 | Witness pairs | `(left, right)` pair of point `GeometryArray` columns | [`nearest_points`][gometry.nearest_points] |
 
@@ -218,7 +216,7 @@ import gometry as gm
 
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
-print(gm.contains(poly, points))   # one polygon vs each point
+print(gm.contains(poly, points).tolist())
 
 ```
 
@@ -236,8 +234,7 @@ polys = gm.GeometryArray([
 ])
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 
-# polys[0] vs points[0], polys[1] vs points[1]
-print("pairwise contains:", gm.contains(polys, points))
+print("pairwise contains:", gm.contains(polys, points).tolist())
 
 ```
 
@@ -253,10 +250,10 @@ polys = gm.GeometryArray([
     gm.box(20.0, 51.0, 22.0, 53.0, crs=4326),
     gm.box(29.0, 51.0, 31.0, 53.0, crs=4326),
 ])
-points = gm.points([21.0, 30.0, 40.0], [52.0, 52.0, 52.0], crs=4326)  # length 3
+points = gm.points([21.0, 30.0, 40.0], [52.0, 52.0, 52.0], crs=4326)
 
 try:
-    gm.contains(polys, points)   # 2 vs 3 -> error
+    gm.contains(polys, points)
 except gm.GeometryError as e:
     print("GeometryError:", e)
 
@@ -291,7 +288,7 @@ Construction preserves input order and duplicates; `CellArray` is a sequence, no
 Bulk cell factories preserve missing input rows as `None`. Missing rows are
 included by slicing, reversing, and fancy indexing; `None in cells`,
 `cells.count(None)`, and `cells.index(None)` follow normal Python sequence
-semantics, while cell/id searches ignore missing rows. Pickles contain only
+semantics, while cell/id searches ignore missing rows. [Pickles](https://docs.python.org/3/library/pickle.html) contain only
 public cell identities plus the logical missing mask, never an internal id
 sentinel.
 
@@ -375,13 +372,13 @@ geoms = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 1, 2, 2)])
 window = gm.box(-1, -1, 2, 2)
 
 print("missing:", geoms.is_missing.tolist())
-print("wkt:    ", geoms.to_wkt())                       # exports emit None
-print("area:   ", geoms.area.tolist())                  # measures -> NaN
-print("contains:", gm.contains(window, geoms).tolist()) # predicates -> False
-print("buffer: ", geoms.buffer(0.5).is_missing.tolist())# geometry ops propagate
-print("union:  ", geoms.union_all().geometry_type)       # aggregates skip
-print("drop:   ", geoms.drop_missing())
-print("fill:   ", geoms.fill_missing(gm.box(9, 9, 10, 10)).to_wkt())
+print("wkt:", geoms.to_wkt())
+print("area:", geoms.area.tolist())
+print("contains:", gm.contains(window, geoms).tolist())
+print("buffer:", geoms.buffer(0.5).is_missing.tolist())
+print("union:", geoms.union_all().geometry_type)
+print("drop:", geoms.drop_missing())
+print("fill:", geoms.fill_missing(gm.box(9, 9, 10, 10)).to_wkt())
 
 ```
 
@@ -426,11 +423,9 @@ poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 lons = [20.0, 20.5, 21.0, 30.0]
 lats = [51.0, 51.5, 52.0, 10.0]
 
-# Per-item form: build Python geometry objects and call the scalar API.
 sample = [gm.Point(lo, la, crs=4326) for lo, la in zip(lons, lats)]
 loop_result = [gm.contains(poly, g) for g in sample]
 
-# Batched form: one packed array and one vectorized call.
 pts = gm.points(lons, lats, crs=4326)
 vectorized_result = gm.contains(poly, pts)
 
@@ -455,8 +450,8 @@ import gometry as gm
 boundary = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 probes = gm.points([21.0, 40.0], [52.0, 10.0], crs=4326)
 
-prepared = boundary.prepare()           # build the edge index once
-print(gm.contains(prepared, probes).tolist())  # array path — no Python loop
+prepared = boundary.prepare()
+print(gm.contains(prepared, probes).tolist())
 
 ```
 
@@ -485,7 +480,6 @@ areas = gm.GeometryArray([
     gm.box(29.0, 51.0, 31.0, 53.0, crs=4326),
 ])
 
-# Instead of: for a in areas: for p in points: gm.contains(a, p)
 pairs = gm.join(points, areas, predicate="within")
 print("matched pairs:", pairs)
 
@@ -510,10 +504,8 @@ import gometry as gm
 
 wkb = [gm.Point(i * 0.01, i * 0.02, crs=4326).to_wkb() for i in range(5)]
 
-# Per-item form: one scalar parse per row, in a Python loop.
 loop_result = [gm.from_wkb(b) for b in wkb]
 
-# Batched form: one call returning a packed array.
 batch_result = gm.from_wkb(wkb)
 
 print("same rows:", [g.to_wkt() for g in loop_result] == batch_result.to_wkt())
@@ -560,17 +552,17 @@ overhead.
 
 !!! note "Pass raw GeoJSON to the parser"
     `gm.from_geojson(text)` parses the JSON in Rust and skips the discarded `properties`
-    entirely. Calling `json.loads` first and passing the resulting `dict` forces a full
+    entirely. Calling [`json.loads`](https://docs.python.org/3/library/json.html#json.loads) first and passing the resulting `dict` forces a full
     Python object tree to be built and re-walked before the native parser sees it.
     Pass the raw `str`/`bytes` (a file's contents, a `polars`/`duckdb` binary column) and
     let the Rust reader do the scan.
 
 | Ingest | Per-item or expanded form | Batched/direct form |
 | --- | --- | --- |
-| GeoJSON | [`from_geojson(json.loads(s))`][gometry.from_geojson] | `from_geojson(s)` — `str`/`bytes` |
+| GeoJSON | [`from_geojson`][gometry.from_geojson](<a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a>(s)) | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
-| Features + attributes | `json.loads` + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
+| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
 
 When you need the per-feature `properties`/`id` alongside geometry,
 [`gm.from_features`][gometry.from_features] parses the whole FeatureCollection in Rust and
@@ -583,10 +575,10 @@ Per-row interop conversion changes a columnar boundary into Python object work. 
 converters accept whole columns.
 
 - **pandas:** [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] stores the native array behind a concrete extension dtype;
-  `gm.from_pandas()` returns that same [`GeometryArray`][gometry.GeometryArray] **zero-copy**.
-- **Polars:** [`arr.to_polars()`][gometry.GeometryArray.to_polars] / `gm.from_polars()` encode and decode a whole WKB/EWKB Binary
+  [`gm.from_pandas()`][gometry.from_pandas] returns that same [`GeometryArray`][gometry.GeometryArray] **zero-copy**.
+- **Polars:** [`arr.to_polars()`][gometry.GeometryArray.to_polars] / [`gm.from_polars()`][gometry.from_polars] encode and decode a whole WKB/EWKB Binary
   Series in native batched calls. The boundary does not require PyArrow.
-- **GeoPandas:** `gm.from_geopandas()` / [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] convert a `GeoSeries` in one
+- **GeoPandas:** [`gm.from_geopandas()`][gometry.from_geopandas] / [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] convert a `GeoSeries` in one
   vectorized WKB step. Avoid rebuilding a `GeoSeries` element by element (`[g.wkb for g in
   series]`); that per-row hop into Shapely is the per-item path the vectorized helpers exist to
   replace.

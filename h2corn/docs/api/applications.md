@@ -5,7 +5,8 @@ description: ASGI application aliases, callables, and message unions exported by
 # ASGI applications and aliases
 
 These aliases describe the callable boundary between an ASGI application and
-h2corn. `Application` accepts either the precise `ASGIApp` contract or the
+h2corn. [`Application`][h2corn.Application] accepts either the precise
+[`ASGIApp`][h2corn.ASGIApp] contract or the
 broader mutable-mapping annotations used by framework applications.
 
 ::: h2corn.ASGIApp

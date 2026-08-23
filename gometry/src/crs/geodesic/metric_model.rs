@@ -84,14 +84,6 @@ impl MetricModel {
     pub(crate) const fn has_coordinate_order(&self) -> bool {
         matches!(self, Self::Planar { .. })
     }
-
-    /// One-word label for an operator-facing `explain` of the metric in force.
-    pub(crate) const fn explain_label(&self) -> &'static str {
-        match self {
-            Self::Planar { .. } => "planar",
-            Self::Geodesic(_) => "CRS-aware",
-        }
-    }
 }
 
 /// A [`MetricModel`] with its batch-invariant CRS resolution done ONCE: the

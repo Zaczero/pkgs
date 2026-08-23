@@ -64,8 +64,7 @@ print("nearby neighborhood rows:", nearby.tolist())
 
     ---
 
-    H3 & S2 cell covers with explicit `cell_rule`, spatial indexing with
-    [`explain`][gometry.SpatialIndex.explain], and millimeter-accurate [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
+    H3 & S2 cell covers with explicit `cell_rule`, spatial indexing, and [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
 
     [:octicons-arrow-right-24: Discrete grids](guide/grids.md)
 

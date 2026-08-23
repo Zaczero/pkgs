@@ -25,9 +25,9 @@ uv add "gometry[geopandas]"
 
 ## pandas extension storage
 
-[`GeometryArray.to_pandas()`][gometry.GeometryArray.to_pandas] constructs a Series backed by gometry's concrete
+`GeometryArray.to_pandas()` constructs a Series backed by gometry's concrete
 extension array. The Series and gometry array share immutable geometry storage;
-[`gm.from_pandas()`][gometry.from_pandas] returns the native column without a WKB round trip.
+`gm.from_pandas()` returns the native column without a WKB round trip.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -66,15 +66,16 @@ frame["buffered"] = geometry.buffer(500).to_pandas(index=frame.index)
 
 ## Polars binary storage
 
-Polars stores the boundary as a `Binary` Series. [`to_polars()`][gometry.GeometryArray.to_polars] encodes the
-whole column through native batched WKB; [`from_polars()`][gometry.from_polars] decodes it in one
+Polars stores the boundary as a `Binary` Series. `to_polars()` encodes the
+whole column through native batched WKB; `from_polars()` decodes it in one
 native call. Neither direction requires PyArrow.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 points = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
-series = points.to_polars(name="geometry")
+geometries = points.buffer(500)
+series = geometries.to_polars(name="geometry")
 geometry = gm.from_polars(series)
 areas = geometry.area
 
@@ -86,7 +87,7 @@ print("areas:", areas.tolist())
 An EPSG CRS rides as an EWKB SRID. Other CRS definitions and coordinate epochs
 are not representable in WKB. `drop_crs=True` removes non-EPSG CRS metadata and
 `drop_epoch=True` removes the coordinate epoch; restore them explicitly through
-[`gm.from_polars(..., crs=..., epoch=...)`][gometry.from_polars]. Missing rows encode as Polars nulls
+`gm.from_polars(..., crs=..., epoch=...)`. Missing rows encode as Polars nulls
 and round-trip as missing geometry rows.
 
 gometry registers no Polars Series or Expr namespace. Conversion goes through
@@ -94,8 +95,8 @@ gometry registers no Polars Series or Expr namespace. Conversion goes through
 
 ## GeoPandas interchange
 
-[`gm.from_geopandas()`][gometry.from_geopandas] decodes a GeoSeries or GeoDataFrame geometry column
-through vectorized WKB. [`GeometryArray.to_geopandas()`][gometry.GeometryArray.to_geopandas] returns a GeoSeries with
+`gm.from_geopandas()` decodes a GeoSeries or GeoDataFrame geometry column
+through vectorized WKB. `GeometryArray.to_geopandas()` returns a GeoSeries with
 the array CRS.
 
 ```python exec="on" source="block" result="text"

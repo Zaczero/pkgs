@@ -22,7 +22,7 @@ line needs.
     pip install h2corn fastapi
     ```
 
-`h2corn` requires **Python 3.11+**. Wheels are published for Linux,
+`h2corn` supports **Python 3.11 or newer**. Wheels are published for Linux,
 macOS, and Windows, including ABI-matched free-threaded CPython (`cp3XXt`)
 builds. The multi-worker supervisor is Unix-only — see
 [Operations](deployment/operations.md#worker-pool).
@@ -165,23 +165,19 @@ uvicorn 0.52.4, gunicorn 26.1.0 and hypercorn 0.18.0:
 ### From Uvicorn
 
 ```bash
-# Uvicorn
 uvicorn myapp:app --host 127.0.0.1 --port 8000 --workers 4
 
-# h2corn
 h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
 ```
 
-Use [`--loop`](configuration.md#option-loop) `asyncio` or `uvloop` to choose the callback loop.
+Use [`--loop`](configuration.md#option-loop) [`asyncio`](https://docs.python.org/3/library/asyncio.html) or `uvloop` to choose the callback loop.
 [`--reload`](configuration.md#command-reload) is a development-only watcher and is limited to one worker.
 
 ### From Hypercorn
 
 ```bash
-# Hypercorn
 hypercorn myapp:app --bind 127.0.0.1:8000 --workers 4
 
-# h2corn
 h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
 ```
 
@@ -192,11 +188,9 @@ deploy.
 ### From Gunicorn
 
 ```bash
-# Gunicorn with its ASGI worker
 gunicorn myapp:app -k uvicorn.workers.UvicornWorker --workers 4 \
   --bind 127.0.0.1:8000
 
-# h2corn
 h2corn myapp:app --bind 127.0.0.1:8000 --workers 4
 ```
 

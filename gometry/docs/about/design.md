@@ -72,7 +72,7 @@ Global prefix families keep domain functions together in both `gm.` completion a
 alphabetical reference lists: `crs_*`, `h3_*`, `s2_*`, `geohash_*`, `tile_*`,
 `pluscode_*`, and `osm_shortlink_*`. Grid families hold factories and set algebra
 (`cover`, `cells`,
-`bounding_cell`, `union`, `intersection`, `difference`); receiver operations stay
+`bounding_cell`, [`union`][gometry.union], `intersection`, [`difference`][gometry.difference]); receiver operations stay
 on the cell or [`CellArray`][gometry.CellArray]: [`cell.polygon`][gometry.Cell.polygon], [`cell.children()`][gometry.Cell.children],
 [`cells.compact(depth)`][gometry.CellArray.compact], [`cells.to_polygon()`][gometry.CellArray.to_polygon].
 
@@ -226,8 +226,8 @@ and the explicit recovery methods are documented in [Geometry & dimensions](../g
 Overlays node their inputs into atomic per-vertex segments
 to compute the result; gometry then dissolves that linework back into the fewest
 maximal [`LineString`s][gometry.LineString], splitting only at genuine junctions (a node of degree
-`>= 3`) and never fusing two arms through one. So [`difference`][gometry.difference], [`intersection`][gometry.intersection],
-[`symmetric_difference`][gometry.symmetric_difference], and [`union`][gometry.union] of lines — and the shared-boundary linework
+`>= 3`) and never fusing two arms through one. So `difference`, `intersection`,
+[`symmetric_difference`][gometry.symmetric_difference], and `union` of lines — and the shared-boundary linework
 of polygon overlays — come back as whole lines: a line minus a disjoint line is
 returned intact, a line clipped to a covering polygon is one `LineString`, and a
 line crossed by a *subtracted* line keeps flowing through the crossing vertex.

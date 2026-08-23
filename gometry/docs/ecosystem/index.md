@@ -11,7 +11,7 @@ One Python-facing package (plus mandatory NumPy) covers
 workflows commonly split across Shapely, pyproj, h3-py, s2sphere, and rtree;
 everything else
 interoperates through standards: NumPy arrays, the Arrow C Data Interface,
-GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and pickle. See the
+GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/library/pickle.html). See the
 [license inventory](../about/license.md) for the supply-chain detail.
 
 ## Choose your boundary
@@ -43,7 +43,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and pickle. See the
 | **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | `geom.__geo_interface__` | no (GeoJSON) | — |
 | **pyproj** | *(none)* | [`CRS(pyproj_crs)`][gometry.CRS] (duck-typed) | [`crs.to_wkt()`][gometry.CRS.to_wkt] / [`to_authority()`][gometry.CRS.to_authority] | — | — |
 | **scipy / scikit-learn** | *(none)* | — | [`get_coordinates`][gometry.get_coordinates] → ndarray | project first | NumPy view |
-| **pickle / multiprocessing** | *(none)* | `pickle.loads` | `pickle.dumps` | preserved (+ epoch) | — |
+| **pickle / [multiprocessing](https://docs.python.org/3/library/multiprocessing.html)** | *(none)* | [`pickle.loads`](https://docs.python.org/3/library/pickle.html#pickle.loads) | [`pickle.dumps`](https://docs.python.org/3/library/pickle.html#pickle.dumps) | preserved (+ epoch) | — |
 
 ## Optional extras
 
