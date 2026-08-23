@@ -118,6 +118,8 @@ pub(super) struct RunningWebSocketApp {
     pub(super) send_buffer: WebSocketSendBuffer,
     pub(super) send_rx: mpsc::Receiver<WebSocketOutboundEvent>,
     pub(super) task: WebSocketAppTask,
+    /// A channel event held back because the buffered first event outranks it.
+    pub(super) deferred: Option<WebSocketOutboundEvent>,
 }
 
 impl RunningWebSocketApp {
@@ -126,29 +128,66 @@ impl RunningWebSocketApp {
         self.send_rx.close();
     }
 
+    /// Order a channel event behind the buffered first event.
+    ///
+    /// The producer fills the buffer under the same lock that flips the stream
+    /// to forwarding, so an event on the channel proves the first one is
+    /// already buffered. Reading the buffer before that push and the channel
+    /// after the next send would otherwise hand the session a later event as
+    /// the handshake: a close is then answered 403, and a denial body parses
+    /// as an unexpected initial event and is answered 500 with no reason
+    /// logged.
+    fn ordered(&mut self, event: WebSocketOutboundEvent) -> AppStep {
+        match self.send_buffer.take_ready() {
+            Some(first) => {
+                self.deferred = Some(event);
+                AppStep::Event(first)
+            },
+            None => AppStep::Event(event),
+        }
+    }
+
+    /// Report completion, unless the app published something on its way out.
+    ///
+    /// The task can be joined between the loop's read of the buffer and this
+    /// check, so a bare `Done` here would drop an event the app did send.
+    fn finished(&mut self) -> AppStep {
+        if let Some(first) = self.send_buffer.take_ready() {
+            return AppStep::Event(first);
+        }
+        if let Some(event) = self.deferred.take() {
+            return AppStep::Event(event);
+        }
+        AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())))
+    }
+
     /// Next handshake-phase step; see [`AppStep`] for the ordering contract.
     pub(super) async fn next_handshake_step(&mut self) -> AppStep {
         loop {
             if let Some(event) = self.send_buffer.take_ready() {
                 return AppStep::Event(event);
             }
+            if let Some(event) = self.deferred.take() {
+                return AppStep::Event(event);
+            }
             match self.send_rx.try_recv() {
-                Ok(event) => return AppStep::Event(event),
+                Ok(event) => return self.ordered(event),
                 Err(mpsc::error::TryRecvError::Empty) => {},
                 // Once the app has dropped its sender, it cannot produce a
                 // later event. Join it rather than selecting a permanently
                 // ready closed receiver.
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     if self.task.is_joined() {
-                        return AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())));
+                        return self.finished();
                     }
                     self.task.join_store().await;
                     continue;
                 },
             }
             if self.task.is_joined() {
-                return AppStep::Done(self.task.take_outcome().unwrap_or(Ok(())));
+                return self.finished();
             }
+            let mut received = None;
             tokio::select! {
                 // The sender places the first handshake event inline before
                 // forwarding later events, so preserve that producer order
@@ -156,11 +195,12 @@ impl RunningWebSocketApp {
                 biased;
                 () = self.send_buffer.wait_ready() => {}
                 event = self.send_rx.recv() => {
-                    if let Some(event) = event {
-                        return AppStep::Event(event);
-                    }
+                    received = event;
                 }
                 () = self.task.join_store() => {}
+            }
+            if let Some(event) = received {
+                return self.ordered(event);
             }
         }
     }
@@ -203,6 +243,7 @@ pub(super) fn start_websocket_app(
         send_buffer,
         send_rx,
         task: WebSocketAppTask::new(app_task),
+        deferred: None,
     }
 }
 

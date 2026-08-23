@@ -326,11 +326,30 @@ async def read_http1_response(
     return status, headers, bytes(body), trailers
 
 
-#: Teardown budget for tests that park a handler and never return one. The
-#: production default is 30 s and is spent twice, once draining and once
-#: cancelling. Below ~2 s the parallel suite starves a shutdown and fails
-#: somewhere unrelated, so the teardown wait clears 2x this rather than less.
+#: Drain budget for a serve() the test did not configure itself. The production
+#: default is 30 s; a test that parks a handler forever spends this once, so it
+#: is also the largest single cost in the suite and tempting to shrink.
+#:
+#: Do not. It is spent twice -- once letting requests finish, once letting
+#: cancellation clean up -- and a request that outruns `2 x` this makes serve()
+#: raise `requests still running`, in whichever test happened to be holding a
+#: connection when the box got busy. At 0.25 that surfaced on a loaded runner
+#: as a TLS test failing 0.5 s into its own shutdown. Cheap teardown is not
+#: worth buying with a failure mode that lands somewhere else.
 _TEST_GRACEFUL_SHUTDOWN = 2.0
+#: How long to wait for something that must happen anyway: readiness, a port, a
+#: stop, a signal reaching a child, workers appearing under a supervisor.
+#:
+#: None of those is a claim under test, so this bounds a hang and nothing else.
+#: It costs nothing when the event arrives on time and only a genuinely broken
+#: run ever spends it -- which is why it is sized for the worst runner rather
+#: than the median one. At load 50 this suite's wall clock doubles and budgets
+#: of 5 to 10 s start failing across the subprocess tests, all at once, on
+#: whichever of them the scheduler happened to starve.
+#:
+#: A budget that *is* the claim does not belong here. It lives in the test that
+#: makes the claim, and gets measured rather than padded.
+HANG_BOUND = 30.0
 _PRODUCTION_GRACEFUL_SHUTDOWN = Config().timeout_graceful_shutdown
 
 
@@ -346,15 +365,34 @@ async def running_server(app, config: Config):
     try:
         yield server
     finally:
+        await stop_serving(server, task)
+
+
+async def stop_serving(server: Server, task: asyncio.Task) -> None:
+    """Settle one `serve()` lifecycle, then report whatever ended it.
+
+    A serve left running outlives the test that started it. Loop teardown
+    then cancels it and gathers with no bound of its own, wedging the worker
+    somewhere no pytest timeout reaches -- so one abandoned serve costs a
+    whole CI job instead of one red test.
+
+    `serve()` returning is the caller's boundary rather than the end of the
+    lifecycle: the generation owns the app and its shards until it releases,
+    and those are the tasks teardown finds. Both are waited for here, and
+    every wait is bounded -- `asyncio.wait_for` cancels what it waits on and
+    then awaits that cancellation with no bound, which is the hang this
+    exists to prevent.
+    """
+    if not task.done():
         server.shutdown()
-        try:
-            await asyncio.wait_for(task, timeout=_TEST_GRACEFUL_SHUTDOWN * 3)
-        except TimeoutError:
+        done, _pending = await asyncio.wait((task,), timeout=HANG_BOUND)
+        if not done:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.wait((task,), timeout=HANG_BOUND)
+    if (generation := server._generation) is not None:
+        await asyncio.wait((generation.released,), timeout=HANG_BOUND)
+    if task.done() and not task.cancelled() and (error := task.exception()) is not None:
+        raise error
 
 
 def server_port(server: Server, index: int = 0) -> int:
@@ -372,7 +410,7 @@ def server_port(server: Server, index: int = 0) -> int:
 async def wait_for_server(
     server: Server,
     task: asyncio.Task,
-    timeout: float = 5.0,
+    timeout: float = HANG_BOUND,
 ) -> None:
     """Wait until `server` is accepting connections.
 
@@ -386,25 +424,30 @@ async def wait_for_server(
     )
     if not done:
         waiting.cancel()
+        await stop_serving(server, task)
         raise TimeoutError('timed out waiting for the server to start serving')
     if task in done:
         # Whatever ended the server is the real answer, even when readiness
         # resolved in the same pass.
         waiting.cancel()
-        task.result()
+        await stop_serving(server, task)
         raise AssertionError('server task finished before it started serving')
     await waiting
 
 
-async def assert_serve_reusable(server: Server, timeout: float = 2) -> None:
+async def assert_serve_reusable(server: Server, timeout: float = HANG_BOUND) -> None:
     """The server accepts a fresh serve() lifecycle after the previous ended."""
     task = asyncio.create_task(server.serve())
-    await wait_for_server(server, task, timeout=timeout)
-    server.shutdown()
-    await asyncio.wait_for(task, timeout=timeout)
+    try:
+        await wait_for_server(server, task, timeout=timeout)
+        server.shutdown()
+        done, _pending = await asyncio.wait((task,), timeout=timeout)
+        assert done, 'serve() did not return after shutdown()'
+    finally:
+        await stop_serving(server, task)
 
 
-async def wait_for_port(port: int, timeout: float = 5.0) -> None:
+async def wait_for_port(port: int, timeout: float = HANG_BOUND) -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:

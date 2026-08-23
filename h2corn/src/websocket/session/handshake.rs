@@ -294,6 +294,7 @@ mod tests {
             send_buffer,
             send_rx,
             task,
+            deferred: None,
         }
     }
 
@@ -336,6 +337,7 @@ mod tests {
             send_buffer,
             send_rx,
             task: completed_app_task(&test_app()),
+            deferred: None,
         };
         let _keep_sender_alive = send_tx;
 
@@ -391,6 +393,7 @@ mod tests {
             send_buffer,
             send_rx,
             task: completed_app_task(&test_app()),
+            deferred: None,
         };
         let _keep_sender_alive = send_tx;
 
@@ -422,6 +425,7 @@ mod tests {
             send_buffer,
             send_rx,
             task: completed_app_task(&test_app()),
+            deferred: None,
         };
         let _keep_sender_alive = send_tx;
 
@@ -460,6 +464,7 @@ mod tests {
             send_buffer,
             send_rx,
             task: completed_app_task(&test_app()),
+            deferred: None,
         };
         let _keep_sender_alive = send_tx;
 
@@ -509,6 +514,7 @@ mod tests {
             send_buffer,
             send_rx,
             task: pending_app_task(&test_app()),
+            deferred: None,
         };
         let _keep_sender_alive = send_tx;
 

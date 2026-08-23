@@ -1194,6 +1194,31 @@ async def test_websocket_single_supported_version_dispatches(
 
 
 @pytest.mark.parametrize(
+    'handshake',
+    [_h2_websocket_handshake, _http1_websocket_handshake],
+)
+async def test_websocket_handshake_failure_names_its_cause(
+    handshake, captured_stderr: pytest.CaptureFixture[str]
+) -> None:
+    """A 500 says why. An operator cannot act on a status code alone."""
+
+    async def app(scope, receive, send):
+        if scope['type'] == 'lifespan':
+            return
+        await receive()
+        # Neither answer the handshake allows, so the session cannot proceed.
+        await send({'type': 'websocket.send', 'text': 'before the handshake'})
+
+    async with running_server(app, Config(port=0)) as server:
+        status, _headers, _body = await handshake(port=server_port(server), path='/ws')
+
+    assert status == 500
+    stderr = captured_stderr.readouterr().err
+    assert 'request failed:' in stderr, stderr
+    assert 'before handshake' in stderr, stderr
+
+
+@pytest.mark.parametrize(
     ('key', 'duplicate'),
     [
         ('not-a-websocket-key', b'dGhlIHNhbXBsZSBub25jZQ=='),
@@ -1844,11 +1869,19 @@ async def test_websocket_ping_interval_zero_emits_no_ping() -> None:
             path='/ws',
         )
         try:
-            try:
-                data = await asyncio.wait_for(reader.read(65535), timeout=0.25)
-            except TimeoutError:
-                data = b''
-            frames, _ = _parse_ws_frames(data)
+            # A pong is mandatory and immediate, which is what orders the
+            # absence: anything the server was going to send unprompted has
+            # arrived by the time it answers. Waiting out a window instead
+            # would only prove "no ping yet", and pay for the window.
+            writer.write(_encode_ws_client_frame(0x9, b'probe'))
+            await writer.drain()
+            frames: list[tuple[int, bytes]] = []
+            pending = b''
+            while not any(opcode == 0xA for opcode, _ in frames):
+                chunk = await asyncio.wait_for(reader.read(65535), timeout=15)
+                assert chunk, 'the connection closed before the pong'
+                parsed, pending = _parse_ws_frames(pending + chunk)
+                frames.extend(parsed)
             assert not any(opcode == 0x9 for opcode, _ in frames), frames
         finally:
             writer.close()

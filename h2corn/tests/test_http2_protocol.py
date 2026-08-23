@@ -2625,10 +2625,10 @@ async def test_header_only_responses_retain_nothing_per_stream() -> None:
 
     Retention of that kind is linear in the number of requests, while the
     allocator noise it has to be told apart from is not: the arenas a run
-    grows depend on how much is in flight at once, which is the same in both
-    runs here. So the same path measured at two sizes separates them by shape.
+    grows follow how much is in flight at once. Holding that window fixed and
+    running many requests through it puts the two an order of magnitude apart.
     """
-    batches, batch = 50, 100
+    batches, batch = 200, 100
 
     async def growth_over(rounds: int) -> int:
         async def app(scope, receive, send):
@@ -2670,22 +2670,18 @@ async def test_header_only_responses_retain_nothing_per_stream() -> None:
                 writer.close()
                 await writer.wait_closed()
 
-    # The smaller run goes first so the larger one measures a warm process:
-    # the reverse would charge first-touch arena growth to the run whose
-    # size the assertion is about.
-    base = await growth_over(batches)
-    quadrupled = await growth_over(batches * 4)
+    # A short run first, so the measured one meets warm arenas instead of
+    # being charged for first touch.
+    await growth_over(5)
+    retained = await growth_over(batches)
 
-    # Four times the requests retaining four times the memory is the defect;
-    # retaining about the same is arena noise, whatever its absolute size. The
-    # gate sits between the two. A run that hands arenas back reports negative
-    # growth, which is not licence for the larger run to retain more, so zero
-    # floors it — and the allowance keeps a near-zero base from making the
-    # bound impossibly tight.
-    assert quadrupled <= 2 * max(base, 0) + 2048, (
-        f'{batches * 4 * batch} requests retained {quadrupled} KiB against '
-        f'{base} KiB for {batches * batch}'
-    )
+    # Per-stream writer state ran to roughly 840 bytes, so the defect retains
+    # some 16 MiB across this many streams while the arena churn is a few MiB
+    # at worst. The gate sits between those two sizes, and comes from them
+    # rather than from a second, smaller measurement — that measurement is a
+    # noisy delta that can itself land near zero, and no tolerance around it
+    # is then wide enough.
+    assert retained < 8192, f'{batches * batch} requests retained {retained} KiB'
 
 
 async def test_a_rejected_header_block_keeps_the_hpack_table_in_step() -> None:

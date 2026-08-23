@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from h2corn import Config
 
-from tests._support import open_fd_count
+from tests._support import HANG_BOUND, open_fd_count
 
 if TYPE_CHECKING:
     from h2corn._socket import ListenerLease
@@ -56,7 +56,7 @@ def _assert_listener_accepts(listener: socket.socket) -> None:
         # from connect() before the connection reaches the accept queue, where
         # Linux happens to queue it synchronously. The timeout bounds a hang
         # and nothing else.
-        readable, _, _ = select.select([listener], [], [], 10)
+        readable, _, _ = select.select([listener], [], [], HANG_BOUND)
         assert readable, 'listener never became readable'
         accepted, _ = listener.accept()
         accepted.close()
@@ -677,9 +677,12 @@ def test_supervisor_keeps_worker_alive_from_request_cleanup_through_lifespan(
     from tests._support import find_free_port
 
     def wait_for_marker(fd: int, name: str) -> None:
-        readable, _writable, _exceptional = select.select([fd], [], [], 5)
+        readable, _writable, _exceptional = select.select([fd], [], [], HANG_BOUND)
         assert readable, f'worker never reached {name}'
-        assert os.read(fd, 1) == b'x'
+        # A readable pipe yielding nothing is EOF rather than the marker:
+        # the worker died on its way there. Say which, or this reads as an
+        # inscrutable b'' mismatch.
+        assert os.read(fd, 1) == b'x', f'worker exited before {name}'
 
     module = tmp_path / 'supervisor_lifecycle_app.py'
     module.write_text(
@@ -776,7 +779,7 @@ async def app(scope, receive, send):
             open_fds.remove(fd)
 
         wait_for_marker(startup_read, 'lifespan startup')
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + HANG_BOUND
         while True:
             try:
                 request = socket.create_connection(('127.0.0.1', port), timeout=0.2)
@@ -792,7 +795,7 @@ async def app(scope, receive, send):
         wait_for_marker(cancelled_read, 'request cancellation')
         os.write(cleanup_write, b'x')
         wait_for_marker(lifespan_read, 'lifespan shutdown')
-        exit_code = process.wait(timeout=5)
+        exit_code = process.wait(timeout=HANG_BOUND)
         assert process.stderr is not None
         assert exit_code == 0, process.stderr.read().decode()
     finally:
@@ -800,7 +803,7 @@ async def app(scope, receive, send):
             request.close()
         if process is not None and process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=5)
+            process.wait(timeout=HANG_BOUND)
         if process is not None and process.stderr is not None:
             process.stderr.close()
         for fd in open_fds:
@@ -3300,7 +3303,7 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
         start_new_session=True,
     )
     try:
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + HANG_BOUND
         workers: list[int] = []
         worker_ready_pids: set[int] = set()
         while time.monotonic() < deadline:
@@ -3368,6 +3371,6 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=3)
+                process.wait(timeout=HANG_BOUND)
         if process.stderr is not None:
             process.stderr.close()

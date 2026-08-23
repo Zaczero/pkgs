@@ -459,26 +459,45 @@ async def test_http1_first_request_head_timeout_is_idle_not_total() -> None:
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': scope['path'].encode()})
 
-    config = Config(port=0, timeout_request_header=0.05)
+    # Idle rather than total means every gap stays under the timeout while the
+    # elapsed total runs past it: a total timeout would close the connection,
+    # an idle one does not. So the test must last longer than the timeout, and
+    # what a stalled machine has to beat is one gap -- which is why the head
+    # goes out a byte at a time. Total 1.4x the timeout, each gap a fraction of
+    # it, leaving most of the timeout as slack.
+    header_timeout = 0.25
+    config = Config(port=0, timeout_request_header=header_timeout)
     async with running_server(app, config) as server:
+        head = (
+            f'GET /slow HTTP/1.1\r\n'
+            f'Host: 127.0.0.1:{server_port(server)}\r\n'
+            f'X-Demo: works\r\n\r\n'
+        ).encode()
+        idle_gap = header_timeout * 1.4 / len(head)
         reader, writer = await asyncio.open_connection('127.0.0.1', server_port(server))
         try:
-            for part in (
-                b'GET /slow HTTP/1.1\r\nHo',
-                f'st: 127.0.0.1:{server_port(server)}\r\nX-De'.encode(),
-                b'mo: works\r\n',
-                b'\r\n',
-            ):
-                writer.write(part)
-                await writer.drain()
-                await asyncio.sleep(0.03)
+            for index in range(len(head)):
+                try:
+                    writer.write(head[index : index + 1])
+                    await writer.drain()
+                except (ConnectionError, RuntimeError) as exc:
+                    # A closed transport reads as RuntimeError on uvloop and
+                    # ConnectionError on the stdlib loop. Either way the server
+                    # hung up mid-head, which is the failure this test exists to
+                    # report — say so instead of surfacing a write traceback.
+                    raise AssertionError(
+                        'server closed mid-head, so timeout_request_header '
+                        'behaved as a total timeout rather than an idle one'
+                    ) from exc
+                await asyncio.sleep(idle_gap)
             status, headers, body, trailers = await asyncio.wait_for(
                 read_http1_response(reader),
                 timeout=5,
             )
         finally:
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionError):
+                await writer.wait_closed()
 
     assert status == 200
     assert headers[b'content-length'] == b'5'

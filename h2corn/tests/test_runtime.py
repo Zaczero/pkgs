@@ -25,6 +25,7 @@ from tests._support import (
     http1_request,
     open_fd_count,
     running_server,
+    stop_serving,
     wait_for_port,
     wait_for_server,
 )
@@ -58,8 +59,9 @@ async def test_repeated_embedded_serve_releases_app_and_doorbell_fds() -> None:
         )
         task = asyncio.create_task(server.serve())
         await wait_for_server(server, task)
-        server.shutdown()
-        await asyncio.wait_for(task, timeout=2)
+        # Counting descriptors needs the lifecycle finished, not just serve()
+        # returned: the generation holds the shard doorbells until it releases.
+        await stop_serving(server, task)
         return app_ref
 
     serves = 6
@@ -826,12 +828,12 @@ async def test_concurrent_cross_thread_serve_has_exactly_one_winner() -> None:
     outcomes = asyncio.create_task(collect_outcomes())
     await asyncio.to_thread(start.wait)
     try:
-        await wait_for_server(server, outcomes, timeout=2)
-        assert await asyncio.to_thread(rejected.wait, 2)
+        await wait_for_server(server, outcomes)
+        assert await asyncio.to_thread(rejected.wait, 15)
     finally:
         await asyncio.to_thread(server.shutdown)
 
-    assert sorted(await asyncio.wait_for(outcomes, 2)) == [
+    assert sorted(await asyncio.wait_for(outcomes, 15)) == [
         'rejected',
         'served',
     ]
@@ -1641,10 +1643,13 @@ async def _wait_for_h2_body_any(
             await asyncio.sleep(0.05)
 
 
+_LISTENING_BANNER = re.compile(rb'Listening on http://127\.0\.0\.1:(\d+)')
+
+
 async def _wait_for_listening_port(
     process: asyncio.subprocess.Process,
     *,
-    timeout: float = 5.0,
+    timeout: float = 15.0,
 ) -> int:
     assert process.stderr is not None
     stderr = process.stderr
@@ -1654,11 +1659,37 @@ async def _wait_for_listening_port(
             line = await stderr.readline()
             if not line:
                 raise AssertionError('server exited before printing listening banner')
-            match = re.search(rb'Listening on http://127\.0\.0\.1:(\d+)', line)
+            match = _LISTENING_BANNER.search(line)
             if match is not None:
                 return int(match.group(1))
 
     return await asyncio.wait_for(_read_port(), timeout=timeout)
+
+
+async def _wait_for_banner_port(
+    path: Path,
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float = 30.0,
+) -> int:
+    """The port a spawned server bound, read from the banner it writes to `path`.
+
+    A file rather than a pipe: a spawned server's stderr is unbounded, and a
+    pipe nobody is draining wedges the child once its buffer fills.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        match = _LISTENING_BANNER.search(path.read_bytes())
+        if match is not None:
+            return int(match.group(1))
+        if process.returncode is not None:
+            raise AssertionError(
+                f'server exited with {process.returncode} before it announced a port'
+            )
+        if loop.time() >= deadline:
+            raise TimeoutError('server never announced a listening address')
+        await asyncio.sleep(0.01)
 
 
 async def _collect_lines(
@@ -1681,28 +1712,64 @@ async def _spawn_server_process(
     extra_args: list[str] | None = None,
     stderr=None,
 ) -> tuple[asyncio.subprocess.Process, int]:
-    port = find_free_port() if port is None else port
+    """Spawn `python -m h2corn._server` and return it with the port it bound.
+
+    The port comes from the server's own banner. Picking one first and handing
+    it over leaves it owned by nobody for the whole of the child's startup, so
+    anything on the box can bind it in between -- and the test then reaches a
+    stranger on that port and blames the server for what it finds there.
+
+    A caller that keeps stderr for itself gets the banner read from wherever
+    its own sink is; only the leading banner line is consumed.
+    """
     module_path = tmp_path / f'{module_name}.py'
     module_path.write_text(textwrap.dedent(module_source).strip() + '\n')
+
+    discover = port is None
+    banner_path: Path | None = None
+    sink = None
+    if discover:
+        port = 0
+        if stderr is None:
+            # Beside the app directory, never inside it: `--reload` watches
+            # that tree, and a server writing its own log into it reloads on
+            # every line it prints.
+            logs = tmp_path.with_name(f'{tmp_path.name}-logs')
+            logs.mkdir(exist_ok=True)
+            banner_path = logs / f'{module_name}.stderr'
+            sink = stderr = banner_path.open('wb')
+        elif stderr != asyncio.subprocess.PIPE:
+            banner_path = Path(stderr.name)
 
     env = os.environ.copy()
     pythonpath = env.get('PYTHONPATH')
     env['PYTHONPATH'] = f'{tmp_path}:{pythonpath}' if pythonpath else str(tmp_path)
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        '-m',
-        'h2corn._server',
-        f'{module_name}:app',
-        '--workers',
-        str(workers),
-        '--port',
-        str(port),
-        *(extra_args or []),
-        env=env,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL if stderr is None else stderr,
-        start_new_session=sys.platform != 'win32',
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            '-m',
+            'h2corn._server',
+            f'{module_name}:app',
+            '--workers',
+            str(workers),
+            '--port',
+            str(port),
+            *(extra_args or []),
+            env=env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL if stderr is None else stderr,
+            start_new_session=sys.platform != 'win32',
+        )
+    finally:
+        if sink is not None:
+            sink.close()
+
+    if discover:
+        port = (
+            await _wait_for_banner_port(banner_path, process)
+            if banner_path is not None
+            else await _wait_for_listening_port(process)
+        )
     return process, port
 
 
@@ -1900,7 +1967,7 @@ async def test_access_log_regular_file_sink_flushes_every_line_on_graceful_shutd
             stderr=log_file,
         )
         try:
-            await wait_for_port(port, timeout=10)
+            await wait_for_port(port)
             # Concurrent burst so the sink writer is still busy when later
             # lines arrive and coalesce into additional batches.
             results = await asyncio.gather(*[
@@ -2008,7 +2075,7 @@ async def test_server_serve_writes_and_cleans_up_pid_file(tmp_path: Path) -> Non
         await send({'type': 'http.response.body', 'body': b'pid'})
 
     pid_path = tmp_path / 'h2corn.pid'
-    config = Config(pid=pid_path, port=find_free_port())
+    config = Config(pid=pid_path, port=0)
     async with running_server(app, config):
         assert pid_path.read_text() == f'{os.getpid()}\n'
 
@@ -2606,20 +2673,25 @@ async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_d
     blocked_path = tmp_path / 'blocked-worker'
     stderr_lines: list[bytes] = []
     healthcheck_failed = asyncio.Event()
-    # The assertions below are proportional to this, not absolute: the worker
-    # must be alive at `graceful_timeout + 0.5` and gone after the second grace
-    # at `2 * graceful_timeout`, leaving `graceful_timeout - 0.5` of margin. At
-    # 8.0 this test alone was 19 s and set the floor for the whole parallel
-    # suite. Do not drop below ~3.0 -- the margin shrinks with it.
-    graceful_timeout = 4.0
+    killed = asyncio.Event()
+    marks: dict[str, float] = {}
+    # Nothing waits near a deadline to sample it, so this only has to be long
+    # enough for one supervisor cycle to be legible. It is also most of the
+    # test's runtime, twice over.
+    graceful_timeout = 1.0
 
     async def collect_stderr(stream: asyncio.StreamReader | None) -> None:
         if stream is None:
             return
+        loop = asyncio.get_running_loop()
         while line := await stream.readline():
             stderr_lines.append(line)
             if b'failed healthcheck and will be replaced' in line:
+                marks['retired'] = loop.time()
                 healthcheck_failed.set()
+            elif b'exceeded request cleanup timeout; killing' in line:
+                marks['killed'] = loop.time()
+                killed.set()
 
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
@@ -2674,13 +2746,14 @@ async def test_worker_supervisor_replaces_blocked_worker_after_request_cleanup_d
             'replacement must serve while the blocked worker is in request cleanup'
         )
 
-        # A one-grace deadline kills here, precisely when Python has only
-        # begun cancellation. The blocked app cannot acknowledge native drain,
-        # so it must still be alive until the second grace expires.
-        await asyncio.sleep(graceful_timeout + 0.5)
-        assert not _all_dead([int(body)]), (
-            'worker died before its request-cleanup grace elapsed'
-        )
+        # The retirement deadline is two graces, not one: the blocked app never
+        # acknowledges native drain, so a one-grace deadline would kill it while
+        # Python had only begun cancellation. Timing the supervisor's own two
+        # announcements measures that budget, where sleeping to just inside it
+        # only samples it -- and a loaded machine can lengthen the interval it
+        # observes, never shorten it.
+        await asyncio.wait_for(killed.wait(), timeout=graceful_timeout * 4 + 5)
+        assert marks['killed'] - marks['retired'] > graceful_timeout * 1.5, marks
         [only_worker] = await _wait_for_worker_count(
             supervisor_pid=process.pid,
             count=1,
@@ -2761,6 +2834,9 @@ async def test_reload_restarts_server_after_python_source_change(
             await send({'type': 'http.response.body', 'body': b'v1'})
         """,
         workers=1,
+        # A reload re-execs and binds again, so the port has to outlive it and
+        # cannot be the kernel-assigned one the first generation announced.
+        port=find_free_port(),
         extra_args=['--reload', '--app-dir', str(tmp_path)],
     )
     module_path = tmp_path / f'{module_name}.py'
@@ -2801,6 +2877,8 @@ async def test_reload_coalesces_bursty_writes_into_one_restart(
             await send({'type': 'http.response.body', 'body': b'v1'})
         """,
         workers=1,
+        # The port must survive the re-exec a reload performs.
+        port=find_free_port(),
         extra_args=['--reload', '--app-dir', str(tmp_path)],
         stderr=asyncio.subprocess.PIPE,
     )

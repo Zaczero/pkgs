@@ -267,10 +267,12 @@ fn spawn_websocket_request(
     // rare state out of the H2 connection poll stack; Tokio's task allocation
     // then contains only the pointer.
     tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
-        let _ = Box::pin(handle_websocket_request(
-            context, stream_id, input, connection,
-        ))
-        .await;
+        crate::server::report_request_failure(
+            Box::pin(handle_websocket_request(
+                context, stream_id, input, connection,
+            ))
+            .await,
+        );
     });
 }
 

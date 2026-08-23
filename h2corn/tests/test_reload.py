@@ -23,7 +23,7 @@ from h2corn._reload import (
     _watch_file_snapshot,
 )
 
-from tests._support import open_fd_count
+from tests._support import HANG_BOUND, open_fd_count
 
 _linux_only = pytest.mark.skipif(
     sys.platform != 'linux', reason='inotify is Linux-only'
@@ -681,7 +681,7 @@ def test_reload_child_stop_waits_for_and_kills_the_whole_process_group(
         assert os.getpgid(child.process.pid) == child.process.pid
         child.stop(0.05)
         assert child.process.poll() is not None
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + HANG_BOUND
         while True:
             try:
                 os.kill(descendant_pid, 0)
@@ -865,7 +865,7 @@ def _proc_children(pid: int) -> list[int]:
     return [int(item) for item in raw.split()]
 
 
-def _wait_http(port: int, body: bytes, timeout: float = 8.0) -> bytes:
+def _wait_http(port: int, body: bytes, timeout: float = HANG_BOUND) -> bytes:
     import socket
     import time
 
@@ -955,7 +955,7 @@ def test_reload_with_fd_bind_serves_across_generations(
         # This is still a real write event, but its timestamp is restored to
         # prove reload does not need an O(tree) snapshot comparison to notice it.
         os.utime(app, ns=(original_mtime, original_mtime))
-        deadline = time.monotonic() + 10.0
+        deadline = time.monotonic() + HANG_BOUND
         while time.monotonic() < deadline:
             try:
                 _wait_http(port, b'reload2', timeout=0.5)
@@ -973,7 +973,7 @@ def test_reload_with_fd_bind_serves_across_generations(
                 watcher.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 os.killpg(watcher.pid, signal.SIGKILL)
-                watcher.wait(timeout=3)
+                watcher.wait(timeout=HANG_BOUND)
         if watcher.stderr is not None:
             watcher.stderr.close()
 
@@ -1029,8 +1029,8 @@ def test_sigkill_watcher_stops_child_on_liveness_eof(tmp_path: Path) -> None:
         assert len(children) == 1
         child_pid = children[0]
         os.kill(watcher.pid, signal.SIGKILL)
-        watcher.wait(timeout=3)
-        deadline = time.monotonic() + 5.0
+        watcher.wait(timeout=HANG_BOUND)
+        deadline = time.monotonic() + HANG_BOUND
         while time.monotonic() < deadline:
             try:
                 os.kill(child_pid, 0)
@@ -1047,6 +1047,6 @@ def test_sigkill_watcher_stops_child_on_liveness_eof(tmp_path: Path) -> None:
                 os.killpg(watcher.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            watcher.wait(timeout=3)
+            watcher.wait(timeout=HANG_BOUND)
         if watcher.stderr is not None:
             watcher.stderr.close()
