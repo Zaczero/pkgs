@@ -20,6 +20,28 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Keep `ResourceWarning` fatal everywhere it can name a culprit.
+
+    A transport releases its socket in `_call_connection_lost`, which `close()`
+    only schedules once nothing is in flight. The selector loop asks `if not
+    self._buffer`, and a write already handed to the kernel leaves that buffer
+    empty -- so on POSIX the release is always scheduled and an unclosed socket
+    means a real leak. The proactor asks `if not self._buffer and
+    self._write_fut is None`, and an overlapped write stays pending until its
+    completion is polled, so a transport closed in that window schedules
+    nothing and `loop.close()` then discards the queues. Windows alone can end
+    a test holding a socket nobody forgot to close.
+
+    `__del__` reports that whenever the collector reaches it, so pytest blames
+    whichever test was running -- a different innocent one each run. Demoting
+    it there keeps it visible without letting garbage-collection timing pick a
+    victim, and costs nothing on the platforms where it is a real signal.
+    """
+    if sys.platform == 'win32':
+        config.addinivalue_line('filterwarnings', 'default::ResourceWarning')
+
+
 @pytest.fixture
 def captured_stderr(capfd: pytest.CaptureFixture[str]) -> pytest.CaptureFixture[str]:
     """`capfd`, drained so a test only ever reads its own output.
