@@ -85,7 +85,7 @@ jobs:
           python="$(command -v python3)"
           echo "embedded interpreter: $python ($("$python" -V))"
           cd "$PACKAGE"
-          uv export --frozen --no-dev --no-emit-project --no-hashes \
+          uv export --no-dev --no-emit-project --no-hashes \
             -o "$RUNNER_TEMP/embedded-requirements.txt"
           uv pip install --python "$python" --target "$RUNNER_TEMP/embedded-deps" \
             -r "$RUNNER_TEMP/embedded-requirements.txt"
