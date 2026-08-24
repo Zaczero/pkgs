@@ -59,3 +59,44 @@ def test_packed_lines_point_on_surface_matches_mixed_storage() -> None:
 def test_packed_polygons_point_on_surface_matches_mixed_storage() -> None:
     packed, mixed = polygon_storage_twins()
     assert canon((packed).point_on_surface()) == canon((mixed).point_on_surface())
+
+
+def test_packed_point_on_surface_stays_inside_shell_and_outside_hole() -> None:
+    donut = gm.Polygon(
+        [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+        holes=[[(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)]],
+        crs=3857,
+        epoch=2020.0,
+    )
+    concave = gm.Polygon(
+        [(20, 0), (30, 0), (30, 4), (24, 4), (24, 10), (20, 10), (20, 0)],
+        crs=3857,
+        epoch=2020.0,
+    )
+    values = gm.GeometryArray([donut, concave], crs=3857, epoch=2020.0)
+
+    result = values.point_on_surface()
+
+    assert result.crs == values.crs
+    assert result.epoch == values.epoch
+    assert all(
+        gm.covered_by(point, source)
+        for source, point in zip(values, result, strict=True)
+    )
+    hole = gm.box(3, 3, 7, 7, crs=3857, epoch=2020.0)
+    assert not gm.covers(hole, result[0])
+
+
+def test_point_on_surface_preserves_empty_missing_alignment_and_frame() -> None:
+    values = gm.GeometryArray(
+        [gm.Polygon([], crs=3857, epoch=2020.0), None, gm.box(0, 0, 2, 2)],
+        crs=3857,
+        epoch=2020.0,
+    )
+
+    result = values.point_on_surface()
+
+    assert result.is_missing.tolist() == [False, True, False]
+    assert result[0].is_empty
+    assert result[2].geometry_type == 'Point'
+    assert (result.crs, result.epoch) == (values.crs, values.epoch)

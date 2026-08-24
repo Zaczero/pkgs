@@ -43,17 +43,17 @@ fn point_on_surface_polygon_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
     bounds: Bounds,
+    crossings: &mut Vec<f64>,
 ) -> Option<Point> {
     let mid = f64::midpoint(bounds.miny(), bounds.maxy());
-    let mut crossings = Vec::new();
     for ring_index in rings {
         let start = ring_offsets[ring_index] as usize;
         let end = ring_offsets[ring_index + 1] as usize;
-        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, &mut crossings) {
+        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, crossings) {
             return None;
         }
     }
-    point_from_chord_crossings(&mut crossings, mid)
+    point_from_chord_crossings(crossings, mid)
 }
 
 /// Degenerate polygon fallback: arc-length midpoint of the longest boundary
@@ -85,10 +85,12 @@ pub(crate) fn point_on_surface_polygon_row_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
     bounds: Option<Bounds>,
+    crossings: &mut Vec<f64>,
 ) -> Option<Point> {
+    crossings.clear();
     if let Some(bounds) = bounds
         && let Some(point) =
-            point_on_surface_polygon_columns(xs, ys, ring_offsets, rings.clone(), bounds)
+            point_on_surface_polygon_columns(xs, ys, ring_offsets, rings.clone(), bounds, crossings)
     {
         return Some(point);
     }

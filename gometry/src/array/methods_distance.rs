@@ -67,17 +67,18 @@ fn packed_point_unary<L, P>(
     strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     line_point: L,
-    polygon_point: P,
+    mut polygon_point: P,
 ) -> PyResult<Option<PyGeometryArray>>
 where
     L: Fn(&CoordSeq, &[f64], &[f64], std::ops::Range<usize>) -> Result<Point> + Send + Sync,
-    P: Fn(
+    P: FnMut(
             &CoordSeq,
             &[f64],
             &[f64],
             &[i32],
             std::ops::Range<usize>,
             Option<std::ops::Range<usize>>,
+            &mut Vec<f64>,
         ) -> Result<Point>
         + Send
         + Sync,
@@ -142,6 +143,7 @@ where
                 });
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
+            let mut crossings = Vec::new();
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
                 let rings = row.polygon_rings().expect("polygon rows have rings");
@@ -161,7 +163,7 @@ where
                     },
                     strategy,
                     op,
-                    || polygon_point(coords, xs, ys, ring_offsets, rings, shell),
+                    || polygon_point(coords, xs, ys, ring_offsets, rings, shell, &mut crossings),
                 )
                 .map_err(|error| PackedColumnError::Row {
                     row: row_index,
@@ -200,7 +202,7 @@ impl PyGeometryArray {
                         column_window(ys, &window),
                     ))
                 },
-                |_, xs, ys, ring_offsets, rings, _| {
+                |_, xs, ys, ring_offsets, rings, _, _crossings| {
                     packed_centroid_xy(crate::geometry::centroid_polygon_row_columns(
                         xs,
                         ys,
@@ -242,7 +244,7 @@ impl PyGeometryArray {
                         column_window(ys, &window),
                     ))
                 },
-                |_, xs, ys, ring_offsets, rings, shell| {
+                |_, xs, ys, ring_offsets, rings, shell, crossings| {
                     let row_bounds = shell.map(|shell| {
                         let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, shell);
                         Bounds::new_unchecked(minx, miny, maxx, maxy)
@@ -253,6 +255,7 @@ impl PyGeometryArray {
                         ring_offsets,
                         rings,
                         row_bounds,
+                        crossings,
                     ))
                 },
             )
