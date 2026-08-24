@@ -677,11 +677,10 @@ impl PointBatchTester {
         let Some(summary) = point_plan_summary(shape) else {
             return false;
         };
-        summary.has_indexed_stage
-            && match use_mode {
-                PointProbeUse::AcrossCalls => true,
-                PointProbeUse::OneShot(probes) => probes >= one_shot_crossover(summary.total_edges),
-            }
+        match use_mode {
+            PointProbeUse::AcrossCalls => summary.has_indexed_stage,
+            PointProbeUse::OneShot(probes) => probes >= one_shot_crossover(summary.total_edges),
+        }
     }
 
     pub(crate) fn new(shape: &Shape) -> Self {
@@ -964,6 +963,19 @@ mod tests {
         assert!(PointBatchTester::should_use(
             &polygon,
             PointProbeUse::OneShot(18)
+        ));
+        let small_polygon = regular_polygon(7);
+        assert!(!PointBatchTester::should_use(
+            &small_polygon,
+            PointProbeUse::OneShot(68)
+        ));
+        assert!(PointBatchTester::should_use(
+            &small_polygon,
+            PointProbeUse::OneShot(69)
+        ));
+        assert!(!PointBatchTester::should_use(
+            &small_polygon,
+            PointProbeUse::AcrossCalls
         ));
         assert_eq!(one_shot_crossover(64), 11);
         assert_eq!(one_shot_crossover(256), 6);

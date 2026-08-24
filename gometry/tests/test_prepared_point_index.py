@@ -90,3 +90,32 @@ def test_prepared_point_index_preserves_contains_predicate_behavior():
     prepared = polygon.prepare()
     assert gm.contains(prepared, gm.Point(1, 1))
     assert not gm.contains(prepared, gm.Point(3, 3))
+
+
+def test_large_unprepared_intersects_batch_keeps_boundary_semantics():
+    ring = [
+        (-4.0, -2.0),
+        (-1.0, -4.0),
+        (3.0, -3.0),
+        (5.0, 0.0),
+        (2.0, 4.0),
+        (-2.0, 3.0),
+        (-5.0, 1.0),
+    ]
+    polygon = gm.Polygon(ring)
+    probes = [
+        (0.0, 0.0),
+        (1.0, 1.0),
+        ring[0],
+        (1.0, -3.5),
+        (10.0, 10.0),
+    ] * 2_400
+    points = gm.GeometryArray([gm.Point(x, y) for x, y in probes])
+    np.testing.assert_array_equal(
+        gm.intersects(polygon, points),
+        np.tile([True, True, True, True, False], 2_400),
+    )
+    np.testing.assert_array_equal(
+        gm.contains(polygon, points),
+        np.tile([True, True, False, False, False], 2_400),
+    )
