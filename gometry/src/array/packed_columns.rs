@@ -12,7 +12,7 @@ use crate::array::packed_gather::{
 use crate::array::{
     CoordSeq, CoordinateReplacement, CsrOffsetColumn, Frame, GeometryArrayStorage, PolygonLevel,
     PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis, Result, Ring, RingLevel,
-    RowSelectionRef, rows_err,
+    RowSelectionRef, map_masked_point_columns_to_crs, rows_err,
 };
 use crate::geometry::{CoordSeqBuilder, CoordWindow};
 
@@ -871,6 +871,41 @@ impl PyGeometryArray {
             .map_err(packed_columns_err)?;
         Ok(Some(
             assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+        ))
+    }
+
+    pub(crate) fn map_masked_points_to_crs_detached(
+        &self,
+        py: Python<'_>,
+        output_frame: Frame,
+        transformer: crate::crs::Transformer,
+    ) -> PyResult<Option<Self>> {
+        if !matches!(self.storage(), GeometryArrayStorage::Points { .. }) {
+            return Ok(None);
+        }
+        let storage = Arc::clone(self.storage_arc());
+        let memo = Arc::clone(&self.gathered_memo);
+        let missing = self.missing().cloned().expect("masked point transform");
+        let missing_for_transform = missing.clone();
+        let output = py
+            .detach(move || -> PackedColumnResult<PackedColumnOutput> {
+                let storage = normalized_gather_storage(&storage, &memo)?;
+                let columns = resolve_packed_columns(storage.as_ref())?.expect("not mixed");
+                let PackedColumns::Points(point_columns) = columns else {
+                    unreachable!("masked point transform requires point columns");
+                };
+                let coords = map_masked_point_columns_to_crs(
+                    &transformer,
+                    point_columns.coords(),
+                    &missing_for_transform,
+                    missing_for_transform.present_count(),
+                )
+                .map_err(batch_err)?;
+                Ok(PackedColumnOutput::Points(coords))
+            })
+            .map_err(packed_columns_err)?;
+        Ok(Some(
+            assemble_packed_output(output, output_frame).with_missing_mask(Some(missing)),
         ))
     }
 

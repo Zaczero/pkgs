@@ -18,9 +18,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::array::packed_columns::{
-    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PolygonColumns,
-    SegmentedRuns, XyColumns,
-    batch_err, row_err,
+    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PolygonColumns, SegmentedRuns,
+    XyColumns, batch_err, row_err,
 };
 use crate::array::storage_helpers::{
     packed_line_measure, packed_line_row_pivot, packed_polygon_measure, packed_polygon_row_pivot,
@@ -31,7 +30,7 @@ use crate::array::{
     crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds_3d,
     row_bounds_values,
 };
-use crate::geometry::{CoordWindow, LineSeq, XY, clip_segment, same_point};
+use crate::geometry::{CoordSeqBuilder, CoordWindow, LineSeq, XY, clip_segment, same_point};
 
 /// Emit one round buffer polygon per packed point without per-row shapes.
 ///
@@ -745,6 +744,55 @@ pub(crate) fn map_coordseq_to_crs(
         zt,
     )?;
     Ok(CoordSeq::from_columns(xs, ys, zs, seq.carried_ms()))
+}
+
+/// Transform present packed points once, then rebuild the row-aligned column.
+/// Missing placeholders never cross the transform boundary, and the output
+/// allocation is filled directly instead of materializing a dense gathered
+/// array and scattering it in a second packed pass.
+pub(crate) fn map_masked_point_columns_to_crs(
+    transformer: &crs::Transformer,
+    coords: &CoordSeq,
+    missing: &[bool],
+    present_count: usize,
+) -> crate::error::Result<CoordSeq> {
+    debug_assert_eq!(coords.len(), missing.len());
+    let mut xs = Vec::with_capacity(present_count);
+    let mut ys = Vec::with_capacity(present_count);
+    let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
+    for (row, &is_missing) in missing.iter().enumerate() {
+        if is_missing {
+            continue;
+        }
+        xs.push(coords.xs()[row]);
+        ys.push(coords.ys()[row]);
+        if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
+            output.push(source[row]);
+        }
+    }
+    let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
+        crate::Zt::Z(values.as_mut_slice())
+    });
+    transformer.transform_coordinates(&mut xs, &mut ys, zt)?;
+
+    let mut output = CoordSeqBuilder::like_coords(coords, missing.len());
+    let (missing_z, missing_m) = (coords.zs().map(|_| f64::NAN), coords.ms().map(|_| f64::NAN));
+    let mut present_row = 0;
+    for (row, &is_missing) in missing.iter().enumerate() {
+        if is_missing {
+            output.push_xyzm(f64::NAN, f64::NAN, missing_z, missing_m);
+        } else {
+            output.push_xyzm(
+                xs[present_row],
+                ys[present_row],
+                zs.as_ref().map(|values| values[present_row]),
+                coords.ms().map(|values| values[row]),
+            );
+            present_row += 1;
+        }
+    }
+    debug_assert_eq!(present_row, present_count);
+    Ok(output.finish_infallible())
 }
 
 /// Per-row 3D bounds from packed homogeneous storage — the kernel behind

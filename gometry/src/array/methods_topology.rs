@@ -179,6 +179,36 @@ impl PyGeometryArray {
         only_best: Option<bool>,
         force_over: bool,
     ) -> PyResult<Self> {
+        if self.missing().is_some() && matches!(self.storage(), GeometryArrayStorage::Points { .. })
+        {
+            let target =
+                parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
+            let options = parse_geometry_transform_options(
+                area_of_interest,
+                authority,
+                accuracy,
+                allow_ballpark,
+                only_best,
+                force_over,
+            )?;
+            let frame = GeometryTransformFrame::new(
+                &self.frame,
+                target,
+                coordinate_epoch_option("epoch", epoch)?,
+                options,
+            )?;
+            if frame.identity {
+                return Ok(self.clone());
+            }
+            let output = frame.output;
+            let transformer =
+                crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
+            let result = self
+                .map_masked_points_to_crs_detached(py, output, transformer)?
+                .expect("masked packed points have a packed transform path");
+            crate::py::crs::drain_accuracy_warning(py)?;
+            return Ok(result);
+        }
         if let Some(mask) = self.missing().cloned() {
             // PROJ pipelines reject the NaN placeholder: reproject the present
             // rows densely, then scatter them back under the same mask.

@@ -409,3 +409,23 @@ def test_masked_z_and_empty_lines_scatter_through_to_crs() -> None:
     assert transformed[0].has_z and transformed[3].has_z
     assert transformed.to_wkt() == expected.to_wkt()
     assert transformed.crs == expected.crs
+
+
+def test_masked_packed_points_to_crs_preserves_rows_axes_and_order() -> None:
+    values = gm.GeometryArray([
+        gm.Point(-73.0, 41.0, z=10.0, m=7.0),
+        None,
+        gm.Point(-72.5, 41.25, z=20.0, m=8.0),
+    ], crs=4326)
+
+    selected = values[[2, 1, 0]]
+    transformed = selected.to_crs(3857)
+    assert transformed.is_missing.tolist() == [False, True, False]
+    assert transformed[1] is None
+    assert transformed.crs.to_epsg() == 3857
+    for row in (0, 2):
+        expected = selected[row].to_crs(3857)
+        actual = transformed[row]
+        np.testing.assert_allclose([actual.x, actual.y], [expected.x, expected.y])
+        assert actual.z == expected.z
+        assert actual.m == expected.m
