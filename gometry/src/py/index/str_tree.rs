@@ -55,12 +55,29 @@ impl StaticStrTree {
     /// boundary ([`initial_len`](Self::initial_len)) and the index for
     /// `removed[entry.idx]`, both of which must span every input row, not just
     /// the indexed ones.
-    pub(super) fn build(mut entries: Vec<IndexEntry>, total_rows: usize) -> Self {
+    pub(super) fn build(entries: Vec<IndexEntry>, total_rows: usize) -> Self {
+        Self::build_with_removed(entries, total_rows, false)
+    }
+
+    /// Build a dense bulk tree whose every input row has an entry. Packed
+    /// arrays prove this at admission, so the tombstone bitmap can start at
+    /// zero without the sparse-path fill pass.
+    pub(super) fn build_dense(entries: Vec<IndexEntry>) -> Self {
+        let total_rows = entries.len();
+        Self::build_with_removed(entries, total_rows, true)
+    }
+
+    fn build_with_removed(mut entries: Vec<IndexEntry>, total_rows: usize, dense: bool) -> Self {
         let entry_count = entries.len();
-        let mut removed = vec![1_u8; total_rows];
-        for entry in &entries {
-            removed[entry.idx] = 0;
-        }
+        let removed = if dense {
+            vec![0_u8; total_rows]
+        } else {
+            let mut removed = vec![1_u8; total_rows];
+            for entry in &entries {
+                removed[entry.idx] = 0;
+            }
+            removed
+        };
         let mut tree = Self {
             entries: Vec::new(),
             levels: Vec::new(),

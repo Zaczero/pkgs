@@ -895,6 +895,36 @@ def test_spatial_index_read_only_mapping_views_and_lazy_iterator() -> None:
         next(invalidated)
 
 
+def test_polygon_build_preserves_dense_and_sparse_handles_through_mutation() -> None:
+    packed = gm.GeometryArray([
+        gm.box(30, 30, 31, 31, crs=32634),
+        gm.box(40, 40, 41, 41, crs=32634),
+    ])
+    packed_index = gm.SpatialIndex(packed)
+    assert list(packed_index) == [0, 1]
+    assert ids(packed_index.candidates(gm.box(29, 29, 32, 32, crs=32634))) == [0]
+
+    values = gm.GeometryArray([
+        gm.box(0, 0, 1, 1, crs=32634),
+        None,
+        gm.from_wkt('POLYGON EMPTY', crs=32634),
+        gm.box(10, 10, 11, 11, crs=32634),
+    ])
+    index = gm.SpatialIndex(values)
+
+    assert len(index) == 2
+    assert list(index) == [0, 3]
+    assert ids(index.candidates(gm.box(-1, -1, 2, 2, crs=32634))) == [0]
+    assert ids(index.candidates(gm.box(9, 9, 12, 12, crs=32634))) == [3]
+
+    assert index.remove(0)
+    assert list(index) == [3]
+    inserted = index.insert(gm.Point(20, 20, crs=32634))
+    assert inserted == 4
+    assert list(index) == [3, 4]
+    assert ids(index.candidates(gm.box(19, 19, 21, 21, crs=32634))) == [4]
+
+
 def test_spatial_index_iterator_size_tracks_retained_index() -> None:
     import sys
 
