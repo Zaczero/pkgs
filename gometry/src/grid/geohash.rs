@@ -124,12 +124,21 @@ impl Geohash {
 
     /// The canonical lowercase token.
     pub(crate) fn token(self) -> String {
-        (0..self.precision)
-            .map(|index| {
-                let value = (self.bits >> (64 - 5 - 5 * u32::from(index))) & 0x1F;
-                char::from(ALPHABET[value as usize])
-            })
-            .collect()
+        let (bytes, length) = self.token_bytes();
+        // Every byte comes from the ASCII geohash alphabet above.
+        unsafe { String::from_utf8_unchecked(bytes[..length].to_vec()) }
+    }
+
+    /// The canonical token bytes in a stack-sized buffer.
+    pub(crate) fn token_bytes(self) -> ([u8; 12], usize) {
+        let mut bytes = [0_u8; 12];
+        let mut index = 0;
+        while index < self.precision as usize {
+            let value = (self.bits >> (64 - 5 - 5 * index as u32)) & 0x1F;
+            bytes[index] = ALPHABET[value as usize];
+            index += 1;
+        }
+        (bytes, self.precision as usize)
     }
 
     /// A `u64` that is unique per cell AND orders like the derived

@@ -15,7 +15,9 @@ use std::sync::Arc;
 use numpy::PyArrayMethods as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::{PyResult, Python, pyclass};
-use pyo3::types::{PyAny, PyBytes, PyBytesMethods as _, PyTuple, PyType};
+use pyo3::types::{
+    PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
+};
 use pyo3::{Bound, Py};
 
 use crate::HeapSize;
@@ -1560,17 +1562,46 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[getter]
     pub(crate) fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use pyo3::IntoPyObjectExt as _;
-        let tokens: Vec<Option<String>> = (0..self.len()).map(|row| {
-            if self.is_row_missing(row) { None } else {
-                Some(dispatch_cell_grid!(self, G, {
-                    crate::grid::cell::GridCell::token(G::from_validated_id(self.id_at(row)))
-                }))
-            }
-        }).collect();
+        let tokens = match self.kind() {
+            GridKind::H3Cell => self.tokens::<h3o::CellIndex>(),
+            GridKind::S2Cell => self.tokens::<crate::grid::s2::cellid::CellId>(),
+            GridKind::Tile => self.tokens::<crate::grid::tile::Tile>(),
+            GridKind::GeohashCell => return self.geohash_tokens(py),
+        };
         tokens.into_py_any(py)
     }
 
 }
+}
+
+impl PyCellArray {
+    fn tokens<G: CellArrayGrid>(&self) -> Vec<Option<String>> {
+        (0..self.len())
+            .map(|row| {
+                if self.is_row_missing(row) {
+                    None
+                } else {
+                    Some(G::from_validated_id(self.id_at(row)).token())
+                }
+            })
+            .collect()
+    }
+
+    fn geohash_tokens(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let tokens = PyList::empty(py);
+        for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                tokens.append(py.None())?;
+                continue;
+            }
+            let cell = crate::grid::geohash::Geohash::from_validated_id(self.id_at(row));
+            let (bytes, length) = cell.token_bytes();
+            // `token_bytes` draws only from the ASCII geohash alphabet.
+            let token = unsafe { std::str::from_utf8_unchecked(&bytes[..length]) };
+            tokens.append(PyString::new(py, token))?;
+        }
+        Ok(tokens.into_any().unbind())
+    }
 }
 
 /// Rebuild a pickled CellArray from its public identities and logical mask.

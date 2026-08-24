@@ -340,6 +340,29 @@ def test_cells_columnar_and_broadcast() -> None:
     ]
 
 
+def test_geohash_bulk_tokens_keep_precision_alphabet_and_missing_rows() -> None:
+    lon = [-120.6623, 112.5584]
+    lat = [35.3003, 37.8324]
+    expected = {
+        1: ['9', 'w'],
+        6: ['9q60y6', 'ww8p1r'],
+        12: ['9q60y60rhsgg', 'ww8p1r4t8yd0'],
+    }
+    for precision, tokens in expected.items():
+        assert gm.geohash_cells(lon, lat, precision=precision).token == tokens
+
+    masked = gm.GeometryArray([
+        gm.Point(-120.6623, 35.3003),
+        None,
+        gm.Point(112.5584, 37.8324),
+    ])
+    assert gm.geohash_cells(masked, precision=6).token == [
+        '9q60y6',
+        None,
+        'ww8p1r',
+    ]
+
+
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cells_accept_packed_point_arrays(grid: GridCase) -> None:
     points = gm.points([13.4, 14.4], [52.5, 53.5], crs=4326)
