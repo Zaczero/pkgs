@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use crate::array::packed_columns::{
-    LineColumns, PackedColumnResult, PackedColumns, PackedRow, PolygonColumns, SegmentedRuns,
-    XyColumns, batch_err, row_err,
+    LineColumns, PackedColumnResult, PackedColumns, PolygonColumns, SegmentedRuns, XyColumns,
+    batch_err, row_err,
 };
 use crate::array::storage_helpers::{
     packed_line_measure, packed_line_row_pivot, packed_polygon_measure, packed_polygon_row_pivot,
@@ -677,23 +677,61 @@ pub(crate) fn reduce_lines_or_polygons<R>(
     }
 }
 
-pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {
+fn bounds_values_from_columns_impl<const MASKED: bool>(
+    columns: &PackedColumns<'_>,
+    missing: &[bool],
+) -> Vec<f64> {
     let XyColumns { xs, ys } = columns.xy();
-    let mut values = Vec::with_capacity(columns.row_count() * 4);
-    columns.map_rows(|row| {
-        let bounds = match row {
-            PackedRow::Points { row } => [xs[row], ys[row], xs[row], ys[row]],
-            PackedRow::Lines { .. } => match row.vertex_window() {
-                Some(window) if !window.is_empty() => row_bounds_values(xs, ys, window),
-                _ => [f64::NAN; 4],
-            },
-            PackedRow::Polygons { .. } => row
-                .polygon_shell_window()
-                .map_or([f64::NAN; 4], |shell| row_bounds_values(xs, ys, shell)),
-        };
-        values.extend_from_slice(&bounds);
-    });
-    values
+    let rows = columns.row_count();
+    // Keep the row result in its natural fixed-width shape while reducing;
+    // flattening moves the same allocation into NumPy's one-dimensional lane.
+    let mut values = Vec::with_capacity(rows);
+    match columns {
+        PackedColumns::Points(point_columns) => {
+            for row in 0..point_columns.len() {
+                if MASKED && missing[row] {
+                    values.push([f64::NAN; 4]);
+                } else {
+                    values.push([xs[row], ys[row], xs[row], ys[row]]);
+                }
+            }
+        },
+        PackedColumns::Lines(line_columns) => {
+            let offsets = line_columns.offsets();
+            for row in 0..line_columns.rows() {
+                if MASKED && missing[row] {
+                    values.push([f64::NAN; 4]);
+                    continue;
+                }
+                let window = offsets[row] as usize..offsets[row + 1] as usize;
+                values.push(row_bounds_values(xs, ys, window));
+            }
+        },
+        PackedColumns::Polygons(polygon_columns) => {
+            let ring_offsets = polygon_columns.ring_offsets();
+            let polygon_offsets = polygon_columns.polygon_offsets();
+            for row in 0..polygon_columns.rows() {
+                if MASKED && missing[row] {
+                    values.push([f64::NAN; 4]);
+                    continue;
+                }
+                let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
+                let bounds = if rings.is_empty() {
+                    [f64::NAN; 4]
+                } else {
+                    let shell =
+                        ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize;
+                    row_bounds_values(xs, ys, shell)
+                };
+                values.push(bounds);
+            }
+        },
+    }
+    values.into_flattened()
+}
+
+pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {
+    bounds_values_from_columns_impl::<false>(columns, &[])
 }
 
 /// Packed bounds with nullable rows excluded before the per-row extrema walk.
@@ -701,32 +739,10 @@ pub(crate) fn bounds_values_from_columns_masked(
     columns: &PackedColumns<'_>,
     missing: Option<&[bool]>,
 ) -> Vec<f64> {
-    let Some(missing) = missing else {
-        return bounds_values_from_columns(columns);
-    };
-    let XyColumns { xs, ys } = columns.xy();
-    let mut values = Vec::with_capacity(columns.row_count() * 4);
-    let mut logical = 0;
-    columns.map_rows(|row| {
-        let row_index = logical;
-        logical += 1;
-        if missing[row_index] {
-            values.extend_from_slice(&[f64::NAN; 4]);
-            return;
-        }
-        let bounds = match row {
-            PackedRow::Points { row } => [xs[row], ys[row], xs[row], ys[row]],
-            PackedRow::Lines { .. } => match row.vertex_window() {
-                Some(window) if !window.is_empty() => row_bounds_values(xs, ys, window),
-                _ => [f64::NAN; 4],
-            },
-            PackedRow::Polygons { .. } => row
-                .polygon_shell_window()
-                .map_or([f64::NAN; 4], |shell| row_bounds_values(xs, ys, shell)),
-        };
-        values.extend_from_slice(&bounds);
-    });
-    values
+    missing.map_or_else(
+        || bounds_values_from_columns(columns),
+        |missing| bounds_values_from_columns_impl::<true>(columns, missing),
+    )
 }
 
 pub(crate) fn geographic_bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {

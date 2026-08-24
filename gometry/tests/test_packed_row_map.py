@@ -196,8 +196,31 @@ def test_packed_polygon_total_bounds_ignores_an_external_hole() -> None:
     values = gm.GeometryArray([polygon, gm.box(10.0, 10.0, 11.0, 11.0, crs=3857)])
     expected = (0.0, 0.0, 11.0, 11.0)
     assert polygon.bounds == (0.0, 0.0, 2.0, 2.0)
+    np.testing.assert_array_equal(
+        values.bounds,
+        np.array([[0.0, 0.0, 2.0, 2.0], [10.0, 10.0, 11.0, 11.0]]),
+    )
     assert values.total_bounds == expected
     assert values[[1, 0]].total_bounds == expected
+
+
+def test_packed_polygon_bounds_keep_empty_and_missing_rows() -> None:
+    """Per-row bounds ignore holes without collapsing fixed-width sentinels."""
+    shell = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
+    external_hole = [(100.0, 100.0), (101.0, 100.0), (101.0, 101.0), (100.0, 101.0)]
+    values = gm.GeometryArray([
+        gm.Polygon(shell, [external_hole], crs=3857),
+        gm.Polygon([], crs=3857),
+        None,
+    ], crs=3857)
+    np.testing.assert_array_equal(
+        values.bounds,
+        np.array([
+            [0.0, 0.0, 2.0, 2.0],
+            [np.nan, np.nan, np.nan, np.nan],
+            [np.nan, np.nan, np.nan, np.nan],
+        ]),
+    )
 
 
 @pytest.mark.parametrize('kind', ROW_MAP_KINDS, ids=lambda k: k.name)
