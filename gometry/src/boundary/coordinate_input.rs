@@ -348,13 +348,24 @@ pub(crate) fn coordinate_arc_values(
     name: &str,
 ) -> PyResult<Arc<[f64]>> {
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        if buffer.is_c_contiguous() {
-            return buffer_to_arc_f64(py, &buffer);
-        }
-        // Strided 1-D (or flattened multi-D): fill Arc directly via strided walk.
-        return strided_buffer_to_arc_f64(py, &buffer);
+        return coordinate_arc_values_from_buffer(py, &buffer);
     }
     coordinate_values(py, value, name).map(Into::into)
+}
+
+/// Copy an already-admitted `f64` buffer into its final native-endian column.
+/// Keeping the admission object across the caller's length checks avoids a
+/// second `PyBuffer::get` and preserves the same contiguous/strided safety
+/// paths as [`coordinate_arc_values`].
+pub(crate) fn coordinate_arc_values_from_buffer(
+    py: Python<'_>,
+    buffer: &PyBuffer<f64>,
+) -> PyResult<Arc<[f64]>> {
+    if buffer.is_c_contiguous() {
+        return buffer_to_arc_f64(py, buffer);
+    }
+    // Strided 1-D (or flattened multi-D): fill Arc directly via strided walk.
+    strided_buffer_to_arc_f64(py, buffer)
 }
 
 /// Fill an `Arc<[f64]>` from a non-contiguous buffer without a `Vec` bounce.
@@ -654,6 +665,25 @@ pub(crate) fn optional_coordinate_arc_values(
         ))
     })?;
     Ok(Some(values))
+}
+
+/// Length-check and copy an already-admitted optional `f64` column.
+pub(crate) fn optional_coordinate_arc_values_from_buffer(
+    py: Python<'_>,
+    buffer: Option<&PyBuffer<f64>>,
+    expected_len: usize,
+    name: &str,
+) -> PyResult<Option<Arc<[f64]>>> {
+    let Some(buffer) = buffer else {
+        return Ok(None);
+    };
+    let got = buffer.item_count();
+    if got != expected_len {
+        return Err(InvalidGeometryError::new_err(format!(
+            "{name} must have the same length as x/y coordinates (got length {got})"
+        )));
+    }
+    coordinate_arc_values_from_buffer(py, buffer).map(Some)
 }
 
 pub(crate) fn coordinate_values(

@@ -278,6 +278,69 @@ def test_topological_point_equality_canonicalizes_signed_zero() -> None:
     )
 
 
+def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
+    x = np.array([1.0, 2.0], dtype=np.float64)
+    y = np.array([3.0, 4.0], dtype=np.float64)
+    z = np.array([5.0, 6.0], dtype=np.float64)
+    m = np.array([7.0, 8.0], dtype=np.float64)
+    points = gm.points(x, y, z=z, m=m, crs=4326)
+
+    assert points[0].coordinate_axes == 'XYZM'
+    assert points[0].crs == 'EPSG:4326'
+    np.testing.assert_array_equal(
+        gm.get_coordinates(points, axes='XYZM'),
+        np.column_stack((x, y, z, m)),
+    )
+    # The packed constructor owns its columns; later producer mutation cannot
+    # change an already-created immutable geometry array.
+    x[0] = 99.0
+    z[1] = 99.0
+    assert points[0].x == 1.0
+    assert points[1].z == 6.0
+
+
+@pytest.mark.parametrize(
+    ('z', 'm', 'axes'),
+    [
+        (None, None, 'XY'),
+        ([5.0, 6.0], None, 'XYZ'),
+        (None, [7.0, 8.0], 'XYM'),
+        ([5.0, 6.0], [7.0, 8.0], 'XYZM'),
+    ],
+)
+def test_points_numpy_columns_preserve_each_axis_layout(
+    z: list[float] | None,
+    m: list[float] | None,
+    axes: str,
+) -> None:
+    points = gm.points(
+        np.array([1.0, 2.0]),
+        np.array([3.0, 4.0]),
+        z=None if z is None else np.array(z),
+        m=None if m is None else np.array(m),
+    )
+    assert points[0].coordinate_axes == axes
+
+
+def test_points_numpy_big_endian_and_strided_columns_keep_axis_order() -> None:
+    source = np.arange(12.0, dtype=np.float64).reshape(6, 2)
+    x = source[::2, 0].astype('>f8')
+    y = source[::2, 1][::-1].astype('>f8')[::-1]
+    points = gm.points(x, y)
+    np.testing.assert_array_equal(
+        gm.get_coordinates(points),
+        np.column_stack((
+            np.asarray(x, dtype=np.float64),
+            np.asarray(y, dtype=np.float64),
+        )),
+    )
+
+
+def test_points_numpy_rejects_nonfinite_coordinates() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='finite'):
+        gm.points(np.array([1.0, np.nan]), np.array([2.0, 3.0]))
+
+
 def test_lonlat_range_validation_on_grid_paths() -> None:
     with pytest.raises(ValueError, match='invalid longitude/latitude'):
         gm.h3_cover(gm.box(181, 0, 182, 1, crs=4326), resolution=1)

@@ -5,11 +5,12 @@
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
-    broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array, coordinate_arc_values,
-    coordinate_epoch_option, coordinate_input, coordinate_inputs_are_scalar,
-    finite_coordinate_required, line_string_from_data_item, multi_line_string_from_data_item,
-    multi_point_from_data_item, multi_polygon_from_data_item, optional_coordinate_arc_values,
-    parse_crs, parse_crs_epoch, polygon_from_data_item, pyfunction,
+    broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array,
+    coordinate_arc_values_from_buffer, coordinate_epoch_option, coordinate_input,
+    coordinate_inputs_are_scalar, finite_coordinate_required, line_string_from_data_item,
+    multi_line_string_from_data_item, multi_point_from_data_item, multi_polygon_from_data_item,
+    optional_coordinate_arc_values_from_buffer, parse_crs, parse_crs_epoch, polygon_from_data_item,
+    pyfunction,
 };
 
 /// Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
@@ -204,26 +205,42 @@ fn try_points_from_arc_columns(
 ) -> PyResult<Option<CoordSeq>> {
     use pyo3::buffer::PyBuffer;
     // Real buffers only — never promote Sequence.__len__ to authority.
-    if PyBuffer::<f64>::get(x).is_err() || PyBuffer::<f64>::get(y).is_err() {
+    let Ok(x_buffer) = PyBuffer::<f64>::get(x) else {
         return Ok(None);
-    }
-    if z.is_some_and(|value| PyBuffer::<f64>::get(value).is_err() && !value.is_none()) {
+    };
+    let Ok(y_buffer) = PyBuffer::<f64>::get(y) else {
         return Ok(None);
-    }
-    if m.is_some_and(|value| PyBuffer::<f64>::get(value).is_err() && !value.is_none()) {
-        return Ok(None);
-    }
-    let xs = coordinate_arc_values(py, x, "x")?;
-    let ys = coordinate_arc_values(py, y, "y")?;
-    if xs.len() != ys.len() {
+    };
+    let z_buffer = match z {
+        Some(value) if !value.is_none() => {
+            let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+                return Ok(None);
+            };
+            Some(buffer)
+        },
+        _ => None,
+    };
+    let m_buffer = match m {
+        Some(value) if !value.is_none() => {
+            let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+                return Ok(None);
+            };
+            Some(buffer)
+        },
+        _ => None,
+    };
+    let x_len = x_buffer.item_count();
+    let y_len = y_buffer.item_count();
+    if x_len != y_len {
         return Err(InvalidGeometryError::new_err(format!(
             "x and y must have the same length, got {} and {}",
-            xs.len(),
-            ys.len(),
+            x_len, y_len,
         )));
     }
-    let zs = optional_coordinate_arc_values(py, z, xs.len(), "z")?;
-    let ms = optional_coordinate_arc_values(py, m, xs.len(), "m")?;
+    let xs = coordinate_arc_values_from_buffer(py, &x_buffer)?;
+    let ys = coordinate_arc_values_from_buffer(py, &y_buffer)?;
+    let zs = optional_coordinate_arc_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
+    let ms = optional_coordinate_arc_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
     // Finite check lives in from_arc_columns (same as column-form LineString).
     Ok(Some(CoordSeq::from_arc_columns(xs, ys, zs, ms)?))
 }
