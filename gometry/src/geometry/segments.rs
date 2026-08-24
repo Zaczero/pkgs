@@ -500,12 +500,28 @@ fn nearest_point_with_segments(
     clippy::too_many_lines,
     reason = "axis-aligned clamp + diagonal edge-bisection share one clip contract"
 )]
-pub(super) fn clip_segment(
+pub(crate) fn clip_segment(
     start: impl Into<XY>,
     end: impl Into<XY>,
     rect: Bounds,
 ) -> Option<(XY, XY)> {
     let (start, end) = (start.into(), end.into());
+    if let Some(clipped) = clip_segment_axis_aligned(start, end, rect) {
+        return clipped;
+    }
+    if let Some(clipped) = clip_segment_liang_barsky(start, end, rect) {
+        return clipped;
+    }
+    clip_segment_edge_bisection(start, end, rect)
+}
+
+#[cfg(test)]
+fn clip_segment_authority(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
+    clip_segment_axis_aligned(start, end, rect)
+        .unwrap_or_else(|| clip_segment_edge_bisection(start, end, rect))
+}
+
+fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> Option<Option<(XY, XY)>> {
     // Axis-aligned clamp: when the free span dwarfs the rect (±1e20 vs unit
     // box), parametric t for both edges collapses to the same value and
     // edge-hit reconstruction degenerates. Clamping the free ordinate keeps
@@ -513,43 +529,47 @@ pub(super) fn clip_segment(
     if same_topological_coordinate(start.y, end.y) {
         let y = start.y;
         if y < rect.miny() || y > rect.maxy() {
-            return None;
+            return Some(None);
         }
         let (lo, hi) = (start.x.min(end.x), start.x.max(end.x));
         if hi < rect.minx() || lo > rect.maxx() {
-            return None;
+            return Some(None);
         }
         let x0 = lo.max(rect.minx());
         let x1 = hi.min(rect.maxx());
         if same_topological_coordinate(x0, x1) {
-            return None;
+            return Some(None);
         }
         return if start.x <= end.x {
-            Some((XY::new(x0, y), XY::new(x1, y)))
+            Some(Some((XY::new(x0, y), XY::new(x1, y))))
         } else {
-            Some((XY::new(x1, y), XY::new(x0, y)))
+            Some(Some((XY::new(x1, y), XY::new(x0, y))))
         };
     }
     if same_topological_coordinate(start.x, end.x) {
         let x = start.x;
         if x < rect.minx() || x > rect.maxx() {
-            return None;
+            return Some(None);
         }
         let (lo, hi) = (start.y.min(end.y), start.y.max(end.y));
         if hi < rect.miny() || lo > rect.maxy() {
-            return None;
+            return Some(None);
         }
         let y0 = lo.max(rect.miny());
         let y1 = hi.min(rect.maxy());
         if same_topological_coordinate(y0, y1) {
-            return None;
+            return Some(None);
         }
         return if start.y <= end.y {
-            Some((XY::new(x, y0), XY::new(x, y1)))
+            Some(Some((XY::new(x, y0), XY::new(x, y1))))
         } else {
-            Some((XY::new(x, y1), XY::new(x, y0)))
+            Some(Some((XY::new(x, y1), XY::new(x, y0))))
         };
     }
+    None
+}
+
+fn clip_segment_edge_bisection(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
     // Diagonal: parameterize intersections on the SHORT rect edges, not on
     // the segment. When |segment| ≫ |rect|, t=(edge-start)/dx collapses both
     // boundaries to the same value and loses the window; bisection on a unit
@@ -637,6 +657,275 @@ pub(super) fn clip_segment(
         return None;
     }
     Some((p_min, p_max))
+}
+
+/// Liang-Barsky lane admitted only when every subtraction, ratio, and free-axis
+/// reconstruction has a finite, separated rounding cell. `None` declines to
+/// the edge-bisection authority; `Some(None)` is a proved disjoint segment.
+fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<(XY, XY)>> {
+    #[derive(Clone, Copy)]
+    enum Edge {
+        MinX,
+        MaxX,
+        MinY,
+        MaxY,
+    }
+
+    let (dx, dx_error) = subtraction_with_ulp_error(end.x, start.x)?;
+    let (dy, dy_error) = subtraction_with_ulp_error(end.y, start.y)?;
+    if !dx.is_normal() || !dy.is_normal() {
+        return None;
+    }
+    let width = rect.maxx() - rect.minx();
+    let height = rect.maxy() - rect.miny();
+    if !width.is_normal() || !height.is_normal() {
+        return None;
+    }
+    let mut lower: f64 = 0.0;
+    let mut upper: f64 = 1.0;
+    let mut lower_error: f64 = 0.0;
+    let mut upper_error: f64 = 0.0;
+    let mut lower_edge = None;
+    let mut upper_edge = None;
+    for (p, p_error, q, q_error, edge) in [
+        (
+            -dx,
+            dx_error,
+            start.x - rect.minx(),
+            subtraction_ulp_error(start.x, rect.minx()),
+            Edge::MinX,
+        ),
+        (
+            dx,
+            dx_error,
+            rect.maxx() - start.x,
+            subtraction_ulp_error(rect.maxx(), start.x),
+            Edge::MaxX,
+        ),
+        (
+            -dy,
+            dy_error,
+            start.y - rect.miny(),
+            subtraction_ulp_error(start.y, rect.miny()),
+            Edge::MinY,
+        ),
+        (
+            dy,
+            dy_error,
+            rect.maxy() - start.y,
+            subtraction_ulp_error(rect.maxy(), start.y),
+            Edge::MaxY,
+        ),
+    ] {
+        let q_error = q_error?;
+        if p == 0.0 {
+            match compare_with_error(q, q_error, 0.0, 0.0) {
+                Some(std::cmp::Ordering::Less) => return Some(None),
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => continue,
+                None => return None,
+            }
+        }
+        let (ratio, ratio_error) = ratio_with_ulp_error(q, q_error, p, p_error)?;
+        if p < 0.0 {
+            match compare_with_error(ratio, ratio_error, upper, upper_error) {
+                Some(std::cmp::Ordering::Greater) => return Some(None),
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Less) => {},
+                None => return None,
+            }
+            match compare_with_error(ratio, ratio_error, lower, lower_error) {
+                Some(std::cmp::Ordering::Greater) => {
+                    lower = ratio;
+                    lower_error = ratio_error;
+                    lower_edge = Some(edge);
+                },
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Less) => {},
+                None => return None,
+            }
+        } else {
+            match compare_with_error(ratio, ratio_error, lower, lower_error) {
+                Some(std::cmp::Ordering::Less) => return Some(None),
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {},
+                None => return None,
+            }
+            match compare_with_error(ratio, ratio_error, upper, upper_error) {
+                Some(std::cmp::Ordering::Less) => {
+                    upper = ratio;
+                    upper_error = ratio_error;
+                    upper_edge = Some(edge);
+                },
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {},
+                None => return None,
+            }
+        }
+    }
+    if lower > upper {
+        return if compare_with_error(lower, lower_error, upper, upper_error)
+            == Some(std::cmp::Ordering::Greater)
+        {
+            Some(None)
+        } else {
+            None
+        };
+    }
+    if lower == upper {
+        return if lower_error == 0.0 && upper_error == 0.0 {
+            Some(None)
+        } else {
+            None
+        };
+    }
+    if lower_edge.is_some() && !(lower_error < lower && lower_error < 1.0 - lower) {
+        return None;
+    }
+    if upper_edge.is_some() && !(upper_error < upper && upper_error < 1.0 - upper) {
+        return None;
+    }
+    let origin = start;
+    let point_at = |fraction, fraction_error, edge| -> Option<XY> {
+        let (free, fixed_value, x_fixed) = match edge {
+            Some(Edge::MinX) => (
+                reconstruct_free_axis(origin.y, dy, dy_error, fraction, fraction_error)?,
+                rect.minx(),
+                true,
+            ),
+            Some(Edge::MaxX) => (
+                reconstruct_free_axis(origin.y, dy, dy_error, fraction, fraction_error)?,
+                rect.maxx(),
+                true,
+            ),
+            Some(Edge::MinY) => (
+                reconstruct_free_axis(origin.x, dx, dx_error, fraction, fraction_error)?,
+                rect.miny(),
+                false,
+            ),
+            Some(Edge::MaxY) => (
+                reconstruct_free_axis(origin.x, dx, dx_error, fraction, fraction_error)?,
+                rect.maxy(),
+                false,
+            ),
+            None => {
+                return Some(XY::new(
+                    dx.mul_add(fraction, origin.x),
+                    dy.mul_add(fraction, origin.y),
+                ));
+            },
+        };
+        let (free_value, free_error) = free;
+        let (min, max) = if x_fixed {
+            (rect.miny(), rect.maxy())
+        } else {
+            (rect.minx(), rect.maxx())
+        };
+        let margin = (free_value - min).min(max - free_value);
+        if !(margin > free_error) {
+            return None;
+        }
+        Some(if x_fixed {
+            XY::new(fixed_value, free_value)
+        } else {
+            XY::new(free_value, fixed_value)
+        })
+    };
+    let clipped_start = (lower == 0.0)
+        .then_some(origin)
+        .map_or_else(|| point_at(lower, lower_error, lower_edge), Some)?;
+    let clipped_end = (upper == 1.0)
+        .then_some(end)
+        .map_or_else(|| point_at(upper, upper_error, upper_edge), Some)?;
+    Some(Some((clipped_start, clipped_end)))
+}
+
+fn ulp_error(value: f64) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let upward = value.next_up() - value;
+    let downward = value - value.next_down();
+    let error = upward.max(downward);
+    (error.is_finite() && error > 0.0).then_some(error)
+}
+
+fn subtraction_ulp_error(left: f64, right: f64) -> Option<f64> {
+    let value = left - right;
+    value.is_finite().then(|| ulp_error(value)).flatten()
+}
+
+fn subtraction_with_ulp_error(left: f64, right: f64) -> Option<(f64, f64)> {
+    let value = left - right;
+    Some((value, ulp_error(value)?))
+}
+
+fn compare_with_error(
+    left: f64,
+    left_error: f64,
+    right: f64,
+    right_error: f64,
+) -> Option<std::cmp::Ordering> {
+    let left_lo = left - left_error;
+    let left_hi = left + left_error;
+    let right_lo = right - right_error;
+    let right_hi = right + right_error;
+    if !left_lo.is_finite()
+        || !left_hi.is_finite()
+        || !right_lo.is_finite()
+        || !right_hi.is_finite()
+    {
+        return None;
+    }
+    if left_lo > right_hi {
+        Some(std::cmp::Ordering::Greater)
+    } else if left_hi < right_lo {
+        Some(std::cmp::Ordering::Less)
+    } else if left_error == 0.0 && right_error == 0.0 && left == right {
+        Some(std::cmp::Ordering::Equal)
+    } else {
+        None
+    }
+}
+
+fn ratio_with_ulp_error(
+    numerator: f64,
+    numerator_error: f64,
+    denominator: f64,
+    denominator_error: f64,
+) -> Option<(f64, f64)> {
+    let ratio = numerator / denominator;
+    if !ratio.is_normal() {
+        return None;
+    }
+    let numerator_abs = numerator.abs();
+    let denominator_abs = denominator.abs();
+    let numerator_lo = numerator_abs - numerator_error;
+    let numerator_hi = numerator_abs + numerator_error;
+    let denominator_lo = denominator_abs - denominator_error;
+    let denominator_hi = denominator_abs + denominator_error;
+    if !(numerator_lo > 0.0 && denominator_lo > 0.0)
+        || !numerator_hi.is_finite()
+        || !denominator_hi.is_finite()
+    {
+        return None;
+    }
+    let ratio_lo = numerator_lo / denominator_hi;
+    let ratio_hi = numerator_hi / denominator_lo;
+    let rounding = ulp_error(ratio)?;
+    let error = (ratio.abs() - ratio_lo)
+        .max(ratio_hi - ratio.abs())
+        .max(rounding);
+    error.is_finite().then_some((ratio, error))
+}
+
+fn reconstruct_free_axis(
+    origin: f64,
+    delta: f64,
+    delta_error: f64,
+    fraction: f64,
+    fraction_error: f64,
+) -> Option<(f64, f64)> {
+    let value = delta.mul_add(fraction, origin);
+    let propagated =
+        delta.abs() * fraction_error + fraction.abs() * delta_error + delta_error * fraction_error;
+    let error = propagated + ulp_error(value)?;
+    value.is_finite().then_some((value, error))
 }
 
 /// Intersection of the infinite line `start→end` with the short rect edge

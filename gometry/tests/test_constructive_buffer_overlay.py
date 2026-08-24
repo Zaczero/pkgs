@@ -693,6 +693,74 @@ def test_clip_by_rect_clips_scalar_array_and_preserves_line_axes() -> None:
         polygon.clip_by_rect(2, 0, 1, 1)
 
 
+def test_clip_by_rect_line_array_keeps_categories_and_multipart_fallback() -> None:
+    crossing = gm.LineString([(-1, 0.5), (0.5, 0.6), (2, 0.5)])
+    inside = gm.LineString([(0.1, 0.5), (0.5, 0.6), (0.9, 0.5)])
+    outside = gm.LineString([(2, 0.5), (2.5, 0.6), (3, 0.5)])
+    multipart = gm.LineString(
+        [(-1, 0.5), (0.5, 0.5), (2, 0.5), (2.5, 0.7), (0.5, 0.8), (-1, 0.8)]
+    )
+
+    result = gm.GeometryArray([crossing, inside, outside]).clip_by_rect(0, 0, 1, 1)
+
+    assert len(result) == 3
+    assert not result[0].is_empty
+    assert result[0].to_wkt() != crossing.to_wkt()
+    assert result[0].to_wkt() == crossing.clip_by_rect(0, 0, 1, 1).to_wkt()
+    assert all(0 <= x <= 1 and 0 <= y <= 1 for x, y, *_ in result[0].coords)
+    assert not result[1].is_empty
+    assert result[1].to_wkt() == inside.to_wkt()
+    assert result[2].to_wkt() == 'LINESTRING EMPTY'
+
+    multipart_result = gm.GeometryArray([inside, multipart]).clip_by_rect(0, 0, 1, 1)
+    assert multipart_result[0].to_wkt() == inside.to_wkt()
+    assert multipart_result[1].geometry_type == 'MultiLineString'
+    assert multipart_result[1].to_wkt() == multipart.clip_by_rect(0, 0, 1, 1).to_wkt()
+
+
+def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> None:
+    zm = gm.GeometryArray(
+        [gm.LineString([(-1, 0.5, 0, 10), (2, 0.5, 3, 13)])]
+    ).clip_by_rect(0, 0, 1, 1)
+    assert zm[0].to_wkt() == 'LINESTRING ZM (0 0.5 1 11, 1 0.5 2 12)'
+
+    rows = gm.GeometryArray([
+        gm.LineString([(-1, 0.5), (2, 0.5)]),
+        gm.LineString([(0.1, 0.5), (0.9, 0.5)]),
+        gm.LineString([(2, 0.5), (3, 0.5)]),
+    ])
+    masked = rows._with_missing([False, True, False]).clip_by_rect(0, 0, 1, 1)
+    assert masked.is_missing.tolist() == [False, True, False]
+    assert masked[0].to_wkt() == 'LINESTRING (0 0.5, 1 0.5)'
+    assert masked[1] is None
+    assert masked[2].to_wkt() == 'LINESTRING EMPTY'
+
+    selected = rows[[2, 0]].clip_by_rect(0, 0, 1, 1)
+    assert [item.to_wkt() for item in selected] == [
+        'LINESTRING EMPTY',
+        'LINESTRING (0 0.5, 1 0.5)',
+    ]
+
+    empty_row = gm.GeometryArray([gm.LineString([]), rows[0]]).clip_by_rect(0, 0, 1, 1)
+    assert [item.to_wkt() for item in empty_row] == [
+        'LINESTRING EMPTY',
+        'LINESTRING (0 0.5, 1 0.5)',
+    ]
+
+    framed = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0).clip_by_rect(0, 0, 1, 1)
+    assert framed.crs == 'EPSG:4326'
+    assert framed.epoch == 2020.0
+
+
+def test_clip_by_rect_line_array_reentry_at_same_boundary_matches_scalar() -> None:
+    coords = [(0.5, 0.5), (0.0, 0.5), (-1.0, 1.5), (0.0, 0.5), (0.75, 0.5)]
+    for line in (gm.LineString(coords), gm.LineString(list(reversed(coords)))):
+        scalar = line.clip_by_rect(0, 0, 1, 1)
+        packed = gm.GeometryArray([line]).clip_by_rect(0, 0, 1, 1)[0]
+        assert packed.geometry_type == scalar.geometry_type == 'LineString'
+        assert packed.to_wkt() == scalar.to_wkt()
+
+
 def test_clip_by_rect_empty_is_subject_typed() -> None:
     rect = (0.0, 0.0, 2.0, 2.0)
     box = gm.box(*rect)

@@ -194,15 +194,16 @@ pub(in crate::geometry) use segment_index::{
     linework_contact, segments_cross, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
+pub(crate) use segments::clip_segment;
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::interpolate_f64;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentContact, SegmentProjection, SharedSpan,
-    SquaredDistanceKey, clip_segment, interpolate_optional, interpolate_segment_point,
-    nearest_points, orientation_xy, point_pair_distance_key, point_segment_distance,
-    point_segment_distance_key, point_segment_distance_squared, point_segment_selection,
-    ray_crossing_is_right, segment_contact, segment_contact_exact, segment_contact_point,
+    SquaredDistanceKey, interpolate_optional, interpolate_segment_point, nearest_points,
+    orientation_xy, point_pair_distance_key, point_segment_distance, point_segment_distance_key,
+    point_segment_distance_squared, point_segment_selection, ray_crossing_is_right,
+    segment_contact, segment_contact_exact, segment_contact_point,
     segment_contact_with_orientations, segment_cross_point, segment_envelopes_disjoint,
     segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
     try_point_segment_distance_squared, undirected_edge_key, undirected_segment_edge_key,

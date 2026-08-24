@@ -1,8 +1,8 @@
 use crate::array::{
     Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
-    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape, affine_about, geometry,
-    reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
-    validate_densify_fraction, validate_max_segment_length,
+    PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape, affine_about,
+    clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
+    subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geometry::ExpansionBudget;
 
@@ -373,8 +373,29 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn clip_by_rect_unary_packed(&self, rect: Bounds, drop: bool) -> PyResult<Self> {
+    pub(crate) fn clip_by_rect_unary_packed(
+        &self,
+        py: Python<'_>,
+        rect: Bounds,
+        drop: bool,
+    ) -> PyResult<Self> {
         let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        if !geographic && matches!(self.storage(), GeometryArrayStorage::Lines { .. }) {
+            let clipped =
+                self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
+                    match columns {
+                        PackedColumns::Lines(lines) => clip_lines_packed_xy(lines, rect),
+                        _ => Ok(None),
+                    }
+                })?;
+            if let Some(result) = clipped {
+                return Ok(if self.has_missing() {
+                    self.scatter_present_result(result)
+                } else {
+                    result
+                });
+            }
+        }
         self.map_shapes(|shape| {
             if geographic && shape.crosses_antimeridian() {
                 Ok(shape.split_antimeridian()?.clip_by_rect(rect, drop)?)

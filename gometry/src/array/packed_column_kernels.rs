@@ -28,7 +28,7 @@ use crate::array::{
     Result, RingLevel, RowSelectionRef, Shape, affine_about, column_window, crs, line_logical_len,
     polygon_logical_len, polygon_rings_range, row_bounds_3d, row_bounds_values,
 };
-use crate::geometry::{CoordWindow, LineSeq};
+use crate::geometry::{CoordWindow, LineSeq, XY, clip_segment, same_point};
 
 // `line_measure`/`polygon_measure` are the sanctioned indirection required by
 // `tools/gates/_check_packed_execution.py`: array method surfaces may not call the
@@ -45,6 +45,77 @@ const COLUMN_STREAM_MAX_SEGMENTS: usize = 24;
 /// Minimum contiguous short groups before ColumnStream is preferred over PerRun.
 /// Measured on the roads fixture (10k short lines); re-measure before changing.
 const COLUMN_STREAM_MIN_GROUPS: usize = 64;
+
+/// Clip packed XY line rows without materializing one [`Shape`] per row.
+///
+/// The result remains packed only while every row has at most one surviving
+/// line part. A row that re-enters the rectangle declines the lane so the
+/// caller can retain the general `MultiLineString` representation and its
+/// ordinate/error policy.
+pub(crate) fn clip_lines_packed_xy(
+    line_columns: LineColumns<'_>,
+    rect: Bounds,
+) -> PackedColumnResult<Option<PackedColumnOutput>> {
+    let coords = line_columns.coords();
+    if coords.zs().is_some() || coords.ms().is_some() {
+        return Ok(None);
+    }
+    let (xs, ys) = (coords.xs(), coords.ys());
+    let offsets = line_columns.offsets();
+    let mut builder = PackedColumnBuilder::like(coords, coords.len());
+
+    for row in 0..line_columns.rows() {
+        let start = offsets[row] as usize;
+        let end = offsets[row + 1] as usize;
+        let window = start..end;
+        let row_bounds = row_bounds_values(xs, ys, window.clone());
+        if row_bounds[0].is_nan() {
+            builder.close_row().map_err(batch_err)?;
+            continue;
+        }
+        let bounds =
+            Bounds::new_unchecked(row_bounds[0], row_bounds[1], row_bounds[2], row_bounds[3]);
+        if !bounds.intersects(rect) {
+            builder.close_row().map_err(batch_err)?;
+            continue;
+        }
+        if rect.contains(bounds) {
+            builder.push_window(coords, window).map_err(batch_err)?;
+            continue;
+        }
+
+        let mut part_count = 0;
+        let mut last_end = None;
+        for index in start..end.saturating_sub(1) {
+            let Some((clipped_start, clipped_end)) = clip_segment(
+                XY::new(xs[index], ys[index]),
+                XY::new(xs[index + 1], ys[index + 1]),
+                rect,
+            ) else {
+                continue;
+            };
+            if same_point(clipped_start, clipped_end) {
+                continue;
+            }
+            if last_end.is_some_and(|last| same_point(last, clipped_start)) {
+                builder.push_xy(clipped_end.x, clipped_end.y);
+            } else {
+                part_count += 1;
+                if part_count > 1 {
+                    return Ok(None);
+                }
+                builder.push_xy(clipped_start.x, clipped_start.y);
+                builder.push_xy(clipped_end.x, clipped_end.y);
+            }
+            last_end = Some(clipped_end);
+        }
+        builder.close_row().map_err(batch_err)?;
+    }
+
+    let capacity = builder.vertex_len();
+    let (coords, offsets) = builder.finish(capacity).map_err(batch_err)?;
+    Ok(Some(PackedColumnOutput::Lines { coords, offsets }))
+}
 
 /// Dual-strategy planar line-length (or ring-perimeter leaf) reduction.
 ///

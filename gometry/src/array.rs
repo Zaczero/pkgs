@@ -207,7 +207,7 @@ mod packed_column_kernels;
 mod packed_columns;
 mod packed_gather;
 pub(crate) use packed_column_kernels::{
-    bounds_3d_values_from_columns, bounds_values_from_columns_masked,
+    bounds_3d_values_from_columns, bounds_values_from_columns_masked, clip_lines_packed_xy,
     ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
     map_coordseq_to_crs, packed_per_row_self_origin_affine_columns, polygon_measure_masked,
     reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,

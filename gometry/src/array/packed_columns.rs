@@ -812,6 +812,25 @@ impl PyGeometryArray {
         Ok(output)
     }
 
+    /// Like [`Self::map_packed_columns_detached`], but lets a packed kernel
+    /// decline a row layout it cannot represent without materializing Shapes.
+    /// `None` means the caller should use its general path.
+    pub(crate) fn try_map_packed_columns_detached(
+        &self,
+        py: Python<'_>,
+        output_frame: Frame,
+        kernel: impl for<'a> FnOnce(PackedColumns<'a>) -> PackedColumnResult<Option<PackedColumnOutput>>
+        + Send,
+    ) -> PyResult<Option<Self>> {
+        let Some(output) = self.reduce_packed_columns_detached(py, kernel)? else {
+            return Ok(None);
+        };
+        let Some(output) = output else {
+            return Ok(None);
+        };
+        Ok(Some(assemble_packed_output(output, output_frame)))
+    }
+
     pub(crate) fn map_packed_coordseq_detached(
         &self,
         py: Python<'_>,

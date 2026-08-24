@@ -115,6 +115,12 @@ impl PackedColumnBuilder {
         }
     }
 
+    /// Append a generated XY vertex to an XY-only packed result.
+    pub(crate) fn push_xy(&mut self, x: f64, y: f64) {
+        self.xs.push(x);
+        self.ys.push(y);
+    }
+
     /// Close the current CSR row after a custom vertex append sequence.
     pub(crate) fn close_row(&mut self) -> CrateResult<()> {
         self.offsets.push_end(self.xs.len(), i32::MAX as usize)?;
