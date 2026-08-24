@@ -323,6 +323,15 @@ def test_web_mercator_just_beyond_cap_raises_intentionally(sign: float) -> None:
         gm.crs_transform(WGS84, WEB_MERCATOR, 0.0, lat)
 
 
+def test_web_mercator_keeps_xy_order_and_does_not_clamp_cap() -> None:
+    lon = 12.5
+    x, y = gm.crs_transform(WGS84, WEB_MERCATOR, lon, WEB_MERCATOR_MAX_LAT)
+    expected_x, expected_y = _pyproj_fwd(WGS84, WEB_MERCATOR, lon, WEB_MERCATOR_MAX_LAT)
+    assert x == pytest.approx(expected_x, abs=ABS_TOL_M)
+    assert y == pytest.approx(expected_y, abs=ABS_TOL_M)
+    assert abs(y) > abs(x)
+
+
 @pytest.mark.parametrize(
     ('source', 'target', 'x', 'y'),
     [

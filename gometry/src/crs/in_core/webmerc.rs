@@ -6,7 +6,7 @@
 
 use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
 use crate::crs::WEB_MERCATOR_RADIUS;
-use crate::crs::in_core::kernel::{Ellipsoid, ProjectionKernel, RAD_TO_DEG};
+use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
     admit_projection, epsg, param_assume_degrees, param_assume_unity,
@@ -42,6 +42,28 @@ pub(super) fn web_mercator_to_lonlat_xy(x: f64, y: f64) -> (f64, f64) {
     WGS84_WEB_MERCATOR
         .inverse_xy(x, y)
         .unwrap_or((f64::NAN, f64::NAN))
+}
+
+pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
+    const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
+    for (lon, lat) in std::iter::zip(x, y) {
+        let lat_rad = *lat * DEG_TO_RAD;
+        let lat_deg = lat_rad * RAD_TO_DEG;
+        if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {
+            return Err(GeometryErrorKind::WebMercatorLatitude(lat_deg).into());
+        }
+        let out_y = if lat_rad == 0.0 {
+            lat_rad
+        } else {
+            WEB_MERCATOR_RADIUS * ((std::f64::consts::FRAC_PI_4 + lat_rad / 2.0).tan()).ln()
+        };
+        let out_x = *lon * METRES_PER_DEGREE;
+        if !out_x.is_finite() || !out_y.is_finite() {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        (*lon, *lat) = (out_x, out_y);
+    }
+    Ok(())
 }
 
 fn forward_unframed_setup(setup: Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {

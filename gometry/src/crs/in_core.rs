@@ -54,6 +54,7 @@ pub(super) enum ProjSetup {
 )]
 #[derive(Clone, Copy, Debug)]
 pub(super) enum InCoreTransform {
+    RawWebMercatorForward,
     One(InCoreStep),
     Two {
         inverse: ProjSetup,
@@ -69,9 +70,7 @@ pub(super) enum InCoreStep {
 
 impl InCoreTransform {
     pub(super) const fn lon_lat_to_web_mercator() -> Self {
-        Self::One(InCoreStep::Forward(ProjSetup::WebMercator(
-            WGS84_WEB_MERCATOR,
-        )))
+        Self::RawWebMercatorForward
     }
 
     pub(super) const fn web_mercator_to_lon_lat() -> Self {
@@ -146,6 +145,7 @@ pub(super) fn transform_in_core_xy_batch(
 /// single flat dispatch.
 #[derive(Clone, Copy)]
 enum ResolvedInCoreXy<'a> {
+    RawWebMercFwd,
     WebMercFwd(&'a Projected<webmerc::WebMerc>),
     WebMercInv(&'a Projected<webmerc::WebMerc>),
     TmercFwd(&'a Projected<tmerc::Tmerc>),
@@ -177,6 +177,7 @@ enum ResolvedInCoreXy<'a> {
 impl ResolvedInCoreXy<'_> {
     fn apply(self, x: f64, y: f64) -> Result<(f64, f64)> {
         match self {
+            Self::RawWebMercFwd => WGS84_WEB_MERCATOR.forward_xy(x, y),
             Self::WebMercFwd(p) => p.forward_xy(x, y),
             Self::WebMercInv(p) => p.inverse_xy(x, y),
             Self::TmercFwd(p) => p.forward_xy(x, y),
@@ -212,6 +213,7 @@ impl ResolvedInCoreXy<'_> {
 
     fn apply_batch(self, x: &mut [f64], y: &mut [f64]) -> Result<()> {
         match self {
+            Self::RawWebMercFwd => webmerc::raw_forward_batch(x, y),
             Self::WebMercFwd(p) => projected_batch::<webmerc::WebMerc, true>(p, x, y),
             Self::WebMercInv(p) => projected_batch::<webmerc::WebMerc, false>(p, x, y),
             Self::TmercFwd(p) => projected_batch::<tmerc::Tmerc, true>(p, x, y),
@@ -325,6 +327,7 @@ fn two_generic_batch(
 
 const fn resolve_in_core_xy(operation: &InCoreTransform) -> ResolvedInCoreXy<'_> {
     match operation {
+        InCoreTransform::RawWebMercatorForward => ResolvedInCoreXy::RawWebMercFwd,
         InCoreTransform::One(InCoreStep::Forward(ProjSetup::WebMercator(p))) => {
             ResolvedInCoreXy::WebMercFwd(p)
         },
