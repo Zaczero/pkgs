@@ -1,7 +1,7 @@
 """Cross-library oracle: data model, frozen tolerances, and equivalence helpers.
 
 Per-op case builders live in ``PUBLIC_CASE_BUILDERS`` (keyed by gometry row name).
-Lane 1 ships the helpers and an empty map; Lane 2 registers the 32 builders.
+The public case module registers one builder for each of the 37 operations.
 An empty map fails closed at the oracle CLI (``validate_builders``), never
 succeeds with zero verified ops.
 """

@@ -1,8 +1,7 @@
-"""Focused summarizer tests for the public competitive presentation (Lane 3)."""
+"""Focused tests for paired process evidence and compact rendering."""
 
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 
@@ -14,19 +13,16 @@ if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
 import summarize_bench as sb  # noqa: E402
-from _bench_registry import DOMAIN_ORDER, RELEASE_OPERATIONS  # noqa: E402
 
 
-def _stats(
-    name: str, mean: float, *, stdev: float = 0.0, samples: int = 30
-) -> sb.BenchStats:
+def _stats(name: str, median: float) -> sb.BenchStats:
     return sb.BenchStats(
         name=name,
-        mean=mean,
-        median=mean,
-        stdev=stdev,
-        nrun=3,
-        samples=samples,
+        mean=median,
+        median=median,
+        stdev=0.0,
+        nrun=1,
+        samples=1,
     )
 
 
@@ -34,10 +30,10 @@ def _meta(
     *,
     domain: str = 'Geometry',
     label: str = 'op',
-    workload: str = '10k / 1,316 vertices',
+    workload: str = '10k inputs',
     gometry: str = 'gometry.op/10k',
-    competitor: str | None = 'shapely.op/10k',
-    competitor_label: str | None = 'Shapely',
+    competitor: str = 'shapely.op/10k',
+    competitor_label: str = 'Shapely',
     footnotes: tuple[str, ...] = (),
 ) -> sb.PublicOpMeta:
     return sb.PublicOpMeta(
@@ -52,222 +48,130 @@ def _meta(
     )
 
 
-def test_speedup_parity_and_as_fast() -> None:
-    win = sb.OpRow(
-        meta=_meta(gometry='gometry.a/1', competitor='shapely.a/1'),
-        gometry=_stats('gometry.a/1', 1.0),
-        competitor=_stats('shapely.a/1', 2.0),
-        speedup=2.0,
-        tie=False,
+def test_process_values_do_not_inflate_independent_n() -> None:
+    ratios = sb.paired_process_ratios(
+        [[1.0, 1.0, 1.0, 1.0], [2.0, 2.0]],
+        [[2.0, 2.0, 2.0, 2.0], [4.0, 4.0]],
     )
-    loss = sb.OpRow(
-        meta=_meta(gometry='gometry.b/1', competitor='shapely.b/1'),
-        gometry=_stats('gometry.b/1', 1.0),
-        competitor=_stats('shapely.b/1', 0.82),
-        speedup=0.82,
-        tie=False,
+    assert ratios == [2.0, 2.0]
+    assert sb.bootstrap_paired_ratio_ci(ratios, seed=123, samples=200) == (2.0, 2.0)
+
+
+def test_common_process_drift_cancels_in_paired_ratios() -> None:
+    assert sb.paired_process_ratios(
+        [[1.0, 1.1], [10.0, 10.5], [2.0, 1.9]],
+        [[2.0, 2.2], [20.0, 21.0], [4.0, 3.8]],
+    ) == [2.0, 2.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    'interval,expected',
+    [
+        ((1.10, 1.20), 'faster'),
+        ((0.80, 0.90), 'slower'),
+        ((0.98, 1.02), 'similar'),
+        ((0.98, 1.05), 'inconclusive'),
+    ],
+)
+def test_classification_uses_entire_interval(interval: tuple[float, float], expected: str) -> None:
+    assert sb.classify_ratio(interval) == expected
+
+
+def test_render_has_compact_accessible_status_and_no_aggregate_claims() -> None:
+    meta = _meta(
+        label='Prepared contains XY',
+        workload='100k probes',
+        footnotes=('in_core',),
     )
-    parity = sb.OpRow(
-        meta=_meta(gometry='gometry.c/1', competitor='shapely.c/1'),
-        gometry=_stats('gometry.c/1', 1.0),
-        competitor=_stats('shapely.c/1', 1.01),
-        speedup=1.01,
-        tie=True,
+    row = sb.OpRow(
+        meta=meta,
+        gometry=_stats(meta.gometry, 0.001),
+        competitor=_stats(meta.competitor, 0.002),
+        ratio=2.0,
+        ratio_ci95=(2.0, 2.0),
+        blocks=(),
+        status='faster',
     )
-    solo = sb.OpRow(
-        meta=_meta(
-            gometry='gometry.s2/1',
-            competitor=None,
-            competitor_label=None,
-            domain='Discrete global grids',
-        ),
-        gometry=_stats('gometry.s2/1', 0.5),
-        competitor=None,
-        speedup=None,
-        tie=False,
-    )
-    assert sb.format_speedup(win) == '2.00× faster'  # noqa: RUF001 — product glyph
-    assert sb.format_speedup(loss) == '0.82× as fast'  # noqa: RUF001 — product glyph
-    assert sb.format_speedup(parity) == '≈ parity'
-    assert sb.format_speedup(solo) == '—'
-    # Never emit the forbidden "x faster" form for a loss.
-    assert 'faster' not in sb.format_speedup(loss)
-    assert 'slower' not in sb.format_speedup(loss)
-
-
-def test_solo_excluded_from_speedup_and_wtl() -> None:
-    rows = [
-        sb.OpRow(
-            meta=_meta(
-                domain='Discrete global grids',
-                label='h3',
-                gometry='gometry.h3/1',
-                competitor='h3.x/1',
-                competitor_label='h3-py',
-            ),
-            gometry=_stats('gometry.h3/1', 1.0),
-            competitor=_stats('h3.x/1', 2.0),
-            speedup=2.0,
-            tie=False,
-        ),
-        sb.OpRow(
-            meta=_meta(
-                domain='Discrete global grids',
-                label='s2',
-                gometry='gometry.s2/1',
-                competitor=None,
-                competitor_label=None,
-            ),
-            gometry=_stats('gometry.s2/1', 0.1),
-            competitor=None,
-            speedup=None,
-            tie=False,
-        ),
-    ]
-    summaries = sb.domain_stats(rows)
-    d = summaries['Discrete global grids']
-    assert d['n_paired'] == 1
-    assert d['wins'] == 1
-    assert d['parity'] == 0
-    assert d['losses'] == 0
-    assert d['geomean'] == pytest.approx(2.0)
-
-
-def test_equal_domain_overall_geomean() -> None:
-    """Overall = geomean of domain geomeans (Geometry's many rows must not dominate)."""
-    # Geometry: two rows with ratios 1.0 and 1.0 → domain geomean 1.0
-    rows: list[sb.OpRow] = [
-        sb.OpRow(
-            meta=_meta(
-                domain='Geometry',
-                gometry=f'gometry.g{i}/1',
-                competitor=f'shapely.g{i}/1',
-            ),
-            gometry=_stats(f'gometry.g{i}/1', 1.0),
-            competitor=_stats(f'shapely.g{i}/1', 1.0),
-            speedup=1.0,
-            tie=False,
-        )
-        for i in range(2)
-    ]
-    # Array construction: one row ratio 8.0 → domain geomean 8.0
-    rows.append(
-        sb.OpRow(
-            meta=_meta(
-                domain='Array construction & I/O',
-                gometry='gometry.io/1',
-                competitor='shapely.io/1',
-            ),
-            gometry=_stats('gometry.io/1', 1.0),
-            competitor=_stats('shapely.io/1', 8.0),
-            speedup=8.0,
-            tie=False,
-        )
-    )
-    summaries = sb.domain_stats(rows)
-    # Row-weighted geomean would be (1*1*8)^(1/3) ≈ 2.0
-    row_weighted = math.exp(math.log(8.0) / 3.0)
-    overall = sb.overall_geomean(summaries)
-    assert overall is not None
-    # Equal domain weight: geomean(1.0, 8.0) = sqrt(8) ≈ 2.828
-    assert overall == pytest.approx(math.sqrt(8.0))
-    assert overall != pytest.approx(row_weighted)
-
-
-def test_smoke_banner_and_workload_labels() -> None:
-    ops = [
-        {
-            'domain': 'Geometry',
-            'label': 'Prepared polygon contains XY',
-            'workload': '100k probes / 1,316-coordinate holed polygon',
-            'suite': 'competitors',
-            'gometry': 'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
-            'competitor': 'shapely.prepare.contains_xy/100k_probes_1316_vertex_polygon',
-            'competitor_label': 'Shapely',
-            'footnotes': ['batched'],
-        }
-    ]
-    payload = {
-        'profile': 'smoke',
-        'publishable': False,
-        'public_operations': ops,
-    }
-    stats = {
-        ops[0]['gometry']: _stats(ops[0]['gometry'], 0.001),
-        ops[0]['competitor']: _stats(ops[0]['competitor'], 0.002),
-    }
-    lines = sb.summarize_payload(payload, stats, markdown=True)
-    text = '\n'.join(lines)
-    assert sb.SMOKE_BANNER in text
-    assert '100k probes / 1,316-coordinate holed polygon' in text
-    assert 'Prepared polygon contains XY' in text
-    assert 'Shapely ·' in text
+    text = '\n'.join(sb.render([row], markdown=True, publishable=True))
+    assert '| API / input | gometry | Comparator | Relative |' in text
+    assert 'Shapely · 2.00 ms' in text
     assert '2.00× faster' in text  # noqa: RUF001 — product glyph
+    assert 'benchmark-status benchmark-faster' in text
+    assert 'benchmark-table-scroll' in text
+    assert '95%' not in text
+    assert 'Geomean' not in text
+    assert 'Overall' not in text
+    assert '‡' in text
+
+
+def test_summary_retains_process_identity_blocks() -> None:
+    meta = _meta()
+    gometry = sb.BenchStats(
+        name=meta.gometry,
+        mean=1.1,
+        median=1.1,
+        stdev=0.1,
+        nrun=2,
+        samples=4,
+        processes=(
+            sb.ProcessSample('pair.json', 0, (1.0, 1.2), 1.1, 'pair-1', 'ab'),
+            sb.ProcessSample('pair.json', 1, (1.0, 1.2), 1.1, 'pair-1', 'ab'),
+        ),
+    )
+    competitor = sb.BenchStats(
+        name=meta.competitor,
+        mean=2.2,
+        median=2.2,
+        stdev=0.1,
+        nrun=2,
+        samples=4,
+        processes=(
+            sb.ProcessSample('pair.json', 0, (2.0, 2.4), 2.2, 'pair-1', 'ab'),
+            sb.ProcessSample('pair.json', 1, (2.0, 2.4), 2.2, 'pair-1', 'ab'),
+        ),
+    )
+    payload = {
+        'profile': 'release',
+        'publishable': True,
+        'public_operations': [{
+            'domain': meta.domain,
+            'label': meta.label,
+            'workload': meta.workload,
+            'suite': meta.suite,
+            'gometry': meta.gometry,
+            'competitor': meta.competitor,
+            'competitor_label': meta.competitor_label,
+            'footnotes': [],
+        }],
+    }
+    normalized = sb.normalized_summary_payload(
+        payload, {meta.gometry: gometry, meta.competitor: competitor}
+    )
+    operation = normalized['operations'][0]
+    assert operation['status'] == 'faster'
+    assert operation['ratio_ci95'] == [2.0, 2.0]
+    assert len(operation['blocks']) == 2
+    assert operation['blocks'][0]['process_index'] == 0
+    assert operation['blocks'][0]['pair_id'] == 'pair-1'
+    assert 'geomean' not in normalized
+    assert 'winner' not in json_keys(normalized)
+
+
+def json_keys(value: object) -> set[str]:
+    return set(value) if isinstance(value, dict) else set()
+
+
+def test_missing_public_operations_fails() -> None:
+    with pytest.raises(SystemExit, match='public_operations'):
+        sb.summarize_payload({'profile': 'smoke', 'publishable': False}, {})
 
 
 def test_undeclared_public_gometry_row_fails_manifest_gate() -> None:
-    meta = _meta(gometry='gometry.declared/1', competitor='shapely.declared/1')
+    meta = _meta()
     stats = {
         meta.gometry: _stats(meta.gometry, 1.0),
         meta.competitor: _stats(meta.competitor, 2.0),
         'gometry.undeclared/1': _stats('gometry.undeclared/1', 3.0),
     }
-    with pytest.raises(SystemExit, match=r'undeclared public gometry[\s\S]*undeclared'):
-        sb._build_rows([meta], stats, noise_band=0.05)
-
-
-def test_six_domain_manifest_order() -> None:
-    assert list(DOMAIN_ORDER) == list(sb.DOMAIN_ORDER)
-    assert len(DOMAIN_ORDER) == 6
-    assert DOMAIN_ORDER[0] == 'Array construction & I/O'
-    # Build one synthetic row per domain in reverse order; render must restore
-    # DOMAIN_ORDER.
-    reverse_ops = list(reversed(DOMAIN_ORDER))
-    public_ops = []
-    stats: dict[str, sb.BenchStats] = {}
-    for i, domain in enumerate(reverse_ops):
-        g = f'gometry.d{i}/1'
-        c = f'shapely.d{i}/1'
-        public_ops.append({
-            'domain': domain,
-            'label': f'label {domain}',
-            'workload': f'work {i}',
-            'suite': 'competitors',
-            'gometry': g,
-            'competitor': c,
-            'competitor_label': 'Shapely',
-            'footnotes': [],
-        })
-        stats[g] = _stats(g, 1.0)
-        stats[c] = _stats(c, 2.0)
-    # Re-order public_ops to match reverse domain appearance then force
-    # summarizer domain order.
-    payload = {
-        'profile': 'release',
-        'publishable': True,
-        'public_operations': public_ops,
-    }
-    lines = sb.summarize_payload(payload, stats, markdown=True)
-    headings = [line[4:] for line in lines if line.startswith('### ')]
-    assert headings == list(DOMAIN_ORDER)
-
-
-def test_missing_public_operations_fails() -> None:
-    with pytest.raises(SystemExit, match='public_operations'):
-        sb.summarize_payload(
-            {'profile': 'smoke', 'publishable': False},
-            {},
-        )
-
-
-def test_release_operations_embeddable_shape() -> None:
-    """Registry records have the fields the run JSON / summarizer need."""
-    for op in RELEASE_OPERATIONS:
-        assert op.domain in DOMAIN_ORDER
-        assert op.label
-        assert op.workload
-        assert op.gometry.startswith('gometry.')
-        if op.competitor is None:
-            assert op.competitor_label is None
-        else:
-            assert op.competitor_label
+    with pytest.raises(SystemExit, match='undeclared public benchmark'):
+        sb._build_rows([meta], stats, noise_band=0.03)

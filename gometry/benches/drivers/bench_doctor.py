@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import platform
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ BUILD_INPUT_PATHS = (
     '.cargo/config.toml',
     'Cargo.toml',
     'Cargo.lock',
+    'uv.lock',
 )
 
 
@@ -56,6 +59,82 @@ def _git_build_inputs_dirty() -> bool | None:
     if result is None:
         return None
     return bool(result)
+
+
+def _source_inputs_digest() -> str | None:
+    """Digest tracked source/build inputs, including path names."""
+    output = _run(
+        ['git', 'ls-files', '-z', '--', *BUILD_INPUT_PATHS], cwd=REPO_ROOT
+    )
+    if output is None:
+        return None
+    # ``_run`` strips text output, so a NUL-separated list is safe to split but
+    # loses a final empty item only; filenames in this package cannot contain NUL.
+    digest = hashlib.sha256()
+    for name in sorted(filter(None, output.split('\x00'))):
+        path = REPO_ROOT / name
+        try:
+            if path.is_dir():
+                # Git records vendored repositories as gitlinks.  The nested
+                # commit is the source identity; hashing the directory itself
+                # would fail and would not describe its contents.
+                nested_commit = _run(['git', 'rev-parse', 'HEAD'], cwd=path)
+                if not nested_commit:
+                    return None
+                payload = nested_commit.encode('ascii')
+            else:
+                payload = path.read_bytes()
+        except OSError:
+            return None
+        digest.update(name.encode('utf-8'))
+        digest.update(b'\0')
+        digest.update(payload)
+        digest.update(b'\0')
+    return digest.hexdigest()
+
+
+def _uv_lock_identity() -> dict[str, Any]:
+    candidates = (REPO_ROOT / 'uv.lock', GOMETRY_ROOT / 'uv.lock')
+    for path in candidates:
+        if path.is_file():
+            return {
+                'path': str(path),
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                'size_bytes': path.stat().st_size,
+            }
+    return {'path': None, 'sha256': None, 'size_bytes': None}
+
+
+def _extension_identity() -> dict[str, Any]:
+    try:
+        import gometry._lib as lib
+
+        path = Path(lib.__file__).resolve()
+        path_text = str(path)
+        debug = (
+            '/target/debug/' in path_text
+            or path.parent.name == 'debug'
+            or '/debug/' in path_text
+        )
+        tied_to_checkout = path.is_file() and GOMETRY_ROOT in path.parents
+        return {
+            'path': path_text,
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'size_bytes': path.stat().st_size,
+            'debug_build': debug,
+            'release_build': not debug,
+            'tied_to_checkout': tied_to_checkout,
+        }
+    except (ImportError, OSError, AttributeError) as exc:
+        return {
+            'path': None,
+            'sha256': None,
+            'size_bytes': None,
+            'debug_build': None,
+            'release_build': False,
+            'tied_to_checkout': False,
+            'error': f'{type(exc).__name__}: {exc}',
+        }
 
 
 def _cpu_model() -> str | None:
@@ -135,6 +214,26 @@ def _package_version(name: str) -> str | None:
     try:
         return version(name)
     except PackageNotFoundError:
+        return None
+
+
+def _geos_version() -> str | None:
+    try:
+        import shapely
+
+        value = getattr(shapely, 'geos_version_string', None)
+        return str(value) if value is not None else None
+    except (ImportError, AttributeError):
+        return None
+
+
+def _proj_version() -> str | None:
+    try:
+        import pyproj
+
+        value = getattr(pyproj, 'proj_version_str', None)
+        return str(value) if value is not None else None
+    except (ImportError, AttributeError):
         return None
 
 
@@ -245,6 +344,7 @@ PACKAGE_INVENTORY: dict[str, str] = {
     'geopandas': 'geopandas',
     'pyarrow': 'pyarrow',
     'mercantile': 'mercantile',
+    'pygeohash': 'pygeohash',
 }
 
 # Display names for competitor libraries (summarizer still prefers competitor_label).
@@ -259,6 +359,7 @@ PACKAGE_DISPLAY_NAMES: dict[str, str] = {
     'geopandas': 'GeoPandas',
     'pyarrow': 'pyarrow',
     'mercantile': 'Mercantile',
+    'pygeohash': 'pygeohash',
 }
 
 # Competitor-label tokens → import names (multi-lib labels split on ' + ').
@@ -279,6 +380,7 @@ _PREFIX_PACKAGE: dict[str, str] = {
     's2sphere': 's2sphere',
     'geopandas': 'geopandas',
     'mercantile': 'mercantile',
+    'pygeohash': 'pygeohash',
     'rtree': 'rtree',
 }
 
@@ -331,12 +433,22 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
     }
     contention = collect_contention()
     frequencies = _per_cpu_frequency_state()
+    extension = _extension_identity()
+    uv_lock = _uv_lock_identity()
     metadata: dict[str, Any] = {
         'git_commit': _run(['git', 'rev-parse', 'HEAD']),
         'git_dirty_build_inputs': _git_build_inputs_dirty(),
+        'source_inputs_sha256': _source_inputs_digest(),
+        'uv_lock': uv_lock,
+        'python_executable': str(Path(sys.executable).resolve()),
         'rustc': _run(['rustc', '--version']),
         'cargo': _run(['cargo', '--version']),
         'python': sys.version.split()[0],
+        'python_version': sys.version,
+        'python_build': platform.python_build(),
+        'python_implementation': platform.python_implementation(),
+        'python_debug': bool(sysconfig.get_config_var('Py_DEBUG')),
+        'python_cache_tag': getattr(sys.implementation, 'cache_tag', None),
         'platform': platform.platform(),
         'kernel': platform.release(),
         'cpu_model': _cpu_model(),
@@ -349,14 +461,32 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         'top_cpu_processes': contention['metadata']['top_cpu_processes'],
         'packages': packages,
         'package_display_names': dict(PACKAGE_DISPLAY_NAMES),
+        'extension': extension,
+        'geos_version': _geos_version(),
+        'proj_version': _proj_version(),
     }
     warnings = list(contention['warnings'])
+    hard_failures: list[str] = []
     if metadata['git_dirty_build_inputs']:
-        warnings.append(
+        hard_failures.append(
             'gometry or its workspace Cargo build inputs have uncommitted changes'
         )
+    if not uv_lock['sha256']:
+        hard_failures.append('uv.lock is missing; release identity cannot be tied to a lock')
+    if extension['debug_build'] is True:
+        hard_failures.append('loaded gometry extension is a debug build')
+    if not extension['release_build']:
+        hard_failures.append('loaded gometry extension has no release-build evidence')
+    if not extension['tied_to_checkout']:
+        hard_failures.append(
+            'loaded gometry extension is not tied to this checkout'
+        )
+    if not metadata['git_commit']:
+        hard_failures.append('git commit identity is unavailable')
+    if not metadata['source_inputs_sha256']:
+        hard_failures.append('relevant source/build input digest is unavailable')
     if metadata['cpu_governor'] not in {None, 'performance'}:
-        warnings.append(
+        hard_failures.append(
             f"CPU governor is {metadata['cpu_governor']!r}, not 'performance'"
         )
     non_performance = {
@@ -365,7 +495,7 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         if value['governor'] not in {None, 'performance'}
     }
     if non_performance:
-        warnings.append(
+        hard_failures.append(
             f'non-performance governors in the allowed CPU set: {non_performance}'
         )
     required = packages_required_by_operations(operations)
@@ -375,19 +505,23 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
             # Optional inventory extension (e.g. rtree on internal filters).
             available = importlib.util.find_spec(package) is not None
             if not available:
-                warnings.append(f'competitor package {package!r} is not importable')
+                hard_failures.append(f'competitor package {package!r} is not importable')
             continue
         if not info['available']:
             if package in {'gometry', 'numpy', 'pyperf'}:
-                warnings.append(
+                hard_failures.append(
                     f'required Python package {package!r} is not importable'
                 )
             else:
                 display = PACKAGE_DISPLAY_NAMES.get(package, package)
-                warnings.append(
+                hard_failures.append(
                     f'competitor package {package!r} ({display}) is not importable'
                 )
-    return {'metadata': metadata, 'warnings': warnings}
+    return {
+        'metadata': metadata,
+        'warnings': warnings,
+        'hard_failures': hard_failures,
+    }
 
 
 def main() -> None:
@@ -423,6 +557,10 @@ def main() -> None:
         print('warnings:')
         for warning in report['warnings']:
             print(f'  - {warning}')
+    if report['hard_failures']:
+        print('hard_failures:')
+        for failure in report['hard_failures']:
+            print(f'  - {failure}')
 
 
 if __name__ == '__main__':

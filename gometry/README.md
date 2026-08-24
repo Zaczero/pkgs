@@ -5,7 +5,7 @@
 <h1 align="center">gometry</h1>
 
 <p align="center">
-  <strong>Blazing-fast geospatial engine for Python</strong>, written in Rust.<br>
+  <strong>Geospatial engine for Python</strong>, written in Rust.<br>
   One package for geometry, CRS, geodesy, grids, and spatial indexing.
 </p>
 

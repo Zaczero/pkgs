@@ -1,19 +1,43 @@
 ---
-description: Current gometry benchmark status.
+description: Current accepted gometry benchmark run and its evidence method.
 ---
 
 # Benchmarks
 
-No comparative benchmark artifact is published.
+This page reports the current accepted full release run only. It does not
+combine runs, publish filtered or smoke measurements, or make a timing claim
+when the tracked result is absent.
 
-The implementation properties users can rely on without a timing claim are:
+## Current Run
 
-- geometry kernels are implemented in Rust;
-- homogeneous geometry columns use packed coordinate and offset storage where
-  the GeoArrow layout supports it; and
-- array APIs expose vectorized operations and typed NumPy results.
+The release matrix contains 37 fully paired operations and 74 timed rows in
+five domains: array construction and I/O, geometry, CRS and geodesy, discrete
+global grids, and spatial index.
 
-## See also
+The runner records the exact Python executable, extension digest and build
+profile, source and lock identities, package versions, selected CPU and
+governor, pyperf artifact identities, and available GEOS/PROJ versions. Each
+pyperf process is one independent observation. The normalized evidence pairs
+the two rows inside each process, bootstraps the median ratio, and classifies
+it against a predeclared 3% equivalence/noise band. `Similar` means the full
+interval is inside that band; `faster` and `slower` require the interval to
+clear it; all other intervals are `Inconclusive`. The [full normalized
+evidence](https://github.com/Zaczero/pkgs/tree/main/gometry/benches/results/current)
+retains exact medians, intervals, process identities, and raw artifacts.
+
+The generated summary follows.
+
+--8<-- "benches/results/current/summary.md"
+
+## Method Boundaries
+
+Fixtures are built before timing and each paired row has an untimed
+fail-closed oracle for row counts, missingness, types, axes, coordinates,
+topology, or domain-specific preconditions. Resource probes remain gometry-only
+diagnostics and are not comparative release evidence. No dashboard, history,
+or percentile/peak resource claim is published here.
+
+## See Also
 
 - [Arrays & performance](../guide/arrays.md) — packed construction and batch results.
 - [Internals](internals.md) — durable ownership and interchange boundaries.

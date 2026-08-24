@@ -239,3 +239,57 @@
     display: grid;
   }
 }
+
+/* Benchmark evidence stays readable at narrow widths without hiding columns.
+   The status words remain the primary encoding; these restrained borders and
+   tints are only reinforcement for readers who can see color. */
+.benchmark-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0.75rem 0 1.25rem;
+  padding-bottom: 0.25rem;
+}
+
+.benchmark-table-scroll:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 3px;
+}
+
+.benchmark-table-scroll table {
+  min-width: 42rem;
+}
+
+.benchmark-status {
+  display: inline-block;
+  padding: 0.08rem 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.benchmark-faster {
+  color: #166534;
+  background: #f0fdf4;
+}
+
+.benchmark-slower {
+  color: #9a3412;
+  background: #fff7ed;
+}
+
+.benchmark-similar {
+  color: var(--md-default-fg-color--light);
+  background: var(--md-default-bg-color--lightest);
+}
+
+.benchmark-inconclusive {
+  color: #7c2d12;
+  background: #fffbeb;
+}
+
+@media screen and (max-width: 20em) {
+  .benchmark-table-scroll table {
+    min-width: 36rem;
+  }
+}

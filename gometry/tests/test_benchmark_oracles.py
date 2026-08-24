@@ -19,7 +19,7 @@ for _path in (_SUPPORT, _PYTHON):
 
 _bench_oracles = importlib.import_module('_bench_oracles')
 _bench_registry = importlib.import_module('_bench_registry')
-# Register the 32 public builders (side-effect import).
+# Register the complete public builder map (side-effect import).
 importlib.import_module('_bench_public_cases')
 _bench_oracle = importlib.import_module('bench_oracle')
 

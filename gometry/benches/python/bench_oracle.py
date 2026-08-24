@@ -10,8 +10,8 @@ the first mismatch. Fixture caches and timed closures are cleared between
 operations so peak RSS stays bounded.
 
 An empty or incomplete ``PUBLIC_CASE_BUILDERS`` map **fails closed** at planning
-(``validate_builders``) — never silently reports success with zero ops. Lane 2
-registers 32 public PairCase builders.
+(``validate_builders``) — never silently reports success with zero ops. The
+public case module registers one builder for each RELEASE operation.
 """
 
 from __future__ import annotations

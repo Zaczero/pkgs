@@ -1,8 +1,9 @@
-"""Summarize a gometry release/smoke run JSON as a domain-grouped competitive table.
+"""Normalize accepted pyperf artifacts into compact paired benchmark evidence.
 
-Reads ordered ``public_operations`` metadata embedded in the run manifest —
-never re-infers domains, labels, or pairs from raw benchmark names. Row order
-is the manifest editorial order only.
+Each pyperf run is an independent process/block.  Values inside one process
+are reduced to one process median before ratios or bootstrap intervals are
+computed.  This keeps pyperf's repeated values from masquerading as additional
+independent observations.
 """
 
 from __future__ import annotations
@@ -10,44 +11,47 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import statistics
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pyperf
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 _BENCHES = Path(__file__).resolve().parents[1]
 GOMETRY_ROOT = _BENCHES.parent
 
-MEAN_INTERVAL_Z = 1.96
-
-# Canonical domain order (must match embedded metadata / registry).
 DOMAIN_ORDER = (
     'Array construction & I/O',
     'Geometry',
     'CRS & geodesy',
     'Discrete global grids',
     'Spatial index',
-    'Real-world workflows',
 )
-
-FOOTNOTE_MARKERS: dict[str, str] = {
-    'geodesic': '†',
-    'in_core': '‡',
-    'batched': '§',
-    'noisy': '*',
-}
-
-FOOTNOTE_LEGEND = (
-    '† geodesic/ellipsoidal work.',
-    '‡ gometry admitted in-core projection path (not arbitrary CRS transforms).',
-    '§ both sides use a full-column/batched API without a timed Python row loop.',
-    '* statistically noisy measurement (relative stdev exceeds the noise band).',
-)
+EQUIVALENCE_BAND = 0.03
+BOOTSTRAP_SAMPLES = 10_000
+DEFAULT_BOOTSTRAP_SEED = 20_260_824
 
 SMOKE_BANNER = 'Smoke/debug run — not publishable release evidence.'
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessSample:
+    """One independent pyperf process median for one raw benchmark row."""
+
+    artifact: str
+    process_index: int
+    values: tuple[float, ...]
+    median: float
+    pair_id: str | None = None
+    lead: str | None = None
+
+    @property
+    def block_id(self) -> str:
+        return f'{self.artifact}#process-{self.process_index}'
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,7 @@ class BenchStats:
     stdev: float
     nrun: int
     samples: int
+    processes: tuple[ProcessSample, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,24 +72,48 @@ class PublicOpMeta:
     workload: str
     suite: str
     gometry: str
-    competitor: str | None
-    competitor_label: str | None
+    competitor: str
+    competitor_label: str
     footnotes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PairedBlock:
+    artifact: str
+    process_index: int
+    pair_id: str | None
+    lead: str | None
+    gometry_median_seconds: float
+    competitor_median_seconds: float
+    ratio: float
+
+    @property
+    def block_id(self) -> str:
+        return f'{self.artifact}#process-{self.process_index}'
 
 
 @dataclass(slots=True)
 class OpRow:
     meta: PublicOpMeta
     gometry: BenchStats
-    competitor: BenchStats | None = None
-    speedup: float | None = None
-    rel_stdev: float = 0.0
-    noisy: bool = False
-    tie: bool = False
+    competitor: BenchStats
+    ratio: float
+    ratio_ci95: tuple[float, float]
+    blocks: tuple[PairedBlock, ...]
+    status: str
 
     @property
-    def solo(self) -> bool:
-        return self.meta.competitor is None
+    def speedup(self) -> float:
+        """Compatibility alias: ratio is competitor seconds / gometry seconds."""
+        return self.ratio
+
+    @property
+    def tie(self) -> bool:
+        return self.status == 'similar'
+
+    @property
+    def noisy(self) -> bool:
+        return self.status == 'inconclusive'
 
 
 def _manifest_payload(path: Path) -> dict[str, Any] | None:
@@ -92,11 +121,7 @@ def _manifest_payload(path: Path) -> dict[str, Any] | None:
         payload = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    if 'artifacts' not in payload and 'profile' not in payload:
-        return None
-    return payload
+    return payload if isinstance(payload, dict) else None
 
 
 def _resolve_artifact_paths(payload: dict[str, Any], manifest_path: Path) -> list[Path]:
@@ -106,45 +131,31 @@ def _resolve_artifact_paths(payload: dict[str, Any], manifest_path: Path) -> lis
     resolved: list[Path] = []
     for artifact in artifacts:
         if not isinstance(artifact, str):
-            raise SystemExit(
-                f'run manifest {manifest_path} has a non-string artifact entry'
-            )
+            raise SystemExit(f'run manifest {manifest_path} has a non-string artifact entry')
         candidate = Path(artifact)
         if not candidate.is_file():
             candidate = manifest_path.parent / candidate.name
         if not candidate.is_file():
             raise SystemExit(
-                f'run manifest {manifest_path} references a missing artifact: '
-                f'{artifact}'
+                f'run manifest {manifest_path} references a missing artifact: {artifact}'
             )
         resolved.append(candidate)
     return resolved
 
 
 def _resolve_run(pattern: str) -> tuple[dict[str, Any], list[Path]]:
-    """Load one run manifest and its pyperf artifact paths.
-
-    Public summaries require embedded ``public_operations`` metadata. Raw
-    pyperf globs alone are not supported for competitive presentation.
-    """
     path = Path(pattern)
     if path.is_dir():
         manifests = [
-            candidate
-            for candidate in sorted(path.glob('*.json'))
-            if _manifest_payload(candidate) is not None
-            and 'profile' in (_manifest_payload(candidate) or {})
+            candidate for candidate in sorted(path.glob('*.json'))
+            if (_manifest_payload(candidate) or {}).get('profile')
         ]
         if len(manifests) > 1:
             raise SystemExit(
-                f'{path} contains multiple benchmark runs; pass one exact '
-                '<timestamp>-<profile>.json run manifest'
+                f'{path} contains multiple benchmark runs; pass one exact run manifest'
             )
         if not manifests:
-            raise SystemExit(
-                f'{path} has no run manifest with embedded public_operations; '
-                'pass the <timestamp>-<profile>.json written by bench.py'
-            )
+            raise SystemExit(f'{path} has no bench.py run manifest')
         path = manifests[0]
     if not path.exists():
         matched = sorted(Path(match) for match in glob(pattern))
@@ -152,68 +163,24 @@ def _resolve_run(pattern: str) -> tuple[dict[str, Any], list[Path]]:
             path = matched[0]
         elif matched:
             raise SystemExit(
-                'summarize_bench requires a single run manifest JSON with '
-                f'embedded public_operations; matched {len(matched)} paths'
+                'summarize_bench requires one run manifest JSON; '
+                f'matched {len(matched)} paths'
             )
         else:
             raise SystemExit(f'no benchmark result files matched: {pattern}')
-
     payload = _manifest_payload(path)
     if payload is None or 'profile' not in payload:
-        raise SystemExit(
-            f'{path} is not a bench.py run manifest. Competitive summaries '
-            'require the run JSON so domains/labels come from embedded '
-            'public_operations metadata (never re-inferred from row names).'
-        )
+        raise SystemExit(f'{path} is not a bench.py run manifest')
     if 'public_operations' not in payload:
-        raise SystemExit(
-            f'run manifest {path} lacks embedded public_operations metadata. '
-            'Re-run benches/drivers/bench.py so the ordered RELEASE operations '
-            'are written into the run JSON; the summarizer does not re-infer '
-            'domains or labels from raw benchmark names.'
-        )
+        raise SystemExit(f'run manifest {path} lacks public_operations metadata')
     return payload, _resolve_artifact_paths(payload, path)
-
-
-def _is_pyperf_suite(path: Path) -> bool:
-    try:
-        pyperf.BenchmarkSuite.load(str(path))
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-    return True
-
-
-def _load_all_stats(paths: list[Path]) -> dict[str, BenchStats]:
-    samples: dict[str, list[float]] = {}
-    runs: dict[str, int] = {}
-    for path in paths:
-        if not _is_pyperf_suite(path):
-            continue
-        suite = pyperf.BenchmarkSuite.load(str(path))
-        for bench in suite.get_benchmarks():
-            name = bench.get_name()
-            samples.setdefault(name, []).extend(bench.get_values())
-            runs[name] = runs.get(name, 0) + bench.get_nrun()
-    merged: dict[str, BenchStats] = {}
-    for name, values in samples.items():
-        merged[name] = BenchStats(
-            name=name,
-            mean=statistics.fmean(values),
-            median=statistics.median(values),
-            stdev=statistics.stdev(values) if len(values) > 1 else 0.0,
-            nrun=runs[name],
-            samples=len(values),
-        )
-    return merged
 
 
 def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
     if not isinstance(raw, list) or not raw:
-        raise SystemExit(
-            'public_operations must be a non-empty list of operation records'
-        )
-    ops: list[PublicOpMeta] = []
-    seen_gometry: set[str] = set()
+        raise SystemExit('public_operations must be a non-empty list')
+    operations: list[PublicOpMeta] = []
+    seen: set[str] = set()
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise SystemExit(f'public_operations[{index}] is not an object')
@@ -223,31 +190,19 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             workload = str(item['workload'])
             suite = str(item['suite'])
             gometry = str(item['gometry'])
-            competitor = item.get('competitor')
-            competitor_label = item.get('competitor_label')
-            footnotes_raw = item.get('footnotes') or ()
+            competitor = str(item['competitor'])
+            competitor_label = str(item['competitor_label'])
         except KeyError as exc:
             raise SystemExit(
                 f'public_operations[{index}] missing field: {exc.args[0]}'
             ) from exc
-        if competitor is not None:
-            competitor = str(competitor)
-        if competitor_label is not None:
-            competitor_label = str(competitor_label)
-        if competitor is None and competitor_label is not None:
-            raise SystemExit(
-                f'public_operations[{index}] ({gometry}): solo op has competitor_label'
-            )
-        if competitor is not None and not competitor_label:
-            raise SystemExit(
-                f'public_operations[{index}] ({gometry}): paired op missing '
-                'competitor_label'
-            )
-        footnotes = tuple(str(f) for f in footnotes_raw)
-        if gometry in seen_gometry:
+        if gometry in seen:
             raise SystemExit(f'duplicate public gometry row: {gometry}')
-        seen_gometry.add(gometry)
-        ops.append(
+        if not competitor or not competitor_label:
+            raise SystemExit(f'public_operations[{index}] must be fully paired')
+        seen.add(gometry)
+        footnotes = tuple(str(value) for value in (item.get('footnotes') or ()))
+        operations.append(
             PublicOpMeta(
                 domain=domain,
                 label=label,
@@ -259,86 +214,198 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
                 footnotes=footnotes,
             )
         )
-    return ops
+    return operations
 
 
-def _humanize_seconds(value: float) -> str:
-    if value >= 0.001:
-        return f'{value * 1000.0:.2f} ms'
-    if value >= 1e-06:
-        return f'{value * 1000000.0:.2f} µs'
-    return f'{value * 1000000000.0:.1f} ns'
+def _metadata_for(
+    payload: dict[str, Any], benchmark: dict[str, Any], run: dict[str, Any]
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for source in (
+        payload.get('metadata'),
+        benchmark.get('metadata'),
+        run.get('metadata'),
+    ):
+        if isinstance(source, dict):
+            metadata.update(source)
+    return metadata
 
 
-def _rel_stdev(mean: float, stdev: float) -> float:
-    if mean == 0.0:
-        return 0.0
-    return stdev / mean
+def _load_all_stats(paths: list[Path]) -> dict[str, BenchStats]:
+    """Load one process median per pyperf run, retaining artifact identity."""
+    processes: dict[str, list[ProcessSample]] = {}
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f'invalid pyperf artifact {path}: {exc}') from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get('benchmarks'), list):
+            continue
+        for benchmark in payload['benchmarks']:
+            if not isinstance(benchmark, dict):
+                continue
+            common = benchmark.get('metadata')
+            name = common.get('name') if isinstance(common, dict) else None
+            if not isinstance(name, str):
+                name = payload.get('metadata', {}).get('name') if isinstance(payload.get('metadata'), dict) else None
+            if not isinstance(name, str):
+                continue
+            runs = benchmark.get('runs')
+            if not isinstance(runs, list):
+                values = benchmark.get('values')
+                runs = [{'values': values}] if isinstance(values, list) else []
+            for process_index, run in enumerate(runs):
+                if not isinstance(run, dict):
+                    continue
+                values = run.get('values')
+                if not isinstance(values, list) or not values:
+                    continue
+                numeric = tuple(float(value) for value in values)
+                if not all(math.isfinite(value) and value > 0.0 for value in numeric):
+                    raise SystemExit(f'{path} contains invalid values for {name}')
+                metadata = _metadata_for(payload, benchmark, run)
+                processes.setdefault(name, []).append(
+                    ProcessSample(
+                        artifact=str(path),
+                        process_index=process_index,
+                        values=numeric,
+                        median=statistics.median(numeric),
+                        pair_id=metadata.get('gometry_pair_id'),
+                        lead=metadata.get('gometry_pair_lead'),
+                    )
+                )
+    result: dict[str, BenchStats] = {}
+    for name, rows in processes.items():
+        medians = [row.median for row in rows]
+        result[name] = BenchStats(
+            name=name,
+            mean=statistics.fmean(medians),
+            median=statistics.median(medians),
+            stdev=statistics.stdev(medians) if len(medians) > 1 else 0.0,
+            nrun=len(rows),
+            samples=sum(len(row.values) for row in rows),
+            processes=tuple(rows),
+        )
+    return result
 
 
-def _noise_radius(stats: BenchStats, noise_band: float) -> float:
-    sampling_radius = (
-        MEAN_INTERVAL_Z * stats.stdev / math.sqrt(stats.samples)
-        if stats.samples > 1
-        else stats.stdev
-    )
-    return max(sampling_radius, stats.mean * noise_band)
+def _percentile(values: Sequence[float], quantile: float) -> float:
+    if not values:
+        raise ValueError('percentile requires values')
+    ordered = sorted(values)
+    position = quantile * (len(ordered) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
-def _stats_intervals_overlap(
-    a: BenchStats, b: BenchStats, *, noise_band: float
-) -> bool:
-    ra = _noise_radius(a, noise_band)
-    rb = _noise_radius(b, noise_band)
-    return a.mean - ra <= b.mean + rb and b.mean - rb <= a.mean + ra
+def _median_process_values(values: Iterable[float | Sequence[float]]) -> list[float]:
+    medians: list[float] = []
+    for value in values:
+        if isinstance(value, (int, float)):
+            medians.append(float(value))
+        else:
+            samples = tuple(float(item) for item in value)
+            if not samples:
+                raise ValueError('process values cannot be empty')
+            medians.append(statistics.median(samples))
+    return medians
 
 
-def _geomean(values: list[float]) -> float | None:
-    positive = [value for value in values if value > 0]
-    if not positive:
-        return None
-    return math.exp(sum(math.log(value) for value in positive) / len(positive))
+def paired_process_ratios(
+    gometry_processes: Sequence[float | Sequence[float]],
+    competitor_processes: Sequence[float | Sequence[float]],
+) -> list[float]:
+    """Return one competitor/gometry ratio for each independent process."""
+    gometry = _median_process_values(gometry_processes)
+    competitor = _median_process_values(competitor_processes)
+    if len(gometry) != len(competitor):
+        raise ValueError('paired process samples must have equal counts')
+    if not gometry:
+        raise ValueError('paired process samples cannot be empty')
+    return [right / left for left, right in zip(gometry, competitor, strict=True)]
 
 
-def format_speedup(row: OpRow) -> str:
-    """Public speedup cell language (ratio = competitor / gometry)."""
-    if row.solo or row.speedup is None:
-        return '—'
-    if row.tie:
-        return '≈ parity'
-    ratio = row.speedup
-    if ratio >= 1.0:
-        text = f'{ratio:.2f}× faster'  # noqa: RUF001 — intentional speedup glyph
-    else:
-        text = f'{ratio:.2f}× as fast'  # noqa: RUF001 — intentional speedup glyph
-    if row.noisy:
-        text += '*'
-    return text
-
-
-def _footnote_suffix(meta: PublicOpMeta, *, noisy: bool) -> str:
-    markers = [
-        FOOTNOTE_MARKERS[key]
-        for key in ('geodesic', 'in_core', 'batched')
-        if key in meta.footnotes
+def bootstrap_paired_ratio_ci(
+    ratios: Sequence[float],
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    *,
+    samples: int = BOOTSTRAP_SAMPLES,
+) -> tuple[float, float]:
+    """Deterministic percentile bootstrap over independent process ratios."""
+    if not ratios:
+        raise ValueError('paired bootstrap requires at least one ratio')
+    rng = random.Random(seed)
+    medians = [
+        statistics.median(ratios[rng.randrange(len(ratios))] for _ in ratios)
+        for _ in range(samples)
     ]
-    if noisy or 'noisy' in meta.footnotes:
-        markers.append(FOOTNOTE_MARKERS['noisy'])
-    return ''.join(markers)
+    return _percentile(medians, 0.025), _percentile(medians, 0.975)
 
 
-def row_label(row: OpRow) -> str:
-    """Keep the full workload text (including any `/`); append footnote markers."""
-    base = f'{row.meta.label} — {row.meta.workload}'
-    suffix = _footnote_suffix(row.meta, noisy=row.noisy)
-    return f'{base} {suffix}'.rstrip() if suffix else base
+def paired_ratio_ci(
+    gometry_processes: Sequence[float | Sequence[float]],
+    competitor_processes: Sequence[float | Sequence[float]],
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    *,
+    samples: int = BOOTSTRAP_SAMPLES,
+) -> tuple[float, float]:
+    return bootstrap_paired_ratio_ci(
+        paired_process_ratios(gometry_processes, competitor_processes),
+        seed,
+        samples=samples,
+    )
 
 
-def format_competitor_cell(row: OpRow) -> str:
-    if row.competitor is None:
-        return '—'
-    label = row.meta.competitor_label or 'competitor'
-    return f'{label} · {_humanize_seconds(row.competitor.mean)}'
+def classify_ratio(
+    ratio_ci95: tuple[float, float], noise_band: float = EQUIVALENCE_BAND
+) -> str:
+    """Classify only intervals that clear or fit the predeclared noise band."""
+    low, high = ratio_ci95
+    lower_equivalent = 1.0 - noise_band
+    upper_equivalent = 1.0 + noise_band
+    if low > upper_equivalent:
+        return 'faster'
+    if high < lower_equivalent:
+        return 'slower'
+    if low >= lower_equivalent and high <= upper_equivalent:
+        return 'similar'
+    return 'inconclusive'
+
+
+def _paired_blocks(gometry: BenchStats, competitor: BenchStats) -> tuple[PairedBlock, ...]:
+    left = {(sample.artifact, sample.process_index): sample for sample in gometry.processes}
+    right = {(sample.artifact, sample.process_index): sample for sample in competitor.processes}
+    keys = sorted(left.keys() & right.keys())
+    if not keys:
+        # Synthetic callers without raw process identity still receive a
+        # deterministic one-block statistic, while real artifacts never use it.
+        return (
+            PairedBlock(
+                artifact='synthetic',
+                process_index=0,
+                pair_id=None,
+                lead=None,
+                gometry_median_seconds=gometry.median,
+                competitor_median_seconds=competitor.median,
+                ratio=competitor.median / gometry.median,
+            ),
+        )
+    return tuple(
+        PairedBlock(
+            artifact=key[0],
+            process_index=key[1],
+            pair_id=left[key].pair_id or right[key].pair_id,
+            lead=left[key].lead or right[key].lead,
+            gometry_median_seconds=left[key].median,
+            competitor_median_seconds=right[key].median,
+            ratio=right[key].median / left[key].median,
+        )
+        for key in keys
+    )
 
 
 def _build_rows(
@@ -346,37 +413,34 @@ def _build_rows(
     stats: dict[str, BenchStats],
     *,
     noise_band: float,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> list[OpRow]:
     rows: list[OpRow] = []
     missing: list[str] = []
     for meta in operations:
         gometry = stats.get(meta.gometry)
+        competitor = stats.get(meta.competitor)
         if gometry is None:
             missing.append(meta.gometry)
+        if competitor is None:
+            missing.append(meta.competitor)
+        if gometry is None or competitor is None:
             continue
-        competitor: BenchStats | None = None
-        if meta.competitor is not None:
-            competitor = stats.get(meta.competitor)
-            if competitor is None:
-                missing.append(meta.competitor)
-                continue
-        rel = _rel_stdev(gometry.mean, gometry.stdev)
-        speedup: float | None = None
-        tie = False
-        if competitor is not None:
-            if gometry.mean <= 0:
-                raise SystemExit(f'non-positive gometry mean for {meta.gometry}')
-            speedup = competitor.mean / gometry.mean
-            tie = _stats_intervals_overlap(gometry, competitor, noise_band=noise_band)
+        if gometry.median <= 0.0 or competitor.median <= 0.0:
+            raise SystemExit(f'non-positive median for {meta.gometry}')
+        blocks = _paired_blocks(gometry, competitor)
+        ratios = [block.ratio for block in blocks]
+        ratio = statistics.median(ratios)
+        ratio_ci95 = bootstrap_paired_ratio_ci(ratios, seed, samples=BOOTSTRAP_SAMPLES)
         rows.append(
             OpRow(
                 meta=meta,
                 gometry=gometry,
                 competitor=competitor,
-                speedup=speedup,
-                rel_stdev=rel,
-                noisy=rel > noise_band,
-                tie=tie,
+                ratio=ratio,
+                ratio_ci95=ratio_ci95,
+                blocks=blocks,
+                status=classify_ratio(ratio_ci95, noise_band),
             )
         )
     if missing:
@@ -384,264 +448,189 @@ def _build_rows(
             'run is missing declared public benchmark rows (or artifacts):\n'
             + '\n'.join(f'  - {name}' for name in missing)
         )
-    # Reject extra public-named gometry rows not declared in the embedding.
-    declared = {op.gometry for op in operations} | {
-        op.competitor for op in operations if op.competitor
-    }
-    extras = sorted(
-        name for name in stats if name.startswith('gometry.') and name not in declared
-    )
+    declared = {op.gometry for op in operations} | {op.competitor for op in operations}
+    extras = sorted(name for name in stats if name not in declared)
     if extras:
         raise SystemExit(
-            'run contains undeclared public gometry benchmark rows:\n'
+            'run contains undeclared public benchmark rows:\n'
             + '\n'.join(f'  - {name}' for name in extras)
         )
     return rows
 
 
-def domain_stats(rows: list[OpRow]) -> dict[str, dict[str, Any]]:
-    """Per-domain geomean and W/T/L, excluding solo rows from all speedup stats."""
-    by_domain: dict[str, list[OpRow]] = {domain: [] for domain in DOMAIN_ORDER}
-    for row in rows:
-        by_domain.setdefault(row.meta.domain, []).append(row)
-
-    out: dict[str, dict[str, Any]] = {}
-    for domain in DOMAIN_ORDER:
-        domain_rows = by_domain.get(domain, [])
-        paired = [
-            row for row in domain_rows if not row.solo and row.speedup is not None
-        ]
-        ratios = [row.speedup for row in paired if row.speedup is not None]
-        wins = sum(1 for row in paired if not row.tie and (row.speedup or 0) > 1.0)
-        losses = sum(1 for row in paired if not row.tie and (row.speedup or 0) < 1.0)
-        parity = sum(1 for row in paired if row.tie)
-        out[domain] = {
-            'geomean': _geomean(ratios),
-            'wins': wins,
-            'parity': parity,
-            'losses': losses,
-            'n_paired': len(paired),
-            'n_rows': len(domain_rows),
-        }
-    return out
+def _humanize_seconds(value: float) -> str:
+    if value >= 0.001:
+        return f'{value * 1000.0:.2f} ms'
+    if value >= 1e-6:
+        return f'{value * 1e6:.2f} us'
+    return f'{value * 1e9:.1f} ns'
 
 
-def overall_geomean(domain_summaries: dict[str, dict[str, Any]]) -> float | None:
-    """Equal-domain-weight overall: geomean of domain geomeans (not row-weighted)."""
-    domain_means = [
-        summary['geomean']
-        for domain in DOMAIN_ORDER
-        for summary in (domain_summaries.get(domain),)
-        if summary is not None and summary['geomean'] is not None
-    ]
-    return _geomean(domain_means)
+def format_speedup(row: OpRow) -> str:
+    """Accessible relative language; no color or interval column is required."""
+    if row.status == 'similar':
+        label = 'Similar'
+    elif row.status == 'inconclusive':
+        label = 'Inconclusive'
+    elif row.ratio >= 1.0:
+        label = f'{row.ratio:.2f}× faster'  # noqa: RUF001 — product glyph
+    else:
+        label = f'{1.0 / row.ratio:.2f}× slower'  # noqa: RUF001 — product glyph
+    return f'<span class="benchmark-status benchmark-{row.status}">{label}</span>'
 
 
-def _is_publishable_run(payload: dict[str, Any]) -> bool:
-    return bool(payload.get('publishable'))
+def format_competitor_cell(row: OpRow) -> str:
+    return f'{row.meta.competitor_label} · {_humanize_seconds(row.competitor.median)}'
 
 
-def _format_geomean(value: float | None) -> str:
-    if value is None:
-        return '—'
-    return f'{value:.2f}×'  # noqa: RUF001 — intentional speedup glyph
+def row_label(row: OpRow) -> str:
+    marker = _footnote_suffix(row.meta)
+    text = f'{row.meta.label} — {row.meta.workload}'
+    return f'{text} {marker}'.rstrip() if marker else text
 
 
-def _header_table(
-    domain_summaries: dict[str, dict[str, Any]], *, markdown: bool
-) -> list[str]:
-    headers = ['Domain', 'Geomean', 'Wins / parity / losses']
-    body: list[list[str]] = []
-    for domain in DOMAIN_ORDER:
-        summary = domain_summaries.get(domain)
-        if summary is None or summary['n_rows'] == 0:
-            continue
-        wtl = f'{summary["wins"]} / {summary["parity"]} / {summary["losses"]}'
-        body.append([domain, _format_geomean(summary['geomean']), wtl])
-    overall = overall_geomean(domain_summaries)
-    total_w = sum(s['wins'] for s in domain_summaries.values())
-    total_p = sum(s['parity'] for s in domain_summaries.values())
-    total_l = sum(s['losses'] for s in domain_summaries.values())
-    body.append([
-        '**Overall, equal domain weight**'
-        if markdown
-        else 'Overall, equal domain weight',
-        (f'**{_format_geomean(overall)}**' if markdown else _format_geomean(overall)),
-        f'**{total_w} / {total_p} / {total_l}**'
-        if markdown
-        else f'{total_w} / {total_p} / {total_l}',
-    ])
-    if markdown:
-        lines = [
-            '| ' + ' | '.join(headers) + ' |',
-            '|---|---:|---:|',
-        ]
-        lines.extend('| ' + ' | '.join(cells) + ' |' for cells in body)
-        return lines
-    widths = [len(h) for h in headers]
-    for cells in body:
-        for i, cell in enumerate(cells):
-            # strip markdown bold for width
-            plain = cell.replace('**', '')
-            widths[i] = max(widths[i], len(plain))
-    lines = [
-        '  '.join(
-            h.rjust(widths[i]) if i else h.ljust(widths[i])
-            for i, h in enumerate(headers)
-        ),
-        '  '.join('-' * widths[i] for i in range(len(headers))),
-    ]
-    for cells in body:
-        plain = [c.replace('**', '') for c in cells]
-        lines.append(
-            '  '.join(
-                plain[i].rjust(widths[i]) if i else plain[i].ljust(widths[i])
-                for i in range(len(headers))
-            )
-        )
-    return lines
+def _footnote_suffix(meta: PublicOpMeta) -> str:
+    markers = []
+    if 'geodesic' in meta.footnotes:
+        markers.append('†')
+    if 'in_core' in meta.footnotes:
+        markers.append('‡')
+    return ''.join(markers)
 
 
-def _section_table(rows: list[OpRow], *, markdown: bool) -> list[str]:
-    headers = ['Operation', 'gometry', 'competitor', 'Speedup']
+FOOTNOTE_LEGEND = (
+    '† geodesic/ellipsoidal metric.',
+    '‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.',
+)
+
+
+def _section_table(rows: list[OpRow]) -> list[str]:
+    headers = ['API / input', 'gometry', 'Comparator', 'Relative']
     body = [
         [
             row_label(row),
-            _humanize_seconds(row.gometry.mean),
+            _humanize_seconds(row.gometry.median),
             format_competitor_cell(row),
             format_speedup(row),
         ]
         for row in rows
     ]
-    if markdown:
-        lines = [
-            '| ' + ' | '.join(headers) + ' |',
-            '|---|---:|---:|---:|',
-        ]
-        lines.extend('| ' + ' | '.join(cells) + ' |' for cells in body)
-        return lines
-    widths = [len(h) for h in headers]
-    for cells in body:
-        for i, cell in enumerate(cells):
-            widths[i] = max(widths[i], len(cell))
-    numeric = {1, 2, 3}
     lines = [
-        '  '.join(
-            h.rjust(widths[i]) if i in numeric else h.ljust(widths[i])
-            for i, h in enumerate(headers)
-        ),
-        '  '.join('-' * widths[i] for i in range(len(headers))),
+        '| ' + ' | '.join(headers) + ' |',
+        '|---|---:|---:|---:|',
     ]
-    for cells in body:
-        lines.append(
-            '  '.join(
-                cells[i].rjust(widths[i]) if i in numeric else cells[i].ljust(widths[i])
-                for i in range(len(headers))
-            )
-        )
+    lines.extend('| ' + ' | '.join(cells) + ' |' for cells in body)
     return lines
 
 
-def _used_footnotes(rows: list[OpRow]) -> list[str]:
-    used: set[str] = set()
-    for row in rows:
-        for key in row.meta.footnotes:
-            if key in FOOTNOTE_MARKERS:
-                used.add(key)
-        if row.noisy:
-            used.add('noisy')
+def _used_footnotes(rows: Iterable[OpRow]) -> list[str]:
+    used = {key for row in rows for key in row.meta.footnotes}
     return [
-        next(line for line in FOOTNOTE_LEGEND if line.startswith(FOOTNOTE_MARKERS[key]))
-        for key in ('geodesic', 'in_core', 'batched', 'noisy')
-        if key in used
+        line for line in FOOTNOTE_LEGEND
+        if (line.startswith('†') and 'geodesic' in used)
+        or (line.startswith('‡') and 'in_core' in used)
     ]
 
 
-def render(
-    rows: list[OpRow],
-    *,
-    markdown: bool,
-    publishable: bool,
-) -> list[str]:
+def render(rows: list[OpRow], *, markdown: bool, publishable: bool) -> list[str]:
+    del markdown  # The release artifact is Markdown; table text is accessible in both uses.
     lines: list[str] = []
     if not publishable:
-        if markdown:
-            lines.append(f'> **{SMOKE_BANNER}**')
-        else:
-            lines.append(SMOKE_BANNER)
-        lines.append('')
-
-    summaries = domain_stats(rows)
-    lines.extend(_header_table(summaries, markdown=markdown))
-    lines.append('')
-
+        lines.extend((f'> **{SMOKE_BANNER}**', ''))
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
         by_domain.setdefault(row.meta.domain, []).append(row)
-
     for domain in DOMAIN_ORDER:
         domain_rows = by_domain.get(domain)
         if not domain_rows:
             continue
-        if markdown:
-            lines.append(f'### {domain}')
-            lines.append('')
-        else:
-            lines.append(domain)
-            lines.append('=' * len(domain))
-        lines.extend(_section_table(domain_rows, markdown=markdown))
-        lines.append('')
-
+        lines.extend((
+            f'### {domain}',
+            '',
+            f'<div class="benchmark-table-scroll" role="region" tabindex="0" '
+            f'aria-label="{domain} benchmark results">',
+            *_section_table(domain_rows),
+            '</div>',
+            '',
+        ))
     lines.extend(_used_footnotes(rows))
-    while lines and lines[-1] == '':
+    while lines and not lines[-1]:
         lines.pop()
     return lines
+
+
+def normalized_summary_payload(
+    payload: dict[str, Any],
+    stats: dict[str, BenchStats],
+    *,
+    noise_band: float = EQUIVALENCE_BAND,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    operations = _parse_public_operations(payload.get('public_operations'))
+    rows = _build_rows(operations, stats, noise_band=noise_band, seed=seed)
+    return {
+        'schema_version': 2,
+        'profile': payload.get('profile'),
+        'publishable': bool(payload.get('publishable')),
+        'equivalence_noise_band': noise_band,
+        'bootstrap_seed': seed,
+        'operations': [
+            {
+                'domain': row.meta.domain,
+                'label': row.meta.label,
+                'workload': row.meta.workload,
+                'gometry': row.meta.gometry,
+                'competitor': row.meta.competitor,
+                'competitor_label': row.meta.competitor_label,
+                'gometry_median_seconds': row.gometry.median,
+                'competitor_median_seconds': row.competitor.median,
+                'ratio_competitor_over_gometry': row.ratio,
+                'ratio_ci95': list(row.ratio_ci95),
+                'status': row.status,
+                'blocks': [
+                    {
+                        'block_id': block.block_id,
+                        'artifact': block.artifact,
+                        'process_index': block.process_index,
+                        'pair_id': block.pair_id,
+                        'lead': block.lead,
+                        'gometry_median_seconds': block.gometry_median_seconds,
+                        'competitor_median_seconds': block.competitor_median_seconds,
+                        'ratio_competitor_over_gometry': block.ratio,
+                    }
+                    for block in row.blocks
+                ],
+            }
+            for row in rows
+        ],
+    }
 
 
 def summarize_payload(
     payload: dict[str, Any],
     stats: dict[str, BenchStats],
     *,
-    noise_band: float = 0.03,
+    noise_band: float = EQUIVALENCE_BAND,
     markdown: bool = True,
 ) -> list[str]:
     operations = _parse_public_operations(payload.get('public_operations'))
     rows = _build_rows(operations, stats, noise_band=noise_band)
-    return render(rows, markdown=markdown, publishable=_is_publishable_run(payload))
+    return render(rows, markdown=markdown, publishable=bool(payload.get('publishable')))
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            'Summarize a gometry bench.py run JSON as a domain-grouped '
-            'competitive table (manifest order; embedded public_operations).'
-        )
-    )
-    parser.add_argument(
-        'results',
-        help='path to a <timestamp>-<profile>.json run manifest (or its directory)',
-    )
-    parser.add_argument(
-        '--format', choices=['table', 'md'], default='table', help='output format'
-    )
-    parser.add_argument(
-        '--noise-band',
-        type=float,
-        default=0.03,
-        help='relative stdev threshold for the noisy-row marker',
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('results', help='one bench.py run manifest JSON or its directory')
+    parser.add_argument('--format', choices=['table', 'md'], default='table')
+    parser.add_argument('--noise-band', type=float, default=EQUIVALENCE_BAND)
     args = parser.parse_args(argv)
-    payload, artifact_paths = _resolve_run(args.results)
-    stats = _load_all_stats(artifact_paths)
+    payload, artifacts = _resolve_run(args.results)
+    stats = _load_all_stats(artifacts)
     if not stats and not payload.get('plan_only'):
-        raise SystemExit('no pyperf benchmark rows found in the run artifacts')
-    lines = summarize_payload(
-        payload,
-        stats,
-        noise_band=args.noise_band,
-        markdown=args.format == 'md',
-    )
-    print('\n'.join(lines))
+        raise SystemExit('no pyperf benchmark rows found in run artifacts')
+    print('\n'.join(summarize_payload(
+        payload, stats, noise_band=args.noise_band, markdown=args.format == 'md'
+    )))
 
 
 if __name__ == '__main__':

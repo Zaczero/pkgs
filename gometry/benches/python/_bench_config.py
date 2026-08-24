@@ -143,5 +143,18 @@ def runner() -> pyperf.Runner:
         '--loops',
     }
     if any(arg in explicit or arg.startswith('--min-time=') for arg in sys.argv[1:]):
-        return pyperf.Runner()
-    return pyperf.Runner(processes=1, values=1, warmups=1, min_time=0.01)
+        result = pyperf.Runner()
+    else:
+        result = pyperf.Runner(processes=1, values=1, warmups=1, min_time=0.01)
+    # These values are copied into every run's metadata by pyperf.  The pair
+    # identity and lead order are required to normalize AB/BA artifacts without
+    # treating values inside one worker process as independent observations.
+    for env_name, metadata_name in (
+        ('GOMETRY_BENCH_PAIR_ID', 'gometry_pair_id'),
+        ('GOMETRY_BENCH_LEAD', 'gometry_pair_lead'),
+        ('GOMETRY_BENCH_PROFILE', 'gometry_profile'),
+    ):
+        value = os.environ.get(env_name)
+        if value is not None:
+            result.metadata[metadata_name] = value
+    return result

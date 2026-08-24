@@ -1,4 +1,4 @@
-"""32 public PairCase builders + timed callables for RELEASE (Lane 2).
+"""37 public PairCase builders + timed callables for RELEASE.
 
 Registers into ``PUBLIC_CASE_BUILDERS`` (keyed by gometry row name). Timed
 callables perform no validation; all checks live in compare/preconditions.
@@ -24,6 +24,7 @@ from _bench_oracles import (
     exact_mask,
     geometry_equivalent,
     metric_allclose,
+    non_unique_points_contract,
     normalized_index_pairs,
     normalized_tile_set,
     normalized_uint64_set,
@@ -31,11 +32,11 @@ from _bench_oracles import (
     wrap_longitude_allclose,
 )
 from _bench_public_fixtures import (
-    arrow_binary_view_mixed_ewkb_10k,
     arrow_mixed_100k,
     bng_transform_10k,
     buildings_10k_gometry,
     buildings_10k_shapely,
+    clip_linework_10k,
     destination_inputs_10k,
     dwithin_pairs_10k,
     geodesic_pairs_10k,
@@ -49,6 +50,7 @@ from _bench_public_fixtures import (
     mixed_10k_gometry,
     mixed_10k_shapely,
     mixed_ewkb_10k,
+    mixed_wkt_10k,
     parcels_10k,
     points_10k_gometry,
     points_10k_shapely,
@@ -475,96 +477,6 @@ def _compare_destination(
         raise OracleMismatch('destination CRS not 4326')
 
 
-def _compare_s2_cover(
-    left: object, right: object | None, context: OracleContext
-) -> None:
-    import gometry as gm
-    import shapely
-
-    del right
-    # left is the coverage or cell array ids
-    cells = left
-    cell_arr = cells
-    cell_list = list(cell_arr)  # type: ignore[arg-type]
-    ids = np.asarray(
-        [int(c.id) for c in cell_list],
-        dtype=np.uint64,
-    )
-    if ids.size == 0 or ids.size > 256:
-        raise OracleMismatch(
-            's2 cover cell count out of range',
-            details=f'count={ids.size}',
-        )
-    if ids.size != np.unique(ids).size:
-        raise OracleMismatch('s2 cover has duplicate cell ids')
-    # Validity: every id reconstructs as S2Cell with the same id/level.
-    reconstructed: list[object] = []
-    for c in cell_list:
-        level = int(c.level)
-        if not (4 <= level <= 18):
-            raise OracleMismatch(
-                's2 cover level out of range', details=f'level={level}'
-            )
-        rebuilt = gm.S2Cell(int(c.id))
-        if int(rebuilt.id) != int(c.id) or int(rebuilt.level) != level:
-            raise OracleMismatch(
-                's2 cover cell failed reconstruct',
-                details=f'id={int(c.id)}',
-            )
-        reconstructed.append(rebuilt)
-    # Hierarchy / canonicality: adaptive covers are leaf-disjoint — no cell
-    # may contain another (parent/child nesting would be non-canonical here).
-    for i, a in enumerate(reconstructed):
-        for b in reconstructed[i + 1 :]:
-            a_level = int(a.level)  # type: ignore[union-attr]
-            b_level = int(b.level)  # type: ignore[union-attr]
-            a_shift = 2 * (30 - a_level)
-            b_shift = 2 * (30 - b_level)
-            a_contains_b = a_level < b_level and (int(a.id) >> a_shift) == (
-                int(b.id) >> a_shift
-            )  # type: ignore[union-attr]
-            b_contains_a = b_level < a_level and (int(b.id) >> b_shift) == (
-                int(a.id) >> b_shift
-            )  # type: ignore[union-attr]
-            if a_contains_b or b_contains_a:
-                raise OracleMismatch(
-                    's2 cover has hierarchical nest (non-canonical)',
-                    details=f'{int(a.id)} vs {int(b.id)}',  # type: ignore[union-attr]
-                )
-    # Deterministic source probes: coverage must hit known interior samples.
-    br = brazil_geometry()
-    probes = (
-        br.point_on_surface(),
-        br.centroid(),
-        gm.Point(
-            (BRAZIL_BOUNDS[0] + BRAZIL_BOUNDS[2]) / 2.0,
-            (BRAZIL_BOUNDS[1] + BRAZIL_BOUNDS[3]) / 2.0,
-            crs=4326,
-        ),
-    )
-
-    def _probe_detail(probe: object) -> str:
-        to_wkt = getattr(probe, 'to_wkt', None)
-        if callable(to_wkt):
-            return repr(to_wkt())
-        return repr(probe)
-
-    for probe in probes:
-        hits = 0
-        for c in reconstructed:
-            try:
-                if bool(shapely.intersects(_as_shapely(c.polygon), _as_shapely(probe))):
-                    hits += 1
-                    break
-            except Exception:  # noqa: S112 — probe loop
-                continue
-        if hits == 0:
-            raise OracleMismatch(
-                's2 cover cells miss source probe',
-                details=_probe_detail(probe),
-            )
-
-
 def _compare_index_build(
     left: object, right: object | None, context: OracleContext
 ) -> None:
@@ -733,6 +645,65 @@ def build_from_wkb() -> PublicCase:
     )
 
 
+def _compare_from_wkt(
+    left: object, right: object | None, context: OracleContext
+) -> None:
+    """Check row shape/type/axes and topology without trusting WKT text."""
+    if right is None:
+        raise OracleMismatch('from_wkt requires competitor')
+    left_rows = _as_geom_rows(left)
+    right_rows = _as_geom_rows(right)
+    if len(left_rows) != 10_000 or len(right_rows) != 10_000:
+        raise OracleMismatch(
+            'from_wkt row count mismatch',
+            details=f'{len(left_rows)} vs {len(right_rows)} (want 10000)',
+        )
+    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
+        if (lg is None) != (rg is None):
+            raise OracleMismatch(f'from_wkt missingness mismatch row={i}')
+        if lg is None:
+            continue
+        left_kind = getattr(lg, 'geometry_type', None) or getattr(lg, 'geom_type', None)
+        right_kind = getattr(rg, 'geometry_type', None) or getattr(rg, 'geom_type', None)
+        if str(left_kind).lower().replace(' ', '') != str(right_kind).lower().replace(' ', ''):
+            raise OracleMismatch(
+                f'from_wkt geometry type mismatch row={i}',
+                details=f'{left_kind!r} vs {right_kind!r}',
+            )
+        left_axes = getattr(lg, 'coordinate_axes', None)
+        right_axes = getattr(rg, 'coordinate_axes', None)
+        if left_axes is not None and right_axes is not None and left_axes != right_axes:
+            raise OracleMismatch(
+                f'from_wkt coordinate axes mismatch row={i}',
+                details=f'{left_axes!r} vs {right_axes!r}',
+            )
+        geometry_equivalent([lg], [rg], context, rtol=1e-12, atol=1e-9)
+
+
+def build_from_wkt() -> PublicCase:
+    wkts = mixed_wkt_10k()
+
+    def gometry_call():
+        import gometry as gm
+
+        return gm.from_wkt(wkts)
+
+    def competitor_call():
+        import shapely
+
+        return shapely.from_wkt(wkts)
+
+    _reg('gometry.from_wkt.batch/10k_realistic_mixed_wkt', gometry_call)
+    _reg('shapely.from_wkt.batch/10k_realistic_mixed_wkt', competitor_call)
+    return _case(
+        gometry_call,
+        competitor_call,
+        _compare_from_wkt,
+        kind='wkt_rowwise_topology',
+        preconditions=(lambda: len(wkts) == 10_000,),
+    )
+
+
 def build_from_arrow() -> PublicCase:
     arrow = arrow_mixed_100k()
 
@@ -755,72 +726,6 @@ def build_from_arrow() -> PublicCase:
         gometry_call,
         competitor_call,
         _compare_from_arrow,
-        kind='rowwise_geometry_exact',
-    )
-
-
-def _compare_from_arrow_binary_view(
-    left: object, right: object | None, context: OracleContext
-) -> None:
-    """Exact rowwise type/value/CRS for dense BinaryView WKB (no nulls)."""
-    import shapely
-
-    if right is None:
-        raise OracleMismatch('from_arrow binary_view requires competitor')
-    gm_arr = left
-    gpd_s = right
-    if len(gm_arr) != len(gpd_s):  # type: ignore[arg-type]
-        raise OracleMismatch(
-            'from_arrow binary_view length mismatch',
-            details=f'{len(gm_arr)} vs {len(gpd_s)}',  # type: ignore[arg-type]
-        )
-    if len(gm_arr) != 10_000:  # type: ignore[arg-type]
-        raise OracleMismatch(
-            'from_arrow binary_view expected 10k rows',
-            details=str(len(gm_arr)),  # type: ignore[arg-type]
-        )
-    gm_miss = np.asarray(gm_arr.is_missing)  # type: ignore[union-attr]
-    if gm_miss.any() or np.asarray(gpd_s.isna()).any():  # type: ignore[union-attr]
-        raise OracleMismatch('from_arrow binary_view fixture must have no nulls')
-    crs = getattr(gm_arr, 'crs', None)
-    epsg = crs.to_epsg() if crs is not None and hasattr(crs, 'to_epsg') else None
-    if epsg != 32634:
-        raise OracleMismatch('from_arrow binary_view CRS not 32634', details=repr(epsg))
-    for i, (g, s) in enumerate(zip(gm_arr, gpd_s, strict=True)):  # type: ignore[arg-type]
-        if g is None or s is None:
-            raise OracleMismatch(f'from_arrow binary_view unexpected null row={i}')
-        ga = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
-        if type(ga).__name__ != type(s).__name__:
-            raise OracleMismatch(
-                f'from_arrow binary_view type mismatch row={i}',
-                details=f'{type(ga).__name__} vs {type(s).__name__}',
-            )
-        if not bool(shapely.equals(_as_shapely(ga), _as_shapely(s))):
-            raise OracleMismatch(f'from_arrow binary_view geometry mismatch row={i}')
-
-
-def build_from_arrow_binary_view() -> PublicCase:
-    arrow = arrow_binary_view_mixed_ewkb_10k()
-
-    def gometry_call():
-        import gometry as gm
-
-        return gm.from_arrow(arrow)
-
-    def competitor_call():
-        import geopandas as gpd
-
-        return gpd.GeoSeries.from_arrow(arrow)
-
-    _reg('gometry.from_arrow.binary_view/10k_mixed_ewkb', gometry_call)
-    _reg(
-        'geopandas.GeoSeries.from_arrow.binary_view/10k_mixed_ewkb',
-        competitor_call,
-    )
-    return _case(
-        gometry_call,
-        competitor_call,
-        _compare_from_arrow_binary_view,
         kind='rowwise_geometry_exact',
     )
 
@@ -915,7 +820,7 @@ def build_contains_xy() -> PublicCase:
         gometry_call,
     )
     _reg(
-        'shapely.prepare.contains_xy/100k_probes_1316_vertex_polygon',
+        'shapely.contains_xy.prepared/100k_probes_1316_vertex_polygon',
         competitor_call,
     )
     return _case(
@@ -951,8 +856,8 @@ def build_intersects_polygon_points() -> PublicCase:
             if values.size == 0 or not np.all(values == expected):
                 raise OracleMismatch('intersects category coverage', details=category)
 
-    _reg('gometry.intersects/irregular_polygon_point_array', gometry_call)
-    _reg('shapely.intersects/irregular_polygon_point_array', competitor_call)
+    _reg('gometry.intersects/12k_irregular_polygon_point_array', gometry_call)
+    _reg('shapely.intersects/12k_irregular_polygon_point_array', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1012,6 +917,42 @@ def build_area() -> PublicCase:
         compare,
         kind='metric_allclose',
         unit='m2',
+    )
+
+
+def build_bounds() -> PublicCase:
+    gm_buildings = buildings_10k_gometry()
+    sh_buildings = buildings_10k_shapely()
+
+    def gometry_call():
+        return gm_buildings.bounds
+
+    def competitor_call():
+        import shapely
+
+        return shapely.bounds(sh_buildings)
+
+    def compare(left: object, right: object | None, context: OracleContext) -> None:
+        if right is None:
+            raise OracleMismatch('bounds requires competitor')
+        a = np.asarray(left)
+        b = np.asarray(right)
+        if a.dtype != np.float64 or b.dtype != np.float64:
+            raise OracleMismatch('bounds requires float64 output', details=f'{a.dtype} vs {b.dtype}')
+        if a.shape != (10_000, 4) or b.shape != (10_000, 4):
+            raise OracleMismatch('bounds shape mismatch', details=f'{a.shape} vs {b.shape}')
+        if np.isnan(a).any() or np.isnan(b).any():
+            raise OracleMismatch('bounds projected buildings unexpectedly masked')
+        exact_coordinates(a, b, context, rtol=0.0, atol=0.0)
+
+    _reg('gometry.bounds/10k_projected_buildings', gometry_call)
+    _reg('shapely.bounds/10k_projected_buildings', competitor_call)
+    return _case(
+        gometry_call,
+        competitor_call,
+        compare,
+        kind='float64_bounds',
+        unit='m',
     )
 
 
@@ -1222,6 +1163,141 @@ def build_repair() -> PublicCase:
     )
 
 
+def _compare_clip_by_rect(
+    left: object, right: object | None, context: OracleContext
+) -> None:
+    if right is None:
+        raise OracleMismatch('clip_by_rect requires competitor')
+    left_rows = _as_geom_rows(left)
+    right_rows = _as_geom_rows(right)
+    if len(left_rows) != 10_000 or len(right_rows) != 10_000:
+        raise OracleMismatch(
+            'clip_by_rect row alignment mismatch',
+            details=f'{len(left_rows)} vs {len(right_rows)}',
+        )
+    for i, (lg, rg) in enumerate(zip(left_rows, right_rows, strict=True)):
+        if lg is None or rg is None:
+            raise OracleMismatch(f'clip_by_rect unexpected missing row={i}')
+        left_kind = getattr(lg, 'geometry_type', None) or getattr(lg, 'geom_type', None)
+        right_kind = getattr(rg, 'geometry_type', None) or getattr(rg, 'geom_type', None)
+        import shapely
+
+        # Shapely represents an empty clipped line as GeometryCollection while
+        # gometry preserves the subject type.  The non-empty rows still require
+        # exact kind parity; empty topology is the meaningful contract here.
+        if bool(shapely.is_empty(_as_shapely(lg))) and bool(shapely.is_empty(rg)):
+            continue
+        if str(left_kind).lower().replace(' ', '') != str(right_kind).lower().replace(' ', ''):
+            raise OracleMismatch(
+                f'clip_by_rect type mismatch row={i}',
+                details=f'{left_kind!r} vs {right_kind!r}',
+            )
+    geometry_equivalent(left_rows, right_rows, context, rtol=1e-9, atol=1e-8)
+
+
+def build_clip_by_rect() -> PublicCase:
+    data = clip_linework_10k()
+
+    def gometry_call():
+        return data['gm'].clip_by_rect(0.0, 0.0, 1.0, 1.0)
+
+    def competitor_call():
+        import shapely
+
+        return shapely.clip_by_rect(data['sh'], 0.0, 0.0, 1.0, 1.0)
+
+    def precondition() -> None:
+        result = _as_geom_rows(gometry_call())
+        if len(result) != 10_000:
+            raise OracleMismatch('clip_by_rect precondition lost row alignment')
+        categories = data['categories']
+        counts = dict.fromkeys(('crossing', 'inside', 'outside'), 0)
+        for i, (category, source, clipped) in enumerate(
+            zip(categories, data['gm'], result, strict=True)
+        ):
+            counts[category] += 1
+            if clipped is None:
+                raise OracleMismatch(f'clip_by_rect returned missing row={i}')
+            source_sh = _as_shapely(source)
+            clipped_sh = _as_shapely(clipped)
+            import shapely
+
+            if category == 'crossing':
+                if bool(shapely.is_empty(clipped_sh)) or bool(shapely.equals(source_sh, clipped_sh)):
+                    raise OracleMismatch(
+                        'clip_by_rect crossing category was not clipped',
+                        details=f'row={i}',
+                    )
+            elif category == 'inside':
+                if bool(shapely.is_empty(clipped_sh)):
+                    raise OracleMismatch(
+                        'clip_by_rect inside category became empty', details=f'row={i}'
+                    )
+            elif not bool(shapely.is_empty(clipped_sh)):
+                raise OracleMismatch(
+                    'clip_by_rect outside category was not empty', details=f'row={i}'
+                )
+        if counts != {'crossing': 4_000, 'inside': 4_000, 'outside': 2_000}:
+            raise OracleMismatch('clip_by_rect category distribution drifted', details=repr(counts))
+
+    _reg('gometry.clip_by_rect/10k_realistic_linework_categories', gometry_call)
+    _reg('shapely.clip_by_rect/10k_realistic_linework_categories', competitor_call)
+    return _case(
+        gometry_call,
+        competitor_call,
+        _compare_clip_by_rect,
+        kind='rowwise_clip_topology',
+        preconditions=(precondition,),
+    )
+
+
+def build_point_on_surface() -> PublicCase:
+    gm_buildings = buildings_10k_gometry()
+    sh_buildings = buildings_10k_shapely()
+
+    def gometry_call():
+        return gm_buildings.point_on_surface()
+
+    def competitor_call():
+        import shapely
+
+        return shapely.point_on_surface(sh_buildings)
+
+    def precondition() -> None:
+        holes = sum(1 for geometry in gm_buildings if len(geometry.interiors) > 0)
+        if holes != 2_000:
+            raise OracleMismatch('point_on_surface holed source count', details=str(holes))
+        if len(gm_buildings) != 10_000:
+            raise OracleMismatch('point_on_surface source count', details=str(len(gm_buildings)))
+        concave = False
+        for geometry in gm_buildings:
+            coords = list(zip(geometry.exterior.coords.x, geometry.exterior.coords.y, strict=True))
+            turns = []
+            for first, second, third in zip(coords, coords[1:], coords[2:], strict=False):
+                turns.append(
+                    (second[0] - first[0]) * (third[1] - second[1])
+                    - (second[1] - first[1]) * (third[0] - second[0])
+                )
+            if any(turn > 0.0 for turn in turns) and any(turn < 0.0 for turn in turns):
+                concave = True
+                break
+        if not concave:
+            raise OracleMismatch('point_on_surface fixture has no concave sources')
+
+    def compare(left: object, right: object | None, context: OracleContext) -> None:
+        non_unique_points_contract(left, right, context, sources=gm_buildings)
+
+    _reg('gometry.point_on_surface/10k_concave_holed_buildings', gometry_call)
+    _reg('shapely.point_on_surface/10k_concave_holed_buildings', competitor_call)
+    return _case(
+        gometry_call,
+        competitor_call,
+        compare,
+        kind='non_unique_points_contract',
+        preconditions=(precondition,),
+    )
+
+
 def build_to_crs() -> PublicCase:
     d = masked_crs_200k()
 
@@ -1320,7 +1396,10 @@ def build_destination() -> PublicCase:
         return gpd.GeoSeries(pts, crs=4326)
 
     _reg('gometry.destination.geodesic/10k_wgs84', gometry_call)
-    _reg('pyproj.Geod.fwd/10k_wgs84', competitor_call)
+    _reg(
+        'pyproj.Geod.fwd+Shapely.points+GeoPandas.GeoSeries/10k_wgs84',
+        competitor_call,
+    )
     return _case(
         gometry_call,
         competitor_call,
@@ -1400,31 +1479,6 @@ def build_h3_compact() -> PublicCase:
         normalized_uint64_set,
         kind='normalized_uint64_set',
         preconditions=(pre,),
-    )
-
-
-def build_s2_cover() -> PublicCase:
-    br = brazil_geometry()
-
-    def gometry_call():
-        import gometry as gm
-
-        return gm.s2_cover(
-            br,
-            cell_rule='overlap',
-            target_cells=256,
-            max_cells=256,
-            min_level=4,
-            max_level=18,
-            level_mod=1,
-        )
-
-    _reg('gometry.s2_cover.adaptive/BR_target256_overlap', gometry_call)
-    return _case(
-        gometry_call,
-        None,
-        _compare_s2_cover,
-        kind='s2_cover_contract',
     )
 
 
@@ -1622,6 +1676,17 @@ def build_index_nearest() -> PublicCase:
         # idx[0]=query indices, idx[1]=tree indices (same layout as query)
         return idx[0], idx[1], dist
 
+    def precondition() -> None:
+        _q, _t, distances = gometry_call()
+        values = np.asarray(distances, dtype=np.float64)
+        if values.shape != (1_000,) or not np.all(np.isfinite(values)):
+            raise OracleMismatch('nearest distance shape/finite precondition failed')
+        if not np.all(values > 0.1):
+            raise OracleMismatch(
+                'nearest probes must be outside buildings with meaningful distances',
+                details=f'min={float(values.min())}',
+            )
+
     _reg('gometry.index.nearest/1k_queries_10k_polygons_k1', gometry_call)
     _reg(
         'shapely.STRtree.query_nearest/1k_queries_10k_polygons_k1',
@@ -1633,6 +1698,7 @@ def build_index_nearest() -> PublicCase:
         _compare_nearest,
         kind='normalized_index_pairs+metric',
         unit='m',
+        preconditions=(precondition,),
     )
 
 
@@ -1673,8 +1739,8 @@ def build_from_geojson() -> PublicCase:
 
         return shapely.get_parts(shapely.from_geojson(text))
 
-    _reg('gometry.real_world.from_geojson/217_countries_2_26mb', gometry_call)
-    _reg('shapely.from_geojson_get_parts/217_countries_2_26mb', competitor_call)
+    _reg('gometry.from_geojson/217_countries_2_26mb', gometry_call)
+    _reg('shapely.from_geojson/217_countries_2_26mb', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1697,7 +1763,7 @@ def build_geodesic_area() -> PublicCase:
         area, _perim = geod.geometry_area_perimeter(coll_sh)
         return abs(area)
 
-    _reg('gometry.real_world.geodesic_area/217_country_collection', gometry_call)
+    _reg('gometry.geodesic_area/217_country_collection', gometry_call)
     _reg(
         'pyproj.Geod.geometry_area_perimeter/217_country_collection',
         competitor_call,
@@ -1725,7 +1791,7 @@ def build_geodesic_length() -> PublicCase:
         return geod.geometry_length(ext_sh)
 
     _reg(
-        'gometry.real_world.geodesic_length/1034_exteriors_16135_vertices',
+        'gometry.geodesic_length/1034_exteriors_16135_vertices',
         gometry_call,
     )
     _reg(
@@ -1748,14 +1814,15 @@ def build_geodesic_length() -> PublicCase:
 BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.from_wkb.batch/10k_mixed_ewkb': build_from_wkb,
     'gometry.from_arrow/100k_mixed_10pct_missing': build_from_arrow,
-    'gometry.from_arrow.binary_view/10k_mixed_ewkb': build_from_arrow_binary_view,
     'gometry.to_wkb.batch/10k_mixed_ewkb': build_to_wkb,
     'gometry.get_coordinates/100k_vertices_with_index': build_get_coordinates,
     'gometry.points/10k_numpy_xy': build_points,
+    'gometry.from_wkt.batch/10k_realistic_mixed_wkt': build_from_wkt,
     'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,
-    'gometry.intersects/irregular_polygon_point_array': build_intersects_polygon_points,
+    'gometry.intersects/12k_irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,
+    'gometry.bounds/10k_projected_buildings': build_bounds,
     'gometry.length/10k_roads_100k_vertices': build_length,
     'gometry.simplify.dp/10k_roads_100k_vertices': build_simplify,
     'gometry.buffer/10k_projected_points': build_buffer,
@@ -1764,13 +1831,14 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.coverage_union/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,
     'gometry.repair.linework/1k_invalid_polygons': build_repair,
+    'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,
+    'gometry.point_on_surface/10k_concave_holed_buildings': build_point_on_surface,
     'gometry.to_crs.masked/200k_points_10pct_missing': build_to_crs,
     'gometry.crs_transform/10k_epsg27700_to4326': build_crs_transform,
     'gometry.distance.geodesic/10k_wgs84_pairs': build_distance_geodesic,
     'gometry.destination.geodesic/10k_wgs84': build_destination,
     'gometry.h3_cover.center/BR_res5_32260_cells': build_h3_cover,
     'gometry.h3_compact/32260_to_1732_cells': build_h3_compact,
-    'gometry.s2_cover.adaptive/BR_target256_overlap': build_s2_cover,
     'gometry.tile_cover.bbox/BR_z10_15340_tiles': build_tile_cover,
     'gometry.index.join.within/10k_pois_217_countries': build_index_join,
     'gometry.join.within/10k_pois_217_countries': build_join_within,
@@ -1778,11 +1846,9 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.index.candidates/1k_queries_10k_polygons': build_index_candidates,
     'gometry.index.nearest/1k_queries_10k_polygons_k1': build_index_nearest,
     'gometry.index.build/10k_polygons': build_index_build,
-    'gometry.real_world.from_geojson/217_countries_2_26mb': build_from_geojson,
-    'gometry.real_world.geodesic_area/217_country_collection': build_geodesic_area,
-    (
-        'gometry.real_world.geodesic_length/1034_exteriors_16135_vertices'
-    ): build_geodesic_length,
+    'gometry.from_geojson/217_countries_2_26mb': build_from_geojson,
+    'gometry.geodesic_area/217_country_collection': build_geodesic_area,
+    'gometry.geodesic_length/1034_exteriors_16135_vertices': build_geodesic_length,
 }
 
 

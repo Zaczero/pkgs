@@ -74,6 +74,23 @@ def _radial_polygon_xy(
     return pts
 
 
+def _building_exterior(
+    cx: float, cy: float, index: int, n_verts: int, radius: float, phase: float
+) -> list[tuple[float, float]]:
+    """Return mixed realistic footprints, including deterministic concave rows."""
+    if index % 7 == 0:
+        r = radius * 0.9
+        return [
+            (cx - r, cy - r),
+            (cx + r, cy - r),
+            (cx + r, cy - r * 0.25),
+            (cx + r * 0.25, cy - r * 0.25),
+            (cx + r * 0.25, cy + r),
+            (cx - r, cy + r),
+        ]
+    return _radial_polygon_xy(cx, cy, n_verts, radius, phase)
+
+
 # ---------------------------------------------------------------------------
 # POINTS / roads / buildings / mixed
 # ---------------------------------------------------------------------------
@@ -174,7 +191,7 @@ def buildings_10k_gometry():
             n_verts = 4 + (i % 9)  # 4..12
             radius = 8.0 + (i % 11)  # 8..18
             phase = 0.17 * i
-            exterior = _radial_polygon_xy(cx, cy, n_verts, radius, phase)
+            exterior = _building_exterior(cx, cy, i, n_verts, radius, phase)
             holes: list[list[tuple[float, float]]] | None = None
             if i % 5 == 0:
                 # reversed 0.25-scale hole (CW if exterior is CCW)
@@ -204,7 +221,7 @@ def buildings_10k_shapely():
             n_verts = 4 + (i % 9)
             radius = 8.0 + (i % 11)
             phase = 0.17 * i
-            exterior = _radial_polygon_xy(cx, cy, n_verts, radius, phase)
+            exterior = _building_exterior(cx, cy, i, n_verts, radius, phase)
             holes = None
             if i % 5 == 0:
                 hole = _radial_polygon_xy(
@@ -304,6 +321,46 @@ def mixed_ewkb_10k() -> np.ndarray:
         return out
 
     return _cached('mixed_ewkb_10k', build)
+
+
+def mixed_wkt_10k() -> tuple[str, ...]:
+    """10k realistic mixed WKT rows: points, lines, polygons, and multipolygons."""
+
+    def build() -> tuple[str, ...]:
+        rows: list[str] = []
+        for i in range(_N10K):
+            kind = i % 10
+            x = 500_000.0 + 20.0 * (i % 200)
+            y = 5_200_000.0 + 20.0 * (i // 200)
+            if kind < 4:
+                rows.append(f'POINT ({x:.3f} {y:.3f})')
+            elif kind < 7:
+                rows.append(
+                    'LINESTRING '
+                    f'({x:.3f} {y:.3f}, {x + 15.0:.3f} {y + 3.0:.3f}, '
+                    f'{x + 30.0:.3f} {y + 1.0:.3f})'
+                )
+            elif kind < 9:
+                rows.append(
+                    'POLYGON '
+                    f'(({x:.3f} {y:.3f}, {x + 10.0:.3f} {y:.3f}, '
+                    f'{x + 8.0:.3f} {y + 8.0:.3f}, {x:.3f} {y + 10.0:.3f}, '
+                    f'{x:.3f} {y:.3f}))'
+                )
+            else:
+                rows.append(
+                    'MULTIPOLYGON '
+                    f'((({x:.3f} {y:.3f}, {x + 5.0:.3f} {y:.3f}, '
+                    f'{x + 5.0:.3f} {y + 5.0:.3f}, {x:.3f} {y + 5.0:.3f}, '
+                    f'{x:.3f} {y:.3f})), '
+                    f'(({x + 10.0:.3f} {y + 10.0:.3f}, {x + 15.0:.3f} {y + 10.0:.3f}, '
+                    f'{x + 15.0:.3f} {y + 15.0:.3f}, {x + 10.0:.3f} {y + 15.0:.3f}, '
+                    f'{x + 10.0:.3f} {y + 10.0:.3f})))'
+                )
+        assert len(rows) == _N10K
+        return tuple(rows)
+
+    return _cached('mixed_wkt_10k', build)
 
 
 def arrow_binary_view_mixed_ewkb_10k():
@@ -505,6 +562,40 @@ def intersects_polygon_and_points():
         }
 
     return _cached('intersects_polygon_points', build)
+
+
+def clip_linework_10k():
+    """Linework crossing, inside, and outside a unit clipping rectangle."""
+
+    def build():
+        import gometry as gm
+        import shapely
+
+        gm_rows: list[Any] = []
+        sh_rows: list[Any] = []
+        categories: list[str] = []
+        for i in range(_N10K):
+            phase = (i % 100) / 100.0
+            y = 0.1 + 0.8 * phase
+            if i < 4_000:
+                category = 'crossing'
+                coords = [(-1.0, y), (0.5, min(0.95, y + 0.1)), (2.0, y)]
+            elif i < 8_000:
+                category = 'inside'
+                coords = [(0.1, y), (0.5, min(0.95, y + 0.1)), (0.9, y)]
+            else:
+                category = 'outside'
+                coords = [(2.0, y), (2.5, min(0.95, y + 0.1)), (3.0, y)]
+            gm_rows.append(gm.LineString(coords, crs=_CRS_UTM))
+            sh_rows.append(shapely.LineString(coords))
+            categories.append(category)
+        return {
+            'gm': gm.GeometryArray(gm_rows, crs=_CRS_UTM),
+            'sh': np.asarray(sh_rows, dtype=object),
+            'categories': tuple(categories),
+        }
+
+    return _cached('clip_linework_10k', build)
 
 
 def geohash_encode_inputs():
@@ -965,7 +1056,7 @@ def index_query_boxes_1k():
 
 
 def index_nearest_queries_1k():
-    """1k points guaranteed unique nonintersecting nearest building."""
+    """1k points outside distinct buildings with positive nearest distances."""
 
     def build():
         import gometry as gm
@@ -975,12 +1066,14 @@ def index_nearest_queries_1k():
         gm_q: list[gm.Geometry] = []
         sh_q: list[Any] = []
         for i in range(1000):
-            # pick 1000 distinct buildings from the 10k grid
+            # Pick 1000 distinct buildings from the 10k grid.  The 25 m offset
+            # is outside every footprint (including the largest radial rows),
+            # while remaining closer than the neighbouring 50 m cell.
             bi = i * 10  # stride through grid
             col = bi % 100
             row = bi // 100
-            cx = 500_000.0 + 50.0 * col + 0.5  # slight offset inside footprint
-            cy = 5_200_000.0 + 50.0 * row + 0.5
+            cx = 500_000.0 + 50.0 * col + 25.0
+            cy = 5_200_000.0 + 50.0 * row
             gm_q.append(gm.Point(cx, cy))
             sh_q.append(shapely.Point(cx, cy))
         return {
