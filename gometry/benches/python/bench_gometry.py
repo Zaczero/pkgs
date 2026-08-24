@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import gometry as gm
-from _bench_config import queue_selected_benchmarks
 from _bench_config import runner as bench_runner
 
 POINT_COUNT = 10000
@@ -660,7 +659,6 @@ def main() -> None:
     runner = bench_runner()
     runner.metadata['project'] = 'gometry'
     runner.metadata['fixture'] = 'deterministic-trig-points'
-    flush_benchmarks = queue_selected_benchmarks(runner, 'gometry')
     runner.bench_func('gometry.points/10k', build_points)
     runner.bench_func('gometry.contains/polygon_points_10k', contains_points)
     # Old point-only precision-7 WKB row removed; public mixed-EWKB supersedes.
@@ -833,15 +831,6 @@ def main() -> None:
     runner.bench_func('gometry.crs_search/120', crs_search)
     runner.bench_func('gometry.crs_exports/120', crs_exports)
     runner.bench_func('gometry.crs_same/120', crs_same)
-    _register_public_release_ops(runner, 'gometry')
-    flush_benchmarks()
-
-
-def _register_public_release_ops(runner: Any, suite: str) -> None:
-    """Register Lane-2 public timed callables (selected rows only; lazy fixtures)."""
-    from _bench_config import register_selected_public_release_ops
-
-    register_selected_public_release_ops(runner, suite)
 
 
 if __name__ == '__main__':

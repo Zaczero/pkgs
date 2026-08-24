@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import shapely
 import gometry as gm
-from _bench_config import queue_selected_benchmarks
 from _bench_config import runner as bench_runner
 from _bench_real_world_layers import (
     country_boundary_lines,
@@ -118,7 +117,6 @@ def main() -> None:
     runner = bench_runner()
     runner.metadata['project'] = 'gometry'
     runner.metadata['fixture'] = 'osm-countries-0-1'
-    flush_benchmarks = queue_selected_benchmarks(runner, 'real_world')
     runner.bench_func(
         f'gometry.real_world.from_geojson/{COUNTRY_LABEL}',
         gometry_from_geojson,
@@ -185,15 +183,6 @@ def main() -> None:
         f'shapely.real_world.length_lines/{COUNTRY_LABEL}',
         shapely_length_lines,
     )
-    _register_public_release_ops(runner, 'real_world')
-    flush_benchmarks()
-
-
-def _register_public_release_ops(runner: Any, suite: str) -> None:
-    """Register Lane-2 public timed callables (selected rows only; lazy fixtures)."""
-    from _bench_config import register_selected_public_release_ops
-
-    register_selected_public_release_ops(runner, suite)
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ Domain = Literal[
     'Discrete global grids',
     'Spatial index',
 ]
-Suite = Literal['gometry', 'competitors', 'real_world']
+Suite = Literal['competitors']
 Footnote = Literal['geodesic', 'in_core', 'batched', 'noisy']
 
 DOMAIN_ORDER: tuple[Domain, ...] = (
@@ -325,24 +325,17 @@ class Profile:
         return _suite_rows(self.operations, suite)
 
     @property
-    def gometry(self) -> tuple[str, ...]:
-        return self.rows('gometry')
-
-    @property
     def competitors(self) -> tuple[str, ...]:
         return self.rows('competitors')
-
-    @property
-    def real_world(self) -> tuple[str, ...]:
-        return self.rows('real_world')
 
 
 RELEASE = Profile(
     sampling_args=(
         '--processes', '6', '--values', '5', '--warmups', '2', '--min-time', '0.1',
     ),
-    # AB and BA each use three processes.  Each process contains both rows, so
-    # the normalized statistic has one independent ratio per process/artifact.
+    # AB and BA each use three processes.  The two rows are separate pyperf
+    # benchmarks; normalized evidence matches their process ordinals within
+    # each artifact and emits one independent ratio per process/artifact.
     paired_sampling_args=(
         '--processes', '3', '--values', '5', '--warmups', '2', '--min-time', '0.1',
     ),
@@ -362,13 +355,6 @@ SMOKE = dataclasses.replace(
 )
 
 PROFILES = {'smoke': SMOKE, 'release': RELEASE}
-# Keep the legacy worker names available for direct non-public probes.  The
-# public release matrix is all in the competitor worker and has no real-world
-# publication side lane.
-SUITES = ('gometry', 'competitors', 'real_world')
-SCRIPTS = {
-    'gometry': 'bench_gometry.py',
-    'competitors': 'bench_competitors.py',
-    'real_world': 'bench_real_world.py',
-}
+SUITES = ('competitors',)
+SCRIPTS = {'competitors': 'bench_competitors.py'}
 CHUNK_SIZE = 40

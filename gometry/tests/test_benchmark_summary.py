@@ -23,6 +23,9 @@ def _stats(name: str, median: float) -> sb.BenchStats:
         stdev=0.0,
         nrun=1,
         samples=1,
+        processes=(
+            sb.ProcessSample('unit.json', 0, (median,), median, 'unit', 'ab'),
+        ),
     )
 
 
@@ -64,6 +67,63 @@ def test_common_process_drift_cancels_in_paired_ratios() -> None:
     ) == [2.0, 2.0, 2.0]
 
 
+def _process_stats(
+    name: str,
+    *,
+    artifact: str = 'pair.json',
+    pair_id: str | None = 'pair-1',
+    lead: str | None = 'ab',
+    count: int = 2,
+) -> sb.BenchStats:
+    processes = tuple(
+        sb.ProcessSample(
+            artifact,
+            index,
+            (1.0, 1.0),
+            1.0,
+            pair_id,
+            lead,
+        )
+        for index in range(count)
+    )
+    return sb.BenchStats(
+        name=name,
+        mean=1.0,
+        median=1.0,
+        stdev=0.0,
+        nrun=count,
+        samples=count * 2,
+        processes=processes,
+    )
+
+
+@pytest.mark.parametrize(
+    'mutation,match',
+    [
+        (lambda _left, right: _process_stats(right.name, count=1), 'identity mismatch'),
+        (lambda _left, right: _process_stats(right.name, pair_id=None), 'missing pair_id'),
+        (lambda _left, right: _process_stats(right.name, lead=None), 'missing pair lead'),
+        (lambda _left, right: _process_stats(right.name, pair_id='other'), 'pair_id mismatch'),
+        (lambda _left, right: _process_stats(right.name, lead='ba'), 'pair lead mismatch'),
+    ],
+)
+def test_artifact_process_pairing_rejects_metadata_and_key_mutations(
+    mutation, match: str
+) -> None:
+    left = _process_stats('gometry.op/10k')
+    right = mutation(left, _process_stats('shapely.op/10k'))
+    with pytest.raises(SystemExit, match=match):
+        sb._paired_blocks(left, right)
+
+
+def test_public_rows_reject_synthetic_fallback_without_raw_processes() -> None:
+    meta = _meta()
+    left = sb.BenchStats(meta.gometry, 1.0, 1.0, 0.0, 1, 1)
+    right = sb.BenchStats(meta.competitor, 2.0, 2.0, 0.0, 1, 1)
+    with pytest.raises(SystemExit, match='synthetic blocks are not publishable'):
+        sb._build_rows([meta], {meta.gometry: left, meta.competitor: right}, noise_band=0.03)
+
+
 @pytest.mark.parametrize(
     'interval,expected',
     [
@@ -92,12 +152,36 @@ def test_render_has_compact_accessible_status_and_no_aggregate_claims() -> None:
         blocks=(),
         status='faster',
     )
-    text = '\n'.join(sb.render([row], markdown=True, publishable=True))
+    text = '\n'.join(sb.render(
+        [row],
+        markdown=True,
+        publishable=True,
+        environment={
+            'cpu': 7,
+            'cpu_source': 'kernel-isolated',
+            'kernel': '6.1',
+            'python': '3.14.7',
+            'gometry_version': '0.1',
+            'git_commit': 'deadbeef',
+            'geos_version': '3.13.0',
+            'proj_version': '9.5.0',
+            'package_versions': {'numpy': '2.0', 'shapely': '2.1'},
+        },
+    ))
+    from markdown import markdown
+
+    html = markdown(text, extensions=['tables', 'md_in_html'])
     assert '| API / input | gometry | Comparator | Relative |' in text
     assert 'Shapely · 2.00 ms' in text
     assert '2.00× faster' in text  # noqa: RUF001 — product glyph
     assert 'benchmark-status benchmark-faster' in text
     assert 'benchmark-table-scroll' in text
+    assert 'markdown="1"' in text
+    assert '<table>' in html
+    assert '| API / input |' not in html
+    assert 'CPU `7`' in text
+    assert 'numpy 2.0, shapely 2.1' in text
+    assert 'GEOS 3.13.0; PROJ 9.5.0' in text
     assert '95%' not in text
     assert 'Geomean' not in text
     assert 'Overall' not in text
@@ -133,6 +217,12 @@ def test_summary_retains_process_identity_blocks() -> None:
     payload = {
         'profile': 'release',
         'publishable': True,
+        'timestamp': '20260824T120000Z',
+        'sampling_args': ['--processes', '6'],
+        'paired_sampling_args': ['--processes', '3'],
+        'row_timeout_seconds': 60,
+        'command_timeout_seconds': 900,
+        'total_timeout_seconds': 2400,
         'public_operations': [{
             'domain': meta.domain,
             'label': meta.label,
@@ -153,6 +243,9 @@ def test_summary_retains_process_identity_blocks() -> None:
     assert len(operation['blocks']) == 2
     assert operation['blocks'][0]['process_index'] == 0
     assert operation['blocks'][0]['pair_id'] == 'pair-1'
+    assert normalized['run']['timestamp'] == '20260824T120000Z'
+    assert normalized['sampling']['paired_sampling_args'] == ['--processes', '3']
+    assert normalized['methodology']['bootstrap_samples'] == sb.BOOTSTRAP_SAMPLES
     assert 'geomean' not in normalized
     assert 'winner' not in json_keys(normalized)
 

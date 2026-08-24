@@ -1,4 +1,4 @@
-"""Shared pyperf setup for the three benchmark suites."""
+"""Shared pyperf setup for benchmark workers."""
 
 from __future__ import annotations
 

@@ -31,9 +31,7 @@ pair_units = _bench_pairs.pair_units
 
 
 EXPECTED_RELEASE_SCRIPTS = {
-    'gometry': 'bench_gometry.py',
     'competitors': 'bench_competitors.py',
-    'real_world': 'bench_real_world.py',
 }
 
 
@@ -72,8 +70,7 @@ def test_all_public_rows_are_unique_and_fully_paired() -> None:
     assert len(names) == len(set(names)) == 74
     assert len({op.competitor for op in RELEASE_OPERATIONS}) == 37
     assert len(RELEASE.rows('competitors')) == 74
-    assert RELEASE.rows('gometry') == ()
-    assert RELEASE.rows('real_world') == ()
+    assert _bench_registry.SUITES == ('competitors',)
     assert all(len(unit) == 2 for unit in pair_units(RELEASE.rows('competitors'), suite='competitors'))
 
 

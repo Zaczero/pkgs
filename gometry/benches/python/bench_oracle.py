@@ -34,7 +34,7 @@ from _bench_oracles import (
 )
 from _bench_registry import RELEASE_OPERATIONS, ReleaseOperation
 
-# Lane 2: register the 32 public PairCase builders (side-effect import).
+# Register the public PairCase builders (side-effect import).
 import _bench_public_cases as _public_cases  # noqa: F401
 
 

@@ -98,16 +98,15 @@ class OracleMismatch(Exception):  # noqa: N818 — spec name; not an Error suffi
         self.details = details
 
 
-# Lane 2 seam: register one builder per gometry row name on this dict
-# (or call ``register_public_builders``). Keys must be RELEASE_OPERATIONS
-# gometry names. Lane 1 leaves the map empty; helpers are tested directly.
+# Register one builder per gometry row name on this dict (or call
+# ``register_public_builders``). Keys must be RELEASE_OPERATIONS gometry names.
 PUBLIC_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
 
 
 def register_public_builders(
     builders: dict[str, Callable[[], PairCase]],
 ) -> None:
-    """Lane 2 entry point: merge suite builders into the shared map."""
+    """Merge public suite builders into the shared map."""
     PUBLIC_CASE_BUILDERS.update(builders)
 
 

@@ -23,8 +23,35 @@ BUILD_INPUT_PATHS = (
     '.cargo/config.toml',
     'Cargo.toml',
     'Cargo.lock',
-    'uv.lock',
 )
+
+DEBUG_ASSERTION_MARKER = b'vendor base-cell partition changed'
+
+
+def _debug_assertion_marker_count(payload: bytes) -> int:
+    return payload.count(DEBUG_ASSERTION_MARKER)
+
+
+def _extension_profile_evidence(payload: bytes) -> dict[str, Any]:
+    count = _debug_assertion_marker_count(payload)
+    return {
+        'debug_assertion_marker': DEBUG_ASSERTION_MARKER.decode('ascii'),
+        'debug_assertion_marker_count': count,
+        'profile_evidence_method': 'extension_bytes_marker_scan',
+        'profile_evidence': (
+            'debug_assertion_marker_present'
+            if count
+            else 'debug_assertion_marker_absent'
+        ),
+        'debug_build': count > 0,
+        'release_build': count == 0,
+    }
+
+
+def selected_cpu_governor(
+    frequency_state: dict[str, dict[str, str | None]], cpu: int
+) -> str | None:
+    return frequency_state[str(cpu)]['governor']
 
 
 def _run(args: list[str], cwd: Path = GOMETRY_ROOT) -> str | None:
@@ -110,19 +137,15 @@ def _extension_identity() -> dict[str, Any]:
         import gometry._lib as lib
 
         path = Path(lib.__file__).resolve()
+        payload = path.read_bytes()
         path_text = str(path)
-        debug = (
-            '/target/debug/' in path_text
-            or path.parent.name == 'debug'
-            or '/debug/' in path_text
-        )
         tied_to_checkout = path.is_file() and GOMETRY_ROOT in path.parents
+        profile = _extension_profile_evidence(payload)
         return {
             'path': path_text,
-            'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            'sha256': hashlib.sha256(payload).hexdigest(),
             'size_bytes': path.stat().st_size,
-            'debug_build': debug,
-            'release_build': not debug,
+            **profile,
             'tied_to_checkout': tied_to_checkout,
         }
     except (ImportError, OSError, AttributeError) as exc:
@@ -130,6 +153,10 @@ def _extension_identity() -> dict[str, Any]:
             'path': None,
             'sha256': None,
             'size_bytes': None,
+            'debug_assertion_marker': DEBUG_ASSERTION_MARKER.decode('ascii'),
+            'debug_assertion_marker_count': None,
+            'profile_evidence_method': 'extension_unavailable',
+            'profile_evidence': 'extension_unavailable',
             'debug_build': None,
             'release_build': False,
             'tied_to_checkout': False,
@@ -388,13 +415,12 @@ _PREFIX_PACKAGE: dict[str, str] = {
 def packages_required_by_operations(operations: Any) -> set[str]:
     """Derive required import names from selected public operations.
 
-    Always includes gometry/numpy/pyperf. Internal-only packages such as
-    s2sphere are required only when a selected competitor row names them —
-    the public S2 gometry-only row does not pull s2sphere in.
+    Always includes gometry/numpy/pyperf. Optional competitor packages are
+    required only when a selected public row names them.
     """
     required = {'gometry', 'numpy', 'pyperf'}
     if operations is None:
-        # Standalone doctor / full public RELEASE surface (no s2sphere).
+        # Standalone doctor / full public RELEASE surface.
         required.update({
             'shapely',
             'pyproj',
@@ -402,6 +428,7 @@ def packages_required_by_operations(operations: Any) -> set[str]:
             'geopandas',
             'pyarrow',
             'mercantile',
+            'pygeohash',
         })
         return required
     for op in operations:
@@ -471,10 +498,11 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         hard_failures.append(
             'gometry or its workspace Cargo build inputs have uncommitted changes'
         )
-    if not uv_lock['sha256']:
-        hard_failures.append('uv.lock is missing; release identity cannot be tied to a lock')
     if extension['debug_build'] is True:
-        hard_failures.append('loaded gometry extension is a debug build')
+        hard_failures.append(
+            'loaded gometry extension contains the debug assertion marker '
+            f'({extension["debug_assertion_marker_count"]} occurrences)'
+        )
     if not extension['release_build']:
         hard_failures.append('loaded gometry extension has no release-build evidence')
     if not extension['tied_to_checkout']:
@@ -485,17 +513,13 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         hard_failures.append('git commit identity is unavailable')
     if not metadata['source_inputs_sha256']:
         hard_failures.append('relevant source/build input digest is unavailable')
-    if metadata['cpu_governor'] not in {None, 'performance'}:
-        hard_failures.append(
-            f"CPU governor is {metadata['cpu_governor']!r}, not 'performance'"
-        )
     non_performance = {
         cpu: value['governor']
         for cpu, value in frequencies.items()
         if value['governor'] not in {None, 'performance'}
     }
     if non_performance:
-        hard_failures.append(
+        warnings.append(
             f'non-performance governors in the allowed CPU set: {non_performance}'
         )
     required = packages_required_by_operations(operations)
@@ -517,6 +541,14 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
                 hard_failures.append(
                     f'competitor package {package!r} ({display}) is not importable'
                 )
+        elif not info['version']:
+            hard_failures.append(
+                f'package {package!r} has no installed distribution version'
+            )
+    if {'shapely', 'geopandas'} & required and not metadata['geos_version']:
+        hard_failures.append('GEOS version is unavailable for the selected benchmark packages')
+    if {'pyproj', 'geopandas'} & required and not metadata['proj_version']:
+        hard_failures.append('PROJ version is unavailable for the selected benchmark packages')
     return {
         'metadata': metadata,
         'warnings': warnings,

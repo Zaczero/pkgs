@@ -35,7 +35,12 @@ from _bench_registry import (
     ReleaseOperation,
     expand_filter_to_pairs,
 )
-from bench_doctor import collect, collect_contention, select_benchmark_cpu
+from bench_doctor import (
+    collect,
+    collect_contention,
+    select_benchmark_cpu,
+    selected_cpu_governor,
+)
 
 
 def _serialize_public_operations(
@@ -104,16 +109,16 @@ def _chunks(rows: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
 
 
 def _validate_release_manifest(profile: Profile) -> None:
-    for suite in ('competitors', 'real_world'):
-        unpaired = [
-            unit[0]
-            for unit in pair_units(profile.rows(suite), suite=suite)
-            if len(unit) != 2
-        ]
-        if unpaired:
-            raise SystemExit(
-                f'{suite} release manifest has unpaired rows: ' + ', '.join(unpaired)
-            )
+    suite = 'competitors'
+    unpaired = [
+        unit[0]
+        for unit in pair_units(profile.rows(suite), suite=suite)
+        if len(unit) != 2
+    ]
+    if unpaired:
+        raise SystemExit(
+            f'{suite} release manifest has unpaired rows: ' + ', '.join(unpaired)
+        )
 
 
 def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
@@ -296,7 +301,7 @@ def _benchmark_plans(
     plans: list[dict[str, Any]] = []
     outputs: dict[str, list[Path]] = {suite: [] for suite in selected}
     for suite, rows in selected.items():
-        comparative = profile_name == 'release' and suite != 'gometry'
+        comparative = profile_name == 'release'
         if comparative:
             units = pair_units(rows, suite=suite)
             scheduled = []
@@ -436,6 +441,7 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         'isolated_cpus',
         'selected_cpu',
         'selected_cpu_source',
+        'selected_cpu_governor',
         'cpu_frequency_state',
     )
     missing = [key for key in required if key not in metadata]
@@ -445,23 +451,20 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
             + ', '.join(missing)
         )
     extension = metadata['extension']
-    lock = metadata['uv_lock']
     if (
         not isinstance(extension, dict)
         or not extension.get('path')
         or not extension.get('sha256')
         or not extension.get('size_bytes')
+        or extension.get('debug_assertion_marker_count') is None
+        or not extension.get('profile_evidence_method')
+        or not extension.get('profile_evidence')
     ):
         raise SystemExit('publication rejected: extension path/digest/size is missing')
     if extension.get('debug_build') is not False or not extension.get('tied_to_checkout'):
         raise SystemExit('publication rejected: extension is debug or not tied to checkout')
-    if (
-        not isinstance(lock, dict)
-        or not lock.get('path')
-        or not lock.get('sha256')
-        or not lock.get('size_bytes')
-    ):
-        raise SystemExit('publication rejected: uv.lock digest is missing')
+    if not isinstance(metadata['uv_lock'], dict):
+        raise SystemExit('publication rejected: uv.lock identity metadata is malformed')
     if not metadata.get('git_commit') or not metadata.get('source_inputs_sha256'):
         raise SystemExit('publication rejected: source commit/input identity is missing')
     packages = metadata['packages']
@@ -481,6 +484,10 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
             'publication rejected: missing package versions: '
             + ', '.join(missing_versions)
         )
+    if not metadata.get('geos_version'):
+        raise SystemExit('publication rejected: GEOS version is missing')
+    if not metadata.get('proj_version'):
+        raise SystemExit('publication rejected: PROJ version is missing')
     hard_failures = doctor.get('hard_failures', ())
     if hard_failures:
         raise SystemExit(
@@ -571,7 +578,14 @@ def publish_current_run(
     summary = normalized_summary_payload(result, stats)
     parsed_operations = _parse_public_operations(result['public_operations'])
     rows = _build_rows(parsed_operations, stats, noise_band=0.03)
-    summary_md = '\n'.join(render(rows, markdown=True, publishable=True)) + '\n'
+    summary_md = '\n'.join(
+        render(
+            rows,
+            markdown=True,
+            publishable=True,
+            environment=summary.get('environment'),
+        )
+    ) + '\n'
 
     stage = Path(tempfile.mkdtemp(prefix='.publication-', dir=output_dir))
     try:
@@ -617,6 +631,7 @@ def publish_current_run(
                 for key in (
                     'cpu_model', 'cpu_governor', 'cpu_affinity',
                     'isolated_cpus', 'selected_cpu', 'selected_cpu_source',
+                    'selected_cpu_governor',
                     'cpu_frequency_state',
                 )
             },
@@ -822,8 +837,7 @@ def main() -> None:
         'command': _oracle_command(selected),
         'output': None,
     }
-    # Doctor package requirements follow the selected public operations so an
-    # internal-only dependency (e.g. s2sphere) never blocks the public S2-only row.
+    # Doctor package requirements follow the selected public operations.
     selected_ops = tuple(
         op
         for op in profile.operations
@@ -834,7 +848,19 @@ def main() -> None:
     doctor = collect(operations=selected_ops)
     doctor['metadata']['selected_cpu'] = cpu
     doctor['metadata']['selected_cpu_source'] = cpu_selection
+    frequency_state = doctor['metadata']['cpu_frequency_state']
+    selected_governor = (
+        selected_cpu_governor(frequency_state, cpu)
+        if str(cpu) in frequency_state
+        else None
+    )
+    doctor['metadata']['selected_cpu_governor'] = selected_governor
     hard_failures = list(doctor.get('hard_failures', ()))
+    if args.profile == 'release' and selected_governor not in {None, 'performance'}:
+        hard_failures.append(
+            f"selected benchmark CPU governor is {selected_governor!r}, "
+            f"not 'performance': cpu={cpu}"
+        )
     if args.profile == 'release' and cpu_selection.endswith('not-isolated'):
         hard_failures.append(
             'release timing CPU is not kernel-isolated: '

@@ -367,7 +367,8 @@ def arrow_binary_view_mixed_ewkb_10k():
     """10k mixed EWKB values in a GeoArrow WKB ``binary_view`` array (no nulls).
 
     Storage is ``pa.binary_view()`` with ``geoarrow.wkb`` extension metadata and
-    EPSG:32634 — the public BinaryView from_arrow release fixture.
+    EPSG:32634 — retained for the focused BinaryView interoperability case,
+    not the public release matrix.
     """
 
     def build():

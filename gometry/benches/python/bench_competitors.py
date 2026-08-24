@@ -3857,7 +3857,7 @@ def main() -> None:
 
 
 def _register_public_release_ops(runner: Any, suite: str) -> None:
-    """Register Lane-2 public timed callables (selected rows only; lazy fixtures)."""
+    """Register selected public timed callables with lazy fixtures."""
     from _bench_config import register_selected_public_release_ops
 
     register_selected_public_release_ops(runner, suite)

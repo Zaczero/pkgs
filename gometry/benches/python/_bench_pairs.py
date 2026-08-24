@@ -97,24 +97,6 @@ def find_competitor(gometry_name: str, available: set[str]) -> str | None:
     return None
 
 
-def find_real_world_competitor(gometry_name: str, available: set[str]) -> str | None:
-    """Resolve a real-world competitor via the public manifest first."""
-    if not gometry_name.startswith(
-        'gometry.real_world.'
-    ) and not gometry_name.startswith('gometry.'):
-        return None
-    op = operation_for_row(gometry_name)
-    if op is not None and op.gometry == gometry_name and op.suite == 'real_world':
-        if op.competitor is not None and op.competitor in available:
-            return op.competitor
-        return None
-    # Internal real-world: legacy shapely.real_world.* suffix pairing
-    if gometry_name.startswith('gometry.real_world.'):
-        candidate = f'shapely.{_suffix(gometry_name)}'
-        return candidate if candidate in available else None
-    return None
-
-
 def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], ...]:
     """Group rows into atomic pair units for pair-aware chunking.
 
@@ -139,10 +121,7 @@ def pair_units(rows: tuple[str, ...], *, suite: str) -> tuple[tuple[str, ...], .
         units.append(ordered)
         used.update(ordered)
 
-    if suite == 'real_world':
-        matcher = find_real_world_competitor
-        driver_prefix = 'gometry.'
-    elif suite == 'competitors':
+    if suite == 'competitors':
         matcher = find_competitor
         driver_prefix = 'gometry.'
     else:

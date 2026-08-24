@@ -377,29 +377,51 @@ def classify_ratio(
 
 
 def _paired_blocks(gometry: BenchStats, competitor: BenchStats) -> tuple[PairedBlock, ...]:
-    left = {(sample.artifact, sample.process_index): sample for sample in gometry.processes}
-    right = {(sample.artifact, sample.process_index): sample for sample in competitor.processes}
-    keys = sorted(left.keys() & right.keys())
-    if not keys:
-        # Synthetic callers without raw process identity still receive a
-        # deterministic one-block statistic, while real artifacts never use it.
-        return (
-            PairedBlock(
-                artifact='synthetic',
-                process_index=0,
-                pair_id=None,
-                lead=None,
-                gometry_median_seconds=gometry.median,
-                competitor_median_seconds=competitor.median,
-                ratio=competitor.median / gometry.median,
-            ),
+    """Match exact artifact/process ordinals and require pair metadata."""
+    if not gometry.processes or not competitor.processes:
+        raise SystemExit(
+            f'paired evidence for {gometry.name} lacks raw process identity; '
+            'synthetic blocks are not publishable'
         )
+    left_keys = [(sample.artifact, sample.process_index) for sample in gometry.processes]
+    right_keys = [(sample.artifact, sample.process_index) for sample in competitor.processes]
+    if len(left_keys) != len(set(left_keys)) or len(right_keys) != len(set(right_keys)):
+        raise SystemExit(f'duplicate artifact/process identity for {gometry.name}')
+    left = dict(zip(left_keys, gometry.processes, strict=True))
+    right = dict(zip(right_keys, competitor.processes, strict=True))
+    if set(left) != set(right):
+        raise SystemExit(
+            f'paired artifact/process identity mismatch for {gometry.name}: '
+            f'gometry={sorted(left)} competitor={sorted(right)}'
+        )
+    keys = sorted(left)
+    for key in keys:
+        left_sample = left[key]
+        right_sample = right[key]
+        if (
+            not isinstance(left_sample.pair_id, str)
+            or not left_sample.pair_id.strip()
+            or not isinstance(right_sample.pair_id, str)
+            or not right_sample.pair_id.strip()
+        ):
+            raise SystemExit(f'missing pair_id for {gometry.name} at {key}')
+        if (
+            not isinstance(left_sample.lead, str)
+            or not left_sample.lead.strip()
+            or not isinstance(right_sample.lead, str)
+            or not right_sample.lead.strip()
+        ):
+            raise SystemExit(f'missing pair lead for {gometry.name} at {key}')
+        if left_sample.pair_id != right_sample.pair_id:
+            raise SystemExit(f'pair_id mismatch for {gometry.name} at {key}')
+        if left_sample.lead != right_sample.lead:
+            raise SystemExit(f'pair lead mismatch for {gometry.name} at {key}')
     return tuple(
         PairedBlock(
             artifact=key[0],
             process_index=key[1],
-            pair_id=left[key].pair_id or right[key].pair_id,
-            lead=left[key].lead or right[key].lead,
+            pair_id=left[key].pair_id,
+            lead=left[key].lead,
             gometry_median_seconds=left[key].median,
             competitor_median_seconds=right[key].median,
             ratio=right[key].median / left[key].median,
@@ -532,11 +554,91 @@ def _used_footnotes(rows: Iterable[OpRow]) -> list[str]:
     ]
 
 
-def render(rows: list[OpRow], *, markdown: bool, publishable: bool) -> list[str]:
+_PACKAGE_HEADER_ORDER = (
+    'numpy', 'pyperf', 'shapely', 'pyproj', 'geopandas',
+    'pyarrow', 'h3', 'mercantile', 'pygeohash',
+)
+
+
+def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
+    doctor = payload.get('doctor')
+    metadata = doctor.get('metadata') if isinstance(doctor, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    packages = metadata.get('packages')
+    package_versions = {
+        name: info.get('version')
+        for name, info in (packages.items() if isinstance(packages, dict) else ())
+        if isinstance(info, dict) and info.get('version')
+    }
+    return {
+        'cpu': metadata.get('selected_cpu', payload.get('selected_cpu')),
+        'cpu_source': metadata.get(
+            'selected_cpu_source', payload.get('selected_cpu_source')
+        ),
+        'kernel': metadata.get('kernel'),
+        'python': metadata.get('python_version', metadata.get('python')),
+        'git_commit': metadata.get('git_commit'),
+        'gometry_version': package_versions.get('gometry'),
+        'geos_version': metadata.get('geos_version'),
+        'proj_version': metadata.get('proj_version'),
+        'package_versions': package_versions,
+    }
+
+
+def _environment_lines(environment: dict[str, Any]) -> list[str]:
+    if not any(environment.values()):
+        return []
+    cpu = environment.get('cpu')
+    cpu_source = environment.get('cpu_source')
+    kernel = environment.get('kernel') or 'unknown'
+    python = environment.get('python') or 'unknown'
+    gometry = environment.get('gometry_version') or 'unknown'
+    commit = environment.get('git_commit') or 'unknown'
+    cpu_text = f'`{cpu}`' if cpu is not None else '`unknown`'
+    if cpu_source:
+        cpu_text += f' ({cpu_source})'
+    package_versions = environment.get('package_versions') or {}
+    package_text = ', '.join(
+        f'{name} {package_versions[name]}'
+        for name in _PACKAGE_HEADER_ORDER
+        if package_versions.get(name)
+    )
+    native_engines = []
+    if environment.get('geos_version'):
+        native_engines.append(f'GEOS {environment["geos_version"]}')
+    if environment.get('proj_version'):
+        native_engines.append(f'PROJ {environment["proj_version"]}')
+    evidence = []
+    if package_text:
+        evidence.append(f'packages {package_text}')
+    if native_engines:
+        evidence.append(f'native engines {"; ".join(native_engines)}')
+    lines = [
+        '## Run environment',
+        '',
+        f'CPU {cpu_text}; Linux kernel `{kernel}`; Python `{python}`; '
+        f'gometry `{gometry}` at commit `{commit}`.',
+    ]
+    if evidence:
+        lines.append('Core/comparator evidence: ' + '; '.join(evidence) + '.')
+    lines.append('')
+    return lines
+
+
+def render(
+    rows: list[OpRow],
+    *,
+    markdown: bool,
+    publishable: bool,
+    environment: dict[str, Any] | None = None,
+) -> list[str]:
     del markdown  # The release artifact is Markdown; table text is accessible in both uses.
     lines: list[str] = []
     if not publishable:
         lines.extend((f'> **{SMOKE_BANNER}**', ''))
+    if environment is not None:
+        lines.extend(_environment_lines(environment))
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
         by_domain.setdefault(row.meta.domain, []).append(row)
@@ -547,7 +649,7 @@ def render(rows: list[OpRow], *, markdown: bool, publishable: bool) -> list[str]
         lines.extend((
             f'### {domain}',
             '',
-            f'<div class="benchmark-table-scroll" role="region" tabindex="0" '
+            f'<div markdown="1" class="benchmark-table-scroll" role="region" tabindex="0" '
             f'aria-label="{domain} benchmark results">',
             *_section_table(domain_rows),
             '</div>',
@@ -568,10 +670,30 @@ def normalized_summary_payload(
 ) -> dict[str, Any]:
     operations = _parse_public_operations(payload.get('public_operations'))
     rows = _build_rows(operations, stats, noise_band=noise_band, seed=seed)
+    environment = _run_environment(payload)
     return {
         'schema_version': 2,
         'profile': payload.get('profile'),
         'publishable': bool(payload.get('publishable')),
+        'run': {
+            'timestamp': payload.get('timestamp'),
+            'git_commit': environment.get('git_commit'),
+            'gometry_version': environment.get('gometry_version'),
+        },
+        'environment': environment,
+        'sampling': {
+            'sampling_args': payload.get('sampling_args'),
+            'paired_sampling_args': payload.get('paired_sampling_args'),
+            'row_timeout_seconds': payload.get('row_timeout_seconds'),
+            'command_timeout_seconds': payload.get('command_timeout_seconds'),
+            'total_timeout_seconds': payload.get('total_timeout_seconds'),
+        },
+        'methodology': {
+            'process_observation': 'median of values within each pyperf process',
+            'pair_identity': 'artifact path and process ordinal with pair_id and lead',
+            'bootstrap': 'paired median-ratio percentile bootstrap',
+            'bootstrap_samples': BOOTSTRAP_SAMPLES,
+        },
         'equivalence_noise_band': noise_band,
         'bootstrap_seed': seed,
         'operations': [
@@ -615,7 +737,12 @@ def summarize_payload(
 ) -> list[str]:
     operations = _parse_public_operations(payload.get('public_operations'))
     rows = _build_rows(operations, stats, noise_band=noise_band)
-    return render(rows, markdown=markdown, publishable=bool(payload.get('publishable')))
+    return render(
+        rows,
+        markdown=markdown,
+        publishable=bool(payload.get('publishable')),
+        environment=_run_environment(payload),
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

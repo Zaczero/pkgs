@@ -15,13 +15,14 @@ five domains: array construction and I/O, geometry, CRS and geodesy, discrete
 global grids, and spatial index.
 
 The runner records the exact Python executable, extension digest and build
-profile, source and lock identities, package versions, selected CPU and
-governor, pyperf artifact identities, and available GEOS/PROJ versions. Each
-pyperf process is one independent observation. The normalized evidence pairs
-the two rows inside each process, bootstraps the median ratio, and classifies
-it against a predeclared 3% equivalence/noise band. `Similar` means the full
-interval is inside that band; `faster` and `slower` require the interval to
-clear it; all other intervals are `Inconclusive`. The [full normalized
+profile, source identity, an optional lock hash, exact package and native-engine
+versions, selected CPU and governor, and pyperf artifact identities. Each
+pyperf process is one independent observation. The normalized evidence matches
+the separate gometry and comparator rows by process ordinal within each AB/BA
+artifact, bootstraps the median ratio, and classifies it against a predeclared
+3% equivalence/noise band. `Similar` means the full interval is inside that
+band; `faster` and `slower` require the interval to clear it; all other
+intervals are `Inconclusive`. The [full normalized
 evidence](https://github.com/Zaczero/pkgs/tree/main/gometry/benches/results/current)
 retains exact medians, intervals, process identities, and raw artifacts.
 

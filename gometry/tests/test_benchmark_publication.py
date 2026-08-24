@@ -44,6 +44,10 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'size_bytes': 10,
             'debug_build': False,
             'release_build': True,
+            'debug_assertion_marker': 'vendor base-cell partition changed',
+            'debug_assertion_marker_count': 0,
+            'profile_evidence_method': 'extension_bytes_marker_scan',
+            'profile_evidence': 'debug_assertion_marker_absent',
             'tied_to_checkout': True,
         },
         'uv_lock': {'path': '/checkout/uv.lock', 'sha256': 'lock-digest', 'size_bytes': 10},
@@ -60,7 +64,10 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'isolated_cpus': '1',
         'selected_cpu': 1,
         'selected_cpu_source': 'explicit-kernel-isolated',
+        'selected_cpu_governor': 'performance',
         'cpu_frequency_state': {},
+        'geos_version': '3.13.0',
+        'proj_version': '9.5.0',
     }
     operations = [
         {
@@ -113,6 +120,19 @@ def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> No
         bench_driver.publish_current_run(incomplete, output_dir=tmp_path / 'stage2', current_dir=tmp_path / 'current')
 
 
+def test_publication_accepts_absent_or_untracked_lock_identity(tmp_path: Path) -> None:
+    result = _result(tmp_path)
+    result['doctor']['metadata']['uv_lock'] = {  # type: ignore[index]
+        'path': None,
+        'sha256': None,
+        'size_bytes': None,
+    }
+    current = tmp_path / 'current'
+    bench_driver.publish_current_run(result, output_dir=tmp_path / 'stage', current_dir=current)
+    identity = json.loads((current / 'identity.json').read_text(encoding='utf-8'))
+    assert identity['uv_lock']['sha256'] is None
+
+
 def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
     result = _result(tmp_path)
     current = tmp_path / 'current'
@@ -123,6 +143,13 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert set(first) == {'identity.json', 'summary.json', 'summary.md', 'raw/pair.json'}
+    summary_md = (current / 'summary.md').read_text(encoding='utf-8')
+    assert '## Run environment' in summary_md
+    assert 'CPU `1`' in summary_md
+    assert 'Python `3.14 test build`' in summary_md
+    assert 'gometry `1`' in summary_md
+    assert 'GEOS 3.13.0; PROJ 9.5.0' in summary_md
+    assert '<table>' not in summary_md
     summary = json.loads((current / 'summary.json').read_text(encoding='utf-8'))
     assert len(summary['operations']) == 37
     assert all(operation['blocks'] for operation in summary['operations'])
