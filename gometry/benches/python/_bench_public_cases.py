@@ -33,7 +33,7 @@ from _bench_oracles import (
 )
 from _bench_public_fixtures import (
     arrow_mixed_100k,
-    bng_transform_10k,
+    webmerc_transform_10k,
     buildings_10k_gometry,
     buildings_10k_shapely,
     clip_linework_10k,
@@ -445,7 +445,9 @@ def _compare_crs_transform(
     exact_coordinates(
         left,
         right,
-        OracleContext(operation=context.operation, kind=context.kind, unit='deg'),
+        OracleContext(operation=context.operation, kind=context.kind, unit='m_3857'),
+        rtol=5e-12,
+        atol=1e-8,
     )
 
 
@@ -1319,28 +1321,28 @@ def build_to_crs() -> PublicCase:
 
 
 def build_crs_transform() -> PublicCase:
-    x, y = bng_transform_10k()
+    lon, lat = webmerc_transform_10k()
     from pyproj import Transformer
 
-    transformer = Transformer.from_crs(27700, 4326, always_xy=True)
+    transformer = Transformer.from_crs(4326, 3857, always_xy=True)
 
     def gometry_call():
         import gometry as gm
 
-        return gm.crs_transform(27700, 4326, x, y)
+        return gm.crs_transform(4326, 3857, lon, lat)
 
     def competitor_call():
-        lon, lat = transformer.transform(x, y)
-        return np.column_stack([lon, lat])
+        x, y = transformer.transform(lon, lat)
+        return np.column_stack([x, y])
 
-    _reg('gometry.crs_transform/10k_epsg27700_to4326', gometry_call)
-    _reg('pyproj.Transformer.transform/10k_epsg27700_to4326', competitor_call)
+    _reg('gometry.crs_transform/10k_epsg4326_to3857', gometry_call)
+    _reg('pyproj.Transformer.transform/10k_epsg4326_to3857', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
         _compare_crs_transform,
         kind='exact_coordinates',
-        unit='deg',
+        unit='m_3857',
     )
 
 
@@ -1834,7 +1836,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,
     'gometry.point_on_surface/10k_concave_holed_buildings': build_point_on_surface,
     'gometry.to_crs.masked/200k_points_10pct_missing': build_to_crs,
-    'gometry.crs_transform/10k_epsg27700_to4326': build_crs_transform,
+    'gometry.crs_transform/10k_epsg4326_to3857': build_crs_transform,
     'gometry.distance.geodesic/10k_wgs84_pairs': build_distance_geodesic,
     'gometry.destination.geodesic/10k_wgs84': build_destination,
     'gometry.h3_cover.center/BR_res5_32260_cells': build_h3_cover,

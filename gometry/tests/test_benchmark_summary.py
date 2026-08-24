@@ -159,6 +159,7 @@ def test_render_has_compact_accessible_status_and_no_aggregate_claims() -> None:
         environment={
             'cpu': 7,
             'cpu_source': 'kernel-isolated',
+            'cpu_model': 'AMD Ryzen 9 5950X',
             'kernel': '6.1',
             'python': '3.14.7',
             'gometry_version': '0.1',
@@ -179,7 +180,7 @@ def test_render_has_compact_accessible_status_and_no_aggregate_claims() -> None:
     assert 'markdown="1"' in text
     assert '<table>' in html
     assert '| API / input |' not in html
-    assert 'CPU `7`' in text
+    assert 'CPU `AMD Ryzen 9 5950X` on core `7`' in text
     assert 'numpy 2.0, shapely 2.1' in text
     assert 'GEOS 3.13.0; PROJ 9.5.0' in text
     assert '95%' not in text

@@ -912,7 +912,7 @@ def parcels_10k():
 
 
 # ---------------------------------------------------------------------------
-# Masked CRS / BNG / geodesic / destination
+# Masked CRS / raw coordinate transform / geodesic / destination
 # ---------------------------------------------------------------------------
 
 
@@ -943,14 +943,14 @@ def masked_crs_200k():
     return _cached('masked_crs_200k', build)
 
 
-def bng_transform_10k() -> tuple[np.ndarray, np.ndarray]:
+def webmerc_transform_10k() -> tuple[np.ndarray, np.ndarray]:
     def build():
         i = np.arange(_N10K, dtype=np.float64)
-        x = 530_000.0 + 50_000.0 * np.sin(0.017 * i)
-        y = 180_000.0 + 50_000.0 * np.cos(0.019 * i)
-        return np.ascontiguousarray(x), np.ascontiguousarray(y)
+        lon = -170.0 + 340.0 * i / (_N10K - 1)
+        lat = 70.0 * np.sin(0.019 * i)
+        return np.ascontiguousarray(lon), np.ascontiguousarray(lat)
 
-    return _cached('bng_10k', build)
+    return _cached('webmerc_transform_10k', build)
 
 
 def geodesic_pairs_10k():

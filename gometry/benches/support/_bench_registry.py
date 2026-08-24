@@ -206,9 +206,10 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
         ('in_core', 'batched'),
     ),
     _op(
-        'CRS & geodesy', 'crs_transform BNG to WGS84', '10k EPSG:27700 to 4326',
-        'gometry.crs_transform/10k_epsg27700_to4326',
-        'pyproj.Transformer.transform/10k_epsg27700_to4326', 'pyproj', ('batched',),
+        'CRS & geodesy', 'crs_transform WGS84 to Web Mercator',
+        '10k EPSG:4326 to 3857',
+        'gometry.crs_transform/10k_epsg4326_to3857',
+        'pyproj.Transformer.transform/10k_epsg4326_to3857', 'pyproj', ('batched',),
     ),
     _op(
         'CRS & geodesy', 'geodesic distance', '10k WGS84 pairs',

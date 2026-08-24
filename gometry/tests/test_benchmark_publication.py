@@ -145,7 +145,7 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
     assert set(first) == {'identity.json', 'summary.json', 'summary.md', 'raw/pair.json'}
     summary_md = (current / 'summary.md').read_text(encoding='utf-8')
     assert '## Run environment' in summary_md
-    assert 'CPU `1`' in summary_md
+    assert 'CPU `test` on core `1`' in summary_md
     assert 'Python `3.14 test build`' in summary_md
     assert 'gometry `1`' in summary_md
     assert 'GEOS 3.13.0; PROJ 9.5.0' in summary_md

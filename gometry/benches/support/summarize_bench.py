@@ -576,6 +576,7 @@ def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
         'cpu_source': metadata.get(
             'selected_cpu_source', payload.get('selected_cpu_source')
         ),
+        'cpu_model': metadata.get('cpu_model'),
         'kernel': metadata.get('kernel'),
         'python': metadata.get('python_version', metadata.get('python')),
         'git_commit': metadata.get('git_commit'),
@@ -591,6 +592,7 @@ def _environment_lines(environment: dict[str, Any]) -> list[str]:
         return []
     cpu = environment.get('cpu')
     cpu_source = environment.get('cpu_source')
+    cpu_model = environment.get('cpu_model') or 'unknown CPU'
     kernel = environment.get('kernel') or 'unknown'
     python = environment.get('python') or 'unknown'
     gometry = environment.get('gometry_version') or 'unknown'
@@ -617,8 +619,8 @@ def _environment_lines(environment: dict[str, Any]) -> list[str]:
     lines = [
         '## Run environment',
         '',
-        f'CPU {cpu_text}; Linux kernel `{kernel}`; Python `{python}`; '
-        f'gometry `{gometry}` at commit `{commit}`.',
+        f'CPU `{cpu_model}` on core {cpu_text}; Linux kernel `{kernel}`; '
+        f'Python `{python}`; gometry `{gometry}` at commit `{commit}`.',
     ]
     if evidence:
         lines.append('Core/comparator evidence: ' + '; '.join(evidence) + '.')
