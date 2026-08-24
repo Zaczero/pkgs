@@ -645,11 +645,51 @@ fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
 }
 
 fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
-    let capacity = value.matches(',').count() + 1;
+    let mut capacity = 1;
+    let mut ascii = true;
+    for &byte in value.as_bytes() {
+        capacity += usize::from(byte == b',');
+        ascii &= byte.is_ascii();
+    }
+    if ascii {
+        return parse_wkt_ascii_points_impl::<Z, M>(value.as_bytes(), capacity);
+    }
     let mut builder =
         CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
     for coordinate in value.split(',') {
         parse_wkt_coordinate_into::<Z, M>(coordinate, &mut builder)?;
+    }
+    builder.finish()
+}
+
+/// Parse the ASCII WKT coordinate lists produced by normal serializers without
+/// layering `split(',')` and `split_whitespace()` iterators for every vertex.
+/// Non-ASCII input stays on the Unicode-aware path above.
+fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
+    bytes: &[u8],
+    capacity: usize,
+) -> Result<CoordSeq> {
+    let mut builder =
+        CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
+    let mut index = 0;
+    loop {
+        let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", true)?;
+        let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", true)?;
+        let z = Z
+            .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "z", true))
+            .transpose()?;
+        let m = M
+            .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "m", true))
+            .transpose()?;
+        skip_wkt_ascii_whitespace(bytes, &mut index);
+        if index < bytes.len() && bytes[index] != b',' {
+            return Err(IoError::wkt("coordinate has too many ordinates"));
+        }
+        builder.push_xyzm(x, y, z, m);
+        if index == bytes.len() {
+            break;
+        }
+        index += 1;
     }
     builder.finish()
 }
@@ -699,6 +739,9 @@ fn parse_wkt_point(value: &str, axes: CoordinateAxes) -> Result<Point> {
 }
 
 fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Point> {
+    if value.is_ascii() {
+        return parse_wkt_ascii_point_impl::<Z, M>(value.as_bytes());
+    }
     let mut values = value.split_whitespace();
     let x = parse_wkt_float_token(
         values
@@ -728,6 +771,48 @@ fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Poi
     Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))
 }
 
+fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Result<Point> {
+    let mut index = 0;
+    let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", false)?;
+    let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", false)?;
+    let z = Z
+        .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "z", false))
+        .transpose()?;
+    let m = M
+        .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "m", false))
+        .transpose()?;
+    skip_wkt_ascii_whitespace(bytes, &mut index);
+    if index != bytes.len() {
+        return Err(IoError::wkt("coordinate has too many ordinates"));
+    }
+    Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))
+}
+
+/// Read one ASCII numeric token. The comma delimiter is enabled for coordinate
+/// lists and disabled for Points so malformed point commas retain the old
+/// numeric-token error.
+#[inline(always)]
+fn parse_wkt_ascii_float_at(
+    bytes: &[u8],
+    index: &mut usize,
+    name: &str,
+    comma_delimiter: bool,
+) -> Result<f64> {
+    skip_wkt_ascii_whitespace(bytes, index);
+    let start = *index;
+    while *index < bytes.len()
+        && !bytes[*index].is_ascii_whitespace()
+        && (!comma_delimiter || bytes[*index] != b',')
+    {
+        *index += 1;
+    }
+    if start == *index {
+        return Err(IoError::wkt(format!("coordinate is missing {name}")));
+    }
+    lexical_core::parse::<f64>(&bytes[start..*index])
+        .map_err(|_| IoError::wkt(format!("{name} coordinate must be numeric")))
+}
+
 fn parse_wkt_ordinate<'a>(values: &mut impl Iterator<Item = &'a str>, name: &str) -> Result<f64> {
     parse_wkt_float_token(
         values
@@ -735,4 +820,32 @@ fn parse_wkt_ordinate<'a>(values: &mut impl Iterator<Item = &'a str>, name: &str
             .ok_or_else(|| IoError::wkt(format!("coordinate is missing {name}")))?,
         name,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_coordinate_cursor_preserves_float_bits() {
+        let sequence = parse_wkt_ascii_points_impl::<false, false>(
+            b"-0.0 1.2345678901234567, 1e308 -1e-308",
+            2,
+        )
+        .expect("ASCII coordinate list parses");
+        assert_eq!(sequence.xs()[0].to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(sequence.ys()[0].to_bits(), 1.2345678901234567_f64.to_bits());
+        assert_eq!(sequence.xs()[1].to_bits(), 1e308_f64.to_bits());
+        assert_eq!(sequence.ys()[1].to_bits(), (-1e-308_f64).to_bits());
+    }
+
+    #[test]
+    fn ascii_point_cursor_preserves_ordinates() {
+        let point = parse_wkt_ascii_point_impl::<true, true>(b"1 2 3 4")
+            .expect("ASCII point parses");
+        assert_eq!(point.x, 1.0);
+        assert_eq!(point.y, 2.0);
+        assert_eq!(point.z(), Some(3.0));
+        assert_eq!(point.m(), Some(4.0));
+    }
 }
