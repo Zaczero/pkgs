@@ -101,12 +101,29 @@ impl PyGeometryArray {
         let precision = precision.map(parse_precision).transpose()?;
         let crs = self.crs_ref().cloned();
         let len = self.storage().len();
+        // An array CRS is uniform across present rows. Resolve it once, but
+        // retain the old all-missing behavior by skipping validation when no
+        // row can emit a payload. Attach the same first-present row note as
+        // the row loop when resolution itself fails.
+        let has_present = len != 0 && self.missing().is_none_or(|mask| mask.present_count() != 0);
+        let srid = if include_srid && has_present {
+            match crate::io::extended_srid_code(crs.as_deref(), true, "EWKB") {
+                Ok(srid) => srid,
+                Err(error) => {
+                    let row = self.missing().map_or(0, |mask| {
+                        mask.iter().position(|&missing| !missing).unwrap_or(0)
+                    });
+                    return Err(rows_err((row, error)));
+                },
+            }
+        } else {
+            None
+        };
         let mut output: Vec<Py<PyBytes>> = Vec::with_capacity(len);
         let mut next_row = 0_usize;
         while next_row < len {
             let storage = Arc::clone(self.storage_arc());
             let missing = self.missing().cloned();
-            let crs = crs.clone();
             let start_row = next_row;
             let (buffer, ends) = py
                 .detach(
@@ -123,12 +140,7 @@ impl PyGeometryArray {
                                             std::borrow::Cow::Owned(shape.quantize(precision))
                                         },
                                     );
-                                    io::write_wkb_to(
-                                        &mut buffer,
-                                        &shape,
-                                        crs.as_deref(),
-                                        include_srid,
-                                    )
+                                    io::write_wkb_to_srid(&mut buffer, &shape, srid)
                                 })
                                 .map_err(|error| (row, error))?;
                             }

@@ -74,6 +74,42 @@ def _ewkb(type_base: int, srid: int | None, payload: bytes) -> bytes:
     return out + payload
 
 
+def test_array_to_wkb_ewkb_preserves_srid_endian_axes_and_missingness() -> None:
+    """The batch writer keeps every wire discriminator on mixed rows."""
+    values = gm.GeometryArray(
+        [
+            gm.Point(1.0, 2.0, z=3.0, m=4.0),
+            None,
+            gm.LineString([(5.0, 6.0, 7.0), (8.0, 9.0, 10.0)]).set_m(11.0),
+        ],
+        crs=4326,
+    )
+
+    encoded = values.to_wkb(include_srid=True)
+    assert encoded[1] is None
+
+    point = bytes(encoded[0])
+    assert point[0] == 1  # little-endian marker, not a host-order accident
+    assert struct.unpack_from('<I', point, 1)[0] == 0xE0000001
+    assert struct.unpack_from('<I', point, 5)[0] == 4326
+    assert struct.unpack_from('<4d', point, 9) == (1.0, 2.0, 3.0, 4.0)
+
+    line = bytes(encoded[2])
+    assert line[0] == 1
+    assert struct.unpack_from('<I', line, 1)[0] == 0xE0000002
+    assert struct.unpack_from('<I', line, 5)[0] == 4326
+    assert struct.unpack_from('<I', line, 9)[0] == 2
+    assert struct.unpack_from('<4d', line, 13) == (5.0, 6.0, 7.0, 11.0)
+
+
+def test_array_to_wkb_srid_error_keeps_first_present_row_note() -> None:
+    """Batch SRID resolution retains the array error contract."""
+    with pytest.raises(gm.CRSError) as error:
+        gm.GeometryArray([None, gm.Point(1.0, 2.0)]).to_wkb(include_srid=True)
+    assert error.value.__notes__ == ['while processing array element 1']
+    assert gm.GeometryArray([]).to_wkb(include_srid=True) == []
+
+
 def test_nested_ewkb_srid_accepts_matching_and_rejects_conflict() -> None:
     """PostGIS may stamp the SRID flag on nested members: a nested SRID equal
     to the parent's is accepted; a genuine conflict is rejected with both codes

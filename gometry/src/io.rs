@@ -135,7 +135,7 @@ pub(crate) fn is_wire_alias_restore(explicit: &str, embedded: &str) -> bool {
 /// `include_srid=True` is never a silent no-op: a CRS-free geometry and a CRS
 /// outside that table both raise (callers must clear the flag or attach an
 /// EPSG/alias CRS).
-fn extended_srid_code(
+pub(crate) fn extended_srid_code(
     crs: Option<&str>,
     include_srid: bool,
     format_label: &'static str,
@@ -389,7 +389,7 @@ pub(crate) use geojson::{
 };
 pub(crate) use wkb::{
     WkbCoordArena, parse_wkb, parse_wkb_batch, to_wkb, to_wkb_len, wkb_len, write_wkb_into,
-    write_wkb_to,
+    write_wkb_to, write_wkb_to_srid,
 };
 pub(crate) use wkt::{
     WktDimension, WktNumberFormat, parse_wkt, to_wkt, to_wkt_display, to_wkt_preview,

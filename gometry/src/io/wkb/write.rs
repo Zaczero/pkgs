@@ -72,6 +72,20 @@ pub(crate) fn write_wkb_to(
 ) -> Result<()> {
     require_serializable_axes(shape)?;
     let srid = extended_srid_code(crs, include_srid, "EWKB")?;
+    write_wkb_resolved(out, shape, srid)
+}
+
+/// Write one row using an SRID resolved by the owning batch.
+///
+/// Resolving an array's uniform CRS in the row loop repeats the same parse for
+/// every row. The batch path resolves once and still validates each shape's
+/// axes here, preserving row-level axis errors and notes.
+pub(crate) fn write_wkb_to_srid(out: &mut Vec<u8>, shape: &Shape, srid: Option<u32>) -> Result<()> {
+    require_serializable_axes(shape)?;
+    write_wkb_resolved(out, shape, srid)
+}
+
+fn write_wkb_resolved(out: &mut Vec<u8>, shape: &Shape, srid: Option<u32>) -> Result<()> {
     WkbShape::classify(shape).write(out, srid)
 }
 

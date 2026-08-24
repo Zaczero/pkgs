@@ -82,4 +82,6 @@ mod read;
 mod write;
 
 pub(crate) use read::{WkbCoordArena, parse_wkb, parse_wkb_batch};
-pub(crate) use write::{to_wkb, to_wkb_len, wkb_len, write_wkb_into, write_wkb_to};
+pub(crate) use write::{
+    to_wkb, to_wkb_len, wkb_len, write_wkb_into, write_wkb_to, write_wkb_to_srid,
+};
