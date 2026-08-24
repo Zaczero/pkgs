@@ -235,6 +235,9 @@ pub(crate) fn geodesic_line_length<C: Coordinates + ?Sized>(
     geodesic: &Geodesic,
     points: &C,
 ) -> f64 {
+    if let Some((xs, ys)) = points.xy_columns() {
+        return geodesic_line_length_columns(geodesic, xs, ys);
+    }
     compensated_sum(
         points
             .segment_pairs()

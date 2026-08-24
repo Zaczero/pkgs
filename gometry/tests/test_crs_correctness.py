@@ -206,6 +206,41 @@ def test_geographic_and_crs_free_unit_modes_are_unchanged() -> None:
         gm.length(raw_line, unit='meters')
 
 
+def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
+    """An exterior line is not a polygon perimeter or a planar/spherical proxy."""
+    exterior = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (0.0, 0.0),
+    ]
+    hole = [
+        (0.25, 0.25),
+        (0.75, 0.25),
+        (0.75, 0.75),
+        (0.25, 0.75),
+        (0.25, 0.25),
+    ]
+    exterior_line = gm.MultiLineString([exterior], crs=4326)
+    polygon = gm.Polygon(exterior, holes=[hole], crs=4326)
+    exterior_length = GEOD.line_length(
+        [point[0] for point in exterior], [point[1] for point in exterior]
+    )
+    hole_length = GEOD.line_length(
+        [point[0] for point in hole], [point[1] for point in hole]
+    )
+
+    assert exterior_line.length == pytest.approx(exterior_length, rel=1e-12)
+    assert polygon.length == pytest.approx(exterior_length + hole_length, rel=1e-12)
+    assert exterior_line.length != pytest.approx(polygon.length, rel=1e-12)
+    assert exterior_line.length != pytest.approx(4.0)
+    z_line = gm.LineString([(0.0, 0.0, 10.0), (1.0, 0.0, 20.0)], crs=4326)
+    assert z_line.length == pytest.approx(
+        GEOD.line_length([0.0, 1.0], [0.0, 0.0]), rel=1e-12
+    )
+
+
 def test_antimeridian_crossing_lines_have_zero_distance() -> None:
     """Lines crossing the antimeridian register as intersecting (distance 0)."""
     crossing = gm.LineString([(170, 10), (-170, 10)], crs=4326)
