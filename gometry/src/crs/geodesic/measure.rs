@@ -1,7 +1,7 @@
 use std::simd::cmp::SimdPartialEq as _;
 use std::simd::num::SimdFloat as _;
 
-use geographiclib_rs::{Geodesic, PolygonArea, Winding};
+use geographiclib_rs::{Geodesic, PolygonArea, Winding, geodesic_capability as caps};
 
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo, GeodesicInterpolateInfo,
@@ -165,14 +165,14 @@ pub(crate) fn geodesic_shape_length(geodesic: &Geodesic, shape: &Shape) -> f64 {
 
 pub(crate) fn geodesic_polygon_area(geodesic: &Geodesic, polygon: &Polygon) -> f64 {
     // Orientation-independent, matching planar `Polygon::area`: the unsigned
-    // shell area less the unsigned hole areas. `PolygonArea` returns a signed
-    // value (negative for clockwise rings), so take magnitudes.
+    // shell area less the unsigned hole areas. The raw geodesic area is signed
+    // (negative for clockwise rings), so take magnitudes.
     compensated_sum(
-        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell).1.abs()).chain(
+        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell).abs()).chain(
             polygon
                 .holes
                 .iter()
-                .map(|hole| -geodesic_ring_measure(geodesic, hole).1.abs()),
+                .map(|hole| -geodesic_ring_area(geodesic, hole).abs()),
         ),
     )
 }
@@ -210,6 +210,97 @@ pub(crate) fn geodesic_ring_measure_columns(
         xs.len(),
         std::iter::zip(xs, ys).map(|(&lon, &lat)| (lon, lat)),
     )
+}
+
+/// Compute only the signed Karney area of a ring.
+///
+/// `PolygonArea::add_point` requests both distance and area from every inverse
+/// edge, but area measurement discards the distance. The public raw inverse
+/// API accepts the narrower `AREA` mask, so keep the same transit/reduction
+/// rules while avoiding the unused perimeter work and its accumulator.
+fn geodesic_ring_area<C: Coordinates + ?Sized>(geodesic: &Geodesic, ring: &C) -> f64 {
+    if ring.coord_count() < 3 {
+        return 0.0;
+    }
+    let mut points = ring.iter_coords().map(|point| (point.x, point.y));
+    let Some((initial_lon, initial_lat)) = points.next() else {
+        return 0.0;
+    };
+    let mut latest_lon = initial_lon;
+    let mut latest_lat = initial_lat;
+    let mut area = 0.0;
+    let mut correction = 0.0;
+    let mut crossings = 0_i64;
+
+    for (lon, lat) in points {
+        let s12 = geodesic
+            ._gen_inverse(latest_lat, latest_lon, lat, lon, caps::AREA)
+            .9;
+        add_compensated(&mut area, &mut correction, s12);
+        crossings += longitude_transit(latest_lon, lon);
+        latest_lon = lon;
+        latest_lat = lat;
+    }
+
+    let s12 = geodesic
+        ._gen_inverse(latest_lat, latest_lon, initial_lat, initial_lon, caps::AREA)
+        .9;
+    add_compensated(&mut area, &mut correction, s12);
+    crossings += longitude_transit(latest_lon, initial_lon);
+
+    let geoid_area = geodesic.area();
+    area %= geoid_area;
+    if crossings % 2 != 0 {
+        area += if area < 0.0 {
+            geoid_area / 2.0
+        } else {
+            -geoid_area / 2.0
+        };
+    }
+
+    // PolygonArea is constructed with CounterClockwise winding and computes a
+    // signed result in (-half-planet, half-planet].
+    area = -area;
+    if area > geoid_area / 2.0 {
+        area -= geoid_area;
+    } else if area <= -geoid_area / 2.0 {
+        area += geoid_area;
+    }
+    area
+}
+
+fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
+    let adjusted = value - *correction;
+    let next = *sum + adjusted;
+    *correction = (next - *sum) - adjusted;
+    *sum = next;
+}
+
+fn longitude_transit(lon1: f64, lon2: f64) -> i64 {
+    let lon1 = normalize_longitude(lon1);
+    let lon2 = normalize_longitude(lon2);
+    let mut difference = lon2 - lon1;
+    if difference > 180.0 {
+        difference -= 360.0;
+    } else if difference <= -180.0 {
+        difference += 360.0;
+    }
+    if difference > 0.0 && ((lon1 < 0.0 && lon2 >= 0.0) || (lon1 > 0.0 && lon2 == 0.0)) {
+        1
+    } else if difference < 0.0 && lon1 >= 0.0 && lon2 < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn normalize_longitude(longitude: f64) -> f64 {
+    let normalized = (longitude + 180.0).rem_euclid(360.0) - 180.0;
+    if normalized == -180.0 {
+        180.0
+    } else {
+        normalized
+    }
 }
 
 fn geodesic_ring_measure_lonlat(
