@@ -1,7 +1,10 @@
 use crate::geometry::{
     Coordinates, Orientation, Point, Polygon, ValidationIssue, XY, column_all_finite,
-    multi_polygon_members_issue, orientation_xy, same_point, wrap_index,
+    multi_polygon_members_issue, orientation_xy, same_point, same_topological_coordinate,
+    wrap_index,
 };
+
+const SMALL_RING_FUSED_LIMIT: usize = 16;
 pub(crate) fn validate_point(point: Point, path: &str) -> Option<ValidationIssue> {
     (!point.x.is_finite() || !point.y.is_finite())
         .then(|| ValidationIssue::new("point coordinates must be finite", Some(point), path))
@@ -61,6 +64,57 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
             points.first_coord(),
             path,
         ));
+    }
+    // Packed rings in ordinary polygons are tiny. Fuse the XY finiteness,
+    // closure, and consecutive-corner checks for them; the SIMD finiteness
+    // scan remains the better shape for larger rings.
+    if len <= SMALL_RING_FUSED_LIMIT
+        && let Some((xs, ys)) = points.xy_columns()
+    {
+        let mut corners = 1_usize;
+        let mut previous_x = xs[0];
+        let mut previous_y = ys[0];
+        for index in 0..len {
+            let x = xs[index];
+            let y = ys[index];
+            if !x.is_finite() || !y.is_finite() {
+                let (_, path) = label();
+                return Some(
+                    ValidationIssue::new(
+                        "point coordinates must be finite",
+                        Some(points.nth_coord(index)),
+                        format!("$[{index}]"),
+                    )
+                    .with_path_prefix(&path),
+                );
+            }
+            if index > 0
+                && (!same_topological_coordinate(previous_x, x)
+                    || !same_topological_coordinate(previous_y, y))
+            {
+                corners += 1;
+                previous_x = x;
+                previous_y = y;
+            }
+        }
+        let first = points.nth_coord(0);
+        let last = points.nth_coord(len - 1);
+        if !same_point(first, last) {
+            let (name, path) = label();
+            return Some(ValidationIssue::new(
+                format!("{name} must be closed"),
+                Some(last),
+                path,
+            ));
+        }
+        return (corners - 1 < 3).then(|| {
+            let (name, path) = label();
+            ValidationIssue::new(
+                format!("{name} collapses to fewer than three distinct vertices"),
+                Some(first),
+                path,
+            )
+        });
     }
     if let Some(issue) = validate_points(points, "$") {
         let (_, path) = label();

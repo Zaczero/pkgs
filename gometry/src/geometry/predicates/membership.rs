@@ -236,12 +236,11 @@ pub(in crate::geometry) fn polygon_rings_issue(
     polygon: &Polygon,
     path: &str,
 ) -> Option<ValidationIssue> {
-    let rings: Vec<&CoordSeq> = std::iter::once(polygon.shell.coords())
-        .chain(polygon.holes.iter().map(Ring::coords))
-        .collect();
+    let ring_count = polygon.holes.len() + 1;
     let mut chains = LineworkChains::default();
-    for ring in &rings {
-        chains.push_line(ring)?;
+    chains.push_line(polygon.shell.coords())?;
+    for hole in polygon.holes.iter() {
+        chains.push_line(hole.coords())?;
     }
 
     let mut touches: TouchDirections = HashMap::new();
@@ -257,7 +256,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
         return Some(issue.with_path_prefix(path));
     }
     if !touches.is_empty()
-        && let Some(issue) = settle_touches(&touches, rings.len(), true, &|a, b| {
+        && let Some(issue) = settle_touches(&touches, ring_count, true, &|a, b| {
             format!(
                 "{} and {} intersect",
                 ring_label(a.min(b)),

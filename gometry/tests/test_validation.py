@@ -187,6 +187,21 @@ def test_is_valid_packed_arrays_match_mixed() -> None:
     np.testing.assert_array_equal(packed_polys.is_valid, [True, False])
 
 
+def test_is_valid_packed_polygons_reject_topology_counterexamples() -> None:
+    """The packed validity route must not accept crossing or external holes."""
+    valid = gm.from_wkt(
+        'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), '
+        '(1 1, 1 2, 2 2, 2 1, 1 1))'
+    )
+    bowtie = gm.from_wkt('POLYGON ((10 0, 12 2, 12 0, 10 2, 10 0))')
+    outside_hole = gm.from_wkt(
+        'POLYGON ((20 0, 24 0, 24 4, 20 4, 20 0), '
+        '(30 0, 32 0, 32 2, 30 2, 30 0))'
+    )
+    values = gm.GeometryArray([valid, bowtie, outside_hole])
+    np.testing.assert_array_equal(values.is_valid, [True, False, False])
+
+
 def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     bowtie = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))', crs=4326)
     square = gm.box(0, 0, 1, 1)
