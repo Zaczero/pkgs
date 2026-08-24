@@ -95,6 +95,24 @@ def test_coverage_union_dissolves_shared_edges() -> None:
         gm.coverage_union([])
 
 
+def test_coverage_union_keeps_point_touching_parts_separate() -> None:
+    """An all-exterior edge inventory may bypass arrangement without merging a touch."""
+    touching = [gm.box(0, 0, 1, 1), gm.box(1, 1, 2, 2)]
+    union = gm.coverage_union(touching)
+    assert union.geometry_type == 'MultiPolygon'
+    assert union.area == pytest.approx(2.0)
+
+
+def test_coverage_union_does_not_bypass_invalid_shape_fallback() -> None:
+    """Rows admitted by the legacy coverage validator keep the old dissolve path."""
+    bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0))')
+    disjoint = gm.box(5, 0, 6, 1)
+    assert gm.coverage_is_valid([bowtie, disjoint])
+    result = gm.coverage_union([bowtie, disjoint])
+    assert result.geometry_type == 'Polygon'
+    assert result.area == pytest.approx(1.0)
+
+
 def test_coverage_union_matches_shapely_oracle() -> None:
     import shapely
 
@@ -178,6 +196,14 @@ def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
             operation()
         assert type(exc_info.value) is gm.InvalidGeometryError
         assert exc_info.value.operation in {'coverage_union', 'coverage_simplify'}
+
+
+def test_coverage_union_keeps_validity_gate_distinct_from_union_all() -> None:
+    """The coverage fast path must not silently become a general dissolve."""
+    overlap = [gm.box(0, 0, 1.2, 1), gm.box(1, 0, 2, 1)]
+    assert gm.union_all(overlap).area == pytest.approx(2.0)
+    with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
+        gm.coverage_union(overlap)
 
 
 def test_coverage_union_rejects_tjunction() -> None:

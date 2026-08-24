@@ -414,6 +414,30 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             Shape::Polygon(polygon.clone())
         }));
     }
+    // If validation found no repeated edge, rows are pairwise disjoint except
+    // for legal point touches. Their input polygon parts already are the
+    // union, so skip sorting and rebuilding an arrangement for this common
+    // sparse-coverage case.
+    if prepared
+        .edge_incidences
+        .values()
+        .all(|&(_, count)| count == 1)
+        && prepared
+            .rows
+            .iter()
+            .all(|row| row.shape.validate().is_none())
+    {
+        let mut parts = Vec::new();
+        for row in &prepared.rows {
+            match row.shape {
+                Shape::Polygon(polygon) => parts.push(polygon.clone()),
+                Shape::MultiPolygon(polygons) => parts.extend(polygons.iter().cloned()),
+                Shape::Empty(..) => {},
+                _ => unreachable!("coverage rows are polygonal"),
+            }
+        }
+        return Ok(polygon_parts_to_shape(parts));
+    }
     Ok(dissolve_edge_incidences(prepared.edge_incidences))
 }
 

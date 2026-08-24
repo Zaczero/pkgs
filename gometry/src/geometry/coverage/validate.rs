@@ -171,7 +171,8 @@ fn coverage_invalid_with_count(
     // Group by canonical bounds bits so +0.0/−0.0 land in one bucket
     // (`f64::to_bits` alone splits them and misses coincident duplicates —
     // edges then all look like shared interfaces and coverage_union empties).
-    let mut by_bounds: HashMap<[u64; 4], Vec<usize>> = HashMap::new();
+    let mut by_bounds: HashMap<[u64; 4], usize> = HashMap::with_capacity(rows.len());
+    let mut duplicate_bounds: HashMap<[u64; 4], Vec<usize>> = HashMap::new();
     for (index, row) in rows.iter().enumerate() {
         let Some(bounds) = row.bounds else { continue };
         let key = [
@@ -180,12 +181,22 @@ fn coverage_invalid_with_count(
             canonical_f64_bits(bounds.maxx()),
             canonical_f64_bits(bounds.maxy()),
         ];
-        by_bounds.entry(key).or_default().push(index);
+        match by_bounds.entry(key) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(index);
+            },
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                duplicate_bounds
+                    .entry(key)
+                    .or_insert_with(|| vec![*entry.get()])
+                    .push(index);
+            },
+        }
     }
     // Within a bounds bucket, fingerprint each row by its sorted undirected
     // edge multiset (PointKey already canonicalizes ±0). Identical fingerprints
     // are coincident without O(g²) `equals` scans.
-    for group in by_bounds.values() {
+    for group in duplicate_bounds.values() {
         if group.len() < 2 {
             continue;
         }
@@ -257,7 +268,9 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
     // safe skip — the edge cancels in dissolve too), and count==1 survivors
     // feed XOR dissolve. The is_valid path keeps the lighter distinct-row
     // map via `edge_row_occurrences` (no dissolve product needed).
-    let mut incidences: HashMap<(PointKey, PointKey), (Segment, u32)> = HashMap::new();
+    let segment_capacity: usize = prepared.iter().map(|row| row.segments.len()).sum();
+    let mut incidences: HashMap<(PointKey, PointKey), (Segment, u32)> =
+        HashMap::with_capacity(segment_capacity.div_ceil(2));
     for row in &prepared {
         for &segment in &row.segments {
             let key = undirected_segment_edge_key(segment);
