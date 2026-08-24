@@ -888,15 +888,23 @@ def test_crs_operations_dict_cache_isolation() -> None:
 
 def _bundled_proj_db_src():
     """Locate the generated proj.db matching the bundled runtime."""
+    import json
     import os
     import sqlite3
+    import subprocess
     from pathlib import Path
 
-    target_dir = Path(
-        os.environ.get(
-            'CARGO_TARGET_DIR', Path(__file__).resolve().parents[2] / 'target'
+    configured = os.environ.get('CARGO_TARGET_DIR')
+    if configured is None:
+        metadata = subprocess.run(
+            ['cargo', 'metadata', '--format-version=1', '--no-deps'],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-    ).resolve()
+        configured = json.loads(metadata.stdout)['target_directory']
+    target_dir = Path(configured).resolve()
     engine = gm.crs_engine()
     expected = engine['database_metadata']
     runtime_paths = {
