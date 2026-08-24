@@ -191,7 +191,7 @@ pub(crate) fn contained_shortcut_impl(
 ) -> Option<Shape> {
     if !(matches!(left, Shape::Polygon(_) | Shape::MultiPolygon(_))
         && matches!(right, Shape::Polygon(_) | Shape::MultiPolygon(_))
-        && left.coord_count().max(right.coord_count()) >= 128)
+        && (op == OverlayOp::Intersection || left.coord_count().max(right.coord_count()) >= 128))
     {
         return None;
     }

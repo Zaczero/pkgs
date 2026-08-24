@@ -180,6 +180,41 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
+    fn small_intersection_containment_shortcut_keeps_exact_refinement() {
+        let outer = square(0.0, 0.0, 10.0, 10.0);
+        let inner = square(2.0, 2.0, 4.0, 4.0);
+        let contained = outer
+            .intersection(&inner, Strictness::Strict)
+            .expect("contained intersection");
+        assert_topologically_equal(&contained, &inner);
+
+        let disjoint = outer
+            .intersection(&square(20.0, 20.0, 22.0, 22.0), Strictness::Strict)
+            .expect("disjoint intersection");
+        assert!(disjoint.is_empty(), "{disjoint:?}");
+
+        // The inner envelope is strictly inside the outer envelope, but the
+        // inner polygon lies in the outer polygon's concave notch. A bounds
+        // clone would return the wrong non-empty result here.
+        let concave = Shape::Polygon(polygon(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (6.0, 10.0),
+            (6.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]));
+        let notch = square(4.5, 5.0, 5.5, 9.0);
+        let refined = concave
+            .intersection(&notch, Strictness::Strict)
+            .expect("concave refinement");
+        assert!(refined.is_empty(), "{refined:?}");
+    }
+
+    #[test]
     fn intersection_all_matches_left_fold_for_permutations() {
         let shapes = [
             square(0.0, 0.0, 4.0, 4.0),

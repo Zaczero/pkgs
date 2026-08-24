@@ -88,8 +88,9 @@ impl Shape {
     /// no linework contact anywhere) resolves every op without noding; a
     /// difference just punches the subtrahend in as a hole. The
     /// strict-bounds pre-filter keeps the prepared probe off ordinary
-    /// overlapping pairs, and the size gate (mirroring the window clip)
-    /// keeps small pairs on the plain engine. Ring reuse carries Z/M by
+    /// overlapping pairs. Intersection can re-present a verified contained
+    /// operand at any size; the size gate remains for operations that must
+    /// construct new boundary structure. Ring reuse carries Z/M by
     /// construction.
     pub(crate) fn contained_shortcut(
         &self,
