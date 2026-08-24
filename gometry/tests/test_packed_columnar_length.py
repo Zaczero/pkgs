@@ -61,6 +61,23 @@ def test_packed_length_mixed_short_and_long_rows_match_scalar() -> None:
     np.testing.assert_allclose(packed, scalar, rtol=1e-12, atol=0.0)
 
 
+@pytest.mark.parametrize("neighbour_first", [False, True])
+def test_packed_short_rows_one_segment_neighbour_match_scalar(
+    neighbour_first: bool,
+) -> None:
+    roads = [
+        gm.LineString([(float(j), float(j % 2)) for j in range(8 + i % 5)])
+        for i in range(100)
+    ]
+    roads[-1] = gm.LineString([(float(j), float(j % 2)) for j in range(10)])
+    neighbour = gm.LineString([(1000.0, 0.0), (1001.0, 0.0)])
+    rows = [neighbour, *roads] if neighbour_first else [*roads, neighbour]
+    arr = gm.GeometryArray(rows)
+    packed = np.asarray(arr.length, dtype=np.float64)
+    scalar = np.array([row.length for row in rows], dtype=np.float64)
+    np.testing.assert_allclose(packed, scalar, rtol=1e-12, atol=0.0)
+
+
 def test_packed_length_huge_poisoned_hex_matches_scalar() -> None:
     """Compact-guard rescue: packed and scalar stay in lockstep (incl. huge)."""
     coords = _huge_poisoned_line()
@@ -84,6 +101,23 @@ def test_packed_length_3d_matches_scalar() -> None:
     packed = np.asarray(arr.length_3d, dtype=np.float64)
     scalar = np.array([g.length_3d for g in arr], dtype=np.float64)
     np.testing.assert_allclose(packed, scalar, rtol=1e-12, atol=0.0)
+
+
+def test_packed_short_3d_length_preserves_z_crs_scale_and_missing() -> None:
+    rows = [
+        gm.LineString([(float(j), float(j % 2), float(2 * j)) for j in range(10)])
+        for _ in range(100)
+    ]
+    arr = gm.GeometryArray([*rows, None], crs=2263)
+    planar = np.asarray(gm.length_3d(arr, unit="planar"), dtype=np.float64)
+    meters = np.asarray(gm.length_3d(arr, unit="meters"), dtype=np.float64)
+    scalar = np.array([gm.length_3d(row, unit="planar") for row in rows], dtype=np.float64)
+    np.testing.assert_allclose(planar[:-1], scalar, rtol=1e-12, atol=0.0)
+    np.testing.assert_allclose(
+        meters[:-1], planar[:-1] * 0.3048006096012192, rtol=1e-12, atol=0.0
+    )
+    assert math.isnan(planar[-1])
+    assert math.isnan(meters[-1])
 
 
 def test_packed_polygon_perimeter_matches_scalar() -> None:
