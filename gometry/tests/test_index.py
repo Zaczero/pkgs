@@ -523,6 +523,22 @@ def test_join_returns_exact_refined_index_pairs() -> None:
     assert pair_rows(pairs) == [(0, 0), (1, 1)]
 
 
+def test_one_shot_join_refines_concave_bbox_candidates() -> None:
+    concave = gm.Polygon([(0, 0), (2, 0), (2, 2), (1, 1), (0, 2)])
+    points = gm.points([1.0, 1.0], [1.5, 0.5])
+
+    assert pair_rows(gm.join(points, [concave], predicate='within')) == [(1, 0)]
+
+
+def test_reusable_packed_point_queries_refine_concave_bbox_candidates() -> None:
+    concave = gm.Polygon([(0, 0), (2, 0), (2, 2), (1, 1), (0, 2)])
+    points = gm.points([1.0, 1.0], [1.5, 0.5])
+    index = gm.SpatialIndex([concave])
+
+    assert match_rows(index.query(points, predicate='within')) == [[], [0]]
+    assert pair_rows(index.join(points, predicate='within')) == [(1, 0)]
+
+
 def test_join_supports_dwithin_and_scalar_inputs() -> None:
     left = [gm.Point(0, 0), gm.Point(4, 0)]
     right = gm.points([1.0, 2.0, 10.0], [0.0, 0.0, 0.0])

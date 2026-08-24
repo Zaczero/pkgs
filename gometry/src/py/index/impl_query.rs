@@ -11,8 +11,9 @@ use crate::py::index::{
     PyResult, PySpatialIndex, RTreeNode, RowMatches, Shape, ShapeData, ShapeRow, XY,
     bounds_envelope, collect_subtree_ids, convex_box_strictly_inside, crs, crs_label, epoch_label,
     global_geographic_candidate_envelope, index_envelope, nearest_candidates_from_heap,
-    pair_distance_resolved, pair_dwithin_resolved, point_from_bounds, point_index_envelope,
-    push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids, topology_scalar_pair,
+    pair_distance_resolved, pair_dwithin_resolved, point_batch, point_from_bounds,
+    point_index_envelope, push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids,
+    topology_scalar_pair,
 };
 
 #[cfg(test)]
@@ -594,6 +595,89 @@ impl PySpatialIndex {
         Ok(())
     }
 
+    /// Refine packed point topological queries by indexed row. Candidate
+    /// traversal remains point-driven, but each indexed shape sees its actual
+    /// candidate points in one packed point kernel call. Geographic seam/pole
+    /// rows use the scalar keystone because the packed kernel is planar there.
+    fn point_rows_join_matches(
+        &self,
+        points: &PointRows<'_>,
+        missing: Option<&[bool]>,
+        predicate: Predicate,
+    ) -> PyResult<RowMatches> {
+        let geographic = self.geographic();
+        let mut ids = Vec::new();
+        let mut offsets = Vec::with_capacity(points.len() + 1);
+        offsets.push(0);
+        for (row, point) in points.iter().enumerate() {
+            if missing.is_some_and(|mask| mask[row]) {
+                offsets.push(ids.len());
+                continue;
+            }
+            self.collect_intersecting(&point_index_envelope(point, geographic), &mut ids);
+            offsets.push(ids.len());
+        }
+        if ids.is_empty() {
+            return Ok(RowMatches { ids, offsets });
+        }
+
+        let mut groups: Vec<Vec<(usize, usize)>> =
+            (0..self.rows.len()).map(|_| Vec::new()).collect();
+        for row in 0..points.len() {
+            for position in offsets[row]..offsets[row + 1] {
+                groups[ids[position]].push((row, position));
+            }
+        }
+
+        let spec = predicate.spec();
+        let mut keep = vec![false; ids.len()];
+        for (idx, group) in groups.iter().enumerate() {
+            if group.is_empty() {
+                continue;
+            }
+            let data = self.rows.prepared_row(idx);
+            let batch_safe = !geographic
+                || (!data.shape().crosses_antimeridian()
+                    && group.iter().all(|&(row, _)| {
+                        crate::geometry::point_is_geographic_pole(points.get(row)).is_none()
+                    }));
+            if batch_safe {
+                let grouped_points =
+                    PointRows::Gathered(group.iter().map(|&(row, _)| points.get(row)).collect());
+                if let Some(mask) = point_batch(&spec, &data, &grouped_points, false, false) {
+                    for (&(_, position), accepted) in group.iter().zip(mask) {
+                        keep[position] = accepted;
+                    }
+                    continue;
+                }
+            }
+            for &(row, position) in group {
+                let query = ShapeData::new(Shape::Point(points.get(row)));
+                keep[position] = topology_scalar_pair(&spec, &query, &data, geographic);
+            }
+        }
+
+        let mut refined_ids = 0;
+        let mut refined_offsets = Vec::with_capacity(offsets.len());
+        refined_offsets.push(0);
+        for row in 0..points.len() {
+            let output_start = refined_ids;
+            for position in offsets[row]..offsets[row + 1] {
+                if keep[position] {
+                    ids[refined_ids] = ids[position];
+                    refined_ids += 1;
+                }
+            }
+            sort_row_ids(&mut ids[output_start..refined_ids], self.rows.len());
+            refined_offsets.push(refined_ids);
+        }
+        ids.truncate(refined_ids);
+        Ok(RowMatches {
+            ids,
+            offsets: refined_offsets,
+        })
+    }
+
     /// Whether this index's shared frame is a geographic CRS — the single
     /// source of truth that drives antimeridian split-normalization in every
     /// topological refine path (never hardcoded). All rows and the query share
@@ -881,6 +965,11 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
     ) -> PyResult<RowMatches> {
         let plan = PreparedIndexQuery::for_array(self, array, predicate, distance, unit)?;
+        if distance.is_none()
+            && let Some(IndexPredicate::Topological(predicate)) = predicate
+        {
+            return self.point_rows_join_matches(points, missing, predicate);
+        }
         let spec = match predicate {
             Some(IndexPredicate::Topological(predicate)) => Some(predicate.spec()),
             Some(IndexPredicate::Dwithin) | None => None,

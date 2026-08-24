@@ -32,7 +32,7 @@ use crate::{
     PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs, crs_label,
     epoch_label, exact_geometry, exact_geometry_array, geometry_items,
     global_geographic_candidate_envelope, index_bounds, index_envelope, pair_distance_resolved,
-    pair_dwithin_resolved, point_from_bounds, point_index_envelope, resolve_metric,
+    pair_dwithin_resolved, point_batch, point_from_bounds, point_index_envelope, resolve_metric,
     scalar_vs_shapes, topology_scalar_pair, validate_distance_arg, validate_nearest_k,
 };
 
