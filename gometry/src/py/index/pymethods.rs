@@ -6,7 +6,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::PyBool;
 
-use crate::collections::sort_row_ids;
+use crate::collections::RowIdSortScratch;
 use crate::parse_spatial_index_handle;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexEntry,
@@ -647,12 +647,13 @@ impl PySpatialIndex {
             let row_count = array.storage().len();
             let mut ids = Vec::new();
             let mut offsets = Vec::with_capacity(row_count + 1);
+            let mut sort_scratch = RowIdSortScratch::default();
+            let (predicate, distance, metric) = plan.candidate_parts();
             offsets.push(0);
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let row_start = ids.len();
                     let seeded = array.row_bounds_seed(row_index);
-                    let (predicate, distance, metric) = plan.candidate_parts();
                     if envelope_only {
                         let bounds = match seeded {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
@@ -673,7 +674,7 @@ impl PySpatialIndex {
                             &mut ids,
                         );
                     }
-                    sort_row_ids(&mut ids[row_start..], self.rows.len());
+                    sort_scratch.sort(&mut ids[row_start..], self.rows.len());
                 }
                 offsets.push(ids.len());
             }

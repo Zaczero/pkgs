@@ -35,7 +35,7 @@ pub(super) struct StaticStrTree {
     /// `levels[0]` = leaves; the last level is the root layer (length <=
     /// `NODE_CAP` — descents seed from it directly).
     levels: Vec<Vec<StrNode>>,
-    removed: Vec<bool>,
+    removed: Vec<u8>,
     live: usize,
 }
 
@@ -57,9 +57,9 @@ impl StaticStrTree {
     /// the indexed ones.
     pub(super) fn build(mut entries: Vec<IndexEntry>, total_rows: usize) -> Self {
         let entry_count = entries.len();
-        let mut removed = vec![true; total_rows];
+        let mut removed = vec![1_u8; total_rows];
         for entry in &entries {
-            removed[entry.idx] = false;
+            removed[entry.idx] = 0;
         }
         let mut tree = Self {
             entries: Vec::new(),
@@ -137,21 +137,23 @@ impl StaticStrTree {
     /// Tombstone a build handle. `true` when it was live.
     pub(super) fn tombstone(&mut self, handle: usize) -> bool {
         let slot = &mut self.removed[handle];
-        if *slot {
+        if *slot != 0 {
             return false;
         }
-        *slot = true;
+        *slot = 1;
         self.live -= 1;
         true
     }
 
     /// Every live entry, in STR storage order.
     pub(super) fn live_entries(&self) -> impl Iterator<Item = &IndexEntry> {
-        self.entries.iter().filter(|entry| !self.removed[entry.idx])
+        self.entries
+            .iter()
+            .filter(|entry| self.removed[entry.idx] == 0)
     }
 
     pub(super) fn is_live(&self, handle: usize) -> bool {
-        !self.removed[handle]
+        self.removed[handle] == 0
     }
 
     /// The root layer (empty tree → empty slice) — descent seeds.
@@ -178,7 +180,7 @@ impl StaticStrTree {
     pub(super) fn collect_subtree(&self, level: usize, node: &StrNode, out: &mut Vec<usize>) {
         if level == 0 {
             out.extend(self.leaf_entries(node).iter().filter_map(|entry| {
-                let live = !self.removed[entry.idx];
+                let live = self.removed[entry.idx] == 0;
                 live.then_some(entry.idx)
             }));
             return;
@@ -192,9 +194,9 @@ impl StaticStrTree {
     /// Live handles whose envelope intersects `query`.
     pub(super) fn each_intersecting(&self, query: &AABB<[f64; 2]>, mut visit: impl FnMut(usize)) {
         self.descend(
-            |envelope| envelope.intersects(query),
+            |envelope| intersects(envelope, query),
             |entry| {
-                if entry.envelope.intersects(query) {
+                if intersects(&entry.envelope, query) {
                     visit(entry.idx);
                 }
             },
@@ -204,9 +206,9 @@ impl StaticStrTree {
     /// Live handles whose envelope is fully contained in `query`.
     pub(super) fn each_contained(&self, query: &AABB<[f64; 2]>, mut visit: impl FnMut(usize)) {
         self.descend(
-            |envelope| envelope.intersects(query),
+            |envelope| intersects(envelope, query),
             |entry| {
-                if query.contains_envelope(&entry.envelope) {
+                if contains_envelope(query, &entry.envelope) {
                     visit(entry.idx);
                 }
             },
@@ -223,9 +225,9 @@ impl StaticStrTree {
         mut visit: impl FnMut(usize),
     ) {
         self.descend(
-            |envelope| envelope.distance_2(&point) <= max_distance_2,
+            |envelope| distance_2(envelope, &point) <= max_distance_2,
             |entry| {
-                if entry.envelope.distance_2(&point) <= max_distance_2 {
+                if distance_2(&entry.envelope, &point) <= max_distance_2 {
                     visit(entry.idx);
                 }
             },
@@ -257,7 +259,7 @@ impl StaticStrTree {
                 let node = self.node(level, index);
                 if level == 0 {
                     for entry in self.leaf_entries(node) {
-                        if !self.removed[entry.idx] {
+                        if self.removed[entry.idx] == 0 {
                             leaf(entry);
                         }
                     }
@@ -271,6 +273,51 @@ impl StaticStrTree {
             }
         });
     }
+}
+
+#[inline]
+fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
+    let left_lower = left.lower();
+    let left_upper = left.upper();
+    let right_lower = right.lower();
+    let right_upper = right.upper();
+    left_lower[0] <= right_upper[0]
+        && left_lower[1] <= right_upper[1]
+        && left_upper[0] >= right_lower[0]
+        && left_upper[1] >= right_lower[1]
+}
+
+#[inline]
+fn contains_envelope(outer: &AABB<[f64; 2]>, inner: &AABB<[f64; 2]>) -> bool {
+    let outer_lower = outer.lower();
+    let outer_upper = outer.upper();
+    let inner_lower = inner.lower();
+    let inner_upper = inner.upper();
+    outer_lower[0] <= inner_lower[0]
+        && outer_lower[1] <= inner_lower[1]
+        && outer_upper[0] >= inner_upper[0]
+        && outer_upper[1] >= inner_upper[1]
+}
+
+#[inline]
+fn distance_2(envelope: &AABB<[f64; 2]>, point: &[f64; 2]) -> f64 {
+    let lower = envelope.lower();
+    let upper = envelope.upper();
+    let dx = if point[0] < lower[0] {
+        lower[0] - point[0]
+    } else if point[0] > upper[0] {
+        point[0] - upper[0]
+    } else {
+        0.0
+    };
+    let dy = if point[1] < lower[1] {
+        lower[1] - point[1]
+    } else if point[1] > upper[1] {
+        point[1] - upper[1]
+    } else {
+        0.0
+    };
+    dx * dx + dy * dy
 }
 
 crate::heapless!(IndexEntry, StrNode);
