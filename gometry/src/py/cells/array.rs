@@ -109,6 +109,11 @@ trait CellArrayGrid: GridCell {
     fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn parse_compact_floor(depth: Option<&Bound<'_, PyAny>>) -> PyResult<u8>;
     fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>>;
+    fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
+        let cells = ids.into_iter().map(Self::from_validated_id).collect();
+        Self::compact_cells(cells, floor)
+            .map(|cells| cells.into_iter().map(Self::hash_key).collect())
+    }
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>>;
     fn uncompact_floor_token(cell: &Self) -> String;
 }
@@ -138,6 +143,10 @@ impl CellArrayGrid for h3o::CellIndex {
 
     fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
         super::h3::compact_cells(cells, super::h3::resolution_from_depth(floor)?)
+    }
+
+    fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
+        super::h3::h3_compact_ids_with_floor(ids, super::h3::resolution_from_depth(floor)?)
     }
 
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
@@ -1454,10 +1463,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     pub(crate) fn compact(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
         let compacted = dispatch_cell_grid!(self, G, {
-            Self::ids_from_cells(G::compact_cells(
-                self.logical_cells::<G>().collect(),
-                G::parse_compact_floor(depth)?,
-            )?)
+            let ids = (0..self.len())
+                .filter(|&logical| !self.is_row_missing(logical))
+                .map(|logical| self.id_at(logical))
+                .collect();
+            G::compact_ids(ids, G::parse_compact_floor(depth)?)?
         });
         Ok(Self::from_trusted_ids(kind, compacted))
     }

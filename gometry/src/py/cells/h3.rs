@@ -17,6 +17,7 @@ mod types;
 mod vertex_edge;
 mod vertex_edge_array;
 
+pub(super) use compact::h3_compact_ids_with_floor;
 use compact::{h3_compact_with_floor, parse_h3_grid_k};
 use dissolve::h3_dissolve;
 use functions::{h3_bounding_cell, h3_cells, h3_cover};

@@ -13,6 +13,7 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
+from gometry import _lib
 
 
 def test_h3_point_cell_and_boundary() -> None:
@@ -390,6 +391,22 @@ def test_h3_set_utilities_compact_uncompact_children_count() -> None:
         children.uncompact(5)
     assert parent.children_count(6) == len(children) == 7
     assert parent.children_count(8) == len(parent.children(8))
+
+
+def test_h3_compact_skips_missing_rows_without_folding_incomplete_parent() -> None:
+    parent = gm.H3Cell(21.0, 52.0, resolution=5)
+    children = list(parent.children(6))
+    present = [child.token for index, child in enumerate(children) if index != 1]
+    values = _lib._unpickle_cell_array(
+        present,
+        'h3',
+        bytes([0, 1, 0, 0, 0, 0, 0]),
+    )
+
+    compacted = values.compact()
+    assert len(compacted) == 6
+    assert parent.token not in compacted.token
+    assert set(compacted.token) == set(present)
 
 
 def test_h3_depth_accessors_and_local_ij() -> None:
