@@ -1,15 +1,14 @@
 use ahash::HashSetExt as _;
 
 use crate::error::Result;
-use crate::geometry::predicates::{
-    face_interior_point, prune_dangles, segments_contain_interior, validate_points,
-};
+use crate::geometry::overlay::outside_winding_seeds;
+use crate::geometry::predicates::{prune_dangles, validate_points};
 use crate::geometry::{
     AreaSign, Arrangement, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _, HashSet,
     OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, RingDecisionArea, Segment, Shape, XY,
-    assemble_region_polygons, binary_areal_overlay, line_segments, minimal_positive_face_rings,
-    ordered_edge, polygon_parts_to_shape, polygon_winding_loops, ring_decision_area, same_point,
-    self_node_segments, winding_region, wrap_index,
+    assemble_region_polygons, binary_areal_overlay, line_segments, ordered_edge,
+    polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments, winding_region,
+    wrap_index,
 };
 ///
 /// `Linework` is even-odd parity over the DEDUPLICATED noded linework
@@ -37,17 +36,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
                     arrangement.region_rings(&windings, |winding| winding % 2 != 0),
                 )
             } else {
-                // The xor-fold across ring areas IS odd-coverage selection:
-                // every face area is a simple CCW polygon, so a face of
-                // their joint arrangement is kept exactly when an ODD
-                // number of areas cover it (winding counts the covers).
-                let mut faces = Vec::new();
-                for polygon in polygons {
-                    for ring in polygon.rings() {
-                        faces.extend(ring_even_odd_area(&ring)?);
-                    }
-                }
-                winding_region(&polygon_winding_loops(&faces), |winding| winding % 2 == 1)
+                linework_area(polygons)?
             }
         },
         RepairMethod::Structure => {
@@ -130,6 +119,144 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         }
     }
     Ok(polygon_parts_to_shape(cleaned))
+}
+
+/// Build the linework repair region from one joint arrangement.
+///
+/// The previous shape decomposed every ring independently and then noded the
+/// resulting face polygons again.  Noding all rings once is equivalent after
+/// collapsing duplicate edges *within each source ring*: duplicate source
+/// rings still contribute twice and cancel under parity, while a retraced edge
+/// inside one ring contributes once as required by linework repair.
+fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
+    let coordinate_count = polygons
+        .iter()
+        .map(|polygon| {
+            polygon
+                .rings()
+                .map(|ring| ring.coord_count())
+                .sum::<usize>()
+        })
+        .sum();
+    let mut segments = Vec::with_capacity(coordinate_count);
+    let mut segment_loop = Vec::with_capacity(coordinate_count);
+    let mut loop_anchor = Vec::with_capacity(polygons.len());
+    for polygon in polygons {
+        for ring in polygon.rings() {
+            require_finite_ring(&ring)?;
+            let mut closed = ring.iter_coords().map(Point::force_2d).collect::<Vec<_>>();
+            if let (Some(&first), Some(&last)) = (closed.first(), closed.last())
+                && !same_point(first, last)
+            {
+                closed.push(first);
+            }
+            let mut ring_edges = HashSet::with_capacity(closed.len());
+            let before = segments.len();
+            for segment in line_segments(&closed) {
+                if same_point(segment.start, segment.end)
+                    || !ring_edges.insert(ordered_edge(
+                        PointKey::new(segment.start),
+                        PointKey::new(segment.end),
+                    ))
+                {
+                    continue;
+                }
+                segments.push(segment);
+                segment_loop.push(loop_anchor.len() as u32);
+            }
+            if segments.len() > before {
+                loop_anchor.push(closed[0].xy());
+            }
+        }
+    }
+    if segments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut atomic = self_node_segments(&segments);
+    prune_dangles(&mut atomic);
+    if atomic.is_empty() {
+        return Ok(Vec::new());
+    }
+    let arrangement = Arrangement::new(&atomic);
+    drop(atomic);
+    let all_source_vertices_survive = segments.iter().all(|segment| {
+        arrangement.ids.contains_key(&PointKey::new(segment.start))
+            && arrangement.ids.contains_key(&PointKey::new(segment.end))
+    });
+    let seeds = if all_source_vertices_survive {
+        // The normal case keeps the original source slices: cloning them just
+        // to make the seed query's inputs owned inflated each row's peak live
+        // set without changing the ray crossings.
+        let loop_component: Vec<u32> = loop_anchor
+            .iter()
+            .map(|&anchor| arrangement.component_of_point(anchor))
+            .collect();
+        let segment_operand = vec![0_u32; segments.len()];
+        outside_winding_seeds(
+            &segments,
+            &segment_operand,
+            &segment_loop,
+            &loop_component,
+            &arrangement.component_probes(),
+        )
+        .into_iter()
+        .map(|seed| seed[0])
+        .collect::<Vec<_>>()
+    } else {
+        // Dangle pruning can remove a repeated-edge branch, including the
+        // original anchor. Keep only source edges that survived in the joint
+        // graph when calculating outside seeds; otherwise a discarded antenna
+        // could perturb the ray crossing for a component that did survive.
+        let mut active_loop = vec![u32::MAX; loop_anchor.len()];
+        let mut active_anchor = Vec::new();
+        for (loop_index, _) in loop_anchor.iter().enumerate() {
+            let anchor = segments
+                .iter()
+                .zip(&segment_loop)
+                .filter(|(_, source)| **source as usize == loop_index)
+                .find_map(|(segment, _)| {
+                    (arrangement.ids.contains_key(&PointKey::new(segment.start))
+                        && arrangement.ids.contains_key(&PointKey::new(segment.end)))
+                    .then_some(segment.start)
+                });
+            if let Some(anchor) = anchor {
+                active_loop[loop_index] = active_anchor.len() as u32;
+                active_anchor.push(anchor);
+            }
+        }
+        let mut seed_segments = Vec::new();
+        let mut seed_loop = Vec::new();
+        for (segment, &loop_index) in segments.iter().zip(&segment_loop) {
+            let active = active_loop[loop_index as usize];
+            if active != u32::MAX
+                && arrangement.ids.contains_key(&PointKey::new(segment.start))
+                && arrangement.ids.contains_key(&PointKey::new(segment.end))
+            {
+                seed_segments.push(*segment);
+                seed_loop.push(active);
+            }
+        }
+        let loop_component: Vec<u32> = active_anchor
+            .iter()
+            .map(|&anchor| arrangement.component_of_point(anchor))
+            .collect();
+        let segment_operand = vec![0_u32; seed_segments.len()];
+        outside_winding_seeds(
+            &seed_segments,
+            &segment_operand,
+            &seed_loop,
+            &loop_component,
+            &arrangement.component_probes(),
+        )
+        .into_iter()
+        .map(|seed| seed[0])
+        .collect::<Vec<_>>()
+    };
+    let windings = arrangement.face_windings(&seeds);
+    Ok(assemble_region_polygons(
+        arrangement.region_rings(&windings, |winding| winding % 2 != 0),
+    ))
 }
 
 /// Split a ring that touches itself at single vertices (a pinch) into its
@@ -338,39 +465,4 @@ pub(crate) fn ring_structure_area<C: Coordinates + ?Sized>(ring: &C) -> Result<V
         return Ok(Vec::new());
     }
     Ok(winding_region(&[(xs, ys)], |winding| winding != 0))
-}
-
-pub(crate) fn ring_even_odd_area<C: Coordinates + ?Sized>(ring: &C) -> Result<Vec<Polygon>> {
-    require_finite_ring(ring)?;
-    let mut closed = ring.iter_coords().map(Point::force_2d).collect::<Vec<_>>();
-    if let (Some(&first), Some(&last)) = (closed.first(), closed.last())
-        && !same_point(first, last)
-    {
-        closed.push(first);
-    }
-
-    let segments = line_segments(&closed).collect::<Vec<_>>();
-    // Even-odd parity is taken over the DEDUPLICATED noded linework: an edge
-    // traced twice within one ring counts once, so a fully re-traced ring
-    // still encloses its area (matching GEOS ``make_valid``) instead of
-    // cancelling to nothing. The face graph already deduplicates edges; the
-    // parity probe must raycast the same deduplicated set.
-    let mut atomic = self_node_segments(&segments);
-    let mut seen = HashSet::with_capacity(atomic.len());
-    atomic.retain(|segment| {
-        seen.insert(ordered_edge(
-            PointKey::new(segment.start),
-            PointKey::new(segment.end),
-        ))
-    });
-    // Deduplication can leave dangles (a spike traced out and back collapses
-    // to one bare edge). A dangle encloses nothing but would flip the
-    // raycast parity, so prune edges with a degree-1 endpoint iteratively
-    // before taking parity (the polygonizer ignores them for faces anyway).
-    prune_dangles(&mut atomic);
-    Ok(minimal_positive_face_rings(&atomic)
-        .into_iter()
-        .filter(|face| segments_contain_interior(&atomic, face_interior_point(face)))
-        .map(|face| Polygon::new(Ring::from_trusted_closed(face), Vec::new()))
-        .collect())
 }

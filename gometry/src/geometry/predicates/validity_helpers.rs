@@ -6,8 +6,8 @@ use crate::geometry::{
     CoordSeq, Coordinates, De9im, Dimension, HashMap, HashMapExt as _, Ordering, Point, PointKey,
     PointSetIndex, Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment,
     SegmentIndex, Shape, VertexProvenance, XY, effective_dimension, point_distance,
-    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ray_crossing_is_right,
-    ring_winding, same_point, segment_projection, simd_mask_any, squared_norm_is_trustworthy,
+    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
+    same_point, segment_projection, simd_mask_any, squared_norm_is_trustworthy,
     try_point_distance_squared, try_point_segment_distance_squared, wrap_index,
 };
 
@@ -66,22 +66,6 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
         index += 1;
         keep
     });
-}
-
-/// Even-odd raycast parity of `point` against a bag of segments (the
-/// deduplicated noded linework) — the segment-set sibling of
-/// [`ring_contains_interior`].
-pub(crate) fn segments_contain_interior(segments: &[Segment], point: XY) -> bool {
-    let mut inside = false;
-    for segment in segments {
-        let (a, b) = (segment.start, segment.end);
-        if (a.y > point.y) != (b.y > point.y)
-            && ray_crossing_is_right(a.x, a.y, b.x, b.y, point.x, point.y)
-        {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// A point strictly inside a simple counter-clockwise closed ring.

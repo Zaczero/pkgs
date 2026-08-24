@@ -280,6 +280,24 @@ def test_repair_parity_and_valid_fast_path() -> None:
     assert list(valid.repair()) == list(valid)
 
 
+def test_linework_repair_keeps_bowtie_and_nested_hole_regions() -> None:
+    bowtie = gm.from_wkt(BOWTIE_WKT)
+    nested_holes = gm.from_wkt(
+        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), '
+        '(2 2, 8 2, 8 8, 2 8, 2 2), '
+        '(4 4, 6 4, 6 6, 4 6, 4 4))'
+    )
+
+    repaired = gm.GeometryArray([bowtie, nested_holes]).repair()
+
+    assert all(repaired.is_valid)
+    assert repaired[0].geometry_type == 'MultiPolygon'
+    assert repaired[0].area == pytest.approx(2)
+    assert repaired[1].area == pytest.approx(68)
+    assert not gm.covers(repaired[1], gm.Point(3, 3))
+    assert gm.covers(repaired[1], gm.Point(5, 5))
+
+
 def test_repair_carries_z_and_m_through_the_rebuild() -> None:
     bowtie_z = gm.from_wkt('POLYGON Z ((0 0 1, 2 2 5, 2 0 3, 0 2 7, 0 0 1))')
     repaired = bowtie_z.repair()

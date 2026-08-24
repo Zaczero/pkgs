@@ -51,7 +51,7 @@ pub(crate) use validate::{
 pub(crate) use validity_helpers::{
     MinimumClearanceWitness, has_collection_operand, line_crosses_antimeridian, line_is_ccw,
     line_is_closed, line_is_simple, line_is_valid, minimum_clearance_witness, multiline_is_simple,
-    polygon_is_valid, prune_dangles, segments_contain_interior,
+    polygon_is_valid, prune_dangles,
 };
 pub(in crate::geometry) use validity_helpers::{disjoint_de9im, face_interior_point};
 

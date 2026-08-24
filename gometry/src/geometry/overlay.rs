@@ -72,7 +72,6 @@ mod shape;
 pub(crate) use areal::bbox_overlap_clusters_for_bounds;
 pub(in crate::geometry) use areal::{
     binary_areal_overlay, build_areal_arrangement, dissolve_polygons, outside_winding_seeds,
-    polygon_winding_loops,
 };
 pub(crate) use assembly::{
     build_overlay_shape, disjoint_overlay_combine, empty_overlay_shape, line_line_cross_points,

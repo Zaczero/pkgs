@@ -147,8 +147,8 @@ pub(crate) use overlay::{
 };
 use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
-    clipped_linestring, line_parts_to_shape, polygon_parts_to_shape, polygon_winding_loops,
-    rect_polygon, self_node_segments,
+    clipped_linestring, line_parts_to_shape, polygon_parts_to_shape, rect_polygon,
+    self_node_segments,
 };
 #[doc(hidden)]
 pub(crate) use packed_line_metrics::PackedLineColumnView;
@@ -215,9 +215,7 @@ pub(crate) use segments::{
     point_on_segment, points_dwithin, squared_norm_is_trustworthy,
 };
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
-use tessellation::{
-    delaunay_triangulation_spade, minimal_positive_face_rings, point_in_ccw_triangle,
-};
+use tessellation::{delaunay_triangulation_spade, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeodesicPartsKey;
 
 use crate::collections::{HashMap, HashSet};
