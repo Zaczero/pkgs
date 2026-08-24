@@ -18,12 +18,10 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     right: &[Q],
     op: OverlayOp,
 ) -> Vec<Polygon> {
-    // The cascade's hot MERGE step: mirror `Shape::union`'s clean fast lane so a
-    // dissolve merge of two simple blobs reassembles straight from its
-    // result-boundary arcs instead of paying a full DCEL/winding arrangement at
-    // every level of the recursion. Without this the cascade was several × the
-    // equivalent binary union (which already takes this path). Bails to the
-    // arrangement oracle (below) on any degeneracy — same contract as the entry.
+    // Two-operand overlay: mirror `Shape::union`'s clean fast lane so a pair of
+    // simple blobs reassembles from result-boundary arcs instead of paying a
+    // full DCEL/winding arrangement. Bails to the arrangement oracle (below) on
+    // any degeneracy — same contract as the entry.
     if matches!(
         op,
         OverlayOp::Union | OverlayOp::Difference | OverlayOp::SymmetricDifference
@@ -396,16 +394,14 @@ pub(crate) fn canonical_ring_walk<C: Coordinates + ?Sized>(
     (walk.len() >= 3).then_some(walk)
 }
 
-/// Dissolve (n-ary union) of polygons. Small batches resolve in ONE joint
-/// arrangement (the union of valid polygons IS the `winding >= 1` region);
-/// larger batches recurse through a kd-style split on the wider bbox axis
-/// and merge with the binary winding overlay — the cascaded-union shape
-/// (each half dissolves to far fewer segments before the merges above it,
-/// keeping every noding pass small).
+/// Dissolve (n-ary union) of polygons. Bbox-disjoint clusters resolve
+/// independently. A two-polygon cluster uses the binary overlay; every
+/// larger connected cluster is one joint arrangement whose union is the
+/// `winding >= 1` region.
 pub(in crate::geometry) fn dissolve_polygons(polygons: Vec<Polygon>) -> Vec<Polygon> {
     // Disjoint clusters dissolve independently — and SINGLETONS (the
     // sparse caseload) cost one tiny single-loop arrangement instead of
-    // riding every cascade merge above them. Boxes that do not overlap
+    // joining a connected cluster's joint pass. Boxes that do not overlap
     // cannot interact, so cross-cluster results concatenate exactly.
     if polygons.len() > 2
         && let Some(roots) = bbox_overlap_clusters(&polygons)
