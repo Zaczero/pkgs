@@ -34,6 +34,40 @@ def test_packed_geodesic_point_pair_distance_matches_scalar_row_oracle() -> None
     assert floats(gm.distance(left, right)) == expected
 
 
+def test_packed_geodesic_distance_keeps_ellipsoid_units_and_poles() -> None:
+    """Packed distance remains Karney geodesic, not a spherical degree shortcut."""
+    import numpy as np
+    from pyproj import Geod
+
+    left = gm.points([0.0, 10.0, 0.0], [0.0, 45.0, 90.0], crs=WGS84)
+    right = gm.points([179.999, -169.999, 180.0], [0.001, -45.0, -90.0], crs=WGS84)
+    expected = np.asarray(
+        Geod(ellps='WGS84').inv(
+            [0.0, 10.0, 0.0],
+            [0.0, 45.0, 90.0],
+            [179.999, -169.999, 180.0],
+            [0.001, -45.0, -90.0],
+        )[2],
+        dtype=np.float64,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(gm.distance(left, right, unit='meters'), dtype=np.float64),
+        expected,
+        rtol=1e-12,
+        atol=1e-6,
+    )
+    # The explicit planar override is degree-space hypot, not meters or a
+    # silently retained geodesic model.
+    np.testing.assert_allclose(
+        np.asarray(gm.distance(left, right, unit='planar'), dtype=np.float64),
+        np.hypot(
+            np.asarray([0.0, 10.0, 0.0]) - np.asarray([179.999, -169.999, 180.0]),
+            np.asarray([0.0, 45.0, 90.0]) - np.asarray([0.001, -45.0, -90.0]),
+        ),
+    )
+
+
 def test_packed_geodesic_point_pair_dwithin_matches_scalar_row_oracle() -> None:
     xs = [0.0, 1.0, 10.0, -73.0, 170.0]
     ys = [0.0, 0.5, 45.0, 41.0, -10.0]
