@@ -1,9 +1,11 @@
 //! Full-binary64 orientation sign.
 //!
-//! The fast filter rounds every operation outward and decides only when the
-//! determinant interval excludes zero. Ambiguous lanes fall back to integer
-//! arithmetic on exact stored dyadics (all binary64 values share `2^-1074`).
+//! The fast filter first applies the standard determinant error bound, then
+//! rounds an outward interval for ambiguous lanes. Unresolved cases fall back
+//! to integer arithmetic on exact stored dyadics (all binary64 values share
+//! `2^-1074`).
 
+use super::CCW_ERRBOUND_A;
 use crate::geometry::Orientation;
 use crate::geometry::tessellation::exact::{ExactSign, Interval};
 
@@ -116,6 +118,25 @@ impl ExactInteger {
 }
 
 pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> Orientation {
+    // Certify ordinary finite coordinates with the first Shewchuk filter before
+    // constructing outward intervals. Overflow, underflow, and near-collinear
+    // cases continue through the complete binary64 path below.
+    let (bax, bay) = (bx - ax, by - ay);
+    let (cax, cay) = (cx - ax, cy - ay);
+    let left = bax * cay;
+    let right = bay * cax;
+    let det = left - right;
+    let magnitude = left.abs() + right.abs();
+    if det.is_finite()
+        && magnitude.is_finite()
+        && det.abs() > (magnitude + f64::MIN_POSITIVE) * CCW_ERRBOUND_A
+    {
+        return if det > 0.0 {
+            Orientation::CounterClockwise
+        } else {
+            Orientation::Clockwise
+        };
+    }
     let exact = Interval::exact;
     let (bax, bay) = (exact(bx).sub(exact(ax)), exact(by).sub(exact(ay)));
     let (cax, cay) = (exact(cx).sub(exact(ax)), exact(cy).sub(exact(ay)));
@@ -158,6 +179,15 @@ mod tests {
         assert_eq!(
             orientation_xy(0.0, 0.0, length, length, mu, 2.0 * mu),
             Orientation::CounterClockwise
+        );
+    }
+
+    #[test]
+    fn overflowing_differences_reach_exact_fallback() {
+        let max = f64::MAX;
+        assert_eq!(
+            orientation_xy(-max, -max, max, max, max, -max),
+            Orientation::Clockwise
         );
     }
 }

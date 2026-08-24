@@ -12,6 +12,7 @@ use crate::geometry::{
     SegmentIndex, Shape, XY, assemble_region_polygons, orient_ring, ray_crossing_is_right,
     ring_winding, same_point, winding_region, wrap_index,
 };
+
 pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     left: &[P],
     right: &[Q],
@@ -422,17 +423,17 @@ pub(in crate::geometry) fn dissolve_polygons(polygons: Vec<Polygon>) -> Vec<Poly
         }
         let mut out = Vec::new();
         for group in groups {
-            out.extend(dissolve_connected(group));
+            out.extend(dissolve_connected(&group));
         }
         return out;
     }
-    dissolve_connected(polygons)
+    dissolve_connected(&polygons)
 }
 
 /// Union-find clustering by bbox overlap via a sweep over `minx`, with a
 /// pair-test budget: `None` for interaction-dense scenes where clustering
-/// cannot pay (one cluster — the cascade handles it). Correctness never
-/// depends on the verdict, only the work shape does.
+/// cannot pay (one cluster — the joint arrangement handles it). Correctness
+/// never depends on the verdict, only the work shape does.
 pub(crate) fn bbox_overlap_clusters(polygons: &[Polygon]) -> Option<Vec<usize>> {
     let bounds: Vec<_> = polygons.iter().map(Polygon::bounds).collect();
     bbox_overlap_clusters_for_bounds(&bounds)
@@ -469,58 +470,12 @@ pub(crate) fn bbox_overlap_clusters_for_bounds(bounds: &[Option<Bounds>]) -> Opt
     })
 }
 
-/// One bbox-connected cluster's dissolve: the joint-arrangement leaf or
-/// the kd-style cascade.
-pub(crate) fn dissolve_connected(polygons: Vec<Polygon>) -> Vec<Polygon> {
-    /// Joint-arrangement budget: below this many segments the single
-    /// global pass beats the recursion overhead.
-    const LEAF_SEGMENTS: usize = 256;
-    // A two-blob leaf is exactly a binary union — take the clean fast lane
-    // (arrangement fallback on degeneracy) rather than building a joint
-    // winding arrangement, which for large blobs costs several × the clean
-    // reassembly. The joint winding pass still owns 3+-way small leaves, where
-    // one shared arrangement beats pairwise merges.
+/// One bbox-connected cluster's dissolve.
+pub(crate) fn dissolve_connected(polygons: &[Polygon]) -> Vec<Polygon> {
     if polygons.len() == 2 {
         return binary_areal_overlay(&polygons[..1], &polygons[1..], OverlayOp::Union);
     }
-    let segments: usize = polygons.iter().map(Polygon::segment_count).sum();
-    if segments <= LEAF_SEGMENTS || polygons.len() <= 1 {
-        return winding_region(&polygon_winding_loops(&polygons), |winding| winding >= 1);
-    }
-    // Median split by bbox center along the wider joint axis. Centers are
-    // computed ONCE and carried next to each polygon — `bounds()` is a
-    // full vertex scan, far too hot for a selection comparator.
-    let mut keyed: Vec<((f64, f64), Polygon)> = polygons
-        .into_iter()
-        .map(|polygon| {
-            let center = polygon.bounds().map_or((0.0, 0.0), |bounds| {
-                (
-                    f64::midpoint(bounds.minx(), bounds.maxx()),
-                    f64::midpoint(bounds.miny(), bounds.maxy()),
-                )
-            });
-            (center, polygon)
-        })
-        .collect();
-    let (minx, maxx, miny, maxy) = keyed.iter().fold(
-        (
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ),
-        |(minx, maxx, miny, maxy), (c, _)| {
-            (minx.min(c.0), maxx.max(c.0), miny.min(c.1), maxy.max(c.1))
-        },
-    );
-    let split_x = (maxx - minx) >= (maxy - miny);
-    let component = |center: &(f64, f64)| if split_x { center.0 } else { center.1 };
-    let mid = keyed.len() / 2;
-    keyed.select_nth_unstable_by(mid, |a, b| component(&a.0).total_cmp(&component(&b.0)));
-    let right = keyed.split_off(mid).into_iter().map(|(_, p)| p).collect();
-    let left = dissolve_connected(keyed.into_iter().map(|(_, p)| p).collect());
-    let right = dissolve_connected(right);
-    binary_areal_overlay(&left, &right, OverlayOp::Union)
+    winding_region(&polygon_winding_loops(polygons), |winding| winding >= 1)
 }
 
 /// The canonical winding loops of polygons (shells CCW, holes CW) — the
