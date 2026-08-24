@@ -173,6 +173,7 @@ pub(crate) type ElementBounds = Arc<[Option<Bounds>]>;
 type TotalBoundsCache = Arc<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>;
 mod linref_kernels;
 mod masked;
+mod methods_buffer;
 mod methods_convert;
 mod methods_core;
 mod methods_coverage;
@@ -207,11 +208,12 @@ mod packed_column_kernels;
 mod packed_columns;
 mod packed_gather;
 pub(crate) use packed_column_kernels::{
-    bounds_3d_values_from_columns, bounds_values_from_columns_masked, clip_lines_packed_xy,
-    ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
-    map_coordseq_to_crs, packed_per_row_self_origin_affine_columns, polygon_measure_masked,
-    reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
-    subdivide_line_columns, subdivide_polygon_columns, total_bounds_from_columns,
+    bounds_3d_values_from_columns, bounds_values_from_columns_masked, buffer_point_columns,
+    clip_lines_packed_xy, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
+    line_measure_masked, map_coordseq_to_crs, packed_per_row_self_origin_affine_columns,
+    polygon_measure_masked, reduce_lines_or_polygons, segmented_planar_lengths,
+    segmented_planar_lengths_3d, subdivide_line_columns, subdivide_polygon_columns,
+    total_bounds_from_columns,
 };
 pub(crate) use packed_columns::{
     PackedColumnError, PackedColumnOutput, PackedColumns, packed_columns_err,

@@ -14,21 +14,124 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::array::packed_columns::{
-    LineColumns, PackedColumnResult, PackedColumns, PolygonColumns, SegmentedRuns, XyColumns,
+    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PolygonColumns,
+    SegmentedRuns, XyColumns,
     batch_err, row_err,
 };
 use crate::array::storage_helpers::{
     packed_line_measure, packed_line_row_pivot, packed_polygon_measure, packed_polygon_row_pivot,
 };
 use crate::array::{
-    Bounds, CoordSeq, GeometryArrayStorage, OriginSpec, PackedColumnBuilder, PackedColumnOutput,
-    Result, RingLevel, RowSelectionRef, Shape, affine_about, column_window, crs, line_logical_len,
-    polygon_logical_len, polygon_rings_range, row_bounds_3d, row_bounds_values,
+    Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
+    PackedColumnOutput, Result, RingLevel, RowSelectionRef, Shape, affine_about, column_window,
+    crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds_3d,
+    row_bounds_values,
 };
 use crate::geometry::{CoordWindow, LineSeq, XY, clip_segment, same_point};
+
+/// Emit one round buffer polygon per packed point without per-row shapes.
+///
+/// The scalar point kernel builds the same inscribed circle, but repeats its
+/// step-angle trigonometry and allocates a `Shape` graph for every row. All
+/// rows here share the unit-circle table and are written into one XY column;
+/// CSR offsets retain one polygon shell per present row and zero shells for
+/// masked rows.
+pub(crate) fn buffer_point_columns(
+    points: &PointColumns<'_>,
+    distance: f64,
+    quadrant_segments: NonZeroU32,
+    missing: Option<&[bool]>,
+) -> PackedColumnResult<Option<PackedColumnOutput>> {
+    let rows = points.len();
+    if missing.is_some_and(|mask| mask.len() != rows) {
+        return Ok(None);
+    }
+    let steps = crate::geometry::ExpansionBudget::product(
+        "buffer",
+        "quadrant_segments",
+        4,
+        quadrant_segments.get() as usize,
+    )
+    .map_err(batch_err)?;
+    let vertices_per_row = steps.checked_add(1).ok_or_else(|| {
+        batch_err(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
+    })?;
+    let present_rows = missing.map_or(rows, |mask| mask.iter().filter(|&&value| !value).count());
+    let total = crate::geometry::ExpansionBudget::product(
+        "buffer",
+        "quadrant_segments",
+        present_rows,
+        vertices_per_row,
+    )
+    .map_err(batch_err)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
+    budget.add(total).map_err(batch_err)?;
+
+    let mut unit_x = Vec::with_capacity(steps);
+    let mut unit_y = Vec::with_capacity(steps);
+    let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
+    let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
+    for step in 0..steps {
+        if step > 0 {
+            (cos_theta, sin_theta) = (
+                cos_theta * cos_step - sin_theta * sin_step,
+                sin_theta * cos_step + cos_theta * sin_step,
+            );
+        }
+        unit_x.push(cos_theta);
+        unit_y.push(sin_theta);
+    }
+
+    let XyColumns {
+        xs: source_xs,
+        ys: source_ys,
+    } = points.xy();
+    let mut xs = Vec::with_capacity(total);
+    let mut ys = Vec::with_capacity(total);
+    let mut ring_offsets = CsrOffsetBuilder::new();
+    let mut polygon_offsets = CsrOffsetBuilder::new();
+    let mut ring_count = 0_usize;
+    for row in 0..rows {
+        let is_missing = missing.is_some_and(|mask| mask[row]);
+        if !is_missing {
+            let center_x = source_xs[row];
+            let center_y = source_ys[row];
+            for step in 0..steps {
+                let x = center_x + distance * unit_x[step];
+                let y = center_y + distance * unit_y[step];
+                if !x.is_finite() || !y.is_finite() {
+                    return Ok(None);
+                }
+                xs.push(x);
+                ys.push(y);
+            }
+            xs.push(xs[xs.len() - steps]);
+            ys.push(ys[ys.len() - steps]);
+            ring_count += 1;
+            ring_offsets
+                .push_end(xs.len(), i32::MAX as usize)
+                .map_err(batch_err)?;
+        }
+        polygon_offsets
+            .push_end(ring_count, i32::MAX as usize)
+            .map_err(batch_err)?;
+    }
+    let coords = CoordSeq::try_from_vecs(xs, ys, None, None).map_err(batch_err)?;
+    let ring_offsets = ring_offsets.finish(total).map_err(batch_err)?.cast_level();
+    let polygon_offsets = polygon_offsets
+        .finish(ring_count)
+        .map_err(batch_err)?
+        .cast_level();
+    Ok(Some(PackedColumnOutput::Polygons {
+        coords,
+        ring_offsets,
+        polygon_offsets,
+    }))
+}
 
 // `line_measure`/`polygon_measure` are the sanctioned indirection required by
 // `tools/gates/_check_packed_execution.py`: array method surfaces may not call the

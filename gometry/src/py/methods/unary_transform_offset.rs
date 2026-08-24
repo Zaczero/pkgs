@@ -343,6 +343,11 @@ impl PyGeometryArray {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
+        if let Some(result) =
+            self.buffer_points_unary_packed(py, &distance, quadrant_segments, side, unit)?
+        {
+            return Ok(result);
+        }
         crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
