@@ -723,6 +723,58 @@ def test_spatial_index_nearest_branch_and_bound_matches_brute_force() -> None:
     assert all(cast('float', gm.distance(probe, geoms[i])) <= 1.5 for i in near)
 
 
+def test_spatial_index_nearest_k1_keeps_stable_ties_after_mutation() -> None:
+    values = [gm.box(0, 0, 1, 1) for _ in range(40)]
+    index = gm.SpatialIndex(values)
+    query = gm.Point(3, 0.5)
+
+    nearest, distances = index.nearest(query, return_distance=True)
+    assert ids(nearest) == [0]
+    assert floats(distances) == pytest.approx([2.0])
+
+    assert index.remove(0)
+    assert ids(index.nearest(query)) == [1]
+    for handle in range(1, 40):
+        assert index.remove(handle)
+    inserted = index.insert(values[0])
+    assert inserted == 40
+    assert ids(index.nearest(query)) == [inserted]
+
+
+def test_spatial_index_nearest_k1_does_not_drop_unsorted_leaf_entries() -> None:
+    values = [
+        gm.box(-880, -304, -782, -282),
+        gm.box(253, -818, 327, -761),
+        gm.box(-794, 983, -735, 1005),
+        gm.box(189, -148, 191, -116),
+        gm.box(-368, -796, -344, -697),
+        gm.box(-21, -879, 49, -793),
+        gm.box(-230, 495, -133, 518),
+        gm.box(825, 38, 882, 116),
+        gm.box(-228, -483, -197, -421),
+        gm.box(208, 618, 307, 660),
+        gm.box(-530, 156, -476, 209),
+        gm.box(345, 602, 435, 613),
+        gm.box(150, -697, 172, -602),
+        gm.box(-350, 545, -266, 639),
+        gm.box(-698, -535, -607, -530),
+        gm.box(176, -711, 181, -619),
+        gm.box(-675, 935, -607, 1021),
+        gm.box(-530, 626, -487, 724),
+    ]
+    query = gm.Point(864, 1092)
+    index = gm.SpatialIndex(values)
+
+    # STR order puts an over-ceiling leaf entry before row 11, while another
+    # global node has a smaller lower bound than the leaf's minimum bound.
+    nearest, distances = index.nearest(
+        query, k=1, max_distance=700, return_distance=True
+    )
+
+    assert ids(nearest) == [11]
+    assert floats(distances) == pytest.approx([float(gm.distance(query, values[11]))])
+
+
 def test_spatial_index_completeness_len_batch_pairs_and_nearest_distance() -> None:
     points = gm.points([0, 1, 2, 3, 10], [0, 0, 0, 0, 0])
     index = gm.SpatialIndex(points)

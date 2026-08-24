@@ -772,6 +772,7 @@ impl PySpatialIndex {
             let mut offsets = Vec::with_capacity(row_count + 1);
             offsets.push(0);
             let mut frontier = BinaryHeap::new();
+            let mut leaf_frontier = Vec::with_capacity(crate::py::index::str_tree::NODE_CAP);
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let query = array.prepared_row(row_index, row);
@@ -786,6 +787,7 @@ impl PySpatialIndex {
                             include_ties: ties,
                         },
                         &mut frontier,
+                        &mut leaf_frontier,
                     )?;
                     for candidate in candidates {
                         ids.push(candidate.idx);

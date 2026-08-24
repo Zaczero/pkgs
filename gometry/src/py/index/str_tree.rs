@@ -14,7 +14,7 @@ use crate::py::index::IndexEntry;
 
 /// STR node fan-out. 16 keeps the tree shallow (100k rows ≈ 6.7k nodes over
 /// 4 levels) while each node's children still scan as one cache line burst.
-const NODE_CAP: usize = 16;
+pub(super) const NODE_CAP: usize = 16;
 
 /// One packed node: its children occupy `children` in the level below
 /// (level 0 nodes index the entry array instead).

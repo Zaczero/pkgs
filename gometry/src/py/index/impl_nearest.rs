@@ -1,9 +1,131 @@
+use super::str_tree::{NODE_CAP, StrNode};
 use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
     NonNegative, PyGeometry, PyResult, PySpatialIndex, RTreeNode, Shape, ShapeData,
     aabb_box_distance_2, crs, index_envelope, nearest_candidates_from_heap, pair_distance_resolved,
     push_nearest_candidate, resolve_metric, shape_pruner_point,
 };
+
+trait NearestState {
+    fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64>;
+    fn accept(&mut self, candidate: NearestCandidate);
+    fn finish(self) -> Vec<NearestCandidate>;
+}
+
+struct HeapNearest {
+    nearest: BinaryHeap<NearestCandidate>,
+    k: usize,
+}
+
+impl HeapNearest {
+    fn new(k: usize, rows: usize) -> Self {
+        Self {
+            nearest: BinaryHeap::with_capacity(k.min(rows + 1)),
+            k,
+        }
+    }
+}
+
+impl NearestState for HeapNearest {
+    #[inline]
+    fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64> {
+        let nearest = (self.nearest.len() == self.k)
+            .then(|| self.nearest.peek().expect("full nearest heap").distance);
+        combine_nearest_ceiling(nearest, max_distance)
+    }
+
+    #[inline]
+    fn accept(&mut self, candidate: NearestCandidate) {
+        push_nearest_candidate(&mut self.nearest, self.k, candidate);
+    }
+
+    fn finish(self) -> Vec<NearestCandidate> {
+        nearest_candidates_from_heap(self.nearest)
+    }
+}
+
+#[derive(Default)]
+struct OneNearest {
+    best: Option<NearestCandidate>,
+}
+
+impl NearestState for OneNearest {
+    #[inline]
+    fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64> {
+        combine_nearest_ceiling(
+            self.best.as_ref().map(|candidate| candidate.distance),
+            max_distance,
+        )
+    }
+
+    #[inline]
+    fn accept(&mut self, candidate: NearestCandidate) {
+        if self
+            .best
+            .as_ref()
+            .is_none_or(|current| candidate.cmp(current).is_lt())
+        {
+            self.best = Some(candidate);
+        }
+    }
+
+    fn finish(self) -> Vec<NearestCandidate> {
+        self.best.into_iter().collect()
+    }
+}
+
+#[inline]
+fn combine_nearest_ceiling(nearest: Option<f64>, max_distance: Option<NonNegative>) -> Option<f64> {
+    match (nearest, max_distance) {
+        (Some(a), Some(b)) => Some(a.min(b.get())),
+        (Some(a), None) => Some(a),
+        (None, Some(a)) => Some(a.get()),
+        (None, None) => None,
+    }
+}
+
+pub(crate) struct LeafFrontierEntry {
+    bound: f64,
+    idx: usize,
+}
+
+struct HeapLeafPolicy<'a> {
+    leaf_frontier: &'a mut Vec<LeafFrontierEntry>,
+}
+
+impl HeapLeafPolicy<'_> {
+    #[inline]
+    fn visit_leaf<'a, B>(
+        &mut self,
+        index: &PySpatialIndex,
+        node: &StrNode,
+        ceiling: Option<f64>,
+        bound: &B,
+        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+    ) where
+        B: Fn(&AABB<[f64; 2]>) -> f64,
+    {
+        self.leaf_frontier.clear();
+        self.leaf_frontier
+            .extend(index.bulk.leaf_entries(node).iter().filter_map(|entry| {
+                index.bulk.is_live(entry.idx).then(|| LeafFrontierEntry {
+                    bound: bound(&entry.envelope),
+                    idx: entry.idx,
+                })
+            }));
+        for entry in self.leaf_frontier.drain(..) {
+            if ceiling.is_some_and(|limit| entry.bound > limit) {
+                // STR storage order is not bound order; do not discard later
+                // entries in this leaf.
+                continue;
+            }
+            frontier.push(FrontierNode {
+                bound: entry.bound,
+                node: Frontier::Entry(entry.idx),
+            });
+        }
+    }
+}
 
 impl PySpatialIndex {
     pub(crate) fn nearest_one(
@@ -17,6 +139,7 @@ impl PySpatialIndex {
         self.ensure_query_compatible(geometry, "spatial index nearest")?;
         let metric = resolve_metric(self.metric_crs_str(geometry.crs_str()), unit, "nearest")?;
         let mut frontier = BinaryHeap::new();
+        let mut leaf_frontier = Vec::with_capacity(NODE_CAP);
         self.nearest_core_ties(
             &metric,
             &geometry.shape,
@@ -25,6 +148,7 @@ impl PySpatialIndex {
             max_distance,
             options,
             &mut frontier,
+            &mut leaf_frontier,
         )
     }
 
@@ -39,6 +163,8 @@ impl PySpatialIndex {
     ///
     /// `frontier` is a batch-local R-tree work heap: cleared and reused across
     /// array query rows (free-threading: never a receiver cache or lock).
+    /// `leaf_frontier` is bounded scratch for one static leaf and is likewise
+    /// reused across rows.
     pub(crate) fn nearest_core_ties<'a>(
         &'a self,
         metric: &crs::MetricModel,
@@ -48,6 +174,7 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         options: NearestOptions,
         frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        leaf_frontier: &mut Vec<LeafFrontierEntry>,
     ) -> PyResult<Vec<NearestCandidate>> {
         let candidates = self.nearest_core(
             metric,
@@ -57,6 +184,7 @@ impl PySpatialIndex {
             max_distance,
             options.exclude_equal,
             frontier,
+            leaf_frontier,
         )?;
         if !options.include_ties || k == 0 || candidates.len() < k {
             // Nothing was dropped at the k boundary — no ties to recover.
@@ -71,6 +199,7 @@ impl PySpatialIndex {
             Some(NonNegative::try_new("max_distance", kth)?),
             options.exclude_equal,
             frontier,
+            leaf_frontier,
         )
     }
 
@@ -83,6 +212,7 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         exclusive: bool,
         frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        leaf_frontier: &mut Vec<LeafFrontierEntry>,
     ) -> PyResult<Vec<NearestCandidate>> {
         let Some(query_bounds) = query.bounds().filter(|_| k > 0) else {
             return Ok(Vec::new());
@@ -97,6 +227,26 @@ impl PySpatialIndex {
             // bound-ordered traversal serves point and non-point queries.
             let query_envelope = index_envelope(query.shape(), query_bounds, self.geographic());
             let to_metre = metric.coordinate_scale();
+            if k == 1 {
+                return self.bound_ordered_nearest_shared(
+                    |envelope| aabb_box_distance_2(&query_envelope, envelope).sqrt() * to_metre,
+                    |idx| {
+                        let data = self.rows.prepared_row(idx);
+                        pair_distance_resolved(
+                            &resolved,
+                            &data,
+                            &self.rows.frame_cache(idx),
+                            query,
+                            query_cache,
+                        )
+                    },
+                    OneNearest::default(),
+                    max_distance,
+                    exclude,
+                    frontier,
+                    leaf_frontier,
+                );
+            }
             return self.bound_ordered_nearest(
                 |envelope| aabb_box_distance_2(&query_envelope, envelope).sqrt() * to_metre,
                 |idx| {
@@ -113,11 +263,32 @@ impl PySpatialIndex {
                 max_distance,
                 exclude,
                 frontier,
+                leaf_frontier,
             );
         }
         if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
             // Geodesic point query over an all-point index: prune with the
             // sound lower bound instead of Karney-evaluating every entry.
+            if k == 1 {
+                return self.bound_ordered_nearest_shared(
+                    |envelope| pruner.envelope_lower_bound(envelope),
+                    |idx| {
+                        let data = self.rows.prepared_row(idx);
+                        pair_distance_resolved(
+                            &resolved,
+                            &data,
+                            &self.rows.frame_cache(idx),
+                            query,
+                            query_cache,
+                        )
+                    },
+                    OneNearest::default(),
+                    max_distance,
+                    exclude,
+                    frontier,
+                    leaf_frontier,
+                );
+            }
             return self.bound_ordered_nearest(
                 |envelope| pruner.envelope_lower_bound(envelope),
                 |idx| {
@@ -134,6 +305,7 @@ impl PySpatialIndex {
                 max_distance,
                 exclude,
                 frontier,
+                leaf_frontier,
             );
         }
         // Geodesic metric without a sound envelope bound (non-point shapes
@@ -183,7 +355,30 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
         frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        leaf_frontier: &mut Vec<LeafFrontierEntry>,
     ) -> PyResult<Vec<NearestCandidate>> {
+        self.bound_ordered_nearest_shared(
+            bound,
+            exact,
+            HeapNearest::new(k, self.rows.len()),
+            max_distance,
+            exclude,
+            frontier,
+            leaf_frontier,
+        )
+    }
+
+    fn bound_ordered_nearest_shared<'a, S: NearestState>(
+        &'a self,
+        bound: impl Fn(&AABB<[f64; 2]>) -> f64,
+        exact: impl Fn(usize) -> PyResult<f64>,
+        mut state: S,
+        max_distance: Option<NonNegative>,
+        exclude: Option<&Shape>,
+        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        leaf_frontier: &mut Vec<LeafFrontierEntry>,
+    ) -> PyResult<Vec<NearestCandidate>> {
+        let mut leaf_policy = HeapLeafPolicy { leaf_frontier };
         frontier.clear();
         let root_level = self.bulk.root_level();
         for (index, root) in self.bulk.roots().iter().enumerate() {
@@ -195,34 +390,16 @@ impl PySpatialIndex {
         for child in self.overflow.root().children() {
             frontier.push(FrontierNode::overflow(&bound, child));
         }
-        let mut nearest: BinaryHeap<NearestCandidate> =
-            BinaryHeap::with_capacity(k.min(self.rows.len() + 1));
         while let Some(node) = frontier.pop() {
-            let ceiling = match (nearest.len() == k).then(|| nearest.peek()) {
-                Some(Some(worst)) => Some(worst.distance),
-                _ => None,
-            };
-            let ceiling = match (ceiling, max_distance) {
-                (Some(a), Some(b)) => Some(a.min(b.get())),
-                (Some(a), None) => Some(a),
-                (None, Some(a)) => Some(a.get()),
-                (None, None) => None,
-            };
+            let ceiling = state.ceiling(max_distance);
             if ceiling.is_some_and(|limit| node.bound > limit) {
                 break;
             }
-            let entry_idx = match node.node {
+            match node.node {
                 Frontier::Bulk(level, index) => {
                     let bulk_node = self.bulk.node(level, index);
                     if level == 0 {
-                        for entry in self.bulk.leaf_entries(bulk_node) {
-                            if self.bulk.is_live(entry.idx) {
-                                frontier.push(FrontierNode {
-                                    bound: bound(&entry.envelope),
-                                    node: Frontier::Entry(entry.idx),
-                                });
-                            }
-                        }
+                        leaf_policy.visit_leaf(self, bulk_node, ceiling, &bound, frontier);
                     } else {
                         for child in bulk_node.children.clone() {
                             frontier.push(FrontierNode {
@@ -239,23 +416,51 @@ impl PySpatialIndex {
                     }
                     continue;
                 },
-                Frontier::Overflow(RTreeNode::Leaf(entry)) => entry.idx,
-                Frontier::Entry(idx) => idx,
-            };
-            if exclude.is_some_and(|shape| {
-                self.rows
-                    .row(entry_idx)
-                    .with_shape(|other| *other == *shape)
-            }) {
-                continue;
+                Frontier::Overflow(RTreeNode::Leaf(entry)) => {
+                    self.consider_nearest_candidate(
+                        entry.idx,
+                        &exact,
+                        max_distance,
+                        exclude,
+                        &mut state,
+                    )?;
+                },
+                Frontier::Entry(entry_idx) => {
+                    self.consider_nearest_candidate(
+                        entry_idx,
+                        &exact,
+                        max_distance,
+                        exclude,
+                        &mut state,
+                    )?;
+                },
             }
-            let distance = exact(entry_idx)?;
-            if max_distance.is_some_and(|max| distance > max.get()) {
-                continue;
-            }
-            push_nearest_candidate(&mut nearest, k, NearestCandidate::new(distance, entry_idx));
         }
-        Ok(nearest_candidates_from_heap(nearest))
+        Ok(state.finish())
+    }
+
+    #[inline]
+    fn consider_nearest_candidate<S: NearestState>(
+        &self,
+        entry_idx: usize,
+        exact: &impl Fn(usize) -> PyResult<f64>,
+        max_distance: Option<NonNegative>,
+        exclude: Option<&Shape>,
+        state: &mut S,
+    ) -> PyResult<()> {
+        if exclude.is_some_and(|shape| {
+            self.rows
+                .row(entry_idx)
+                .with_shape(|other| *other == *shape)
+        }) {
+            return Ok(());
+        }
+        let distance = exact(entry_idx)?;
+        if max_distance.is_some_and(|max| distance > max.get()) {
+            return Ok(());
+        }
+        state.accept(NearestCandidate::new(distance, entry_idx));
+        Ok(())
     }
 }
 
