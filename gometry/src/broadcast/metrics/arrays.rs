@@ -681,7 +681,10 @@ pub(crate) fn array_crs_dwithin(
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             let mut out = vec![false; lx.len()];
-                            let use_sq = limit_sq.is_finite() && limit_sq != 0.0 && limit > 0.0;
+                            // A positive-subnormal limit square quantizes the
+                            // boundary; keep the packed lane in distance space
+                            // until the square is a normal f64.
+                            let use_sq = limit_sq.is_normal() && limit > 0.0;
                             if use_sq {
                                 pair_select_mask(
                                     lx,

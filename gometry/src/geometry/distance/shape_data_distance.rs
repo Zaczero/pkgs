@@ -80,7 +80,7 @@ impl ShapeData {
             return true;
         }
         // Puntal brute finished through the same helper as distance.
-        let use_sq = limit.is_finite() && limit != 0.0 && distance > 0.0;
+        let use_sq = limit.is_normal() && distance > 0.0;
         if use_sq
             && let Some((left_b, right_b)) = bounds
             && bounds_squared_safe(left_b)
@@ -290,7 +290,7 @@ impl ShapeData {
         }
         let parts = self.distance_parts();
         let limit_sq = distance * distance;
-        let use_sq = limit_sq.is_finite() && limit_sq != 0.0 && distance > 0.0;
+        let use_sq = limit_sq.is_normal() && distance > 0.0;
         if !use_sq {
             return self.distance_point_with(point, stack) <= distance;
         }

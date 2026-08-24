@@ -80,6 +80,26 @@ def test_subnormal_distance_and_dwithin_array_packed() -> None:
     )
 
 
+def test_packed_dwithin_keeps_inclusive_boundary_distinct_from_intersects() -> None:
+    """Packed point pairs compare the requested radius, including its boundary."""
+    left = gm.points([0.0, 0.0], [0.0, 0.0])
+    right = gm.points([3.0, 0.0], [4.0, 5.0])
+
+    np.testing.assert_array_equal(gm.dwithin(left, right, 5.0), [True, True])
+    np.testing.assert_array_equal(
+        gm.dwithin(left, right, np.nextafter(5.0, 0.0)), [False, False]
+    )
+    np.testing.assert_array_equal(gm.dwithin(left, right, 0.0), [False, False])
+
+
+def test_packed_dwithin_rescues_subnormal_limit_square() -> None:
+    """A vector-sized tiny-radius batch must not compare quantized squares."""
+    left = gm.points([0.0] * 8, [0.0] * 8)
+    right = gm.points([2.2e-162] * 8, [0.0] * 8)
+
+    np.testing.assert_array_equal(gm.dwithin(left, right, 1.6e-162), [False] * 8)
+
+
 def test_ordinary_magnitude_distance_bit_identical_smoke() -> None:
     """Ordinary mid-range results stay on the normal-square fast path."""
     cases = [

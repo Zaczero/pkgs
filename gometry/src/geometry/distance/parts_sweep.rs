@@ -93,8 +93,8 @@ pub(crate) fn any_parts_within(
     limit_sq: f64,
     simd: bool,
 ) -> bool {
-    // Squared path only when limit² is honest (positive finite, non-false-zero).
-    let use_sq = limit_sq.is_finite() && limit_sq != 0.0 && distance > 0.0;
+    // Squared path only when limit² is a normal, faithful f64.
+    let use_sq = limit_sq.is_normal() && distance > 0.0;
     let segment_hit = if use_sq {
         target.bvh().map_or_else(
             || {

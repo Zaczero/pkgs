@@ -355,8 +355,7 @@ impl Shape {
         let limit_sq = distance * distance;
         let simd = squared_space_safe(self_parts)
             && squared_space_safe(other_parts)
-            && limit_sq.is_finite()
-            && limit_sq != 0.0
+            && limit_sq.is_normal()
             && distance > 0.0;
         any_parts_within(self_parts, other_parts, distance, limit_sq, simd)
             || any_parts_within(other_parts, self_parts, distance, limit_sq, simd)
