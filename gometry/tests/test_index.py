@@ -539,6 +539,23 @@ def test_reusable_packed_point_queries_refine_concave_bbox_candidates() -> None:
     assert pair_rows(index.join(points, predicate='within')) == [(1, 0)]
 
 
+def test_reusable_packed_point_join_sparse_groups_preserves_order_and_refines() -> None:
+    concave = gm.Polygon([(0, 0), (2, 0), (2, 2), (1, 1), (0, 2)])
+    values = gm.GeometryArray([
+        concave,
+        gm.box(3, 3, 4, 4),
+        gm.box(10, 10, 11, 11),
+    ])
+    # The first query is a bbox candidate for the concave row but is outside
+    # its notch; the other rows exercise sparse groups in non-handle order.
+    points = gm.points([1.0, 3.5, 10.5], [1.5, 3.5, 10.5])
+
+    assert pair_rows(gm.SpatialIndex(values).join(points, predicate='within')) == [
+        (1, 1),
+        (2, 2),
+    ]
+
+
 def test_join_supports_dwithin_and_scalar_inputs() -> None:
     left = [gm.Point(0, 0), gm.Point(4, 0)]
     right = gm.points([1.0, 2.0, 10.0], [0.0, 0.0, 0.0])
