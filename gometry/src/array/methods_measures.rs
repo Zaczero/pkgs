@@ -535,13 +535,12 @@ impl PyGeometryArray {
                         }
                         let rings =
                             polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
-                        let area = crate::geometry::polygon_area_measure_with(|visit| {
-                            for ring_index in rings.clone() {
-                                let start = ring_offsets[ring_index] as usize;
-                                let end = ring_offsets[ring_index + 1] as usize;
-                                visit(&xs[start..end], &ys[start..end], ring_index > rings.start);
-                            }
-                        });
+                        let area = crate::geometry::polygon_area_measure_columns(
+                            xs,
+                            ys,
+                            ring_offsets,
+                            rings,
+                        );
                         values.push(area * scale);
                     }
                     Ok(values)

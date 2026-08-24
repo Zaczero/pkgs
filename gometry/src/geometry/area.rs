@@ -892,6 +892,104 @@ pub(crate) fn polygon_area_measure_with(
     unscale_area(area, sx, sy)
 }
 
+/// Packed polygon area with a fused ordinary path.
+///
+/// Most packed polygons have short, finite rings whose per-ring origin shift
+/// is enough to condition the shoelace products.  Fuse the cross-term and
+/// roundoff-bound folds so those rows do not first build a polygon-wide frame
+/// and then replay every vertex.  A shell/hole cancellation, overflow, long
+/// ring, or uncertain bound returns to [`polygon_area_measure_with`], whose
+/// shared frame and exact expansion preserve the extreme-coordinate contract.
+pub(crate) fn polygon_area_measure_columns(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i32],
+    rings: std::ops::Range<usize>,
+) -> f64 {
+    let mut area = 0.0_f64;
+    let mut magnitude = 0.0_f64;
+    let mut error = 0.0_f64;
+    let mut fast = !rings.is_empty();
+
+    for ring_index in rings.clone() {
+        let start = ring_offsets[ring_index] as usize;
+        let end = ring_offsets[ring_index + 1] as usize;
+        let pairs = end.saturating_sub(start + 1);
+        let Some((signed, bound)) = fast_ring_area_columns(&xs[start..end], &ys[start..end], pairs)
+        else {
+            fast = false;
+            break;
+        };
+        let ring = signed.abs();
+        magnitude += ring;
+        error += bound;
+        if ring_index == rings.start {
+            area += ring;
+        } else {
+            area -= ring;
+        }
+    }
+
+    // Include the final shell-minus-holes fold in the bound.  If that bound
+    // cannot distinguish the result from zero, use the shared-frame exact
+    // owner rather than letting independent ring frames cancel poorly.
+    let fold_error = magnitude * EPSILON * rings.len().saturating_add(1) as f64;
+    error += fold_error;
+    if fast && area.is_finite() && error.is_finite() && area.abs() > error {
+        return area;
+    }
+
+    polygon_area_measure_with(|visit| {
+        for ring_index in rings.clone() {
+            let start = ring_offsets[ring_index] as usize;
+            let end = ring_offsets[ring_index + 1] as usize;
+            visit(&xs[start..end], &ys[start..end], ring_index != rings.start);
+        }
+    })
+}
+
+/// One-pass short-ring reducer. `None` is the cold-path signal, not a result
+/// sentinel: it covers arithmetic that needs the shared-frame exact owner.
+fn fast_ring_area_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<(f64, f64)> {
+    if pairs >= SHOELACE_SIMD_MIN {
+        return None;
+    }
+    if pairs == 0 {
+        return Some((0.0, 0.0));
+    }
+    let ox = xs[0];
+    let oy = ys[0];
+    let mut cross = 0.0_f64;
+    let mut product_scale = 0.0_f64;
+    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
+        .iter()
+        .zip(&xs[1..=pairs])
+        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    {
+        let x0 = x0 - ox;
+        let y0 = y0 - oy;
+        let x1 = x1 - ox;
+        let y1 = y1 - oy;
+        let term = x0 * y1 - x1 * y0;
+        let products = x0.abs() * y1.abs() + x1.abs() * y0.abs();
+        cross += term;
+        product_scale += products;
+        if !(cross.is_finite() && product_scale.is_finite()) {
+            return None;
+        }
+    }
+    let measured = cross / 2.0;
+    if measured == 0.0 || product_scale == 0.0 {
+        return None;
+    }
+    let operations = pairs.saturating_mul(4).saturating_add(1) as f64;
+    let error = product_scale * EPSILON * operations;
+    if !error.is_finite() || measured.abs() <= error {
+        return None;
+    }
+    Some((measured, error))
+}
+
 pub(crate) fn ring_decision_area<C: Coordinates + ?Sized>(points: &C) -> RingDecisionArea {
     let pairs = points.coord_count().saturating_sub(1);
     if pairs == 0 {
@@ -1192,6 +1290,42 @@ mod tests {
         assert!(
             (naive - shifted).abs() > (measure - shifted).abs(),
             "naive={naive} measure={measure} shifted={shifted}"
+        );
+    }
+
+    #[test]
+    fn packed_polygon_area_fuses_short_rings_without_losing_holes() {
+        let xs = [
+            500_000.0, 500_010.0, 500_010.0, 500_000.0, 500_000.0, 500_002.0, 500_002.0, 500_008.0,
+            500_008.0, 500_002.0,
+        ];
+        let ys = [
+            5_200_000.0,
+            5_200_000.0,
+            5_200_010.0,
+            5_200_010.0,
+            5_200_000.0,
+            5_200_002.0,
+            5_200_008.0,
+            5_200_008.0,
+            5_200_002.0,
+            5_200_002.0,
+        ];
+        assert_eq!(
+            polygon_area_measure_columns(&xs, &ys, &[0, 5, 10], 0..2),
+            64.0
+        );
+    }
+
+    #[test]
+    fn packed_polygon_area_falls_back_on_shell_hole_cancellation() {
+        let xs = [0.0, 10.0, 10.0, 0.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0];
+        let ys = [0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 0.0, 10.0, 10.0, 0.0];
+        // The second ring has the same magnitude as the shell. An unsigned
+        // ring fold would return 200 rather than the contract's zero.
+        assert_eq!(
+            polygon_area_measure_columns(&xs, &ys, &[0, 5, 10], 0..2),
+            0.0
         );
     }
 }
