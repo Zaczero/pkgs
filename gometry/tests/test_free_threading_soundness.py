@@ -399,12 +399,27 @@ def test_proj_info_snapshot_survives_concurrent_reconfigure() -> None:
 
     readers = [threading.Thread(target=reader) for _ in range(6)]
     writer = threading.Thread(target=reconfigure)
-    for thread in readers:
-        thread.start()
-    writer.start()
-    writer.join(_JOIN_TIMEOUT)
-    for thread in readers:
-        thread.join(_JOIN_TIMEOUT)
-    gm.crs_clear_cache()
+    started: list[threading.Thread] = []
+    try:
+        for thread in readers:
+            thread.start()
+            started.append(thread)
+        writer.start()
+        started.append(writer)
+        writer.join(_JOIN_TIMEOUT)
+        assert not writer.is_alive(), 'PROJ reconfigure writer did not finish'
+        for thread in readers:
+            thread.join(_JOIN_TIMEOUT)
+            assert not thread.is_alive(), f'{thread.name} did not finish'
 
-    assert anomalies == []
+        assert anomalies == []
+    finally:
+        stop.set()
+        for thread in started:
+            thread.join(_JOIN_TIMEOUT)
+        gm.crs_reset()
+
+    assert gm.crs_config() == {
+        'search_paths': None,
+        'user_writable_directory': None,
+    }

@@ -2,9 +2,8 @@ import math
 
 import gometry as gm
 import pytest
+import shapely
 from gometry._types import CapStyle, JoinStyle
-
-shapely = pytest.importorskip('shapely')
 
 
 def _buffer_oracle_fixtures() -> list[tuple[str, str]]:

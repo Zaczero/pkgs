@@ -2,7 +2,11 @@ import math
 from typing import Any, cast
 
 import gometry as gm
+import h3
+import pyproj
 import pytest
+import s2sphere
+import shapely
 
 
 def test_overlay_restores_zm_and_force_2d_flattens() -> None:
@@ -22,7 +26,6 @@ def test_overlay_restores_zm_and_force_2d_flattens() -> None:
 
 
 def test_h3_cells_hierarchy_and_compaction_match_h3_py_oracle() -> None:
-    h3 = pytest.importorskip('h3')
     cell = gm.H3Cell(21.0, 52.0, resolution=7)
     coverage = gm.h3_cover(
         gm.box(20.99, 51.99, 21.01, 52.01, crs=4326), resolution=8, cell_rule='center'
@@ -49,7 +52,6 @@ def test_h3_cells_hierarchy_and_compaction_match_h3_py_oracle() -> None:
 
 
 def test_s2_cells_and_hierarchy_match_s2sphere_oracle() -> None:
-    s2sphere = pytest.importorskip('s2sphere')
     lat_lng = s2sphere.LatLng.from_degrees(52.0, 21.0)
     oracle = s2sphere.CellId.from_lat_lng(lat_lng).parent(12)
     cell = gm.S2Cell(21.0, 52.0, level=12)
@@ -69,7 +71,6 @@ def test_s2_cells_and_hierarchy_match_s2sphere_oracle() -> None:
 
 
 def test_geodesic_measurements_match_pyproj_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     geod = pyproj.Geod(ellps='WGS84')
     point = gm.Point(21.0, 52.0, crs=4326)
     other = gm.Point(22.0, 52.0, crs=4326)
@@ -98,7 +99,6 @@ def test_geodesic_measurements_match_pyproj_oracle() -> None:
 
 
 def test_utm_transforms_match_pyproj_oracle_across_zones() -> None:
-    pyproj = pytest.importorskip('pyproj')
     samples = []
     for zone in range(1, 61):
         lon = -183.0 + zone * 6.0
@@ -132,7 +132,6 @@ def test_utm_transforms_match_pyproj_oracle_across_zones() -> None:
 
 
 def test_utm_catalog_matches_pyproj_database_oracle() -> None:
-    pytest.importorskip('pyproj')
     from pyproj.aoi import AreaOfInterest
     from pyproj.database import query_utm_crs_info
 
@@ -154,7 +153,6 @@ def test_utm_catalog_matches_pyproj_database_oracle() -> None:
 
 
 def test_estimated_polar_crs_matches_pyproj_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     for lon, lat in [(0.0, 89.0), (0.0, -89.0)]:
         actual = gm.Point(lon, lat, crs=4326).estimate_local_crs()
         crs = pyproj.CRS.from_user_input(str(actual))
@@ -168,7 +166,6 @@ def test_estimated_polar_crs_matches_pyproj_oracle() -> None:
 
 
 def test_estimated_local_crs_is_projected_across_domains() -> None:
-    pyproj = pytest.importorskip('pyproj')
     cases = [
         gm.box(20.0, 51.0, 22.0, 53.0, crs=4326),
         gm.Point(0.0, 89.0, crs=4326),
@@ -180,7 +177,6 @@ def test_estimated_local_crs_is_projected_across_domains() -> None:
 
 
 def test_raw_crs_transform_matches_pyproj_for_3d_coordinates() -> None:
-    pyproj = pytest.importorskip('pyproj')
     transformer = pyproj.Transformer.from_crs(4979, 4978, always_xy=True)
     xs = [21.0, -73.9857]
     ys = [52.0, 40.7484]
@@ -215,7 +211,6 @@ def test_raw_crs_transform_matches_pyproj_for_3d_coordinates() -> None:
 
 
 def test_geometry_to_crs_transforms_xyz_with_proj_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     transformer = pyproj.Transformer.from_crs(4979, 4978, always_xy=True)
     xs = [21.0, 22.0]
     ys = [52.0, 53.0]
@@ -238,7 +233,6 @@ def test_geometry_to_crs_transforms_xyz_with_proj_oracle() -> None:
 
 
 def test_crs_operation_area_matches_pyproj_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     from pyproj.aoi import AreaOfInterest
     from pyproj.transformer import TransformerGroup
 
@@ -441,7 +435,6 @@ def test_crs_operation_area_matches_pyproj_oracle() -> None:
 
 
 def test_crs_projection_factors_match_pyproj_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     for crs, lon, lat in [(3857, -73.0, 41.0), (32618, -73.0, 41.0)]:
         actual = gm.CRS(crs).factors(lon, lat)
         expected = pyproj.Proj(f'EPSG:{crs}').get_factors(lon, lat)
@@ -460,7 +453,6 @@ def test_crs_projection_factors_match_pyproj_oracle() -> None:
 
 
 def test_crs_geodesic_inverse_matches_pyproj_ellipsoid_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     for crs in [4326, 4267]:
         ellipsoid = gm.crs_info(crs)['ellipsoid']
         assert ellipsoid is not None
@@ -515,7 +507,6 @@ def test_crs_geodesic_inverse_matches_pyproj_ellipsoid_oracle() -> None:
 
 
 def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     coordinates = [
         (-73.0, 41.0),
         (-72.0, 41.0),
@@ -573,7 +564,6 @@ def test_crs_coordinate_epoch_metadata_controls_dynamic_operations() -> None:
 
 
 def test_dynamic_crs_transform_threads_source_epoch_to_time_lane() -> None:
-    pyproj = pytest.importorskip('pyproj')
     transformer = pyproj.Transformer.from_crs(9990, 9000, always_xy=True)
     lon, lat, epoch = 10.0, 50.0, 2020.0
     expected_lon, expected_lat, _ = transformer.transform(lon, lat, tt=epoch)
@@ -597,7 +587,6 @@ def test_dynamic_crs_transform_requires_epoch_when_operation_needs_time() -> Non
 
 
 def test_raw_crs_apply_matches_pyproj_pipeline_oracle() -> None:
-    pyproj = pytest.importorskip('pyproj')
     from pyproj.enums import TransformDirection
 
     operation = '+proj=pipeline +step +proj=affine +xoff=1 +yoff=2 +zoff=3'
@@ -646,7 +635,6 @@ def test_raw_crs_apply_matches_pyproj_pipeline_oracle() -> None:
 
 
 def test_affine_transforms_match_shapely_affinity_oracle() -> None:
-    pytest.importorskip('shapely')
     from shapely import get_coordinates
     from shapely.affinity import rotate, scale, translate
     from shapely.wkt import loads
@@ -677,7 +665,6 @@ def test_affine_transforms_match_shapely_affinity_oracle() -> None:
 
 def test_reverse_and_segmentize_carry_z_like_shapely() -> None:
     """Gometry matches shapely when an op carries Z through unchanged."""
-    shapely = pytest.importorskip('shapely')
     from shapely import from_wkt, get_coordinates, segmentize
 
     def shy_coords(geometry: Any) -> list[Any]:
@@ -758,7 +745,6 @@ def test_validity_repeated_vertices_regression() -> None:
     """Repeated consecutive vertices are removable redundancy (valid/simple,
     matching the whole ecosystem); only genuine defects are invalid.
     """
-    shapely = pytest.importorskip('shapely')
     dup_poly = 'POLYGON ((0 0, 0 0, 4 0, 4 4, 0 4, 0 0))'
     clean_poly = 'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))'
     g, c = (gm.from_wkt(dup_poly), gm.from_wkt(clean_poly))
@@ -802,7 +788,6 @@ def test_simplify_never_yields_invalid_polygon_regression() -> None:
     """simplify(preserve_topology=False) must never leak a degenerate invalid
     polygon — a collapsed shell is POLYGON EMPTY (matching Shapely).
     """
-    shapely = pytest.importorskip('shapely')
     sliver = 'POLYGON ((0 0, 4 0, 4 0.01, 0 0))'
     for method in ('dp', 'vw'):
         out = gm.from_wkt(sliver).simplify(1.0, method=method, preserve_topology=False)
@@ -816,7 +801,6 @@ def test_predicate_and_overlay_edge_cases_match_shapely_regression() -> None:
     """Predicate verdicts and overlay output TYPES on the classic edge cases
     agree with Shapely (boundary points, endpoints, touches, edge/point contact).
     """
-    shapely = pytest.importorskip('shapely')
     preds = (
         'contains',
         'covers',

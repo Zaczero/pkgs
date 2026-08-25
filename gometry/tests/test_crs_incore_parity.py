@@ -8,9 +8,9 @@ from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import gometry as gm
+import pyproj
 import pytest
 
-pyproj = pytest.importorskip('pyproj')
 if TYPE_CHECKING:
     from collections.abc import Iterator
 ABS_TOL_M = 1e-06

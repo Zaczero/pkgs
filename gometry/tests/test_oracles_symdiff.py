@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 import gometry as gm
 import pytest
+import shapely
 
-shapely = pytest.importorskip('shapely')
 shapely_from_wkt = shapely.from_wkt
 
 if TYPE_CHECKING:

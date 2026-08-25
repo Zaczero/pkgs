@@ -61,6 +61,7 @@ dev = [
   "geopandas",
   "griffe",
   "h3",
+  "markdown",
   "mercantile>=1.2.1",
   "pandas",
   "pandas-stubs",

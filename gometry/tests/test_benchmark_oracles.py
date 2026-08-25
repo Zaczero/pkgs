@@ -37,6 +37,7 @@ normalized_uint64_set = _bench_oracles.normalized_uint64_set
 rowwise_geometry_exact = _bench_oracles.rowwise_geometry_exact
 RELEASE_OPERATIONS = _bench_registry.RELEASE_OPERATIONS
 validate_builders = _bench_oracle.validate_builders
+run_oracle = _bench_oracle.run_oracle
 
 
 def _ctx(
@@ -276,6 +277,11 @@ def test_validate_builders_rejects_orphan() -> None:
     bloated['gometry.not_a_real_op'] = lambda: None  # type: ignore[assignment]
     with pytest.raises(SystemExit, match='outside RELEASE_OPERATIONS'):
         validate_builders(list(RELEASE_OPERATIONS), bloated)
+
+
+def test_public_oracle_executes_every_case_once() -> None:
+    """The ordinary gate executes every public pair through the oracle path."""
+    assert run_oracle(list(RELEASE_OPERATIONS)) == 0
 
 
 def test_oracle_mismatch_message_is_rich() -> None:

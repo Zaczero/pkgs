@@ -11,8 +11,7 @@ import struct
 
 import gometry as gm
 import pytest
-
-shapely = pytest.importorskip('shapely')
+import shapely
 
 
 def _sample_geometries() -> list[tuple[str, gm.Geometry]]:

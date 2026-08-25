@@ -2,10 +2,10 @@ import warnings
 from typing import Any, cast
 
 import gometry as gm
+import h3
 import numpy as np
 import pytest
-
-shapely = pytest.importorskip('shapely')
+import shapely
 
 
 def test_predicates_and_overlay_match_shapely_oracle() -> None:
@@ -339,7 +339,6 @@ def test_mixed_point_line_polygon_overlay_matches_shapely_oracle() -> None:
 
 
 def test_h3_edges_match_h3py_oracle() -> None:
-    h3 = pytest.importorskip('h3')
     origin = h3.latlng_to_cell(52.5, 13.4, 7)
     cell = gm.H3Cell(origin)
     for destination in h3.grid_ring(origin, 1):

@@ -7,6 +7,7 @@ import math
 from typing import Any, cast
 
 import gometry as gm
+import pyproj
 import pytest
 
 _WKT_4326 = gm.CRS(4326).to_wkt()
@@ -508,7 +509,6 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
 
 
 def test_compound_crs_axes_match_pyproj_components() -> None:
-    pyproj = pytest.importorskip('pyproj')
     for code in (7405, 7415, 5498):
         crs = gm.CRS(code)
         expected = [

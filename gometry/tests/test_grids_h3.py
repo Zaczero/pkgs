@@ -11,6 +11,7 @@ from itertools import pairwise
 from typing import Any, cast
 
 import gometry as gm
+import h3
 import numpy as np
 import pytest
 from gometry import _lib
@@ -810,7 +811,6 @@ def _analytic_h3_within_box(
     resolution: int, west: float, south: float, east: float, north: float
 ) -> set[str]:
     """Native vertices plus analytic arc latitudes for an axis-aligned box."""
-    h3 = pytest.importorskip('h3')
     expected = set()
     for base in h3.get_res0_cells():
         for token in h3.cell_to_children(base, resolution):
@@ -883,8 +883,7 @@ def test_h3_overlap_keeps_both_closed_owners_at_native_arc_midpoint() -> None:
 
 def test_h3_within_never_uses_the_chord_proxy_as_a_containment_certificate() -> None:
     """The true first H3 arc exits its own planar presentation polygon."""
-    h3 = pytest.importorskip('h3')
-    shapely = pytest.importorskip('shapely')
+    import shapely
 
     cell = gm.H3Cell(0x82754FFFFFFFFFF)
     source = cell.polygon
@@ -947,8 +946,7 @@ def test_h3_within_emits_no_cell_with_an_independent_spherical_arc_witness(
     token: str,
 ) -> None:
     """Vertices and exact arc midpoints red-team nearby/special-cell outputs."""
-    h3 = pytest.importorskip('h3')
-    shapely = pytest.importorskip('shapely')
+    import shapely
 
     owner = gm.H3Cell(token)
     source = owner.polygon

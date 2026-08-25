@@ -6,9 +6,9 @@ import math
 
 import gometry as gm
 import numpy as np
+import pyproj
 import pytest
 
-pyproj = pytest.importorskip('pyproj')
 ABS_TOL_M = 1e-06
 ABS_TOL_DEG = 1e-06
 ROUND_TRIP_TOL_M = 1e-06
