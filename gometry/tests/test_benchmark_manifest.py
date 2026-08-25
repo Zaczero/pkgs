@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import sys
 from pathlib import Path
@@ -15,17 +16,23 @@ for _path in (_SUPPORT, _PYTHON):
     path_s = str(_path)
     if path_s not in sys.path:
         sys.path.insert(0, path_s)
+_DRIVERS = _BENCHES / 'drivers'
+if str(_DRIVERS) not in sys.path:
+    sys.path.insert(0, str(_DRIVERS))
 
 _bench_pairs = importlib.import_module('_bench_pairs')
 _bench_registry = importlib.import_module('_bench_registry')
+_bench_driver = importlib.import_module('bench')
 
 DOMAIN_ORDER = _bench_registry.DOMAIN_ORDER
 RELEASE = _bench_registry.RELEASE
 RELEASE_OPERATIONS = _bench_registry.RELEASE_OPERATIONS
+PUBLIC_API_SYMBOLS = _bench_registry.PUBLIC_API_SYMBOLS
 SMOKE = _bench_registry.SMOKE
 SCRIPTS = _bench_registry.SCRIPTS
 expand_filter_to_pairs = _bench_registry.expand_filter_to_pairs
 operation_for_row = _bench_registry.operation_for_row
+validate_canonical_symbols = _bench_registry.validate_canonical_symbols
 find_competitor = _bench_pairs.find_competitor
 pair_units = _bench_pairs.pair_units
 
@@ -54,6 +61,51 @@ def test_release_operation_counts_and_five_domains() -> None:
     ] == [7, 15, 6, 4, 5]
     assert len(DOMAIN_ORDER) == 5
     assert all('Real-world' not in op.domain for op in RELEASE_OPERATIONS)
+
+
+def test_release_operations_name_canonical_public_endpoints() -> None:
+    validate_canonical_symbols()
+    assert all(op.canonical_symbols for op in RELEASE_OPERATIONS)
+    assert {
+        'GeometryArray.area',
+        'SpatialIndex.join',
+        'SpatialIndex.candidates',
+        'Groups.to_pairs',
+    } <= PUBLIC_API_SYMBOLS
+    assert all(
+        symbol in PUBLIC_API_SYMBOLS
+        for op in RELEASE_OPERATIONS
+        for symbol in op.canonical_symbols
+    )
+
+
+def test_public_inventory_includes_type_only_exports() -> None:
+    assert {
+        'Cell',
+        'Extremes',
+        'Features',
+        'PolygonizeResult',
+    } <= PUBLIC_API_SYMBOLS
+
+
+def test_manifest_serialization_retains_canonical_endpoints() -> None:
+    records = _bench_driver._serialize_public_operations(
+        RELEASE_OPERATIONS,
+        {'competitors': RELEASE.rows('competitors')},
+    )
+    assert len(records) == 37
+    assert records[0]['canonical_symbols'] == ['from_wkb']
+    assert all(record['canonical_symbols'] for record in records)
+
+
+def test_invalid_canonical_endpoint_rejects_historically_valid_row() -> None:
+    operation = RELEASE_OPERATIONS[0]
+    mutated = dataclasses.replace(
+        operation,
+        canonical_symbols=('from_wkb.removed',),
+    )
+    with pytest.raises(ValueError, match='non-public API symbol'):
+        validate_canonical_symbols((mutated,))
 
 
 def test_release_script_inventory_is_complete() -> None:

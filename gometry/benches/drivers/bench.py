@@ -34,6 +34,7 @@ from _bench_registry import (
     Profile,
     ReleaseOperation,
     expand_filter_to_pairs,
+    validate_canonical_symbols,
 )
 from bench_doctor import (
     collect,
@@ -58,6 +59,7 @@ def _serialize_public_operations(
             'label': op.label,
             'workload': op.workload,
             'suite': op.suite,
+            'canonical_symbols': list(op.canonical_symbols),
             'gometry': op.gometry,
             'competitor': op.competitor,
             'competitor_label': op.competitor_label,
@@ -110,6 +112,12 @@ def _chunks(rows: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
 
 def _validate_release_manifest(profile: Profile) -> None:
     suite = 'competitors'
+    try:
+        validate_canonical_symbols(profile.operations)
+    except ValueError as exc:
+        raise SystemExit(
+            f'{suite} release manifest has invalid canonical endpoint: {exc}'
+        ) from exc
     unpaired = [
         unit[0]
         for unit in pair_units(profile.rows(suite), suite=suite)

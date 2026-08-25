@@ -75,6 +75,7 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'label': operation.label,
             'workload': operation.workload,
             'suite': operation.suite,
+            'canonical_symbols': list(operation.canonical_symbols),
             'gometry': operation.gometry,
             'competitor': operation.competitor,
             'competitor_label': operation.competitor_label,

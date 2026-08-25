@@ -34,6 +34,7 @@ def _meta(
     domain: str = 'Geometry',
     label: str = 'op',
     workload: str = '10k inputs',
+    canonical_symbols: tuple[str, ...] = ('area',),
     gometry: str = 'gometry.op/10k',
     competitor: str = 'shapely.op/10k',
     competitor_label: str = 'Shapely',
@@ -44,6 +45,7 @@ def _meta(
         label=label,
         workload=workload,
         suite='competitors',
+        canonical_symbols=canonical_symbols,
         gometry=gometry,
         competitor=competitor,
         competitor_label=competitor_label,
@@ -229,6 +231,7 @@ def test_summary_retains_process_identity_blocks() -> None:
             'label': meta.label,
             'workload': meta.workload,
             'suite': meta.suite,
+            'canonical_symbols': list(meta.canonical_symbols),
             'gometry': meta.gometry,
             'competitor': meta.competitor,
             'competitor_label': meta.competitor_label,
@@ -240,6 +243,7 @@ def test_summary_retains_process_identity_blocks() -> None:
     )
     operation = normalized['operations'][0]
     assert operation['status'] == 'faster'
+    assert operation['canonical_symbols'] == ['area']
     assert operation['ratio_ci95'] == [2.0, 2.0]
     assert len(operation['blocks']) == 2
     assert operation['blocks'][0]['process_index'] == 0
@@ -258,6 +262,25 @@ def json_keys(value: object) -> set[str]:
 def test_missing_public_operations_fails() -> None:
     with pytest.raises(SystemExit, match='public_operations'):
         sb.summarize_payload({'profile': 'smoke', 'publishable': False}, {})
+
+
+def test_plausible_row_with_removed_canonical_endpoint_fails() -> None:
+    meta = _meta(
+        gometry='gometry.from_wkb.batch/10k_mixed_ewkb',
+        canonical_symbols=('from_wkb.removed',),
+    )
+    with pytest.raises(SystemExit, match='non-public API symbol'):
+        sb._parse_public_operations([{
+            'domain': meta.domain,
+            'label': meta.label,
+            'workload': meta.workload,
+            'suite': meta.suite,
+            'canonical_symbols': list(meta.canonical_symbols),
+            'gometry': meta.gometry,
+            'competitor': meta.competitor,
+            'competitor_label': meta.competitor_label,
+            'footnotes': [],
+        }])
 
 
 def test_undeclared_public_gometry_row_fails_manifest_gate() -> None:

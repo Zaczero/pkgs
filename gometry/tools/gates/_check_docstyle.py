@@ -23,6 +23,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+_TOOLS = Path(__file__).resolve().parents[1]
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+from public_inventory import load_public_all as _load_public_all
+from public_inventory import load_public_symbols
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -712,23 +719,7 @@ def _doc_from_node(node: ast.AST) -> str | None:
 
 
 def load_public_all(init_path: Path = INIT_PATH) -> frozenset[str]:
-    tree = ast.parse(init_path.read_text(encoding='utf-8'), filename=str(init_path))
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == '__all__':
-                    try:
-                        value = ast.literal_eval(node.value)
-                    except Exception as exc:
-                        raise RuntimeError(f'cannot eval __all__: {exc}') from exc
-                    if not isinstance(value, (list, tuple)):
-                        raise RuntimeError('__all__ is not a list')
-                    return frozenset(str(x) for x in value)
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):  # noqa: SIM102
-            if node.target.id == '__all__' and node.value is not None:
-                value = ast.literal_eval(node.value)
-                return frozenset(str(x) for x in value)
-    raise RuntimeError('__all__ not found in __init__.py')
+    return _load_public_all(init_path)
 
 
 def load_inventory(
@@ -737,11 +728,11 @@ def load_inventory(
 ) -> tuple[list[PublicDoc], list[ScanError], frozenset[str]]:
     """Return public docs, scan errors, and the public symbol name set."""
     public_all = load_public_all(init_path)
+    public_symbols = load_public_symbols(stub_path, init_path)
     source = stub_path.read_text(encoding='utf-8')
     tree = ast.parse(source, filename=str(stub_path))
     docs: list[PublicDoc] = []
     errors: list[ScanError] = []
-    seen_qnames: set[str] = set()
 
     # Group overloads by name: keep the one with a non-empty docstring.
     top_funcs: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = (
@@ -770,7 +761,6 @@ def load_inventory(
             carrier = (group[-1], _doc_from_node(group[-1]) or '')
         fn, doc = carrier
         qname = name
-        seen_qnames.add(qname)
         if not doc.strip():
             errors.append(
                 ScanError(
@@ -794,7 +784,6 @@ def load_inventory(
         if name not in public_all:
             continue
         class_doc = _doc_from_node(cls) or ''
-        seen_qnames.add(name)
         if class_doc.strip():
             docs.append(
                 PublicDoc(
@@ -839,7 +828,6 @@ def load_inventory(
                 carrier = (group[-1], _doc_from_node(group[-1]) or '')
             fn, doc = carrier
             qname = f'{name}.{mname}'
-            seen_qnames.add(qname)
             is_prop = _is_property(fn)
             is_dunder = (
                 mname.startswith('__') and mname.endswith('__') and mname != '__new__'
@@ -878,7 +866,7 @@ def load_inventory(
                 )
             )
 
-    return docs, errors, frozenset(seen_qnames)
+    return docs, errors, public_symbols
 
 
 _RUST_INDEX: dict[str, list[tuple[str, int]]] | None = None

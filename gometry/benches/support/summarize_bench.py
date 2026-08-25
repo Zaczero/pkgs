@@ -13,6 +13,7 @@ import json
 import math
 import random
 import statistics
+import sys
 from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
 
 _BENCHES = Path(__file__).resolve().parents[1]
 GOMETRY_ROOT = _BENCHES.parent
+_TOOLS = GOMETRY_ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+from public_inventory import load_public_symbols, unknown_public_symbols
 
 DOMAIN_ORDER = (
     'Array construction & I/O',
@@ -34,6 +40,11 @@ DOMAIN_ORDER = (
 EQUIVALENCE_BAND = 0.03
 BOOTSTRAP_SAMPLES = 10_000
 DEFAULT_BOOTSTRAP_SEED = 20_260_824
+
+PUBLIC_API_SYMBOLS = load_public_symbols(
+    GOMETRY_ROOT / 'python' / 'gometry' / '_lib.pyi',
+    GOMETRY_ROOT / 'python' / 'gometry' / '__init__.py',
+)
 
 SMOKE_BANNER = 'Smoke/debug run — not publishable release evidence.'
 
@@ -71,6 +82,7 @@ class PublicOpMeta:
     label: str
     workload: str
     suite: str
+    canonical_symbols: tuple[str, ...]
     gometry: str
     competitor: str
     competitor_label: str
@@ -189,6 +201,7 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             label = str(item['label'])
             workload = str(item['workload'])
             suite = str(item['suite'])
+            raw_canonical = item['canonical_symbols']
             gometry = str(item['gometry'])
             competitor = str(item['competitor'])
             competitor_label = str(item['competitor_label'])
@@ -200,6 +213,17 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             raise SystemExit(f'duplicate public gometry row: {gometry}')
         if not competitor or not competitor_label:
             raise SystemExit(f'public_operations[{index}] must be fully paired')
+        if not isinstance(raw_canonical, (list, tuple)) or not raw_canonical:
+            raise SystemExit(
+                f'public_operations[{index}] must declare canonical_symbols'
+            )
+        canonical_symbols = tuple(str(value) for value in raw_canonical)
+        unknown = unknown_public_symbols(canonical_symbols, PUBLIC_API_SYMBOLS)
+        if unknown:
+            raise SystemExit(
+                f'public_operations[{index}] maps to non-public API symbol(s): '
+                + ', '.join(unknown)
+            )
         seen.add(gometry)
         footnotes = tuple(str(value) for value in (item.get('footnotes') or ()))
         operations.append(
@@ -208,6 +232,7 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
                 label=label,
                 workload=workload,
                 suite=suite,
+                canonical_symbols=canonical_symbols,
                 gometry=gometry,
                 competitor=competitor,
                 competitor_label=competitor_label,
@@ -703,6 +728,7 @@ def normalized_summary_payload(
                 'domain': row.meta.domain,
                 'label': row.meta.label,
                 'workload': row.meta.workload,
+                'canonical_symbols': list(row.meta.canonical_symbols),
                 'gometry': row.meta.gometry,
                 'competitor': row.meta.competitor,
                 'competitor_label': row.meta.competitor_label,
