@@ -589,6 +589,7 @@ dependencies = [
  "s2",
  "serde",
  "serde_json",
+ "sha2",
  "smol_str",
  "spade",
  "thiserror",

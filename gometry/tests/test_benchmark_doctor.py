@@ -1,7 +1,8 @@
-"""Release identity evidence tests for the benchmark doctor."""
+"""Build identity evidence tests for the benchmark doctor."""
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -14,25 +15,77 @@ if str(_DRIVERS) not in sys.path:
 import bench_doctor as doctor  # noqa: E402
 
 
-def test_debug_assertion_marker_presence_is_the_profile_evidence() -> None:
-    marker = doctor.DEBUG_ASSERTION_MARKER
-    assert doctor._debug_assertion_marker_count(b'release bytes') == 0
-    assert doctor._debug_assertion_marker_count(b'prefix' + marker + b'suffix') == 1
-    assert doctor._debug_assertion_marker_count(marker + marker) == 2
+def _release_build_info(source_inputs_sha256: str) -> dict[str, object]:
+    return {
+        'schema_version': doctor.BUILD_INFO_SCHEMA_VERSION,
+        'source_inputs_format': doctor.SOURCE_INPUTS_FORMAT,
+        'source_inputs_sha256': source_inputs_sha256,
+        'profile_family': 'release',
+        'opt_level': '3',
+        'debug': False,
+        'debug_assertions': False,
+        'target': doctor._rustc_host_target(),
+        'target_features': 'sse2',
+    }
 
 
-def test_extension_profile_rejects_marker_mutation() -> None:
-    release = doctor._extension_profile_evidence(b'optimized extension')
-    debug = doctor._extension_profile_evidence(
-        b'optimized extension' + doctor.DEBUG_ASSERTION_MARKER
+def test_source_identity_and_effective_release_facts_pass() -> None:
+    source_inputs_sha256 = doctor._source_inputs_digest()
+    assert source_inputs_sha256
+    assert doctor._build_info_failures(
+        _release_build_info(source_inputs_sha256),
+        source_inputs_sha256,
+        doctor._rustc_host_target(),
+    ) == []
+
+
+def test_source_identity_mutation_rejects_without_rebuild() -> None:
+    source_inputs_sha256 = doctor._source_inputs_digest()
+    assert source_inputs_sha256
+    failures = doctor._build_info_failures(
+        _release_build_info(source_inputs_sha256),
+        hashlib.sha256(b'one changed tracked build input').hexdigest(),
+        doctor._rustc_host_target(),
     )
-    assert release['debug_build'] is False
-    assert release['release_build'] is True
-    assert release['debug_assertion_marker_count'] == 0
-    assert release['profile_evidence_method'] == 'extension_bytes_marker_scan'
-    assert debug['debug_build'] is True
-    assert debug['release_build'] is False
-    assert debug['debug_assertion_marker_count'] == 1
+    assert any('stale' in failure for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ('field', 'value', 'message'),
+    [
+        ('profile_family', 'debug', 'release-family'),
+        ('opt_level', '0', 'optimization level'),
+        ('debug', 'true', 'debug-info flag'),
+        ('debug_assertions', True, 'debug assertions'),
+        ('target', 'wrong-target', 'targets'),
+    ],
+)
+def test_effective_build_fact_mutation_rejects(
+    field: str, value: object, message: str
+) -> None:
+    source_inputs_sha256 = doctor._source_inputs_digest()
+    assert source_inputs_sha256
+    build_info = _release_build_info(source_inputs_sha256)
+    build_info[field] = value
+    failures = doctor._build_info_failures(
+        build_info,
+        source_inputs_sha256,
+        doctor._rustc_host_target(),
+    )
+    assert any(message in failure for failure in failures)
+
+
+def test_private_runtime_build_info_matches_current_source() -> None:
+    import gometry._lib as lib
+
+    build_info = lib.__build_info__
+    assert isinstance(build_info, dict)
+    assert '__build_info__' not in lib.__all__
+    assert build_info['source_inputs_sha256'] == doctor._source_inputs_digest()
+    extension = doctor._extension_identity()
+    path = Path(extension['path'])
+    assert extension['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert 'tied_to_checkout' not in extension
 
 
 def test_selected_cpu_governor_is_distinct_from_other_cpu_state() -> None:

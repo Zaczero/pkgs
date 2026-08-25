@@ -32,10 +32,16 @@ The release matrix contains 37 fully paired operations and 74 timed rows in
 five domains: array construction and I/O, geometry, CRS and geodesy, discrete
 global grids, and spatial index.
 
-The runner records the exact Python executable, extension digest and build
-profile, source identity, an optional lock hash, exact package and native-engine
-versions, selected CPU and governor, and pyperf artifact identities. Each
-pyperf process is one independent observation. The normalized evidence matches
+The runner records the exact Python executable, extension digest, effective Cargo
+profile family and build facts, source identity, an optional lock hash, exact
+package and native-engine versions, selected CPU and governor, and pyperf artifact
+identities. Cargo exposes custom profiles to build scripts only through their
+effective `debug`/`release` family, so the record does not claim to name a custom
+profile such as `release-dist`.
+The recorded `debug` value describes compiler debug information; this workspace
+may retain line tables in an optimized release build. Release suitability is
+determined by the release family, optimization level, and debug-assertion state.
+Each pyperf process is one independent observation. The normalized evidence matches
 the separate gometry and comparator rows by process ordinal within each AB/BA
 artifact, bootstraps the median ratio, and classifies it against a predeclared
 3% equivalence/noise band. `Similar` means the full interval is inside that

@@ -24,28 +24,19 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-
-DEBUG_ASSERTION_MARKER = b'vendor base-cell partition changed'
-
-
-def _debug_assertion_marker_count(payload: bytes) -> int:
-    return payload.count(DEBUG_ASSERTION_MARKER)
-
-
-def _extension_profile_evidence(payload: bytes) -> dict[str, Any]:
-    count = _debug_assertion_marker_count(payload)
-    return {
-        'debug_assertion_marker': DEBUG_ASSERTION_MARKER.decode('ascii'),
-        'debug_assertion_marker_count': count,
-        'profile_evidence_method': 'extension_bytes_marker_scan',
-        'profile_evidence': (
-            'debug_assertion_marker_present'
-            if count
-            else 'debug_assertion_marker_absent'
-        ),
-        'debug_build': count > 0,
-        'release_build': count == 0,
-    }
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v1'
+BUILD_INFO_SCHEMA_VERSION = 1
+BUILD_INFO_KEYS = {
+    'schema_version',
+    'source_inputs_format',
+    'source_inputs_sha256',
+    'profile_family',
+    'opt_level',
+    'debug',
+    'debug_assertions',
+    'target',
+    'target_features',
+}
 
 
 def selected_cpu_governor(
@@ -89,28 +80,34 @@ def _git_build_inputs_dirty() -> bool | None:
 
 
 def _source_inputs_digest() -> str | None:
-    """Digest tracked source/build inputs, including path names."""
-    output = _run(
-        ['git', 'ls-files', '-z', '--', *BUILD_INPUT_PATHS], cwd=REPO_ROOT
-    )
-    if output is None:
-        return None
-    # ``_run`` strips text output, so a NUL-separated list is safe to split but
-    # loses a final empty item only; filenames in this package cannot contain NUL.
+    """Digest the deterministic inputs Cargo can receive in a checkout or sdist."""
+    files: list[tuple[str, Path]] = [
+        ('Cargo.toml', REPO_ROOT / 'Cargo.toml'),
+        ('Cargo.lock', REPO_ROOT / 'Cargo.lock'),
+        ('rust-toolchain.toml', REPO_ROOT / 'rust-toolchain.toml'),
+        ('gometry/Cargo.toml', GOMETRY_ROOT / 'Cargo.toml'),
+        ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
+    ]
+    pyproject = GOMETRY_ROOT / 'pyproject.toml'
+    if not pyproject.is_file():
+        pyproject = REPO_ROOT / 'pyproject.toml'
+    files.append(('pyproject.toml', pyproject))
+    config = REPO_ROOT / '.cargo' / 'config.toml'
+    if config.is_file():
+        files.append(('.cargo/config.toml', config))
+    for directory in ('src', 'native'):
+        root = GOMETRY_ROOT / directory
+        if not root.is_dir():
+            return None
+        for path in root.rglob('*'):
+            if '.git' in path.parts or not path.is_file():
+                continue
+            files.append((f'gometry/{path.relative_to(GOMETRY_ROOT)}', path))
+    files.sort(key=lambda item: item[0])
     digest = hashlib.sha256()
-    for name in sorted(filter(None, output.split('\x00'))):
-        path = REPO_ROOT / name
+    for name, path in files:
         try:
-            if path.is_dir():
-                # Git records vendored repositories as gitlinks.  The nested
-                # commit is the source identity; hashing the directory itself
-                # would fail and would not describe its contents.
-                nested_commit = _run(['git', 'rev-parse', 'HEAD'], cwd=path)
-                if not nested_commit:
-                    return None
-                payload = nested_commit.encode('ascii')
-            else:
-                payload = path.read_bytes()
+            payload = path.read_bytes()
         except OSError:
             return None
         digest.update(name.encode('utf-8'))
@@ -138,30 +135,86 @@ def _extension_identity() -> dict[str, Any]:
 
         path = Path(lib.__file__).resolve()
         payload = path.read_bytes()
-        path_text = str(path)
-        tied_to_checkout = path.is_file() and GOMETRY_ROOT in path.parents
-        profile = _extension_profile_evidence(payload)
+        build_info = getattr(lib, '__build_info__', None)
+        if not isinstance(build_info, dict):
+            build_info = None
         return {
-            'path': path_text,
+            'path': str(path),
             'sha256': hashlib.sha256(payload).hexdigest(),
             'size_bytes': path.stat().st_size,
-            **profile,
-            'tied_to_checkout': tied_to_checkout,
+            'build_info': build_info,
         }
     except (ImportError, OSError, AttributeError) as exc:
         return {
             'path': None,
             'sha256': None,
             'size_bytes': None,
-            'debug_assertion_marker': DEBUG_ASSERTION_MARKER.decode('ascii'),
-            'debug_assertion_marker_count': None,
-            'profile_evidence_method': 'extension_unavailable',
-            'profile_evidence': 'extension_unavailable',
-            'debug_build': None,
-            'release_build': False,
-            'tied_to_checkout': False,
+            'build_info': None,
             'error': f'{type(exc).__name__}: {exc}',
         }
+
+
+def _rustc_host_target() -> str | None:
+    output = _run(['rustc', '-vV'])
+    if output is None:
+        return None
+    for line in output.splitlines():
+        key, separator, value = line.partition(':')
+        if separator and key == 'host':
+            return value.strip() or None
+    return None
+
+
+def _build_info_failures(
+    build_info: Any, source_inputs_sha256: str | None, rustc_host_target: str | None
+) -> list[str]:
+    if not isinstance(build_info, dict):
+        return ['loaded gometry extension has no private build-info record']
+    missing = sorted(BUILD_INFO_KEYS - build_info.keys())
+    if missing:
+        return ['gometry extension build-info is missing: ' + ', '.join(missing)]
+    failures: list[str] = []
+    if build_info['schema_version'] != BUILD_INFO_SCHEMA_VERSION:
+        failures.append(
+            'gometry extension build-info schema is unsupported: '
+            f'{build_info["schema_version"]!r}'
+        )
+    if build_info['source_inputs_format'] != SOURCE_INPUTS_FORMAT:
+        failures.append(
+            'gometry extension uses an unsupported source-input identity format: '
+            f'{build_info["source_inputs_format"]!r}'
+        )
+    if not source_inputs_sha256:
+        failures.append('relevant source/build input digest is unavailable')
+    elif build_info['source_inputs_sha256'] != source_inputs_sha256:
+        failures.append(
+            'loaded gometry extension is stale: embedded source-input identity '
+            f'{build_info["source_inputs_sha256"]!r} != current {source_inputs_sha256!r}'
+        )
+    if build_info['profile_family'] != 'release':
+        failures.append(
+            'loaded gometry extension is not a release-family build: '
+            f'{build_info["profile_family"]!r}'
+        )
+    if build_info['opt_level'] != '3':
+        failures.append(
+            'loaded gometry extension has unexpected optimization level: '
+            f'{build_info["opt_level"]!r}'
+        )
+    if not isinstance(build_info['debug'], bool):
+        failures.append('gometry extension debug-info flag is malformed')
+    if build_info['debug_assertions'] is not False:
+        failures.append('loaded gometry extension has debug assertions enabled')
+    if rustc_host_target is None:
+        failures.append('current Rust host target is unavailable')
+    elif build_info['target'] != rustc_host_target:
+        failures.append(
+            'loaded gometry extension targets '
+            f'{build_info["target"]!r}, current Rust host is {rustc_host_target!r}'
+        )
+    if not isinstance(build_info['target_features'], str):
+        failures.append('gometry extension target features are malformed')
+    return failures
 
 
 def _cpu_model() -> str | None:
@@ -462,13 +515,16 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
     frequencies = _per_cpu_frequency_state()
     extension = _extension_identity()
     uv_lock = _uv_lock_identity()
+    rustc_host_target = _rustc_host_target()
     metadata: dict[str, Any] = {
         'git_commit': _run(['git', 'rev-parse', 'HEAD']),
         'git_dirty_build_inputs': _git_build_inputs_dirty(),
+        'source_inputs_format': SOURCE_INPUTS_FORMAT,
         'source_inputs_sha256': _source_inputs_digest(),
         'uv_lock': uv_lock,
         'python_executable': str(Path(sys.executable).resolve()),
         'rustc': _run(['rustc', '--version']),
+        'rustc_host_target': rustc_host_target,
         'cargo': _run(['cargo', '--version']),
         'python': sys.version.split()[0],
         'python_version': sys.version,
@@ -498,21 +554,13 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         hard_failures.append(
             'gometry or its workspace Cargo build inputs have uncommitted changes'
         )
-    if extension['debug_build'] is True:
-        hard_failures.append(
-            'loaded gometry extension contains the debug assertion marker '
-            f'({extension["debug_assertion_marker_count"]} occurrences)'
+    hard_failures.extend(
+        _build_info_failures(
+            extension.get('build_info'),
+            metadata['source_inputs_sha256'],
+            rustc_host_target,
         )
-    if not extension['release_build']:
-        hard_failures.append('loaded gometry extension has no release-build evidence')
-    if not extension['tied_to_checkout']:
-        hard_failures.append(
-            'loaded gometry extension is not tied to this checkout'
-        )
-    if not metadata['git_commit']:
-        hard_failures.append('git commit identity is unavailable')
-    if not metadata['source_inputs_sha256']:
-        hard_failures.append('relevant source/build input digest is unavailable')
+    )
     non_performance = {
         cpu: value['governor']
         for cpu, value in frequencies.items()
