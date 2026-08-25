@@ -1,12 +1,12 @@
-"""Bounded public-API latency/RSS/Python-allocation probe.
+"""Bounded public-API latency/current-memory/Python-allocation probe.
 
 Unlike ``bench_ab.py`` block medians, this case retains every kernel-call
 sample so p99/p99.9 describe actual calls. RSS includes native allocations;
 ``tracemalloc`` and allocated-block deltas intentionally describe Python only.
-Run one mode per fresh process. **Current RSS** is sampled from
-``/proc/self/status`` ``VmRSS`` (not lifetime high-water marks); peak RSS during
-an isolated call is the max of current-RSS samples around that call, with
-``ru_maxrss`` retained only as a process lifetime diagnostic.
+Run one mode per fresh process. Current RSS and proportional set size (PSS) are
+sampled at operation endpoints from ``/proc``. The process lifetime high-water
+mark is retained as a diagnostic only; this case does not claim to observe an
+in-call native peak.
 """
 
 from __future__ import annotations
@@ -43,17 +43,33 @@ def percentile(values: list[float] | array[float], quantile: float) -> float:
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
-def current_rss_kib() -> int:
-    """Current resident set size in KiB from /proc (not a lifetime high-water mark)."""
-    status = Path('/proc/self/status')
-    if status.is_file():
-        for line in status.read_text(encoding='utf-8').splitlines():
-            if line.startswith('VmRSS:'):
-                # VmRSS:   12345 kB
-                parts = line.split()
-                return int(parts[1])
-    # Fallback: some platforms lack /proc; report lifetime max as last resort.
-    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+def _proc_memory_kib(path: str, field: str) -> int | None:
+    """Read one current process-memory field, or report unavailable."""
+    status = Path(path)
+    if not status.is_file():
+        return None
+    for line in status.read_text(encoding='utf-8').splitlines():
+        if line.startswith(field):
+            parts = line.split()
+            return int(parts[1])
+    return None
+
+
+def current_rss_kib() -> int | None:
+    """Current resident set size in KiB from /proc."""
+    return _proc_memory_kib('/proc/self/status', 'VmRSS:')
+
+
+def current_pss_kib() -> int | None:
+    """Current proportional set size in KiB from /proc."""
+    return _proc_memory_kib('/proc/self/smaps_rollup', 'Pss:')
+
+
+def memory_delta_kib(after: int | None, before: int | None) -> int | None:
+    """Return the signed endpoint delta when both samples are available."""
+    if after is None or before is None:
+        return None
+    return after - before
 
 
 def intersects_case() -> tuple[Callable[[], Any], Callable[[Any], None], int, int]:
@@ -178,12 +194,13 @@ def main() -> None:
     args = parser.parse_args()
 
     environment_before = cpu_state()
-    rss_before_setup = current_rss_kib()
+    rss_current_before_setup = current_rss_kib()
+    pss_current_before_setup = current_pss_kib()
     setup_started = time.perf_counter()
     run, validate, latency_iterations, allocation_iterations = CASES[args.mode]()
     setup_seconds = time.perf_counter() - setup_started
-    # Current RSS after setup (honest baseline — not a lifetime high-water mark).
-    rss_after_setup = current_rss_kib()
+    rss_current_after_setup = current_rss_kib()
+    pss_current_after_setup = current_pss_kib()
     warmup_iterations = 64
     warmup_started = time.perf_counter()
     for _ in range(warmup_iterations):
@@ -191,21 +208,26 @@ def main() -> None:
     validate(result)
     warmup_seconds = time.perf_counter() - warmup_started
 
-    # Isolated call: sample current RSS around a single invocation for peak.
+    # Isolated call: endpoint samples only; an in-call native peak needs a
+    # child-process sampler or an allocation recorder and is not inferred here.
     gc.collect()
-    rss_before_isolated = current_rss_kib()
+    rss_current_before_isolated = current_rss_kib()
+    pss_current_before_isolated = current_pss_kib()
     isolated_result = run()
     validate(isolated_result)
-    rss_after_isolated = current_rss_kib()
-    rss_peak_isolated = max(rss_before_isolated, rss_after_isolated)
+    rss_current_after_isolated = current_rss_kib()
+    pss_current_after_isolated = current_pss_kib()
 
+    rss_current_before_latency = current_rss_kib()
+    pss_current_before_latency = current_pss_kib()
     samples = array('d')
     for _ in range(latency_iterations):
         started = time.perf_counter_ns()
         result = run()
         samples.append((time.perf_counter_ns() - started) / 1e9)
     validate(result)
-    rss_after_latency = current_rss_kib()
+    rss_current_after_latency = current_rss_kib()
+    pss_current_after_latency = current_pss_kib()
 
     gc.collect()
     blocks_before = sys.getallocatedblocks()
@@ -216,13 +238,13 @@ def main() -> None:
     tracemalloc.stop()
     blocks_after = sys.getallocatedblocks()
     validate(result)
-    # Lifetime high-water mark kept as diagnostic only (not growth arithmetic).
-    rss_lifetime_peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    # Lifetime high-water mark kept as diagnostic only (not endpoint arithmetic).
+    rss_lifetime_maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
     extension_path = Path(gm_lib.__file__).resolve()
     case_path = Path(__file__).resolve()
     payload = {
-        'schema_version': 3,
+        'schema_version': 5,
         'mode': args.mode,
         'latency_iterations': latency_iterations,
         'allocation_iterations': allocation_iterations,
@@ -233,18 +255,31 @@ def main() -> None:
         'p99_seconds': percentile(samples, 0.99),
         'p999_seconds': percentile(samples, 0.999),
         'latency_samples_seconds': list(samples),
-        'rss_before_setup_kib': rss_before_setup,
-        'rss_current_after_setup_kib': rss_after_setup,
-        'rss_after_setup_kib': rss_after_setup,  # alias for schema consumers
-        'rss_before_isolated_kib': rss_before_isolated,
-        'rss_after_isolated_kib': rss_after_isolated,
-        'rss_peak_during_isolated_kib': rss_peak_isolated,
-        'rss_isolated_growth_kib': max(0, rss_peak_isolated - rss_after_setup),
-        'rss_after_latency_kib': rss_after_latency,
-        'rss_latency_growth_kib': max(0, rss_after_latency - rss_after_setup),
-        'rss_peak_kib': rss_peak_isolated,
-        'rss_peak_growth_kib': max(0, rss_peak_isolated - rss_after_setup),
-        'rss_lifetime_maxrss_kib': rss_lifetime_peak,
+        'rss_current_before_setup_kib': rss_current_before_setup,
+        'rss_current_after_setup_kib': rss_current_after_setup,
+        'rss_current_before_isolated_kib': rss_current_before_isolated,
+        'rss_current_after_isolated_kib': rss_current_after_isolated,
+        'rss_current_isolated_endpoint_delta_kib': memory_delta_kib(
+            rss_current_after_isolated, rss_current_before_isolated
+        ),
+        'rss_current_before_latency_kib': rss_current_before_latency,
+        'rss_current_after_latency_kib': rss_current_after_latency,
+        'rss_current_latency_endpoint_delta_kib': memory_delta_kib(
+            rss_current_after_latency, rss_current_before_latency
+        ),
+        'pss_current_before_setup_kib': pss_current_before_setup,
+        'pss_current_after_setup_kib': pss_current_after_setup,
+        'pss_current_before_isolated_kib': pss_current_before_isolated,
+        'pss_current_after_isolated_kib': pss_current_after_isolated,
+        'pss_current_isolated_endpoint_delta_kib': memory_delta_kib(
+            pss_current_after_isolated, pss_current_before_isolated
+        ),
+        'pss_current_before_latency_kib': pss_current_before_latency,
+        'pss_current_after_latency_kib': pss_current_after_latency,
+        'pss_current_latency_endpoint_delta_kib': memory_delta_kib(
+            pss_current_after_latency, pss_current_before_latency
+        ),
+        'rss_lifetime_maxrss_kib': rss_lifetime_maxrss,
         'python_peak_traced_bytes': python_peak_bytes,
         'python_allocated_blocks_delta': blocks_after - blocks_before,
         'tracemalloc_active_during_latency': False,

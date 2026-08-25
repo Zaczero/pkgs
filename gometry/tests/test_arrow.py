@@ -1469,22 +1469,37 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     n_empty = 250_000
     many_empty = pa.chunked_array([empty] * n_empty, type=arr.type)
     assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
-    if sys.platform.startswith('linux'):
-        import resource
-
-        max_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
     assert len(out) == 0
     assert out.crs == 'EPSG:4326'
     assert out.to_wkt() == []
-    # len==0 short-circuit: no O(chunk) walk — must not grow peak RSS by
-    # O(chunk) (~tens of MiB from retaining wrappers). Wall-clock is not a
-    # pytest gate (host-sensitive under -n auto).
-    if sys.platform.startswith('linux'):
-        max_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        assert (max_after - max_before) < 4096, (
-            f'from_arrow peak RSS grew {max_after - max_before} KiB (expected ~0)'
-        )
+
+    # Count the public-ingress work directly. Point chunks have no offset chain,
+    # so classifying the first chunk is sufficient; a restored per-empty
+    # storage path would call chunk() once per physical chunk.
+    class CountedEmptyChunks:
+        type = arr.type
+        num_chunks = n_empty
+
+        def __init__(self) -> None:
+            self.chunk_calls: list[int] = []
+
+        def __len__(self) -> int:
+            return 0
+
+        @property
+        def chunks(self) -> object:
+            return (self.chunk(index) for index in range(n_empty))
+
+        def chunk(self, index: int) -> object:
+            self.chunk_calls.append(index)
+            return empty
+
+    counted = CountedEmptyChunks()
+    counted_out = cast('gm.GeometryArray', gm.from_arrow(counted))
+    assert len(counted_out) == 0
+    assert counted_out.crs == 'EPSG:4326'
+    assert counted.chunk_calls == [0]
 
     # Empty around real data: only present rows land.
     mixed = pa.chunked_array([empty, arr, empty, empty], type=arr.type)

@@ -59,8 +59,14 @@ The generated summary follows.
 Fixtures are built before timing and each paired row has an untimed
 fail-closed oracle for row counts, missingness, types, axes, coordinates,
 topology, or domain-specific preconditions. Resource probes remain gometry-only
-diagnostics and are not comparative release evidence. No dashboard, history,
-or percentile/peak resource claim is published here.
+diagnostics and are not comparative release evidence. They record current RSS
+and proportional set size (PSS) at setup and operation endpoints, plus the
+process lifetime RSS high-water mark as a diagnostic. Signed memory deltas use
+the immediately adjacent samples around the isolated call and latency loop;
+they do not turn setup-to-later accumulation into operation growth. The probes
+do not infer an in-call native peak from before/after samples; Python traced
+allocation peak is Python-only. No dashboard, history, or percentile/peak
+resource claim is published here.
 
 ## See Also
 

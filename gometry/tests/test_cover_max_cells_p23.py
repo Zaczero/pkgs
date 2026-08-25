@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pickle
-import sys
 
 import gometry as gm
 import numpy as np
@@ -304,39 +303,21 @@ def test_s2_target_cells_respects_min_level_and_max_cells_stays_hard():
 # ---------------------------------------------------------------------------
 
 
-def _rss_kib() -> int:
-    """Current max RSS in KiB (Linux)."""
-    if not sys.platform.startswith('linux'):
-        return 0
-    import resource
-
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-
-
 def test_s2_level30_tiny_budget_rejects_without_frontier_flood():
     """Defect 2: level=30 + max_cells=1 must reject without BFS flood.
 
-    Pre-fix: ~2.3s / ~85 MiB building a fine frontier before the budget
-    error. Post-fix: projected-count DFS raises before that work. The flood
-    shows up as O(frontier) allocation, so incremental RSS is the detector —
-    deliberately not a wall-clock budget, which would measure the host.
+    The native coverer test observes the bounded pending frontier directly.
+    This Python test keeps the public semantic regression: the request must
+    reject with a typed max_cells error rather than building a result.
     """
     line = gm.LineString([(0.0, 0.0), (0.1, 0.0)], crs=4326)
     # Warm classifier / PROJ paths so the measured call is cover work.
     gm.s2_cover(gm.Point(0.0, 0.0, crs=4326), level=4, max_cells=8)
 
-    rss_before = _rss_kib()
     with pytest.raises(gm.GeometryError, match='max_cells') as excinfo:
         gm.s2_cover(line, level=30, max_cells=1)
-    rss_after = _rss_kib()
 
     _assert_not_panic(excinfo.value)
-    # Linux ru_maxrss is KiB; incremental peak must stay well under the old ~85 MiB.
-    if sys.platform.startswith('linux'):
-        delta_mib = max(0, rss_after - rss_before) / 1024.0
-        assert delta_mib < 32.0, (
-            f'incremental RSS {delta_mib:.1f} MiB (frontier flood?)'
-        )
 
 
 def test_s2_world_line_l20_tiny_budget_rejects():

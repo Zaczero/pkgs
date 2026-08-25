@@ -381,8 +381,10 @@ def _resource_summaries(plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 'median_seconds',
                 'p99_seconds',
                 'p999_seconds',
-                'rss_peak_kib',
-                'rss_peak_growth_kib',
+                'rss_current_isolated_endpoint_delta_kib',
+                'pss_current_isolated_endpoint_delta_kib',
+                'rss_current_latency_endpoint_delta_kib',
+                'pss_current_latency_endpoint_delta_kib',
                 'python_peak_traced_bytes',
                 'python_allocated_blocks_delta',
             )
