@@ -188,6 +188,15 @@ def _is_geo(crs: Any) -> bool:
     return crs in (4326, 'EPSG:4326')
 
 
+def _h3_snapshot_resolution(geom: gm.Geometry) -> int:
+    # Keep the antimeridian line on the certified traversal without paying the
+    # disproportionate resolution-7 refinement cost; other corpus inputs keep
+    # the original resolution.
+    if geom.geometry_type == 'LineString' and _is_geo(_matching_crs(geom)):
+        return 6
+    return 7
+
+
 def _segmentize_length(geom: gm.Geometry) -> float:
     """A max segment length in the units ``segmentize`` actually measures in.
 
@@ -306,7 +315,9 @@ OP_RUNNERS: dict[str, Callable[[gm.Geometry], object]] = {
     'h3_parent': lambda geom: gm.H3Cell(geom, resolution=7).parent(6),
     'h3_children': lambda geom: gm.H3Cell(geom, resolution=7).children(8),
     'h3_boundary': lambda geom: gm.H3Cell(geom, resolution=7).polygon,
-    'h3_cover': lambda geom: gm.h3_cover(geom, resolution=7),
+    'h3_cover': lambda geom: gm.h3_cover(
+        geom, resolution=_h3_snapshot_resolution(geom)
+    ),
     's2_cell': lambda geom: gm.S2Cell(geom, level=12),
     's2_parent': lambda geom: gm.S2Cell(geom, level=12).parent(10),
     's2_children': lambda geom: gm.S2Cell(geom, level=12).children(13),

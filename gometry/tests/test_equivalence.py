@@ -752,8 +752,15 @@ def test_w4b_hausdorff_and_union_all_stable() -> None:
     """W4B-topology: Hausdorff heap-order + scratch and n-ary overlay bounds
     cache preserve numeric stability vs repeated calls.
     """
-    left = gm.LineString([(float(i), math.sin(i * 0.1)) for i in range(200)])
-    right = gm.LineString([(float(i) + 0.5, math.cos(i * 0.1)) for i in range(200)])
+    # Stay above the 16-vertex small-target threshold so the indexed heap path
+    # remains covered without making the watchdog-bound case needlessly large.
+    hausdorff_vertices = 128
+    left = gm.LineString(
+        [(float(i), math.sin(i * 0.1)) for i in range(hausdorff_vertices)]
+    )
+    right = gm.LineString(
+        [(float(i) + 0.5, math.cos(i * 0.1)) for i in range(hausdorff_vertices)]
+    )
     h1 = gm.hausdorff_distance(left, right)
     h2 = gm.hausdorff_distance(left, right)
     assert h1 == h2
