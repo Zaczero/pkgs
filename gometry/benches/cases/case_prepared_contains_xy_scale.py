@@ -9,11 +9,13 @@ belong here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 import numpy as np
 from _observation import emit
+from _validation import emit_validation
 
 
 def _big_polygon(n_edge: int = 10_000) -> gm.Polygon:
@@ -52,11 +54,21 @@ def main() -> None:
         metric='duration',
         raw_values=[_median_prepared(63)],
         useful_work={'count': 63, 'unit': 'prepared-probes'},
-        oracle_identity='case_prepared_contains_xy_scale:probe-mask-v1',
+        oracle_identity='case_prepared_contains_xy_scale:probe-mask',
         warmup_iterations=3,
         calibration_iterations=11,
     )
 
 
+def validate_case() -> None:
+    polygon = gm.box(-1.0, -1.0, 1.0, 1.0).prepare()
+    result = gm.contains_xy(polygon, np.asarray([0.0]), np.asarray([0.0]))
+    assert result.shape == (1,) and bool(result[0])
+    emit_validation(
+        'case_prepared_contains_xy_scale',
+        useful_output={'count': 1, 'unit': 'prepared-probes'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

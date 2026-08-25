@@ -8,10 +8,12 @@ Timing claims belong here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def _line_array(n: int) -> gm.GeometryArray:
@@ -45,12 +47,20 @@ def main() -> None:
             'numerator': {'count': 1_600, 'unit': 'rows'},
             'denominator': {'count': 800, 'unit': 'rows'},
         },
-        oracle_identity='case_coordinates_equality_scale:identity-contract-v1',
+        oracle_identity='case_coordinates_equality_scale:identity-contract',
         warmup_iterations=3,
         calibration_iterations=11,
         calibration_strategy='median-of-repetitions-per-scaling-point',
     )
 
 
+def validate_case() -> None:
+    assert _median_eq(4, warm=0, reps=1) >= 0.0
+    emit_validation(
+        'case_coordinates_equality_scale',
+        useful_output={'count': 4, 'unit': 'rows'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

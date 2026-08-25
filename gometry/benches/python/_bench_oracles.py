@@ -52,7 +52,7 @@ class OracleContext:
 
 def public_oracle_identity(operation: ReleaseOperation) -> str:
     """Stable identity for the untimed oracle attached to one public operation."""
-    return f'public:{operation.gometry}:oracle-v1'
+    return f'public:{operation.gometry}:oracle'
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +107,7 @@ class OracleMismatch(Exception):  # noqa: N818 — spec name; not an Error suffi
 # Register one builder per gometry row name on this dict (or call
 # ``register_public_builders``). Keys must be RELEASE_OPERATIONS gometry names.
 PUBLIC_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
+PUBLIC_SCALING_CASE_BUILDERS: dict[str, Callable[[], PairCase]] = {}
 
 
 def register_public_builders(
@@ -114,6 +115,13 @@ def register_public_builders(
 ) -> None:
     """Merge public suite builders into the shared map."""
     PUBLIC_CASE_BUILDERS.update(builders)
+
+
+def register_public_scaling_builders(
+    builders: dict[str, Callable[[], PairCase]],
+) -> None:
+    """Merge the derived sparse scaling builders into the shared map."""
+    PUBLIC_SCALING_CASE_BUILDERS.update(builders)
 
 
 def _ctx_names(context: OracleContext) -> tuple[str, str | None]:

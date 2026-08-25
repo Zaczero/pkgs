@@ -91,7 +91,7 @@ for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarro
         packages[name] = identity
 extension = _extension_identity()
 print(json.dumps({
-    'identity_schema_version': 2,
+    'identity_schema_version': 1,
     'git_commit': _run(['git', 'rev-parse', 'HEAD']),
     'source_inputs_sha256': _source_inputs_digest(),
     'extension': extension,
@@ -222,7 +222,7 @@ def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
     producer_after = _attribute_build(
         producer_after, side='A', row=str(case)
     )
-    if producer_before.get('identity_schema_version') == 2:
+    if producer_before.get('identity_schema_version') == 1:
         observation['producer_identity'] = producer_before
     return {
         'observation': observation,
@@ -869,7 +869,7 @@ def run_blocks(
             arm = arms[side]
             before = arm.get('provenance_before')
             after = arm.get('provenance_after')
-            if isinstance(before, dict) and before.get('identity_schema_version') == 2:
+            if isinstance(before, dict) and before.get('identity_schema_version') == 1:
                 attributed_before = _attribute_build(before, side=side, row=str(case))
                 attributed_after = _attribute_build(
                     after if isinstance(after, dict) else before,
@@ -952,7 +952,7 @@ def run_blocks_with_perf(
                 )
             before = result.get('provenance_before')
             after = result.get('provenance_after')
-            if isinstance(before, dict) and before.get('identity_schema_version') == 2:
+            if isinstance(before, dict) and before.get('identity_schema_version') == 1:
                 result['provenance_before'] = _attribute_build(
                     before, side=side, row=str(case)
                 )
@@ -1409,7 +1409,7 @@ def main() -> int:
         perf_capability = check_perf_capability(perf_events)
         if perf_capability['status'] != 'available':
             capability_record = {
-                'schema_version': 2,
+                'schema_version': 1,
                 'observation_type': 'typed-paired-comparison',
                 'case': str(args.case),
                 'case_sha256': hashlib.sha256(args.case.read_bytes()).hexdigest(),
@@ -1474,7 +1474,7 @@ def main() -> int:
     if perf_run is not None:
         verdict = f'PERF-INSTRUMENTED DIAGNOSTIC: {verdict}'
     record = {
-        'schema_version': 2,
+        'schema_version': 1,
         'observation_type': 'typed-paired-comparison',
         'seed': args.seed,
         'warmup_blocks': args.warmup,

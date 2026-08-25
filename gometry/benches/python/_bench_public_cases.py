@@ -7,7 +7,7 @@ callables perform no validation; all checks live in compare/preconditions.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -91,6 +91,10 @@ class PublicCase:
     pair: PairCase
     kind: str
     unit: str | None = None
+    useful_work: dict[str, object] = field(
+        default_factory=lambda: {'count': 1, 'unit': 'equivalent-case-invocation'}
+    )
+    output_validator: Callable[[object], None] | None = None
 
     def verify(self, context: OracleContext) -> None:
         ctx = OracleContext(
@@ -110,6 +114,8 @@ def _case(
     kind: str,
     unit: str | None = None,
     preconditions: tuple[Callable[[], None], ...] = (),
+    useful_work: dict[str, object] | None = None,
+    output_validator: Callable[[object], None] | None = None,
 ) -> PublicCase:
     return PublicCase(
         pair=PairCase(
@@ -120,6 +126,8 @@ def _case(
         ),
         kind=kind,
         unit=unit,
+        useful_work=useful_work or {'count': 1, 'unit': 'equivalent-case-invocation'},
+        output_validator=output_validator,
     )
 
 
@@ -1104,6 +1112,10 @@ def build_union_all() -> PublicCase:
 
         return shapely.union_all(d['sh'])
 
+    def output_validator(value: object) -> None:
+        if value is None or bool(value.is_empty):  # type: ignore[union-attr]
+            raise ValueError('union_all output is empty')
+
     _reg('gometry.union_all/1024_service_areas', gometry_call)
     _reg('shapely.union_all/1024_service_areas', competitor_call)
     return _case(
@@ -1111,6 +1123,8 @@ def build_union_all() -> PublicCase:
         competitor_call,
         _compare_overlay_geom,
         kind='geometry_equivalent',
+        useful_work={'count': 1_024, 'unit': 'input-geometries'},
+        output_validator=output_validator,
         unit='symdiff',
     )
 
@@ -1533,6 +1547,10 @@ def build_tile_cover() -> PublicCase:
                 'tile cover count', details=f'got {n_tiles}, want 15340'
             )
 
+    def output_validator(value: object) -> None:
+        if value is None or len(value) != 15_340:  # type: ignore[arg-type]
+            raise ValueError('expected 15340 output tiles')
+
     _reg('gometry.tile_cover.bbox/BR_z10_15340_tiles', gometry_call)
     _reg('mercantile.tiles/BR_z10_15340_tiles', competitor_call)
     return _case(
@@ -1541,6 +1559,8 @@ def build_tile_cover() -> PublicCase:
         normalized_tile_set,
         kind='normalized_tile_set',
         preconditions=(pre,),
+        useful_work={'count': 15_340, 'unit': 'output-tiles'},
+        output_validator=output_validator,
     )
 
 

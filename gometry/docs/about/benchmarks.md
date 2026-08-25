@@ -28,9 +28,23 @@ used to derive it.
 
 ## Current Run
 
-The release matrix contains 37 fully paired operations and 74 timed rows in
-five domains: array construction and I/O, geometry, CRS and geodesy, discrete
-global grids, and spatial index.
+The release matrix contains 37 unchanged representative operations plus six
+owned three-point scaling curves. Two curve endpoints reuse the canonical
+representative rows `gometry.union_all/1024_service_areas` and
+`gometry.tile_cover.bbox/BR_z10_15340_tiles`; no duplicate scaling aliases are
+created. The result is 53 paired logical operations and 106 timed rows in five
+domains: array construction and I/O, geometry, CRS and geodesy, discrete
+global grids, and spatial index. The scaling curves cover spatial-index
+cardinality, selectivity, and candidate-result amplification as separate
+curves, n-ary overlay input count, grid-cover output count, and the
+prepared-predicate batch boundary. They are sparse one-dimensional curves;
+their points are not a Cartesian product.
+
+The curve points are index cardinality `1k/5k/10k`, query selectivity
+`1%/10%/50%`, candidate amplification `1/10/100` pairs per query, overlay
+inputs `64/256/1024` geometries, grid output `990/3960/15340` tiles, and probe
+counts `9999/10000/10001`. The 1024-geometry and 15340-tile points use the
+representative rows named above.
 
 The runner records the exact Python executable and build identity, extension
 digest and effective Cargo profile facts, source identity, a required dependency
@@ -47,10 +61,14 @@ The recorded `debug` value describes compiler debug information; this workspace
 may retain line tables in an optimized release build. Release suitability is
 determined by the release family, optimization level, and debug-assertion state.
 Each release block is one fresh process that executes both arms of one operation
-pair. Blocks record their actual lead order, monotonic timestamps, typed metric
-and unit, equal useful work, passed oracle status with an operation-specific
-oracle identity, and producer identity before and after both arms. The matrix
-contains six independent blocks per pair, with
+pair. Release rows declare the `warm` phase: the worker performs two explicit
+untimed prewarm calls for each arm before five recorded repetitions. Blocks
+record the declared phase and state scope, actual lead order, monotonic
+timestamps, typed metric and unit, useful output/work, passed external-oracle
+identity, and producer identity before and after both arms. The untimed oracle
+runs in its own fresh process; it is not executed in a timing worker, so it
+cannot prewarm the timed case. The matrix contains six independent blocks per
+pair, with
 three `AB` and three `BA` leads. Analysis bootstraps the paired median ratio
 over those block artifacts and classifies it against a predeclared 3%
 practical equivalence margin. `Similar` means the full interval is inside
@@ -69,7 +87,11 @@ capacity measured on that host. Unsupported, nonmoving, `<not counted>`, or
 over-multiplexed events produce a bounded capability null, never a zero counter
 or a publishable result.
 
-The generated summary follows.
+The generated summary retains each curve's three raw paired medians, per-point
+competitor-to-gometry ratios, seconds per validated useful-work unit, and
+first-to-last endpoint growth. These are descriptive observations; the summary
+does not label a noisy three-point wall-time series as proportional or
+quadratic. The generated summary follows.
 
 --8<-- "benches/results/current/summary.md"
 
@@ -86,6 +108,12 @@ they do not turn setup-to-later accumulation into operation growth. The probes
 do not infer an in-call native peak from before/after samples; Python traced
 allocation peak is Python-only. No dashboard, history, or percentile/peak
 resource claim is published here.
+
+The release matrix does not claim a generic `first-use` or operating-system
+cache-cold phase. A shared-process pair cannot give both arms their first
+operation invocation without the first arm warming state for the second. A
+separate fresh process per arm would be a different execution contract, so the
+current evidence uses the explicitly prewarmed `warm` phase instead.
 
 ## See Also
 

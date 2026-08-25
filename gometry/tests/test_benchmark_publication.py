@@ -17,7 +17,7 @@ for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
         sys.path.insert(0, str(_path))
 
 import bench as bench_driver  # noqa: E402
-from _bench_registry import RELEASE_OPERATIONS  # noqa: E402
+from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # noqa: E402
 from benchmark_observation import make_observation  # noqa: E402
 
 _HASH = hashlib.sha256(b'x').hexdigest()
@@ -65,7 +65,7 @@ def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]
         **_file('/checkout/target/release/gometry.so'),
         'build_info': {
             'schema_version': 1,
-            'source_inputs_format': 'sha256-path-nul-content-nul-v1',
+            'source_inputs_format': 'sha256-path-nul-content-nul',
             'source_inputs_sha256': _HASH,
             'profile_family': 'release',
             'opt_level': '3',
@@ -95,7 +95,7 @@ def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]
         'native_library_status': 'identified' if native_libraries else 'not-applicable',
     }
     return {
-        'identity_schema_version': 2,
+        'identity_schema_version': 1,
         'git_commit': 'deadbeef',
         'source_inputs_sha256': _HASH,
         'extension': extension,
@@ -132,19 +132,26 @@ def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]
 def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, object]:
     lead = 'ab' if index % 2 == 0 else 'ba'
     order = ['A', 'B'] if lead == 'ab' else ['B', 'A']
+    scaling = scaling_record(operation)
+    useful_work = {
+        'count': max(1, int(scaling['point'])) if scaling else 1,
+        'unit': scaling['useful_work_unit'] if scaling else 'equivalent-case-invocation',
+    }
     observation_a = make_observation(
         metric='duration',
         raw_values=[1.0],
-        useful_work={'count': 1, 'unit': 'equivalent-case-invocation'},
-        oracle_identity=f'public:{operation.gometry}:oracle-v1',
+        oracle_identity=f'public:{operation.gometry}:oracle',
+        phase=operation.phase,
+        useful_work=useful_work,
         warmup_iterations=2,
         calibration_iterations=5,
     )
     observation_b = make_observation(
         metric='duration',
         raw_values=[2.0],
-        useful_work={'count': 1, 'unit': 'equivalent-case-invocation'},
-        oracle_identity=f'public:{operation.gometry}:oracle-v1',
+        oracle_identity=f'public:{operation.gometry}:oracle',
+        phase=operation.phase,
+        useful_work=useful_work,
         warmup_iterations=2,
         calibration_iterations=5,
     )
@@ -153,16 +160,18 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
     observation_a['producer_identity'] = provenance_a
     observation_b['producer_identity'] = provenance_b
     return {
-        'schema_version': 2,
+        'schema_version': 1,
         'artifact_type': 'gometry-paired-block',
         'profile': 'release',
         'run_id': 'run-1-release',
-        'block_id': f'competitors-pair-{RELEASE_OPERATIONS.index(operation) + 1:02d}-block-{index + 1:02d}-{lead}',
-        'pair_id': f'competitors-pair-{RELEASE_OPERATIONS.index(operation) + 1:02d}',
+        'block_id': f'competitors-pair-{ALL_PUBLIC_OPERATIONS.index(operation) + 1:02d}-block-{index + 1:02d}-{lead}',
+        'pair_id': f'competitors-pair-{ALL_PUBLIC_OPERATIONS.index(operation) + 1:02d}',
         'operation': {
             'gometry': operation.gometry,
             'competitor': operation.competitor,
             'canonical_symbols': list(operation.canonical_symbols),
+            'phase': operation.phase,
+            'scaling': scaling,
         },
         'lead_order': order,
         'state_scope': 'shared-process-prepared-fixture',
@@ -171,6 +180,8 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
             'warmup_iterations': 2,
             'repetitions': 5,
             'calibration_strategy': 'fixed-repetitions',
+            'phase': operation.phase,
+            'scaling': scaling,
         },
         'arms': {
             'A': {
@@ -198,13 +209,27 @@ def _result(tmp_path: Path) -> dict[str, object]:
     lock.write_bytes(b'x')
     artifacts: list[str] = []
     lock_path = str(tmp_path / 'lock')
-    for operation in RELEASE_OPERATIONS:
+    for operation in ALL_PUBLIC_OPERATIONS:
         for index in range(6):
-            artifact = tmp_path / f'block-{RELEASE_OPERATIONS.index(operation):02d}-{index:02d}.json'
+            operation_index = ALL_PUBLIC_OPERATIONS.index(operation)
+            artifact = tmp_path / f'block-{operation_index:02d}-{index:02d}.json'
             artifact.write_text(
                 json.dumps(_block_payload(operation, index, lock_path)), encoding='utf-8'
             )
             artifacts.append(str(artifact))
+    oracle = tmp_path / 'oracle.json'
+    oracle.write_text(json.dumps({
+        'schema_version': 1,
+        'artifact_type': 'gometry-public-oracle',
+        'operations': [operation.gometry for operation in ALL_PUBLIC_OPERATIONS],
+        'identities': [
+            f'public:{operation.gometry}:oracle'
+            for operation in ALL_PUBLIC_OPERATIONS
+        ],
+        'verified': len(ALL_PUBLIC_OPERATIONS),
+        'state_scope': 'external-fresh-process',
+    }), encoding='utf-8')
+    artifacts.insert(0, str(oracle))
     metadata = {
         'git_commit': 'deadbeef',
         'source_inputs_sha256': _HASH,
@@ -221,7 +246,7 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'size_bytes': 1,
             'build_info': {
                 'schema_version': 1,
-                'source_inputs_format': 'sha256-path-nul-content-nul-v1',
+                'source_inputs_format': 'sha256-path-nul-content-nul',
                 'source_inputs_sha256': _HASH,
                 'profile_family': 'release',
                 'opt_level': '3',
@@ -273,9 +298,11 @@ def _result(tmp_path: Path) -> dict[str, object]:
             'gometry': operation.gometry,
             'competitor': operation.competitor,
             'competitor_label': operation.competitor_label,
-            'footnotes': list(operation.footnotes),
+            'footnotes': list(getattr(operation, 'footnotes', ())),
+            'phase': operation.phase,
+            'scaling': scaling_record(operation),
         }
-        for operation in RELEASE_OPERATIONS
+            for operation in ALL_PUBLIC_OPERATIONS
     ]
     return {
         'profile': 'release',
@@ -285,15 +312,18 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'oracle_ok': True,
         'commands_complete': True,
         'publishable': True,
-        'row_counts': {'competitors': 74},
+        'row_counts': {'competitors': 106},
         'public_operations': operations,
         'source_artifacts': artifacts,
+        'oracle_artifact': 'raw/oracle.json',
         'sampling': {
             'worker': 'bench_paired.py',
             'measured_blocks': 6,
             'lead_orders': ['ab', 'ba', 'ab', 'ba', 'ab', 'ba'],
             'warmup_iterations': 2,
             'repetitions': 5,
+            'phase': 'warm',
+            'oracle_state_scope': 'external-fresh-process',
         },
         'doctor': {'metadata': metadata, 'hard_failures': [], 'warnings': ['load advisory']},
     }
@@ -341,8 +371,14 @@ def _analysis(tmp_path: Path) -> tuple[Path, Path]:
 
 def _mutate_first_block(run_manifest: Path, mutate) -> None:
     result = json.loads(run_manifest.read_text(encoding='utf-8'))
-    raw = run_manifest.parent / result['raw_artifacts'][0]['path']
-    payload = json.loads(raw.read_text(encoding='utf-8'))
+    for record in result['raw_artifacts']:
+        candidate = run_manifest.parent / record['path']
+        payload = json.loads(candidate.read_text(encoding='utf-8'))
+        if payload.get('artifact_type') == 'gometry-paired-block':
+            raw = candidate
+            break
+    else:
+        raise AssertionError('fixture has no paired block artifact')
     mutate(payload)
     raw.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
     for record in result['raw_artifacts']:
@@ -408,18 +444,19 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         'collect_contention',
         lambda: {'metadata': {}, 'warnings': []},
     )
-    monkeypatch.setattr(
-        bench_driver,
-        '_run',
-        lambda command, **_: {
+    def fake_run(command: list[str], **_: object) -> dict[str, object]:
+        if '--output' in command:
+            Path(command[command.index('--output') + 1]).write_text('{}', encoding='utf-8')
+        return {
             'command': command,
             'returncode': 0,
             'timeout': False,
             'elapsed_seconds': 0.0,
             'stdout_tail': '',
             'stderr_tail': '',
-        },
-    )
+        }
+
+    monkeypatch.setattr(bench_driver, '_run', fake_run)
 
     def fail_if_called(*_: object, **__: object) -> None:
         raise AssertionError('measurement invoked publication')
@@ -634,7 +671,13 @@ def test_analysis_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
 def test_analysis_rejects_extra_paired_artifact(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
     result = json.loads(run_manifest.read_text(encoding='utf-8'))
-    source = run_manifest.parent / result['raw_artifacts'][0]['path']
+    source = next(
+        candidate
+        for record in result['raw_artifacts']
+        if (candidate := run_manifest.parent / record['path'])
+        and json.loads(candidate.read_text(encoding='utf-8')).get('artifact_type')
+        == 'gometry-paired-block'
+    )
     extra = run_manifest.parent / 'raw' / 'extra-paired.json'
     shutil.copy2(source, extra)
     result['artifacts'].append(f'raw/{extra.name}')
@@ -645,6 +688,16 @@ def test_analysis_rejects_extra_paired_artifact(tmp_path: Path) -> None:
     })
     run_manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     with pytest.raises(SystemExit, match='duplicate paired matrix identity'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_mismatched_external_oracle_artifact(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+    oracle = run_manifest.parent / 'raw' / 'oracle.json'
+    payload = json.loads(oracle.read_text(encoding='utf-8'))
+    payload['verified'] -= 1
+    oracle.write_text(json.dumps(payload), encoding='utf-8')
+    with pytest.raises(SystemExit, match='raw artifact digest mismatch'):
         bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
 
 
@@ -672,7 +725,7 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert {'identity.json', 'summary.json', 'summary.md'} <= set(first)
-    assert len([path for path in first if path.startswith('raw/')]) == 222
+    assert len([path for path in first if path.startswith('raw/')]) == 319
     summary_md = (current / 'summary.md').read_text(encoding='utf-8')
     assert '## Run environment' in summary_md
     assert 'CPU `test` on core `1`' in summary_md
@@ -681,8 +734,18 @@ def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
     assert 'GEOS 3.13.0; PROJ 9.5.0' in summary_md
     assert '<table>' not in summary_md
     summary = json.loads((current / 'summary.json').read_text(encoding='utf-8'))
-    assert len(summary['operations']) == 37
+    assert len(summary['operations']) == 53
     assert all(operation['blocks'] for operation in summary['operations'])
+    assert len(summary['scaling_curves']) == 6
+    overlay = next(
+        curve for curve in summary['scaling_curves']
+        if curve['curve_id'] == 'overlay-input-count'
+    )
+    assert [point['point'] for point in overlay['points']] == [64, 256, 1_024]
+    assert 'gometry_shape' not in overlay
+    assert 'competitor_shape' not in overlay
+    assert overlay['points'][0]['gometry_seconds_per_useful_work'] > 0
+    assert overlay['endpoint_growth']['gometry_median_ratio'] > 0
     bench_driver.publish_current_run(
         analysis_manifest, output_dir=tmp_path / 'stage-again', current_dir=current
     )

@@ -8,6 +8,7 @@ import time
 import gometry as gm
 import numpy as np
 from _observation import emit
+from _validation import emit_validation
 
 ROWS = 1_000_000
 REPEATS = 12
@@ -31,11 +32,22 @@ def main() -> None:
         metric='duration',
         raw_values=[elapsed],
         useful_work={'count': ROWS * REPEATS, 'unit': 'coordinates-transformed'},
-        oracle_identity='case_webmerc_exact_zero:finite-output-v1',
+        oracle_identity='case_webmerc_exact_zero:finite-output',
         warmup_iterations=2,
         calibration_iterations=REPEATS,
     )
 
 
+def validate_case() -> None:
+    longitudes = np.asarray([-1.0, 1.0])
+    latitudes = np.asarray([0.0, 0.0])
+    result = gm.crs_transform(4326, 3857, longitudes, latitudes)
+    assert np.isfinite(result).all() and len(result) == 2
+    emit_validation(
+        'case_webmerc_exact_zero',
+        useful_output={'count': 2, 'unit': 'coordinates-transformed'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

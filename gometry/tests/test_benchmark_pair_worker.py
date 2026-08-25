@@ -45,6 +45,7 @@ class _Operation:
     gometry: str = 'gometry.fake/1'
     competitor: str = 'shapely.fake/1'
     canonical_symbols: tuple[str, ...] = ('area',)
+    phase: str = 'warm'
 
 
 def _clock() -> object:
@@ -66,7 +67,7 @@ def _file_identity(path: str) -> dict[str, object]:
     return {'path': path, 'sha256': '0' * 64, 'size_bytes': 1}
 
 
-def _schema_v2_identity() -> dict[str, object]:
+def _complete_identity() -> dict[str, object]:
     source = '0' * 64
     extension = {
         **_file_identity('/checkout/gometry.so'),
@@ -90,7 +91,7 @@ def _schema_v2_identity() -> dict[str, object]:
         }
 
     return {
-        'identity_schema_version': 2,
+        'identity_schema_version': 1,
         'git_commit': 'test-commit',
         'source_inputs_sha256': source,
         'extension': extension,
@@ -137,11 +138,11 @@ def test_one_fresh_process_block_contains_both_arms_and_consumes_output() -> Non
     )
     assert artifact['lead_order'] == ['A', 'B']
     assert set(artifact['arms']) == {'A', 'B'}
-    assert seen == ['A', 'B', 'A', 'A', 'A', 'B', 'B', 'B']
+    assert seen == ['A', 'A', 'A', 'B', 'B', 'B']
     assert artifact['arms']['A']['observation']['measurement']['unit'] == 'seconds'
     assert artifact['arms']['A']['observation']['useful_work']['unit'] == 'equivalent-case-invocation'
     assert artifact['arms']['A']['observation']['oracle']['identity'] == (
-        'public:gometry.fake/1:oracle-v1'
+        'public:gometry.fake/1:oracle'
     )
     assert artifact['arms']['A']['observation']['oracle'] == artifact['arms']['B']['observation']['oracle']
 
@@ -170,7 +171,7 @@ def test_callable_mutation_fails_before_measured_acceptance() -> None:
     assert calls == 0
 
 
-def test_result_mutation_fails_untimed_oracle_before_timing() -> None:
+def test_local_oracle_is_not_run_in_timed_worker() -> None:
     clock_calls = 0
     timed_calls = 0
 
@@ -191,23 +192,73 @@ def test_result_mutation_fails_untimed_oracle_before_timing() -> None:
 
     class _OracleCase(_Case):
         def verify(self, _context: object) -> None:
-            if self.pair.gometry_call() != self.pair.competitor_call():
-                raise ValueError('result mutation detected')
+            raise AssertionError('the timed worker must use the external oracle artifact')
 
-    with pytest.raises(SystemExit, match='preflight oracle failed'):
+    artifact = worker.run_block(
+        operation=_Operation(),
+        block_id='pair-1-block-1-ab',
+        pair_id='pair-1',
+        lead='ab',
+        warmups=1,
+        repetitions=2,
+        clock_ns=clock,
+        identity=_identity,
+        builder=lambda: _OracleCase(_Pair(gometry_call, competitor_call)),
+    )
+    assert set(artifact['arms']) == {'A', 'B'}
+    assert timed_calls == 6
+    assert clock_calls > 0
+
+
+def test_warm_phase_requires_explicit_prewarms() -> None:
+    with pytest.raises(SystemExit, match='explicit untimed prewarming'):
+        worker.run_block(
+            operation=_Operation(),
+            block_id='pair-1-block-1-ab',
+            pair_id='pair-1',
+            lead='ab',
+            warmups=0,
+            repetitions=1,
+            clock_ns=_clock(),
+            identity=_identity,
+            builder=lambda: _Case(_Pair(lambda: [1], lambda: [1])),
+        )
+
+
+def test_first_use_is_not_claimed_for_a_shared_process_pair() -> None:
+    with pytest.raises(SystemExit, match='first-use cannot be paired'):
+        worker.run_block(
+            operation=_Operation(phase='first-use'),
+            block_id='pair-1-block-1-ab',
+            pair_id='pair-1',
+            lead='ab',
+            phase='first-use',
+            warmups=0,
+            repetitions=1,
+            clock_ns=_clock(),
+            identity=_identity,
+            builder=lambda: _Case(_Pair(lambda: [1], lambda: [1])),
+        )
+
+
+def test_useful_output_mutation_fails_after_timing_before_artifact_acceptance() -> None:
+    class _ValidatedCase(_Case):
+        output_validator = staticmethod(lambda _value: (_ for _ in ()).throw(
+            ValueError('mutated useful output')
+        ))
+
+    with pytest.raises(SystemExit, match='output validation failed'):
         worker.run_block(
             operation=_Operation(),
             block_id='pair-1-block-1-ab',
             pair_id='pair-1',
             lead='ab',
             warmups=1,
-            repetitions=2,
-            clock_ns=clock,
+            repetitions=1,
+            clock_ns=_clock(),
             identity=_identity,
-            builder=lambda: _OracleCase(_Pair(gometry_call, competitor_call)),
+            builder=lambda: _ValidatedCase(_Pair(lambda: [1], lambda: [1])),
         )
-    assert timed_calls == 2
-    assert clock_calls == 0
 
 
 def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> None:
@@ -223,7 +274,7 @@ def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> No
         block_id='pair-1-block-1-ab',
         pair_id='pair-1',
         lead='ab',
-        warmups=0,
+        warmups=1,
         repetitions=1,
         clock_ns=_clock(),
         identity=identity,
@@ -233,7 +284,7 @@ def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> No
     assert artifact['arms']['A']['provenance_before'] == artifact['arms']['A']['provenance_after']
 
 
-def test_schema_v2_arm_identity_uses_rows_from_tuple_backed_arms(
+def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     operation = _Operation()
@@ -268,10 +319,10 @@ def test_schema_v2_arm_identity_uses_rows_from_tuple_backed_arms(
         block_id='pair-1-block-1-ab',
         pair_id='pair-1',
         lead='ab',
-        warmups=0,
+        warmups=1,
         repetitions=1,
         clock_ns=_clock(),
-        identity=_schema_v2_identity,
+        identity=_complete_identity,
         builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
     )
 

@@ -29,6 +29,12 @@ import gometry as gm
 import gometry._lib as gm_lib
 import numpy as np
 
+_CASE_DIR = Path(__file__).resolve().parent
+if str(_CASE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CASE_DIR))
+
+from _validation import emit_validation
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
@@ -244,7 +250,7 @@ def main() -> None:
     extension_path = Path(gm_lib.__file__).resolve()
     case_path = Path(__file__).resolve()
     payload = {
-        'schema_version': 5,
+        'schema_version': 1,
         'mode': args.mode,
         'latency_iterations': latency_iterations,
         'allocation_iterations': allocation_iterations,
@@ -298,5 +304,16 @@ def main() -> None:
         args.output.write_text(encoded + '\n', encoding='utf-8')
 
 
+def validate_case() -> None:
+    points = gm.points([0.0, 1.0], [0.0, 1.0])
+    polygon = gm.box(-1.0, -1.0, 2.0, 2.0)
+    result = gm.intersects(polygon, points)
+    assert len(result) == 2 and result.all()
+    emit_validation(
+        'case_resource_tail',
+        useful_output={'count': 2, 'unit': 'predicate-results'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

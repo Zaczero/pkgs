@@ -8,10 +8,12 @@ Timing claims belong here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def _poly_with_n_holes(n: int, spacing: float = 3.0) -> gm.Polygon:
@@ -52,11 +54,20 @@ def main() -> None:
         metric='duration',
         raw_values=[_median_valid()],
         useful_work={'count': 2_000, 'unit': 'polygon-holes'},
-        oracle_identity='case_validity_disjoint_scale:validity-v1',
+        oracle_identity='case_validity_disjoint_scale:validity',
         warmup_iterations=2,
         calibration_iterations=7,
     )
 
 
+def validate_case() -> None:
+    polygon = _poly_with_n_holes(3)
+    assert polygon.is_valid is True
+    emit_validation(
+        'case_validity_disjoint_scale',
+        useful_output={'count': 3, 'unit': 'polygon-holes'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

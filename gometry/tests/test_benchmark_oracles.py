@@ -21,9 +21,11 @@ _bench_oracles = importlib.import_module('_bench_oracles')
 _bench_registry = importlib.import_module('_bench_registry')
 # Register the complete public builder map (side-effect import).
 importlib.import_module('_bench_public_cases')
+importlib.import_module('_bench_scaling_cases')
 _bench_oracle = importlib.import_module('bench_oracle')
 
 PUBLIC_CASE_BUILDERS = _bench_oracles.PUBLIC_CASE_BUILDERS
+PUBLIC_SCALING_CASE_BUILDERS = _bench_oracles.PUBLIC_SCALING_CASE_BUILDERS
 OracleContext = _bench_oracles.OracleContext
 OracleMismatch = _bench_oracles.OracleMismatch
 exact_coordinates = _bench_oracles.exact_coordinates
@@ -260,6 +262,12 @@ def test_public_case_builders_exact_bijection() -> None:
     assert builders == public, (
         f'missing={sorted(public - builders)} orphans={sorted(builders - public)}'
     )
+
+
+def test_public_scaling_builders_exact_bijection() -> None:
+    public = {op.gometry for op in _bench_registry.SCALING_OPERATIONS}
+    assert set(PUBLIC_SCALING_CASE_BUILDERS) == public
+    _bench_registry.validate_scaling_operations()
 
 
 def test_validate_builders_rejects_missing_selected() -> None:

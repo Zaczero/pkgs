@@ -85,6 +85,39 @@ def test_manifest_serialization_retains_canonical_endpoints() -> None:
     assert len(records) == 37
     assert records[0]['canonical_symbols'] == ['from_wkb']
     assert all(record['canonical_symbols'] for record in records)
+    endpoint = next(
+        record for record in records
+        if record['gometry'] == 'gometry.union_all/1024_service_areas'
+    )
+    assert endpoint['scaling']['point'] == 1_024
+
+
+def test_scaling_curves_are_sparse_ordered_and_single_dimension() -> None:
+    _bench_registry.validate_scaling_operations()
+    assert len(_bench_registry.SCALING_CURVES) == 6
+    assert len(_bench_registry.SCALING_OPERATIONS) == 16
+    for curve in _bench_registry.SCALING_CURVES:
+        assert len(curve.points) == 3
+        assert [point.point for point in curve.points] == sorted(
+            point.point for point in curve.points
+        )
+    assert len(set(RELEASE.rows('competitors'))) == 106
+    assert len(_bench_registry.ALL_PUBLIC_OPERATIONS) == 53
+
+
+def test_scaling_curves_reuse_canonical_endpoint_rows() -> None:
+    overlay = next(
+        operation for operation in RELEASE_OPERATIONS
+        if operation.gometry == 'gometry.union_all/1024_service_areas'
+    )
+    grid = next(
+        operation for operation in RELEASE_OPERATIONS
+        if operation.gometry == 'gometry.tile_cover.bbox/BR_z10_15340_tiles'
+    )
+    assert overlay.scaling is not None and overlay.scaling.point == 1_024
+    assert grid.scaling is not None and grid.scaling.point == 15_340
+    assert all('scaling=overlay-input-count' not in row for row in overlay.rows)
+    assert all('scaling=grid-cover-output-count' not in row for row in grid.rows)
 
 
 def test_invalid_canonical_endpoint_rejects_historically_valid_row() -> None:
@@ -110,7 +143,7 @@ def test_all_public_rows_are_unique_and_fully_paired() -> None:
     names = [name for op in RELEASE_OPERATIONS for name in op.rows]
     assert len(names) == len(set(names)) == 74
     assert len({op.competitor for op in RELEASE_OPERATIONS}) == 37
-    assert len(RELEASE.rows('competitors')) == 74
+    assert len(RELEASE.rows('competitors')) == 106
     assert _bench_registry.SUITES == ('competitors',)
     assert all(len(unit) == 2 for unit in pair_units(RELEASE.rows('competitors'), suite='competitors'))
 
@@ -155,9 +188,12 @@ def test_filter_selects_both_pair_members() -> None:
 
 def test_smoke_shares_operation_tuple() -> None:
     assert SMOKE.operations == RELEASE.operations
-    assert SMOKE.rows('competitors') == RELEASE.rows('competitors')
+    assert SMOKE.scaling_operations == ()
+    assert SMOKE.rows('competitors') == tuple(
+        row for op in RELEASE_OPERATIONS for row in op.rows
+    )
     assert SMOKE.paired_blocks == 1
-    assert SMOKE.paired_sampling_args == ('--warmups', '0', '--repetitions', '1')
+    assert SMOKE.paired_sampling_args == ('--warmups', '1', '--repetitions', '1')
 
 
 def test_release_declares_exact_balanced_block_matrix() -> None:

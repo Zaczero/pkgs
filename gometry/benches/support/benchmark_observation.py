@@ -96,8 +96,8 @@ def validate_observation(value: Any) -> dict[str, Any]:
     else:
         _work(useful_work, label='useful_work')
     phase = value.get('phase')
-    if phase not in {'cold', 'warm', 'steady'}:
-        raise _fail('phase must be cold, warm, or steady')
+    if phase not in {'first-use', 'warm', 'steady'}:
+        raise _fail('phase must be first-use, warm, or steady')
     for name in ('warmup', 'calibration'):
         section = value.get(name)
         if not isinstance(section, dict):
@@ -107,6 +107,11 @@ def validate_observation(value: Any) -> dict[str, Any]:
             raise _fail(f'{name}.iterations must be a non-negative integer')
         if section.get('completed') is not True:
             raise _fail(f'{name}.completed must be true')
+    warmup_iterations = value['warmup']['iterations']
+    if phase == 'warm' and warmup_iterations < 1:
+        raise _fail('warm phase requires at least one explicit untimed prewarm iteration')
+    if phase == 'first-use' and warmup_iterations != 0:
+        raise _fail('first-use phase cannot contain prewarm iterations')
     oracle = value.get('oracle')
     if (
         not isinstance(oracle, dict)
@@ -136,7 +141,13 @@ def make_observation(
     calibration_iterations: int = 0,
     calibration_strategy: str = 'fixed-repetitions',
 ) -> dict[str, Any]:
-    """Construct one observation using the metric-specific schema."""
+    """Construct one observation using the metric-specific schema.
+
+    ``warm`` requires explicit untimed prewarming; ``steady`` describes a
+    case whose setup already establishes its reusable state. ``first-use`` is
+    reserved for an isolated producing process and is not emitted by the
+    shared-process paired worker.
+    """
     if metric not in _METRICS:
         raise _fail(f'unknown metric {metric!r}')
     unit, raw_key, estimate_key, direction = _METRICS[metric]

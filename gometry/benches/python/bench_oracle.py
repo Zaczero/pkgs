@@ -9,15 +9,16 @@ operation sequentially, prints ``PASS <row> [<kind>]``, and exits nonzero on
 the first mismatch. Fixture caches and timed closures are cleared between
 operations so peak RSS stays bounded.
 
-An empty or incomplete ``PUBLIC_CASE_BUILDERS`` map **fails closed** at planning
+An empty or incomplete public builder map **fails closed** at planning
 (``validate_builders``) — never silently reports success with zero ops. The
-public case module registers one builder for each RELEASE operation.
+public case modules register one builder for every declared operation.
 """
 
 from __future__ import annotations
 
 import argparse
 import gc
+import json
 import sys
 from pathlib import Path
 
@@ -29,24 +30,26 @@ for _path in (_PYTHON, _SUPPORT):
 
 from _bench_oracles import (
     PUBLIC_CASE_BUILDERS,
+    PUBLIC_SCALING_CASE_BUILDERS,
     OracleContext,
     OracleMismatch,
     public_oracle_identity,
 )
-from _bench_registry import RELEASE_OPERATIONS, ReleaseOperation
+from _bench_registry import ALL_PUBLIC_OPERATIONS, RELEASE_OPERATIONS, ScalingOperation
 
 # Register the public PairCase builders (side-effect import).
 import _bench_public_cases as _public_cases  # noqa: F401
+import _bench_scaling_cases as _scaling_cases  # noqa: F401
 
 
-def _selected_operations(names: set[str] | None) -> list[ReleaseOperation]:
+def _selected_operations(names: set[str] | None) -> list[object]:
     if names is None:
-        return list(RELEASE_OPERATIONS)
-    known = {op.gometry: op for op in RELEASE_OPERATIONS}
-    by_any = {row: op for op in RELEASE_OPERATIONS for row in op.rows}
+        return list(ALL_PUBLIC_OPERATIONS)
+    known = {op.gometry: op for op in ALL_PUBLIC_OPERATIONS}
+    by_any = {row: op for op in ALL_PUBLIC_OPERATIONS for row in op.rows}
     unknown: list[str] = []
     seen: set[str] = set()
-    selected: list[ReleaseOperation] = []
+    selected: list[object] = []
     for name in names:
         op = known.get(name) or by_any.get(name)
         if op is None:
@@ -60,21 +63,23 @@ def _selected_operations(names: set[str] | None) -> list[ReleaseOperation]:
         raise SystemExit(
             'unknown oracle operation name(s): ' + ', '.join(sorted(unknown))
         )
-    order = {op.gometry: i for i, op in enumerate(RELEASE_OPERATIONS)}
+    order = {op.gometry: i for i, op in enumerate(ALL_PUBLIC_OPERATIONS)}
     selected.sort(key=lambda op: order[op.gometry])
     return selected
 
 
 def validate_builders(
-    operations: list[ReleaseOperation],
+    operations: list[object],
     builders: dict[str, object],
+    *,
+    public_operations: tuple[object, ...] = tuple(RELEASE_OPERATIONS),
 ) -> None:
     """Require exact bijection: every selected op has a builder; no orphans.
 
     Called before any timing or verification so a missing builder fails closed
     at planning/oracle entry rather than silently SKIPping.
     """
-    public = {op.gometry for op in RELEASE_OPERATIONS}
+    public = {op.gometry for op in public_operations}
     orphans = sorted(set(builders) - public)
     if orphans:
         raise SystemExit(
@@ -91,13 +96,32 @@ def validate_builders(
 
 
 def run_oracle(
-    operations: list[ReleaseOperation],
+    operations: list[object],
     *,
     builders: dict | None = None,
+    output: Path | None = None,
 ) -> int:
-    builders = PUBLIC_CASE_BUILDERS if builders is None else builders
-    # Fail closed before any verification work when the map is incomplete.
-    validate_builders(operations, builders)
+    base = [op for op in operations if not isinstance(op, ScalingOperation)]
+    scaling = [op for op in operations if isinstance(op, ScalingOperation)]
+    if builders is not None:
+        builder_maps = (builders,)
+        validate_builders(
+            operations,
+            builders,
+            public_operations=tuple(operations),
+        )
+    else:
+        builder_maps = (PUBLIC_CASE_BUILDERS, PUBLIC_SCALING_CASE_BUILDERS)
+        # Fail closed before any verification work when the map is incomplete.
+        validate_builders(base, PUBLIC_CASE_BUILDERS)
+        if scaling:
+            validate_builders(
+                scaling,
+                PUBLIC_SCALING_CASE_BUILDERS,
+                public_operations=tuple(
+                    op for op in ALL_PUBLIC_OPERATIONS if isinstance(op, ScalingOperation)
+                ),
+            ),
 
     from _bench_public_cases import PUBLIC_TIMED
     from _bench_public_fixtures import clear_public_fixture_cache
@@ -105,7 +129,11 @@ def run_oracle(
 
     verified = 0
     for op in operations:
-        builder = builders[op.gometry]
+        builder = next(
+            builder_map[op.gometry]
+            for builder_map in builder_maps
+            if op.gometry in builder_map
+        )
         case = builder()
         try:
             context = OracleContext(
@@ -139,6 +167,19 @@ def run_oracle(
             gc.collect()
 
     print(f'oracle complete: {verified} passed, 0 skipped', flush=True)
+    if output is not None:
+        payload = {
+            'schema_version': 1,
+            'artifact_type': 'gometry-public-oracle',
+            'operations': [op.gometry for op in operations],
+            'identities': [public_oracle_identity(op) for op in operations],
+            'verified': verified,
+            'state_scope': 'external-fresh-process',
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open('x', encoding='utf-8') as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write('\n')
     return 0
 
 
@@ -150,8 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         '--all',
         action='store_true',
-        help='verify every RELEASE_OPERATIONS entry that has a builder',
+        help='verify every declared public operation that has a builder',
     )
+    parser.add_argument('--output', type=Path)
     group.add_argument(
         '--operations',
         help='comma-separated gometry (or competitor) row names to verify',
@@ -166,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error('--operations must contain at least one operation name')
         operations = _selected_operations(names)
 
-    return run_oracle(operations)
+    return run_oracle(operations, output=args.output)
 
 
 if __name__ == '__main__':

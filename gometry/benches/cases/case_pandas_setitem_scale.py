@@ -8,11 +8,13 @@ is flat ~30 ms. Timing claims belong here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 import numpy as np
 from _observation import emit
+from _validation import emit_validation
 
 
 def _median_setitem(ext: object, n: int, *, warm: int = 2, reps: int = 5) -> float:
@@ -49,12 +51,25 @@ def main() -> None:
             'numerator': {'count': 10_000, 'unit': 'selected-rows'},
             'denominator': {'count': 1, 'unit': 'selected-rows'},
         },
-        oracle_identity='case_pandas_setitem_scale:last-row-write-v1',
+        oracle_identity='case_pandas_setitem_scale:last-row-write',
         warmup_iterations=2,
         calibration_iterations=5,
         calibration_strategy='median-of-repetitions-per-scaling-point',
     )
 
 
+def validate_case() -> None:
+    from gometry._pandas import GeometryExtensionArray
+
+    ext = GeometryExtensionArray(gm.points([0.0], [0.0]))
+    point = gm.Point(1.0, 1.0)
+    ext[0] = point
+    assert ext[0] == point
+    emit_validation(
+        'case_pandas_setitem_scale',
+        useful_output={'count': 1, 'unit': 'selected-rows'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

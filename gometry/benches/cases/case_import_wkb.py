@@ -1,15 +1,14 @@
-"""bench_ab case: from_wkb over 200k point + 20k linestring WKBs.
+"""bench_ab case: from_wkb over 200k points and 20k linestrings."""
 
-Validates type/length/identity outside the timed region so a "win" cannot come
-from doing less work (bench_ab contract).
-"""
+from __future__ import annotations
 
-import sys
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def main() -> None:
@@ -23,7 +22,6 @@ def main() -> None:
     ])
     point_wkb = points.to_wkb()
     line_wkb = lines.to_wkb()
-    # warm parse + untimed semantic postcondition
     warm_pts = gm.from_wkb(point_wkb)
     warm_lines = gm.from_wkb(line_wkb)
     assert len(warm_pts) == 200_000
@@ -42,7 +40,6 @@ def main() -> None:
         last_pts = gm.from_wkb(point_wkb)
         last_lines = gm.from_wkb(line_wkb)
         samples.append(time.perf_counter() - start)
-    # Untimed postconditions after the measured loop.
     assert last_pts is not None and last_lines is not None
     assert len(last_pts) == 200_000 and len(last_lines) == 20_000
     assert gm.equals_identical(last_pts[123], points[123])
@@ -51,11 +48,21 @@ def main() -> None:
         metric='duration',
         raw_values=[statistics.median(samples)],
         useful_work={'count': 220_000, 'unit': 'WKB-rows'},
-        oracle_identity='case_import_wkb:roundtrip-sample-rows-v1',
+        oracle_identity='case_import_wkb:roundtrip-sample-rows',
         warmup_iterations=1,
         calibration_iterations=3,
     )
 
 
+def validate_case() -> None:
+    points = gm.points([0.0, 1.0], [0.0, 1.0])
+    restored = gm.from_wkb(points.to_wkb())
+    assert len(restored) == 2 and gm.equals_identical(restored[1], points[1])
+    emit_validation(
+        'case_import_wkb',
+        useful_output={'count': 2, 'unit': 'WKB-rows'},
+    )
+
+
 if __name__ == '__main__':
-    sys.exit(main())
+    validate_case() if '--validate' in sys.argv else main()

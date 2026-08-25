@@ -17,6 +17,7 @@ import gometry as gm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 from _bench_public_fixtures import repair_1k_gometry
 from _observation import emit
+from _validation import emit_validation
 
 
 def build_input(mix: str) -> gm.GeometryArray:
@@ -53,11 +54,21 @@ def main() -> None:
         metric='duration',
         raw_values=[elapsed],
         useful_work={'count': len(input_array), 'unit': 'geometry-rows'},
-        oracle_identity='case_repair_linework:valid-repair-crs-v1',
+        oracle_identity='case_repair_linework:valid-repair-crs',
         warmup_iterations=2,
         calibration_iterations=1,
     )
 
 
+def validate_case() -> None:
+    input_array = gm.GeometryArray([gm.box(0.0, 0.0, 1.0, 1.0)])
+    result = input_array.repair(method='linework')
+    assert len(result) == 1 and all(result.is_valid)
+    emit_validation(
+        'case_repair_linework',
+        useful_output={'count': 1, 'unit': 'geometry-rows'},
+    )
+
+
 if __name__ == "__main__":
-    main()
+    validate_case() if '--validate' in sys.argv else main()

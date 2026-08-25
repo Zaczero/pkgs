@@ -23,8 +23,12 @@ for _path in (_PYTHON, _SUPPORT, _DRIVERS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from _bench_oracles import OracleContext, PUBLIC_CASE_BUILDERS, public_oracle_identity
-from _bench_registry import operation_for_row
+from _bench_oracles import (
+    PUBLIC_CASE_BUILDERS,
+    PUBLIC_SCALING_CASE_BUILDERS,
+    public_oracle_identity,
+)
+from _bench_registry import operation_for_row, scaling_record
 from bench_doctor import (
     _extension_identity,
     _loaded_native_libraries,
@@ -46,7 +50,7 @@ _DEPENDENCIES = (
     'mercantile', 'pygeohash',
 )
 _OUTPUT_SINK = 0
-PAIR_ARTIFACT_SCHEMA_VERSION = 2
+PAIR_ARTIFACT_SCHEMA_VERSION = 1
 
 
 def producer_identity() -> dict[str, Any]:
@@ -147,26 +151,43 @@ def _measure_arm(
     producer_identity: dict[str, Any] | None,
     warmups: int,
     repetitions: int,
+    phase: str,
+    useful_work: dict[str, Any],
+    output_validator: Callable[[object], None] | None,
     oracle_identity: str,
 ) -> dict[str, Any]:
     if not callable(call):
         raise SystemExit(f'paired block callable for {row} is not callable')
+    if phase == 'warm' and warmups < 1:
+        raise SystemExit(f'warm phase for {row} requires explicit untimed prewarming')
+    if phase == 'first-use':
+        raise SystemExit(
+            'first-use cannot be paired in one shared process: the first arm warms '
+            'state before the second arm is invoked'
+        )
     for _ in range(warmups):
         _consume_output(call())
     started = clock_ns()
     raw_seconds: list[float] = []
+    last_value: object | None = None
     for _ in range(repetitions):
         arm_started = clock_ns()
-        _consume_output(call())
+        last_value = call()
+        _consume_output(last_value)
         arm_ended = clock_ns()
         raw_seconds.append((arm_ended - arm_started) / 1_000_000_000.0)
     ended = clock_ns()
+    if output_validator is not None:
+        try:
+            output_validator(last_value)
+        except Exception as exc:
+            raise SystemExit(f'paired block output validation failed for {row}: {exc}') from exc
     observation = make_observation(
         metric='duration',
         raw_values=raw_seconds,
-        useful_work={'count': 1, 'unit': 'equivalent-case-invocation'},
+        useful_work=useful_work,
         oracle_identity=oracle_identity,
-        phase='warm',
+        phase=phase,
         warmup_iterations=warmups,
         calibration_iterations=repetitions,
     )
@@ -193,6 +214,7 @@ def run_block(
     run_id: str = 'unbound',
     warmups: int,
     repetitions: int,
+    phase: str = 'warm',
     clock_ns: Callable[[], int] = time.perf_counter_ns,
     identity: Callable[[], dict[str, Any]] = producer_identity,
     builder: Callable[[], Any] | None = None,
@@ -202,43 +224,44 @@ def run_block(
         raise SystemExit(f'paired block lead must be ab or ba, got {lead!r}')
     if warmups < 0 or repetitions < 1:
         raise SystemExit('paired block warmups must be non-negative and repetitions positive')
+    if phase not in {'warm', 'steady', 'first-use'}:
+        raise SystemExit(f'paired block phase is unsupported: {phase!r}')
+    declared_phase = getattr(operation, 'phase', 'warm')
+    if declared_phase != phase:
+        raise SystemExit(
+            f'paired block phase does not match operation metadata: '
+            f'{phase!r} != {declared_phase!r}'
+        )
+    if phase == 'first-use':
+        raise SystemExit(
+            'first-use cannot be paired in one shared process: the first arm warms '
+            'state before the second arm is invoked'
+        )
     if builder is None:
         # Import the workload catalog only after the worker has passed CLI and
         # oracle-gate checks; importing it constructs native-backed fixtures.
         import _bench_public_cases as _public_cases  # noqa: F401
-        case_builder = PUBLIC_CASE_BUILDERS.get(operation.gometry)
+        import _bench_scaling_cases as _scaling_cases  # noqa: F401
+        case_builder = (
+            PUBLIC_SCALING_CASE_BUILDERS.get(operation.gometry)
+            if hasattr(operation, 'curve_id')
+            else PUBLIC_CASE_BUILDERS.get(operation.gometry)
+        )
     else:
         case_builder = builder
     if case_builder is None:
         raise SystemExit(f'missing public paired case builder: {operation.gometry}')
-    oracle_case = case_builder()
-    pair = getattr(oracle_case, 'pair', None)
+    case = case_builder()
+    pair = getattr(case, 'pair', None)
     if pair is None or not callable(getattr(pair, 'gometry_call', None)):
         raise SystemExit(f'public paired case is malformed: {operation.gometry}')
     if not callable(getattr(pair, 'competitor_call', None)):
         raise SystemExit(f'public paired case lacks competitor callable: {operation.gometry}')
     oracle_identity = public_oracle_identity(operation)
-    verify = getattr(oracle_case, 'verify', None)
-    if not callable(verify):
-        raise SystemExit(f'public paired case lacks untimed oracle verification: {operation.gometry}')
-    try:
-        verify(OracleContext(
-            operation=operation,
-            kind=getattr(oracle_case, 'kind', 'oracle'),
-            unit=getattr(oracle_case, 'unit', None),
-            oracle_identity=oracle_identity,
-        ))
-    except Exception as exc:
-        raise SystemExit(
-            f'public paired preflight oracle failed for {operation.gometry}: {exc}'
-        ) from exc
-    # The timed case is freshly built so oracle mutations cannot share its state.
-    case = case_builder()
-    pair = getattr(case, 'pair', None)
-    if pair is None or not callable(getattr(pair, 'gometry_call', None)):
-        raise SystemExit(f'public timed paired case is malformed: {operation.gometry}')
-    if not callable(getattr(pair, 'competitor_call', None)):
-        raise SystemExit(f'public timed paired case lacks competitor callable: {operation.gometry}')
+    useful_work = getattr(case, 'useful_work', None)
+    if not isinstance(useful_work, dict):
+        useful_work = {'count': 1, 'unit': 'equivalent-case-invocation'}
+    output_validator = getattr(case, 'output_validator', None)
     arms = {
         'A': (operation.gometry, pair.gometry_call),
         'B': (operation.competitor, pair.competitor_call),
@@ -266,6 +289,9 @@ def run_block(
             producer_identity=arm_identity_before[side],
             warmups=warmups,
             repetitions=repetitions,
+            phase=phase,
+            useful_work=useful_work,
+            output_validator=output_validator,
             oracle_identity=oracle_identity,
         )
         for side in order
@@ -300,6 +326,8 @@ def run_block(
             'gometry': operation.gometry,
             'competitor': operation.competitor,
             'canonical_symbols': list(operation.canonical_symbols),
+            'phase': phase,
+            'scaling': scaling_record(operation),
         },
         'lead_order': list(order),
         'state_scope': 'shared-process-prepared-fixture',
@@ -312,6 +340,8 @@ def run_block(
             'warmup_iterations': warmups,
             'repetitions': repetitions,
             'calibration_strategy': 'fixed-repetitions',
+            'phase': phase,
+            'scaling': scaling_record(operation),
         },
         'arms': measured,
     }
@@ -326,6 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
     parser.add_argument('--profile', choices=('smoke', 'release'), required=True)
     parser.add_argument('--run-id', required=True)
+    parser.add_argument('--phase', choices=('warm', 'steady', 'first-use'), required=True)
     parser.add_argument('--warmups', type=int, required=True)
     parser.add_argument('--repetitions', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -350,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         lead=args.lead,
         profile=args.profile,
         run_id=args.run_id,
+        phase=args.phase,
         warmups=args.warmups,
         repetitions=args.repetitions,
     )

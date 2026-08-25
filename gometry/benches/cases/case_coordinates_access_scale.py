@@ -8,10 +8,12 @@ with run count. Timing claims belong here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def _median_index0(n_runs: int, *, warm: int = 2, reps: int = 7) -> float:
@@ -47,12 +49,21 @@ def main() -> None:
             'numerator': {'count': 100_000, 'unit': 'geometry-runs'},
             'denominator': {'count': 1_000, 'unit': 'geometry-runs'},
         },
-        oracle_identity='case_coordinates_access_scale:first-coordinate-v1',
+        oracle_identity='case_coordinates_access_scale:first-coordinate',
         warmup_iterations=2,
         calibration_iterations=7,
         calibration_strategy='median-of-repetitions-per-scaling-point',
     )
 
 
+def validate_case() -> None:
+    arr = gm.line_strings([[(0.0, 0.0), (1.0, 1.0)]])
+    assert arr.coords[0] == (0.0, 0.0)
+    emit_validation(
+        'case_coordinates_access_scale',
+        useful_output={'count': 1, 'unit': 'geometry-runs'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

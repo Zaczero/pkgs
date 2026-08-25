@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import math
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def _case(count: int) -> tuple[gm.LineString, gm.MultiPoint]:
@@ -43,12 +45,20 @@ def main() -> None:
             'numerator': {'count': 800, 'unit': 'target-points'},
             'denominator': {'count': 100, 'unit': 'target-points'},
         },
-        oracle_identity='case_hausdorff_point_envelope_scale:exact-distance-v1',
+        oracle_identity='case_hausdorff_point_envelope_scale:exact-distance',
         warmup_iterations=3,
         calibration_iterations=9,
         calibration_strategy='median-of-repetitions-per-scaling-point',
     )
 
 
+def validate_case() -> None:
+    assert _median_hausdorff(2) > 0.0
+    emit_validation(
+        'case_hausdorff_point_envelope_scale',
+        useful_output={'count': 2, 'unit': 'target-points'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

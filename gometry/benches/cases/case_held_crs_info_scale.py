@@ -9,10 +9,12 @@ here, not in pytest.
 from __future__ import annotations
 
 import statistics
+import sys
 import time
 
 import gometry as gm
 from _observation import emit
+from _validation import emit_validation
 
 
 def _held_crs(n: int = 1000) -> list[gm.CRS]:
@@ -53,11 +55,20 @@ def main() -> None:
         metric='duration',
         raw_values=[_median_info_pass(held)],
         useful_work={'count': len(held), 'unit': 'CRS-info-reads'},
-        oracle_identity='case_held_crs_info_scale:nonempty-info-v1',
+        oracle_identity='case_held_crs_info_scale:nonempty-info',
         warmup_iterations=2,
         calibration_iterations=7,
     )
 
 
+def validate_case() -> None:
+    held = _held_crs(2)
+    assert all(isinstance(crs.info, dict) and crs.info for crs in held)
+    emit_validation(
+        'case_held_crs_info_scale',
+        useful_output={'count': len(held), 'unit': 'CRS-info-reads'},
+    )
+
+
 if __name__ == '__main__':
-    main()
+    validate_case() if '--validate' in sys.argv else main()

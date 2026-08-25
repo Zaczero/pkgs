@@ -27,13 +27,19 @@ for _path in (_SUPPORT, _DRIVERS, _PYTHON):
 
 from _bench_pairs import pair_units
 from _bench_registry import (
+    ALL_PUBLIC_OPERATIONS,
     PROFILES,
     PAIR_WORKER,
+    RELEASE_OPERATIONS,
+    SCALING_OPERATIONS,
     SUITES,
     Profile,
     ReleaseOperation,
+    ScalingOperation,
     expand_filter_to_pairs,
+    scaling_record,
     validate_canonical_symbols,
+    validate_scaling_operations,
 )
 from bench_doctor import (
     _ENGINE_LIBRARY_TOKENS,
@@ -46,7 +52,7 @@ from bench_doctor import (
 
 
 def _serialize_public_operations(
-    operations: tuple[ReleaseOperation, ...],
+    operations: tuple[ReleaseOperation | ScalingOperation, ...],
     selected: dict[str, tuple[str, ...]],
 ) -> list[dict[str, object]]:
     """Ordered operation records for the run JSON (summarizer input)."""
@@ -55,7 +61,7 @@ def _serialize_public_operations(
     for op in operations:
         if not any(name in selected_names for name in op.rows):
             continue
-        records.append({
+        record: dict[str, object] = {
             'domain': op.domain,
             'label': op.label,
             'workload': op.workload,
@@ -64,8 +70,11 @@ def _serialize_public_operations(
             'gometry': op.gometry,
             'competitor': op.competitor,
             'competitor_label': op.competitor_label,
-            'footnotes': list(op.footnotes),
-        })
+            'footnotes': list(getattr(op, 'footnotes', ())),
+            'phase': op.phase,
+        }
+        record['scaling'] = scaling_record(op)
+        records.append(record)
     return records
 
 
@@ -94,7 +103,7 @@ def _paired_matrix_identity(
 _OUTPUT_TAIL = 10_000
 _RUN_MANIFEST_TYPE = 'gometry-benchmark-run'
 _ANALYSIS_MANIFEST_TYPE = 'gometry-benchmark-analysis'
-_MANIFEST_SCHEMA_VERSION = 2
+_MANIFEST_SCHEMA_VERSION = 1
 _REQUIRED_ENGINE_LIBRARY_TOKENS = {
     'shapely': ('geos',),
     'pyproj': ('proj',),
@@ -139,6 +148,7 @@ def _validate_release_manifest(profile: Profile) -> None:
     suite = 'competitors'
     try:
         validate_canonical_symbols(profile.operations)
+        validate_scaling_operations(profile.all_operations)
     except ValueError as exc:
         raise SystemExit(
             f'{suite} release manifest has invalid canonical endpoint: {exc}'
@@ -161,9 +171,9 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
     row; orphans against the full public set are also rejected.
     """
     # Local import: builders register numpy-heavy public cases.
-    from _bench_oracles import PUBLIC_CASE_BUILDERS
-    from _bench_registry import RELEASE_OPERATIONS
+    from _bench_oracles import PUBLIC_CASE_BUILDERS, PUBLIC_SCALING_CASE_BUILDERS
     import _bench_public_cases as _public_cases  # noqa: F401
+    import _bench_scaling_cases as _scaling_cases  # noqa: F401
     from bench_oracle import validate_builders
 
     gometry_names = [
@@ -172,8 +182,8 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
         for name in suite_rows
         if name.startswith('gometry.')
     ]
-    by_name = {op.gometry: op for op in RELEASE_OPERATIONS}
-    by_any = {row: op for op in RELEASE_OPERATIONS for row in op.rows}
+    by_name = {op.gometry: op for op in ALL_PUBLIC_OPERATIONS}
+    by_any = {row: op for op in ALL_PUBLIC_OPERATIONS for row in op.rows}
     seen: set[str] = set()
     operations = []
     for name in gometry_names:
@@ -185,10 +195,20 @@ def _validate_oracle_builders(selected: dict[str, tuple[str, ...]]) -> None:
     if not operations:
         # Full-manifest oracle path (--all) when no gometry rows selected.
         operations = list(RELEASE_OPERATIONS)
-    validate_builders(operations, PUBLIC_CASE_BUILDERS)
+    base = [op for op in operations if not isinstance(op, ScalingOperation)]
+    scaling = [op for op in operations if isinstance(op, ScalingOperation)]
+    validate_builders(base, PUBLIC_CASE_BUILDERS)
+    if scaling:
+        validate_builders(
+            scaling,
+            PUBLIC_SCALING_CASE_BUILDERS,
+            public_operations=tuple(SCALING_OPERATIONS),
+        )
 
 
-def _oracle_command(selected: dict[str, tuple[str, ...]]) -> list[str]:
+def _oracle_command(
+    selected: dict[str, tuple[str, ...]], *, output: Path | None = None
+) -> list[str]:
     """Build the single oracle subprocess command for selected logical ops."""
     gometry_names = [
         name
@@ -203,18 +223,17 @@ def _oracle_command(selected: dict[str, tuple[str, ...]]) -> list[str]:
         if name not in seen:
             seen.add(name)
             ordered.append(name)
-    if not ordered:
-        return [
+    command = [
             '.venv/bin/python',
             'benches/python/bench_oracle.py',
-            '--all',
         ]
-    return [
-        '.venv/bin/python',
-        'benches/python/bench_oracle.py',
-        '--operations',
-        ','.join(ordered),
-    ]
+    if not ordered:
+        command.append('--all')
+    else:
+        command.extend(('--operations', ','.join(ordered)))
+    if output is not None:
+        command.extend(('--output', str(output)))
+    return command
 
 
 def _paired_command(
@@ -229,6 +248,7 @@ def _paired_command(
     profile: Profile,
     cpu: int,
     run_id: str,
+    phase: str,
 ) -> list[str]:
     return [
         'taskset',
@@ -250,6 +270,8 @@ def _paired_command(
         profile_name,
         '--run-id',
         run_id,
+        '--phase',
+        phase,
         *profile.paired_sampling_args,
         '--output',
         str(output),
@@ -352,6 +374,13 @@ def _benchmark_plans(
                     profile=profile,
                     cpu=cpu,
                     run_id=f'{timestamp}-{profile_name}',
+                    phase=getattr(
+                        next(
+                            op for op in profile.all_operations if op.gometry == gometry
+                        ),
+                        'phase',
+                        'warm',
+                    ),
                 )
             else:
                 raise SystemExit(f'unsupported public benchmark schedule: {label}')
@@ -725,12 +754,16 @@ def _validate_publication_result(
     if (
         not isinstance(row_counts, dict)
         or not all(isinstance(value, int) for value in row_counts.values())
-        or sum(row_counts.values()) != 74
+        or sum(row_counts.values()) != sum(len(op.rows) for op in ALL_PUBLIC_OPERATIONS)
     ):
-        raise SystemExit('publication rejected: release does not contain exactly 74 rows')
+        raise SystemExit(
+            'publication rejected: release does not contain the complete paired row matrix'
+        )
     operations = result.get('public_operations')
-    if not isinstance(operations, list) or len(operations) != 37:
-        raise SystemExit('publication rejected: release does not contain exactly 37 operations')
+    if not isinstance(operations, list) or len(operations) != len(ALL_PUBLIC_OPERATIONS):
+        raise SystemExit(
+            'publication rejected: release does not contain the complete operation matrix'
+        )
     for operation in operations:
         if not isinstance(operation, dict) or not operation.get('competitor'):
             raise SystemExit('publication rejected: operation matrix is not fully paired')
@@ -746,6 +779,41 @@ def _validate_publication_result(
             '(three ab and three ba)'
         )
     return _publication_metadata(result), operations
+
+
+def _validate_oracle_artifact(result: dict[str, Any], artifacts: list[Path]) -> None:
+    """Require the untimed oracle to be a distinct, complete process artifact."""
+    value = result.get('oracle_artifact')
+    if not isinstance(value, str) or not value:
+        raise SystemExit('analysis rejected: external oracle artifact is missing')
+    run_directory = artifacts[0].resolve().parent.parent if artifacts else None
+    if run_directory is None:
+        raise SystemExit('analysis rejected: no run artifacts for external oracle')
+    path = Path(value)
+    if not path.is_absolute():
+        path = run_directory / path
+    try:
+        path = path.resolve()
+        path.relative_to(run_directory.resolve())
+    except ValueError as exc:
+        raise SystemExit('analysis rejected: external oracle artifact is outside the run') from exc
+    if not path.is_file():
+        raise SystemExit('analysis rejected: external oracle artifact is missing')
+    payload = _read_json_object(path, label='external oracle artifact')
+    expected = [
+        operation['gometry']
+        for operation in result.get('public_operations', ())
+        if isinstance(operation, dict) and isinstance(operation.get('gometry'), str)
+    ]
+    if (
+        payload.get('schema_version') != 1
+        or payload.get('artifact_type') != 'gometry-public-oracle'
+        or payload.get('state_scope') != 'external-fresh-process'
+        or payload.get('operations') != expected
+        or payload.get('identities') != [f'public:{name}:oracle' for name in expected]
+        or payload.get('verified') != len(expected)
+    ):
+        raise SystemExit('analysis rejected: external oracle artifact is incomplete or mismatched')
 
 
 def _analyze_result(
@@ -765,6 +833,8 @@ def _analyze_result(
     )
 
     validate_exact_paired_matrix(result, artifacts)
+    _validate_oracle_artifact(result, artifacts)
+
     stats = _load_all_blocks(
         artifacts,
         expected_profile=str(result.get('profile')),
@@ -1400,19 +1470,20 @@ def main() -> None:
             _resource_plans(output_dir=raw_directory, timestamp=timestamp, cpu=cpu)
         )
     # Oracle runs once after env/manifest validation and before timing.
+    oracle_output = raw_directory / f'{timestamp}-oracle-{args.profile}.json'
     oracle_plan: dict[str, Any] = {
         'kind': 'oracle',
         'suite': 'oracle',
         'label': 'oracle',
         'rows': (),
         'environment': None,
-        'command': _oracle_command(selected),
-        'output': None,
+        'command': _oracle_command(selected, output=oracle_output),
+        'output': str(oracle_output),
     }
     # Doctor package requirements follow the selected public operations.
     selected_ops = tuple(
         op
-        for op in profile.operations
+        for op in profile.all_operations
         if any(
             name in {n for rows in selected.values() for n in rows} for name in op.rows
         )
@@ -1512,7 +1583,7 @@ def main() -> None:
         if args.profile == 'release' and not args.plan_only
         else {'metadata': {}, 'warnings': []}
     )
-    # Oracle has no artifact; count paired blocks/resources separately.
+    # Keep the external oracle artifact separate from timing/resource plans.
     timing_plans = [plan for plan in plans if plan.get('kind') != 'oracle']
     if args.plan_only:
         # plans already includes oracle_plan at front
@@ -1526,12 +1597,13 @@ def main() -> None:
             and len(commands) == expected_commands
             and all(command['returncode'] == 0 for command in commands)
         )
+    artifact_plans = ([] if args.plan_only else [oracle_plan]) + timing_plans
     artifacts = [
         plan['output']
-        for plan in timing_plans
+        for plan in artifact_plans
         if plan.get('output') and Path(plan['output']).is_file()
     ]
-    expected_artifacts = sum(1 for plan in timing_plans if plan.get('output'))
+    expected_artifacts = sum(1 for plan in artifact_plans if plan.get('output'))
     publishable = (
         args.profile == 'release'
         and args.filter is None
@@ -1542,7 +1614,7 @@ def main() -> None:
         and not doctor['hard_failures']
     )
 
-    public_operations = _serialize_public_operations(profile.operations, selected)
+    public_operations = _serialize_public_operations(profile.all_operations, selected)
     sampling = {
         'worker': PAIR_WORKER,
         'measured_blocks': profile.paired_blocks,
@@ -1554,6 +1626,8 @@ def main() -> None:
         'repetitions': int(profile.paired_sampling_args[3]),
         'independent_process_blocks': True,
         'state_scope': 'shared-process-prepared-fixture',
+        'phase': 'warm',
+        'oracle_state_scope': 'external-fresh-process',
     }
     paired_matrix, paired_matrix_sha256 = _paired_matrix_identity(public_operations, sampling)
     result = {
@@ -1591,6 +1665,10 @@ def main() -> None:
         'commands': commands,
         'commands_complete': commands_complete,
         'oracle_ok': oracle_ok if not args.plan_only else None,
+        'oracle_artifact': (
+            _manifest_relative(oracle_output, run_directory)
+            if oracle_output.is_file() else None
+        ),
         'artifacts': artifacts,
         'resources': [] if args.plan_only else _resource_summaries(plans),
     }

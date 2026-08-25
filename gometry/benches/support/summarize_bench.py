@@ -56,7 +56,10 @@ class PairedBlock:
     competitor_median: float
     ratio: float
     producer_identity: dict[str, Any]
+    phase: str
+    scaling: dict[str, Any] | None
     arm_identities: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
+    useful_work: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,8 @@ class PublicOpMeta:
     competitor: str
     competitor_label: str
     footnotes: tuple[str, ...]
+    phase: str
+    scaling: dict[str, Any] | None
 
 
 @dataclass(slots=True)
@@ -183,8 +188,17 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             gometry = str(item['gometry'])
             competitor = str(item['competitor'])
             competitor_label = str(item['competitor_label'])
+            phase = str(item['phase'])
         except KeyError as exc:
             raise SystemExit(f'public_operations[{index}] missing field: {exc.args[0]}') from exc
+        if phase not in {'warm', 'steady', 'first-use'}:
+            raise SystemExit(f'public_operations[{index}] has an invalid phase')
+        raw_scaling = item.get('scaling')
+        scaling = raw_scaling if isinstance(raw_scaling, dict) else None
+        if scaling is not None:
+            required = {'curve_id', 'dimension', 'unit', 'point', 'point_label', 'useful_work_unit'}
+            if set(scaling) != required:
+                raise SystemExit(f'public_operations[{index}] has incomplete scaling metadata')
         if gometry in seen:
             raise SystemExit(f'duplicate public gometry row: {gometry}')
         if not competitor or not competitor_label:
@@ -209,7 +223,10 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
             competitor=competitor,
             competitor_label=competitor_label,
             footnotes=tuple(str(value) for value in (item.get('footnotes') or ())),
+            phase=phase,
+            scaling=scaling,
         ))
+    _validate_scaling_metadata(operations)
     return operations
 
 
@@ -309,28 +326,49 @@ def validate_exact_paired_matrix(
             'exact paired matrix is incomplete; missing identities: '
             + ', '.join(repr(value) for value in missing)
         )
+    expected_nonpaired: set[str] = set()
+    oracle_artifact = payload.get('oracle_artifact')
+    if isinstance(oracle_artifact, str) and oracle_artifact:
+        expected_nonpaired.add(Path(oracle_artifact).name)
     planned = payload.get('planned_commands')
-    if isinstance(planned, list) and planned:
-        expected_nonpaired = {
+    if isinstance(planned, list):
+        expected_nonpaired.update(
             Path(str(command['output'])).name
             for command in planned
             if isinstance(command, dict)
-            and command.get('kind') == 'resource'
+            and command.get('kind') in {'oracle', 'resource'}
             and isinstance(command.get('output'), str)
-        }
-        if nonpaired != expected_nonpaired:
-            raise SystemExit(
-                'run contains unexpected or missing non-paired artifacts: '
-                f'actual={sorted(nonpaired)!r} expected={sorted(expected_nonpaired)!r}'
-            )
-    elif nonpaired:
+        )
+    if nonpaired != expected_nonpaired:
         raise SystemExit(
-            'run contains undeclared non-paired artifacts: ' + ', '.join(sorted(nonpaired))
+            'run contains unexpected or missing non-paired artifacts: '
+            f'actual={sorted(nonpaired)!r} expected={sorted(expected_nonpaired)!r}'
         )
 
 
 def _identity_without_attribution(value: dict[str, Any]) -> dict[str, Any]:
     return common_identity(value)
+
+
+def _validate_scaling_metadata(operations: list[PublicOpMeta]) -> None:
+    curves: dict[str, list[PublicOpMeta]] = {}
+    for operation in operations:
+        if operation.scaling is not None:
+            curves.setdefault(str(operation.scaling['curve_id']), []).append(operation)
+    for curve_id, rows in curves.items():
+        if len(rows) != 3:
+            raise SystemExit(f'scaling curve {curve_id} must have exactly three points')
+        dimensions = {(row.scaling['dimension'], row.scaling['unit']) for row in rows if row.scaling}
+        if len(dimensions) != 1:
+            raise SystemExit(f'scaling curve {curve_id} mixes dimensions or units')
+        useful_work_units = {
+            row.scaling['useful_work_unit'] for row in rows if row.scaling
+        }
+        if len(useful_work_units) != 1:
+            raise SystemExit(f'scaling curve {curve_id} mixes useful-work units')
+        points = [row.scaling['point'] for row in rows if row.scaling]
+        if len(set(points)) != 3:
+            raise SystemExit(f'scaling curve {curve_id} points must be unique')
 
 
 def _validate_block(
@@ -341,7 +379,7 @@ def _validate_block(
     expected_run_id: str | None = None,
 ) -> tuple[str, str, PairedBlock]:
     strict_identity = expected_profile is not None or expected_run_id is not None
-    if payload.get('schema_version') != 2 or payload.get('artifact_type') != 'gometry-paired-block':
+    if payload.get('schema_version') != 1 or payload.get('artifact_type') != 'gometry-paired-block':
         raise SystemExit(f'{path} is not a typed paired block artifact')
     if expected_profile is not None and payload.get('profile') != expected_profile:
         raise SystemExit(f'{path} paired block profile identity mismatch')
@@ -407,12 +445,33 @@ def _validate_block(
         provenances[side] = (before, after)
     if summaries['A'][:2] != summaries['B'][:2]:
         raise SystemExit(f'{path} arms have mismatched metric types')
+    if arms['A']['observation']['useful_work'] != arms['B']['observation']['useful_work']:
+        raise SystemExit(f'{path} arms have mismatched useful work')
     sampling = payload.get('sampling')
     if not isinstance(sampling, dict):
         raise SystemExit(f'{path} is missing sampling metadata')
-    for field in ('warmup_iterations', 'repetitions'):
-        expected = sampling.get(field)
-        for side in ('A', 'B'):
+    phase = operation.get('phase')
+    scaling = operation.get('scaling')
+    if scaling is not None:
+        required_scaling = {
+            'curve_id', 'dimension', 'unit', 'point', 'point_label', 'useful_work_unit'
+        }
+        if not isinstance(scaling, dict) or set(scaling) != required_scaling:
+            raise SystemExit(f'{path} has incomplete scaling metadata')
+        if arms['A']['observation']['useful_work']['unit'] != scaling['useful_work_unit']:
+            raise SystemExit(f'{path} has mismatched useful-work unit')
+    if phase not in {'warm', 'steady', 'first-use'}:
+        raise SystemExit(f'{path} has an invalid operation phase')
+    if not isinstance(sampling.get('phase'), str) or sampling['phase'] != phase:
+        raise SystemExit(f'{path} has mismatched phase metadata')
+    if sampling.get('scaling') != scaling:
+        raise SystemExit(f'{path} has mismatched scaling metadata')
+    for side in ('A', 'B'):
+        observed_phase = arms[side]['observation'].get('phase')
+        if observed_phase != phase:
+            raise SystemExit(f'{path} arm {side} has mismatched phase metadata')
+        for field in ('warmup_iterations', 'repetitions'):
+            expected = sampling.get(field)
             observed = arms[side]['observation']['warmup' if field.startswith('warmup') else 'calibration']['iterations']
             if observed != expected:
                 raise SystemExit(f'{path} arm {side} has mismatched sampling {field}')
@@ -434,7 +493,7 @@ def _validate_block(
     second_start, second_end = arm_times[second]
     if not block_started <= first_start <= first_end <= second_start <= second_end <= block_ended:
         raise SystemExit(f'{path} lead order has overlapping or reversed monotonic timestamps')
-    expected_oracle_identity = f'public:{gometry_row}:oracle-v1'
+    expected_oracle_identity = f'public:{gometry_row}:oracle'
     oracle_a = arms['A']['observation']['oracle']
     oracle_b = arms['B']['observation']['oracle']
     if oracle_a != oracle_b or oracle_a.get('identity') != expected_oracle_identity:
@@ -454,7 +513,10 @@ def _validate_block(
         competitor_median=competitor_median,
         ratio=competitor_median / gometry_median,
         producer_identity=provenances['A'][0],
+        phase=phase,
+        scaling=scaling,
         arm_identities={side: provenance[0] for side, provenance in provenances.items()},
+        useful_work=arms['A']['observation']['useful_work'],
     )
 
 
@@ -531,6 +593,17 @@ def bootstrap_paired_ratio_ci(
     return _percentile(medians, 0.025), _percentile(medians, 0.975)
 
 
+def normalize_scaling_values(
+    values: Sequence[float], useful_work: Sequence[int | float]
+) -> list[float]:
+    """Return descriptive values per useful-work unit without classifying shape."""
+    if len(values) != len(useful_work) or not values:
+        raise ValueError('scaling normalization requires matching non-empty sequences')
+    if any(value <= 0 for value in values) or any(work <= 0 for work in useful_work):
+        raise ValueError('scaling values and useful work must be positive')
+    return [value / work for value, work in zip(values, useful_work, strict=True)]
+
+
 def classify_ratio(
     ratio_ci95: tuple[float, float],
     equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
@@ -575,6 +648,18 @@ def _build_rows(
         blocks = gometry.blocks
         if competitor.blocks != blocks:
             raise SystemExit(f'paired block identity mismatch for {meta.gometry}')
+        if any(block.phase != meta.phase for block in blocks):
+            raise SystemExit(f'{meta.gometry} has mismatched phase across blocks')
+        if any(block.scaling != meta.scaling for block in blocks):
+            raise SystemExit(f'{meta.gometry} has mismatched scaling point across blocks')
+        if meta.scaling is not None:
+            block_work = [block.useful_work for block in blocks]
+            if not block_work or any(not isinstance(work, dict) for work in block_work):
+                raise SystemExit(f'{meta.gometry} lacks useful-work evidence')
+            if len({json.dumps(work, sort_keys=True) for work in block_work}) != 1:
+                raise SystemExit(f'{meta.gometry} has inconsistent useful-work evidence')
+            if block_work[0].get('unit') != meta.scaling['useful_work_unit']:
+                raise SystemExit(f'{meta.gometry} has mismatched useful-work unit')
         if expected_blocks is not None and len(blocks) != expected_blocks:
             raise SystemExit(
                 f'{meta.gometry} requires exactly {expected_blocks} paired blocks; got {len(blocks)}'
@@ -641,6 +726,11 @@ def row_label(row: OpRow) -> str:
     if 'in_core' in row.meta.footnotes:
         markers.append('‡')
     text = f'{row.meta.label} — {row.meta.workload}'
+    if row.meta.scaling is not None:
+        text += (
+            f' ({row.meta.scaling["dimension"]}='
+            f'{row.meta.scaling["point_label"]} {row.meta.scaling["unit"]})'
+        )
     return f'{text} {"".join(markers)}'.rstrip()
 
 
@@ -657,6 +747,66 @@ def _section_table(rows: list[OpRow]) -> list[str]:
         )
         for row in rows
     )
+    return lines
+
+
+def _scaling_sections(rows: list[OpRow]) -> list[str]:
+    by_curve: dict[str, list[OpRow]] = {}
+    for row in rows:
+        if row.meta.scaling is not None:
+            by_curve.setdefault(str(row.meta.scaling['curve_id']), []).append(row)
+    lines: list[str] = []
+    for curve_rows in by_curve.values():
+        ordered = sorted(curve_rows, key=lambda row: row.meta.scaling['point'])
+        scaling = ordered[0].meta.scaling
+        if scaling is None:
+            raise SystemExit('scaling curve has no metadata')
+        work: list[dict[str, Any]] = []
+        for row in ordered:
+            value = row.blocks[0].useful_work if row.blocks else None
+            if not isinstance(value, dict) or not isinstance(value.get('count'), int):
+                raise SystemExit(f'{row.meta.gometry} lacks useful-work evidence')
+            work.append(value)
+        gometry_normalized = normalize_scaling_values(
+            [row.gometry.median for row in ordered],
+            [int(value['count']) for value in work],
+        )
+        competitor_normalized = normalize_scaling_values(
+            [row.competitor.median for row in ordered],
+            [int(value['count']) for value in work],
+        )
+        lines.extend((
+            f'#### {ordered[0].meta.label}',
+            '',
+            f'Dimension `{scaling["dimension"]}` in `{scaling["unit"]}`; '
+            'each point is an independent paired workload.',
+            '',
+            '| Point | Useful work | gometry | Comparator | Ratio C/G | gometry/work | Comparator/work | Status |',
+            '|---:|---:|---:|---:|---:|---:|---:|---:|',
+        ))
+        lines.extend(
+            (
+                f'| `{row.meta.scaling["point_label"]}` | '
+                f'`{value["count"]} {value["unit"]}` | '
+                f'{_humanize_seconds(row.gometry.median)} | '
+                f'{row.meta.competitor_label} · {_humanize_seconds(row.competitor.median)} | '
+                f'{row.ratio:.3f} | '
+                f'{_humanize_seconds(gometry_normalized[index])} | '
+                f'{_humanize_seconds(competitor_normalized[index])} | '
+                f'{format_speedup(row)} |'
+            )
+            for index, (row, value) in enumerate(zip(ordered, work, strict=True))
+        )
+        lines.extend((
+            '',
+            f'Endpoint growth ({ordered[0].meta.scaling["point_label"]} → '
+            f'{ordered[-1].meta.scaling["point_label"]}): '
+            f'gometry median {ordered[-1].gometry.median / ordered[0].gometry.median:.3f}x, '
+            f'comparator median {ordered[-1].competitor.median / ordered[0].competitor.median:.3f}x, '
+            f'gometry/work {gometry_normalized[-1] / gometry_normalized[0]:.3f}x, '
+            f'comparator/work {competitor_normalized[-1] / competitor_normalized[0]:.3f}x.',
+        ))
+        lines.append('')
     return lines
 
 
@@ -720,7 +870,7 @@ def render(
     for row in rows:
         by_domain.setdefault(row.meta.domain, []).append(row)
     for domain in DOMAIN_ORDER:
-        domain_rows = by_domain.get(domain)
+        domain_rows = [row for row in by_domain.get(domain, ()) if row.meta.scaling is None]
         if not domain_rows:
             continue
         lines.extend((
@@ -733,6 +883,9 @@ def render(
         lines.append('† geodesic/ellipsoidal metric.')
     if any('in_core' in row.meta.footnotes for row in rows):
         lines.append('‡ gometry uses its admitted in-core projection path; this is not a claim about arbitrary CRS transforms.')
+    scaling_rows = [row for row in rows if row.meta.scaling is not None]
+    if scaling_rows:
+        lines.extend(('', '### Scaling Curves', '', *_scaling_sections(scaling_rows)))
     while lines and not lines[-1]:
         lines.pop()
     return lines
@@ -756,9 +909,68 @@ def normalized_summary_payload(
         expected_blocks=expected_blocks if isinstance(expected_blocks, int) else None,
         expected_leads=expected_leads or None,
     )
+    scaling_curves: list[dict[str, Any]] = []
+    by_curve: dict[str, list[OpRow]] = {}
+    for row in rows:
+        if row.meta.scaling is not None:
+            by_curve.setdefault(str(row.meta.scaling['curve_id']), []).append(row)
+    for curve_id, curve_rows in by_curve.items():
+        ordered = sorted(curve_rows, key=lambda row: row.meta.scaling['point'])
+        metadata = ordered[0].meta.scaling
+        if metadata is None:
+            raise SystemExit(f'scaling curve {curve_id} has no metadata')
+        useful_work: list[dict[str, Any]] = []
+        for row in ordered:
+            work = row.blocks[0].useful_work if row.blocks else None
+            if not isinstance(work, dict):
+                raise SystemExit(f'{row.meta.gometry} has malformed useful-work evidence')
+            useful_work.append(work)
+        gometry_medians = [row.gometry.median for row in ordered]
+        competitor_medians = [row.competitor.median for row in ordered]
+        work_counts = [int(work['count']) for work in useful_work]
+        gometry_normalized = normalize_scaling_values(gometry_medians, work_counts)
+        competitor_normalized = normalize_scaling_values(competitor_medians, work_counts)
+        first = 0
+        last = -1
+        scaling_curves.append({
+            'curve_id': curve_id,
+            'dimension': metadata['dimension'],
+            'unit': metadata['unit'],
+            'useful_work_unit': metadata['useful_work_unit'],
+            'points': [
+                {
+                    'point': row.meta.scaling['point'],
+                    'point_label': row.meta.scaling['point_label'],
+                    'useful_work': work,
+                    'gometry_median_seconds': row.gometry.median,
+                    'competitor_median_seconds': row.competitor.median,
+                    'gometry_seconds_per_useful_work': gometry_normalized[index],
+                    'competitor_seconds_per_useful_work': competitor_normalized[index],
+                    'ratio_competitor_over_gometry': row.ratio,
+                    'status': row.status,
+                }
+                for index, (row, work) in enumerate(zip(ordered, useful_work, strict=True))
+            ],
+            'endpoint_growth': {
+                'point_ratio': (
+                    ordered[last].meta.scaling['point']
+                    / ordered[first].meta.scaling['point']
+                ),
+                'gometry_median_ratio': gometry_medians[last] / gometry_medians[first],
+                'competitor_median_ratio': (
+                    competitor_medians[last] / competitor_medians[first]
+                ),
+                'gometry_seconds_per_useful_work_ratio': (
+                    gometry_normalized[last] / gometry_normalized[first]
+                ),
+                'competitor_seconds_per_useful_work_ratio': (
+                    competitor_normalized[last] / competitor_normalized[first]
+                ),
+            },
+        })
     environment = _run_environment(payload)
     return {
-        'schema_version': 3,
+        'schema_version': 1,
         'profile': payload.get('profile'),
         'publishable': bool(payload.get('publishable')),
         'run': {
@@ -782,6 +994,8 @@ def normalized_summary_payload(
                 'label': row.meta.label,
                 'workload': row.meta.workload,
                 'canonical_symbols': list(row.meta.canonical_symbols),
+                'phase': row.meta.phase,
+                'scaling': row.meta.scaling,
                 'gometry': row.meta.gometry,
                 'competitor': row.meta.competitor,
                 'competitor_label': row.meta.competitor_label,
@@ -805,12 +1019,16 @@ def normalized_summary_payload(
                         'ratio_competitor_over_gometry': block.ratio,
                         'producer_identity': block.producer_identity,
                         'producer_identities': block.arm_identities,
+                        'phase': block.phase,
+                        'scaling': block.scaling,
+                        'useful_work': block.useful_work,
                     }
                     for block in row.blocks
                 ],
             }
             for row in rows
         ],
+        'scaling_curves': scaling_curves,
     }
 
 

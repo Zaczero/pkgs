@@ -35,6 +35,7 @@ Domain = Literal[
 ]
 Suite = Literal['competitors']
 Footnote = Literal['geodesic', 'in_core', 'batched', 'noisy']
+Phase = Literal['warm', 'steady', 'first-use']
 
 DOMAIN_ORDER: tuple[Domain, ...] = (
     'Array construction & I/O',
@@ -43,6 +44,18 @@ DOMAIN_ORDER: tuple[Domain, ...] = (
     'Discrete global grids',
     'Spatial index',
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingMetadata:
+    """Typed curve membership attached to any canonical public operation."""
+
+    curve_id: str
+    dimension: str
+    unit: str
+    point: int | float
+    point_label: str
+    useful_work_unit: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +71,8 @@ class ReleaseOperation:
     competitor: str
     competitor_label: str
     footnotes: tuple[Footnote, ...] = ()
+    phase: Phase = 'warm'
+    scaling: ScalingMetadata | None = None
 
     @property
     def rows(self) -> tuple[str, str]:
@@ -66,6 +81,82 @@ class ReleaseOperation:
     @property
     def paired(self) -> bool:
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingPoint:
+    """One named point on a sparse, single-dimension scaling curve."""
+
+    point: int | float
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingReuse:
+    """A curve point owned by an existing representative operation."""
+
+    point: ScalingPoint
+    rows: tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingCurve:
+    """The only metadata needed to derive a three-point curve."""
+
+    curve_id: str
+    domain: Domain
+    label: str
+    workload: str
+    canonical_symbols: tuple[str, ...]
+    dimension: str
+    unit: str
+    points: tuple[ScalingPoint, ScalingPoint, ScalingPoint]
+    gometry_prefix: str
+    competitor_prefix: str
+    competitor_label: str
+    useful_work_unit: str
+    phase: Phase = 'warm'
+    reuse: ScalingReuse | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingOperation:
+    """One paired row derived from one point in ``SCALING_CURVES``."""
+
+    curve_id: str
+    domain: Domain
+    label: str
+    workload: str
+    canonical_symbols: tuple[str, ...]
+    dimension: str
+    unit: str
+    point: int | float
+    point_label: str
+    useful_work_unit: str
+    phase: Phase
+    gometry: str
+    competitor: str
+    competitor_label: str
+    suite: Suite = 'competitors'
+
+    @property
+    def rows(self) -> tuple[str, str]:
+        return self.gometry, self.competitor
+
+    @property
+    def paired(self) -> bool:
+        return True
+
+    @property
+    def scaling(self) -> ScalingMetadata:
+        return ScalingMetadata(
+            curve_id=self.curve_id,
+            dimension=self.dimension,
+            unit=self.unit,
+            point=self.point,
+            point_label=self.point_label,
+            useful_work_unit=self.useful_work_unit,
+        )
 
 
 def _op(
@@ -93,7 +184,7 @@ def _op(
 
 # 37 logical operations / 74 rows.  Keep domains contiguous: this is both the
 # docs order and the manifest completeness contract exercised before timing.
-RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
+_BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     # --- Array construction & I/O — 7 ---
     _op(
         'Array construction & I/O', 'from_wkb mixed EWKB', '10k mixed EWKB',
@@ -340,6 +431,218 @@ RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
 )
 
 
+SCALING_CURVES: tuple[ScalingCurve, ...] = (
+    ScalingCurve(
+        curve_id='spatial-index-cardinality',
+        domain='Spatial index',
+        label='index candidates: indexed cardinality',
+        workload='1k queries / indexed polygon count',
+        canonical_symbols=('SpatialIndex.candidates', 'Groups.to_pairs'),
+        dimension='indexed-polygons',
+        unit='polygons',
+        points=(
+            ScalingPoint(1_000, '1k'),
+            ScalingPoint(5_000, '5k'),
+            ScalingPoint(10_000, '10k'),
+        ),
+        gometry_prefix='gometry.index.candidates',
+        competitor_prefix='shapely.STRtree.query',
+        competitor_label='Shapely',
+        useful_work_unit='candidate-pairs',
+    ),
+    ScalingCurve(
+        curve_id='spatial-index-selectivity',
+        domain='Spatial index',
+        label='index candidates: query selectivity',
+        workload='10k indexed polygons / 1k queries',
+        canonical_symbols=('SpatialIndex.candidates', 'Groups.to_pairs'),
+        dimension='query-selectivity',
+        unit='fraction',
+        points=(
+            ScalingPoint(0.01, '1pct'),
+            ScalingPoint(0.10, '10pct'),
+            ScalingPoint(0.50, '50pct'),
+        ),
+        gometry_prefix='gometry.index.candidates',
+        competitor_prefix='shapely.STRtree.query',
+        competitor_label='Shapely',
+        useful_work_unit='candidate-pairs',
+    ),
+    ScalingCurve(
+        curve_id='spatial-index-result-amplification',
+        domain='Spatial index',
+        label='index candidates: result amplification',
+        workload='1 query / candidate-pair output',
+        canonical_symbols=('SpatialIndex.candidates', 'Groups.to_pairs'),
+        dimension='candidate-pairs-per-query',
+        unit='pairs/query',
+        points=(
+            ScalingPoint(1, '1'),
+            ScalingPoint(10, '10'),
+            ScalingPoint(100, '100'),
+        ),
+        gometry_prefix='gometry.index.candidates',
+        competitor_prefix='shapely.STRtree.query',
+        competitor_label='Shapely',
+        useful_work_unit='candidate-pairs',
+    ),
+    ScalingCurve(
+        curve_id='overlay-input-count',
+        domain='Geometry',
+        label='union_all: n-ary overlay input count',
+        workload='edge-matched service areas',
+        canonical_symbols=('GeometryArray.union_all',),
+        dimension='input-geometries',
+        unit='geometries',
+        points=(
+            ScalingPoint(64, '64'),
+            ScalingPoint(256, '256'),
+            ScalingPoint(1_024, '1024'),
+        ),
+        gometry_prefix='gometry.union_all',
+        competitor_prefix='shapely.union_all',
+        competitor_label='Shapely',
+        useful_work_unit='input-geometries',
+        reuse=ScalingReuse(
+            point=ScalingPoint(1_024, '1024'),
+            rows=(
+                'gometry.union_all/1024_service_areas',
+                'shapely.union_all/1024_service_areas',
+            ),
+        ),
+    ),
+    ScalingCurve(
+        curve_id='grid-cover-output-count',
+        domain='Discrete global grids',
+        label='tile_cover: output count',
+        workload='Brazil bounding box / bounded output',
+        canonical_symbols=('tile_cover',),
+        dimension='grid-output-count',
+        unit='tiles',
+        points=(
+            ScalingPoint(990, '990'),
+            ScalingPoint(3_960, '3960'),
+            ScalingPoint(15_340, '15340'),
+        ),
+        gometry_prefix='gometry.tile_cover.bbox',
+        competitor_prefix='mercantile.tiles',
+        competitor_label='Mercantile',
+        useful_work_unit='output-tiles',
+        reuse=ScalingReuse(
+            point=ScalingPoint(15_340, '15340'),
+            rows=(
+                'gometry.tile_cover.bbox/BR_z10_15340_tiles',
+                'mercantile.tiles/BR_z10_15340_tiles',
+            ),
+        ),
+    ),
+    ScalingCurve(
+        curve_id='prepared-batch-boundary',
+        domain='Geometry',
+        label='contains_xy: certified batch boundary',
+        workload='prepared polygon / probe count',
+        canonical_symbols=('contains_xy',),
+        dimension='probe-count',
+        unit='probes',
+        points=(
+            ScalingPoint(9_999, 'below-gate'),
+            ScalingPoint(10_000, 'gate'),
+            ScalingPoint(10_001, 'above-gate'),
+        ),
+        gometry_prefix='gometry.contains_xy',
+        competitor_prefix='shapely.contains_xy.prepared',
+        competitor_label='Shapely',
+        useful_work_unit='predicate-results',
+    ),
+)
+
+
+def _scaling_row_name(prefix: str, curve: ScalingCurve, point: ScalingPoint) -> str:
+    return (
+        f'{prefix}/scaling={curve.curve_id}/{curve.dimension}='
+        f'{point.label}'
+    )
+
+
+def _scaling_metadata(curve: ScalingCurve, point: ScalingPoint) -> ScalingMetadata:
+    return ScalingMetadata(
+        curve_id=curve.curve_id,
+        dimension=curve.dimension,
+        unit=curve.unit,
+        point=point.point,
+        point_label=point.label,
+        useful_work_unit=curve.useful_work_unit,
+    )
+
+
+def _attach_reused_scaling_membership(
+    operations: tuple[ReleaseOperation, ...],
+) -> tuple[ReleaseOperation, ...]:
+    by_rows = {operation.rows: operation for operation in operations}
+    memberships: dict[tuple[str, str], ScalingMetadata] = {}
+    for curve in SCALING_CURVES:
+        reuse = curve.reuse
+        if reuse is None:
+            continue
+        operation = by_rows.get(reuse.rows)
+        if operation is None:
+            raise ValueError(
+                f'scaling curve {curve.curve_id} reuses unknown operation rows: '
+                f'{reuse.rows!r}'
+            )
+        if reuse.point not in curve.points:
+            raise ValueError(
+                f'scaling curve {curve.curve_id} reuses a point outside its curve'
+            )
+        memberships[reuse.rows] = _scaling_metadata(curve, reuse.point)
+    return tuple(
+        dataclasses.replace(operation, scaling=memberships.get(operation.rows))
+        for operation in operations
+    )
+
+
+def _derive_scaling_operations() -> tuple[ScalingOperation, ...]:
+    operations: list[ScalingOperation] = []
+    for curve in SCALING_CURVES:
+        if len(curve.points) != 3:
+            raise ValueError(f'scaling curve {curve.curve_id} must have exactly three points')
+        values = [point.point for point in curve.points]
+        if values != sorted(values) or len(set(values)) != 3:
+            raise ValueError(f'scaling curve {curve.curve_id} points must be ordered and unique')
+        for point in curve.points:
+            if curve.reuse is not None and point == curve.reuse.point:
+                continue
+            operations.append(ScalingOperation(
+                curve_id=curve.curve_id,
+                domain=curve.domain,
+                label=curve.label,
+                workload=curve.workload,
+                canonical_symbols=curve.canonical_symbols,
+                dimension=curve.dimension,
+                unit=curve.unit,
+                point=point.point,
+                point_label=point.label,
+                useful_work_unit=curve.useful_work_unit,
+                phase=curve.phase,
+                gometry=_scaling_row_name(curve.gometry_prefix, curve, point),
+                competitor=_scaling_row_name(curve.competitor_prefix, curve, point),
+                competitor_label=curve.competitor_label,
+            ))
+    return tuple(operations)
+
+
+RELEASE_OPERATIONS = _attach_reused_scaling_membership(_BASE_RELEASE_OPERATIONS)
+SCALING_OPERATIONS = _derive_scaling_operations()
+ALL_PUBLIC_OPERATIONS = RELEASE_OPERATIONS + SCALING_OPERATIONS
+
+
+def scaling_record(
+    operation: ReleaseOperation | ScalingOperation,
+) -> dict[str, object] | None:
+    metadata = getattr(operation, 'scaling', None)
+    return None if metadata is None else dataclasses.asdict(metadata)
+
+
 def validate_canonical_symbols(
     operations: tuple[ReleaseOperation, ...] = RELEASE_OPERATIONS,
 ) -> None:
@@ -357,8 +660,68 @@ def validate_canonical_symbols(
             )
 
 
+def validate_scaling_operations(
+    operations: tuple[ReleaseOperation | ScalingOperation, ...] = ALL_PUBLIC_OPERATIONS,
+) -> None:
+    """Reject missing points, aliases, cross-products, or mixed curve units."""
+    all_rows = [row for operation in operations for row in operation.rows]
+    if len(all_rows) != len(set(all_rows)):
+        raise ValueError('public benchmark rows must be unique across canonical operations')
+
+    expected = {curve.curve_id: curve for curve in SCALING_CURVES}
+    by_curve: dict[str, list[tuple[ScalingMetadata, ReleaseOperation | ScalingOperation]]] = {}
+    for operation in operations:
+        scaling = operation.scaling
+        if scaling is None:
+            continue
+        unknown = unknown_public_symbols(operation.canonical_symbols, PUBLIC_API_SYMBOLS)
+        if unknown:
+            raise ValueError(
+                f'scaling row {operation.gometry!r} maps to non-public API symbol(s): '
+                + ', '.join(unknown)
+            )
+        by_curve.setdefault(scaling.curve_id, []).append((scaling, operation))
+    if set(by_curve) != set(expected):
+        raise ValueError(
+            f'scaling curve set mismatch: expected {sorted(expected)}, got {sorted(by_curve)}'
+        )
+    for curve_id, rows in by_curve.items():
+        curve = expected[curve_id]
+        if len(rows) != 3:
+            raise ValueError(f'scaling curve {curve_id} must have three rows')
+        memberships = [membership for membership, _operation in rows]
+        points = [membership.point for membership in memberships]
+        expected_points = [point.point for point in curve.points]
+        if sorted(points) != expected_points or len(set(points)) != 3:
+            raise ValueError(f'scaling curve {curve_id} points are incomplete or unordered')
+        if len({(membership.dimension, membership.unit) for membership in memberships}) != 1:
+            raise ValueError(f'scaling curve {curve_id} mixes dimensions or units')
+        for point in curve.points:
+            membership = _scaling_metadata(curve, point)
+            matching = [
+                operation for current, operation in rows
+                if current == membership
+            ]
+            if len(matching) != 1:
+                raise ValueError(
+                    f'scaling curve {curve_id} has an invalid membership for {point.label}'
+                )
+            expected_rows = (
+                curve.reuse.rows
+                if curve.reuse is not None and point == curve.reuse.point
+                else (
+                    _scaling_row_name(curve.gometry_prefix, curve, point),
+                    _scaling_row_name(curve.competitor_prefix, curve, point),
+                )
+            )
+            if matching[0].rows != expected_rows:
+                raise ValueError(
+                    f'scaling curve {curve_id} point {point.label} has a duplicate alias'
+                )
+
+
 def _suite_rows(
-    operations: tuple[ReleaseOperation, ...], suite: str
+    operations: tuple[ReleaseOperation | ScalingOperation, ...], suite: str
 ) -> tuple[str, ...]:
     names: list[str] = []
     for op in operations:
@@ -367,8 +730,10 @@ def _suite_rows(
     return tuple(names)
 
 
-def operation_for_row(name: str) -> ReleaseOperation | None:
-    for op in RELEASE_OPERATIONS:
+def operation_for_row(
+    name: str,
+) -> ReleaseOperation | ScalingOperation | None:
+    for op in ALL_PUBLIC_OPERATIONS:
         if name in op.rows:
             return op
     return None
@@ -376,7 +741,7 @@ def operation_for_row(name: str) -> ReleaseOperation | None:
 
 def expand_filter_to_pairs(names: set[str]) -> set[str]:
     expanded = set(names)
-    for op in RELEASE_OPERATIONS:
+    for op in ALL_PUBLIC_OPERATIONS:
         if expanded.intersection(op.rows):
             expanded.update(op.rows)
     return expanded
@@ -393,9 +758,14 @@ class Profile:
     command_timeout: int
     total_timeout: int
     operations: tuple[ReleaseOperation, ...] = RELEASE_OPERATIONS
+    scaling_operations: tuple[ScalingOperation, ...] = ()
 
     def rows(self, suite: str) -> tuple[str, ...]:
-        return _suite_rows(self.operations, suite)
+        return _suite_rows(self.operations + self.scaling_operations, suite)
+
+    @property
+    def all_operations(self) -> tuple[ReleaseOperation | ScalingOperation, ...]:
+        return self.operations + self.scaling_operations
 
     @property
     def competitors(self) -> tuple[str, ...]:
@@ -412,16 +782,18 @@ RELEASE = Profile(
     command_timeout=900,
     total_timeout=2400,
     operations=RELEASE_OPERATIONS,
+    scaling_operations=SCALING_OPERATIONS,
 )
 
 SMOKE = dataclasses.replace(
     RELEASE,
     sampling_args=('--blocks', '1', '--warmups', '0', '--repetitions', '1'),
-    paired_sampling_args=('--warmups', '0', '--repetitions', '1'),
+    paired_sampling_args=('--warmups', '1', '--repetitions', '1'),
     paired_blocks=1,
     row_timeout=60,
     command_timeout=600,
     total_timeout=900,
+    scaling_operations=(),
 )
 
 PROFILES = {'smoke': SMOKE, 'release': RELEASE}
