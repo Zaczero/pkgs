@@ -29,7 +29,7 @@ RELEASE = _bench_registry.RELEASE
 RELEASE_OPERATIONS = _bench_registry.RELEASE_OPERATIONS
 PUBLIC_API_SYMBOLS = _bench_registry.PUBLIC_API_SYMBOLS
 SMOKE = _bench_registry.SMOKE
-SCRIPTS = _bench_registry.SCRIPTS
+PAIR_WORKER = _bench_registry.PAIR_WORKER
 expand_filter_to_pairs = _bench_registry.expand_filter_to_pairs
 operation_for_row = _bench_registry.operation_for_row
 validate_canonical_symbols = _bench_registry.validate_canonical_symbols
@@ -37,18 +37,7 @@ find_competitor = _bench_pairs.find_competitor
 pair_units = _bench_pairs.pair_units
 
 
-EXPECTED_RELEASE_SCRIPTS = {
-    'competitors': 'bench_competitors.py',
-}
-
-
-def test_direct_worker_rejects_explicitly_empty_filter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = importlib.import_module('_bench_config')
-    monkeypatch.setenv('GOMETRY_BENCH_FILTER', ' , ')
-    with pytest.raises(SystemExit, match='must select at least one benchmark'):
-        config.selected_benchmarks('competitors')
+EXPECTED_PAIR_WORKER = 'bench_paired.py'
 
 
 def test_release_operation_counts_and_five_domains() -> None:
@@ -108,12 +97,12 @@ def test_invalid_canonical_endpoint_rejects_historically_valid_row() -> None:
         validate_canonical_symbols((mutated,))
 
 
-def test_release_script_inventory_is_complete() -> None:
-    assert SCRIPTS == EXPECTED_RELEASE_SCRIPTS
+def test_release_uses_one_typed_paired_worker() -> None:
+    assert PAIR_WORKER == EXPECTED_PAIR_WORKER
 
 
-@pytest.mark.parametrize('script', EXPECTED_RELEASE_SCRIPTS.values(), ids=EXPECTED_RELEASE_SCRIPTS)
-def test_release_scripts_import_before_a_release_run(script: str) -> None:
+def test_release_paired_worker_imports_before_a_release_run() -> None:
+    script = EXPECTED_PAIR_WORKER
     importlib.import_module(Path(script).stem)
 
 
@@ -167,8 +156,13 @@ def test_filter_selects_both_pair_members() -> None:
 def test_smoke_shares_operation_tuple() -> None:
     assert SMOKE.operations == RELEASE.operations
     assert SMOKE.rows('competitors') == RELEASE.rows('competitors')
-    assert SMOKE.sampling_args == ('--debug-single-value',)
-    assert SMOKE.paired_sampling_args == ('--debug-single-value',)
+    assert SMOKE.paired_blocks == 1
+    assert SMOKE.paired_sampling_args == ('--warmups', '0', '--repetitions', '1')
+
+
+def test_release_declares_exact_balanced_block_matrix() -> None:
+    assert RELEASE.paired_blocks == 6
+    assert RELEASE.paired_sampling_args == ('--warmups', '2', '--repetitions', '5')
 
 
 def test_domain_order_is_contiguous() -> None:

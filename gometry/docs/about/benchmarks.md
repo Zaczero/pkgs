@@ -23,7 +23,7 @@ uv run python benches/drivers/bench.py --analyze target/bench/results/<run-id>/r
 ```
 
 `<run-id>` is the directory name printed by the measurement command. The
-normalized evidence retains exact process identities and the raw artifacts
+normalized evidence retains exact paired-block identities and the raw artifacts
 used to derive it.
 
 ## Current Run
@@ -34,21 +34,25 @@ global grids, and spatial index.
 
 The runner records the exact Python executable, extension digest, effective Cargo
 profile family and build facts, source identity, an optional lock hash, exact
-package and native-engine versions, selected CPU and governor, and pyperf artifact
-identities. Cargo exposes custom profiles to build scripts only through their
+package and native-engine versions, selected CPU and governor, and paired-block
+artifact identities. Cargo exposes custom profiles to build scripts only through their
 effective `debug`/`release` family, so the record does not claim to name a custom
 profile such as `release-dist`.
 The recorded `debug` value describes compiler debug information; this workspace
 may retain line tables in an optimized release build. Release suitability is
 determined by the release family, optimization level, and debug-assertion state.
-Each pyperf process is one independent observation. The normalized evidence matches
-the separate gometry and comparator rows by process ordinal within each AB/BA
-artifact, bootstraps the median ratio, and classifies it against a predeclared
-3% equivalence/noise band. `Similar` means the full interval is inside that
-band; `faster` and `slower` require the interval to clear it; all other
-intervals are `Inconclusive`. The [full normalized
+Each release block is one fresh process that executes both arms of one operation
+pair. Blocks record their actual lead order, monotonic timestamps, typed metric
+and unit, equal useful work, passed oracle status with an operation-specific
+oracle identity, and producer identity before and after both arms. The matrix
+contains six independent blocks per pair, with
+three `AB` and three `BA` leads. Analysis bootstraps the paired median ratio
+over those block artifacts and classifies it against a predeclared 3%
+practical equivalence margin. `Similar` means the full interval is inside
+that margin; `faster` and `slower` require the interval to clear it; all
+other intervals are `Inconclusive`. The [full normalized
 evidence](https://github.com/Zaczero/pkgs/tree/main/gometry/benches/results/current)
-retains exact medians, intervals, process identities, and raw artifacts.
+retains exact medians, intervals, block identities, and raw artifacts.
 
 The generated summary follows.
 

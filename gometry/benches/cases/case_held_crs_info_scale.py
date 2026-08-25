@@ -12,6 +12,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def _held_crs(n: int = 1000) -> list[gm.CRS]:
@@ -48,7 +49,14 @@ def _median_info_pass(held: list[gm.CRS], *, warm: int = 2, reps: int = 7) -> fl
 
 def main() -> None:
     held = _held_crs()
-    print(_median_info_pass(held))
+    emit(
+        metric='duration',
+        raw_values=[_median_info_pass(held)],
+        useful_work={'count': len(held), 'unit': 'CRS-info-reads'},
+        oracle_identity='case_held_crs_info_scale:nonempty-info-v1',
+        warmup_iterations=2,
+        calibration_iterations=7,
+    )
 
 
 if __name__ == '__main__':

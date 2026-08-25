@@ -97,6 +97,7 @@ class PublicCase:
             operation=context.operation,
             kind=self.kind,
             unit=self.unit,
+            oracle_identity=context.oracle_identity,
         )
         self.pair.verify(ctx)
 
@@ -255,7 +256,12 @@ def _compare_get_coordinates(
     exact_coordinates(
         l_coords,
         r_coords,
-        OracleContext(operation=context.operation, kind=context.kind, unit='m'),
+        OracleContext(
+            operation=context.operation,
+            kind=context.kind,
+            unit='m',
+            oracle_identity=context.oracle_identity,
+        ),
     )
     if not np.array_equal(np.asarray(l_idx), np.asarray(r_idx)):
         raise OracleMismatch(
@@ -342,7 +348,12 @@ def _compare_simplify(
     exact_coordinates(
         l_coords,
         r_coords,
-        OracleContext(operation=context.operation, kind=context.kind, unit='m'),
+        OracleContext(
+            operation=context.operation,
+            kind=context.kind,
+            unit='m',
+            oracle_identity=context.oracle_identity,
+        ),
         atol=1e-9,
         rtol=0.0,
     )
@@ -435,7 +446,12 @@ def _compare_to_crs(left: object, right: object | None, context: OracleContext) 
     exact_coordinates(
         np.asarray(lxy, dtype=np.float64),
         np.asarray(rxy, dtype=np.float64),
-        OracleContext(operation=context.operation, kind=context.kind, unit='m_3857'),
+        OracleContext(
+            operation=context.operation,
+            kind=context.kind,
+            unit='m_3857',
+            oracle_identity=context.oracle_identity,
+        ),
     )
 
 
@@ -445,7 +461,12 @@ def _compare_crs_transform(
     exact_coordinates(
         left,
         right,
-        OracleContext(operation=context.operation, kind=context.kind, unit='m_3857'),
+        OracleContext(
+            operation=context.operation,
+            kind=context.kind,
+            unit='m_3857',
+            oracle_identity=context.oracle_identity,
+        ),
         rtol=5e-12,
         atol=1e-8,
     )
@@ -471,6 +492,7 @@ def _compare_destination(
             operation=context.operation,
             kind=context.kind,
             unit='deg_destination',
+            oracle_identity=context.oracle_identity,
         ),
     )
     # CRS check
@@ -527,7 +549,12 @@ def _compare_nearest(
     metric_allclose(
         ld,
         rd,
-        OracleContext(operation=context.operation, kind=context.kind, unit='m'),
+        OracleContext(
+            operation=context.operation,
+            kind=context.kind,
+            unit='m',
+            oracle_identity=context.oracle_identity,
+        ),
     )
     # uniqueness: each query once
     lq_a = np.asarray(lq)

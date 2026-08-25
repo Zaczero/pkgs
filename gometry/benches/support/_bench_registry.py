@@ -388,6 +388,7 @@ class Profile:
 
     sampling_args: tuple[str, ...]
     paired_sampling_args: tuple[str, ...]
+    paired_blocks: int
     row_timeout: int
     command_timeout: int
     total_timeout: int
@@ -402,15 +403,11 @@ class Profile:
 
 
 RELEASE = Profile(
-    sampling_args=(
-        '--processes', '6', '--values', '5', '--warmups', '2', '--min-time', '0.1',
-    ),
-    # AB and BA each use three processes.  The two rows are separate pyperf
-    # benchmarks; normalized evidence matches their process ordinals within
-    # each artifact and emits one independent ratio per process/artifact.
-    paired_sampling_args=(
-        '--processes', '3', '--values', '5', '--warmups', '2', '--min-time', '0.1',
-    ),
+    sampling_args=('--blocks', '1', '--warmups', '0', '--repetitions', '1'),
+    # Six independent process blocks: three AB and three BA.  Each block
+    # executes both arms and writes one self-contained artifact.
+    paired_sampling_args=('--warmups', '2', '--repetitions', '5'),
+    paired_blocks=6,
     row_timeout=60,
     command_timeout=900,
     total_timeout=2400,
@@ -419,8 +416,9 @@ RELEASE = Profile(
 
 SMOKE = dataclasses.replace(
     RELEASE,
-    sampling_args=('--debug-single-value',),
-    paired_sampling_args=('--debug-single-value',),
+    sampling_args=('--blocks', '1', '--warmups', '0', '--repetitions', '1'),
+    paired_sampling_args=('--warmups', '0', '--repetitions', '1'),
+    paired_blocks=1,
     row_timeout=60,
     command_timeout=600,
     total_timeout=900,
@@ -428,5 +426,5 @@ SMOKE = dataclasses.replace(
 
 PROFILES = {'smoke': SMOKE, 'release': RELEASE}
 SUITES = ('competitors',)
-SCRIPTS = {'competitors': 'bench_competitors.py'}
+PAIR_WORKER = 'bench_paired.py'
 CHUNK_SIZE = 40

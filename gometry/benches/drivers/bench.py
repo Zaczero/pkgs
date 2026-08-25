@@ -25,11 +25,10 @@ for _path in (_SUPPORT, _DRIVERS, _PYTHON):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from _bench_pairs import pair_orderings, pair_units
+from _bench_pairs import pair_units
 from _bench_registry import (
-    CHUNK_SIZE,
     PROFILES,
-    SCRIPTS,
+    PAIR_WORKER,
     SUITES,
     Profile,
     ReleaseOperation,
@@ -75,7 +74,8 @@ _MANIFEST_SCHEMA_VERSION = 1
 
 
 def _stamp() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).strftime('%Y%m%dT%H%M%SZ')
+    utc = getattr(dt, 'UTC', dt.timezone.utc)  # noqa: UP017 — Python 3.10 compatibility
+    return dt.datetime.now(utc).replace(microsecond=0).strftime('%Y%m%dT%H%M%SZ')
 
 
 def _rows(profile: Profile) -> dict[str, tuple[str, ...]]:
@@ -105,12 +105,6 @@ def _select(
         for suite, suite_rows in rows.items()
         if any(name in requested for name in suite_rows)
     }
-
-
-def _chunks(rows: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
-    return tuple(
-        rows[index : index + CHUNK_SIZE] for index in range(0, len(rows), CHUNK_SIZE)
-    )
 
 
 def _validate_release_manifest(profile: Profile) -> None:
@@ -195,24 +189,34 @@ def _oracle_command(selected: dict[str, tuple[str, ...]]) -> list[str]:
     ]
 
 
-def _pyperf_command(
-    script: str,
+def _paired_command(
+    *,
+    gometry: str,
+    competitor: str,
+    pair_id: str,
+    block_id: str,
+    lead: str,
     output: Path,
     profile: Profile,
-    sampling_args: tuple[str, ...],
     cpu: int,
 ) -> list[str]:
     return [
-        '.venv/bin/python',
-        f'benches/python/{script}',
-        *sampling_args,
-        '--affinity',
+        'taskset',
+        '--cpu-list',
         str(cpu),
-        '--timeout',
-        str(profile.row_timeout),
-        '--inherit-environ',
-        'GOMETRY_BENCH_FILTER,GOMETRY_BENCH_PROFILE,GOMETRY_BENCH_ORCHESTRATED,'
-        'GOMETRY_BENCH_ORACLE_OK,GOMETRY_BENCH_PAIR_ID,GOMETRY_BENCH_LEAD',
+        '.venv/bin/python',
+        f'benches/python/{PAIR_WORKER}',
+        '--gometry',
+        gometry,
+        '--competitor',
+        competitor,
+        '--pair-id',
+        pair_id,
+        '--block-id',
+        block_id,
+        '--lead',
+        lead,
+        *profile.paired_sampling_args,
         '--output',
         str(output),
     ]
@@ -282,58 +286,46 @@ def _benchmark_plans(
     plans: list[dict[str, Any]] = []
     outputs: dict[str, list[Path]] = {suite: [] for suite in selected}
     for suite, rows in selected.items():
-        comparative = profile_name == 'release'
-        if comparative:
-            units = pair_units(rows, suite=suite)
-            scheduled = []
-            for number, unit in enumerate(units, start=1):
-                if len(unit) == 1:
-                    scheduled.append((f'row-{number:02d}', unit, profile.sampling_args))
-                    continue
-                scheduled.extend(
-                    (
-                        f'pair-{number:02d}-{lead}',
-                        ordering,
-                        profile.paired_sampling_args,
-                    )
-                    for lead, ordering in zip(
-                        ('ab', 'ba'),
-                        pair_orderings(unit, suite=suite),
-                        strict=True,
-                    )
-                )
-        else:
-            chunks = _chunks(rows)
-            scheduled = [
-                (
-                    'all' if len(chunks) == 1 else f'chunk-{number:02d}',
-                    chunk,
-                    profile.sampling_args,
-                )
-                for number, chunk in enumerate(chunks, start=1)
-            ]
-        for label, scheduled_rows, sampling_args in scheduled:
+        units = pair_units(rows, suite=suite)
+        scheduled = []
+        for number, unit in enumerate(units, start=1):
+            if len(unit) != 2:
+                raise SystemExit(f'public benchmark unit is not paired: {unit!r}')
+            for block_number in range(profile.paired_blocks):
+                lead = 'ab' if block_number % 2 == 0 else 'ba'
+                scheduled.append((
+                    f'pair-{number:02d}-block-{block_number + 1:02d}-{lead}',
+                    unit,
+                ))
+        for label, scheduled_rows in scheduled:
             run_label = f'{suite}-{label}'
             output = output_dir / f'{timestamp}-{run_label}-{profile_name}.json'
             outputs[suite].append(output)
-            environment = {
-                'GOMETRY_BENCH_FILTER': ','.join(scheduled_rows),
-                'GOMETRY_BENCH_PROFILE': profile_name,
-                'GOMETRY_BENCH_ORCHESTRATED': '1',
-            }
-            if label.startswith('pair-'):
-                pair_number, lead = label.removeprefix('pair-').split('-', 1)
-                environment['GOMETRY_BENCH_PAIR_ID'] = f'{suite}-pair-{pair_number}'
-                environment['GOMETRY_BENCH_LEAD'] = lead
+            environment = {'GOMETRY_BENCH_PROFILE': profile_name}
+            command: list[str]
+            if len(scheduled_rows) == 2 and label.startswith('pair-'):
+                gometry, competitor = scheduled_rows
+                pair_number, block_spec = label.removeprefix('pair-').split('-block-', 1)
+                _block_number, lead = block_spec.split('-', 1)
+                command = _paired_command(
+                    gometry=gometry,
+                    competitor=competitor,
+                    pair_id=f'{suite}-pair-{pair_number}',
+                    block_id=run_label,
+                    lead=lead,
+                    output=output,
+                    profile=profile,
+                    cpu=cpu,
+                )
+            else:
+                raise SystemExit(f'unsupported public benchmark schedule: {label}')
             plans.append({
-                'kind': 'pyperf',
+                'kind': 'paired-block',
                 'suite': suite,
                 'label': run_label,
                 'rows': scheduled_rows,
                 'environment': environment,
-                'command': _pyperf_command(
-                    SCRIPTS[suite], output, profile, sampling_args, cpu
-                ),
+                'command': command,
                 'output': str(output),
             })
     return plans, outputs
@@ -545,21 +537,10 @@ def _verified_run_artifacts(
     }:
         raise SystemExit('run manifest rejected: declared artifacts do not match digests')
 
-    pyperf = result.get('pyperf_artifacts')
-    if not isinstance(pyperf, list) or not pyperf:
-        raise SystemExit('publication rejected: no pyperf artifacts are declared')
-    pyperf_paths: list[Path] = []
-    for item in pyperf:
-        if not isinstance(item, str):
-            raise SystemExit('publication rejected: artifact path is not a string')
-        path = _resolve_manifest_artifact(manifest_path, item)
-        key = path.relative_to(manifest_path.parent.resolve()).as_posix()
-        if key not in by_path:
-            raise SystemExit(f'publication rejected: artifact is not digested: {item}')
-        pyperf_paths.append(path)
-    if len({path.name for path in pyperf_paths}) != len(pyperf_paths):
-        raise SystemExit('publication rejected: raw artifact names are not unique')
-    return pyperf_paths, records
+    return [
+        _resolve_manifest_artifact(manifest_path, str(record['path']))
+        for record in records
+    ], records
 
 
 def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
@@ -614,7 +595,7 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit('publication rejected: source commit/input identity is missing')
     packages = metadata['packages']
     required_packages = {
-        'gometry', 'numpy', 'pyperf', 'shapely', 'pyproj', 'h3',
+        'gometry', 'numpy', 'shapely', 'pyproj', 'h3',
         'geopandas', 'pyarrow', 'mercantile', 'pygeohash',
     }
     if not isinstance(packages, dict):
@@ -633,7 +614,7 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit('publication rejected: GEOS version is missing')
     if not metadata.get('proj_version'):
         raise SystemExit('publication rejected: PROJ version is missing')
-    hard_failures = doctor.get('hard_failures', ())
+    hard_failures = doctor.get('hard_failures', ()) if isinstance(doctor, dict) else ()
     if hard_failures:
         raise SystemExit(
             'publication rejected: benchmark identity has hard failures: '
@@ -648,9 +629,6 @@ def _normalize_artifact_paths(summary: dict[str, Any], mapping: dict[str, str]) 
             old = block.get('artifact')
             if isinstance(old, str):
                 block['artifact'] = mapping.get(old, old)
-                block['block_id'] = (
-                    f'{block["artifact"]}#process-{block.get("process_index", 0)}'
-                )
 
 
 def _validate_publication_result(
@@ -681,6 +659,17 @@ def _validate_publication_result(
     for operation in operations:
         if not isinstance(operation, dict) or not operation.get('competitor'):
             raise SystemExit('publication rejected: operation matrix is not fully paired')
+    sampling = result.get('sampling')
+    if not isinstance(sampling, dict):
+        raise SystemExit('publication rejected: paired sampling matrix is missing')
+    if (
+        sampling.get('measured_blocks') != 6
+        or sampling.get('lead_orders') != ['ab', 'ba', 'ab', 'ba', 'ab', 'ba']
+    ):
+        raise SystemExit(
+            'publication rejected: release requires exactly six paired blocks '
+            '(three ab and three ba)'
+        )
     return _publication_metadata(result), operations
 
 
@@ -693,17 +682,54 @@ def _analyze_result(
         sys.path.insert(0, str(support))
     from summarize_bench import (
         _build_rows,
-        _load_all_stats,
+        _load_all_blocks,
         _parse_public_operations,
         normalized_summary_payload,
         render,
     )
 
-    stats = _load_all_stats(artifacts)
+    stats = _load_all_blocks(artifacts)
+    doctor = result.get('doctor')
+    metadata = doctor.get('metadata', {}) if isinstance(doctor, dict) else {}
+    expected_source = metadata.get('source_inputs_sha256')
+    extension = metadata.get('extension') if isinstance(metadata, dict) else None
+    expected_extension = extension.get('sha256') if isinstance(extension, dict) else None
+    expected_packages = metadata.get('packages', {}) if isinstance(metadata, dict) else {}
+    for operation_stats in stats.values():
+        for block in operation_stats.blocks:
+            identity = block.producer_identity
+            if expected_source and identity.get('source_inputs_sha256') != expected_source:
+                raise SystemExit('analysis rejected: paired block source identity mismatch')
+            observed_extension = identity.get('extension')
+            observed_extension_digest = (
+                observed_extension.get('sha256')
+                if isinstance(observed_extension, dict)
+                else identity.get('extension_sha256')
+            )
+            if expected_extension and observed_extension_digest != expected_extension:
+                raise SystemExit('analysis rejected: paired block extension identity mismatch')
+            observed_packages = identity.get('packages')
+            if not isinstance(observed_packages, dict) or not isinstance(expected_packages, dict):
+                raise SystemExit('analysis rejected: paired block dependency identity is missing')
+            for name, package in expected_packages.items():
+                expected_version = package.get('version') if isinstance(package, dict) else None
+                if expected_version and observed_packages.get(name) != expected_version:
+                    raise SystemExit(
+                        f'analysis rejected: paired block dependency identity mismatch for {name}'
+                    )
     summary = normalized_summary_payload(result, stats)
     _normalize_artifact_paths(summary, artifact_mapping)
     parsed_operations = _parse_public_operations(result['public_operations'])
-    rows = _build_rows(parsed_operations, stats, noise_band=0.03)
+    sampling = result.get('sampling')
+    expected_blocks = sampling.get('measured_blocks') if isinstance(sampling, dict) else None
+    expected_leads = sampling.get('lead_orders') if isinstance(sampling, dict) else None
+    rows = _build_rows(
+        parsed_operations,
+        stats,
+        equivalence_margin=0.03,
+        expected_blocks=expected_blocks if isinstance(expected_blocks, int) else None,
+        expected_leads=tuple(expected_leads) if isinstance(expected_leads, list) else None,
+    )
     summary_md = '\n'.join(
         render(
             rows,
@@ -1134,7 +1160,9 @@ def main() -> None:
         else None
     )
     doctor['metadata']['selected_cpu_governor'] = selected_governor
-    hard_failures = list(doctor.get('hard_failures', ()))
+    hard_failures: list[str] = [
+        str(value) for value in doctor.get('hard_failures', ())
+    ]
     if args.profile == 'release' and selected_governor not in {None, 'performance'}:
         hard_failures.append(
             f"selected benchmark CPU governor is {selected_governor!r}, "
@@ -1165,7 +1193,7 @@ def main() -> None:
         oracle_result['kind'] = 'oracle'
         commands.append(oracle_result)
         if oracle_result['returncode']:
-            # Failed oracle: zero pyperf commands, publishable=false, nonzero.
+            # Failed oracle: no measurement commands, publishable=false, nonzero.
             oracle_ok = False
         else:
             oracle_ok = True
@@ -1192,7 +1220,7 @@ def main() -> None:
                 )
                 result['suite'] = plan['suite']
                 result['label'] = plan['label']
-                result['kind'] = plan.get('kind', 'pyperf')
+                result['kind'] = plan.get('kind', 'paired-block')
                 commands.append(result)
                 if result['returncode']:
                     break
@@ -1206,7 +1234,7 @@ def main() -> None:
         if args.profile == 'release' and not args.plan_only
         else {'metadata': {}, 'warnings': []}
     )
-    # Oracle has no pyperf artifact; count timing/resource plans separately.
+    # Oracle has no artifact; count paired blocks/resources separately.
     timing_plans = [plan for plan in plans if plan.get('kind') != 'oracle']
     if args.plan_only:
         # plans already includes oracle_plan at front
@@ -1224,13 +1252,6 @@ def main() -> None:
         plan['output']
         for plan in timing_plans
         if plan.get('output') and Path(plan['output']).is_file()
-    ]
-    pyperf_artifacts = [
-        plan['output']
-        for plan in timing_plans
-        if plan.get('kind') == 'pyperf'
-        and plan.get('output')
-        and Path(plan['output']).is_file()
     ]
     expected_artifacts = sum(1 for plan in timing_plans if plan.get('output'))
     publishable = (
@@ -1255,6 +1276,18 @@ def main() -> None:
         'publishable': publishable,
         'sampling_args': profile.sampling_args,
         'paired_sampling_args': profile.paired_sampling_args,
+        'sampling': {
+            'worker': PAIR_WORKER,
+            'measured_blocks': profile.paired_blocks,
+            'lead_orders': [
+                'ab' if index % 2 == 0 else 'ba'
+                for index in range(profile.paired_blocks)
+            ],
+            'warmup_iterations': int(profile.paired_sampling_args[1]),
+            'repetitions': int(profile.paired_sampling_args[3]),
+            'independent_process_blocks': True,
+            'state_scope': 'shared-process-prepared-fixture',
+        },
         'row_timeout_seconds': profile.row_timeout,
         'command_timeout_seconds': profile.command_timeout,
         'total_timeout_seconds': profile.total_timeout,
@@ -1276,17 +1309,11 @@ def main() -> None:
         'commands_complete': commands_complete,
         'oracle_ok': oracle_ok if not args.plan_only else None,
         'artifacts': artifacts,
-        'pyperf_artifacts': pyperf_artifacts,
-        'pyperf': {},
         'resources': [] if args.plan_only else _resource_summaries(plans),
     }
     raw_records = _manifest_artifact_records(result, run_directory=run_directory)
     result['raw_artifacts'] = raw_records
     result['artifacts'] = [record['path'] for record in raw_records]
-    result['pyperf_artifacts'] = [
-        _manifest_relative(Path(path), run_directory)
-        for path in pyperf_artifacts
-    ]
     output = run_directory / 'run.json'
     _write_json_once(output, result, label='run manifest')
     print(f'wrote {output}')

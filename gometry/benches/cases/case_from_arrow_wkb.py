@@ -9,6 +9,7 @@ import time
 
 import gometry as gm
 import pyarrow as pa
+from _observation import emit
 
 
 def main() -> None:
@@ -32,7 +33,15 @@ def main() -> None:
         samples.append(time.perf_counter() - start)
     assert last is not None and len(last) == n
     assert gm.equals_identical(last[0], points[0])
-    print(min(samples))
+    emit(
+        metric='duration',
+        raw_values=[min(samples)],
+        useful_work={'count': n, 'unit': 'WKB-rows'},
+        oracle_identity='case_from_arrow_wkb:roundtrip-first-row-v1',
+        warmup_iterations=1,
+        calibration_iterations=3,
+        calibration_strategy='minimum-of-repetitions',
+    )
 
 
 if __name__ == '__main__':

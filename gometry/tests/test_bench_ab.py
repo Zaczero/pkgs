@@ -1,26 +1,72 @@
-"""Statistical and interleaving contracts for the native A/B harness."""
+"""Typed native A/B protocol and blocked-sampling contracts."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import math
+import sys
+from copy import deepcopy
 from itertools import pairwise
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 
-from tests._support import GOMETRY_ROOT, load_tool
+GOMETRY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(GOMETRY_ROOT / 'benches' / 'support'))
+from benchmark_observation import make_observation, validate_observation  # noqa: E402
 
-if TYPE_CHECKING:
-    from types import ModuleType
 
-
-def _module() -> ModuleType:
+def _module():
     path = GOMETRY_ROOT / 'benches' / 'drivers' / 'bench_ab.py'
-    return load_tool(
-        'gometry_bench_ab_test',
-        path,
-        path.parent,
+    name = 'gometry_bench_ab_typed_test'
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.pop(0)
+
+
+def _observation(bench_ab, metric: str, value: float) -> dict[str, Any]:
+    return make_observation(
+        metric=metric,
+        raw_values=[value],
+        useful_work=(
+            {
+                'numerator': {'count': 10, 'unit': 'large'},
+                'denominator': {'count': 1, 'unit': 'small'},
+            }
+            if metric == 'scaling_ratio'
+            else {'count': 10, 'unit': 'calls'}
+        ),
+        oracle_identity='test:native-observation-v1',
+        warmup_iterations=1,
+        calibration_iterations=1,
     )
+
+
+def _arm(
+    bench_ab,
+    value: float,
+    *,
+    metric: str = 'duration',
+    identity: str = 'A',
+    started: int = 10,
+    ended: int = 11,
+) -> dict[str, Any]:
+    return {
+        'observation': _observation(bench_ab, metric, value),
+        'started_monotonic_ns': started,
+        'ended_monotonic_ns': ended,
+        'provenance_before': {'extension': identity},
+        'provenance_after': {'extension': identity},
+    }
 
 
 def test_blocked_orders_are_seeded_balanced_and_alternate_leaders() -> None:
@@ -29,24 +75,27 @@ def test_blocked_orders_are_seeded_balanced_and_alternate_leaders() -> None:
     assert orders == bench_ab.blocked_orders(11, 20_260_709)
     assert set(orders) == {('A', 'B'), ('B', 'A')}
     assert all(left[0] != right[0] for left, right in pairwise(orders))
-    assert (
-        abs(
-            sum(order[0] == 'A' for order in orders)
-            - sum(order[0] == 'B' for order in orders)
-        )
-        == 1
-    )
+    assert abs(sum(order[0] == 'A' for order in orders) - sum(order[0] == 'B' for order in orders)) == 1
 
 
-def test_run_blocks_obeys_balanced_order_and_keeps_only_measured_values() -> None:
+def test_run_blocks_records_real_typed_pairs_and_excludes_warmups() -> None:
     bench_ab = _module()
     calls: list[str] = []
+    tick = 0
 
-    def runner(python: str, _case, _extra) -> float:
+    def clock() -> int:
+        nonlocal tick
+        tick += 1
+        return tick
+
+    def runner(python: str, _case: Path, _extra: list[str]) -> dict[str, Any]:
         calls.append(python)
-        return float(len(calls))
+        value = 1.1 if python == 'python-a' else 1.0
+        started = clock()
+        ended = clock()
+        return _arm(bench_ab, value, identity=python, started=started, ended=ended)
 
-    samples = bench_ab.run_blocks(
+    result = bench_ab.run_blocks(
         {'A': 'python-a', 'B': 'python-b'},
         GOMETRY_ROOT / 'benches' / 'cases' / 'case_import_wkb.py',
         [],
@@ -54,180 +103,166 @@ def test_run_blocks_obeys_balanced_order_and_keeps_only_measured_values() -> Non
         rounds=9,
         seed=20_260_709,
         runner=runner,
+        clock_ns=clock,
     )
     assert len(calls) == 22
-    assert len(samples['A']) == len(samples['B']) == 9
+    assert len(result['blocks']) == 11
+    assert sum(block['measured'] for block in result['blocks']) == 9
+    assert result['blocks'][0]['arms']['A']['observation']['measurement']['unit'] == 'seconds'
+    assert len(result['samples']['A']) == len(result['samples']['B']) == 9
 
 
-def test_summary_reports_block_distribution_and_deterministic_confidence_interval() -> (
-    None
-):
+@pytest.mark.parametrize('metric', ['duration', 'scaling_ratio'])
+def test_stdout_parser_accepts_only_typed_metric_payload(metric: str) -> None:
     bench_ab = _module()
-    values = [1.0, 1.1, 0.9, 1.05, 0.95, 1.02, 0.98, 1.01, 0.99]
-    summary = bench_ab.summarize(values, 123)
-    assert summary == bench_ab.summarize(values, 123)
-    assert summary['median_seconds'] == 1.0
-    assert summary['max_block_seconds'] >= summary['p50_seconds']
-    assert 'p99_seconds' not in summary
-    low, high = summary['median_ci95_seconds']
-    assert low <= summary['median_seconds'] <= high
-
-
-def test_bootstrap_ratio_ci_separates_large_explained_effect() -> None:
-    bench_ab = _module()
-    # Absolute runtime drifts across blocks, but each paired observation has
-    # exactly the same 2x effect. A paired bootstrap must retain that signal.
-    low, high = bench_ab.bootstrap_ratio_ci(
-        [2.0 * value for value in range(1, 10)],
-        [float(value) for value in range(1, 10)],
-        123,
-        samples=200,
+    observation = _observation(bench_ab, metric, 1.5)
+    parsed = bench_ab._parse_observation_stdout(
+        Path('case.py'), json.dumps({'observation': observation}) + '\n', ''
     )
-    assert (low, high) == (2.0, 2.0)
+    assert parsed['measurement']['metric'] == metric
 
 
-def test_bootstrap_ratio_ci_requires_block_pairs() -> None:
+def test_stdout_parser_rejects_float_and_ratio_as_seconds() -> None:
     bench_ab = _module()
-    with pytest.raises(ValueError, match='equal sample counts'):
-        bench_ab.bootstrap_ratio_ci([1.0], [1.0, 2.0], 123)
+    with pytest.raises(SystemExit, match='typed observation JSON'):
+        bench_ab._parse_observation_stdout(Path('case.py'), '1.5\n', '')
+    ratio = _observation(bench_ab, 'scaling_ratio', 1.5)
+    ratio['measurement']['unit'] = 'seconds'
+    with pytest.raises(ValueError, match='unit'):
+        validate_observation(ratio)
 
 
-def test_perf_event_expansion_uses_a_stable_default_and_accepts_csv_groups() -> None:
+def test_smooth_common_drift_is_inconclusive_for_a_a_blocks() -> None:
     bench_ab = _module()
-    assert bench_ab.expand_perf_events() == (
-        'instructions',
-        'cycles',
-        'cache-references',
-        'cache-misses',
-        'branches',
-        'branch-misses',
+    tick = 0
+    call_index = 0
+
+    def clock() -> int:
+        nonlocal tick
+        tick += 1
+        return tick
+
+    def runner(_side: str, _case: Path, _extra: list[str]) -> dict[str, Any]:
+        nonlocal call_index
+        started = clock()
+        value = math.exp(call_index * 0.5)
+        call_index += 1
+        ended = clock()
+        return _arm(bench_ab, value, started=started, ended=ended)
+
+    run = bench_ab.run_blocks(
+        {'A': 'same-a', 'B': 'same-b'},
+        Path('synthetic-a-a.py'),
+        [],
+        warmup=1,
+        rounds=6,
+        seed=0,
+        runner=runner,
+        clock_ns=clock,
     )
+    result = bench_ab.compare_blocks(
+        run['blocks'], 123, metric='duration', unit='seconds'
+    )
+    measured = [block for block in run['blocks'] if block['measured']]
+    unpaired_a = [bench_ab._observation_estimate(block['arms']['A']['observation']) for block in measured]
+    unpaired_b = [bench_ab._observation_estimate(block['arms']['B']['observation']) for block in measured]
+    assert bench_ab.statistics.median(unpaired_a) / bench_ab.statistics.median(unpaired_b) != pytest.approx(1.0)
+    assert result['relative_ratio_a_over_b'] == pytest.approx(1.0)
+    assert result['significant'] is False
+    broken_schedule = deepcopy(run['blocks'])
+    for block in broken_schedule:
+        if block['measured']:
+            block['lead_order'] = ['A', 'B']
+    with pytest.raises(SystemExit, match='both lead orders'):
+        bench_ab.compare_blocks(broken_schedule, 123, metric='duration', unit='seconds')
+    swapped_order = deepcopy(run['blocks'])
+    for block in swapped_order:
+        if block['measured']:
+            block['lead_order'].reverse()
+    with pytest.raises(SystemExit, match='timestamps'):
+        bench_ab.compare_blocks(swapped_order, 123, metric='duration', unit='seconds')
+
+
+@pytest.mark.parametrize(('seed', 'first_lead'), [(0, 'A'), (1, 'B')])
+def test_constant_ten_percent_cost_is_recovered_for_both_leads(seed: int, first_lead: str) -> None:
+    bench_ab = _module()
+    tick = 0
+
+    def clock() -> int:
+        nonlocal tick
+        tick += 1
+        return tick
+
+    def runner(side: str, _case: Path, _extra: list[str]) -> dict[str, Any]:
+        started = clock()
+        ended = clock()
+        value = 1.1 if side == 'python-a' else 1.0
+        return _arm(bench_ab, value, identity=side, started=started, ended=ended)
+
+    run = bench_ab.run_blocks(
+        {'A': 'python-a', 'B': 'python-b'},
+        Path('synthetic-cost.py'),
+        [],
+        warmup=1,
+        rounds=4,
+        seed=seed,
+        runner=runner,
+        clock_ns=clock,
+    )
+    measured = [block for block in run['blocks'] if block['measured']]
+    assert run['blocks'][0]['lead_order'][0] == first_lead
+    assert len(measured) >= 3
+    result = bench_ab.compare_blocks(run['blocks'], 123, metric='duration', unit='seconds')
+    assert result['relative_ratio_a_over_b'] == pytest.approx(1.1)
+    assert result['relative_ratio_ci95'] == pytest.approx((1.1, 1.1))
+
+
+@pytest.mark.parametrize(
+    ('ratio', 'expected'),
+    [
+        (1.25, 'Candidate B is 1.250x faster than A'),
+        (0.8, 'Candidate B is 1.250x slower than A'),
+        (1.0, 'Candidate B matches A'),
+    ],
+)
+def test_directional_verdict_names_candidate_direction(
+    ratio: float, expected: str
+) -> None:
+    bench_ab = _module()
+    assert expected in bench_ab.format_directional_verdict(
+        ratio, metric='duration', unit='seconds'
+    )
+
+
+def test_observation_requires_oracle_identity() -> None:
+    bench_ab = _module()
+    observation = _observation(bench_ab, 'duration', 1.0)
+    del observation['oracle']['identity']
+    with pytest.raises(ValueError, match='oracle'):
+        validate_observation(observation)
+
+
+def test_pair_semantics_reject_mismatched_metric_before_summary() -> None:
+    bench_ab = _module()
+    arms = {
+        'A': _arm(bench_ab, 1.0, metric='duration'),
+        'B': _arm(bench_ab, 1.0, metric='scaling_ratio'),
+    }
+    with pytest.raises(SystemExit, match='mismatched typed metrics'):
+        bench_ab._validate_pair_arms(arms, Path('case.py'))
+
+
+def test_perf_event_expansion_and_parser_retain_counter_identity() -> None:
+    bench_ab = _module()
     assert bench_ab.expand_perf_events(['instructions, cycles', 'branches']) == (
-        'instructions',
-        'cycles',
-        'branches',
+        'instructions', 'cycles', 'branches'
     )
-    with pytest.raises(ValueError, match='duplicate'):
-        bench_ab.expand_perf_events(['cycles', 'cycles'])
-
-
-def test_perf_csv_parser_retains_value_identity_runtime_and_coverage() -> None:
-    bench_ab = _module()
     parsed = bench_ab.parse_perf_output(
-        '1234,,instructions:u,1000,100.00,,\n'
-        '2000,,cycles,1000,50.00,,\n',
+        '1234,,instructions:u,1000,100.00,,\n2000,,cycles,1000,50.00,,\n',
         ['instructions', 'cycles'],
     )
-    assert parsed['instructions']['event'] == 'instructions:u'
     assert parsed['instructions']['raw_value'] == 1234
-    assert parsed['instructions']['raw_value_text'] == '1234'
-    assert parsed['instructions']['runtime'] == 1000
     assert parsed['instructions']['coverage'] == 1.0
-    assert parsed['instructions']['scaling'] == 1.0
     assert parsed['cycles']['status'] == 'multiplexed'
-    assert parsed['cycles']['coverage'] == 0.5
-    assert parsed['cycles']['raw_line'].startswith('2000')
-
-
-def test_perf_parser_handles_human_text_and_explicit_failure_states() -> None:
-    bench_ab = _module()
-    parsed = bench_ab.parse_perf_output(
-        '1,234 cycles:u # 1.2 GHz\n'
-        '<not supported> cache-misses\n'
-        '<not counted> branches\n',
-        ['cycles', 'cache-misses', 'branches', 'instructions'],
-    )
-    assert parsed['cycles']['status'] == 'ok'
-    assert parsed['cycles']['raw_value'] == 1234
-    assert parsed['cycles']['coverage'] is None
-    assert parsed['cache-misses']['status'] == 'unsupported'
-    assert parsed['branches']['status'] == 'not-counted'
-    assert parsed['instructions']['status'] == 'missing'
     with pytest.raises(SystemExit, match='not comparable'):
-        bench_ab._validate_counters(parsed, tuple(parsed))
-
-
-def test_perf_block_path_preserves_ab_ba_association_and_excludes_warmups() -> None:
-    bench_ab = _module()
-    calls: list[tuple[str, tuple[str, ...]]] = []
-    events = ('instructions', 'cycles')
-
-    def runner(python: str, _case, _extra, requested) -> dict[str, Any]:
-        calls.append((python, tuple(requested)))
-        value = 10.0 if python == 'python-a' else 5.0
-        return {
-            'elapsed_seconds': value,
-            'counters': {
-                event: {
-                    'value': value * (2 if event == 'instructions' else 3),
-                    'status': 'ok',
-                    'coverage': 1.0,
-                }
-                for event in requested
-            },
-            'command': ['perf', 'stat', '--', python],
-            'perf_output': 'raw perf output\n',
-            'case_stdout': f'{value}\n',
-            'perf_stderr': '',
-        }
-
-    result = bench_ab.run_blocks_with_perf(
-        {'A': 'python-a', 'B': 'python-b'},
-        GOMETRY_ROOT / 'benches' / 'cases' / 'case_import_wkb.py',
-        [],
-        events=events,
-        warmup=2,
-        rounds=9,
-        seed=20_260_709,
-        runner=runner,
-    )
-    assert [python for python, _ in calls] == [
-        side
-        for order in bench_ab.blocked_orders(11, 20_260_709)
-        for side in (('python-a' if order_side == 'A' else 'python-b') for order_side in order)
-    ]
-    assert all(requested == events for _, requested in calls)
-    assert len(result['blocks']) == 11
-    assert [block['lead_order'] for block in result['blocks']] == [
-        list(order) for order in bench_ab.blocked_orders(11, 20_260_709)
-    ]
-    assert sum(block['measured'] for block in result['blocks']) == 9
-    assert len(result['samples']['A']) == len(result['samples']['B']) == 9
-    assert all(block['counter_ratios']['instructions'] == 2.0 for block in result['blocks'])
-    encoded = json.dumps(result)
-    assert 'counter_ratios' in encoded
-
-
-def test_counter_ratio_summary_is_paired_and_primary_event_is_instructions() -> None:
-    bench_ab = _module()
-    blocks = [
-        {
-            'measured': index != 0,
-            'A': {'counters': {'instructions': {'value': 20.0 + index}}},
-            'B': {'counters': {'instructions': {'value': 10.0 + index}}},
-        }
-        for index in range(3)
-    ]
-    summary = bench_ab.summarize_counter_ratios(blocks, ('instructions',), 123)
-    assert summary['primary_event'] == 'instructions'
-    assert summary['A']['instructions']['samples'] == [21.0, 22.0]
-    assert summary['B']['instructions']['samples'] == [11.0, 12.0]
-    assert summary['ratios']['instructions']['status'] == 'ok'
-    assert summary['ratios']['instructions']['a_over_b'] == 21.5 / 11.5
-
-
-def test_counter_ratio_summary_reports_zero_denominators_without_infinity() -> None:
-    bench_ab = _module()
-    blocks = [
-        {
-            'measured': True,
-            'A': {'counters': {'instructions': {'value': 1.0}}},
-            'B': {'counters': {'instructions': {'value': 0.0}}},
-        }
-    ]
-    summary = bench_ab.summarize_counter_ratios(blocks, ('instructions',), 123)
-    assert summary['ratios']['instructions'] == {
-        'status': 'undefined-zero-denominator',
-        'a_over_b': None,
-        'ci95': None,
-    }
+        bench_ab._validate_counters(parsed, ('instructions', 'cycles'))

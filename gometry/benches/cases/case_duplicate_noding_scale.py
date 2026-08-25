@@ -12,6 +12,7 @@ import time
 
 import gometry as gm
 import numpy as np
+from _observation import emit
 
 
 def _ring32(ox: float = 0.0, oy: float = 0.0) -> gm.Polygon:
@@ -49,8 +50,18 @@ def main() -> None:
     t80 = _median_union(80)
     t320 = _median_union(320)
     ratio = t320 / max(t80, 1e-12)
-    # Single float for bench_ab consumers; ratio is the scaling property.
-    print(ratio)
+    emit(
+        metric='scaling_ratio',
+        raw_values=[ratio],
+        useful_work={
+            'numerator': {'count': 320, 'unit': 'duplicate-polygons'},
+            'denominator': {'count': 80, 'unit': 'duplicate-polygons'},
+        },
+        oracle_identity='case_duplicate_noding_scale:nonempty-union-v1',
+        warmup_iterations=3,
+        calibration_iterations=7,
+        calibration_strategy='median-of-repetitions-per-scaling-point',
+    )
 
 
 if __name__ == '__main__':

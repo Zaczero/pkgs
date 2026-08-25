@@ -47,6 +47,12 @@ class OracleContext:
     operation: ReleaseOperation
     kind: str
     unit: str | None = None
+    oracle_identity: str | None = None
+
+
+def public_oracle_identity(operation: ReleaseOperation) -> str:
+    """Stable identity for the untimed oracle attached to one public operation."""
+    return f'public:{operation.gometry}:oracle-v1'
 
 
 @dataclass(frozen=True, slots=True)

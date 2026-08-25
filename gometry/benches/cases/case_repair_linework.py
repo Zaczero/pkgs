@@ -16,6 +16,7 @@ import gometry as gm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 from _bench_public_fixtures import repair_1k_gometry
+from _observation import emit
 
 
 def build_input(mix: str) -> gm.GeometryArray:
@@ -48,7 +49,14 @@ def main() -> None:
     assert len(result) == 1000
     assert all(result.is_valid)
     assert str(result.crs) == "EPSG:32634"
-    print(elapsed)
+    emit(
+        metric='duration',
+        raw_values=[elapsed],
+        useful_work={'count': len(input_array), 'unit': 'geometry-rows'},
+        oracle_identity='case_repair_linework:valid-repair-crs-v1',
+        warmup_iterations=2,
+        calibration_iterations=1,
+    )
 
 
 if __name__ == "__main__":

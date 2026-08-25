@@ -7,6 +7,7 @@ import math
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 parser = argparse.ArgumentParser()
@@ -80,4 +81,10 @@ _assert_exact_enclosure(expected_result)
 t0 = time.perf_counter()
 for _ in range(iterations):
     run()
-print(time.perf_counter() - t0)
+emit(
+    metric='duration',
+    raw_values=[time.perf_counter() - t0],
+    useful_work={'count': iterations, 'unit': 'rectangles'},
+    oracle_identity='case_minimum_rotated_rectangle:exact-enclosure-v1',
+    calibration_iterations=iterations,
+)

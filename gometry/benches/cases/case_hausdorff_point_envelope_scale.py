@@ -12,6 +12,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def _case(count: int) -> tuple[gm.LineString, gm.MultiPoint]:
@@ -35,7 +36,18 @@ def _median_hausdorff(count: int) -> float:
 
 
 def main() -> None:
-    print(_median_hausdorff(800) / max(_median_hausdorff(100), 1e-12))
+    emit(
+        metric='scaling_ratio',
+        raw_values=[_median_hausdorff(800) / max(_median_hausdorff(100), 1e-12)],
+        useful_work={
+            'numerator': {'count': 800, 'unit': 'target-points'},
+            'denominator': {'count': 100, 'unit': 'target-points'},
+        },
+        oracle_identity='case_hausdorff_point_envelope_scale:exact-distance-v1',
+        warmup_iterations=3,
+        calibration_iterations=9,
+        calibration_strategy='median-of-repetitions-per-scaling-point',
+    )
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ import time
 
 import gometry as gm
 import numpy as np
+from _observation import emit
 
 ROWS = 1_000_000
 REPEATS = 12
@@ -26,7 +27,14 @@ def main() -> None:
     elapsed = time.perf_counter() - start
     if not np.isfinite(result).all():
         raise RuntimeError('Web Mercator result must remain finite')
-    print(elapsed)
+    emit(
+        metric='duration',
+        raw_values=[elapsed],
+        useful_work={'count': ROWS * REPEATS, 'unit': 'coordinates-transformed'},
+        oracle_identity='case_webmerc_exact_zero:finite-output-v1',
+        warmup_iterations=2,
+        calibration_iterations=REPEATS,
+    )
 
 
 if __name__ == '__main__':

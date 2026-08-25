@@ -74,7 +74,6 @@ dev = [
   "pytest-cov",
   "pytest-timeout>=2.4",
   "pytest-xdist[psutil]>=3.8",
-  "pyperf",
   "rtree",
   "s2sphere",
   "scikit-learn",

@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 text = (
@@ -21,4 +22,10 @@ parse()
 t0 = time.perf_counter()
 for _ in range(12):
     parse()
-print(time.perf_counter() - t0)
+emit(
+    metric='duration',
+    raw_values=[time.perf_counter() - t0],
+    useful_work={'count': 12 * 217, 'unit': 'features-parsed'},
+    oracle_identity='case_feature_parse_countries:feature-metadata-v1',
+    calibration_iterations=12,
+)

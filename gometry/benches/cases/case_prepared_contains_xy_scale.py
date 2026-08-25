@@ -13,6 +13,7 @@ import time
 
 import gometry as gm
 import numpy as np
+from _observation import emit
 
 
 def _big_polygon(n_edge: int = 10_000) -> gm.Polygon:
@@ -47,8 +48,14 @@ def _median_prepared(n: int, *, warm: int = 3, reps: int = 11) -> float:
 
 
 def main() -> None:
-    # Single float: prepared 63-probe seconds (cliff was ~0.4-1 ms; post-fix us).
-    print(_median_prepared(63))
+    emit(
+        metric='duration',
+        raw_values=[_median_prepared(63)],
+        useful_work={'count': 63, 'unit': 'prepared-probes'},
+        oracle_identity='case_prepared_contains_xy_scale:probe-mask-v1',
+        warmup_iterations=3,
+        calibration_iterations=11,
+    )
 
 
 if __name__ == '__main__':

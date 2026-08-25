@@ -11,6 +11,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def _poly_with_n_holes(n: int, spacing: float = 3.0) -> gm.Polygon:
@@ -47,7 +48,14 @@ def _median_valid(n: int = 2000, *, warm: int = 2, reps: int = 7) -> float:
 
 
 def main() -> None:
-    print(_median_valid())
+    emit(
+        metric='duration',
+        raw_values=[_median_valid()],
+        useful_work={'count': 2_000, 'unit': 'polygon-holes'},
+        oracle_identity='case_validity_disjoint_scale:validity-v1',
+        warmup_iterations=2,
+        calibration_iterations=7,
+    )
 
 
 if __name__ == '__main__':

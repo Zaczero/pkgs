@@ -4,8 +4,9 @@ Each measured block runs both builds, alternating the lead order ``A/B`` then
 ``B/A``. A fixed seed chooses the first leader and drives the bootstrap, so the
 entire comparison is reproducible without grouping all runs from one build.
 
-The case script prints one elapsed-seconds float on stdout. It must perform
-equivalent work and validate its output before printing the measured value.
+The case script prints one validated typed observation JSON object on stdout.
+It must perform equivalent work and validate its output before printing the
+measured value.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+from itertools import pairwise
 import json
 import math
 import os
@@ -22,15 +24,21 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+GOMETRY_ROOT = Path(__file__).resolve().parents[2]
+_SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
+if str(_SUPPORT) not in sys.path:
+    sys.path.insert(0, str(_SUPPORT))
+
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
+from benchmark_observation import metric_spec, measurement_summary, validate_observation
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SEED = 20_260_709
 MIN_MEASURED_ROUNDS = 9
 BOOTSTRAP_SAMPLES = 10_000
@@ -67,14 +75,34 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
 
 def identify_build(python: str) -> dict[str, Any]:
     code = """
-import hashlib, json
+import hashlib, importlib.metadata, json, platform, sys
 from pathlib import Path
+sys.path.insert(0, 'benches/drivers')
 import gometry._lib as lib
+from bench_doctor import _source_inputs_digest, _uv_lock_identity
 path = Path(lib.__file__).resolve()
+packages = {}
+for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow', 'mercantile', 'pygeohash'):
+    try:
+        packages[name] = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        packages[name] = None
 print(json.dumps({
-    'extension_path': str(path),
-    'extension_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-    'extension_size_bytes': path.stat().st_size,
+    'source_inputs_sha256': _source_inputs_digest(),
+    'extension': {
+        'path': str(path),
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'size_bytes': path.stat().st_size,
+        'build_info': getattr(lib, '__build_info__', None),
+    },
+    'uv_lock': _uv_lock_identity(),
+    'packages': packages,
+    'python': {
+        'executable': sys.executable,
+        'version': sys.version,
+        'implementation': platform.python_implementation(),
+        'cache_tag': sys.implementation.cache_tag,
+    },
 }))
 """
     result = subprocess.run(
@@ -116,22 +144,22 @@ def perf_version(perf_binary: str = PERF_BINARY) -> dict[str, Any]:
     return {'command': command, 'version': output}
 
 
-def _parse_elapsed_stdout(case: Path, stdout: str, stderr: str) -> float:
+def _parse_observation_stdout(case: Path, stdout: str, stderr: str) -> dict[str, Any]:
     try:
-        value = float(stdout.strip().splitlines()[-1])
-    except (IndexError, ValueError) as error:
+        payload = json.loads(stdout.strip().splitlines()[-1])
+        observation = payload['observation']
+        validate_observation(observation)
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(
-            f'{case}: expected a float on stdout, got {stdout!r} '
+            f'{case}: expected one typed observation JSON object on stdout, got {stdout!r} '
             f'(stderr: {stderr[-400:]!r})'
         ) from error
-    if not math.isfinite(value) or value < 0.0:
-        raise SystemExit(
-            f'{case}: elapsed seconds must be finite and non-negative, got {value}'
-        )
-    return value
+    return observation
 
 
-def run_case(python: str, case: Path, extra: list[str]) -> float:
+def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
+    producer_before = identify_build(python)
+    started_monotonic_ns = time.monotonic_ns()
     try:
         result = subprocess.run(
             [python, str(case), *extra],
@@ -145,7 +173,20 @@ def run_case(python: str, case: Path, extra: list[str]) -> float:
         raise SystemExit(
             f'{case}: exceeded the {CASE_TIMEOUT_SECONDS}s per-block timeout'
         ) from error
-    return _parse_elapsed_stdout(case, result.stdout, result.stderr)
+    ended_monotonic_ns = time.monotonic_ns()
+    producer_after = identify_build(python)
+    if producer_before != producer_after:
+        raise SystemExit(f'{case}: producer identity changed during the measured arm')
+    return {
+        'observation': _parse_observation_stdout(case, result.stdout, result.stderr),
+        'started_monotonic_ns': started_monotonic_ns,
+        'ended_monotonic_ns': ended_monotonic_ns,
+        'provenance_before': producer_before,
+        'provenance_after': producer_after,
+        'command': [python, str(case), *extra],
+        'case_stdout': result.stdout,
+        'case_stderr': result.stderr,
+    }
 
 
 def _event_base(event: str) -> str:
@@ -209,7 +250,7 @@ def _counter_entry(
         'event': observed,
         'raw_value': raw_value,
         'raw_value_text': raw_value_text,
-        'value': raw_value,
+        'counter_value': raw_value,
         'unit': unit,
         'runtime': runtime,
         'coverage': coverage,
@@ -458,6 +499,8 @@ def run_case_with_perf(
 ) -> dict[str, Any]:
     """Run one validated case under perf, keeping perf output out of stdout."""
     requested = expand_perf_events(events)
+    producer_before = identify_build(python)
+    started_monotonic_ns = time.monotonic_ns()
     with tempfile.TemporaryFile() as perf_log:
         log_fd = perf_log.fileno()
         command = [
@@ -494,6 +537,8 @@ def run_case_with_perf(
             ) from error
         perf_log.seek(0)
         perf_output = perf_log.read().decode(errors='replace')
+    ended_monotonic_ns = time.monotonic_ns()
+    producer_after = identify_build(python)
     counters = parse_perf_output(
         perf_output, requested, minimum_coverage=minimum_coverage
     )
@@ -503,10 +548,14 @@ def run_case_with_perf(
             f'case stdout={result.stdout!r}; process stderr={result.stderr[-400:]!r}; '
             f'perf output={perf_output!r}'
         )
-    elapsed = _parse_elapsed_stdout(case, result.stdout, result.stderr)
+    observation = _parse_observation_stdout(case, result.stdout, result.stderr)
     _validate_counters(counters, requested)
     return {
-        'elapsed_seconds': elapsed,
+        'observation': observation,
+        'started_monotonic_ns': started_monotonic_ns,
+        'ended_monotonic_ns': ended_monotonic_ns,
+        'provenance_before': producer_before,
+        'provenance_after': producer_after,
         'counters': counters,
         'command': command,
         'perf_output': perf_output,
@@ -532,21 +581,49 @@ def run_blocks(
     warmup: int,
     rounds: int,
     seed: int,
-    runner: Callable[[str, Path, list[str]], float] = run_case,
-) -> dict[str, list[float]]:
+    runner: Callable[[str, Path, list[str]], dict[str, Any]] = run_case,
+    clock_ns: Callable[[], int] = time.monotonic_ns,
+) -> dict[str, Any]:
     samples: dict[str, list[float]] = {'A': [], 'B': []}
+    blocks: list[dict[str, Any]] = []
     for block_index, order in enumerate(blocked_orders(warmup + rounds, seed)):
         measured = block_index >= warmup
+        block_started = clock_ns()
+        arms = {}
         for side in order:
-            value = runner(sides[side], case, extra)
+            arms[side] = runner(sides[side], case, extra)
+        block_ended = clock_ns()
+        metric, unit = _validate_pair_arms(arms, case)
+        _validate_arm_order(
+            arms,
+            order,
+            case,
+            block_started=block_started,
+            block_ended=block_ended,
+        )
+        for side in order:
+            value = _observation_estimate(arms[side]['observation'])
             if measured:
                 samples[side].append(value)
             tag = 'measure' if measured else 'warmup'
             print(
-                f'  [{tag} block={block_index} lead={order[0]}] {side}: {value:.9f}s',
+                f'  [{tag} block={block_index} lead={order[0]}] {side}: '
+                f'{metric}={value:.9g} {unit}',
                 file=sys.stderr,
             )
-    return samples
+        blocks.append({
+            'index': block_index,
+            'lead_order': list(order),
+            'measured': measured,
+            'metric': metric,
+            'unit': unit,
+            'timestamps_monotonic_ns': {
+                'block_started': block_started,
+                'block_ended': block_ended,
+            },
+            'arms': arms,
+        })
+    return {'samples': samples, 'blocks': blocks}
 
 
 def run_blocks_with_perf(
@@ -559,40 +636,190 @@ def run_blocks_with_perf(
     rounds: int,
     seed: int,
     runner: Callable[[str, Path, list[str], Sequence[str]], dict[str, Any]] = run_case_with_perf,
+    clock_ns: Callable[[], int] = time.monotonic_ns,
 ) -> dict[str, Any]:
-    """Run the existing blocked schedule and retain counter evidence per block."""
+    """Run the typed blocked schedule and retain counter evidence per block."""
     requested = expand_perf_events(events)
     samples: dict[str, list[float]] = {'A': [], 'B': []}
     blocks: list[dict[str, Any]] = []
     for block_index, order in enumerate(blocked_orders(warmup + rounds, seed)):
         measured = block_index >= warmup
+        block_started = clock_ns()
         block: dict[str, Any] = {
             'index': block_index,
             'lead_order': list(order),
             'measured': measured,
         }
+        arms: dict[str, Any] = {}
         for side in order:
             result = runner(sides[side], case, extra, requested)
             _validate_counters(result['counters'], requested)
-            value = result['elapsed_seconds']
+            arms[side] = result
+        metric, unit = _validate_pair_arms(arms, case)
+        block_ended = clock_ns()
+        _validate_arm_order(
+            arms,
+            order,
+            case,
+            block_started=block_started,
+            block_ended=block_ended,
+        )
+        block['arms'] = arms
+        block['metric'], block['unit'] = metric, unit
+        block['timestamps_monotonic_ns'] = {
+            'block_started': block_started,
+            'block_ended': block_ended,
+        }
+        for side in order:
+            value = _observation_estimate(arms[side]['observation'])
             if measured:
                 samples[side].append(value)
-            block[side] = result
             tag = 'measure' if measured else 'warmup'
             print(
                 f'  [{tag} block={block_index} lead={order[0]}] '
-                f'{side}: {value:.9f}s',
+                f'{side}: {metric}={value:.9g} {unit}',
                 file=sys.stderr,
             )
         block['counter_ratios'] = {
             event: _finite_ratio(
-                block['A']['counters'][event]['value'],
-                block['B']['counters'][event]['value'],
+                block['arms']['A']['counters'][event]['counter_value'],
+                block['arms']['B']['counters'][event]['counter_value'],
             )
             for event in requested
         }
         blocks.append(block)
     return {'samples': samples, 'blocks': blocks, 'events': list(requested)}
+
+
+def validate_block_schedule(
+    blocks: Sequence[dict[str, Any]], *, minimum_measured: int = 3
+) -> None:
+    """Require an alternating, balanced lead schedule over independent blocks."""
+    measured = [block for block in blocks if block.get('measured')]
+    if len(measured) < minimum_measured:
+        raise SystemExit(
+            f'paired schedule requires at least {minimum_measured} measured blocks'
+        )
+    leads = [tuple(block.get('lead_order', ())) for block in measured]
+    if any(lead not in {('A', 'B'), ('B', 'A')} for lead in leads):
+        raise SystemExit('paired schedule contains an invalid lead order')
+    if {lead[0] for lead in leads} != {'A', 'B'}:
+        raise SystemExit('paired schedule must exercise both lead orders')
+    if any(left[0] == right[0] for left, right in pairwise(leads)):
+        raise SystemExit('paired schedule must alternate lead orders')
+    if abs(sum(lead[0] == 'A' for lead in leads) - sum(lead[0] == 'B' for lead in leads)) > 1:
+        raise SystemExit('paired schedule lead orders are unbalanced')
+
+
+def compare_blocks(
+    blocks: Sequence[dict[str, Any]], seed: int, *, metric: str, unit: str
+) -> dict[str, Any]:
+    """Compare estimates kept in their producing paired blocks."""
+    validate_block_schedule(blocks)
+    measured = [block for block in blocks if block.get('measured')]
+    ratios: list[float] = []
+    for block in measured:
+        _validate_block_timing(block, Path('<paired-block>'))
+        baseline_observation = block['arms']['A']['observation']
+        candidate_observation = block['arms']['B']['observation']
+        baseline_metric, baseline_unit, baseline, _raw = measurement_summary(
+            baseline_observation
+        )
+        candidate_metric, candidate_unit, candidate, _raw = measurement_summary(
+            candidate_observation
+        )
+        if (
+            (baseline_metric, baseline_unit) != (metric, unit)
+            or (candidate_metric, candidate_unit) != (metric, unit)
+        ):
+            raise SystemExit('paired blocks have inconsistent typed metric semantics')
+        if candidate <= 0.0:
+            raise ValueError('paired block candidate estimate must be positive')
+        ratios.append(baseline / candidate)
+    return compare_paired_ratios(ratios, seed, metric=metric, unit=unit)
+
+
+def _observation_estimate(observation: dict[str, Any]) -> float:
+    _metric, _unit, estimate, _raw = measurement_summary(observation)
+    return estimate
+
+
+def _validate_pair_arms(arms: dict[str, Any], case: Path) -> tuple[str, str]:
+    if set(arms) != {'A', 'B'}:
+        raise SystemExit(f'{case}: paired block must contain exactly A and B arms')
+    left = arms['A']
+    right = arms['B']
+    try:
+        left_observation = left['observation']
+        right_observation = right['observation']
+        left_metric, left_unit, _left_estimate, _left_raw = measurement_summary(left_observation)
+        right_metric, right_unit, _right_estimate, _right_raw = measurement_summary(right_observation)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(f'{case}: paired observation is malformed: {exc}') from exc
+    if (left_metric, left_unit) != (right_metric, right_unit):
+        raise SystemExit(
+            f'{case}: arms have mismatched typed metrics: '
+            f'{left_metric}/{left_unit} vs {right_metric}/{right_unit}'
+        )
+    for name in ('useful_work', 'phase', 'warmup', 'calibration', 'oracle'):
+        if left_observation.get(name) != right_observation.get(name):
+            raise SystemExit(f'{case}: arms have mismatched {name} semantics')
+    for side in ('A', 'B'):
+        arm = arms[side]
+        before = arm.get('provenance_before')
+        after = arm.get('provenance_after')
+        if not isinstance(before, dict) or not isinstance(after, dict) or before != after:
+            raise SystemExit(f'{case}: {side} producer identity is incomplete or changed')
+        started = arm.get('started_monotonic_ns')
+        ended = arm.get('ended_monotonic_ns')
+        if not isinstance(started, int) or not isinstance(ended, int) or started > ended:
+            raise SystemExit(f'{case}: {side} monotonic timestamps are invalid')
+    return left_metric, left_unit
+
+
+def _validate_arm_order(
+    arms: dict[str, Any],
+    order: tuple[str, str],
+    case: Path,
+    *,
+    block_started: int | None = None,
+    block_ended: int | None = None,
+) -> None:
+    first, second = order
+    first_started = arms[first]['started_monotonic_ns']
+    first_ended = arms[first]['ended_monotonic_ns']
+    second_started = arms[second]['started_monotonic_ns']
+    second_ended = arms[second]['ended_monotonic_ns']
+    bounds = (
+        block_started is None
+        or block_ended is None
+        or block_started <= first_started <= first_ended <= second_started <= second_ended <= block_ended
+    )
+    if not bounds:
+        raise SystemExit(f'{case}: observed arm timestamps overlap or contradict lead order')
+
+
+def _validate_block_timing(block: dict[str, Any], case: Path) -> None:
+    order = tuple(block.get('lead_order', ()))
+    timestamps = block.get('timestamps_monotonic_ns')
+    arms = block.get('arms')
+    if (
+        order not in {('A', 'B'), ('B', 'A')}
+        or not isinstance(timestamps, dict)
+        or not isinstance(arms, dict)
+    ):
+        raise SystemExit(f'{case}: paired block timing metadata is incomplete')
+    block_started = timestamps.get('block_started')
+    block_ended = timestamps.get('block_ended')
+    if not isinstance(block_started, int) or not isinstance(block_ended, int):
+        raise SystemExit(f'{case}: paired block timestamps are invalid')
+    _validate_arm_order(
+        arms,
+        order,
+        case,
+        block_started=block_started,
+        block_ended=block_ended,
+    )
 
 
 def _finite_ratio(numerator: float, denominator: float) -> float | None:
@@ -638,8 +865,8 @@ def summarize_counter_ratios(
         'ratios': {},
     }
     for event_index, event in enumerate(requested):
-        values_a = [block['A']['counters'][event]['value'] for block in measured]
-        values_b = [block['B']['counters'][event]['value'] for block in measured]
+        values_a = [block['arms']['A']['counters'][event]['counter_value'] for block in measured]
+        values_b = [block['arms']['B']['counters'][event]['counter_value'] for block in measured]
         if any(value is None for value in (*values_a, *values_b)):
             raise ValueError(f'counter {event!r} has an incomplete measured block')
         summary['A'][event] = summarize_counter_values(
@@ -722,18 +949,67 @@ def bootstrap_ratio_ci(
     return percentile(ratios, 0.025), percentile(ratios, 0.975)
 
 
-def summarize(values: Sequence[float], seed: int) -> dict[str, Any]:
+def compare_paired_ratios(
+    ratios: Sequence[float],
+    seed: int,
+    *,
+    metric: str,
+    unit: str,
+) -> dict[str, Any]:
+    """Estimate the arm ratio from one observation pair per independent block."""
+    expected_unit, _raw_key, _estimate_key, direction = metric_spec(metric)
+    if unit != expected_unit or direction != 'lower_is_better':
+        raise ValueError(f'{metric} requires typed unit {expected_unit!r}')
+    if not ratios:
+        raise ValueError('typed comparison requires at least one paired block')
+    numeric = [float(value) for value in ratios]
+    if any(not math.isfinite(value) or value <= 0.0 for value in numeric):
+        raise ValueError('paired block ratios must be finite and positive')
+    log_ratios = [math.log(value) for value in numeric]
+    ratio = math.exp(statistics.median(log_ratios))
+    log_ci = bootstrap_median_ci(log_ratios, seed)
+    ratio_ci = (math.exp(log_ci[0]), math.exp(log_ci[1]))
+    differences = [value - 1.0 for value in numeric]
+    difference = statistics.median(differences)
+    spread = percentile(differences, 0.75) - percentile(differences, 0.25)
+    significant = ratio_ci[0] > 1.0 or ratio_ci[1] < 1.0
+    return {
+        'measurement': {'metric': metric, 'unit': unit, 'direction': direction},
+        'relative_ratio_a_over_b': ratio,
+        'relative_ratio_ci95': ratio_ci,
+        'paired_difference': {'median': difference, 'iqr': spread, 'unit': 'ratio'},
+        'paired_ratios': numeric,
+        'significant': significant,
+    }
+
+
+def format_directional_verdict(ratio: float, *, metric: str, unit: str) -> str:
+    """Describe candidate B's direction from the stored A/B ratio."""
+    if ratio > 1.0:
+        return f'Candidate B is {ratio:.3f}x faster than A for {metric} ({unit})'
+    if ratio < 1.0:
+        return f'Candidate B is {1.0 / ratio:.3f}x slower than A for {metric} ({unit})'
+    return f'Candidate B matches A for {metric} ({unit}); A/B ratio is 1.000x'
+
+
+def summarize(
+    values: Sequence[float], seed: int, *, metric: str, unit: str
+) -> dict[str, Any]:
+    if not values:
+        raise ValueError('observation summary requires at least one measured block')
     median = statistics.median(values)
     q1 = percentile(values, 0.25)
     q3 = percentile(values, 0.75)
     ci_low, ci_high = bootstrap_median_ci(values, seed)
     return {
-        'samples': list(values),
-        'median_seconds': median,
-        'iqr_seconds': q3 - q1,
-        'p50_seconds': percentile(values, 0.50),
-        'max_block_seconds': max(values),
-        'median_ci95_seconds': [ci_low, ci_high],
+        'metric': metric,
+        'unit': unit,
+        'raw_estimates': list(values),
+        'median': median,
+        'iqr': q3 - q1,
+        'p50': percentile(values, 0.50),
+        'max_block': max(values),
+        'median_ci95': [ci_low, ci_high],
     }
 
 
@@ -763,7 +1039,7 @@ def main() -> int:
     parser.add_argument('--a', required=True, help='Python of side A (baseline build)')
     parser.add_argument('--b', required=True, help='Python of side B (candidate build)')
     parser.add_argument(
-        '--case', required=True, type=Path, help='case script printing one float'
+        '--case', required=True, type=Path, help='case script printing one typed observation JSON object'
     )
     parser.add_argument('--rounds', type=int, default=MIN_MEASURED_ROUNDS)
     parser.add_argument('--warmup', type=int, default=2)
@@ -811,7 +1087,7 @@ def main() -> int:
     perf_run: dict[str, Any] | None = None
     perf_info: dict[str, Any] | None = None
     if perf_events is None:
-        samples = run_blocks(
+        block_run = run_blocks(
             {'A': args.a, 'B': args.b},
             args.case,
             args.extra,
@@ -830,25 +1106,33 @@ def main() -> int:
             rounds=args.rounds,
             seed=args.seed,
         )
-        samples = perf_run['samples']
-    summary_a = summarize(samples['A'], args.seed ^ 0xA)
-    summary_b = summarize(samples['B'], args.seed ^ 0xB)
-    median_a = summary_a['median_seconds']
-    median_b = summary_b['median_seconds']
-    ratio = median_a / median_b if median_b else float('inf')
-    ratio_ci = bootstrap_ratio_ci(samples['A'], samples['B'], args.seed ^ 0xAB)
-    paired_deltas = [a - b for a, b in zip(samples['A'], samples['B'], strict=True)]
-    paired_delta = statistics.median(paired_deltas)
-    noise = percentile(paired_deltas, 0.75) - percentile(paired_deltas, 0.25)
+        block_run = perf_run
+    samples = block_run['samples']
+    blocks = block_run['blocks']
+    measured_blocks = [block for block in blocks if block['measured']]
+    if not measured_blocks:
+        raise SystemExit('typed A/B run produced no measured blocks')
+    metric = measured_blocks[0]['metric']
+    unit = measured_blocks[0]['unit']
+    summary_a = summarize(samples['A'], args.seed ^ 0xA, metric=metric, unit=unit)
+    summary_b = summarize(samples['B'], args.seed ^ 0xB, metric=metric, unit=unit)
+    comparison = compare_blocks(
+        blocks, args.seed ^ 0xAB, metric=metric, unit=unit
+    )
+    ratio = comparison['relative_ratio_a_over_b']
+    ratio_ci = comparison['relative_ratio_ci95']
+    paired_delta = comparison['paired_difference']['median']
+    noise = comparison['paired_difference']['iqr']
     delta = abs(paired_delta)
-    significant = delta > noise and (ratio_ci[0] > 1.0 or ratio_ci[1] < 1.0)
+    significant = comparison['significant']
     verdict = (
-        f'B is {ratio:.3f}x of A ({"faster" if ratio > 1.0 else "SLOWER"})'
+        format_directional_verdict(ratio, metric=metric, unit=unit)
         if significant
-        else 'NOISE (paired-delta IQR / bootstrap CI does not exclude equivalence)'
+        else 'INCONCLUSIVE (paired log-ratio bootstrap CI includes 1.0; no directional result)'
     )
     record = {
-        'schema_version': 1,
+        'schema_version': 2,
+        'observation_type': 'typed-paired-comparison',
         'seed': args.seed,
         'warmup_blocks': args.warmup,
         'measured_blocks': args.rounds,
@@ -866,20 +1150,21 @@ def main() -> int:
             'bench_doctor_before': doctor_before,
             'contention_after': collect_contention(exclude_pgids={os.getpgrp()}),
         },
+        'measurement': {'metric': metric, 'unit': unit, 'direction': 'lower_is_better'},
         'A': summary_a,
         'B': summary_b,
-        'ratio_a_over_b': ratio,
-        'ratio_ci95': ratio_ci,
-        'paired_delta_median_seconds': paired_delta,
-        'noise_floor_seconds': noise,
+        'relative_ratio_a_over_b': ratio,
+        'relative_ratio_ci95': ratio_ci,
+        'paired_difference': {'median': paired_delta, 'iqr': noise, 'unit': 'ratio'},
+        'paired_ratios': comparison['paired_ratios'],
         'significant': significant,
         'verdict': verdict,
+        'blocks': blocks,
     }
     if perf_run is not None and perf_info is not None and perf_events is not None:
         counter_summary = summarize_counter_ratios(
             perf_run['blocks'], perf_events, args.seed ^ 0xC0,
         )
-        record['blocks'] = perf_run['blocks']
         record['perf'] = {
             'enabled': True,
             'binary': PERF_BINARY,
@@ -892,21 +1177,21 @@ def main() -> int:
             'minimum_coverage': MIN_COUNTER_COVERAGE,
             'summary': counter_summary,
             'commands': [
-                block[side]['command']
+                block['arms'][side]['command']
                 for block in perf_run['blocks']
                 for side in ('A', 'B')
             ],
         }
     for label, summary in (('A (baseline)', summary_a), ('B (candidate)', summary_b)):
-        ci = summary['median_ci95_seconds']
+        ci = summary['median_ci95']
         print(
-            f'{label}: median={summary["median_seconds"]:.9f}s '
-            f'IQR={summary["iqr_seconds"]:.9f}s max_block={summary["max_block_seconds"]:.9f}s '
+            f'{label}: metric={metric} unit={unit} median={summary["median"]:.9g} '
+            f'IQR={summary["iqr"]:.9g} max_block={summary["max_block"]:.9g} '
             f'95%CI=[{ci[0]:.9f}, {ci[1]:.9f}]'
         )
     print(
-        f'ratio A/B={ratio:.4f} 95%CI=[{ratio_ci[0]:.4f}, {ratio_ci[1]:.4f}] '
-        f'|delta|={delta:.9f}s noise_floor={noise:.9f}s'
+        f'relative_ratio A/B={ratio:.4f} 95%CI=[{ratio_ci[0]:.4f}, {ratio_ci[1]:.4f}] '
+        f'|difference|={delta:.9g} ratio paired_spread={noise:.9g} ratio'
     )
     print(f'VERDICT: {verdict}')
     if perf_run is not None and perf_events is not None:

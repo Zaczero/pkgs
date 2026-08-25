@@ -12,6 +12,7 @@ import time
 
 import gometry as gm
 import numpy as np
+from _observation import emit
 
 
 def _median_setitem(ext: object, n: int, *, warm: int = 2, reps: int = 5) -> float:
@@ -41,7 +42,18 @@ def main() -> None:
     t1 = _median_setitem(ext, 1)
     t10k = _median_setitem(ext, 10_000)
     ratio = t10k / max(t1, 1e-12)
-    print(ratio)
+    emit(
+        metric='scaling_ratio',
+        raw_values=[ratio],
+        useful_work={
+            'numerator': {'count': 10_000, 'unit': 'selected-rows'},
+            'denominator': {'count': 1, 'unit': 'selected-rows'},
+        },
+        oracle_identity='case_pandas_setitem_scale:last-row-write-v1',
+        warmup_iterations=2,
+        calibration_iterations=5,
+        calibration_strategy='median-of-repetitions-per-scaling-point',
+    )
 
 
 if __name__ == '__main__':

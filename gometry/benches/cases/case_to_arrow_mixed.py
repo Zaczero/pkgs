@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 ROWS = 30_000
@@ -38,4 +39,11 @@ assert (
     restored.to_wkt()[-1]
     == 'POLYGON ((29999 0, 29999.25 0, 29999.25 0.25, 29999 0.25, 29999 0))'
 )
-print(elapsed)
+emit(
+    metric='duration',
+    raw_values=[elapsed],
+    useful_work={'count': EXPORTS * ROWS, 'unit': 'rows-exported'},
+    oracle_identity='case_to_arrow_mixed:roundtrip-shape-v1',
+    warmup_iterations=1,
+    calibration_iterations=EXPORTS,
+)

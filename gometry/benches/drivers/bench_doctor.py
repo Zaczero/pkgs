@@ -416,7 +416,6 @@ def collect_contention(*, exclude_pgids: set[int] | None = None) -> dict[str, An
 PACKAGE_INVENTORY: dict[str, str] = {
     'gometry': 'gometry',
     'numpy': 'numpy',
-    'pyperf': 'pyperf',
     'shapely': 'shapely',
     'pyproj': 'pyproj',
     'h3': 'h3',
@@ -431,7 +430,6 @@ PACKAGE_INVENTORY: dict[str, str] = {
 PACKAGE_DISPLAY_NAMES: dict[str, str] = {
     'gometry': 'gometry',
     'numpy': 'NumPy',
-    'pyperf': 'pyperf',
     'shapely': 'Shapely',
     'pyproj': 'pyproj',
     'h3': 'h3-py',
@@ -468,10 +466,10 @@ _PREFIX_PACKAGE: dict[str, str] = {
 def packages_required_by_operations(operations: Any) -> set[str]:
     """Derive required import names from selected public operations.
 
-    Always includes gometry/numpy/pyperf. Optional competitor packages are
+    Always includes gometry/numpy. Optional competitor packages are
     required only when a selected public row names them.
     """
-    required = {'gometry', 'numpy', 'pyperf'}
+    required = {'gometry', 'numpy'}
     if operations is None:
         # Standalone doctor / full public RELEASE surface.
         required.update({
@@ -580,7 +578,7 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
                 hard_failures.append(f'competitor package {package!r} is not importable')
             continue
         if not info['available']:
-            if package in {'gometry', 'numpy', 'pyperf'}:
+            if package in {'gometry', 'numpy'}:
                 hard_failures.append(
                     f'required Python package {package!r} is not importable'
                 )

@@ -11,6 +11,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def _median_index0(n_runs: int, *, warm: int = 2, reps: int = 7) -> float:
@@ -39,7 +40,18 @@ def main() -> None:
     t_small = _median_index0(1_000)
     t_large = _median_index0(100_000)
     ratio = t_large / max(t_small, 1e-12)
-    print(ratio)
+    emit(
+        metric='scaling_ratio',
+        raw_values=[ratio],
+        useful_work={
+            'numerator': {'count': 100_000, 'unit': 'geometry-runs'},
+            'denominator': {'count': 1_000, 'unit': 'geometry-runs'},
+        },
+        oracle_identity='case_coordinates_access_scale:first-coordinate-v1',
+        warmup_iterations=2,
+        calibration_iterations=7,
+        calibration_strategy='median-of-repetitions-per-scaling-point',
+    )
 
 
 if __name__ == '__main__':

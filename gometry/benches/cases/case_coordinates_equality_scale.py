@@ -11,6 +11,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def _line_array(n: int) -> gm.GeometryArray:
@@ -37,7 +38,18 @@ def main() -> None:
     t_small = _median_eq(800)
     t_large = _median_eq(1600)
     ratio = t_large / max(t_small, 1e-12)
-    print(ratio)
+    emit(
+        metric='scaling_ratio',
+        raw_values=[ratio],
+        useful_work={
+            'numerator': {'count': 1_600, 'unit': 'rows'},
+            'denominator': {'count': 800, 'unit': 'rows'},
+        },
+        oracle_identity='case_coordinates_equality_scale:identity-contract-v1',
+        warmup_iterations=3,
+        calibration_iterations=11,
+        calibration_strategy='median-of-repetitions-per-scaling-point',
+    )
 
 
 if __name__ == '__main__':

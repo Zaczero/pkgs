@@ -31,6 +31,7 @@ from _bench_oracles import (
     PUBLIC_CASE_BUILDERS,
     OracleContext,
     OracleMismatch,
+    public_oracle_identity,
 )
 from _bench_registry import RELEASE_OPERATIONS, ReleaseOperation
 
@@ -111,6 +112,7 @@ def run_oracle(
                 operation=op,
                 kind=getattr(case, 'kind', None) or 'oracle',
                 unit=None,
+                oracle_identity=public_oracle_identity(op),
             )
             kind = context.kind
             case.verify(context)

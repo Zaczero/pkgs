@@ -9,6 +9,7 @@ import statistics
 import time
 
 import gometry as gm
+from _observation import emit
 
 
 def main() -> None:
@@ -46,7 +47,14 @@ def main() -> None:
     assert len(last_pts) == 200_000 and len(last_lines) == 20_000
     assert gm.equals_identical(last_pts[123], points[123])
     assert gm.equals_identical(last_lines[7], lines[7])
-    print(statistics.median(samples))
+    emit(
+        metric='duration',
+        raw_values=[statistics.median(samples)],
+        useful_work={'count': 220_000, 'unit': 'WKB-rows'},
+        oracle_identity='case_import_wkb:roundtrip-sample-rows-v1',
+        warmup_iterations=1,
+        calibration_iterations=3,
+    )
 
 
 if __name__ == '__main__':
