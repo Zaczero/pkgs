@@ -62,6 +62,56 @@ def _identity() -> dict[str, object]:
     return {'source_inputs_sha256': 'source', 'extension': {'sha256': 'extension'}}
 
 
+def _file_identity(path: str) -> dict[str, object]:
+    return {'path': path, 'sha256': '0' * 64, 'size_bytes': 1}
+
+
+def _schema_v2_identity() -> dict[str, object]:
+    source = '0' * 64
+    extension = {
+        **_file_identity('/checkout/gometry.so'),
+        'build_info': {'source_inputs_sha256': source},
+    }
+
+    def package(name: str) -> dict[str, object]:
+        return {
+            'available': True,
+            'version': '1',
+            'module': _file_identity(f'/site/{name}/__init__.py'),
+            'distribution': {
+                'name': name,
+                'version': '1',
+                'location': '/site',
+                'metadata': _file_identity(f'/site/{name}.dist-info/METADATA'),
+                'record': _file_identity(f'/site/{name}.dist-info/RECORD'),
+                'record_available': True,
+            },
+            'native_libraries': [],
+        }
+
+    return {
+        'identity_schema_version': 2,
+        'git_commit': 'test-commit',
+        'source_inputs_sha256': source,
+        'extension': extension,
+        'uv_lock': None,
+        'packages': {'gometry': package('gometry'), 'shapely': package('shapely')},
+        'loaded_native_libraries': [_file_identity('/checkout/gometry.so')],
+        'python': {
+            'executable': '/python',
+            'version': '3.13 test',
+            'implementation': 'CPython',
+            'cache_tag': 'cpython-313',
+            'build': {
+                'implementation': 'CPython',
+                'version': '3.13',
+                'build': ['test', 'build'],
+                'debug': False,
+            },
+        },
+    }
+
+
 def test_one_fresh_process_block_contains_both_arms_and_consumes_output() -> None:
     operation = _Operation()
     seen: list[str] = []
@@ -181,3 +231,50 @@ def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> No
     )
     assert calls == 2
     assert artifact['arms']['A']['provenance_before'] == artifact['arms']['A']['provenance_after']
+
+
+def test_schema_v2_arm_identity_uses_rows_from_tuple_backed_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = _Operation()
+    rows: list[str] = []
+
+    def implementation_identity(
+        row: str,
+        extension: dict[str, object],
+        *,
+        package_info: dict[str, object] | None = None,
+        loaded_native_libraries: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        rows.append(row)
+        package = package_info or {}
+        runtime = 'gometry' if row.startswith('gometry.') else 'comparator'
+        native = [{
+            key: extension[key]
+            for key in ('path', 'sha256', 'size_bytes')
+        }] if runtime == 'gometry' else []
+        return {
+            'runtime': runtime,
+            'row': row,
+            'module': package.get('module'),
+            'distribution': package.get('distribution'),
+            'native_libraries': native,
+            'native_library_status': 'identified' if native else 'not-applicable',
+        }
+
+    monkeypatch.setattr(worker, 'implementation_identity', implementation_identity)
+    artifact = worker.run_block(
+        operation=operation,
+        block_id='pair-1-block-1-ab',
+        pair_id='pair-1',
+        lead='ab',
+        warmups=0,
+        repetitions=1,
+        clock_ns=_clock(),
+        identity=_schema_v2_identity,
+        builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
+    )
+
+    assert rows == [operation.gometry, operation.competitor] * 2
+    assert artifact['arms']['A']['provenance_before']['implementation']['row'] == operation.gometry
+    assert artifact['arms']['B']['provenance_before']['implementation']['row'] == operation.competitor

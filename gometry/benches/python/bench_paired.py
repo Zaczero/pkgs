@@ -251,10 +251,10 @@ def run_block(
             side: _arm_identity(
                 common_before,
                 side=side,
-                row=row,
+                row=arm[0],
                 extension=common_before.get('extension', {}),
             )
-            for side, row in arms.items()
+            for side, arm in arms.items()
         }
     else:
         arm_identity_before = {'A': {}, 'B': {}}
@@ -278,10 +278,10 @@ def run_block(
             side: _arm_identity(
                 common_after,
                 side=side,
-                row=row,
+                row=arm[0],
                 extension=common_after.get('extension', {}),
             )
-            for side, row in arms.items()
+            for side, arm in arms.items()
         }
     else:
         arm_identity_after = {'A': {}, 'B': {}}
