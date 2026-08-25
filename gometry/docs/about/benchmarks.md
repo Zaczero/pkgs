@@ -8,6 +8,24 @@ This page reports the current accepted full release run only. It does not
 combine runs, publish filtered or smoke measurements, or make a timing claim
 when the tracked result is absent.
 
+## Evidence Workflow
+
+Benchmark evidence is measured and analyzed from explicit immutable manifests.
+The release measurement command writes only raw artifacts and a run manifest
+under `target/bench/results`; it cannot mutate tracked evidence. Analyze one
+exact run manifest to produce normalized review files under
+`target/bench/results`. Accepted publication consumes a reviewed immutable
+analysis manifest, and this page reports only the accepted evidence.
+
+```bash
+uv run python benches/drivers/bench.py --profile release
+uv run python benches/drivers/bench.py --analyze target/bench/results/<run-id>/run.json
+```
+
+`<run-id>` is the directory name printed by the measurement command. The
+normalized evidence retains exact process identities and the raw artifacts
+used to derive it.
+
 ## Current Run
 
 The release matrix contains 37 fully paired operations and 74 timed rows in

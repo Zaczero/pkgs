@@ -145,8 +145,8 @@ def _resolve_artifact_paths(payload: dict[str, Any], manifest_path: Path) -> lis
         if not isinstance(artifact, str):
             raise SystemExit(f'run manifest {manifest_path} has a non-string artifact entry')
         candidate = Path(artifact)
-        if not candidate.is_file():
-            candidate = manifest_path.parent / candidate.name
+        if not candidate.is_absolute():
+            candidate = manifest_path.parent / candidate
         if not candidate.is_file():
             raise SystemExit(
                 f'run manifest {manifest_path} references a missing artifact: {artifact}'

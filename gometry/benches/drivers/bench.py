@@ -69,6 +69,9 @@ def _serialize_public_operations(
 
 
 _OUTPUT_TAIL = 10_000
+_RUN_MANIFEST_TYPE = 'gometry-benchmark-run'
+_ANALYSIS_MANIFEST_TYPE = 'gometry-benchmark-analysis'
+_MANIFEST_SCHEMA_VERSION = 1
 
 
 def _stamp() -> str:
@@ -267,36 +270,6 @@ def _stop_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
         return process.communicate()
 
 
-def _pyperf_summaries(paths: list[Path]) -> list[dict[str, Any]]:
-    if not paths:
-        return []
-    if str(_SUPPORT) not in sys.path:
-        sys.path.insert(0, str(_SUPPORT))
-    from summarize_bench import _load_all_stats
-
-    stats = _load_all_stats([path for path in paths if path.is_file()])
-    return [
-        {
-            'name': name,
-            'mean_process_median_seconds': value.mean,
-            'median_process_median_seconds': value.median,
-            'stdev_process_median_seconds': value.stdev,
-            'processes': [
-                {
-                    'artifact': process.artifact,
-                    'process_index': process.process_index,
-                    'pair_id': process.pair_id,
-                    'lead': process.lead,
-                    'median_seconds': process.median,
-                    'values': list(process.values),
-                }
-                for process in value.processes
-            ],
-        }
-        for name, value in sorted(stats.items())
-    ]
-
-
 def _benchmark_plans(
     *,
     profile_name: str,
@@ -425,6 +398,168 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f'{label} {path} is not valid JSON: {exc}') from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f'{label} {path} must contain a JSON object')
+    return payload
+
+
+def _write_json_once(path: Path, payload: dict[str, Any], *, label: str) -> None:
+    """Write a manifest once; an existing path is never replaced."""
+    try:
+        with path.open('x', encoding='utf-8') as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write('\n')
+    except FileExistsError as exc:
+        raise SystemExit(f'{label} already exists: {path}') from exc
+
+
+def _manifest_path(value: Path | str, *, label: str) -> Path:
+    path = Path(value)
+    if not path.is_file():
+        raise SystemExit(f'{label} does not exist: {path}')
+    return path.resolve()
+
+
+def _manifest_relative(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise SystemExit(
+            f'benchmark artifact must be below its run directory: {path}'
+        ) from exc
+
+
+def _manifest_artifact_records(
+    result: dict[str, Any], *, run_directory: Path
+) -> list[dict[str, Any]]:
+    raw = result.get('artifacts')
+    if not isinstance(raw, list):
+        raise SystemExit('run manifest rejected: artifact list is malformed')
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise SystemExit('run manifest rejected: artifact path is not a string')
+        path = Path(item)
+        if not path.is_file():
+            raise SystemExit(f'run manifest rejected: missing artifact {item}')
+        relative = _manifest_relative(path, run_directory)
+        if relative in seen:
+            raise SystemExit(f'run manifest rejected: duplicate artifact {relative}')
+        seen.add(relative)
+        records.append({
+            'path': relative,
+            'sha256': _file_sha256(path),
+            'size_bytes': path.stat().st_size,
+        })
+    return records
+
+
+def _resolve_manifest_artifact(manifest_path: Path, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        resolved = path.resolve()
+    else:
+        resolved = (manifest_path.parent / path).resolve()
+    try:
+        resolved.relative_to(manifest_path.parent.resolve())
+    except ValueError as exc:
+        raise SystemExit(
+            f'run manifest {manifest_path} references an artifact outside its directory: '
+            f'{value}'
+        ) from exc
+    return resolved
+
+
+def _resolve_analysis_file(analysis_path: Path, value: str, *, label: str) -> Path:
+    path = (analysis_path.parent / value).resolve()
+    try:
+        path.relative_to(analysis_path.parent.resolve())
+    except ValueError as exc:
+        raise SystemExit(f'publication rejected: {label} is outside its manifest') from exc
+    return _manifest_path(path, label=label)
+
+
+def _verified_run_artifacts(
+    manifest_path: Path, result: dict[str, Any]
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    raw_records = result.get('raw_artifacts')
+    if not isinstance(raw_records, list) or not raw_records:
+        raise SystemExit('run manifest rejected: raw artifact digests are missing')
+    records: list[dict[str, Any]] = []
+    by_path: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(raw_records):
+        if not isinstance(item, dict):
+            raise SystemExit(f'run manifest rejected: raw artifact {index} is not an object')
+        path_value = item.get('path')
+        digest = item.get('sha256')
+        size = item.get('size_bytes')
+        if (
+            not isinstance(path_value, str)
+            or not isinstance(digest, str)
+            or not isinstance(size, int)
+            or size < 0
+        ):
+            raise SystemExit(f'run manifest rejected: raw artifact {index} is malformed')
+        path = _resolve_manifest_artifact(manifest_path, path_value)
+        key = path.relative_to(manifest_path.parent.resolve()).as_posix()
+        if key in by_path:
+            raise SystemExit(f'run manifest rejected: duplicate raw artifact {key}')
+        if not path.is_file():
+            raise SystemExit(f'run manifest rejected: missing raw artifact {path_value}')
+        actual_size = path.stat().st_size
+        actual_digest = _file_sha256(path)
+        if actual_size != size or actual_digest != digest:
+            raise SystemExit(
+                f'run manifest rejected: raw artifact digest mismatch for {path_value}'
+            )
+        record = dict(item)
+        record['path'] = key
+        by_path[key] = record
+        records.append(record)
+
+    declared = result.get('artifacts')
+    if not isinstance(declared, list) or not declared:
+        raise SystemExit('run manifest rejected: artifact list is missing')
+    declared_paths = []
+    for item in declared:
+        if not isinstance(item, str):
+            raise SystemExit('run manifest rejected: artifact path is not a string')
+        path = _resolve_manifest_artifact(manifest_path, item)
+        key = path.relative_to(manifest_path.parent.resolve()).as_posix()
+        if key not in by_path:
+            raise SystemExit(f'run manifest rejected: artifact is not digested: {item}')
+        declared_paths.append(path)
+    if len(declared_paths) != len(set(declared_paths)):
+        raise SystemExit('run manifest rejected: duplicate declared artifacts')
+    if set(declared_paths) != {
+        _resolve_manifest_artifact(manifest_path, str(record['path']))
+        for record in records
+    }:
+        raise SystemExit('run manifest rejected: declared artifacts do not match digests')
+
+    pyperf = result.get('pyperf_artifacts')
+    if not isinstance(pyperf, list) or not pyperf:
+        raise SystemExit('publication rejected: no pyperf artifacts are declared')
+    pyperf_paths: list[Path] = []
+    for item in pyperf:
+        if not isinstance(item, str):
+            raise SystemExit('publication rejected: artifact path is not a string')
+        path = _resolve_manifest_artifact(manifest_path, item)
+        key = path.relative_to(manifest_path.parent.resolve()).as_posix()
+        if key not in by_path:
+            raise SystemExit(f'publication rejected: artifact is not digested: {item}')
+        pyperf_paths.append(path)
+    if len({path.name for path in pyperf_paths}) != len(pyperf_paths):
+        raise SystemExit('publication rejected: raw artifact names are not unique')
+    return pyperf_paths, records
+
+
 def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     doctor = result.get('doctor')
     metadata = doctor.get('metadata') if isinstance(doctor, dict) else None
@@ -505,23 +640,6 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _publication_artifacts(result: dict[str, Any]) -> list[Path]:
-    raw = result.get('pyperf_artifacts')
-    if not isinstance(raw, list) or not raw:
-        raise SystemExit('publication rejected: no pyperf artifacts are declared')
-    artifacts: list[Path] = []
-    for item in raw:
-        if not isinstance(item, str):
-            raise SystemExit('publication rejected: artifact path is not a string')
-        path = Path(item)
-        if not path.is_file():
-            raise SystemExit(f'publication rejected: missing artifact {item}')
-        artifacts.append(path)
-    if len({path.name for path in artifacts}) != len(artifacts):
-        raise SystemExit('publication rejected: raw artifact names are not unique')
-    return artifacts
-
-
 def _normalize_artifact_paths(summary: dict[str, Any], mapping: dict[str, str]) -> None:
     for operation in summary.get('operations', ()):
         for block in operation.get('blocks', ()):
@@ -533,19 +651,9 @@ def _normalize_artifact_paths(summary: dict[str, Any], mapping: dict[str, str]) 
                 )
 
 
-def publish_current_run(
+def _validate_publication_result(
     result: dict[str, Any],
-    *,
-    output_dir: Path | None = None,
-    current_dir: Path | None = None,
-) -> Path:
-    """Atomically publish one validated full release run.
-
-    Staging lives below ``target`` (ignored); the destination is the tracked
-    ``benches/results/current`` directory.  No destination mutation occurs
-    until identity, matrix, oracle, artifacts, and normalized statistics have
-    all passed validation.
-    """
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if result.get('profile') != 'release':
         raise SystemExit('publication rejected: only a release profile is publishable')
     if result.get('plan_only') or not result.get('full_manifest'):
@@ -559,7 +667,11 @@ def publish_current_run(
     if not result.get('publishable'):
         raise SystemExit('publication rejected: run is not marked publishable')
     row_counts = result.get('row_counts')
-    if not isinstance(row_counts, dict) or sum(row_counts.values()) != 74:
+    if (
+        not isinstance(row_counts, dict)
+        or not all(isinstance(value, int) for value in row_counts.values())
+        or sum(row_counts.values()) != 74
+    ):
         raise SystemExit('publication rejected: release does not contain exactly 74 rows')
     operations = result.get('public_operations')
     if not isinstance(operations, list) or len(operations) != 37:
@@ -567,23 +679,27 @@ def publish_current_run(
     for operation in operations:
         if not isinstance(operation, dict) or not operation.get('competitor'):
             raise SystemExit('publication rejected: operation matrix is not fully paired')
-    metadata = _publication_metadata(result)
-    artifacts = _publication_artifacts(result)
-    if output_dir is None:
-        output_dir = GOMETRY_ROOT / 'target' / 'bench' / 'results'
-    if current_dir is None:
-        current_dir = GOMETRY_ROOT / 'benches' / 'results' / 'current'
-    output_dir.mkdir(parents=True, exist_ok=True)
-    current_dir.parent.mkdir(parents=True, exist_ok=True)
+    return _publication_metadata(result), operations
 
-    # Import lazily so plan/list commands do not load pyperf or NumPy support.
+
+def _analyze_result(
+    result: dict[str, Any], artifacts: list[Path], *, artifact_mapping: dict[str, str]
+) -> tuple[dict[str, Any], str]:
+    """Run the existing deterministic normalization path for one run."""
     support = _SUPPORT
     if str(support) not in sys.path:
         sys.path.insert(0, str(support))
-    from summarize_bench import _load_all_stats, normalized_summary_payload, render, _build_rows, _parse_public_operations
+    from summarize_bench import (
+        _build_rows,
+        _load_all_stats,
+        _parse_public_operations,
+        normalized_summary_payload,
+        render,
+    )
 
     stats = _load_all_stats(artifacts)
     summary = normalized_summary_payload(result, stats)
+    _normalize_artifact_paths(summary, artifact_mapping)
     parsed_operations = _parse_public_operations(result['public_operations'])
     rows = _build_rows(parsed_operations, stats, noise_band=0.03)
     summary_md = '\n'.join(
@@ -594,6 +710,182 @@ def publish_current_run(
             environment=summary.get('environment'),
         )
     ) + '\n'
+    return summary, summary_md
+
+
+def analyze_run(
+    run_manifest: Path | str,
+    *,
+    output_dir: Path | None = None,
+) -> Path:
+    """Validate one immutable run and write one immutable analysis manifest."""
+    manifest_path = _manifest_path(run_manifest, label='run manifest')
+    result = _read_json_object(manifest_path, label='run manifest')
+    if result.get('manifest_type') != _RUN_MANIFEST_TYPE:
+        raise SystemExit(f'{manifest_path} is not a gometry benchmark run manifest')
+    if result.get('schema_version') != _MANIFEST_SCHEMA_VERSION:
+        raise SystemExit(f'run manifest {manifest_path} has an unsupported schema')
+    _validate_publication_result(result)
+    artifacts, records = _verified_run_artifacts(manifest_path, result)
+    record_paths = {str(record['path']): str(record['path']) for record in records}
+    artifact_mapping = {
+        str(path): record_paths[path.relative_to(manifest_path.parent).as_posix()]
+        for path in artifacts
+    }
+    summary, summary_md = _analyze_result(
+        result, artifacts, artifact_mapping=artifact_mapping
+    )
+
+    run_id = result.get('run_id')
+    if not isinstance(run_id, str) or not run_id:
+        raise SystemExit(f'run manifest {manifest_path} lacks run identity')
+    root = output_dir
+    if root is None:
+        root = (
+            manifest_path.parent.parent
+            if manifest_path.parent.name == run_id
+            else manifest_path.parent
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    analysis_directory = root / f'{run_id}-analysis'
+    try:
+        analysis_directory.mkdir()
+    except FileExistsError as exc:
+        raise SystemExit(
+            f'analysis output already exists: {analysis_directory}; '
+            'choose a new --output-dir'
+        ) from exc
+    summary_path = analysis_directory / 'summary.json'
+    summary_md_path = analysis_directory / 'summary.md'
+    _write_json_once(summary_path, summary, label='analysis summary')
+    summary_md_path.write_text(summary_md, encoding='utf-8')
+    analysis = {
+        'manifest_type': _ANALYSIS_MANIFEST_TYPE,
+        'schema_version': _MANIFEST_SCHEMA_VERSION,
+        'analysis_id': f'{run_id}-analysis',
+        'source_run_manifest': str(manifest_path),
+        'source_run_sha256': _file_sha256(manifest_path),
+        'source_run_id': run_id,
+        'profile': result.get('profile'),
+        'summary': {
+            'path': 'summary.json',
+            'sha256': _file_sha256(summary_path),
+            'size_bytes': summary_path.stat().st_size,
+        },
+        'summary_markdown': {
+            'path': 'summary.md',
+            'sha256': _file_sha256(summary_md_path),
+            'size_bytes': summary_md_path.stat().st_size,
+        },
+    }
+    analysis_path = analysis_directory / 'analysis.json'
+    _write_json_once(analysis_path, analysis, label='analysis manifest')
+    return analysis_path
+
+
+def _load_analysis(
+    analysis_manifest: Path | str,
+) -> tuple[Path, dict[str, Any], Path, dict[str, Any], list[Path], list[dict[str, Any]]]:
+    analysis_path = _manifest_path(analysis_manifest, label='analysis manifest')
+    analysis = _read_json_object(analysis_path, label='analysis manifest')
+    if analysis.get('manifest_type') != _ANALYSIS_MANIFEST_TYPE:
+        raise SystemExit(f'{analysis_path} is not a gometry benchmark analysis manifest')
+    if analysis.get('schema_version') != _MANIFEST_SCHEMA_VERSION:
+        raise SystemExit(f'analysis manifest {analysis_path} has an unsupported schema')
+    source_value = analysis.get('source_run_manifest')
+    if not isinstance(source_value, str):
+        raise SystemExit('publication rejected: analysis source run is missing')
+    source_path = Path(source_value)
+    if not source_path.is_absolute():
+        source_path = analysis_path.parent / source_path
+    source_path = _manifest_path(source_path, label='source run manifest')
+    expected_source_digest = analysis.get('source_run_sha256')
+    if not isinstance(expected_source_digest, str):
+        raise SystemExit('publication rejected: analysis source identity is missing')
+    if _file_sha256(source_path) != expected_source_digest:
+        raise SystemExit('publication rejected: source run manifest identity is stale')
+    result = _read_json_object(source_path, label='run manifest')
+    if result.get('manifest_type') != _RUN_MANIFEST_TYPE:
+        raise SystemExit('publication rejected: analysis source is not a run manifest')
+    if analysis.get('source_run_id') != result.get('run_id'):
+        raise SystemExit('publication rejected: analysis/source run identity mismatch')
+    if analysis.get('analysis_id') != f'{result.get("run_id")}-analysis':
+        raise SystemExit('publication rejected: analysis identity mismatch')
+    if analysis.get('profile') != result.get('profile'):
+        raise SystemExit('publication rejected: analysis profile identity mismatch')
+    summary_info = analysis.get('summary')
+    if not isinstance(summary_info, dict) or not isinstance(summary_info.get('path'), str):
+        raise SystemExit('publication rejected: analysis summary identity is missing')
+    summary_path = _resolve_analysis_file(
+        analysis_path, summary_info['path'], label='analysis summary'
+    )
+    if (
+        not isinstance(summary_info.get('sha256'), str)
+        or _file_sha256(summary_path) != summary_info['sha256']
+        or summary_path.stat().st_size != summary_info.get('size_bytes')
+    ):
+        raise SystemExit('publication rejected: analysis summary identity is stale')
+    summary = _read_json_object(summary_path, label='analysis summary')
+    if summary.get('profile') != result.get('profile'):
+        raise SystemExit('publication rejected: analysis summary profile mismatch')
+    summary_run = summary.get('run')
+    doctor = result.get('doctor')
+    metadata = doctor.get('metadata', {}) if isinstance(doctor, dict) else {}
+    if (
+        not isinstance(summary_run, dict)
+        or summary_run.get('timestamp') != result.get('timestamp')
+        or summary_run.get('git_commit') != metadata.get('git_commit')
+    ):
+        raise SystemExit('publication rejected: analysis summary/run identity mismatch')
+    artifacts, records = _verified_run_artifacts(source_path, result)
+    return analysis_path, analysis, source_path, result, artifacts, records
+
+
+def publish_current_run(
+    analysis_manifest: Path | str,
+    *,
+    output_dir: Path | None = None,
+    current_dir: Path | None = None,
+) -> Path:
+    """Atomically publish one explicitly named, validated analysis manifest."""
+    (
+        analysis_path,
+        analysis,
+        source_path,
+        result,
+        artifacts,
+        _source_records,
+    ) = _load_analysis(analysis_manifest)
+    metadata, _operations = _validate_publication_result(result)
+    if output_dir is None:
+        output_dir = GOMETRY_ROOT / 'target' / 'bench' / 'results'
+    if current_dir is None:
+        current_dir = GOMETRY_ROOT / 'benches' / 'results' / 'current'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    current_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    summary_info = analysis.get('summary')
+    if not isinstance(summary_info, dict):
+        raise SystemExit('publication rejected: analysis summary is missing')
+    summary = _read_json_object(
+        _resolve_analysis_file(
+            analysis_path, str(summary_info['path']), label='analysis summary'
+        ),
+        label='analysis summary',
+    )
+    markdown_info = analysis.get('summary_markdown')
+    if not isinstance(markdown_info, dict) or not isinstance(markdown_info.get('path'), str):
+        raise SystemExit('publication rejected: analysis Markdown is missing')
+    summary_md_path = _resolve_analysis_file(
+        analysis_path, markdown_info['path'], label='analysis Markdown'
+    )
+    if (
+        not summary_md_path.is_file()
+        or not isinstance(markdown_info.get('sha256'), str)
+        or _file_sha256(summary_md_path) != markdown_info['sha256']
+    ):
+        raise SystemExit('publication rejected: analysis Markdown identity is stale')
+    summary_md = summary_md_path.read_text(encoding='utf-8')
 
     stage = Path(tempfile.mkdtemp(prefix='.publication-', dir=output_dir))
     try:
@@ -606,6 +898,12 @@ def publish_current_run(
             shutil.copy2(artifact, destination)
             relative = str(Path('raw') / artifact.name)
             mapping[str(artifact)] = relative
+            try:
+                source_relative = artifact.relative_to(source_path.parent).as_posix()
+            except ValueError:
+                source_relative = ''
+            if source_relative:
+                mapping[source_relative] = relative
             raw_records.append({
                 'path': relative,
                 'sha256': _file_sha256(destination),
@@ -616,6 +914,10 @@ def publish_current_run(
         identity = {
             'schema_version': 1,
             'profile': 'release',
+            'run_id': result.get('run_id'),
+            'analysis_id': analysis.get('analysis_id'),
+            'run_manifest_sha256': _file_sha256(source_path),
+            'analysis_manifest_sha256': _file_sha256(analysis_path),
             'git_commit': metadata['git_commit'],
             'git_dirty_build_inputs': metadata.get('git_dirty_build_inputs'),
             'clean_source_build_inputs': not bool(metadata.get('git_dirty_build_inputs')),
@@ -681,84 +983,6 @@ def publish_current_run(
     return current_dir
 
 
-def _markdown(result: dict[str, Any]) -> str:
-    lines = [
-        '# Gometry benchmark run',
-        '',
-        f'- profile: `{result["profile"]}`',
-        f'- timestamp: `{result["timestamp"]}`',
-        f'- plan only: `{result["plan_only"]}`',
-        f'- full manifest: `{result["full_manifest"]}`',
-        f'- publishable: `{result["publishable"]}`',
-        f'- selected rows: `{sum(result["row_counts"].values())}`',
-        f'- total timeout: `{result["total_timeout_seconds"]} s`',
-        f'- elapsed: `{result["elapsed_seconds"]:.3f} s`',
-        '',
-        '## Commands',
-        '',
-    ]
-    command_rows = (
-        result['planned_commands'] if result['plan_only'] else result['commands']
-    )
-    for command in command_rows:
-        rendered = ' '.join(command['command'])
-        if result['plan_only']:
-            lines.append(f'- `{command["label"]}`: `{rendered}`')
-        else:
-            lines.append(
-                f'- `{command["label"]}`: `{rendered}` -> '
-                f'`{command["returncode"]}` ({command["elapsed_seconds"]:.3f} s)'
-            )
-    if result['pyperf']:
-        lines.extend(('', '## Results', ''))
-        for suite, summaries in result['pyperf'].items():
-            lines.extend((
-                f'### {suite}',
-                '',
-                '| Benchmark | Median of process medians | Process spread | Processes |',
-                '|---|---:|---:|---:|',
-            ))
-            lines.extend(
-                (
-                    f'| `{row["name"]}` | '
-                    f'{row["median_process_median_seconds"]:.6g} s | '
-                    f'{row["stdev_process_median_seconds"]:.6g} s | '
-                    f'{len(row["processes"])} |'
-                )
-                for row in summaries
-            )
-            lines.append('')
-    if result['resources']:
-        lines.extend((
-            '',
-            '## Gometry-only resource probes',
-            '',
-            'These probes are not competitor comparison evidence.',
-            '',
-            '| Mode | Median | p99 | Python peak allocation |',
-            '|---|---:|---:|---:|',
-        ))
-        lines.extend(
-            f'| `{row["mode"]}` | {row["median_seconds"]:.6g} s | '
-            f'{row["p99_seconds"]:.6g} s | '
-            f'{row["python_peak_traced_bytes"]} B |'
-            for row in result['resources']
-        )
-    warnings = result['doctor']['warnings']
-    if warnings:
-        lines.extend(('', '## Environment warnings', ''))
-        lines.extend(f'- {warning}' for warning in warnings)
-    postflight_warnings = result['contention_after']['warnings']
-    if postflight_warnings:
-        lines.extend(('', '## Postflight contention warnings', ''))
-        lines.extend(f'- {warning}' for warning in postflight_warnings)
-    hard_failures = result['doctor'].get('hard_failures', ())
-    if hard_failures:
-        lines.extend(('', '## Release identity failures', ''))
-        lines.extend(f'- {failure}' for failure in hard_failures)
-    return '\n'.join(lines) + '\n'
-
-
 def _print_manifest() -> None:
     for profile_name, profile in PROFILES.items():
         print(f'[{profile_name}]')
@@ -804,10 +1028,47 @@ def main() -> None:
         type=Path,
         default=GOMETRY_ROOT / 'target' / 'bench' / 'results',
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        '--analyze',
+        type=Path,
+        metavar='RUN_MANIFEST',
+        help='validate and normalize one exact immutable run manifest',
+    )
+    mode.add_argument(
+        '--publish',
+        type=Path,
+        metavar='ANALYSIS_MANIFEST',
+        help='publish one exact validated analysis manifest',
+    )
+    parser.add_argument(
+        '--current-dir',
+        type=Path,
+        help='tracked current directory for --publish (tests or an explicit checkout)',
+    )
     parser.add_argument('--list', action='store_true')
     args = parser.parse_args()
     if args.list:
         _print_manifest()
+        return
+
+    output_dir = args.output_dir
+    if not output_dir.is_absolute():
+        output_dir = GOMETRY_ROOT / output_dir
+    if args.analyze is not None:
+        analysis_path = analyze_run(args.analyze, output_dir=output_dir)
+        print(f'wrote {analysis_path}')
+        return
+    if args.publish is not None:
+        current_dir = args.current_dir
+        if current_dir is not None and not current_dir.is_absolute():
+            current_dir = GOMETRY_ROOT / current_dir
+        published = publish_current_run(
+            args.publish,
+            output_dir=output_dir,
+            current_dir=current_dir,
+        )
+        print(f'published {published}')
         return
 
     profile = PROFILES[args.profile]
@@ -816,24 +1077,32 @@ def main() -> None:
     selected = _select(_rows(profile), args.filter)
     # Builder bijection is pre-timing for smoke and release (incl. plan-only).
     _validate_oracle_builders(selected)
-    output_dir = args.output_dir
-    if not output_dir.is_absolute():
-        output_dir = GOMETRY_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = _stamp()
+    run_id = f'{timestamp}-{args.profile}'
+    run_directory = output_dir / run_id
+    try:
+        run_directory.mkdir()
+    except FileExistsError as exc:
+        raise SystemExit(
+            f'measurement output already exists: {run_directory}; '
+            'choose a new --output-dir'
+        ) from exc
+    raw_directory = run_directory / 'raw'
+    raw_directory.mkdir()
     cpu, cpu_selection = select_benchmark_cpu(args.cpu)
-    plans, outputs = _benchmark_plans(
+    plans, _outputs = _benchmark_plans(
         profile_name=args.profile,
         profile=profile,
         selected=selected,
-        output_dir=output_dir,
+        output_dir=raw_directory,
         timestamp=timestamp,
         cpu=cpu,
     )
     if args.profile == 'release' and args.filter is None:
         plans.extend(
-            _resource_plans(output_dir=output_dir, timestamp=timestamp, cpu=cpu)
+            _resource_plans(output_dir=raw_directory, timestamp=timestamp, cpu=cpu)
         )
     # Oracle runs once after env/manifest validation and before timing.
     oracle_plan: dict[str, Any] = {
@@ -973,6 +1242,9 @@ def main() -> None:
     )
 
     result = {
+        'manifest_type': _RUN_MANIFEST_TYPE,
+        'schema_version': _MANIFEST_SCHEMA_VERSION,
+        'run_id': run_id,
         'profile': args.profile,
         'timestamp': timestamp,
         'plan_only': args.plan_only,
@@ -1003,21 +1275,19 @@ def main() -> None:
         'oracle_ok': oracle_ok if not args.plan_only else None,
         'artifacts': artifacts,
         'pyperf_artifacts': pyperf_artifacts,
-        'pyperf': {}
-        if args.plan_only
-        else {suite: _pyperf_summaries(paths) for suite, paths in outputs.items()},
+        'pyperf': {},
         'resources': [] if args.plan_only else _resource_summaries(plans),
     }
-    output = output_dir / f'{timestamp}-{args.profile}.json'
-    report = output_dir / f'{timestamp}-{args.profile}.md'
-    output.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-    )
-    report.write_text(_markdown(result), encoding='utf-8')
-    if publishable:
-        publish_current_run(result, output_dir=output_dir)
+    raw_records = _manifest_artifact_records(result, run_directory=run_directory)
+    result['raw_artifacts'] = raw_records
+    result['artifacts'] = [record['path'] for record in raw_records]
+    result['pyperf_artifacts'] = [
+        _manifest_relative(Path(path), run_directory)
+        for path in pyperf_artifacts
+    ]
+    output = run_directory / 'run.json'
+    _write_json_once(output, result, label='run manifest')
     print(f'wrote {output}')
-    print(f'wrote {report}')
     if (
         (not args.plan_only and not oracle_ok)
         or any(command['returncode'] for command in commands)
