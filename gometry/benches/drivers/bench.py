@@ -36,6 +36,8 @@ from _bench_registry import (
     validate_canonical_symbols,
 )
 from bench_doctor import (
+    _ENGINE_LIBRARY_TOKENS,
+    _distribution_owned_paths,
     collect,
     collect_contention,
     select_benchmark_cpu,
@@ -67,10 +69,36 @@ def _serialize_public_operations(
     return records
 
 
+def _paired_matrix_identity(
+    operations: list[dict[str, Any]], sampling: dict[str, Any]
+) -> tuple[list[dict[str, str]], str]:
+    leads = sampling.get('lead_orders')
+    if not isinstance(leads, list):
+        raise SystemExit('paired sampling matrix has no lead orders')
+    matrix: list[dict[str, str]] = []
+    for number, operation in enumerate(operations, start=1):
+        pair_id = f'{operation["suite"]}-pair-{number:02d}'
+        for block_number, lead in enumerate(leads, start=1):
+            block_id = f'{pair_id}-block-{block_number:02d}-{lead}'
+            matrix.append({
+                'gometry': operation['gometry'],
+                'competitor': operation['competitor'],
+                'pair_id': pair_id,
+                'block_id': block_id,
+                'lead': lead,
+            })
+    encoded = json.dumps(matrix, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    return matrix, hashlib.sha256(encoded).hexdigest()
+
+
 _OUTPUT_TAIL = 10_000
 _RUN_MANIFEST_TYPE = 'gometry-benchmark-run'
 _ANALYSIS_MANIFEST_TYPE = 'gometry-benchmark-analysis'
-_MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_SCHEMA_VERSION = 2
+_REQUIRED_ENGINE_LIBRARY_TOKENS = {
+    'shapely': ('geos',),
+    'pyproj': ('proj',),
+}
 
 
 def _stamp() -> str:
@@ -193,12 +221,14 @@ def _paired_command(
     *,
     gometry: str,
     competitor: str,
+    profile_name: str,
     pair_id: str,
     block_id: str,
     lead: str,
     output: Path,
     profile: Profile,
     cpu: int,
+    run_id: str,
 ) -> list[str]:
     return [
         'taskset',
@@ -216,6 +246,10 @@ def _paired_command(
         block_id,
         '--lead',
         lead,
+        '--profile',
+        profile_name,
+        '--run-id',
+        run_id,
         *profile.paired_sampling_args,
         '--output',
         str(output),
@@ -310,12 +344,14 @@ def _benchmark_plans(
                 command = _paired_command(
                     gometry=gometry,
                     competitor=competitor,
+                    profile_name=profile_name,
                     pair_id=f'{suite}-pair-{pair_number}',
                     block_id=run_label,
                     lead=lead,
                     output=output,
                     profile=profile,
                     cpu=cpu,
+                    run_id=f'{timestamp}-{profile_name}',
                 )
             else:
                 raise SystemExit(f'unsupported public benchmark schedule: {label}')
@@ -569,6 +605,15 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         'selected_cpu_source',
         'selected_cpu_governor',
         'cpu_frequency_state',
+        'cpu_topology',
+        'cache_topology',
+        'numa_topology',
+        'allowed_memory_nodes',
+        'memory_policy',
+        'memory_placement',
+        'cgroup_v2',
+        'loaded_native_libraries',
+        'native_library_identity',
     )
     missing = [key for key in required if key not in metadata]
     if missing:
@@ -582,15 +627,31 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         or not extension.get('path')
         or not extension.get('sha256')
         or not extension.get('size_bytes')
-        or extension.get('debug_assertion_marker_count') is None
-        or not extension.get('profile_evidence_method')
-        or not extension.get('profile_evidence')
+        or not isinstance(extension.get('build_info'), dict)
     ):
         raise SystemExit('publication rejected: extension path/digest/size is missing')
-    if extension.get('debug_build') is not False or not extension.get('tied_to_checkout'):
-        raise SystemExit('publication rejected: extension is debug or not tied to checkout')
+    build_info = extension['build_info']
+    if build_info.get('profile_family') != 'release' or build_info.get('opt_level') != '3':
+        raise SystemExit('publication rejected: extension effective build facts are not release optimized')
+    if build_info.get('debug_assertions') is not False:
+        raise SystemExit('publication rejected: extension has debug assertions enabled')
     if not isinstance(metadata['uv_lock'], dict):
         raise SystemExit('publication rejected: uv.lock identity metadata is malformed')
+    lock = metadata['uv_lock']
+    lock_path = lock.get('path')
+    lock_digest = lock.get('sha256')
+    if (
+        not isinstance(lock_path, str)
+        or not lock_path
+        or not isinstance(lock_digest, str)
+        or len(lock_digest) != 64
+        or not isinstance(lock.get('size_bytes'), int)
+        or lock.get('size_bytes', 0) <= 0
+    ):
+        raise SystemExit('publication rejected: publishable evidence requires a lock file identity')
+    lock_file = Path(lock_path)
+    if not lock_file.is_file() or _file_sha256(lock_file) != lock_digest:
+        raise SystemExit('publication rejected: dependency lock identity is stale or unavailable')
     if not metadata.get('git_commit') or not metadata.get('source_inputs_sha256'):
         raise SystemExit('publication rejected: source commit/input identity is missing')
     packages = metadata['packages']
@@ -603,7 +664,11 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     missing_versions = [
         package for package in sorted(required_packages)
         if not isinstance(packages.get(package), dict)
+        or packages[package].get('available') is not True
         or not packages[package].get('version')
+        or not isinstance(packages[package].get('module'), dict)
+        or not isinstance(packages[package].get('distribution'), dict)
+        or packages[package]['distribution'].get('record_available') is not True
     ]
     if missing_versions:
         raise SystemExit(
@@ -614,6 +679,16 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit('publication rejected: GEOS version is missing')
     if not metadata.get('proj_version'):
         raise SystemExit('publication rejected: PROJ version is missing')
+    native_capability = metadata['native_library_identity']
+    if (
+        not isinstance(native_capability, dict)
+        or native_capability.get('available') is not True
+        or not native_capability.get('source')
+    ):
+        raise SystemExit(
+            'publication rejected: loaded native-library identity is unavailable '
+            '(native comparison evidence is not publishable)'
+        )
     hard_failures = doctor.get('hard_failures', ()) if isinstance(doctor, dict) else ()
     if hard_failures:
         raise SystemExit(
@@ -686,37 +761,47 @@ def _analyze_result(
         _parse_public_operations,
         normalized_summary_payload,
         render,
+        validate_exact_paired_matrix,
     )
 
-    stats = _load_all_blocks(artifacts)
+    validate_exact_paired_matrix(result, artifacts)
+    stats = _load_all_blocks(
+        artifacts,
+        expected_profile=str(result.get('profile')),
+        expected_run_id=str(result.get('run_id')),
+    )
     doctor = result.get('doctor')
     metadata = doctor.get('metadata', {}) if isinstance(doctor, dict) else {}
     expected_source = metadata.get('source_inputs_sha256')
     extension = metadata.get('extension') if isinstance(metadata, dict) else None
     expected_extension = extension.get('sha256') if isinstance(extension, dict) else None
+    expected_lock = metadata.get('uv_lock') if isinstance(metadata, dict) else None
+    expected_python = {
+        key: metadata.get(key)
+        for key in (
+            'python_executable',
+            'python_version',
+            'python_implementation',
+            'python_cache_tag',
+            'python_build',
+            'python_debug',
+        )
+    } if isinstance(metadata, dict) else {}
     expected_packages = metadata.get('packages', {}) if isinstance(metadata, dict) else {}
     for operation_stats in stats.values():
         for block in operation_stats.blocks:
-            identity = block.producer_identity
-            if expected_source and identity.get('source_inputs_sha256') != expected_source:
-                raise SystemExit('analysis rejected: paired block source identity mismatch')
-            observed_extension = identity.get('extension')
-            observed_extension_digest = (
-                observed_extension.get('sha256')
-                if isinstance(observed_extension, dict)
-                else identity.get('extension_sha256')
-            )
-            if expected_extension and observed_extension_digest != expected_extension:
-                raise SystemExit('analysis rejected: paired block extension identity mismatch')
-            observed_packages = identity.get('packages')
-            if not isinstance(observed_packages, dict) or not isinstance(expected_packages, dict):
-                raise SystemExit('analysis rejected: paired block dependency identity is missing')
-            for name, package in expected_packages.items():
-                expected_version = package.get('version') if isinstance(package, dict) else None
-                if expected_version and observed_packages.get(name) != expected_version:
-                    raise SystemExit(
-                        f'analysis rejected: paired block dependency identity mismatch for {name}'
-                    )
+            identities = block.arm_identities or {'A': block.producer_identity}
+            for identity in identities.values():
+                _validate_analysis_identity(
+                    identity,
+                    expected_commit=metadata.get('git_commit') if isinstance(metadata, dict) else None,
+                    expected_source=expected_source,
+                    expected_extension=expected_extension,
+                    expected_extension_record=extension,
+                    expected_lock=expected_lock,
+                    expected_python=expected_python,
+                    expected_packages=expected_packages,
+                )
     summary = normalized_summary_payload(result, stats)
     _normalize_artifact_paths(summary, artifact_mapping)
     parsed_operations = _parse_public_operations(result['public_operations'])
@@ -739,6 +824,178 @@ def _analyze_result(
         )
     ) + '\n'
     return summary, summary_md
+
+
+def _validate_analysis_identity(
+    identity: dict[str, Any],
+    *,
+    expected_commit: Any,
+    expected_source: Any,
+    expected_extension: Any,
+    expected_extension_record: Any,
+    expected_lock: Any,
+    expected_python: dict[str, Any],
+    expected_packages: Any,
+) -> None:
+    """Check one arm against the doctor identity before normalization."""
+    if expected_commit and identity.get('git_commit') != expected_commit:
+        raise SystemExit('analysis rejected: paired block commit identity mismatch')
+    if expected_source and identity.get('source_inputs_sha256') != expected_source:
+        raise SystemExit('analysis rejected: paired block source identity mismatch')
+    observed_extension = identity.get('extension')
+    observed_extension_digest = (
+        observed_extension.get('sha256')
+        if isinstance(observed_extension, dict)
+        else identity.get('extension_sha256')
+    )
+    if expected_extension and observed_extension_digest != expected_extension:
+        raise SystemExit('analysis rejected: paired block extension identity mismatch')
+    if (
+        isinstance(expected_extension_record, dict)
+        and isinstance(observed_extension, dict)
+        and observed_extension.get('build_info') != expected_extension_record.get('build_info')
+    ):
+        raise SystemExit('analysis rejected: paired block effective build identity mismatch')
+    if isinstance(expected_lock, dict) and identity.get('uv_lock') != expected_lock:
+        raise SystemExit('analysis rejected: paired block dependency lock identity mismatch')
+    observed_python = identity.get('python')
+    if isinstance(observed_python, dict):
+        if observed_python.get('executable') != expected_python.get('python_executable'):
+            raise SystemExit('analysis rejected: paired block Python executable identity mismatch')
+        if observed_python.get('version') != expected_python.get('python_version'):
+            raise SystemExit('analysis rejected: paired block Python build identity mismatch')
+        if observed_python.get('implementation') != expected_python.get('python_implementation'):
+            raise SystemExit('analysis rejected: paired block Python implementation identity mismatch')
+        if observed_python.get('cache_tag') != expected_python.get('python_cache_tag'):
+            raise SystemExit('analysis rejected: paired block Python cache identity mismatch')
+        observed_build = observed_python.get('build')
+        if isinstance(observed_build, dict):
+            if observed_build.get('build') != expected_python.get('python_build'):
+                raise SystemExit('analysis rejected: paired block Python build tuple mismatch')
+            if observed_build.get('debug') != expected_python.get('python_debug'):
+                raise SystemExit('analysis rejected: paired block Python debug identity mismatch')
+    loaded = identity.get('loaded_native_libraries')
+    if not isinstance(loaded, list):
+        raise SystemExit('analysis rejected: paired block loaded native-library inventory is missing')
+    loaded_by_path = {
+        item.get('path'): item
+        for item in loaded
+        if isinstance(item, dict) and isinstance(item.get('path'), str)
+    }
+    implementation = identity.get('implementation')
+    if not isinstance(implementation, dict):
+        raise SystemExit('analysis rejected: paired block implementation attribution is missing')
+    implementation_row = implementation.get('row')
+    if not isinstance(implementation_row, str):
+        raise SystemExit('analysis rejected: paired block implementation row is missing')
+    package_name = (
+        'gometry'
+        if implementation.get('runtime') == 'gometry'
+        else implementation_row.split('.', 1)[0]
+    )
+    expected_package = expected_packages.get(package_name)
+    if isinstance(expected_package, dict):
+        if implementation.get('module') != expected_package.get('module'):
+            raise SystemExit(
+                f'analysis rejected: paired block implementation module identity mismatch for {package_name}'
+            )
+        if implementation.get('distribution') != expected_package.get('distribution'):
+            raise SystemExit(
+                f'analysis rejected: paired block implementation distribution identity mismatch for {package_name}'
+            )
+        native = implementation.get('native_libraries')
+        if not isinstance(native, list) or any(
+            not isinstance(item, dict)
+            or item.get('path') not in loaded_by_path
+            or any(item.get(key) != loaded_by_path[item['path']].get(key) for key in ('sha256', 'size_bytes'))
+            for item in native
+        ):
+            raise SystemExit(
+                f'analysis rejected: paired block native-library identity mismatch for {package_name}'
+            )
+        if implementation.get('runtime') == 'gometry':
+            expected_extension_file = (
+                {
+                    key: expected_extension_record[key]
+                    for key in ('path', 'sha256', 'size_bytes')
+                }
+                if isinstance(expected_extension_record, dict)
+                else None
+            )
+            if expected_extension_file is None or native != [expected_extension_file]:
+                raise SystemExit('analysis rejected: paired block gometry native identity mismatch')
+        else:
+            distribution = implementation.get('distribution')
+            owned_paths = (
+                _distribution_owned_paths(distribution)
+                if isinstance(distribution, dict)
+                else None
+            )
+            if owned_paths is None:
+                raise SystemExit(
+                    f'analysis rejected: paired block distribution ownership is unavailable for {package_name}'
+                )
+            module = implementation.get('module')
+            module_path = module.get('path') if isinstance(module, dict) else None
+            engine_tokens = _ENGINE_LIBRARY_TOKENS.get(package_name, ())
+            for item in native:
+                path = item.get('path')
+                if not isinstance(path, str) or not (
+                    path in owned_paths
+                    or path == module_path
+                    or any(token in Path(path).name.lower() for token in engine_tokens)
+                ):
+                    raise SystemExit(
+                        f'analysis rejected: paired block native-library ownership mismatch for {package_name}'
+                    )
+            for token in _REQUIRED_ENGINE_LIBRARY_TOKENS.get(package_name, ()):
+                loaded_engine = [
+                    path for path in loaded_by_path
+                    if token in Path(path).name.lower()
+                ]
+                attributed_engine = [
+                    item for item in native
+                    if token in Path(str(item.get('path'))).name.lower()
+                ]
+                if not loaded_engine:
+                    raise SystemExit(
+                        f'analysis rejected: required {token} engine is not loaded for {package_name}'
+                    )
+                if not attributed_engine:
+                    raise SystemExit(
+                        f'analysis rejected: required {token} engine is not attributed for {package_name}'
+                    )
+        if implementation.get('native_library_status') == 'identified' and not native:
+            raise SystemExit(
+                f'analysis rejected: paired block native-library identity is unavailable for {package_name}'
+            )
+        if implementation.get('native_library_status') == 'unavailable':
+            raise SystemExit(
+                f'analysis rejected: paired block native-library capability is unavailable for {package_name}'
+            )
+    observed_packages = identity.get('packages')
+    if not isinstance(observed_packages, dict) or not isinstance(expected_packages, dict):
+        raise SystemExit('analysis rejected: paired block dependency identity is missing')
+    for name, package in expected_packages.items():
+        expected_version = package.get('version') if isinstance(package, dict) else None
+        observed_package = observed_packages.get(name)
+        if isinstance(package, dict) and isinstance(observed_package, dict):
+            expected_identity = {
+                key: package.get(key)
+                for key in ('available', 'version', 'module', 'distribution')
+            }
+            observed_identity = {
+                key: observed_package.get(key)
+                for key in ('available', 'version', 'module', 'distribution')
+            }
+            if expected_identity != observed_identity:
+                raise SystemExit(
+                    f'analysis rejected: paired block dependency identity mismatch for {name}'
+                )
+        elif expected_version and observed_package != expected_version:
+            raise SystemExit(
+                f'analysis rejected: paired block dependency identity mismatch for {name}'
+            )
 
 
 def analyze_run(
@@ -866,6 +1123,16 @@ def _load_analysis(
     ):
         raise SystemExit('publication rejected: analysis summary/run identity mismatch')
     artifacts, records = _verified_run_artifacts(source_path, result)
+    record_paths = {str(record['path']): str(record['path']) for record in records}
+    artifact_mapping = {
+        str(path): record_paths[path.relative_to(source_path.parent).as_posix()]
+        for path in artifacts
+    }
+    recalculated, _recalculated_markdown = _analyze_result(
+        result, artifacts, artifact_mapping=artifact_mapping
+    )
+    if recalculated != summary:
+        raise SystemExit('publication rejected: analysis summary does not match source evidence')
     return analysis_path, analysis, source_path, result, artifacts, records
 
 
@@ -1173,6 +1440,17 @@ def main() -> None:
             'release timing CPU is not kernel-isolated: '
             f'cpu={cpu}, selection={cpu_selection}'
         )
+    lock = doctor['metadata'].get('uv_lock')
+    if args.profile == 'release' and (
+        not isinstance(lock, dict)
+        or not lock.get('path')
+        or not lock.get('sha256')
+        or not isinstance(lock.get('size_bytes'), int)
+        or lock.get('size_bytes', 0) <= 0
+    ):
+        hard_failures.append(
+            'publishable release evidence requires an actual dependency lock file identity'
+        )
     _validate_run_environment(
         args.profile,
         plan_only=args.plan_only,
@@ -1264,6 +1542,20 @@ def main() -> None:
         and not doctor['hard_failures']
     )
 
+    public_operations = _serialize_public_operations(profile.operations, selected)
+    sampling = {
+        'worker': PAIR_WORKER,
+        'measured_blocks': profile.paired_blocks,
+        'lead_orders': [
+            'ab' if index % 2 == 0 else 'ba'
+            for index in range(profile.paired_blocks)
+        ],
+        'warmup_iterations': int(profile.paired_sampling_args[1]),
+        'repetitions': int(profile.paired_sampling_args[3]),
+        'independent_process_blocks': True,
+        'state_scope': 'shared-process-prepared-fixture',
+    }
+    paired_matrix, paired_matrix_sha256 = _paired_matrix_identity(public_operations, sampling)
     result = {
         'manifest_type': _RUN_MANIFEST_TYPE,
         'schema_version': _MANIFEST_SCHEMA_VERSION,
@@ -1276,18 +1568,9 @@ def main() -> None:
         'publishable': publishable,
         'sampling_args': profile.sampling_args,
         'paired_sampling_args': profile.paired_sampling_args,
-        'sampling': {
-            'worker': PAIR_WORKER,
-            'measured_blocks': profile.paired_blocks,
-            'lead_orders': [
-                'ab' if index % 2 == 0 else 'ba'
-                for index in range(profile.paired_blocks)
-            ],
-            'warmup_iterations': int(profile.paired_sampling_args[1]),
-            'repetitions': int(profile.paired_sampling_args[3]),
-            'independent_process_blocks': True,
-            'state_scope': 'shared-process-prepared-fixture',
-        },
+        'sampling': sampling,
+        'paired_matrix': paired_matrix,
+        'paired_matrix_sha256': paired_matrix_sha256,
         'row_timeout_seconds': profile.row_timeout,
         'command_timeout_seconds': profile.command_timeout,
         'total_timeout_seconds': profile.total_timeout,
@@ -1296,7 +1579,7 @@ def main() -> None:
             name for rows in selected.values() for name in rows
         }),
         # Ordered editorial metadata for summarize_bench (never re-inferred).
-        'public_operations': _serialize_public_operations(profile.operations, selected),
+        'public_operations': public_operations,
         'elapsed_seconds': time.monotonic() - started,
         'doctor': doctor,
         'contention_after': contention_after,

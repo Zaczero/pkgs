@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import importlib
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -127,6 +130,192 @@ def _uv_lock_identity() -> dict[str, Any]:
                 'size_bytes': path.stat().st_size,
             }
     return {'path': None, 'sha256': None, 'size_bytes': None}
+
+
+def _file_identity(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        path = path.resolve()
+        payload = path.read_bytes()
+        return {
+            'path': str(path),
+            'sha256': hashlib.sha256(payload).hexdigest(),
+            'size_bytes': len(payload),
+        }
+    except OSError:
+        return None
+
+
+def _module_identity(name: str) -> dict[str, Any] | None:
+    module = sys.modules.get(name)
+    path: Path | None = None
+    if module is not None:
+        value = getattr(module, '__file__', None)
+        if isinstance(value, str):
+            path = Path(value)
+    if path is None:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            spec = None
+        origin = spec.origin if spec is not None else None
+        if isinstance(origin, str) and origin not in {'built-in', 'frozen'}:
+            path = Path(origin)
+    return _file_identity(path)
+
+
+def _distribution_owned_paths(distribution: dict[str, Any]) -> set[str] | None:
+    private_paths = distribution.get('_record_files')
+    if isinstance(private_paths, list):
+        return {str(path) for path in private_paths if isinstance(path, str)}
+    record = distribution.get('record')
+    if not isinstance(record, dict) or distribution.get('record_available') is not True:
+        return None
+    record_path = record.get('path')
+    location = distribution.get('location')
+    if not isinstance(record_path, str) or not isinstance(location, str):
+        return None
+    paths: set[str] = set()
+    try:
+        with Path(record_path).open(newline='', encoding='utf-8', errors='replace') as stream:
+            for row in csv.reader(stream):
+                if not row:
+                    continue
+                entry = Path(row[0])
+                owned = entry if entry.is_absolute() else Path(location) / entry
+                paths.add(str(owned.resolve()))
+    except OSError:
+        return None
+    return paths
+
+
+def _distribution_identity(name: str) -> dict[str, Any] | None:
+    try:
+        distribution = importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    location = Path(distribution.locate_file('')).resolve()
+    metadata_path: Path | None = None
+    record_path: Path | None = None
+    dist_info = getattr(distribution, '_path', None)
+    if dist_info is not None:
+        dist_info = Path(dist_info)
+        metadata_path = dist_info / 'METADATA'
+        record_path = dist_info / 'RECORD'
+    record_available = record_path is not None and record_path.is_file()
+    return {
+        'name': name,
+        'version': distribution.version,
+        'location': str(location),
+        'metadata': _file_identity(metadata_path),
+        'record': _file_identity(record_path),
+        'record_available': record_available,
+    }
+
+
+def _native_library_paths() -> list[Path]:
+    """Return native files actually mapped by this process on Linux."""
+    maps = Path('/proc/self/maps')
+    if not maps.is_file():
+        return []
+    paths: set[Path] = set()
+    for line in maps.read_text(encoding='utf-8', errors='replace').splitlines():
+        candidate = line.rsplit(' ', 1)[-1]
+        if not candidate.startswith('/'):
+            continue
+        path = Path(candidate)
+        if '.so' in path.name or path.suffix.lower() in {'.dylib', '.dll'}:
+            paths.add(path)
+    return sorted(paths, key=str)
+
+
+def _loaded_native_libraries() -> list[dict[str, Any]]:
+    return [
+        identity
+        for path in _native_library_paths()
+        if (identity := _file_identity(path)) is not None
+    ]
+
+
+def _package_identity(name: str) -> dict[str, Any] | None:
+    distribution = _distribution_identity(name)
+    module = _module_identity(name)
+    if distribution is None or module is None:
+        return None
+    return {
+        'available': True,
+        'version': distribution['version'],
+        'display_name': PACKAGE_DISPLAY_NAMES.get(name, name),
+        'module': module,
+        'distribution': distribution,
+        'native_libraries': [],
+    }
+
+
+_ENGINE_LIBRARY_TOKENS: dict[str, tuple[str, ...]] = {
+    'shapely': ('geos',),
+    'pyproj': ('proj',),
+    'geopandas': ('geos', 'proj'),
+}
+
+
+def implementation_identity(
+    row: str,
+    extension: dict[str, Any],
+    *,
+    package_info: dict[str, Any] | None = None,
+    loaded_native_libraries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Attribute module, distribution, and loaded native files to one row."""
+    runtime = 'gometry' if row.startswith('gometry.') else 'comparator'
+    package = 'gometry' if runtime == 'gometry' else row.split('.', 1)[0]
+    package_info = package_info if package_info is not None else _package_identity(package)
+    module = package_info.get('module') if package_info else None
+    distribution = package_info.get('distribution') if package_info else None
+    libraries = loaded_native_libraries if loaded_native_libraries is not None else _loaded_native_libraries()
+    if runtime == 'gometry':
+        extension_file = {
+            key: extension[key]
+            for key in ('path', 'sha256', 'size_bytes')
+            if key in extension
+        }
+        libraries = [extension_file]
+        status = 'identified'
+    else:
+        owned_paths = set()
+        distribution_info = package_info.get('distribution') if package_info else None
+        if isinstance(distribution_info, dict):
+            owned_paths.update(_distribution_owned_paths(distribution_info) or ())
+        module_path = module.get('path') if isinstance(module, dict) else None
+        engine_tokens = _ENGINE_LIBRARY_TOKENS.get(package, ())
+        libraries = [
+            item for item in libraries
+            if item.get('path') in owned_paths
+            or item.get('path') == module_path
+            or any(token in Path(str(item.get('path'))).name.lower() for token in engine_tokens)
+        ]
+        native_module = isinstance(module, dict) and any(
+            suffix in str(module.get('path', '')).lower()
+            for suffix in ('.so', '.dylib', '.dll')
+        )
+        if native_module and isinstance(module, dict) and module not in libraries:
+            libraries.append(module)
+        if libraries:
+            status = 'identified'
+        elif engine_tokens:
+            status = 'unavailable'
+        else:
+            status = 'not-applicable'
+    return {
+        'runtime': runtime,
+        'row': row,
+        'module_name': 'gometry._lib' if runtime == 'gometry' else package,
+        'module': module,
+        'distribution': distribution,
+        'native_libraries': libraries,
+        'native_library_status': status,
+    }
 
 
 def _extension_identity() -> dict[str, Any]:
@@ -265,6 +454,154 @@ def _cpu_list(text: str) -> set[int]:
         stop = int(endpoints[-1])
         cpus.update(range(start, stop + 1))
     return cpus
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+
+
+def parse_cpu_topology(root: Path = Path('/sys/devices/system/cpu')) -> dict[str, Any]:
+    """Parse CPU/core/socket/SMT facts without assuming CPU numbering."""
+    cpus: dict[str, Any] = {}
+    for cpu_path in sorted(root.glob('cpu[0-9]*'), key=lambda path: path.name):
+        try:
+            cpu = int(cpu_path.name.removeprefix('cpu'))
+        except ValueError:
+            continue
+        topology = cpu_path / 'topology'
+        sibling = _read_text(topology / 'thread_siblings_list')
+        core_cpus = _read_text(topology / 'core_cpus_list')
+        cpus[str(cpu)] = {
+            'cpu': cpu,
+            'online': _read_text(cpu_path / 'online') != '0',
+            'socket': _read_text(topology / 'physical_package_id'),
+            'core': _read_text(topology / 'core_id'),
+            'thread_siblings': sorted(_cpu_list(sibling)) if sibling else None,
+            'core_cpus': sorted(_cpu_list(core_cpus)) if core_cpus else None,
+        }
+    return {
+        'available': bool(cpus),
+        'cpus': cpus,
+        'allowed_cpus': sorted(os.sched_getaffinity(0)),
+    }
+
+
+def parse_cache_topology(root: Path = Path('/sys/devices/system/cpu')) -> list[dict[str, Any]]:
+    caches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for cpu_path in sorted(root.glob('cpu[0-9]*'), key=lambda path: path.name):
+        for cache in sorted((cpu_path / 'cache').glob('index*'), key=lambda path: path.name):
+            identity = str(cache.resolve())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            shared = _read_text(cache / 'shared_cpu_list')
+            caches.append({
+                'level': _read_text(cache / 'level'),
+                'type': _read_text(cache / 'type'),
+                'size': _read_text(cache / 'size'),
+                'shared_cpus': sorted(_cpu_list(shared)) if shared else None,
+            })
+    return caches
+
+
+def parse_numa_topology(root: Path = Path('/sys/devices/system/node')) -> dict[str, Any]:
+    nodes: dict[str, Any] = {}
+    for node_path in sorted(root.glob('node[0-9]*'), key=lambda path: path.name):
+        name = node_path.name.removeprefix('node')
+        cpulist = _read_text(node_path / 'cpulist')
+        nodes[name] = {
+            'cpus': sorted(_cpu_list(cpulist)) if cpulist else None,
+            'memory_total_kib': _read_meminfo_value(node_path / 'meminfo', 'MemTotal'),
+            'memory_free_kib': _read_meminfo_value(node_path / 'meminfo', 'MemFree'),
+        }
+    return {'available': bool(nodes), 'nodes': nodes}
+
+
+def _read_meminfo_value(path: Path, key: str) -> int | None:
+    text = _read_text(path)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        name, separator, value = line.partition(':')
+        if separator and (name == key or name.endswith(f' {key}')):
+            try:
+                return int(value.strip().split()[0])
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _proc_cgroup_path(proc_cgroup: Path = Path('/proc/self/cgroup')) -> str | None:
+    text = _read_text(proc_cgroup)
+    if text is None:
+        return None
+    for line in text.splitlines():
+        hierarchy, separator, path = line.partition('::')
+        if separator and hierarchy == '0':
+            return path
+    return None
+
+
+def parse_cgroup_v2(
+    proc_cgroup: Path = Path('/proc/self/cgroup'),
+    mount: Path = Path('/sys/fs/cgroup'),
+) -> dict[str, Any]:
+    """Record cgroup v2 limits and pressure, or explicit unavailability."""
+    relative = _proc_cgroup_path(proc_cgroup)
+    if relative is None:
+        return {'available': False, 'path': None, 'reason': 'unified cgroup v2 path unavailable'}
+    path = (mount / relative.lstrip('/')).resolve()
+    if not path.is_dir():
+        return {'available': False, 'path': relative, 'reason': 'cgroup v2 mount unavailable'}
+    names = (
+        'memory.max', 'memory.high', 'memory.current', 'memory.events',
+        'cpu.max', 'cpu.weight', 'cpu.stat', 'cpuset.cpus.effective',
+        'cpuset.mems.effective', 'memory.pressure', 'cpu.pressure',
+    )
+    values = {name: _read_text(path / name) for name in names}
+    return {'available': True, 'path': relative, 'mount': str(mount), 'values': values}
+
+
+def parse_memory_placement(
+    proc_status: Path = Path('/proc/self/status'),
+    proc_numa_maps: Path = Path('/proc/self/numa_maps'),
+) -> dict[str, Any]:
+    """Summarize observed NUMA page placement; this is not an affinity claim."""
+    status = _read_text(proc_status)
+    allowed: str | None = None
+    if status is not None:
+        for line in status.splitlines():
+            if line.startswith('Mems_allowed_list:'):
+                allowed = line.partition(':')[2].strip() or None
+                break
+    pages: dict[str, int] = {}
+    policies: set[str] = set()
+    if proc_numa_maps.is_file():
+        text = _read_text(proc_numa_maps)
+        if text is not None:
+            for line in text.splitlines():
+                fields = line.split()
+                if len(fields) > 1 and '=' not in fields[1]:
+                    policies.add(fields[1])
+                for token in line.split():
+                    if token.startswith('N') and '=' in token:
+                        node, value = token[1:].split('=', 1)
+                        try:
+                            pages[node] = pages.get(node, 0) + int(value)
+                        except ValueError:
+                            continue
+    return {
+        'available': bool(pages),
+        'allowed_memory_nodes': allowed,
+        'memory_policy': sorted(policies) if policies else None,
+        'observed_pages_by_node': pages,
+        'source': str(proc_numa_maps) if pages else None,
+        'reason': None if pages else 'NUMA page-placement observations unavailable',
+    }
 
 
 def select_benchmark_cpu(requested: int | None) -> tuple[int, str]:
@@ -501,19 +838,34 @@ def packages_required_by_operations(operations: Any) -> set[str]:
 
 
 def collect(*, operations: Any = None) -> dict[str, Any]:
-    packages = {
-        name: {
-            'available': importlib.util.find_spec(name) is not None,
+    required_runtime_modules = packages_required_by_operations(operations)
+    for name in sorted(required_runtime_modules):
+        try:
+            importlib.import_module(name)
+        except (ImportError, ModuleNotFoundError):
+            pass
+    packages: dict[str, dict[str, Any]] = {}
+    for name, dist in PACKAGE_INVENTORY.items():
+        available = importlib.util.find_spec(name) is not None
+        packages[name] = {
+            'available': available,
             'version': _package_version(dist),
             'display_name': PACKAGE_DISPLAY_NAMES.get(name, name),
         }
-        for name, dist in PACKAGE_INVENTORY.items()
-    }
+        if available:
+            identity = _package_identity(name)
+            if identity is not None:
+                packages[name].update(identity)
     contention = collect_contention()
     frequencies = _per_cpu_frequency_state()
     extension = _extension_identity()
     uv_lock = _uv_lock_identity()
     rustc_host_target = _rustc_host_target()
+    loaded_native_libraries = _loaded_native_libraries()
+    cpu_topology = parse_cpu_topology()
+    numa_topology = parse_numa_topology()
+    cgroup = parse_cgroup_v2()
+    memory_placement = parse_memory_placement()
     metadata: dict[str, Any] = {
         'git_commit': _run(['git', 'rev-parse', 'HEAD']),
         'git_dirty_build_inputs': _git_build_inputs_dirty(),
@@ -538,11 +890,24 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         'cpu_affinity': sorted(os.sched_getaffinity(0)),
         'isolated_cpus': _isolated_cpus(),
         'cpu_frequency_state': frequencies,
+        'cpu_topology': cpu_topology,
+        'cache_topology': parse_cache_topology(),
+        'numa_topology': numa_topology,
+        'allowed_memory_nodes': memory_placement.get('allowed_memory_nodes'),
+        'memory_policy': memory_placement.get('memory_policy'),
+        'memory_placement': memory_placement,
+        'cgroup_v2': cgroup,
         'load_average': contention['metadata']['load_average'],
         'top_cpu_processes': contention['metadata']['top_cpu_processes'],
         'packages': packages,
         'package_display_names': dict(PACKAGE_DISPLAY_NAMES),
         'extension': extension,
+        'loaded_native_libraries': loaded_native_libraries,
+        'native_library_identity': {
+            'available': bool(loaded_native_libraries),
+            'source': '/proc/self/maps' if Path('/proc/self/maps').is_file() else None,
+            'reason': None if loaded_native_libraries else 'loaded native-library mapping is unavailable',
+        },
         'geos_version': _geos_version(),
         'proj_version': _proj_version(),
     }
@@ -568,7 +933,7 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         warnings.append(
             f'non-performance governors in the allowed CPU set: {non_performance}'
         )
-    required = packages_required_by_operations(operations)
+    required = required_runtime_modules
     for package in sorted(required):
         info = packages.get(package)
         if info is None:

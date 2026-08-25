@@ -158,3 +158,26 @@ def test_result_mutation_fails_untimed_oracle_before_timing() -> None:
         )
     assert timed_calls == 2
     assert clock_calls == 0
+
+
+def test_block_snapshots_common_identity_once_before_and_after_both_arms() -> None:
+    calls = 0
+
+    def identity() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {'source_inputs_sha256': 'source', 'extension': {'sha256': 'extension'}}
+
+    artifact = worker.run_block(
+        operation=_Operation(),
+        block_id='pair-1-block-1-ab',
+        pair_id='pair-1',
+        lead='ab',
+        warmups=0,
+        repetitions=1,
+        clock_ns=_clock(),
+        identity=identity,
+        builder=lambda: _Case(_Pair(lambda: [1], lambda: [2])),
+    )
+    assert calls == 2
+    assert artifact['arms']['A']['provenance_before'] == artifact['arms']['A']['provenance_after']

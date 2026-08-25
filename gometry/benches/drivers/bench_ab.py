@@ -34,6 +34,7 @@ if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
+from benchmark_identity import identity_for_arm
 from benchmark_observation import metric_spec, measurement_summary, validate_observation
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ DEFAULT_PERF_EVENTS = (
     'branch-misses',
 )
 MIN_COUNTER_COVERAGE = 0.90
+PERF_CONTROL_TIMEOUT_SECONDS = 30
 
 
 def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
@@ -75,33 +77,38 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
 
 def identify_build(python: str) -> dict[str, Any]:
     code = """
-import hashlib, importlib.metadata, json, platform, sys
+import json, platform, sys, sysconfig
 from pathlib import Path
 sys.path.insert(0, 'benches/drivers')
 import gometry._lib as lib
-from bench_doctor import _source_inputs_digest, _uv_lock_identity
-path = Path(lib.__file__).resolve()
+from bench_doctor import (_extension_identity, _loaded_native_libraries,
+                          _package_identity, _run, _source_inputs_digest,
+                          _uv_lock_identity)
 packages = {}
 for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow', 'mercantile', 'pygeohash'):
-    try:
-        packages[name] = importlib.metadata.version(name)
-    except importlib.metadata.PackageNotFoundError:
-        packages[name] = None
+    identity = _package_identity(name)
+    if identity is not None:
+        packages[name] = identity
+extension = _extension_identity()
 print(json.dumps({
+    'identity_schema_version': 2,
+    'git_commit': _run(['git', 'rev-parse', 'HEAD']),
     'source_inputs_sha256': _source_inputs_digest(),
-    'extension': {
-        'path': str(path),
-        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-        'size_bytes': path.stat().st_size,
-        'build_info': getattr(lib, '__build_info__', None),
-    },
+    'extension': extension,
     'uv_lock': _uv_lock_identity(),
     'packages': packages,
+    'loaded_native_libraries': _loaded_native_libraries(),
     'python': {
-        'executable': sys.executable,
+        'executable': str(Path(sys.executable).resolve()),
         'version': sys.version,
         'implementation': platform.python_implementation(),
         'cache_tag': sys.implementation.cache_tag,
+        'build': {
+            'implementation': platform.python_implementation(),
+            'version': platform.python_version(),
+            'build': platform.python_build(),
+            'debug': bool(sysconfig.get_config_var('Py_DEBUG')),
+        },
     },
 }))
 """
@@ -114,6 +121,37 @@ print(json.dumps({
         timeout=IDENTIFY_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)
+
+
+def _attribute_build(identity: dict[str, Any], *, side: str, row: str) -> dict[str, Any]:
+    packages = identity.get('packages')
+    gometry = packages.get('gometry') if isinstance(packages, dict) else None
+    if not isinstance(gometry, dict):
+        return identity
+    implementation = {
+        'runtime': 'gometry',
+        'row': row,
+        'module_name': 'gometry._lib',
+        'module': gometry.get('module'),
+        'distribution': gometry.get('distribution'),
+        'native_libraries': [
+            {
+                key: identity['extension'][key]
+                for key in ('path', 'sha256', 'size_bytes')
+            }
+        ],
+        'native_library_status': 'identified',
+    }
+    return identity_for_arm(
+        identity,
+        side=side,
+        row=row,
+        runtime=implementation['runtime'],
+        module=implementation['module'],
+        distribution=implementation['distribution'],
+        native_libraries=implementation['native_libraries'],
+        native_library_status=implementation['native_library_status'],
+    )
 
 
 def perf_version(perf_binary: str = PERF_BINARY) -> dict[str, Any]:
@@ -177,8 +215,17 @@ def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
     producer_after = identify_build(python)
     if producer_before != producer_after:
         raise SystemExit(f'{case}: producer identity changed during the measured arm')
+    observation = _parse_observation_stdout(case, result.stdout, result.stderr)
+    producer_before = _attribute_build(
+        producer_before, side='A', row=str(case)
+    )
+    producer_after = _attribute_build(
+        producer_after, side='A', row=str(case)
+    )
+    if producer_before.get('identity_schema_version') == 2:
+        observation['producer_identity'] = producer_before
     return {
-        'observation': _parse_observation_stdout(case, result.stdout, result.stderr),
+        'observation': observation,
         'started_monotonic_ns': started_monotonic_ns,
         'ended_monotonic_ns': ended_monotonic_ns,
         'provenance_before': producer_before,
@@ -476,7 +523,7 @@ def _validate_counters(
             failures[event] = {'status': 'missing'}
         elif (
             entry.get('status') != 'ok'
-            or entry.get('value') is None
+            or entry.get('raw_value') is None
             or entry.get('coverage') is None
         ):
             failures[event] = {
@@ -488,7 +535,160 @@ def _validate_counters(
         raise SystemExit(f'perf counters are not comparable; refusing result: {failures}')
 
 
-def run_case_with_perf(
+def _perf_control_command(
+    perf_binary: str, events: Sequence[str], log_fd: int
+) -> list[str]:
+    command = [
+        perf_binary,
+        'stat',
+        '--all-user',
+        '-x,',
+        '--no-big-num',
+        '--log-fd',
+        str(log_fd),
+        '-e',
+        ('{' + ','.join(events) + '}') if len(events) > 1 else events[0],
+        '--',
+        sys.executable,
+        '-c',
+        'x = 0\nfor i in range(2000000):\n    x += i\nprint(x)',
+    ]
+    return command
+
+
+def _run_perf_control(
+    events: Sequence[str],
+    *,
+    perf_binary: str = PERF_BINARY,
+    minimum_coverage: float = MIN_COUNTER_COVERAGE,
+) -> dict[str, Any]:
+    requested = expand_perf_events(events)
+    with tempfile.TemporaryFile() as perf_log:
+        command = _perf_control_command(perf_binary, requested, perf_log.fileno())
+        try:
+            result = subprocess.run(
+                command,
+                cwd=GOMETRY_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=PERF_CONTROL_TIMEOUT_SECONDS,
+                pass_fds=(perf_log.fileno(),),
+                env={**os.environ, 'LC_ALL': 'C', 'LANG': 'C'},
+            )
+        except (FileNotFoundError, OSError) as error:
+            return {
+                'status': 'unavailable',
+                'events': list(requested),
+                'error': f'perf cannot execute: {error}',
+                'command': command,
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                'status': 'unavailable',
+                'events': list(requested),
+                'error': 'perf positive control timed out',
+                'command': command,
+            }
+        perf_log.seek(0)
+        output = perf_log.read().decode(errors='replace')
+    counters = parse_perf_output(output, requested, minimum_coverage=minimum_coverage)
+    failures = validate_positive_control(counters, requested)
+    return {
+        'status': 'ok' if result.returncode == 0 and not failures else 'rejected',
+        'events': list(requested),
+        'counters': counters,
+        'failures': failures,
+        'command': command,
+        'stderr': result.stderr[-400:],
+    }
+
+
+def validate_positive_control(
+    counters: dict[str, dict[str, Any]], events: Sequence[str]
+) -> dict[str, Any]:
+    """Return every requested event that did not move with usable coverage."""
+    failures: dict[str, Any] = {}
+    for event in expand_perf_events(events):
+        entry = counters.get(event)
+        if entry is None:
+            failures[event] = {'status': 'missing'}
+            continue
+        raw = entry.get('raw_value')
+        if entry.get('status') != 'ok' or entry.get('coverage') is None:
+            failures[event] = {
+                'status': entry.get('status'),
+                'coverage': entry.get('coverage'),
+                'error': entry.get('error'),
+            }
+        elif not isinstance(raw, (int, float)) or raw <= 0:
+            failures[event] = {
+                'status': 'nonmoving',
+                'raw_value': raw,
+                'error': 'positive-control counter did not move',
+            }
+    return failures
+
+
+def check_perf_capability(
+    events: Sequence[str],
+    *,
+    perf_binary: str = PERF_BINARY,
+    minimum_coverage: float = MIN_COUNTER_COVERAGE,
+) -> dict[str, Any]:
+    """Find usable event groups using a moving execution positive control."""
+    requested = expand_perf_events(events)
+    try:
+        version = perf_version(perf_binary)
+    except SystemExit as error:
+        return {
+            'status': 'capability-null',
+            'reason': str(error),
+            'events': list(requested),
+            'event_groups': [],
+            'controls': [],
+        }
+    groups: list[list[str]] = []
+    controls: list[dict[str, Any]] = []
+    for event in requested:
+        single = _run_perf_control(
+            [event], perf_binary=perf_binary, minimum_coverage=minimum_coverage
+        )
+        controls.append(single)
+        if single['status'] != 'ok':
+            return {
+                'status': 'capability-null',
+                'reason': f'event {event!r} failed its positive control',
+                'events': list(requested),
+                'event_groups': [],
+                'controls': controls,
+                'perf': version,
+            }
+        if not groups:
+            groups.append([event])
+            continue
+        candidate = [*groups[-1], event]
+        grouped = _run_perf_control(
+            candidate, perf_binary=perf_binary, minimum_coverage=minimum_coverage
+        )
+        controls.append(grouped)
+        if grouped['status'] == 'ok':
+            groups[-1] = candidate
+        else:
+            # The event itself passed alone, so begin a new minimally usable
+            # group instead of accepting a multiplexed wider group.
+            groups.append([event])
+    return {
+        'status': 'available',
+        'events': list(requested),
+        'event_groups': groups,
+        'usable_group_capacity': max(map(len, groups), default=0),
+        'controls': controls,
+        'perf': version,
+    }
+
+
+def _run_case_with_perf_group(
     python: str,
     case: Path,
     extra: list[str],
@@ -497,7 +697,7 @@ def run_case_with_perf(
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
 ) -> dict[str, Any]:
-    """Run one validated case under perf, keeping perf output out of stdout."""
+    """Run one validated case under one non-multiplexed perf event group."""
     requested = expand_perf_events(events)
     producer_before = identify_build(python)
     started_monotonic_ns = time.monotonic_ns()
@@ -512,8 +712,10 @@ def run_case_with_perf(
             '--log-fd',
             str(log_fd),
         ]
-        for event in requested:
-            command.extend(('-e', event))
+        command.extend((
+            '-e',
+            ('{' + ','.join(requested) + '}') if len(requested) > 1 else requested[0],
+        ))
         command.extend(('--', python, str(case), *extra))
         try:
             result = subprocess.run(
@@ -539,6 +741,8 @@ def run_case_with_perf(
         perf_output = perf_log.read().decode(errors='replace')
     ended_monotonic_ns = time.monotonic_ns()
     producer_after = identify_build(python)
+    if producer_before != producer_after:
+        raise SystemExit(f'{case}: producer identity changed during the perf arm')
     counters = parse_perf_output(
         perf_output, requested, minimum_coverage=minimum_coverage
     )
@@ -562,6 +766,76 @@ def run_case_with_perf(
         'case_stdout': result.stdout,
         'perf_stderr': result.stderr,
     }
+
+
+def _observation_identity(observation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: observation.get(name)
+        for name in (
+            'schema_version',
+            'observation_type',
+            'useful_work',
+            'phase',
+            'warmup',
+            'calibration',
+            'oracle',
+        )
+    }
+
+
+def run_case_with_perf(
+    python: str,
+    case: Path,
+    extra: list[str],
+    events: Sequence[str],
+    *,
+    perf_binary: str = PERF_BINARY,
+    minimum_coverage: float = MIN_COUNTER_COVERAGE,
+    event_groups: Sequence[Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Run each usable perf group in its own process invocation.
+
+    Group counters are merged only after every invocation proves the same
+    oracle, useful work, and producer identity.  The timing retained here is
+    instrumented timing and is never reused as uninstrumented release latency.
+    """
+    requested = expand_perf_events(events)
+    groups = tuple(event_groups or tuple((event,) for event in requested))
+    flattened = [event for group in groups for event in group]
+    if set(flattened) != set(requested) or len(flattened) != len(set(flattened)):
+        raise SystemExit('perf event groups do not cover the requested events exactly')
+    results = [
+        _run_case_with_perf_group(
+            python,
+            case,
+            extra,
+            group,
+            perf_binary=perf_binary,
+            minimum_coverage=minimum_coverage,
+        )
+        for group in groups
+    ]
+    first = results[0]
+    first_observation = first['observation']
+    first_before = first['provenance_before']
+    first_after = first['provenance_after']
+    counters: dict[str, dict[str, Any]] = {}
+    commands: list[list[str]] = []
+    for _group, result in zip(groups, results, strict=True):
+        if _observation_identity(result['observation']) != _observation_identity(first_observation):
+            raise SystemExit('perf split groups produced mismatched observation identity')
+        if result['provenance_before'] != first_before or result['provenance_after'] != first_after:
+            raise SystemExit('perf split groups produced mismatched producer identity')
+        for event, counter in result['counters'].items():
+            if event in counters:
+                raise SystemExit(f'perf split groups duplicated counter {event!r}')
+            counters[event] = counter
+        commands.append(result['command'])
+    merged = dict(first)
+    merged['counters'] = counters
+    merged['commands'] = commands
+    merged['event_groups'] = [list(group) for group in groups]
+    return merged
 
 
 def blocked_orders(blocks: int, seed: int) -> tuple[tuple[str, str], ...]:
@@ -592,6 +866,19 @@ def run_blocks(
         arms = {}
         for side in order:
             arms[side] = runner(sides[side], case, extra)
+            arm = arms[side]
+            before = arm.get('provenance_before')
+            after = arm.get('provenance_after')
+            if isinstance(before, dict) and before.get('identity_schema_version') == 2:
+                attributed_before = _attribute_build(before, side=side, row=str(case))
+                attributed_after = _attribute_build(
+                    after if isinstance(after, dict) else before,
+                    side=side,
+                    row=str(case),
+                )
+                arm['provenance_before'] = attributed_before
+                arm['provenance_after'] = attributed_after
+                arm['observation']['producer_identity'] = attributed_before
         block_ended = clock_ns()
         metric, unit = _validate_pair_arms(arms, case)
         _validate_arm_order(
@@ -637,6 +924,7 @@ def run_blocks_with_perf(
     seed: int,
     runner: Callable[[str, Path, list[str], Sequence[str]], dict[str, Any]] = run_case_with_perf,
     clock_ns: Callable[[], int] = time.monotonic_ns,
+    event_groups: Sequence[Sequence[str]] | None = None,
 ) -> dict[str, Any]:
     """Run the typed blocked schedule and retain counter evidence per block."""
     requested = expand_perf_events(events)
@@ -652,7 +940,28 @@ def run_blocks_with_perf(
         }
         arms: dict[str, Any] = {}
         for side in order:
-            result = runner(sides[side], case, extra, requested)
+            if event_groups is None:
+                result = runner(sides[side], case, extra, requested)
+            else:
+                result = runner(
+                    sides[side],
+                    case,
+                    extra,
+                    requested,
+                    event_groups=event_groups,
+                )
+            before = result.get('provenance_before')
+            after = result.get('provenance_after')
+            if isinstance(before, dict) and before.get('identity_schema_version') == 2:
+                result['provenance_before'] = _attribute_build(
+                    before, side=side, row=str(case)
+                )
+                result['provenance_after'] = _attribute_build(
+                    after if isinstance(after, dict) else before,
+                    side=side,
+                    row=str(case),
+                )
+                result['observation']['producer_identity'] = result['provenance_before']
             _validate_counters(result['counters'], requested)
             arms[side] = result
         metric, unit = _validate_pair_arms(arms, case)
@@ -1086,6 +1395,7 @@ def main() -> int:
         )
     perf_run: dict[str, Any] | None = None
     perf_info: dict[str, Any] | None = None
+    perf_capability: dict[str, Any] | None = None
     if perf_events is None:
         block_run = run_blocks(
             {'A': args.a, 'B': args.b},
@@ -1096,7 +1406,34 @@ def main() -> int:
             seed=args.seed,
         )
     else:
-        perf_info = perf_version()
+        perf_capability = check_perf_capability(perf_events)
+        if perf_capability['status'] != 'available':
+            capability_record = {
+                'schema_version': 2,
+                'observation_type': 'typed-paired-comparison',
+                'case': str(args.case),
+                'case_sha256': hashlib.sha256(args.case.read_bytes()).hexdigest(),
+                'python': {'A': args.a, 'B': args.b},
+                'perf': {
+                    'enabled': True,
+                    'status': 'capability-null',
+                    'events': list(perf_events),
+                    'capability': perf_capability,
+                },
+                'publishable': False,
+            }
+            if args.json_out is not None:
+                args.json_out.parent.mkdir(parents=True, exist_ok=True)
+                args.json_out.write_text(
+                    json.dumps(capability_record, indent=2, sort_keys=True) + '\n'
+                )
+            print(
+                'PERF CAPABILITY NULL: '
+                f'{perf_capability.get("reason", "requested events are unavailable")}',
+                file=sys.stderr,
+            )
+            return 2
+        perf_info = perf_capability['perf']
         perf_run = run_blocks_with_perf(
             {'A': args.a, 'B': args.b},
             args.case,
@@ -1105,6 +1442,7 @@ def main() -> int:
             warmup=args.warmup,
             rounds=args.rounds,
             seed=args.seed,
+            event_groups=perf_capability['event_groups'],
         )
         block_run = perf_run
     samples = block_run['samples']
@@ -1130,6 +1468,11 @@ def main() -> int:
         if significant
         else 'INCONCLUSIVE (paired log-ratio bootstrap CI includes 1.0; no directional result)'
     )
+    timing_semantics = (
+        'perf-instrumented-diagnostic' if perf_run is not None else 'uninstrumented'
+    )
+    if perf_run is not None:
+        verdict = f'PERF-INSTRUMENTED DIAGNOSTIC: {verdict}'
     record = {
         'schema_version': 2,
         'observation_type': 'typed-paired-comparison',
@@ -1151,6 +1494,8 @@ def main() -> int:
             'contention_after': collect_contention(exclude_pgids={os.getpgrp()}),
         },
         'measurement': {'metric': metric, 'unit': unit, 'direction': 'lower_is_better'},
+        'timing_semantics': timing_semantics,
+        'release_latency_eligible': perf_run is None,
         'A': summary_a,
         'B': summary_b,
         'relative_ratio_a_over_b': ratio,
@@ -1167,6 +1512,7 @@ def main() -> int:
         )
         record['perf'] = {
             'enabled': True,
+            'status': 'available',
             'binary': PERF_BINARY,
             'version': perf_info['version'],
             'version_command': perf_info['command'],
@@ -1175,12 +1521,17 @@ def main() -> int:
             'format': 'csv',
             'locale': {'LC_ALL': 'C', 'LANG': 'C'},
             'minimum_coverage': MIN_COUNTER_COVERAGE,
+            'capability': perf_capability,
             'summary': counter_summary,
             'commands': [
-                block['arms'][side]['command']
+                command
                 for block in perf_run['blocks']
                 for side in ('A', 'B')
+                for command in block['arms'][side].get(
+                    'commands', [block['arms'][side]['command']]
+                )
             ],
+            'timing_semantics': 'instrumented-perf-run; not uninstrumented release latency',
         }
     for label, summary in (('A (baseline)', summary_a), ('B (candidate)', summary_b)):
         ci = summary['median_ci95']

@@ -11,6 +11,8 @@ import math
 import statistics
 from typing import Any
 
+from benchmark_identity import validate_producer_identity
+
 SCHEMA_VERSION = 1
 OBSERVATION_TYPE = 'gometry-benchmark-observation'
 
@@ -114,6 +116,12 @@ def validate_observation(value: Any) -> dict[str, Any]:
         or not oracle['identity'].strip()
     ):
         raise _fail('oracle must have passed status and a non-empty identity')
+    producer_identity = value.get('producer_identity')
+    if producer_identity is not None:
+        try:
+            validate_producer_identity(producer_identity)
+        except ValueError as exc:
+            raise _fail(f'producer identity rejected: {exc}') from exc
     return value
 
 

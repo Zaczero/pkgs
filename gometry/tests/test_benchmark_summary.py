@@ -48,7 +48,7 @@ def _block(
 ) -> dict:
     order = ['A', 'B'] if lead == 'ab' else ['B', 'A']
     return {
-        'schema_version': 1,
+        'schema_version': 2,
         'artifact_type': 'gometry-paired-block',
         'block_id': block_id,
         'pair_id': 'pair-1',

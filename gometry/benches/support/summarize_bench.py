@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from glob import glob
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
 from benchmark_observation import measurement_summary, validate_observation
+from benchmark_identity import common_identity, validate_producer_identity
 from public_inventory import load_public_symbols, unknown_public_symbols
 
 DOMAIN_ORDER = (
@@ -54,6 +56,7 @@ class PairedBlock:
     competitor_median: float
     ratio: float
     producer_identity: dict[str, Any]
+    arm_identities: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,9 +213,140 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
     return operations
 
 
-def _validate_block(payload: dict[str, Any], path: Path) -> tuple[str, str, PairedBlock]:
-    if payload.get('schema_version') != 1 or payload.get('artifact_type') != 'gometry-paired-block':
+def expected_paired_matrix(payload: dict[str, Any]) -> dict[tuple[str, str, str, str, str], dict[str, Any]]:
+    """Derive every accepted paired artifact identity from one run manifest."""
+    operations = _parse_public_operations(payload.get('public_operations'))
+    sampling = payload.get('sampling')
+    if not isinstance(sampling, dict):
+        raise SystemExit('run manifest lacks paired sampling identity')
+    blocks = sampling.get('measured_blocks')
+    leads = sampling.get('lead_orders')
+    if not isinstance(blocks, int) or blocks < 1 or not isinstance(leads, list):
+        raise SystemExit('run manifest has malformed paired sampling identity')
+    if len(leads) != blocks or any(lead not in {'ab', 'ba'} for lead in leads):
+        raise SystemExit('run manifest has malformed lead-order matrix')
+    expected: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for number, operation in enumerate(operations, start=1):
+        pair_id = f'{operation.suite}-pair-{number:02d}'
+        for block_number, lead in enumerate(leads, start=1):
+            block_id = f'{pair_id}-block-{block_number:02d}-{lead}'
+            key = (operation.gometry, operation.competitor, pair_id, block_id, lead)
+            expected[key] = {
+                'operation': operation,
+                'block_number': block_number,
+            }
+    return expected
+
+
+def validate_exact_paired_matrix(
+    payload: dict[str, Any], artifacts: list[Path]
+) -> None:
+    """Reject any artifact set other than the run's exact paired matrix."""
+    expected = expected_paired_matrix(payload)
+    declared_matrix = payload.get('paired_matrix')
+    if declared_matrix is not None:
+        if not isinstance(declared_matrix, list):
+            raise SystemExit('run manifest paired matrix is malformed')
+        expected_matrix = [
+            {
+                'gometry': key[0],
+                'competitor': key[1],
+                'pair_id': key[2],
+                'block_id': key[3],
+                'lead': key[4],
+            }
+            for key in expected
+        ]
+        if declared_matrix != expected_matrix:
+            raise SystemExit('run manifest paired matrix does not match its operation metadata')
+        declared_digest = payload.get('paired_matrix_sha256')
+        encoded = json.dumps(declared_matrix, separators=(',', ':'), sort_keys=True).encode('utf-8')
+        expected_digest = hashlib.sha256(encoded).hexdigest()
+        if declared_digest != expected_digest:
+            raise SystemExit('run manifest paired matrix digest is stale')
+    actual: dict[tuple[str, str, str, str, str], Path] = {}
+    nonpaired: set[str] = set()
+    profile = payload.get('profile')
+    run_id = payload.get('run_id')
+    if not isinstance(profile, str) or not isinstance(run_id, str) or not run_id:
+        raise SystemExit('run manifest lacks profile/run identity for paired matrix')
+    for path in artifacts:
+        artifact = _manifest_payload(path)
+        if artifact is None:
+            raise SystemExit(f'invalid benchmark artifact {path}')
+        if artifact.get('artifact_type') != 'gometry-paired-block':
+            nonpaired.add(path.name)
+            continue
+        operation = artifact.get('operation')
+        order = artifact.get('lead_order')
+        if not isinstance(operation, dict) or order not in (['A', 'B'], ['B', 'A']):
+            raise SystemExit(f'{path} has incomplete paired matrix identity')
+        key = (
+            operation.get('gometry'),
+            operation.get('competitor'),
+            artifact.get('pair_id'),
+            artifact.get('block_id'),
+            'ab' if order == ['A', 'B'] else 'ba',
+        )
+        if not all(isinstance(value, str) and value for value in key):
+            raise SystemExit(f'{path} has malformed paired matrix identity')
+        if key in actual:
+            raise SystemExit(f'duplicate paired matrix identity: {key!r}')
+        expected_entry = expected.get(key)
+        if expected_entry is None:
+            raise SystemExit(f'{path} is extra or swapped in the paired matrix: {key!r}')
+        declared = expected_entry['operation']
+        if tuple(operation.get('canonical_symbols') or ()) != declared.canonical_symbols:
+            raise SystemExit(f'{path} canonical operation identity mismatch')
+        if artifact.get('profile') != profile:
+            raise SystemExit(f'{path} paired block profile identity mismatch')
+        if artifact.get('run_id') != run_id:
+            raise SystemExit(f'{path} paired block run identity mismatch')
+        actual[key] = path
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        raise SystemExit(
+            'exact paired matrix is incomplete; missing identities: '
+            + ', '.join(repr(value) for value in missing)
+        )
+    planned = payload.get('planned_commands')
+    if isinstance(planned, list) and planned:
+        expected_nonpaired = {
+            Path(str(command['output'])).name
+            for command in planned
+            if isinstance(command, dict)
+            and command.get('kind') == 'resource'
+            and isinstance(command.get('output'), str)
+        }
+        if nonpaired != expected_nonpaired:
+            raise SystemExit(
+                'run contains unexpected or missing non-paired artifacts: '
+                f'actual={sorted(nonpaired)!r} expected={sorted(expected_nonpaired)!r}'
+            )
+    elif nonpaired:
+        raise SystemExit(
+            'run contains undeclared non-paired artifacts: ' + ', '.join(sorted(nonpaired))
+        )
+
+
+def _identity_without_attribution(value: dict[str, Any]) -> dict[str, Any]:
+    return common_identity(value)
+
+
+def _validate_block(
+    payload: dict[str, Any],
+    path: Path,
+    *,
+    expected_profile: str | None = None,
+    expected_run_id: str | None = None,
+) -> tuple[str, str, PairedBlock]:
+    strict_identity = expected_profile is not None or expected_run_id is not None
+    if payload.get('schema_version') != 2 or payload.get('artifact_type') != 'gometry-paired-block':
         raise SystemExit(f'{path} is not a typed paired block artifact')
+    if expected_profile is not None and payload.get('profile') != expected_profile:
+        raise SystemExit(f'{path} paired block profile identity mismatch')
+    if expected_run_id is not None and payload.get('run_id') != expected_run_id:
+        raise SystemExit(f'{path} paired block run identity mismatch')
     block_id = payload.get('block_id')
     pair_id = payload.get('pair_id')
     operation = payload.get('operation')
@@ -255,6 +389,14 @@ def _validate_block(payload: dict[str, Any], path: Path) -> tuple[str, str, Pair
             raise SystemExit(f'{path} arm {side} timestamps are outside the block')
         if before != after:
             raise SystemExit(f'{path} arm {side} producer identity changed')
+        producer_identity = observation.get('producer_identity')
+        if strict_identity:
+            if producer_identity != before:
+                raise SystemExit(f'{path} arm {side} observation producer identity mismatch')
+            try:
+                validate_producer_identity(before)
+            except ValueError as exc:
+                raise SystemExit(f'{path} arm {side} producer identity rejected: {exc}') from exc
         try:
             validate_observation(observation)
             metric, unit, median, _raw = measurement_summary(observation)
@@ -274,7 +416,14 @@ def _validate_block(payload: dict[str, Any], path: Path) -> tuple[str, str, Pair
             observed = arms[side]['observation']['warmup' if field.startswith('warmup') else 'calibration']['iterations']
             if observed != expected:
                 raise SystemExit(f'{path} arm {side} has mismatched sampling {field}')
-    if provenances['A'][0] != provenances['B'][0]:
+    if strict_identity:
+        if _identity_without_attribution(provenances['A'][0]) != _identity_without_attribution(provenances['B'][0]):
+            raise SystemExit(f'{path} arms have mismatched common producer identities')
+        for side, expected_side in (('A', 'A'), ('B', 'B')):
+            identity = provenances[side][0]
+            if identity.get('arm', {}).get('side') != expected_side:
+                raise SystemExit(f'{path} arm {side} producer attribution is swapped')
+    elif provenances['A'][0] != provenances['B'][0]:
         raise SystemExit(f'{path} arms have mismatched producer identities')
     gometry_row = arms['A']['row']
     competitor_row = arms['B']['row']
@@ -305,10 +454,13 @@ def _validate_block(payload: dict[str, Any], path: Path) -> tuple[str, str, Pair
         competitor_median=competitor_median,
         ratio=competitor_median / gometry_median,
         producer_identity=provenances['A'][0],
+        arm_identities={side: provenance[0] for side, provenance in provenances.items()},
     )
 
 
-def _load_all_blocks(paths: list[Path]) -> dict[str, BenchStats]:
+def _load_all_blocks(
+    paths: list[Path], *, expected_profile: str | None = None, expected_run_id: str | None = None
+) -> dict[str, BenchStats]:
     """Load one typed paired block per artifact; resource artifacts are ignored."""
     by_operation: dict[str, list[PairedBlock]] = {}
     for path in paths:
@@ -317,7 +469,12 @@ def _load_all_blocks(paths: list[Path]) -> dict[str, BenchStats]:
             raise SystemExit(f'invalid benchmark artifact {path}')
         if payload.get('artifact_type') != 'gometry-paired-block':
             continue
-        gometry_row, competitor_row, block = _validate_block(payload, path)
+        gometry_row, competitor_row, block = _validate_block(
+            payload,
+            path,
+            expected_profile=expected_profile,
+            expected_run_id=expected_run_id,
+        )
         for row in (gometry_row, competitor_row):
             if block.block_id in {item.block_id for item in by_operation.get(row, ())}:
                 raise SystemExit(f'duplicate paired block identity for {row}: {block.block_id}')
@@ -429,7 +586,13 @@ def _build_rows(
                 raise SystemExit(f'{meta.gometry} has incomplete lead-order matrix: {actual!r}')
         if len({block.pair_id for block in blocks}) != 1:
             raise SystemExit(f'{meta.gometry} has inconsistent pair identity across blocks')
-        if len({json.dumps(block.producer_identity, sort_keys=True) for block in blocks}) != 1:
+        identities = [
+            json.dumps(
+                block.arm_identities or {'A': block.producer_identity}, sort_keys=True
+            )
+            for block in blocks
+        ]
+        if len(set(identities)) != 1:
             raise SystemExit(f'{meta.gometry} has inconsistent producer identities across blocks')
         ratios = paired_block_ratios(blocks)
         ratio_ci95 = bootstrap_paired_ratio_ci(ratios, seed, samples=BOOTSTRAP_SAMPLES)
@@ -641,6 +804,7 @@ def normalized_summary_payload(
                         'competitor_median': block.competitor_median,
                         'ratio_competitor_over_gometry': block.ratio,
                         'producer_identity': block.producer_identity,
+                        'producer_identities': block.arm_identities,
                     }
                     for block in row.blocks
                 ],

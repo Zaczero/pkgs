@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -19,8 +20,116 @@ import bench as bench_driver  # noqa: E402
 from _bench_registry import RELEASE_OPERATIONS  # noqa: E402
 from benchmark_observation import make_observation  # noqa: E402
 
+_HASH = hashlib.sha256(b'x').hexdigest()
 
-def _block_payload(operation, index: int) -> dict[str, object]:
+
+def _file(path: str = '/checkout/file') -> dict[str, object]:
+    return {'path': path, 'sha256': _HASH, 'size_bytes': 1}
+
+
+def _distribution(name: str) -> dict[str, object]:
+    return {
+        'name': name,
+        'version': '1',
+        'location': '/checkout',
+        'metadata': _file(f'/checkout/{name}.dist-info/METADATA'),
+        'record': _file(f'/checkout/{name}.dist-info/RECORD'),
+        'record_available': True,
+        '_record_files': [
+            f'/checkout/{name}/__init__.py',
+            f'/checkout/{name}/lib.cpython.so',
+            f'/checkout/{name}/_crs.cpython.so',
+        ],
+    }
+
+
+def _package(name: str) -> dict[str, object]:
+    return {
+        'available': True,
+        'version': '1',
+        'module': _file(f'/checkout/{name}/__init__.py'),
+        'distribution': _distribution(name),
+        'native_libraries': [],
+    }
+
+
+def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
+    packages = {
+        name: _package(name)
+        for name in (
+            'gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas',
+            'pyarrow', 'mercantile', 'pygeohash',
+        )
+    }
+    extension = {
+        **_file('/checkout/target/release/gometry.so'),
+        'build_info': {
+            'schema_version': 1,
+            'source_inputs_format': 'sha256-path-nul-content-nul-v1',
+            'source_inputs_sha256': _HASH,
+            'profile_family': 'release',
+            'opt_level': '3',
+            'debug': False,
+            'debug_assertions': False,
+            'target': 'test-target',
+            'target_features': 'sse2',
+        },
+    }
+    runtime = 'gometry' if side == 'A' else 'comparator'
+    package_name = 'gometry' if runtime == 'gometry' else row.split('.', 1)[0]
+    geos = _file('/checkout/libgeos_c.so')
+    proj = _file('/checkout/libproj.so')
+    python_native = _file('/checkout/libpython.so')
+    native_libraries = (
+        [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
+        if runtime == 'gometry'
+        else ([geos] if package_name in {'shapely', 'geopandas'} else [proj] if package_name == 'pyproj' else [])
+    )
+    implementation = {
+        'runtime': runtime,
+        'row': row,
+        'module_name': 'gometry._lib' if runtime == 'gometry' else package_name,
+        'module': packages[package_name]['module'],
+        'distribution': packages[package_name]['distribution'],
+        'native_libraries': native_libraries,
+        'native_library_status': 'identified' if native_libraries else 'not-applicable',
+    }
+    return {
+        'identity_schema_version': 2,
+        'git_commit': 'deadbeef',
+        'source_inputs_sha256': _HASH,
+        'extension': extension,
+        'uv_lock': {'path': lock_path, 'sha256': _HASH, 'size_bytes': 1},
+        'python': {
+            'executable': '/python',
+            'version': '3.14 test build',
+            'implementation': 'CPython',
+            'cache_tag': 'cpython-314',
+            'build': {
+                'implementation': 'CPython',
+                'version': '3.14',
+                'build': ['build', 'date'],
+                'debug': False,
+            },
+        },
+        'packages': packages,
+        'loaded_native_libraries': [
+            {key: extension[key] for key in ('path', 'sha256', 'size_bytes')},
+            geos,
+            proj,
+            python_native,
+        ],
+        'native_library_identity': {
+            'available': True,
+            'source': '/proc/self/maps',
+            'reason': None,
+        },
+        'implementation': implementation,
+        'arm': {'side': side, 'row': row},
+    }
+
+
+def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, object]:
     lead = 'ab' if index % 2 == 0 else 'ba'
     order = ['A', 'B'] if lead == 'ab' else ['B', 'A']
     observation_a = make_observation(
@@ -39,20 +148,15 @@ def _block_payload(operation, index: int) -> dict[str, object]:
         warmup_iterations=2,
         calibration_iterations=5,
     )
-    provenance = {
-        'source_inputs_sha256': 'source-digest',
-        'extension': {'sha256': 'extension-digest'},
-        'packages': dict.fromkeys(
-            (
-                'gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas',
-                'pyarrow', 'mercantile', 'pygeohash',
-            ),
-            '1',
-        ),
-    }
+    provenance_a = _producer(operation.gometry, 'A', lock_path)
+    provenance_b = _producer(operation.competitor, 'B', lock_path)
+    observation_a['producer_identity'] = provenance_a
+    observation_b['producer_identity'] = provenance_b
     return {
-        'schema_version': 1,
+        'schema_version': 2,
         'artifact_type': 'gometry-paired-block',
+        'profile': 'release',
+        'run_id': 'run-1-release',
         'block_id': f'competitors-pair-{RELEASE_OPERATIONS.index(operation) + 1:02d}-block-{index + 1:02d}-{lead}',
         'pair_id': f'competitors-pair-{RELEASE_OPERATIONS.index(operation) + 1:02d}',
         'operation': {
@@ -73,16 +177,16 @@ def _block_payload(operation, index: int) -> dict[str, object]:
                 'row': operation.gometry,
                 'started_monotonic_ns': 2 if lead == 'ab' else 12,
                 'ended_monotonic_ns': 3 if lead == 'ab' else 13,
-                'provenance_before': provenance,
-                'provenance_after': provenance,
+                'provenance_before': provenance_a,
+                'provenance_after': provenance_a,
                 'observation': observation_a,
             },
             'B': {
                 'row': operation.competitor,
                 'started_monotonic_ns': 12 if lead == 'ab' else 2,
                 'ended_monotonic_ns': 13 if lead == 'ab' else 3,
-                'provenance_before': provenance,
-                'provenance_after': provenance,
+                'provenance_before': provenance_b,
+                'provenance_after': provenance_b,
                 'observation': observation_b,
             },
         },
@@ -90,15 +194,20 @@ def _block_payload(operation, index: int) -> dict[str, object]:
 
 
 def _result(tmp_path: Path) -> dict[str, object]:
+    lock = tmp_path / 'lock'
+    lock.write_bytes(b'x')
     artifacts: list[str] = []
+    lock_path = str(tmp_path / 'lock')
     for operation in RELEASE_OPERATIONS:
         for index in range(6):
             artifact = tmp_path / f'block-{RELEASE_OPERATIONS.index(operation):02d}-{index:02d}.json'
-            artifact.write_text(json.dumps(_block_payload(operation, index)), encoding='utf-8')
+            artifact.write_text(
+                json.dumps(_block_payload(operation, index, lock_path)), encoding='utf-8'
+            )
             artifacts.append(str(artifact))
     metadata = {
         'git_commit': 'deadbeef',
-        'source_inputs_sha256': 'source-digest',
+        'source_inputs_sha256': _HASH,
         'python_executable': '/python',
         'python': '3.14',
         'python_version': '3.14 test build',
@@ -108,19 +217,23 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'python_cache_tag': 'cpython-314',
         'extension': {
             'path': '/checkout/target/release/gometry.so',
-            'sha256': 'extension-digest',
-            'size_bytes': 10,
-            'debug_build': False,
-            'release_build': True,
-            'debug_assertion_marker': 'vendor base-cell partition changed',
-            'debug_assertion_marker_count': 0,
-            'profile_evidence_method': 'extension_bytes_marker_scan',
-            'profile_evidence': 'debug_assertion_marker_absent',
-            'tied_to_checkout': True,
+            'sha256': _HASH,
+            'size_bytes': 1,
+            'build_info': {
+                'schema_version': 1,
+                'source_inputs_format': 'sha256-path-nul-content-nul-v1',
+                'source_inputs_sha256': _HASH,
+                'profile_family': 'release',
+                'opt_level': '3',
+                'debug': False,
+                'debug_assertions': False,
+                'target': 'test-target',
+                'target_features': 'sse2',
+            },
         },
-        'uv_lock': {'path': '/checkout/uv.lock', 'sha256': 'lock-digest', 'size_bytes': 10},
+        'uv_lock': {'path': str(lock), 'sha256': _HASH, 'size_bytes': 1},
         'packages': {
-            package: {'version': '1'}
+            package: _package(package)
             for package in (
                 'gometry', 'numpy', 'shapely', 'pyproj', 'h3',
                 'geopandas', 'pyarrow', 'mercantile', 'pygeohash',
@@ -134,6 +247,19 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'selected_cpu_source': 'explicit-kernel-isolated',
         'selected_cpu_governor': 'performance',
         'cpu_frequency_state': {},
+        'cpu_topology': {'available': False, 'cpus': {}, 'allowed_cpus': [1]},
+        'cache_topology': [],
+        'numa_topology': {'available': False, 'nodes': {}},
+        'allowed_memory_nodes': None,
+        'memory_policy': None,
+        'memory_placement': {'available': False},
+        'cgroup_v2': {'available': False},
+        'loaded_native_libraries': [],
+        'native_library_identity': {
+            'available': True,
+            'source': '/proc/self/maps',
+            'reason': None,
+        },
         'geos_version': '3.13.0',
         'proj_version': '9.5.0',
     }
@@ -195,6 +321,11 @@ def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Pa
             'size_bytes': artifact.stat().st_size,
         } for artifact in copied],
     })
+    matrix, matrix_digest = bench_driver._paired_matrix_identity(
+        result['public_operations'], result['sampling']
+    )
+    result['paired_matrix'] = matrix
+    result['paired_matrix_sha256'] = matrix_digest
     manifest = run_directory / 'run.json'
     manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
     return manifest
@@ -206,6 +337,20 @@ def _analysis(tmp_path: Path) -> tuple[Path, Path]:
         run_manifest, output_dir=tmp_path / 'analyses'
     )
     return run_manifest, analysis_manifest
+
+
+def _mutate_first_block(run_manifest: Path, mutate) -> None:
+    result = json.loads(run_manifest.read_text(encoding='utf-8'))
+    raw = run_manifest.parent / result['raw_artifacts'][0]['path']
+    payload = json.loads(raw.read_text(encoding='utf-8'))
+    mutate(payload)
+    raw.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
+    for record in result['raw_artifacts']:
+        if record['path'] == f'raw/{raw.name}':
+            record['sha256'] = bench_driver._file_sha256(raw)
+            record['size_bytes'] = raw.stat().st_size
+            break
+    run_manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
 def test_release_measurement_cannot_publish_or_mutate_current(
@@ -246,7 +391,14 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         bench_driver,
         'collect',
         lambda **_: {
-            'metadata': {'cpu_frequency_state': {}},
+            'metadata': {
+                'cpu_frequency_state': {},
+                'uv_lock': {
+                    'path': str(tmp_path / 'lock'),
+                    'sha256': hashlib.sha256(b'x').hexdigest(),
+                    'size_bytes': 1,
+                },
+            },
             'hard_failures': [],
             'warnings': [],
         },
@@ -284,6 +436,7 @@ def test_release_measurement_cannot_publish_or_mutate_current(
             str(tmp_path / 'measurements'),
         ],
     )
+    (tmp_path / 'lock').write_bytes(b'x')
     bench_driver.main()
 
     after = {
@@ -345,7 +498,157 @@ def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> No
         bench_driver.analyze_run(incomplete_manifest, output_dir=tmp_path / 'stage2')
 
 
-def test_publication_accepts_absent_or_untracked_lock_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ('mutation', 'message'),
+    [
+        (lambda payload: payload['operation'].__setitem__('competitor', 'shapely.swapped'), 'extra or swapped'),
+        (lambda payload: payload.__setitem__('block_id', 'competitors-pair-01-block-01-ba'), 'extra or swapped'),
+        (lambda payload: payload.__setitem__('lead_order', ['B', 'A']), 'extra or swapped'),
+        (lambda payload: payload.__setitem__('profile', 'smoke'), 'profile identity mismatch'),
+        (lambda payload: payload.__setitem__('run_id', 'other-run-release'), 'run identity mismatch'),
+    ],
+    ids=('operation', 'block', 'lead', 'profile', 'run'),
+)
+def test_analysis_rejects_exact_matrix_mutations(
+    tmp_path: Path, mutation, message: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path)
+    _mutate_first_block(run_manifest, mutation)
+    with pytest.raises(SystemExit, match=message):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_comparator_module_mutation(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        identity = payload['arms']['B']['provenance_before']
+        identity['implementation']['module']['sha256'] = '1' * 64
+        payload['arms']['B']['provenance_after'] = identity
+        payload['arms']['B']['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match='module identity mismatch'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_native_library_mutation(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        identity = payload['arms']['A']['provenance_before']
+        identity['implementation']['native_libraries'][0]['sha256'] = '1' * 64
+        payload['arms']['A']['provenance_after'] = identity
+        payload['arms']['A']['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match='native-library identity mismatch'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_comparator_native_library_mutation(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        identity = payload['arms']['B']['provenance_before']
+        identity['implementation']['native_libraries'] = [{
+            **_file('/checkout/libgeos_c.so'),
+            'sha256': '1' * 64,
+        }]
+        identity['implementation']['native_library_status'] = 'identified'
+        payload['arms']['B']['provenance_after'] = identity
+        payload['arms']['B']['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match='native-library identity mismatch'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        for side in ('A', 'B'):
+            identity = payload['arms'][side]['provenance_before']
+            identity['uv_lock']['sha256'] = '1' * 64
+            payload['arms'][side]['provenance_after'] = identity
+            payload['arms'][side]['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match='lock identity mismatch'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_accepts_real_shape_engine_attribution(tmp_path: Path) -> None:
+    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
+    summary = json.loads((analysis_manifest.parent / 'summary.json').read_text())
+    first = summary['operations'][0]['blocks'][0]['producer_identities']['B']
+    assert first['implementation']['native_libraries'][0]['path'].endswith('libgeos_c.so')
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'message'),
+    [
+        ('missing', 'required geos engine is not attributed'),
+        ('unrelated', 'native-library ownership mismatch'),
+        ('hash', 'native-library identity mismatch'),
+    ],
+)
+def test_analysis_rejects_geos_attribution_mutations(
+    tmp_path: Path, mutation: str, message: str
+) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        identity = payload['arms']['B']['provenance_before']
+        if mutation == 'missing':
+            identity['implementation']['native_libraries'] = []
+            identity['implementation']['native_library_status'] = 'not-applicable'
+        elif mutation == 'unrelated':
+            identity['implementation']['native_libraries'] = [_file('/checkout/libpython.so')]
+        else:
+            identity['implementation']['native_libraries'][0]['sha256'] = '1' * 64
+        payload['arms']['B']['provenance_after'] = identity
+        payload['arms']['B']['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match=message):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+
+    def mutate(payload: dict[str, object]) -> None:
+        for side in ('A', 'B'):
+            identity = payload['arms'][side]['provenance_before']
+            identity['extension']['build_info']['opt_level'] = '0'
+            payload['arms'][side]['provenance_after'] = identity
+            payload['arms'][side]['observation']['producer_identity'] = identity
+
+    _mutate_first_block(run_manifest, mutate)
+    with pytest.raises(SystemExit, match='effective build identity'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_analysis_rejects_extra_paired_artifact(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
+    result = json.loads(run_manifest.read_text(encoding='utf-8'))
+    source = run_manifest.parent / result['raw_artifacts'][0]['path']
+    extra = run_manifest.parent / 'raw' / 'extra-paired.json'
+    shutil.copy2(source, extra)
+    result['artifacts'].append(f'raw/{extra.name}')
+    result['raw_artifacts'].append({
+        'path': f'raw/{extra.name}',
+        'sha256': bench_driver._file_sha256(extra),
+        'size_bytes': extra.stat().st_size,
+    })
+    run_manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    with pytest.raises(SystemExit, match='duplicate paired matrix identity'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+
+
+def test_publication_rejects_absent_or_untracked_lock_identity(tmp_path: Path) -> None:
     result = _result(tmp_path)
     result['doctor']['metadata']['uv_lock'] = {  # type: ignore[index]
         'path': None,
@@ -353,15 +656,8 @@ def test_publication_accepts_absent_or_untracked_lock_identity(tmp_path: Path) -
         'size_bytes': None,
     }
     run_manifest = _run_manifest(tmp_path, result)
-    analysis_manifest = bench_driver.analyze_run(
-        run_manifest, output_dir=tmp_path / 'analyses'
-    )
-    current = tmp_path / 'current'
-    bench_driver.publish_current_run(
-        analysis_manifest, output_dir=tmp_path / 'stage', current_dir=current
-    )
-    identity = json.loads((current / 'identity.json').read_text(encoding='utf-8'))
-    assert identity['uv_lock']['sha256'] is None
+    with pytest.raises(SystemExit, match='requires a lock file identity'):
+        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'analyses')
 
 
 def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:

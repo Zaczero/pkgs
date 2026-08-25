@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -97,3 +99,141 @@ def test_selected_cpu_governor_is_distinct_from_other_cpu_state() -> None:
     assert doctor.selected_cpu_governor(state, 0) == 'powersave'
     with pytest.raises(KeyError):
         doctor.selected_cpu_governor(state, 3)
+
+
+def test_topology_fixture_preserves_smt_and_numa_boundaries(tmp_path: Path) -> None:
+    cpu_root = tmp_path / 'cpu'
+    for cpu, socket, core, siblings in (
+        ('0', '0', '0', '0,2'),
+        ('2', '0', '0', '0,2'),
+        ('1', '1', '1', '1'),
+    ):
+        topology = cpu_root / f'cpu{cpu}' / 'topology'
+        topology.mkdir(parents=True)
+        (topology / 'physical_package_id').write_text(socket)
+        (topology / 'core_id').write_text(core)
+        (topology / 'thread_siblings_list').write_text(siblings)
+        (topology / 'core_cpus_list').write_text(siblings)
+    parsed = doctor.parse_cpu_topology(cpu_root)
+    assert parsed['cpus']['0']['thread_siblings'] == [0, 2]
+    assert parsed['cpus']['2']['core'] == '0'
+    assert parsed['cpus']['1']['socket'] == '1'
+
+    node_root = tmp_path / 'node'
+    for node, cpus in (('0', '0-1'), ('1', '2')):
+        path = node_root / f'node{node}'
+        path.mkdir(parents=True)
+        (path / 'cpulist').write_text(cpus)
+        (path / 'meminfo').write_text('Node MemTotal:       1024 kB\nNode MemFree:         512 kB\n')
+    numa = doctor.parse_numa_topology(node_root)
+    assert numa['nodes']['0']['cpus'] == [0, 1]
+    assert numa['nodes']['1']['cpus'] == [2]
+
+
+def test_cgroup_and_memory_placement_fixture_are_explicit(tmp_path: Path) -> None:
+    cgroup = tmp_path / 'cg'
+    cgroup.mkdir()
+    (cgroup / 'memory.max').write_text('1048576')
+    (cgroup / 'cpu.max').write_text('100000 100000')
+    proc_cgroup = tmp_path / 'cgroup'
+    proc_cgroup.write_text('0::/bench\n')
+    parsed = doctor.parse_cgroup_v2(proc_cgroup, tmp_path)
+    assert parsed['available'] is False
+    mount = tmp_path / 'mount' / 'bench'
+    mount.mkdir(parents=True)
+    (mount / 'memory.max').write_text('1048576')
+    (mount / 'cpu.max').write_text('100000 100000')
+    parsed = doctor.parse_cgroup_v2(proc_cgroup, tmp_path / 'mount')
+    assert parsed['available'] is True
+    assert parsed['values']['memory.max'] == '1048576'
+
+    status = tmp_path / 'status'
+    status.write_text('Mems_allowed_list:\t0-1\n')
+    maps = tmp_path / 'numa_maps'
+    maps.write_text('7f000 default file=/x N0=4 N1=2\n')
+    placement = doctor.parse_memory_placement(status, maps)
+    assert placement['allowed_memory_nodes'] == '0-1'
+    assert placement['observed_pages_by_node'] == {'0': 4, '1': 2}
+
+
+def test_native_library_ownership_uses_record_and_engine_associations() -> None:
+    def file_identity(path: str) -> dict[str, object]:
+        return {'path': path, 'sha256': '0' * 64, 'size_bytes': 1}
+
+    def package(name: str, module: str, extension: str) -> dict[str, object]:
+        return {
+            'module': file_identity(module),
+            'distribution': {
+                'name': name,
+                'version': '1',
+                'location': '/site-packages',
+                'metadata': file_identity(f'/site-packages/{name}.dist-info/METADATA'),
+                'record': file_identity(f'/site-packages/{name}.dist-info/RECORD'),
+                'record_available': True,
+                '_record_files': [extension],
+            },
+        }
+
+    shapely_extension = '/site-packages/shapely/lib.cpython-313-x86_64-linux-gnu.so'
+    pyproj_extension = '/site-packages/pyproj/_crs.cpython-313-x86_64-linux-gnu.so'
+    loaded = [
+        file_identity(shapely_extension),
+        file_identity('/nix/store/libgeos_c.so.1'),
+        file_identity(pyproj_extension),
+        file_identity('/nix/store/libproj.so.25'),
+        file_identity('/nix/store/libpython3.13.so'),
+    ]
+    shapely = doctor.implementation_identity(
+        'shapely.area/1',
+        file_identity('/site-packages/gometry/_lib.so'),
+        package_info=package('shapely', '/site-packages/shapely/__init__.py', shapely_extension),
+        loaded_native_libraries=loaded,
+    )
+    pyproj = doctor.implementation_identity(
+        'pyproj.transform/1',
+        file_identity('/site-packages/gometry/_lib.so'),
+        package_info=package('pyproj', '/site-packages/pyproj/__init__.py', pyproj_extension),
+        loaded_native_libraries=loaded,
+    )
+    assert {item['path'] for item in shapely['native_libraries']} == {
+        shapely_extension, '/nix/store/libgeos_c.so.1'
+    }
+    assert {item['path'] for item in pyproj['native_libraries']} == {
+        pyproj_extension, '/nix/store/libproj.so.25'
+    }
+    assert '/nix/store/libpython3.13.so' not in {
+        item['path'] for item in shapely['native_libraries'] + pyproj['native_libraries']
+    }
+
+
+def test_installed_native_identity_keeps_real_engine_ownership_bounded() -> None:
+    loaded: list[dict[str, object]] = []
+    for module_name in ('shapely.lib', 'pyproj._crs'):
+        try:
+            available = importlib.util.find_spec(module_name) is not None
+        except ModuleNotFoundError:
+            available = False
+        if available:
+            try:
+                importlib.import_module(module_name)
+            except ImportError:
+                pass
+    loaded = doctor._loaded_native_libraries()
+    extension = {'path': '/checkout/gometry/_lib.so', 'sha256': '0' * 64, 'size_bytes': 1}
+    for package_name, engine_token in (('shapely', 'geos'), ('pyproj', 'proj')):
+        package = doctor._package_identity(package_name)
+        if package is None:
+            continue
+        identity = doctor.implementation_identity(
+            f'{package_name}.installed/1',
+            extension,
+            package_info=package,
+            loaded_native_libraries=loaded,
+        )
+        engine_paths = [
+            item['path'] for item in loaded if engine_token in str(item['path']).lower()
+        ]
+        if engine_paths:
+            owned_paths = {item['path'] for item in identity['native_libraries']}
+            assert set(engine_paths) <= owned_paths
+            assert identity['native_library_status'] == 'identified'

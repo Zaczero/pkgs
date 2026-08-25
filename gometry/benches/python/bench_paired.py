@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import os
 import platform
 import sys
+import sysconfig
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -25,6 +25,20 @@ for _path in (_PYTHON, _SUPPORT, _DRIVERS):
 
 from _bench_oracles import OracleContext, PUBLIC_CASE_BUILDERS, public_oracle_identity
 from _bench_registry import operation_for_row
+from bench_doctor import (
+    _extension_identity,
+    _loaded_native_libraries,
+    _package_identity,
+    _source_inputs_digest,
+    _run,
+    _uv_lock_identity,
+    implementation_identity,
+)
+from benchmark_identity import (
+    IDENTITY_SCHEMA_VERSION,
+    identity_for_arm,
+    validate_producer_identity,
+)
 from benchmark_observation import make_observation
 
 _DEPENDENCIES = (
@@ -32,34 +46,12 @@ _DEPENDENCIES = (
     'mercantile', 'pygeohash',
 )
 _OUTPUT_SINK = 0
-
-
-def _package_identity() -> dict[str, str | None]:
-    versions: dict[str, str | None] = {}
-    for name in _DEPENDENCIES:
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
-    try:
-        import shapely
-        geos = getattr(shapely, 'geos_version_string', None)
-    except ImportError:
-        geos = None
-    try:
-        import pyproj
-        proj = getattr(pyproj, 'proj_version_str', None)
-    except ImportError:
-        proj = None
-    versions['GEOS'] = geos
-    versions['PROJ'] = proj
-    return versions
+PAIR_ARTIFACT_SCHEMA_VERSION = 2
 
 
 def producer_identity() -> dict[str, Any]:
     """Capture immutable producer facts, not transient host load."""
     import gometry._lib as lib
-    from bench_doctor import _extension_identity, _source_inputs_digest, _uv_lock_identity
 
     extension = _extension_identity()
     source_digest = _source_inputs_digest()
@@ -75,18 +67,64 @@ def producer_identity() -> dict[str, Any]:
         )
     if not isinstance(getattr(lib, '__build_info__', None), dict):
         raise SystemExit('paired block producer identity lacks embedded build info')
-    return {
+    packages = {
+        name: identity
+        for name in _DEPENDENCIES
+        if (identity := _package_identity(name)) is not None
+    }
+    identity = {
+        'identity_schema_version': IDENTITY_SCHEMA_VERSION,
+        'git_commit': _run(['git', 'rev-parse', 'HEAD']),
         'source_inputs_sha256': source_digest,
         'extension': extension,
         'uv_lock': _uv_lock_identity(),
-        'packages': _package_identity(),
+        'packages': packages,
+        'loaded_native_libraries': _loaded_native_libraries(),
         'python': {
-            'executable': sys.executable,
+            'executable': str(Path(sys.executable).resolve()),
             'version': sys.version,
             'implementation': platform.python_implementation(),
             'cache_tag': sys.implementation.cache_tag,
+            'build': {
+                'implementation': platform.python_implementation(),
+                'version': platform.python_version(),
+                'build': platform.python_build(),
+                'debug': bool(sysconfig.get_config_var('Py_DEBUG')),
+            },
         },
     }
+    return identity
+
+
+def _arm_identity(
+    identity: dict[str, Any], *, side: str, row: str, extension: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep common facts intact while attributing one implementation to an arm."""
+    if identity.get('identity_schema_version') != IDENTITY_SCHEMA_VERSION:
+        # Unit tests may inject a deliberately tiny identity provider; real
+        # worker output always comes from producer_identity above.
+        return identity
+    packages = identity.get('packages')
+    package_name = 'gometry' if row.startswith('gometry.') else row.split('.', 1)[0]
+    package_info = packages.get(package_name) if isinstance(packages, dict) else None
+    implementation = implementation_identity(
+        row,
+        extension,
+        package_info=package_info if isinstance(package_info, dict) else None,
+        loaded_native_libraries=identity.get('loaded_native_libraries'),
+    )
+    result = identity_for_arm(
+        identity,
+        side=side,
+        row=row,
+        runtime=implementation['runtime'],
+        module=implementation['module'],
+        distribution=implementation['distribution'],
+        native_libraries=implementation['native_libraries'],
+        native_library_status=implementation['native_library_status'],
+    )
+    validate_producer_identity(result)
+    return result
 
 
 def _consume_output(value: object) -> None:
@@ -106,14 +144,13 @@ def _measure_arm(
     row: str,
     call: Callable[[], object],
     clock_ns: Callable[[], int],
-    identity: Callable[[], dict[str, Any]],
+    producer_identity: dict[str, Any] | None,
     warmups: int,
     repetitions: int,
     oracle_identity: str,
 ) -> dict[str, Any]:
     if not callable(call):
         raise SystemExit(f'paired block callable for {row} is not callable')
-    identity_before = identity()
     for _ in range(warmups):
         _consume_output(call())
     started = clock_ns()
@@ -124,24 +161,25 @@ def _measure_arm(
         arm_ended = clock_ns()
         raw_seconds.append((arm_ended - arm_started) / 1_000_000_000.0)
     ended = clock_ns()
-    identity_after = identity()
-    if identity_before != identity_after:
-        raise SystemExit(f'paired block producer identity changed during {row}')
+    observation = make_observation(
+        metric='duration',
+        raw_values=raw_seconds,
+        useful_work={'count': 1, 'unit': 'equivalent-case-invocation'},
+        oracle_identity=oracle_identity,
+        phase='warm',
+        warmup_iterations=warmups,
+        calibration_iterations=repetitions,
+    )
+    if producer_identity is not None:
+        observation['producer_identity'] = producer_identity
+    arm_identity = producer_identity if producer_identity is not None else {}
     return {
         'row': row,
         'started_monotonic_ns': started,
         'ended_monotonic_ns': ended,
-        'provenance_before': identity_before,
-        'provenance_after': identity_after,
-        'observation': make_observation(
-            metric='duration',
-            raw_values=raw_seconds,
-            useful_work={'count': 1, 'unit': 'equivalent-case-invocation'},
-            oracle_identity=oracle_identity,
-            phase='warm',
-            warmup_iterations=warmups,
-            calibration_iterations=repetitions,
-        ),
+        'provenance_before': arm_identity,
+        'provenance_after': arm_identity,
+        'observation': observation,
     }
 
 
@@ -151,6 +189,8 @@ def run_block(
     block_id: str,
     pair_id: str,
     lead: str,
+    profile: str = 'release',
+    run_id: str = 'unbound',
     warmups: int,
     repetitions: int,
     clock_ns: Callable[[], int] = time.perf_counter_ns,
@@ -204,23 +244,56 @@ def run_block(
         'B': (operation.competitor, pair.competitor_call),
     }
     order = ('A', 'B') if lead == 'ab' else ('B', 'A')
+    common_before = identity()
     block_started = clock_ns()
+    if common_before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
+        arm_identity_before = {
+            side: _arm_identity(
+                common_before,
+                side=side,
+                row=row,
+                extension=common_before.get('extension', {}),
+            )
+            for side, row in arms.items()
+        }
+    else:
+        arm_identity_before = {'A': {}, 'B': {}}
     measured = {
         side: _measure_arm(
             row=arms[side][0],
             call=arms[side][1],
             clock_ns=clock_ns,
-            identity=identity,
+            producer_identity=arm_identity_before[side],
             warmups=warmups,
             repetitions=repetitions,
             oracle_identity=oracle_identity,
         )
         for side in order
     }
+    common_after = identity()
+    if common_before != common_after:
+        raise SystemExit('paired block producer identity changed during the timed block')
+    if common_after.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
+        arm_identity_after = {
+            side: _arm_identity(
+                common_after,
+                side=side,
+                row=row,
+                extension=common_after.get('extension', {}),
+            )
+            for side, row in arms.items()
+        }
+    else:
+        arm_identity_after = {'A': {}, 'B': {}}
     block_ended = clock_ns()
+    for side in ('A', 'B'):
+        measured[side]['provenance_after'] = arm_identity_after[side]
+        measured[side]['observation']['producer_identity'] = arm_identity_before[side]
     return {
-        'schema_version': 1,
+        'schema_version': PAIR_ARTIFACT_SCHEMA_VERSION,
         'artifact_type': 'gometry-paired-block',
+        'profile': profile,
+        'run_id': run_id,
         'block_id': block_id,
         'pair_id': pair_id,
         'operation': {
@@ -251,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--pair-id', required=True)
     parser.add_argument('--block-id', required=True)
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
+    parser.add_argument('--profile', choices=('smoke', 'release'), required=True)
+    parser.add_argument('--run-id', required=True)
     parser.add_argument('--warmups', type=int, required=True)
     parser.add_argument('--repetitions', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -273,6 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         block_id=args.block_id,
         pair_id=args.pair_id,
         lead=args.lead,
+        profile=args.profile,
+        run_id=args.run_id,
         warmups=args.warmups,
         repetitions=args.repetitions,
     )
