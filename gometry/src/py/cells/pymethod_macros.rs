@@ -129,7 +129,7 @@ macro_rules! grid_cell_common_pymethods {
             /// Returns
             /// -------
 #[doc = concat!("CellArray of ", $class_name, "")]
-            ///     The descendant cells.
+            ///     The descendant cells in the grid's public identity order.
             ///
             /// Raises
             /// ------
@@ -361,16 +361,17 @@ macro_rules! grid_free_functions {
                         )]
         pub(super) fn $cell_set_arg(
             cells: &pyo3::Bound<'_, pyo3::PyAny>,
-        ) -> pyo3::PyResult<Vec<$cell_type>> {
+        ) -> pyo3::PyResult<crate::grid::cell_set::CanonicalCellSet<$cell_type>> {
             let items = crate::py::cells::cell_items(cells)?;
             let ids = crate::try_collect_results(items.iter().map(|cell| $parse_cell(cell)))?;
-            Ok(crate::grid::cell_set::normalize(ids))
+            Ok(crate::grid::cell_set::CanonicalCellSet::new(ids)?)
         }
 
         #[doc = concat!("Hierarchy-aware union of two ", $label, " cell sets.")]
         ///
-        /// Returns the normalized cell union: sorted, with contained cells absorbed
-        /// by their ancestors and complete sibling groups merged into parents.
+        /// Returns the normalized cell union in the grid's public identity
+        /// order: contained cells are absorbed by their ancestors and complete
+        /// sibling groups are merged into parents.
         #[doc = $contract_doc]
         ///
         /// Parameters
@@ -398,7 +399,7 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::union(left, right);
+            let $array_cells = crate::grid::cell_set::union(left, right)?.into_public_vec();
             Ok($array_expr?)
         }
 
@@ -432,14 +433,15 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::intersection(&left, &right);
+            let $array_cells = crate::grid::cell_set::intersection(&left, &right)?.into_public_vec();
             Ok($array_expr?)
         }
 
         #[doc = concat!("Hierarchy-aware difference of two ", $label, " cell sets.")]
         ///
         /// Cells of ``left`` partially covered by ``right`` split into children
-        /// until the remainder is exact; the result is normalized.
+        /// until the remainder is exact; the result is normalized in the grid's
+        /// public identity order.
         #[doc = $contract_doc]
         ///
         /// Parameters
@@ -466,8 +468,7 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::difference(&left, &right)
-                .map_err(crate::py::cells::cell_limit_err)?;
+            let $array_cells = crate::grid::cell_set::difference(&left, &right)?.into_public_vec();
             Ok($array_expr?)
         }
     };

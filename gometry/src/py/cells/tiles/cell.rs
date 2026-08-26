@@ -10,7 +10,7 @@ use pyo3::types::{PyAny, PyBool, PyDict, PyTuple};
 
 use crate::Typed;
 use crate::curves::morton_interleave;
-use crate::grid::cell::GridCell;
+use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,

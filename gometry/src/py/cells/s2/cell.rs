@@ -202,7 +202,7 @@ use pyo3::types::PyBool;
 
 use crate::Typed;
 use crate::boundary::geographic::validate_lonlat_xy;
-use crate::grid::cell::GridCell;
+use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::cell_ops::{

@@ -262,7 +262,8 @@ impl Geohash {
     }
 }
 
-pub(crate) use crate::grid::cell_set::{compact_with_floor, uncompact, uncompact_unlimited};
+#[cfg(test)]
+use crate::grid::cell_set::uncompact;
 
 /// The 32 precision-1 root cells, in token order — the coverer's seeds.
 pub(crate) fn roots() -> Vec<Geohash> {
@@ -281,7 +282,7 @@ impl crate::grid::coverer::RectCell for Geohash {
     fn bounds(self) -> crate::geometry::Bounds {
         Self::bounds(self)
     }
-    fn children(self) -> impl Iterator<Item = Self> {
+    fn children(self) -> impl ExactSizeIterator<Item = Self> {
         Self::children(self)
     }
     fn edge_neighbors(self) -> [Option<Self>; 4] {
@@ -426,9 +427,9 @@ mod tests {
     }
 
     #[test]
-    fn uncompact_rejects_over_budget() {
+    fn uncompact_materializes_without_fixed_budget() {
         let root = Geohash::parse("u").unwrap();
-        let err = uncompact(&[root], 5).expect_err("precision 1 → 5 exceeds budget");
-        assert!(err.estimated > crate::grid::UNCOMPACT_MAX_CELLS);
+        let cells = uncompact(&[root], 4).expect("within allocator");
+        assert_eq!(cells.as_slice().len(), 32_usize.pow(3));
     }
 }

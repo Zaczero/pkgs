@@ -471,10 +471,10 @@ def test_p23_empty_center_uncompact_pickle():
 
 
 def test_p23_uncompact_past_million_pickle_roundtrips():
-    """Uncompact past UNCOMPACT_MAX_CELLS must still pickle-round-trip.
+    """Uncompact past one million cells must still pickle-round-trip.
 
-    Coverage transforms are uncapped; pickle reconstruction must use the same
-    unlimited path (not re-hit the uncompact budget).
+    Explicit expansion is not capped; pickle reconstruction must use the same
+    path without introducing a second limit.
     """
     # One world tile at z0 → 4^10 = 1_048_576 cells at z10 (>1M).
     cov = gm.tile_cover(gm.Point(10, 10, crs=4326), zoom=0).uncompact(10)
@@ -483,6 +483,17 @@ def test_p23_uncompact_past_million_pickle_roundtrips():
     out = pickle.loads(pickle.dumps(cov))
     assert len(out) == len(cov)
     np.testing.assert_array_equal(out.to_numpy(), cov.to_numpy())
+
+
+def test_cell_set_difference_past_million_cells_is_not_capped():
+    """Set algebra accepts a canonical, non-mergeable result over one million."""
+    leaves = gm.CellArray([gm.Tile('')], type=gm.Tile).uncompact(11)
+    left = leaves[::2]
+    result = gm.tile_difference(left, [])
+
+    assert len(result) == len(left) > 1_000_000
+    assert result[0] == left[0]
+    assert result[-1] == left[-1]
 
 
 def test_p23_projected_source_roundtrips():

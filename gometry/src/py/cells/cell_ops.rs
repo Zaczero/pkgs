@@ -4,7 +4,6 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::basic::CompareOp;
 use pyo3::prelude::*;
 
-use crate::grid::UncompactBudgetExceeded;
 use crate::grid::cell::{CellPickleArg, GridCell};
 use crate::py::cells::{GridKind, PyCellArray, lonlat_point_geometry};
 use crate::py::errors::GeometryError;
@@ -118,8 +117,7 @@ where
     let Some(target) = children_target_depth(cell, depth, parse_depth)? else {
         return Ok(Vec::new());
     };
-    cell.children_to(target)
-        .map_err(|err: UncompactBudgetExceeded| GeometryError::new_err(err.to_string()))
+    cell.children_to(target).map_err(Into::into)
 }
 
 pub(crate) fn cell_descendant_count<G, P>(

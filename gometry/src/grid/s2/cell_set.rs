@@ -8,14 +8,12 @@
 //!
 //! S2's complete quadtree makes every cell one contiguous leaf-id range, so
 //! all of this is sorted-vector work — no trees, no hashing. The kernels
-//! live in [`crate::grid::cell_set`] via [`HierarchicalId`]; this module
-//! re-exports them for existing `crate::grid::s2::cell_set::` call sites.
+//! live in [`crate::grid::cell_set`] via [`HierarchicalCell`].
 
-pub(crate) use crate::grid::cell_set::{
-    compact_with_floor, normalize, uncompact, uncompact_unlimited,
-};
 #[cfg(test)]
-use crate::grid::cell_set::{contains_any, difference, intersection, union};
+use crate::grid::cell_set::{
+    compact_with_floor, contains_any, difference, intersection, uncompact, union,
+};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::MAX_LEVEL;
 
@@ -61,13 +59,17 @@ impl ExactSizeIterator for CellIdChildren {
     }
 }
 
-impl crate::grid::cell_set::HierarchicalId for CellId {
+impl crate::grid::cell::HierarchicalCell for CellId {
     fn depth(self) -> u8 {
         self.level()
     }
 
     fn max_depth() -> u8 {
         MAX_LEVEL
+    }
+
+    fn public_key(self) -> u64 {
+        self.raw()
     }
 
     fn range_min(self) -> u64 {
@@ -125,7 +127,7 @@ mod tests {
             Vec::new(),
         ];
         for cells in cases {
-            let ours = normalize(cells.clone());
+            let ours = crate::grid::cell_set::CanonicalCellSet::new(cells.clone()).unwrap();
             let mut oracle = ::s2::cellunion::CellUnion(
                 cells
                     .iter()
@@ -134,11 +136,14 @@ mod tests {
             );
             oracle.normalize();
             assert_eq!(
-                ours.iter().map(|c| c.raw()).collect::<Vec<_>>(),
+                ours.as_slice().iter().map(|c| c.raw()).collect::<Vec<_>>(),
                 oracle.0.iter().map(|c| c.0).collect::<Vec<_>>()
             );
             // Idempotent.
-            assert_eq!(normalize(ours.clone()), ours);
+            assert_eq!(
+                crate::grid::cell_set::CanonicalCellSet::new(ours.as_slice().to_vec()).unwrap(),
+                ours
+            );
         }
     }
 
@@ -149,36 +154,54 @@ mod tests {
         let base = cell(13.4, 52.5, 10);
         let children = base.children().expect("not leaf");
         // A complete quartet would merge to level 10 — the floor forbids it.
-        assert_eq!(compact_with_floor(children.to_vec(), 11), children.to_vec());
-        assert_eq!(compact_with_floor(children.to_vec(), 10), vec![base]);
+        assert_eq!(
+            compact_with_floor(children.to_vec(), 11)
+                .unwrap()
+                .into_public_vec(),
+            children.to_vec()
+        );
+        assert_eq!(
+            compact_with_floor(children.to_vec(), 10)
+                .unwrap()
+                .into_public_vec(),
+            vec![base]
+        );
         // Already-coarser cells pass through unchanged.
         let coarse = cell(0.0, 0.0, 3);
-        let mixed = compact_with_floor(vec![coarse, children[0]], 5);
-        assert_eq!(mixed, normalize(vec![coarse, children[0]]));
+        let mixed = compact_with_floor(vec![coarse, children[0]], 5).unwrap();
+        assert_eq!(
+            mixed,
+            crate::grid::cell_set::CanonicalCellSet::new(vec![coarse, children[0]]).unwrap()
+        );
     }
 
     /// Uncompact inverts compact and orders along the curve.
     #[test]
     fn uncompact_round_trips() {
         let base = cell(13.4, 52.5, 10);
-        let expanded = uncompact(&[base], 12).expect("within budget");
-        assert_eq!(expanded.len(), 16);
-        assert!(expanded.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(expanded.iter().all(|&child| base.contains(child)));
-        assert_eq!(normalize(expanded), vec![base]);
+        let expanded = uncompact(&[base], 12).expect("within allocator");
+        assert_eq!(expanded.as_slice().len(), 16);
+        assert!(expanded.as_slice().windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            expanded
+                .as_slice()
+                .iter()
+                .all(|&child| base.contains(child))
+        );
+        assert_eq!(
+            crate::grid::cell_set::CanonicalCellSet::new(expanded.as_slice().to_vec())
+                .unwrap()
+                .into_public_vec(),
+            vec![base]
+        );
         // Leaf-level identity.
         let leaf = cell(1.0, 2.0, MAX_LEVEL);
-        assert_eq!(uncompact(&[leaf], MAX_LEVEL).expect("within budget"), vec![
-            leaf
-        ]);
-    }
-
-    /// Over-budget uncompact is rejected before allocation.
-    #[test]
-    fn uncompact_rejects_over_budget() {
-        let root = cell(0.0, 0.0, 0);
-        let err = uncompact(&[root], 15).expect_err("level 0 → 15 exceeds budget");
-        assert!(err.estimated > crate::grid::UNCOMPACT_MAX_CELLS);
+        assert_eq!(
+            uncompact(&[leaf], MAX_LEVEL)
+                .expect("within allocator")
+                .into_public_vec(),
+            vec![leaf]
+        );
     }
 
     /// Set-algebra identities on hierarchy overlaps.
@@ -186,27 +209,28 @@ mod tests {
     fn set_algebra_identities() {
         let base = cell(13.4, 52.5, 10);
         let children = base.children().expect("not leaf");
-        let left = normalize(vec![base]);
-        let right = normalize(children[..2].to_vec());
+        let left = crate::grid::cell_set::CanonicalCellSet::new(vec![base]).unwrap();
+        let right = crate::grid::cell_set::CanonicalCellSet::new(children[..2].to_vec()).unwrap();
 
         // union(ancestor, descendants) = ancestor.
-        assert_eq!(union(left.clone(), right.clone()), left);
+        assert_eq!(union(left.clone(), right.clone()).unwrap(), left);
         // intersection keeps the finer side.
-        assert_eq!(intersection(&left, &right), right);
+        assert_eq!(intersection(&left, &right).unwrap(), right);
         // difference splits exactly: base - first two children = last two.
         assert_eq!(
             difference(&left, &right).unwrap(),
-            normalize(children[2..].to_vec())
+            crate::grid::cell_set::CanonicalCellSet::new(children[2..].to_vec()).unwrap()
         );
         // x - x = empty; x - empty = x.
-        assert!(difference(&left, &left).unwrap().is_empty());
-        assert_eq!(difference(&left, &[]).unwrap(), left);
+        assert!(difference(&left, &left).unwrap().as_slice().is_empty());
+        let empty = crate::grid::cell_set::CanonicalCellSet::new(Vec::new()).unwrap();
+        assert_eq!(difference(&left, &empty).unwrap(), left);
         // Membership range searches.
-        assert!(contains_any(&left, children[3]));
-        assert!(intersects_any(&right, base));
-        assert!(!contains_any(&right, base));
-        assert!(!intersects_any(&right, children[3]));
+        assert!(contains_any(left.as_slice(), children[3]));
+        assert!(intersects_any(right.as_slice(), base));
+        assert!(!contains_any(right.as_slice(), base));
+        assert!(!intersects_any(right.as_slice(), children[3]));
         let far = cell(100.0, -40.0, 10);
-        assert!(!intersects_any(&left, far));
+        assert!(!intersects_any(left.as_slice(), far));
     }
 }

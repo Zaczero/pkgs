@@ -33,7 +33,7 @@ pub(crate) trait RectCell: Copy + Eq + Ord {
     /// The cell's exact lon/lat bounding rectangle.
     fn bounds(self) -> Bounds;
     /// The children one level finer.
-    fn children(self) -> impl Iterator<Item = Self>;
+    fn children(self) -> impl ExactSizeIterator<Item = Self>;
     /// Push each child with its lon/lat bounds into `out`, derived from
     /// `parent_bounds` when the grid allows (tiles: four children from parent
     /// edges + one shared latitude split). Default recomputes `child.bounds()`.

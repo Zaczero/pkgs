@@ -20,10 +20,9 @@ def test_geometry_amplification_returns_errors_before_allocation() -> None:
         line.line_interpolate(count=16_000_001)
 
 
-def test_h3_fanout_and_traversal_share_the_cell_limit() -> None:
+def test_h3_fanout_is_unbounded_but_grid_traversal_keeps_its_limit() -> None:
     cell = gm.H3Cell(0.0, 0.0, resolution=0)
-    with pytest.raises(gm.GeometryError, match='limit'):
-        cell.children(15)
+    assert len(cell.children(2)) == cell.children_count(2)
     with pytest.raises(gm.GeometryError, match='limit'):
         cell.grid_disk(100_000)
 

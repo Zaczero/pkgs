@@ -5,7 +5,6 @@ use pyo3::PyResult;
 
 use crate::Typed;
 mod cell;
-mod compact;
 mod dissolve;
 mod functions;
 mod grid_cell;
@@ -17,10 +16,8 @@ mod types;
 mod vertex_edge;
 mod vertex_edge_array;
 
-pub(super) use compact::h3_compact_ids_with_floor;
-use compact::{h3_compact_with_floor, parse_h3_grid_k};
 use dissolve::h3_dissolve;
-use functions::{h3_bounding_cell, h3_cells, h3_cover};
+use functions::{h3_bounding_cell, h3_cells, h3_cover, parse_h3_grid_k};
 pub(super) use functions::{h3_cell_from_xy, h3_cell_index};
 pub(super) use index::{H3Index, validate_h3_index_id, validate_h3_index_ids};
 use index::{collect_h3_index_ids, parse_h3_index};
@@ -37,28 +34,6 @@ use vertex_edge_array::{
     _unpickle_h3_edge_array, _unpickle_h3_vertex_array, PyH3EdgeArrayIter, PyH3VertexArrayIter,
 };
 pub(crate) use vertex_edge_array::{PyH3EdgeArray, PyH3VertexArray};
-
-pub(super) fn resolution_from_depth(depth: u8) -> PyResult<Resolution> {
-    h3_resolution(depth)
-}
-
-pub(super) fn compact_cells(
-    cells: Vec<CellIndex>,
-    min_resolution: Resolution,
-) -> PyResult<Vec<CellIndex>> {
-    h3_compact_with_floor(cells, min_resolution)
-}
-
-pub(super) fn uncompact_cells_unlimited(
-    cells: Vec<CellIndex>,
-    resolution: Resolution,
-) -> PyResult<Vec<CellIndex>> {
-    let mut out = Vec::new();
-    for cell in CellIndex::uncompact(cells, resolution) {
-        crate::try_push(&mut out, cell)?;
-    }
-    Ok(out)
-}
 
 pub(super) fn dissolve_cells(cells: Vec<CellIndex>) -> PyResult<Typed> {
     h3_dissolve(cells)

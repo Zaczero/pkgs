@@ -11,8 +11,8 @@ use thiserror::Error;
 /// Default cell-output budget for covering factories when `max_cells` is
 /// omitted. Secure-by-default against runaway coverings of untrusted boxes;
 /// callers pass a larger value or `max_cells=None` (unlimited) for deliberate
-/// large work. Non-coverage collectors (`grid_disk`, set algebra, …) still use
-/// this as their fixed hard limit.
+/// large work. The independent `grid_disk`/`grid_ring` traversal budget remains
+/// fixed because those operations take a radius rather than a caller budget.
 pub(crate) const GRID_MAX_CELLS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -85,10 +85,6 @@ impl<T> CellCollector<T> {
     }
 }
 
-/// Maximum number of cells an `uncompact` may materialize (checked from an
-/// estimate before allocation). Aliases the shared [`GRID_MAX_CELLS`] budget.
-pub(crate) const UNCOMPACT_MAX_CELLS: usize = GRID_MAX_CELLS;
-
 /// A covering whose running cell count would exceed the caller-supplied
 /// `max_cells` budget. The error message names `max_cells` so callers learn
 /// the override knob (`None` = unlimited).
@@ -118,35 +114,6 @@ pub(crate) const fn ensure_cover_budget(
     match max_cells {
         Some(limit) if produced > limit => Err(CoverBudgetExceeded::new(limit)),
         _ => Ok(()),
-    }
-}
-
-/// `uncompact` budget exceeded — estimated output cell count is too large.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("uncompact would produce {estimated} cells, exceeding the limit of {limit}")]
-pub(crate) struct UncompactBudgetExceeded {
-    pub estimated: usize,
-    limit: usize,
-}
-
-impl UncompactBudgetExceeded {
-    pub(crate) const fn new(estimated: usize) -> Self {
-        Self {
-            estimated,
-            limit: UNCOMPACT_MAX_CELLS,
-        }
-    }
-}
-
-/// Reject `uncompact` when the estimated output exceeds
-/// [`UNCOMPACT_MAX_CELLS`].
-pub(crate) const fn ensure_uncompact_budget(
-    estimated: usize,
-) -> Result<(), UncompactBudgetExceeded> {
-    if estimated > UNCOMPACT_MAX_CELLS {
-        Err(UncompactBudgetExceeded::new(estimated))
-    } else {
-        Ok(())
     }
 }
 

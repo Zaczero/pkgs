@@ -25,7 +25,7 @@ use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_fr
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes};
-use crate::grid::cell::GridCell;
+use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
 };
@@ -110,7 +110,9 @@ trait CellArrayGrid: GridCell {
     fn from_validated_id(id: u64) -> Self;
     fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn parse_compact_floor(depth: Option<&Bound<'_, PyAny>>) -> PyResult<u8>;
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>>;
+    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
+        Ok(crate::grid::cell_set::compact_with_floor(cells, floor)?.into_public_vec())
+    }
     fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
         let mut cells = crate::try_vec_with_capacity(ids.len())?;
         for id in ids {
@@ -123,7 +125,9 @@ trait CellArrayGrid: GridCell {
         }
         Ok(ids)
     }
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>>;
+    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
+        Ok(crate::grid::cell_set::uncompact(&cells, depth)?.into_public_vec())
+    }
     fn uncompact_floor_token(cell: &Self) -> String;
 }
 
@@ -150,18 +154,6 @@ impl CellArrayGrid for h3o::CellIndex {
         )
     }
 
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        super::h3::compact_cells(cells, super::h3::resolution_from_depth(floor)?)
-    }
-
-    fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
-        super::h3::h3_compact_ids_with_floor(ids, super::h3::resolution_from_depth(floor)?)
-    }
-
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        super::h3::uncompact_cells_unlimited(cells, super::h3::resolution_from_depth(depth)?)
-    }
-
     fn uncompact_floor_token(cell: &Self) -> String {
         cell.to_string()
     }
@@ -182,17 +174,6 @@ impl CellArrayGrid for crate::grid::s2::cellid::CellId {
             _ => 0,
         };
         super::s2::parse_s2_min_level_value(value)
-    }
-
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::s2::cell_set::compact_with_floor(cells, floor))
-    }
-
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::s2::cell_set::uncompact_unlimited(
-            &crate::grid::s2::cell_set::normalize(cells),
-            depth,
-        ))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -223,14 +204,6 @@ impl CellArrayGrid for crate::grid::tile::Tile {
         )
     }
 
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::tile::compact_with_floor(cells, floor))
-    }
-
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::tile::uncompact_unlimited(&cells, depth))
-    }
-
     fn uncompact_floor_token(cell: &Self) -> String {
         cell.quadkey()
     }
@@ -257,14 +230,6 @@ impl CellArrayGrid for crate::grid::geohash::Geohash {
             1,
             i64::from(crate::grid::geohash::GEOHASH_MAX_PRECISION),
         )
-    }
-
-    fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::geohash::compact_with_floor(cells, floor))
-    }
-
-    fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::geohash::uncompact_unlimited(&cells, depth))
     }
 
     fn uncompact_floor_token(cell: &Self) -> String {
@@ -1530,7 +1495,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
     }
 
-    /// Compact this cell set to the coarsest exact covering.
+    /// Compact this cell set to the coarsest exact covering, returned in the
+    /// grid's public identity order. Duplicates and descendants are absorbed;
+    /// complete sibling groups merge recursively, stopping at ``depth``.
     /// Missing rows are skipped; this is a set operation over present cells.
     ///
     /// Parameters
@@ -1568,7 +1535,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         Ok(Self::from_trusted_ids(kind, compacted))
     }
 
-    /// Expand this cell set to a uniform depth.
+    /// Expand this cell set to a uniform depth, returned in the grid's public
+    /// identity order. Expansion is bounded only by checked size arithmetic
+    /// and allocator capacity; it has no fixed cell-count limit.
     /// Missing rows are skipped; this is a set operation over present cells.
     ///
     /// Parameters

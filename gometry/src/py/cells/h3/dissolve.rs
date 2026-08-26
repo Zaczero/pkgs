@@ -1,4 +1,3 @@
-use super::functions::ensure_h3_uncompact_budget;
 use crate::geometry::CoordSeq;
 use crate::py::cells::coverage_ops::{
     GridDissolver, SortedCells, coordseq_crosses_lon_seam, dissolve_grid_cells,
@@ -35,20 +34,8 @@ impl GridDissolver for H3Dissolver {
             .iter()
             .any(|cell| cell.resolution() != resolution)
         {
-            let estimated =
-                ensure_h3_uncompact_budget(cells.as_slice().iter().copied(), resolution)?;
-            let seed = crate::try_collect_results(
-                cells
-                    .as_slice()
-                    .iter()
-                    .copied()
-                    .map(|cell| Ok::<_, pyo3::PyErr>(cell)),
-            )?;
-            let mut expanded = crate::try_vec_with_capacity(estimated)?;
-            for cell in CellIndex::uncompact(seed, resolution) {
-                crate::try_push(&mut expanded, cell)?;
-            }
-            Ok(Some(SortedCells::new(expanded)))
+            let expanded = crate::grid::cell_set::uncompact(cells.as_slice(), resolution.into())?;
+            Ok(Some(SortedCells::new(expanded.into_public_vec())))
         } else {
             Ok(Some(cells.clone()))
         }

@@ -10,7 +10,7 @@ use pyo3::types::PyAny;
 
 use crate::geometry::{CoordSeq, LineSeq, Shape, is_geographic_frame};
 use crate::grid::affine_source::normalize_grid_source;
-use crate::grid::cell::RectGridCell;
+use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer;
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
@@ -216,7 +216,7 @@ pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
 }
 
 pub(crate) trait RectCoverSpec {
-    type Cell: RectGridCell + crate::grid::cell_set::HierarchicalId;
+    type Cell: RectGridCell + HierarchicalCell;
 
     const KIND: GridKind;
 

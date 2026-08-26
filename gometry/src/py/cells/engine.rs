@@ -16,10 +16,6 @@ use crate::{
     expected_geometry_or_array, validate_lonlat_shape,
 };
 
-pub(super) fn uncompact_budget_err(err: crate::grid::UncompactBudgetExceeded) -> PyErr {
-    GeometryError::new_err(err.to_string())
-}
-
 pub(super) fn cell_limit_err(err: crate::grid::CellLimitExceeded) -> PyErr {
     GeometryError::new_err(err.to_string())
 }

@@ -402,6 +402,11 @@ normalized rather than rejected. This is identity algebra (an H3 child's *geomet
 does not nest exactly inside its parent, but its id does). S2 algebra is
 range-nesting exact; geohash/tile algebra is prefix-based.
 
+Every set-algebra, `compact()`, and `uncompact()` result uses the grid family's
+public identity order: H3 and S2 numeric id order, tile packed Morton-id order,
+and geohash token order. This presentation order is separate from the internal
+descendant-range order used to prove containment and merge sibling groups.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 

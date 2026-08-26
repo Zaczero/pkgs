@@ -627,13 +627,14 @@ def test_h3_to_polygon_dissolves_shared_edges() -> None:
         gm.CellArray([], type=gm.H3Cell).to_polygon()
 
 
-def test_h3_to_polygon_rejects_mixed_resolution_expansion_over_budget() -> None:
+def test_h3_to_polygon_expands_mixed_resolutions_without_fixed_budget() -> None:
     cells = [
         gm.H3Cell(0.0, 0.0, resolution=0),
-        gm.H3Cell(0.0, 0.0, resolution=15),
+        gm.H3Cell(0.0, 0.0, resolution=2),
     ]
-    with pytest.raises(gm.GeometryError, match='exceeding the limit'):
-        gm.CellArray(cells, type=gm.H3Cell).to_polygon()
+    outline = gm.CellArray(cells, type=gm.H3Cell).to_polygon()
+    assert outline.geometry_type == 'Polygon'
+    assert outline.is_valid
 
 
 # ---------------------------------------------------------------------------

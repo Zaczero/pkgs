@@ -246,8 +246,7 @@ pub(crate) const fn root() -> Tile {
 }
 
 #[cfg(test)]
-use crate::grid::cell_set::uncompact;
-pub(crate) use crate::grid::cell_set::{compact_with_floor, uncompact_unlimited};
+use crate::grid::cell_set::{compact_with_floor, uncompact};
 
 impl crate::grid::coverer::RectCell for Tile {
     fn depth(self) -> u8 {
@@ -256,7 +255,7 @@ impl crate::grid::coverer::RectCell for Tile {
     fn bounds(self) -> crate::geometry::Bounds {
         Self::bounds(self)
     }
-    fn children(self) -> impl Iterator<Item = Self> {
+    fn children(self) -> impl ExactSizeIterator<Item = Self> {
         Self::children(self).into_iter()
     }
     fn push_children_bounds(self, parent: Bounds, out: &mut Vec<(Self, Bounds)>) {
@@ -384,25 +383,52 @@ mod tests {
         let parent = Tile { z: 5, x: 10, y: 20 };
         // All four children of `parent` compact back into it…
         let children = parent.children().to_vec();
-        assert_eq!(compact_with_floor(children.clone(), 0), vec![parent]);
-        assert_eq!(compact_with_floor(children.clone(), 5), vec![parent]);
+        assert_eq!(
+            compact_with_floor(children.clone(), 0)
+                .unwrap()
+                .into_public_vec(),
+            vec![parent]
+        );
+        assert_eq!(
+            compact_with_floor(children.clone(), 5)
+                .unwrap()
+                .into_public_vec(),
+            vec![parent]
+        );
         // …unless the floor (coarsest allowed) forbids producing zoom 5.
         assert_eq!(
-            compact_with_floor(children.clone(), 6),
-            uncompact(&children, 6).expect("within budget")
+            compact_with_floor(children.clone(), 6)
+                .unwrap()
+                .into_public_vec(),
+            uncompact(&children, 6)
+                .expect("within allocator")
+                .into_public_vec()
         );
         // Three of four siblings do NOT merge (incomplete quad).
         let partial: Vec<Tile> = children[..3].to_vec();
-        assert_eq!(compact_with_floor(partial, 0).len(), 3);
+        assert_eq!(compact_with_floor(partial, 0).unwrap().as_slice().len(), 3);
         // uncompact expands back to a uniform zoom and round-trips a compacted set.
-        let expanded = uncompact(&[parent], 7).expect("within budget");
-        assert_eq!(expanded.len(), 16);
-        assert_eq!(compact_with_floor(expanded, 0), vec![parent]);
+        let expanded = uncompact(&[parent], 7).expect("within allocator");
+        assert_eq!(expanded.as_slice().len(), 16);
+        assert_eq!(
+            compact_with_floor(expanded.as_slice().to_vec(), 0)
+                .unwrap()
+                .into_public_vec(),
+            vec![parent]
+        );
         // A tile nested under an ancestor already present is absorbed —
         // including when the ancestor is COARSER than the merge floor.
         let mixed = vec![parent, Tile { z: 7, x: 41, y: 81 }];
-        assert_eq!(compact_with_floor(mixed.clone(), 0), vec![parent]);
-        assert_eq!(compact_with_floor(mixed, 6), vec![parent]);
+        assert_eq!(
+            compact_with_floor(mixed.clone(), 0)
+                .unwrap()
+                .into_public_vec(),
+            vec![parent]
+        );
+        assert_eq!(
+            compact_with_floor(mixed, 6).unwrap().into_public_vec(),
+            vec![parent]
+        );
     }
 
     #[test]
@@ -497,12 +523,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn uncompact_rejects_over_budget() {
-        let root = Tile { z: 0, x: 0, y: 0 };
-        let err = uncompact(&[root], 10).expect_err("z0 → z10 exceeds budget");
-        assert!(err.estimated > crate::grid::UNCOMPACT_MAX_CELLS);
     }
 }

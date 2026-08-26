@@ -9,6 +9,16 @@ use crate::py::cells::{
 };
 use crate::py::errors::InvalidGeometryError;
 
+pub(super) fn parse_h3_grid_k(value: &Bound<'_, PyAny>) -> PyResult<u32> {
+    let k = crate::py_i64_required("H3 grid distance", value)?;
+    if k < 0 {
+        return Err(GeometryError::new_err(
+            "H3 grid distance must be non-negative",
+        ));
+    }
+    u32::try_from(k).map_err(|_| GeometryError::new_err("H3 grid distance is too large"))
+}
+
 /// Build H3 cells from parallel lon/lat columns.
 ///
 /// Parameters
@@ -244,16 +254,6 @@ fn h3_cell_covers_samples(cell: CellIndex, samples: &[(f64, f64)]) -> bool {
     samples
         .iter()
         .all(|&(lon, lat)| LatLng::new(lat, lon).is_ok_and(|latlng| latlng.to_cell(res) == cell))
-}
-
-pub(super) fn ensure_h3_uncompact_budget(
-    cells: impl IntoIterator<Item = CellIndex>,
-    resolution: Resolution,
-) -> PyResult<usize> {
-    let estimated =
-        usize::try_from(CellIndex::uncompact_size(cells, resolution)).unwrap_or(usize::MAX);
-    crate::grid::ensure_uncompact_budget(estimated).map_err(super::super::uncompact_budget_err)?;
-    Ok(estimated)
 }
 
 pub(in crate::py::cells) fn h3_cell_from_xy(
