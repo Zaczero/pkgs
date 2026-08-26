@@ -4,9 +4,10 @@
 )]
 use geographiclib_rs::Geodesic;
 
+use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    EllipsoidMetric, Result, ensure_geodesic_lonlat_crs, ensure_geographic_lonlat, finite,
-    normalize, with_ellipsoid_metric, with_geodesic,
+    EllipsoidMetric, Result, ensure_geodesic_lonlat_crs_at, ensure_geographic_lonlat, finite,
+    normalize, with_ellipsoid_metric_at, with_geodesic_at,
 };
 use crate::geometry::{Coordinates, GeodesicMetric as _, Point, Shape};
 
@@ -30,7 +31,7 @@ pub(crate) fn geodesic_point_pair_distances(
     for (&x, &y) in std::iter::zip(right_xs, right_ys) {
         ensure_geographic_lonlat(x, y)?;
     }
-    let metric = EllipsoidMetric::for_geodesic(geodesic);
+    let metric = EllipsoidMetric::for_geodesic_at(geodesic, 0);
     std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
@@ -64,7 +65,7 @@ pub(crate) fn geodesic_point_pair_dwithin(
     for (&x, &y) in std::iter::zip(right_xs, right_ys) {
         ensure_geographic_lonlat(x, y)?;
     }
-    let metric = EllipsoidMetric::for_geodesic(geodesic);
+    let metric = EllipsoidMetric::for_geodesic_at(geodesic, 0);
     Ok(std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
@@ -83,15 +84,16 @@ pub(crate) fn geodesic_point_distances(
     xs: &[f64],
     ys: &[f64],
     target: Point,
+    state: &RuntimeState,
 ) -> Result<Vec<f64>> {
-    ensure_geodesic_lonlat_crs(crs)?;
+    ensure_geodesic_lonlat_crs_at(crs, state)?;
     ensure_geographic_lonlat(target.x, target.y)?;
     for (&x, &y) in std::iter::zip(xs, ys) {
         ensure_geographic_lonlat(x, y)?;
     }
     let crs = normalize(crs)?;
-    with_geodesic(&crs, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic(geodesic);
+    with_geodesic_at(&crs, state, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
         std::iter::zip(xs, ys)
             .map(|(&x, &y)| {
                 finite(
@@ -109,11 +111,16 @@ pub(crate) fn geodesic_point_distances(
 /// is the linework max-min over source vertices and source segment interiors,
 /// with target pruning via auxiliary-sphere bounds and exact
 /// point-to-segment distances.
-pub(crate) fn geodesic_hausdorff(crs: &str, a: &Shape, b: &Shape) -> Result<f64> {
+pub(crate) fn geodesic_hausdorff_at(
+    crs: &str,
+    a: &Shape,
+    b: &Shape,
+    state: &RuntimeState,
+) -> Result<f64> {
     if a.is_empty() || b.is_empty() {
         return Ok(f64::INFINITY);
     }
-    with_ellipsoid_metric(crs, &[a, b], |metric| {
+    with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         finite(
             a.geodesic_hausdorff_distance(b, metric),
             "geodesic Hausdorff distance",
@@ -126,14 +133,19 @@ pub(crate) fn geodesic_hausdorff(crs: &str, a: &Shape, b: &Shape) -> Result<f64>
 /// The geodesic sibling of `Shape::frechet_distance`. The coupling DP mirrors
 /// the planar discrete-Fréchet kernel exactly but couples on true Karney
 /// distances, with band pruning around a greedy coupling upper bound.
-pub(crate) fn geodesic_frechet(crs: &str, a: &Shape, b: &Shape) -> Result<f64> {
+pub(crate) fn geodesic_frechet_at(
+    crs: &str,
+    a: &Shape,
+    b: &Shape,
+    state: &RuntimeState,
+) -> Result<f64> {
     // Fréchet requires non-empty linework on both sides; `single_linework`
     // raises `EmptyLinework` for empty input, exactly like the planar path
     // (do NOT short-circuit empty to inf — that is the distance/Hausdorff
     // convention, not Fréchet's).
     let left = a.single_linework()?;
     let right = b.single_linework()?;
-    with_ellipsoid_metric(crs, &[a, b], |metric| {
+    with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         let distance = if left.coord_count() <= right.coord_count() {
             geodesic_frechet_dp(metric, left, right)
         } else {

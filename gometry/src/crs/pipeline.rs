@@ -11,7 +11,7 @@
 use crate::crs::runtime::{begin_proj_operation, publish_accuracy_diagnostic};
 use crate::crs::{
     CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
-    ProjPipeline, ProjTransformOptions, TransformOptions, coordinates_are_finite,
+    ProjPipeline, ProjTransformOptions, RuntimeState, TransformOptions, coordinates_are_finite,
     create_crs_transform_object, cstring, operation_info_from_pj, proj_context_error_message,
     proj_transform_error, ptr,
 };
@@ -29,12 +29,17 @@ fn begin_accuracy_diagnostics_for_batch() {
 }
 
 impl ProjPipeline {
-    pub(crate) fn new(source: &str, target: &str, options: &TransformOptions) -> Result<Self> {
+    pub(crate) fn new_with_state(
+        source: &str,
+        target: &str,
+        options: &TransformOptions,
+        state: &RuntimeState,
+    ) -> Result<Self> {
         let source_crs = cstring(source)?;
         let target_crs = cstring(target)?;
         let area = options.area_of_interest.map(ProjArea::new).transpose()?;
         let transform_options = ProjTransformOptions::new(options)?;
-        let context = ProjContext::new()
+        let context = ProjContext::new_with_state(state)
             .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
         let source_transform_object =
             create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
@@ -90,9 +95,12 @@ impl ProjPipeline {
         Ok(())
     }
 
-    pub(crate) fn from_definition(definition: &str) -> Result<Self> {
+    pub(crate) fn from_definition_with_state(
+        definition: &str,
+        state: &RuntimeState,
+    ) -> Result<Self> {
         let definition = cstring(definition)?;
-        let context = ProjContext::new().map_err(|error| {
+        let context = ProjContext::new_with_state(state).map_err(|error| {
             CrsError::crs_create(definition.to_string_lossy().into_owned(), error.to_string())
         })?;
         // SAFETY: DOC-H. Typed live context; definition is a live CString;

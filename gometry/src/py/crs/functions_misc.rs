@@ -14,9 +14,8 @@ use crate::py::crs::{Bound, CRSError, Crs, PyAny, PyResult, crs, parse_crs_inner
 /// >>> gm.crs_engine()['version']
 /// '9.6.2'
 pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
-    let mut info = crs::engine_info()?;
-    info.paths = crs::runtime_config()?.search_paths.unwrap_or_default();
-    Ok(info)
+    let state = crs::runtime_state_snapshot()?;
+    Ok(crs::engine_info_with_state(&state)?)
 }
 
 /// One required-CRS parser: borrowed `Crs`/text through the shared

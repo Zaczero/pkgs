@@ -3,10 +3,11 @@ use std::simd::num::SimdFloat as _;
 
 use geographiclib_rs::{Geodesic, PolygonArea, Winding, geodesic_capability as caps};
 
+use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo, GeodesicInterpolateInfo,
     GeodesicInverseInfo, ensure_geographic_lonlat, inverse_distance, inverse_distance_azimuths,
-    with_geodesic_erased,
+    with_geodesic_erased_at,
 };
 use crate::error::Result;
 use crate::geometry::{
@@ -98,12 +99,23 @@ impl From<bool> for DistanceMode {
 /// [`Geodesic`] lookup — the single entry point the geodesic metric ops
 /// (`geodesic_hausdorff`/`_nearest`/…) share, so none re-implements the
 /// validation and caching boilerplate.
+#[cfg(test)]
 pub(crate) fn with_ellipsoid_metric<T>(
     crs: &str,
     shapes: &[&Shape],
     f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<T>,
 ) -> Result<T> {
-    with_resolved_ellipsoid_metric(crs, shapes, |_, metric| f(metric))
+    let state = crate::crs::runtime_state_snapshot()?;
+    with_ellipsoid_metric_at(crs, shapes, &state, f)
+}
+
+pub(crate) fn with_ellipsoid_metric_at<T>(
+    crs: &str,
+    shapes: &[&Shape],
+    state: &RuntimeState,
+    f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<T>,
+) -> Result<T> {
+    with_resolved_ellipsoid_metric_at(crs, shapes, state, |_, metric| f(metric))
 }
 
 /// Run `f` against the normalized CRS string and resolved ellipsoid metric.
@@ -111,12 +123,13 @@ pub(crate) fn with_ellipsoid_metric<T>(
 /// This is the broadcast-friendly sibling of [`with_ellipsoid_metric`]: the
 /// CRS kind/unit checks, input lon/lat validation, PROJ cache refresh,
 /// normalization, and geodesic lookup happen once outside the row loop.
-pub(crate) fn with_resolved_ellipsoid_metric<T>(
+pub(crate) fn with_resolved_ellipsoid_metric_at<T>(
     crs: &str,
     shapes: &[&Shape],
+    state: &RuntimeState,
     f: impl FnOnce(&str, &EllipsoidMetric<'_>) -> Result<T>,
 ) -> Result<T> {
-    with_geodesic_erased(crs, shapes, |error| error, f)
+    with_geodesic_erased_at(crs, shapes, state, |error| error, f)
 }
 
 pub(crate) fn geodesic_shape_area(geodesic: &Geodesic, shape: &Shape) -> f64 {

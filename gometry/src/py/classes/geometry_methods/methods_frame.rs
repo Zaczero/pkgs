@@ -298,8 +298,12 @@ impl PyGeometry {
         if frame.identity {
             return Ok(Typed(self.clone()));
         }
-        let transformer =
-            crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
+        let transformer = crs::Transformer::new_with_options_at(
+            &frame.source,
+            &frame.target,
+            frame.options,
+            frame.state,
+        );
         let shape = transformer.transform_shape(&self.shape)?;
         drain_accuracy_warning(py)?;
         Ok(Typed(Self::with_frame(shape, frame.output)))

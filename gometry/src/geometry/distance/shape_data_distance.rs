@@ -126,7 +126,12 @@ impl ShapeData {
             crate::crs::ensure_geographic_lonlat(b.x, b.y)?;
             return Ok(metric.segment_length(*a, *b));
         }
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        );
         let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
         let other_parts = other.geodesic_parts(other_cache, key, metric)?;
         Ok(geodesic_distance_with_parts(
@@ -156,7 +161,12 @@ impl ShapeData {
             crate::crs::ensure_geographic_lonlat(b.x, b.y)?;
             return Ok(metric.segment_length(*a, *b) <= distance);
         }
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        );
         let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
         let other_parts = other.geodesic_parts(other_cache, key, metric)?;
         Ok(geodesic_dwithin_with_parts(
@@ -332,7 +342,12 @@ impl ShapeData {
         flattening: f64,
         metric: &impl GeodesicMetric,
     ) -> Result<Vec<f64>> {
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let mut stack = Vec::new();
         probes
@@ -361,7 +376,12 @@ impl ShapeData {
         metric: &impl GeodesicMetric,
         distance: f64,
     ) -> Result<Vec<bool>> {
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let mut stack = Vec::new();
         probes

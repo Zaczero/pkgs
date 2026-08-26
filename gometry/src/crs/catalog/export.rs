@@ -3,8 +3,8 @@ use crate::crs::{
     CRS_EXPORT_CACHE_CAPACITY, CachedCrsComparison, CachedCrsExport, CrsComparison,
     CrsComparisonKey, CrsExportKey, CrsExportKind, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsWktOptions, EllipsoidCatalogInfo, OnceLock, PrimeMeridianCatalogInfo, ProjObject,
-    ProjOperationCatalogInfo, WktVersion, ensure_thread_caches_current,
-    first_static_string_from_ptr, info, lru_resolve, normalize,
+    ProjOperationCatalogInfo, RuntimeState, WktVersion, ensure_thread_caches_current,
+    first_static_string_from_ptr, info_with_state, lru_resolve, normalize, runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -98,13 +98,24 @@ pub(crate) fn to_wkt_with_options(
     version: WktVersion,
     options: &CrsWktOptions,
 ) -> Result<String> {
+    let state = runtime_state_snapshot()?;
+    to_wkt_with_options_at(value, version, options, &state)
+}
+
+pub(crate) fn to_wkt_with_options_at(
+    value: &str,
+    version: WktVersion,
+    options: &CrsWktOptions,
+    state: &RuntimeState,
+) -> Result<String> {
     cached_export(
         value,
         || CrsExportKind::Wkt {
             version,
             options: options.clone(),
         },
-        wkt_export,
+        |key, state| wkt_export(key, state),
+        state,
     )
 }
 
@@ -116,12 +127,22 @@ pub(crate) fn to_projjson_with_options(
     value: &str,
     options: &CrsProjJsonOptions,
 ) -> Result<String> {
+    let state = runtime_state_snapshot()?;
+    to_projjson_with_options_at(value, options, &state)
+}
+
+pub(crate) fn to_projjson_with_options_at(
+    value: &str,
+    options: &CrsProjJsonOptions,
+    state: &RuntimeState,
+) -> Result<String> {
     cached_export(
         value,
         || CrsExportKind::ProjJson {
             options: options.clone(),
         },
-        projjson_export,
+        |key, state| projjson_export(key, state),
+        state,
     )
 }
 
@@ -143,66 +164,96 @@ pub(crate) fn to_proj(
     version: ProjStringVersion,
     options: &CrsProjOptions,
 ) -> Result<String> {
+    let state = runtime_state_snapshot()?;
+    to_proj_at(value, version, options, &state)
+}
+
+pub(crate) fn to_proj_at(
+    value: &str,
+    version: ProjStringVersion,
+    options: &CrsProjOptions,
+    state: &RuntimeState,
+) -> Result<String> {
     cached_export(
         value,
         || CrsExportKind::Proj {
             version,
             options: options.clone(),
         },
-        proj_string_export,
+        |key, state| proj_string_export(key, state),
+        state,
     )
 }
 
 pub(crate) fn cached_export(
     value: &str,
     kind: impl FnOnce() -> CrsExportKind,
-    produce: impl FnOnce(&CrsExportKey) -> Result<String>,
+    produce: impl FnOnce(&CrsExportKey, &RuntimeState) -> Result<String>,
+    state: &RuntimeState,
 ) -> Result<String> {
     let normalized = normalize(value)?;
     let key = CrsExportKey {
         crs: normalized,
         kind: kind(),
     };
-    cached_crs_export(&key, produce)
+    cached_crs_export_with_state(&key, state, produce)
 }
 
-fn wkt_export(key: &CrsExportKey) -> Result<String> {
+fn wkt_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::Wkt { version, options } = &key.kind else {
         unreachable!("WKT cache key");
     };
-    ProjObject::new(&key.crs)?.to_wkt_with_options(key.crs.clone(), version.to_proj(), options)
+    ProjObject::new_with_state(&key.crs, state)?.to_wkt_with_options(
+        key.crs.clone(),
+        version.to_proj(),
+        options,
+    )
 }
 
-fn projjson_export(key: &CrsExportKey) -> Result<String> {
+fn projjson_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::ProjJson { options } = &key.kind else {
         unreachable!("PROJJSON export cache key has PROJJSON options")
     };
-    ProjObject::new(&key.crs)?.to_projjson(key.crs.clone(), options)
+    ProjObject::new_with_state(&key.crs, state)?.to_projjson(key.crs.clone(), options)
 }
 
-fn proj_string_export(key: &CrsExportKey) -> Result<String> {
+fn proj_string_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::Proj { version, options } = &key.kind else {
         unreachable!("PROJ string cache key");
     };
-    ProjObject::new(&key.crs)?.to_proj_string(key.crs.clone(), version.to_proj(), options)
+    ProjObject::new_with_state(&key.crs, state)?.to_proj_string(
+        key.crs.clone(),
+        version.to_proj(),
+        options,
+    )
 }
 
-pub(crate) fn crs_to_2d_export(key: &CrsExportKey) -> Result<String> {
+pub(crate) fn crs_to_2d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::To2d { name } = &key.kind else {
         unreachable!("2D CRS cache key");
     };
-    ProjObject::new(&key.crs)?.to_2d(key.crs.clone(), name.as_deref())
+    ProjObject::new_with_state(&key.crs, state)?.to_2d(key.crs.clone(), name.as_deref())
 }
 
-pub(crate) fn crs_to_3d_export(key: &CrsExportKey) -> Result<String> {
+pub(crate) fn crs_to_3d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::To3d { name } = &key.kind else {
         unreachable!("3D CRS cache key");
     };
-    ProjObject::new(&key.crs)?.to_3d(key.crs.clone(), name.as_deref())
+    ProjObject::new_with_state(&key.crs, state)?.to_3d(key.crs.clone(), name.as_deref())
 }
 
 pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result<bool> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    same_with_state(left, right, comparison, &state)
+}
+
+pub(crate) fn same_with_state(
+    left: &str,
+    right: &str,
+    comparison: CrsComparison,
+    state: &RuntimeState,
+) -> Result<bool> {
+    ensure_thread_caches_current(state);
     let left = normalize(left)?;
     let right = normalize(right)?;
     // Order the pair so (A,B) and (B,A) share one cache entry (comparison is
@@ -224,7 +275,7 @@ pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result
             CRS_COMPARISON_CACHE_CAPACITY,
             |item| item.key == key,
             || {
-                let value = crs_same_uncached(&key.left, &key.right, key.mode)?;
+                let value = crs_same_uncached(&key.left, &key.right, key.mode, state)?;
                 Ok(CachedCrsComparison {
                     key: key.clone(),
                     value,
@@ -250,19 +301,24 @@ fn is_single_horizontal_crs(info: &CrsInfo) -> bool {
 /// each `proj_normalize_for_visualization`'d, then compared with
 /// `PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS`. `Exact` stays a strict PROJ
 /// equivalence. Both negative and positive results are cached by the caller.
-fn crs_same_uncached(left: &str, right: &str, mode: CrsComparison) -> Result<bool> {
+fn crs_same_uncached(
+    left: &str,
+    right: &str,
+    mode: CrsComparison,
+    state: &RuntimeState,
+) -> Result<bool> {
     if left == right {
         return Ok(true);
     }
     match mode {
         CrsComparison::Exact => {
-            let left = ProjObject::new(left)?;
-            let right = ProjObject::new(right)?;
+            let left = ProjObject::new_with_state(left, state)?;
+            let right = ProjObject::new_with_state(right, state)?;
             Ok(left.is_equivalent_to(&right, mode.criterion()))
         },
         CrsComparison::IgnoreAxisOrder => {
-            let left_info = info(left)?;
-            let right_info = info(right)?;
+            let left_info = info_with_state(left, state)?;
+            let right_info = info_with_state(right, state)?;
             if !is_single_horizontal_crs(&left_info) || !is_single_horizontal_crs(&right_info) {
                 // Compound / vertical / engineering / bound / mixed kinds: no
                 // axis-order relaxation — only the string-equality short path
@@ -272,18 +328,24 @@ fn crs_same_uncached(left: &str, right: &str, mode: CrsComparison) -> Result<boo
             if left_info.axes.len() != right_info.axes.len() {
                 return Ok(false);
             }
-            let left = ProjObject::new(left)?.into_normalized_for_visualization()?;
-            let right = ProjObject::new(right)?.into_normalized_for_visualization()?;
+            let left =
+                ProjObject::new_with_state(left, state)?.into_normalized_for_visualization()?;
+            let right =
+                ProjObject::new_with_state(right, state)?.into_normalized_for_visualization()?;
             Ok(left.is_equivalent_to(&right, mode.criterion()))
         },
     }
 }
 
-pub(crate) fn cached_crs_export<F>(key: &CrsExportKey, produce: F) -> Result<String>
+pub(crate) fn cached_crs_export_with_state<F>(
+    key: &CrsExportKey,
+    state: &RuntimeState,
+    produce: F,
+) -> Result<String>
 where
-    F: FnOnce(&CrsExportKey) -> Result<String>,
+    F: FnOnce(&CrsExportKey, &RuntimeState) -> Result<String>,
 {
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     CRS_EXPORT_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
         let index = lru_resolve(
@@ -291,7 +353,7 @@ where
             CRS_EXPORT_CACHE_CAPACITY,
             |item| &item.key == key,
             || {
-                let value = produce(key)?;
+                let value = produce(key, state)?;
                 Ok(CachedCrsExport {
                     key: key.clone(),
                     value,

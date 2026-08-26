@@ -80,7 +80,7 @@ pub(crate) fn shortest_line(
             let model = resolve_metric(geometry.crs_str(), unit, "shortest_line")?;
             // A crossing scalar can't share one prepared cache across the seam —
             // fall through to the split-normalizing broadcast below for it.
-            if let crs::MetricModel::Geodesic(crs) = model
+            if let crs::MetricModel::Geodesic { crs, state } = model
                 && !geometry.shape.shape().crosses_antimeridian()
                 && !array.has_missing()
             {
@@ -88,37 +88,45 @@ pub(crate) fn shortest_line(
                 let scalar_cache = Arc::clone(&geometry.frame_cache);
                 let array = array.clone();
                 let rows = py.detach(move || {
-                    crs::with_resolved_ellipsoid_metric(&crs, &[scalar.shape()], |crs, metric| {
-                        let (semi_major, flattening) = metric.ellipsoid_parameters();
-                        scalar.prepare_geodesic_parts(
-                            &scalar_cache,
-                            crs,
-                            semi_major,
-                            flattening,
-                            metric,
-                        )?;
-                        Ok(array
-                            .storage()
-                            .iter_rows()
-                            .enumerate()
-                            .map(|(row_index, row)| {
-                                let element = array.prepared_row(row_index, row);
-                                let element_cache = array.row_frame_cache(row_index);
-                                Ok(crate::geometry::nearest_line(
-                                    scalar.geodesic_nearest_points_cached_split(
-                                        &scalar_cache,
-                                        &element,
-                                        &element_cache,
-                                        crs,
-                                        semi_major,
-                                        flattening,
-                                        metric,
-                                    )?,
-                                    crate::geometry::common_axes(scalar.shape(), element.shape()),
-                                ))
-                            })
-                            .collect_rows())
-                    })
+                    crs::with_resolved_ellipsoid_metric_at(
+                        &crs,
+                        &[scalar.shape()],
+                        &state,
+                        |crs, metric| {
+                            let (semi_major, flattening) = metric.ellipsoid_parameters();
+                            scalar.prepare_geodesic_parts(
+                                &scalar_cache,
+                                crs,
+                                semi_major,
+                                flattening,
+                                metric,
+                            )?;
+                            Ok(array
+                                .storage()
+                                .iter_rows()
+                                .enumerate()
+                                .map(|(row_index, row)| {
+                                    let element = array.prepared_row(row_index, row);
+                                    let element_cache = array.row_frame_cache(row_index);
+                                    Ok(crate::geometry::nearest_line(
+                                        scalar.geodesic_nearest_points_cached_split(
+                                            &scalar_cache,
+                                            &element,
+                                            &element_cache,
+                                            crs,
+                                            semi_major,
+                                            flattening,
+                                            metric,
+                                        )?,
+                                        crate::geometry::common_axes(
+                                            scalar.shape(),
+                                            element.shape(),
+                                        ),
+                                    ))
+                                })
+                                .collect_rows())
+                        },
+                    )
                 })?;
                 let result =
                     PyGeometryArray::from_shapes(rows.map_err(rows_err)?, geometry.frame.clone());
@@ -127,7 +135,7 @@ pub(crate) fn shortest_line(
         }
         if let Some(array) = exact_geometry_array(left) {
             let model = resolve_metric(array.crs_str(), unit, "shortest_line")?;
-            if let crs::MetricModel::Geodesic(_) = model {
+            if let crs::MetricModel::Geodesic { .. } = model {
                 let result = array.shortest_line(right, unit)?;
                 return Ok(result.into_pyobject(py)?.unbind().into());
             }

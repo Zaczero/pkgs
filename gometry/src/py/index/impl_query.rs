@@ -241,10 +241,21 @@ impl PySpatialIndex {
         &self,
         metric: &crs::MetricModel,
     ) -> Option<Arc<GeodesicRowCaps>> {
-        let crs::MetricModel::Geodesic(crs) = metric else {
+        let crs::MetricModel::Geodesic { state, .. } = metric else {
             return None;
         };
-        let runtime_gen = crs::runtime_config_generation();
+        self.geodesic_row_caps_at(metric, state)
+    }
+
+    fn geodesic_row_caps_at(
+        &self,
+        metric: &crs::MetricModel,
+        runtime_state: &crs::RuntimeState,
+    ) -> Option<Arc<GeodesicRowCaps>> {
+        let crs::MetricModel::Geodesic { crs, .. } = metric else {
+            return None;
+        };
+        let runtime_gen = runtime_state.generation;
         let mut cache = self
             .geodesic_caps
             .lock()
@@ -258,7 +269,7 @@ impl PySpatialIndex {
         }
         // Resolve the ellipsoid OUTSIDE the metric scope: `with_geodesic`
         // holds the thread-local handle cache borrow across its closure.
-        let Ok(shape) = crs::ellipsoid_shape(crs) else {
+        let Ok(shape) = crs::ellipsoid_shape_at(crs, &runtime_state) else {
             *cache = GeodesicCapsCache {
                 row_count: self.rows.len(),
                 generation: self.mutation_gen,
@@ -267,7 +278,7 @@ impl PySpatialIndex {
             };
             return None;
         };
-        let built = crs::with_ellipsoid_metric(crs, &[], |ellipsoid| {
+        let built = crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
                 shape,
                 self.rows.len(),
@@ -281,6 +292,7 @@ impl PySpatialIndex {
                             semi_major,
                             flattening,
                             ellipsoid,
+                            &runtime_state,
                         )
                     })
                 }),
@@ -312,18 +324,34 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
     ) -> PyResult<Option<Vec<NearestCandidate>>> {
-        let Some(caps) = self.geodesic_row_caps(metric) else {
+        let crs::MetricModel::Geodesic {
+            state: runtime_state,
+            ..
+        } = metric
+        else {
             return Ok(None);
         };
-        let crs::MetricModel::Geodesic(crs) = metric else {
+        let Some(caps) = self.geodesic_row_caps_at(metric, &runtime_state) else {
             return Ok(None);
         };
-        let Some((anchor, reach)) = crs::with_ellipsoid_metric(crs, &[], |ellipsoid| {
-            let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-            Ok(query.geodesic_cap_cached(query_cache, crs, semi_major, flattening, ellipsoid))
-        })
-        .ok()
-        .flatten() else {
+        let crs::MetricModel::Geodesic { crs, .. } = metric else {
+            return Ok(None);
+        };
+        let Some((anchor, reach)) =
+            crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
+                let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
+                Ok(query.geodesic_cap_cached(
+                    query_cache,
+                    crs,
+                    semi_major,
+                    flattening,
+                    ellipsoid,
+                    &runtime_state,
+                ))
+            })
+            .ok()
+            .flatten()
+        else {
             return Ok(None);
         };
         let Some(query_anchor) = caps.query_anchor(anchor) else {
@@ -379,13 +407,13 @@ impl PySpatialIndex {
         metric: &crs::MetricModel,
         query: Option<Point>,
     ) -> Option<GeodesicPruner> {
-        let crs::MetricModel::Geodesic(crs) = metric else {
+        let crs::MetricModel::Geodesic { crs, state } = metric else {
             return None;
         };
         if self.non_prunable_live != 0 {
             return None;
         }
-        GeodesicPruner::new(crs, query?)
+        GeodesicPruner::new_at(crs, query?, state)
     }
 
     /// The candidate walk for one ALREADY frame-checked query: its bounds,
@@ -983,13 +1011,13 @@ impl PySpatialIndex {
             distance.and_then(|distance| model.and_then(|m| m.coordinate_radius(distance.get())));
         // Geodesic dwithin over an all-point index: the sound per-point
         // candidate window replaces the global scan.
-        let geodesic_crs = match (model, distance) {
-            (Some(crs::MetricModel::Geodesic(crs)), Some(_))
+        let (geodesic_crs, geodesic_state) = match (model, distance) {
+            (Some(crs::MetricModel::Geodesic { crs, state }), Some(_))
                 if self.non_prunable_live == 0 && coordinate_distance.is_none() =>
             {
-                Some(crs.clone())
+                (Some(crs.clone()), Some(state))
             },
-            _ => None,
+            _ => (None, None),
         };
         // CSR-direct: every row appends into one flat ids buffer (refine
         // compacts the row window in place, then the window sorts in
@@ -1015,7 +1043,10 @@ impl PySpatialIndex {
                     let distance = distance.get();
                     match geodesic_crs
                         .as_deref()
-                        .and_then(|crs| GeodesicPruner::new(crs, point))
+                        .and_then(|crs| {
+                            geodesic_state
+                                .and_then(|state| GeodesicPruner::new_at(crs, point, state))
+                        })
                         .and_then(|pruner| pruner.dwithin_windows(distance))
                     {
                         Some(windows) => {

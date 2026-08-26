@@ -320,21 +320,21 @@ impl PreparedIndexQuery {
         // projected/CRS-free index never build a temporary polygon.
         let geodesic_metric = match self {
             Self::CandidatesDwithin {
-                metric: crs::MetricModel::Geodesic(crs),
+                metric: crs::MetricModel::Geodesic { crs, state },
                 ..
             }
             | Self::Dwithin {
-                metric: crs::MetricModel::Geodesic(crs),
+                metric: crs::MetricModel::Geodesic { crs, state },
                 ..
-            } => Some(crs),
+            } => Some((crs, state)),
             _ => None,
         };
         let need_geodesic_cap = pruner_point.is_none() && geodesic_metric.is_some();
         let cap = match pruner_point {
             Some(point) => Some((point, 0.0)),
             None if need_geodesic_cap => row.with_shape(|shape| {
-                geodesic_metric.and_then(|crs| {
-                    crs::with_ellipsoid_metric(crs, &[shape], |ellipsoid| {
+                geodesic_metric.and_then(|(crs, state)| {
+                    crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
                         Ok(shape.geodesic_cap(ellipsoid))
                     })
                     .ok()

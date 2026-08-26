@@ -44,7 +44,24 @@ mod proj_env {
     pub fn prepare(_: &super::context::ProjContext) -> EnvResult<()> {
         Ok(())
     }
+
+    pub fn prepare_with_state(
+        _: &super::context::ProjContext,
+        _: &super::runtime::RuntimeState,
+    ) -> EnvResult<()> {
+        Ok(())
+    }
 }
+
+mod runtime {
+    pub struct RuntimeState;
+
+    pub fn runtime_state_snapshot() -> Result<std::sync::Arc<RuntimeState>, String> {
+        Ok(std::sync::Arc::new(RuntimeState))
+    }
+}
+
+use runtime::{RuntimeState, runtime_state_snapshot};
 
 #[path = "../context.rs"]
 mod context;
@@ -58,8 +75,7 @@ fn escape_and_use_after_drop() {
     // Under the correct signature this is E0308 (`&ProjContext` expected).
     // Under the named regression (`*mut ContextRaw` parameter) this compiles
     // — that is the RED signal.
-    let p: *mut proj_env::ContextRaw =
-        with_proj_context(|c| c.as_ptr()).expect("stub create");
+    let p: *mut proj_env::ContextRaw = with_proj_context(|c| c.as_ptr()).expect("stub create");
     // ERROR: expected `&ProjContext`, found `*mut ContextRaw`
     require_typed_proj_context(p);
 }

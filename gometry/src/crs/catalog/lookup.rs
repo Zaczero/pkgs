@@ -5,14 +5,15 @@ use crate::crs::{
     CRS_CATALOG_CACHE, CRS_CATALOG_CACHE_CAPACITY, CRS_CELESTIAL_BODIES_CACHE,
     CRS_CELESTIAL_BODIES_CACHE_CAPACITY, CachedCelestialBodies, CachedCrsCatalog,
     CelestialBodyInfo, CrsCatalogInfo, CrsCatalogOptions, CrsError, CrsObjectKind,
-    OwnedCelestialBodyList, OwnedCrsInfoList, OwnedProjStringList, ProjCrsListParameters, cstring,
-    ensure_thread_caches_current, info, lru_resolve, proj_context_error_message,
-    take_proj_string_list, with_proj_context,
+    OwnedCelestialBodyList, OwnedCrsInfoList, OwnedProjStringList, ProjCrsListParameters,
+    RuntimeState, cstring, ensure_thread_caches_current, info_with_state, lru_resolve,
+    proj_context_error_message, runtime_state_snapshot, take_proj_string_list,
+    with_proj_context_at,
 };
 use crate::error::Result;
 
-pub(crate) fn authorities() -> Result<Vec<String>> {
-    with_proj_context(|context| {
+pub(crate) fn authorities_with_state(state: &RuntimeState) -> Result<Vec<String>> {
+    with_proj_context_at(state, |context| {
         // SAFETY: DOC-H. Typed live context; PROJ returns a uniquely owned
         // null-terminated string list (or null); adopt immediately.
         let list = unsafe {
@@ -25,7 +26,12 @@ pub(crate) fn authorities() -> Result<Vec<String>> {
 }
 
 pub(crate) fn geoid_models(value: &str) -> Result<Vec<String>> {
-    let crs_info = info(value)?;
+    let state = runtime_state_snapshot()?;
+    geoid_models_with_state(value, &state)
+}
+
+pub(crate) fn geoid_models_with_state(value: &str, state: &RuntimeState) -> Result<Vec<String>> {
+    let crs_info = info_with_state(value, state)?;
     let (Some(authority), Some(code)) = (crs_info.authority.clone(), crs_info.code.clone()) else {
         return Err(CrsError::invalid(
             "geoid model lookup requires a CRS with an authority code".to_owned(),
@@ -33,7 +39,7 @@ pub(crate) fn geoid_models(value: &str) -> Result<Vec<String>> {
     };
     let authority = cstring(authority)?;
     let code = cstring(code)?;
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         // SAFETY: DOC-H. Typed context; authority/code CStrings live for the
         // call; null options use PROJ defaults; uniquely owned list adopted.
         let list = unsafe {
@@ -58,9 +64,10 @@ pub(crate) fn codes(
             "authority must be a non-empty string".to_owned(),
         ));
     }
+    let state = runtime_state_snapshot()?;
     let authority = cstring(authority)?;
     let type_ = CrsObjectKind::parse(kind)?.to_proj();
-    with_proj_context(|context| {
+    with_proj_context_at(&state, |context| {
         // SAFETY: DOC-H. Typed context; authority CString live for the call;
         // uniquely owned string list adopted immediately.
         let list = unsafe {
@@ -79,7 +86,16 @@ pub(crate) fn catalog(
     authority: Option<&str>,
     options: &CrsCatalogOptions,
 ) -> Result<Vec<CrsCatalogInfo>> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    catalog_with_state(authority, options, &state)
+}
+
+pub(crate) fn catalog_with_state(
+    authority: Option<&str>,
+    options: &CrsCatalogOptions,
+    state: &RuntimeState,
+) -> Result<Vec<CrsCatalogInfo>> {
+    ensure_thread_caches_current(state);
     options.validate()?;
     let authority = authority
         .filter(|value| !value.is_empty())
@@ -97,7 +113,7 @@ pub(crate) fn catalog(
                 Ok(CachedCrsCatalog {
                     authority: Some(authority.clone()),
                     options: options.clone(),
-                    items: catalog_uncached(Some(authority.as_str()), options)?,
+                    items: catalog_uncached(Some(authority.as_str()), options, state)?,
                 })
             },
         )?;
@@ -108,9 +124,10 @@ pub(crate) fn catalog(
 fn catalog_uncached(
     authority: Option<&str>,
     options: &CrsCatalogOptions,
+    state: &RuntimeState,
 ) -> Result<Vec<CrsCatalogInfo>> {
     let authority = authority.map(cstring).transpose()?;
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         let params = ProjCrsListParameters::new(options)?;
         let mut count = 0;
         // SAFETY: DOC-H. Typed context/params; optional authority CString live;
@@ -137,13 +154,16 @@ fn catalog_uncached(
     })?
 }
 
-pub(crate) fn celestial_bodies(authority: Option<&str>) -> Result<Vec<CelestialBodyInfo>> {
+pub(crate) fn celestial_bodies_with_state(
+    authority: Option<&str>,
+    state: &RuntimeState,
+) -> Result<Vec<CelestialBodyInfo>> {
     if matches!(authority, Some("")) {
         return Err(CrsError::invalid(
             "celestial body authority must be a non-empty string".to_owned(),
         ));
     }
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     let authority_owned = authority.map(str::to_owned);
     CRS_CELESTIAL_BODIES_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -154,7 +174,7 @@ pub(crate) fn celestial_bodies(authority: Option<&str>) -> Result<Vec<CelestialB
             || {
                 Ok(CachedCelestialBodies {
                     authority: authority_owned.clone(),
-                    items: celestial_bodies_uncached(authority)?.into(),
+                    items: celestial_bodies_uncached(authority, state)?.into(),
                 })
             },
         )?;
@@ -162,9 +182,12 @@ pub(crate) fn celestial_bodies(authority: Option<&str>) -> Result<Vec<CelestialB
     })
 }
 
-fn celestial_bodies_uncached(authority: Option<&str>) -> Result<Vec<CelestialBodyInfo>> {
+fn celestial_bodies_uncached(
+    authority: Option<&str>,
+    state: &RuntimeState,
+) -> Result<Vec<CelestialBodyInfo>> {
     let authority = authority.map(cstring).transpose()?;
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         let mut count = 0;
         // SAFETY: DOC-H. Typed context; optional authority live; OUT count
         // exclusive; returns caller-owned list with count entries.

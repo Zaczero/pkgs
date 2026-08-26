@@ -1,13 +1,13 @@
 use geographiclib_rs::Geodesic;
 
+use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, Result, ensure_geographic_lonlat, inverse_azimuths,
-    inverse_distance_azimuths, with_geodesic,
+    inverse_distance_azimuths, with_geodesic_at,
 };
 
-/// Copy the cached ellipsoid for a CRS once (batch nav kernels borrow it).
-pub(crate) fn geodesic_for_crs(crs: &str) -> Result<Geodesic> {
-    with_geodesic(crs, |geodesic| Ok(*geodesic))
+pub(crate) fn geodesic_for_crs_at(crs: &str, state: &RuntimeState) -> Result<Geodesic> {
+    with_geodesic_at(crs, state, |geodesic| Ok(*geodesic))
 }
 
 /// Initial geodesic bearing (degrees clockwise from north, `0..360`) on a
@@ -33,15 +33,15 @@ pub(crate) fn geodesic_bearing(
     })
 }
 
-/// Initial geodesic bearing (degrees clockwise from north, `0..360`).
-pub(crate) fn geodesic_bearing_crs(
+pub(crate) fn geodesic_bearing_crs_at(
     crs: &str,
     lon1: f64,
     lat1: f64,
     lon2: f64,
     lat2: f64,
+    state: &RuntimeState,
 ) -> Result<f64> {
-    with_geodesic(crs, |geodesic| {
+    with_geodesic_at(crs, state, |geodesic| {
         geodesic_bearing(geodesic, lon1, lat1, lon2, lat2)
     })
 }
@@ -65,16 +65,15 @@ pub(crate) fn geodesic_destination(
     Ok((lon2, lat2))
 }
 
-/// Destination lon/lat from a point along `azimuth` for `meters` (direct
-/// problem).
-pub(crate) fn geodesic_destination_crs(
+pub(crate) fn geodesic_destination_crs_at(
     crs: &str,
     lon: f64,
     lat: f64,
     azimuth: f64,
     meters: f64,
+    state: &RuntimeState,
 ) -> Result<(f64, f64)> {
-    with_geodesic(crs, |geodesic| {
+    with_geodesic_at(crs, state, |geodesic| {
         geodesic_destination(geodesic, lon, lat, azimuth, meters)
     })
 }
@@ -129,25 +128,19 @@ pub(crate) fn finite(value: f64, operation: &str) -> Result<f64> {
     }
 }
 
-/// Signed spherical cross-track distance (meters) from `point` to the
-/// great circle through `start -> end`.
-///
-/// Positive left of the directed path, negative right, zero on it.
-/// Spherical on the CRS ellipsoid's mean radius `(2a + b) / 3` — the
-/// classic navigation formula (ellipsoidal cross-track has no closed
-/// form).
-pub(crate) fn geodesic_cross_track_crs(
+pub(crate) fn geodesic_cross_track_crs_at(
     crs: &str,
     point: (f64, f64),
     start: (f64, f64),
     end: (f64, f64),
+    state: &RuntimeState,
 ) -> Result<f64> {
-    let radius = geodesic_cross_track_radius_crs(crs)?;
+    let radius = geodesic_cross_track_radius_crs_at(crs, state)?;
     geodesic_cross_track_with_radius(radius, point, start, end)
 }
 
-pub(crate) fn geodesic_cross_track_radius_crs(crs: &str) -> Result<f64> {
-    let shape = ellipsoid_shape(crs)?;
+pub(crate) fn geodesic_cross_track_radius_crs_at(crs: &str, state: &RuntimeState) -> Result<f64> {
+    let shape = super::ellipsoid_shape_at(crs, state)?;
     Ok(shape.semi_major.get() * (1.0 - shape.flattening / 3.0))
 }
 
@@ -209,8 +202,11 @@ impl EllipsoidShape {
     }
 }
 
-/// The CRS ellipsoid's semi-major axis (meters) and flattening — the
-/// parameters the spatial index's geodesic lower bound needs.
-pub(crate) fn ellipsoid_shape(crs: &str) -> Result<EllipsoidShape> {
-    with_geodesic(crs, |geodesic| EllipsoidShape::new(geodesic.a, geodesic.f))
+pub(crate) fn ellipsoid_shape_at(
+    crs: &str,
+    state: &crate::crs::RuntimeState,
+) -> Result<EllipsoidShape> {
+    with_geodesic_at(crs, state, |geodesic| {
+        EllipsoidShape::new(geodesic.a, geodesic.f)
+    })
 }

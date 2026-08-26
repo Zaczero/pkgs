@@ -73,6 +73,7 @@ where
 /// ellipsoid without depending on the CRS module.
 pub(crate) struct EllipsoidMetric<'a> {
     geodesic: &'a Geodesic,
+    runtime_generation: u64,
     /// Lazily built AND per-thread cached: the lower-bound tabulation is ~150
     /// µs of trig and is read ONLY by the foot-finding pruner
     /// ([`Self::point_distance_lower_bound`]). Point-to-point and other
@@ -82,9 +83,15 @@ pub(crate) struct EllipsoidMetric<'a> {
 }
 
 impl<'a> EllipsoidMetric<'a> {
+    #[cfg(test)]
     pub(crate) const fn for_geodesic(geodesic: &'a Geodesic) -> Self {
+        Self::for_geodesic_at(geodesic, 0)
+    }
+
+    pub(crate) const fn for_geodesic_at(geodesic: &'a Geodesic, runtime_generation: u64) -> Self {
         Self {
             geodesic,
+            runtime_generation,
             lower_bound: std::cell::OnceCell::new(),
         }
     }
@@ -95,6 +102,10 @@ impl<'a> EllipsoidMetric<'a> {
 }
 
 impl GeodesicMetric for EllipsoidMetric<'_> {
+    fn runtime_generation(&self) -> u64 {
+        self.runtime_generation
+    }
+
     fn make_segment(&self, start: Point, end: Point) -> GeodesicSegment {
         let (length, azimuth0, azimuth1) = geo_distance_azimuths(self.geodesic, start, end);
         GeodesicSegment {

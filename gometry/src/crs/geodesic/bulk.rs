@@ -1,13 +1,14 @@
 use std::simd::cmp::SimdPartialOrd as _;
 
+use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     AngleUnit, DistanceMode, GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo,
-    GeodesicInverseInfo, GeometryErrorKind, endpoints_are_repeated, ensure_geodesic_lonlat_crs,
+    GeodesicInverseInfo, GeometryErrorKind, endpoints_are_repeated, ensure_geodesic_lonlat_crs_at,
     ensure_geographic_domain, ensure_latitudes_in_domain, ensure_same_geodesic_len,
     geodesic_direct_on_ellipsoid, geodesic_direct_on_ellipsoid_const,
     geodesic_interpolate_on_line_const, geodesic_inverse_on_ellipsoid,
     geodesic_inverse_on_ellipsoid_const, geodesic_line_solution_const, geodesic_shape_length,
-    normalize, with_geodesic,
+    normalize, with_geodesic, with_geodesic_at,
 };
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, ReduceSimd, Shape, column_all_finite, simd_mask_any};
@@ -364,9 +365,11 @@ fn geodesic_interpolates_impl<const RADIANS: bool, const NORMALIZED: bool>(
     Ok(result)
 }
 
-pub(crate) fn geodesic_length(crs: &str, shape: &Shape) -> Result<f64> {
-    ensure_geodesic_lonlat_crs(crs)?;
+pub(crate) fn geodesic_length_at(crs: &str, shape: &Shape, state: &RuntimeState) -> Result<f64> {
+    ensure_geodesic_lonlat_crs_at(crs, state)?;
     ensure_geographic_domain(shape)?;
     let crs = normalize(crs)?;
-    with_geodesic(&crs, |geodesic| Ok(geodesic_shape_length(geodesic, shape)))
+    with_geodesic_at(&crs, state, |geodesic| {
+        Ok(geodesic_shape_length(geodesic, shape))
+    })
 }

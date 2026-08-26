@@ -65,8 +65,10 @@ impl ShapeData {
         semi_major: f64,
         flattening: f64,
         metric: &impl GeodesicMetric,
+        state: &crate::crs::RuntimeState,
     ) -> Option<(Point, f64)> {
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key =
+            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, state.generation);
         if let Some(parts) = self.cached_geodesic_parts(frame_cache, &key) {
             return geodesic_cap_from_parts(&parts, metric);
         }

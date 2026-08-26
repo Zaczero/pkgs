@@ -546,9 +546,9 @@ impl PyGeometryArray {
                     Ok(values)
                 })
             },
-            crs::MetricModel::Geodesic(geodesic_crs) => {
+            model @ crs::MetricModel::Geodesic { .. } => {
                 let crs::ResolvedMetric::Geodesic { geodesic, .. } =
-                    crs::ResolvedMetric::from_model(&crs::MetricModel::Geodesic(geodesic_crs))?
+                    crs::ResolvedMetric::from_model(&model)?
                 else {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };
@@ -627,9 +627,9 @@ impl PyGeometryArray {
                     ))
                 })
             },
-            crs::MetricModel::Geodesic(geodesic_crs) => {
+            model @ crs::MetricModel::Geodesic { .. } => {
                 let crs::ResolvedMetric::Geodesic { geodesic, .. } =
-                    crs::ResolvedMetric::from_model(&crs::MetricModel::Geodesic(geodesic_crs))?
+                    crs::ResolvedMetric::from_model(&model)?
                 else {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };

@@ -135,11 +135,12 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     let fixed_cache = Arc::clone(&fixed.frame_cache);
     let array_owned = array.clone();
     let missing = array.missing().cloned();
-    if let crate::crs::MetricModel::Geodesic(crs) = model {
+    if let crate::crs::MetricModel::Geodesic { crs, state } = model {
         let rows = py.detach(move || {
-            crate::crs::with_resolved_ellipsoid_metric(
+            crate::crs::with_resolved_ellipsoid_metric_at(
                 &crs,
                 &[fixed_shape.shape()],
+                &state,
                 |crs, metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
                     if !fixed_shape.shape().crosses_antimeridian() {

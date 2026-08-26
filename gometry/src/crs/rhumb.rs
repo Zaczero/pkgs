@@ -32,12 +32,13 @@
 
 use std::f64::consts::FRAC_PI_2;
 
+use crate::crs::RuntimeState;
 use crate::crs::cache::{
     CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, ensure_thread_caches_current,
     lru_resolve,
 };
 use crate::crs::error::CrsError;
-use crate::crs::geodesic::{ellipsoid_shape, ensure_geographic_lonlat};
+use crate::crs::geodesic::ensure_geographic_lonlat;
 use crate::crs::local::normalize_longitude;
 use crate::error::Result;
 
@@ -63,8 +64,19 @@ pub(in crate::crs) struct RhumbEllipsoid {
 }
 
 impl RhumbEllipsoid {
+    #[cfg(test)]
     fn for_crs(crs: &str) -> Result<Self> {
-        let shape = ellipsoid_shape(crs)?;
+        let state = crate::crs::runtime_state_snapshot()?;
+        let shape = super::geodesic::ellipsoid_shape_at(crs, &state)?;
+        Self::from_shape(shape)
+    }
+
+    fn for_crs_at(crs: &str, state: &RuntimeState) -> Result<Self> {
+        let shape = super::geodesic::ellipsoid_shape_at(crs, state)?;
+        Self::from_shape(shape)
+    }
+
+    fn from_shape(shape: super::geodesic::EllipsoidShape) -> Result<Self> {
         let f = shape.flattening;
         if !(0.0..=MAX_FLATTENING).contains(&f) {
             return Err(CrsError::message(format!(
@@ -244,15 +256,12 @@ fn shortest_lon_delta(lon1: f64, lon2: f64) -> f64 {
     }
 }
 
-/// Resolve the prepared [`RhumbEllipsoid`] for `crs` from the thread-local
-/// cache and run `f` against it — the rhumb sibling of `with_geodesic`, so a
-/// bulk rhumb call rebuilds the order-6 coefficient tables at most once per
-/// distinct CRS.
-pub(in crate::crs) fn with_rhumb<T>(
+pub(in crate::crs) fn with_rhumb_at<T>(
     crs: &str,
+    state: &RuntimeState,
     f: impl FnOnce(&RhumbEllipsoid) -> Result<T>,
 ) -> Result<T> {
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     CRS_RHUMB_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
@@ -262,7 +271,7 @@ pub(in crate::crs) fn with_rhumb<T>(
             || {
                 Ok(CachedRhumbEllipsoid {
                     crs: crs.to_owned(),
-                    ellipsoid: RhumbEllipsoid::for_crs(crs)?,
+                    ellipsoid: RhumbEllipsoid::for_crs_at(crs, state)?,
                 })
             },
         )?;
@@ -273,16 +282,17 @@ pub(in crate::crs) fn with_rhumb<T>(
 /// Rhumb-line distance (meters) between two lon/lat points.
 ///
 /// Distance-only: no `atan2` azimuth is computed.
-pub(crate) fn rhumb_distance_crs(
+pub(crate) fn rhumb_distance_crs_at(
     crs: &str,
     lon1: f64,
     lat1: f64,
     lon2: f64,
     lat2: f64,
+    state: &RuntimeState,
 ) -> Result<f64> {
     ensure_geographic_lonlat(lon1, lat1)?;
     ensure_geographic_lonlat(lon2, lat2)?;
-    with_rhumb(crs, |ellipsoid| {
+    with_rhumb_at(crs, state, |ellipsoid| {
         let lambda12 = shortest_lon_delta(lon1, lon2).to_radians();
         let phi1 = lat1.to_radians();
         let phi2 = lat2.to_radians();
@@ -316,20 +326,33 @@ pub(crate) fn rhumb_distance_crs(
     })
 }
 
-/// Constant rhumb bearing (degrees clockwise from north, `0..360`) from one
-/// lon/lat point to another.
-///
-/// Bearing-only: no rectifying series, slope, or distance is computed.
-pub(crate) fn rhumb_bearing_crs(
+#[cfg(test)]
+pub(crate) fn rhumb_distance_crs(
     crs: &str,
     lon1: f64,
     lat1: f64,
     lon2: f64,
     lat2: f64,
 ) -> Result<f64> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    rhumb_distance_crs_at(crs, lon1, lat1, lon2, lat2, &state)
+}
+
+/// Constant rhumb bearing (degrees clockwise from north, `0..360`) from one
+/// lon/lat point to another.
+///
+/// Bearing-only: no rectifying series, slope, or distance is computed.
+pub(crate) fn rhumb_bearing_crs_at(
+    crs: &str,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    state: &RuntimeState,
+) -> Result<f64> {
     ensure_geographic_lonlat(lon1, lat1)?;
     ensure_geographic_lonlat(lon2, lat2)?;
-    let azimuth = with_rhumb(crs, |ellipsoid| {
+    let azimuth = with_rhumb_at(crs, state, |ellipsoid| {
         let psi1 = ellipsoid.isometric(lat1);
         let psi2 = ellipsoid.isometric(lat2);
         let lambda12 = shortest_lon_delta(lon1, lon2).to_radians();
@@ -369,6 +392,18 @@ pub(crate) fn rhumb_bearing_crs(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn rhumb_bearing_crs(
+    crs: &str,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+) -> Result<f64> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    rhumb_bearing_crs_at(crs, lon1, lat1, lon2, lat2, &state)
+}
+
 /// Destination lon/lat along a constant `bearing` for `meters` (direct
 /// problem). `None` when the path would cross a pole — the destination
 /// longitude is indeterminate there (GeographicLib reports `NaN`).
@@ -376,15 +411,16 @@ pub(crate) fn rhumb_bearing_crs(
     clippy::float_cmp,
     reason = "exact-pole arrival (mu2 == pi/2) is a deliberate boundary case"
 )]
-pub(crate) fn rhumb_destination_crs(
+pub(crate) fn rhumb_destination_crs_at(
     crs: &str,
     lon: f64,
     lat: f64,
     bearing: f64,
     meters: f64,
+    state: &RuntimeState,
 ) -> Result<Option<(f64, f64)>> {
     ensure_geographic_lonlat(lon, lat)?;
-    with_rhumb(crs, |ellipsoid| {
+    with_rhumb_at(crs, state, |ellipsoid| {
         let phi1 = lat.to_radians();
         let alpha = bearing.to_radians();
         let arc = meters / ellipsoid.radius;
@@ -414,6 +450,18 @@ pub(crate) fn rhumb_destination_crs(
         let lon2 = finite(normalize_longitude(lon + dlon), "rhumb destination")?;
         Ok(Some((lon2, lat2)))
     })
+}
+
+#[cfg(test)]
+pub(crate) fn rhumb_destination_crs(
+    crs: &str,
+    lon: f64,
+    lat: f64,
+    bearing: f64,
+    meters: f64,
+) -> Result<Option<(f64, f64)>> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    rhumb_destination_crs_at(crs, lon, lat, bearing, meters, &state)
 }
 
 fn finite(value: f64, operation: &str) -> Result<f64> {

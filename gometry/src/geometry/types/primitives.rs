@@ -372,15 +372,6 @@ impl GeodesicPartsKey {
         self.runtime_generation
     }
 
-    pub(in crate::geometry) fn new(crs: &str, semi_major: f64, flattening: f64) -> Self {
-        Self::new_at_generation(
-            crs,
-            semi_major,
-            flattening,
-            crate::crs::runtime_config_generation(),
-        )
-    }
-
     pub(in crate::geometry) fn new_at_generation(
         crs: &str,
         semi_major: f64,

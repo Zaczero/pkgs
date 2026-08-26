@@ -10,9 +10,10 @@
 //! `use super::*`; re-exported at `crs` so `crs::transform` callers resolve.
 
 use crate::crs::{
-    CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, Shape,
+    CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
     TRANSFORM_BOUNDS_MAX_DENSIFY, TransformOptions, Transformer, coordinate_identity_crs, info,
-    normalize_pair, proj_error_message, with_proj_operation, with_proj_pipeline,
+    info_with_state, normalize_pair, proj_error_message, runtime_state_snapshot,
+    with_proj_operation_at, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{LineSeq, MOrdinate, ZOrdinate};
@@ -21,7 +22,23 @@ use crate::geometry::{LineSeq, MOrdinate, ZOrdinate};
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
 
 pub(crate) fn transform(shape: &Shape, source: &str, target: &str) -> Result<Shape> {
-    Transformer::new(source, target).transform_shape(shape)
+    let state = runtime_state_snapshot()?;
+    transform_at(shape, source, target, &state)
+}
+
+pub(crate) fn transform_at(
+    shape: &Shape,
+    source: &str,
+    target: &str,
+    state: &RuntimeState,
+) -> Result<Shape> {
+    Transformer::new_with_options_at(
+        source,
+        target,
+        TransformOptions::default(),
+        std::sync::Arc::new(state.clone()),
+    )
+    .transform_shape(shape)
 }
 
 pub(crate) fn transform_coordinates(
@@ -32,19 +49,20 @@ pub(crate) fn transform_coordinates(
     zt: crate::ZtLanes<'_>,
     options: TransformOptions,
 ) -> Result<()> {
-    Transformer::new_with_options(source, target, options).transform_coordinates(x, y, zt)
+    let state = runtime_state_snapshot()?;
+    Transformer::new_with_options_at(source, target, options, state).transform_coordinates(x, y, zt)
 }
 
 /// Shared densify gate for the bounds transforms: capped, and at least 2 when
 /// the output CRS is geographic (PROJ needs edge samples to track the
 /// antimeridian).
-fn validate_bounds_densify(target: &str, densify: u32) -> Result<()> {
+fn validate_bounds_densify(target: &str, densify: u32, state: &RuntimeState) -> Result<()> {
     if densify > TRANSFORM_BOUNDS_MAX_DENSIFY {
         return Err(CrsError::invalid(format!(
             "bounds densify must be <= {TRANSFORM_BOUNDS_MAX_DENSIFY}"
         )));
     }
-    if densify < 2 && is_geographic_crs(target)? {
+    if densify < 2 && is_geographic_crs_with_state(target, state)? {
         return Err(CrsError::invalid(
             "bounds densify must be at least 2 when the output CRS is geographic".to_owned(),
         ));
@@ -53,7 +71,7 @@ fn validate_bounds_densify(target: &str, densify: u32) -> Result<()> {
 }
 
 trait BoundsTransform: Copy {
-    fn validate(source: &str, bounds: Self) -> Result<()>;
+    fn validate(source: &str, bounds: Self, state: &RuntimeState) -> Result<()>;
     fn crosses_antimeridian(bounds: Self) -> bool;
     fn transform_one(transformer: &Transformer, bounds: Self, densify: u32) -> Result<Self>;
     fn transform_one_proj(transformer: &ProjPipeline, bounds: Self, densify: u32) -> Result<Self>;
@@ -61,8 +79,8 @@ trait BoundsTransform: Copy {
 }
 
 impl BoundsTransform for (f64, f64, f64, f64) {
-    fn validate(source: &str, bounds: Self) -> Result<()> {
-        validate_transform_bounds(source, bounds)
+    fn validate(source: &str, bounds: Self, state: &RuntimeState) -> Result<()> {
+        validate_transform_bounds_with_state(source, bounds, state)
     }
 
     fn crosses_antimeridian(bounds: Self) -> bool {
@@ -83,8 +101,8 @@ impl BoundsTransform for (f64, f64, f64, f64) {
 }
 
 impl BoundsTransform for TransformedBounds3d {
-    fn validate(source: &str, bounds: Self) -> Result<()> {
-        validate_transform_bounds_3d(source, bounds)
+    fn validate(source: &str, bounds: Self, state: &RuntimeState) -> Result<()> {
+        validate_transform_bounds_3d_with_state(source, bounds, state)
     }
 
     fn crosses_antimeridian(bounds: Self) -> bool {
@@ -110,21 +128,22 @@ fn transform_bounds_row<B: BoundsTransform>(
     bounds: B,
     densify: u32,
     options: TransformOptions,
+    state: std::sync::Arc<RuntimeState>,
 ) -> Result<B> {
-    B::validate(source, bounds)?;
+    B::validate(source, bounds, &state)?;
     reject_bounds_epochs(&options)?;
     if coordinate_identity_crs(source, target) {
         return Ok(bounds);
     }
-    validate_bounds_densify(target, densify)?;
+    validate_bounds_densify(target, densify, &state)?;
     if B::crosses_antimeridian(bounds) {
         let (source, target) = normalize_pair(source, target)?;
-        return with_proj_pipeline(&source, &target, &options, |transformer| {
+        return with_proj_pipeline_at(&source, &target, &options, &state, |transformer| {
             B::transform_one_proj(transformer, bounds, densify)
         });
     }
     B::transform_one(
-        &Transformer::new_with_options(source, target, options),
+        &Transformer::new_with_options_at(source, target, options, state),
         bounds,
         densify,
     )
@@ -136,23 +155,33 @@ fn transform_bounds_rows<B: BoundsTransform>(
     rows: &[B],
     densify: u32,
     options: TransformOptions,
+    state: std::sync::Arc<RuntimeState>,
 ) -> Result<Vec<B>> {
     for &bounds in rows {
-        B::validate(source, bounds)?;
+        B::validate(source, bounds, &state)?;
     }
     reject_bounds_epochs(&options)?;
     if coordinate_identity_crs(source, target) {
         return Ok(rows.to_vec());
     }
-    validate_bounds_densify(target, densify)?;
+    validate_bounds_densify(target, densify, &state)?;
     if rows.iter().any(|&bounds| B::crosses_antimeridian(bounds)) {
         return rows
             .iter()
-            .map(|&bounds| transform_bounds_row(source, target, bounds, densify, options.clone()))
+            .map(|&bounds| {
+                transform_bounds_row(
+                    source,
+                    target,
+                    bounds,
+                    densify,
+                    options.clone(),
+                    std::sync::Arc::clone(&state),
+                )
+            })
             .collect();
     }
     B::transform_many(
-        &Transformer::new_with_options(source, target, options),
+        &Transformer::new_with_options_at(source, target, options, state),
         rows,
         densify,
     )
@@ -174,7 +203,8 @@ pub(crate) fn transform_bounds(
     densify: u32,
     options: TransformOptions,
 ) -> Result<(f64, f64, f64, f64)> {
-    transform_bounds_row(source, target, bounds, densify, options)
+    let state = runtime_state_snapshot()?;
+    transform_bounds_row(source, target, bounds, densify, options, state)
 }
 
 pub(crate) fn transform_bounds_many(
@@ -184,7 +214,8 @@ pub(crate) fn transform_bounds_many(
     densify: u32,
     options: TransformOptions,
 ) -> Result<Vec<(f64, f64, f64, f64)>> {
-    transform_bounds_rows(source, target, rows, densify, options)
+    let state = runtime_state_snapshot()?;
+    transform_bounds_rows(source, target, rows, densify, options, state)
 }
 
 pub(crate) fn transform_bounds_3d(
@@ -194,7 +225,8 @@ pub(crate) fn transform_bounds_3d(
     densify: u32,
     options: TransformOptions,
 ) -> Result<(f64, f64, f64, f64, f64, f64)> {
-    transform_bounds_row(source, target, bounds, densify, options)
+    let state = runtime_state_snapshot()?;
+    transform_bounds_row(source, target, bounds, densify, options, state)
 }
 
 pub(crate) fn transform_bounds_3d_many(
@@ -204,7 +236,8 @@ pub(crate) fn transform_bounds_3d_many(
     densify: u32,
     options: TransformOptions,
 ) -> Result<Vec<TransformedBounds3d>> {
-    transform_bounds_rows(source, target, rows, densify, options)
+    let state = runtime_state_snapshot()?;
+    transform_bounds_rows(source, target, rows, densify, options, state)
 }
 
 pub(crate) fn apply_operation(
@@ -220,7 +253,8 @@ pub(crate) fn apply_operation(
             "operation definition is required".to_owned(),
         ));
     }
-    with_proj_operation(definition, |operation| {
+    let state = runtime_state_snapshot()?;
+    with_proj_operation_at(definition, &state, |operation| {
         transform_coordinates_with_pipeline(operation, direction, x, y, zt)
     })
 }
@@ -312,8 +346,12 @@ pub(crate) fn validate_bounds(bounds: (f64, f64, f64, f64)) -> Result<()> {
     Err(CrsError::invalid(BOUNDS_2D_ERROR.to_owned()))
 }
 
-pub(crate) fn validate_transform_bounds(source: &str, bounds: (f64, f64, f64, f64)) -> Result<()> {
-    if is_geographic_crs(source)? {
+fn validate_transform_bounds_with_state(
+    source: &str,
+    bounds: (f64, f64, f64, f64),
+    state: &RuntimeState,
+) -> Result<()> {
+    if is_geographic_crs_with_state(source, state)? {
         if all_finite(&<[f64; 4]>::from(bounds))
             && (-180.0..=180.0).contains(&bounds.0)
             && (-180.0..=180.0).contains(&bounds.2)
@@ -340,11 +378,12 @@ pub(crate) fn validate_bounds_3d(bounds: (f64, f64, f64, f64, f64, f64)) -> Resu
     Err(CrsError::invalid(BOUNDS_3D_ERROR.to_owned()))
 }
 
-pub(crate) fn validate_transform_bounds_3d(
+fn validate_transform_bounds_3d_with_state(
     source: &str,
     bounds: (f64, f64, f64, f64, f64, f64),
+    state: &RuntimeState,
 ) -> Result<()> {
-    if is_geographic_crs(source)? {
+    if is_geographic_crs_with_state(source, state)? {
         if all_finite(&<[f64; 6]>::from(bounds))
             && (-180.0..=180.0).contains(&bounds.0)
             && (-180.0..=180.0).contains(&bounds.3)
@@ -366,6 +405,10 @@ pub(crate) fn validate_transform_bounds_3d(
 /// walk as [`CrsInfo::is_geographic`].
 pub(crate) fn is_geographic_crs(value: &str) -> Result<bool> {
     Ok(info(value)?.is_geographic())
+}
+
+pub(crate) fn is_geographic_crs_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
+    Ok(info_with_state(value, state)?.is_geographic())
 }
 
 pub(crate) fn transform_coordinates_with_pipeline(

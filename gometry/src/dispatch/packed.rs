@@ -448,8 +448,8 @@ fn linref_point_between_packed_inner(
     // Parameter errors raise on BOTH surfaces: the coordseq row loop below
     // clamps out-of-range stationing by design, so a non-finite distance
     // must be rejected here (the scalar path's kernel owns its own check).
-    if let MetricModel::Geodesic(crs) = model {
-        crate::crs::with_geodesic_coordseq_collect_rows(crs, |metric| {
+    if let MetricModel::Geodesic { crs, state } = model {
+        crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -514,8 +514,8 @@ fn linref_substring_packed_inner(
     end_distance: &F64Param,
     normalized: bool,
 ) -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-    if let MetricModel::Geodesic(crs) = model {
-        crate::crs::with_geodesic_coordseq_collect_rows(crs, |metric| {
+    if let MetricModel::Geodesic { crs, state } = model {
+        crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);

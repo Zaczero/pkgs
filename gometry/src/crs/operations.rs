@@ -11,10 +11,10 @@ use std::simd::num::SimdFloat as _;
 use crate::crs::{
     CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CachedCrsOperations, CrsError,
     OperationInfo, OwnedPj, ProjContext, ProjDirection, ProjObjList, ProjOperationFactoryContext,
-    TransformOptions, Transformer, create_crs_transform_object, cstring,
+    RuntimeState, TransformOptions, Transformer, create_crs_transform_object, cstring,
     ensure_thread_caches_current, is_wgs84_lonlat, lonlat_to_web_mercator_xy, lru_resolve,
-    normalize_pair, operation_info, operation_info_from_pj, proj_context_error_message,
-    validate_coordinate_lanes, web_mercator_to_lonlat_xy, with_proj_diagnostic_pipeline,
+    normalize_pair, operation_info_from_pj, proj_context_error_message, runtime_state_snapshot,
+    validate_coordinate_lanes, web_mercator_to_lonlat_xy, with_proj_diagnostic_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, simd_indexed_map_f64};
@@ -53,9 +53,20 @@ pub(crate) fn roundtrip_errors(
                 .map_err(|error| CrsError::transform(source, target, error.to_string()));
         }
     }
+    let state = runtime_state_snapshot()?;
     if options.allows_in_core() {
-        let forward = Transformer::new_with_options(&source, &target, options.clone());
-        let reverse = Transformer::new(&target, &source);
+        let forward = Transformer::new_with_options_at(
+            &source,
+            &target,
+            options.clone(),
+            std::sync::Arc::clone(&state),
+        );
+        let reverse = Transformer::new_with_options_at(
+            &target,
+            &source,
+            TransformOptions::default(),
+            std::sync::Arc::clone(&state),
+        );
         if forward.is_in_core() && reverse.is_in_core() {
             return roundtrip_errors_with_transformers(
                 &forward, &reverse, direction, iterations, x, y, zt,
@@ -63,7 +74,7 @@ pub(crate) fn roundtrip_errors(
             .map_err(|error| CrsError::transform(source, target, error.to_string()));
         }
     }
-    with_proj_diagnostic_pipeline(&source, &target, options, |pipeline| {
+    with_proj_diagnostic_pipeline_at(&source, &target, options, &state, |pipeline| {
         pipeline.roundtrip_errors(direction, iterations, x, y, z, t)
     })
 }
@@ -491,15 +502,27 @@ fn transform_web_mercator_coordinates(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn operations_info(
     source: &str,
     target: &str,
     options: &TransformOptions,
 ) -> Result<Vec<OperationInfo>> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    operations_info_with_state(source, target, options, &state)
+}
+
+pub(crate) fn operations_info_with_state(
+    source: &str,
+    target: &str,
+    options: &TransformOptions,
+    state: &RuntimeState,
+) -> Result<Vec<OperationInfo>> {
+    ensure_thread_caches_current(state);
     options.validate()?;
     if options.only_best == Some(true) || options.force_over {
-        return operation_info(source, target, options).map(|operation| vec![operation]);
+        return crate::crs::operation_info_with_state(source, target, options, state)
+            .map(|operation| vec![operation]);
     }
     let (source, target) = normalize_pair(source, target)?;
     CRS_OPERATIONS_CACHE.with(|cache| {
@@ -509,7 +532,7 @@ pub(crate) fn operations_info(
             CRS_OPERATIONS_CACHE_CAPACITY,
             |item| item.source == source && item.target == target && item.options == *options,
             || {
-                let items = operations_info_uncached(&source, &target, options)?;
+                let items = operations_info_uncached(&source, &target, options, state)?;
                 Ok(CachedCrsOperations {
                     source: source.clone(),
                     target: target.clone(),
@@ -526,10 +549,11 @@ pub(crate) fn operations_info_uncached(
     source: &str,
     target: &str,
     options: &TransformOptions,
+    state: &RuntimeState,
 ) -> Result<Vec<OperationInfo>> {
     let source_crs = cstring(source)?;
     let target_crs = cstring(target)?;
-    let context = ProjContext::new()
+    let context = ProjContext::new_with_state(state)
         .map_err(|error| CrsError::transform_create(source, target, error.to_string()))?;
     let source_object =
         create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;

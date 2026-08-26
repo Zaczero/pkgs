@@ -1,15 +1,24 @@
 use std::ptr;
 
-use crate::crs::catalog::catalog;
+use crate::crs::catalog::catalog_with_state;
 use crate::crs::{
     CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedUnits, CrsCatalogInfo, CrsCatalogOptions,
-    CrsError, CrsObjectKind, OwnedUnitList, UnitInfo, UtmCatalogOptions, cstring,
+    CrsError, CrsObjectKind, OwnedUnitList, RuntimeState, UnitInfo, UtmCatalogOptions, cstring,
     ensure_thread_caches_current, lru_resolve, proj_context_error_message, with_proj_context,
+    with_proj_context_at,
 };
 use crate::error::Result;
 use crate::text::str_contains_ignore_ascii_case;
 
 pub(crate) fn utm_zones(options: &UtmCatalogOptions) -> Result<Vec<CrsCatalogInfo>> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    utm_zones_at(options, &state)
+}
+
+pub(crate) fn utm_zones_at(
+    options: &UtmCatalogOptions,
+    state: &RuntimeState,
+) -> Result<Vec<CrsCatalogInfo>> {
     options.validate()?;
     let catalog_options = CrsCatalogOptions {
         kind: Some(CrsObjectKind::ProjectedCrs),
@@ -19,7 +28,7 @@ pub(crate) fn utm_zones(options: &UtmCatalogOptions) -> Result<Vec<CrsCatalogInf
         celestial_body: Some("Earth".to_owned()),
     };
     let datum_name = options.datum_name.as_deref();
-    let mut items = catalog(Some("EPSG"), &catalog_options)?
+    let mut items = catalog_with_state(Some("EPSG"), &catalog_options, state)?
         .into_iter()
         .filter(|info| is_utm_crs_info(info, datum_name))
         .collect::<Vec<_>>();
@@ -95,17 +104,18 @@ pub(crate) fn unit_info(authority: &str, code: &str) -> Result<UnitInfo> {
     })?
 }
 
-pub(crate) fn units(
+pub(crate) fn units_with_state(
     authority: &str,
     category: Option<&str>,
     allow_deprecated: bool,
+    state: &RuntimeState,
 ) -> Result<Vec<UnitInfo>> {
     if authority.is_empty() {
         return Err(CrsError::invalid(
             "unit authority must be a non-empty string".to_owned(),
         ));
     }
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     let authority_owned = authority.to_owned();
     let category_owned = category.map(str::to_owned);
     CRS_UNITS_CACHE.with(|cache| {
@@ -123,7 +133,7 @@ pub(crate) fn units(
                     authority: authority_owned.clone(),
                     category: category_owned.clone(),
                     allow_deprecated,
-                    items: units_uncached(authority, category, allow_deprecated)?.into(),
+                    items: units_uncached(authority, category, allow_deprecated, state)?.into(),
                 })
             },
         )?;
@@ -135,12 +145,13 @@ fn units_uncached(
     authority: &str,
     category: Option<&str>,
     allow_deprecated: bool,
+    state: &RuntimeState,
 ) -> Result<Vec<UnitInfo>> {
     use std::ptr::NonNull;
 
     let authority = cstring(authority)?;
     let category = category.map(cstring).transpose()?;
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         let mut count = 0;
         // SAFETY: DOC-H. Typed context; authority/category live; OUT count
         // exclusive; returns caller-owned list with count entries.

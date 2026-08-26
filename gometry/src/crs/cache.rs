@@ -8,8 +8,8 @@ use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, TransformOptions, UnitInfo, WktVersion, proj_env,
-    runtime_config_generation,
+    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformOptions, UnitInfo, WktVersion,
+    proj_env, runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -289,8 +289,8 @@ crs_cache! {
     reported CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CachedCrsExport, 32, "crs_export";
 }
 
-pub(super) fn ensure_thread_caches_current() {
-    let current = runtime_config_generation();
+pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {
+    let current = state.generation;
     CRS_CACHE_GENERATION.with(|generation| {
         let mut generation = generation.borrow_mut();
         if *generation != current {
@@ -301,12 +301,18 @@ pub(super) fn ensure_thread_caches_current() {
 }
 
 pub(crate) fn cache_info() -> CacheInfo {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot().unwrap_or_else(|_| {
+        crate::crs::runtime::runtime_state_lock()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    });
+    ensure_thread_caches_current(&state);
     let buckets = crs_reported_cache_buckets();
     let (last_transform_engine, transform_invocations) =
         TRANSFORM_OBSERVATION.with(std::cell::Cell::get);
     CacheInfo {
-        generation: runtime_config_generation(),
+        generation: state.generation,
         total_entries: buckets.iter().map(|bucket| bucket.entries).sum(),
         total_capacity: buckets.iter().map(|bucket| bucket.capacity).sum(),
         buckets,
@@ -343,13 +349,14 @@ pub(crate) fn lru_resolve<E>(
     Ok(cache.len() - 1)
 }
 
-pub(super) fn with_proj_pipeline<R>(
+pub(super) fn with_proj_pipeline_at<R>(
     source: &str,
     target: &str,
     options: &TransformOptions,
+    state: &RuntimeState,
     transform: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     PROJ_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
@@ -362,7 +369,7 @@ pub(super) fn with_proj_pipeline<R>(
                     source: source.to_owned(),
                     target: target.to_owned(),
                     options: options.clone(),
-                    pipeline: ProjPipeline::new(source, target, options)?,
+                    pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
                 })
             },
         )?;
@@ -388,13 +395,25 @@ pub(super) fn with_proj_pipeline<R>(
 /// the execution cache prevents diagnostic calls from evicting hot transforms,
 /// while one resolver guarantees identical keying, validation, and errors for
 /// every diagnostic surface.
+#[cfg(test)]
 pub(super) fn with_proj_diagnostic_pipeline<R>(
     source: &str,
     target: &str,
     options: &TransformOptions,
     inspect: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    with_proj_diagnostic_pipeline_at(source, target, options, &state, inspect)
+}
+
+pub(super) fn with_proj_diagnostic_pipeline_at<R>(
+    source: &str,
+    target: &str,
+    options: &TransformOptions,
+    state: &RuntimeState,
+    inspect: impl FnOnce(&ProjPipeline) -> Result<R>,
+) -> Result<R> {
+    ensure_thread_caches_current(state);
     options.validate()?;
     PROJ_DIAGNOSTIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -407,7 +426,7 @@ pub(super) fn with_proj_diagnostic_pipeline<R>(
                     source: source.to_owned(),
                     target: target.to_owned(),
                     options: options.clone(),
-                    pipeline: ProjPipeline::new(source, target, options)?,
+                    pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
                 })
             },
         )?;
@@ -416,11 +435,12 @@ pub(super) fn with_proj_diagnostic_pipeline<R>(
     })
 }
 
-pub(super) fn with_proj_operation<R>(
+pub(super) fn with_proj_operation_at<R>(
     definition: &str,
+    state: &RuntimeState,
     transform: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     PROJ_OPERATION_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
@@ -430,7 +450,7 @@ pub(super) fn with_proj_operation<R>(
             || {
                 Ok(CachedProjOperation {
                     definition: definition.to_owned(),
-                    operation: ProjPipeline::from_definition(definition)?,
+                    operation: ProjPipeline::from_definition_with_state(definition, state)?,
                 })
             },
         )?;
@@ -444,14 +464,14 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
-    use crate::crs::catalog::authority_matches;
-    use crate::crs::runtime::bump_runtime_config_generation;
+    use crate::crs::catalog::{authority_matches, catalog_with_state};
+    use crate::crs::operations::operations_info;
     use crate::crs::{
         CrsObjectKind, ProjDirection, WGS84_A, apply_operation, catalog, clear_cache,
         configure_runtime, factors, geodesic_direct_columns, geodesic_interpolates,
         geodesic_inverse, geodesic_inverses, info, non_deprecated, operation_info_at,
-        operations_info, reset_runtime_config, rhumb_distance_crs, same, search,
-        to_wkt_with_options, transform_coordinates,
+        reset_runtime_config, rhumb_distance_crs, same, search, to_wkt_with_options,
+        transform_coordinates,
     };
 
     fn thread_cache_lengths() -> [usize; 18] {
@@ -484,6 +504,8 @@ mod tests {
     fn assert_some_thread_cache_is_warm() {
         assert!(thread_cache_lengths().iter().any(|length| *length > 0));
     }
+
+    static RUNTIME_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn warm_representative_thread_caches() {
         let options = TransformOptions::default();
@@ -558,6 +580,7 @@ mod tests {
 
     #[test]
     fn runtime_config_changes_clear_current_thread_caches() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
         assert_thread_caches_are_empty();
 
@@ -575,27 +598,91 @@ mod tests {
     }
 
     #[test]
-    fn generation_bump_during_cached_context_creation_cannot_reenter_cache_clear() {
+    fn held_runtime_state_survives_mutation_during_context_creation() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        reset_runtime_config().unwrap();
+        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        let expected = runtime_state_snapshot().unwrap();
         let entered = Arc::new(Barrier::new(2));
         let resume = Arc::new(Barrier::new(2));
+        let observed = Arc::new(std::sync::Mutex::new(None));
         let worker_entered = Arc::clone(&entered);
         let worker_resume = Arc::clone(&resume);
+        let worker_observed = Arc::clone(&observed);
         let worker = std::thread::spawn(move || {
-            super::super::context::install_context_creation_hook(worker_entered, worker_resume);
+            super::super::context::install_context_creation_state_hook(
+                worker_entered,
+                worker_resume,
+                worker_observed,
+            );
             operations_info("EPSG:4267", "EPSG:4326", &TransformOptions::default())
         });
         entered.wait();
-        bump_runtime_config_generation();
+        configure_runtime(Some(vec!["/tmp/gometry-crs-new".to_owned()]), None).unwrap();
         resume.wait();
 
         worker
             .join()
             .expect("context creation must not panic")
             .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some((expected.generation, expected.config.search_paths.clone()))
+        );
+        let current = runtime_state_snapshot().unwrap();
+        assert_eq!(current.generation, expected.generation + 1);
+        assert_eq!(
+            current.config.search_paths.as_deref(),
+            Some(["/tmp/gometry-crs-new".to_owned()].as_slice())
+        );
+        reset_runtime_config().unwrap();
+    }
+
+    #[test]
+    fn held_runtime_state_survives_mutation_during_catalog_observation() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        reset_runtime_config().unwrap();
+        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        let expected = runtime_state_snapshot().unwrap();
+        let entered = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let observed = Arc::new(std::sync::Mutex::new(None));
+        let worker_entered = Arc::clone(&entered);
+        let worker_resume = Arc::clone(&resume);
+        let worker_observed = Arc::clone(&observed);
+        let worker_expected = Arc::clone(&expected);
+        let worker = std::thread::spawn(move || {
+            super::super::context::install_context_creation_state_hook(
+                worker_entered,
+                worker_resume,
+                worker_observed,
+            );
+            let options = CrsCatalogOptions {
+                kind: Some(CrsObjectKind::Geographic2dCrs),
+                area: None,
+                contains_area: false,
+                allow_deprecated: false,
+                celestial_body: Some("Earth".to_owned()),
+            };
+            catalog_with_state(Some("EPSG"), &options, &worker_expected)
+        });
+        entered.wait();
+        configure_runtime(Some(vec!["/tmp/gometry-crs-new".to_owned()]), None).unwrap();
+        resume.wait();
+        worker
+            .join()
+            .expect("catalog observation must not panic")
+            .unwrap();
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some((expected.generation, expected.config.search_paths.clone()))
+        );
+        reset_runtime_config().unwrap();
     }
 
     #[test]
     fn factor_cache_promotes_hits_before_eviction() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
         let factor_crs =
             |offset: usize| format!("+proj=merc +datum=WGS84 +x_0={offset} +y_0=0 +type=crs");
@@ -617,6 +704,7 @@ mod tests {
 
     #[test]
     fn diagnostic_pipeline_resolver_reuses_the_same_key() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
         let options = TransformOptions::default();
         for _ in 0..2 {
@@ -632,6 +720,7 @@ mod tests {
 
     #[test]
     fn geodesic_cache_promotes_hits_before_eviction() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
         let crs_values: Vec<String> = (0..=CRS_GEODESIC_CACHE_CAPACITY)
             .map(|offset| {
@@ -670,6 +759,7 @@ mod tests {
 
     #[test]
     fn geodesic_batch_kernels_reject_mismatched_lengths() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         let inverse = geodesic_inverses(
             "EPSG:4326",
             &[-73.0, -72.0],

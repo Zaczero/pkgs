@@ -18,7 +18,7 @@ mod tmerc;
 mod webmerc;
 
 pub(in crate::crs) use admission::CachedInCoreDescriptor;
-pub(crate) use admission::try_in_core_transform;
+pub(crate) use admission::try_in_core_transform_with_state;
 use params::Projected;
 pub(in crate::crs) use stere::Pole;
 use webmerc::WGS84_WEB_MERCATOR;

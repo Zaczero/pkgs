@@ -9,7 +9,8 @@ use crate::crs::in_core::{
 use crate::crs::{
     CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY,
     CrsCoordinateOperationInfo, CrsInfo, DEGREE_TO_RADIAN, EllipsoidInfo, PrimeMeridianInfo,
-    TransformOptions, ensure_thread_caches_current, info, lru_resolve, normalize, parse_epsg,
+    RuntimeState, TransformOptions, ensure_thread_caches_current, info_with_state, lru_resolve,
+    normalize, parse_epsg,
 };
 use crate::error::Result;
 use crate::numeric::AxisScale;
@@ -57,10 +58,11 @@ pub(in crate::crs) struct InCoreDescriptor {
     datum: DatumKey,
 }
 
-pub(crate) fn try_in_core_transform(
+pub(crate) fn try_in_core_transform_with_state(
     source: &str,
     target: &str,
     options: &TransformOptions,
+    state: &RuntimeState,
 ) -> Option<InCoreTransform> {
     if !options.allows_in_core() {
         return None;
@@ -68,8 +70,8 @@ pub(crate) fn try_in_core_transform(
     if let Some(transform) = try_literal_in_core(source, target) {
         return Some(transform);
     }
-    let source_desc = resolve_in_core_descriptor(source).ok()??;
-    let target_desc = resolve_in_core_descriptor(target).ok()??;
+    let source_desc = resolve_in_core_descriptor(source, state).ok()??;
+    let target_desc = resolve_in_core_descriptor(target, state).ok()??;
     if source_desc.datum != target_desc.datum {
         return None;
     }
@@ -149,9 +151,9 @@ const fn descriptor_to_setup(kind: &InCoreCrsKind) -> Option<ProjSetup> {
     Some(setup)
 }
 
-fn resolve_in_core_descriptor(crs: &str) -> Result<Option<InCoreDescriptor>> {
+fn resolve_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<InCoreDescriptor>> {
     let normalized = normalize(crs)?;
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     CRS_IN_CORE_DESCRIPTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
@@ -159,7 +161,7 @@ fn resolve_in_core_descriptor(crs: &str) -> Result<Option<InCoreDescriptor>> {
             CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY,
             |item| item.crs == normalized,
             || {
-                let descriptor = admit_in_core_descriptor(&normalized)?;
+                let descriptor = admit_in_core_descriptor(&normalized, state)?;
                 Ok(CachedInCoreDescriptor {
                     crs: normalized.clone(),
                     descriptor,
@@ -170,8 +172,8 @@ fn resolve_in_core_descriptor(crs: &str) -> Result<Option<InCoreDescriptor>> {
     })
 }
 
-fn admit_in_core_descriptor(crs: &str) -> Result<Option<InCoreDescriptor>> {
-    let info = info(crs)?;
+fn admit_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<InCoreDescriptor>> {
+    let info = info_with_state(crs, state)?;
     if !admit_base_crs(&info) {
         return Ok(None);
     }
@@ -370,27 +372,56 @@ fn literal_utm_zone(value: &str) -> Option<UtmZone> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crs::TransformOptions;
+    use crate::crs::{TransformOptions, runtime_state_snapshot};
 
     #[test]
     fn admits_etrs89_utm_pair() {
         let options = TransformOptions::default();
-        assert!(admit_in_core_descriptor("EPSG:4258").unwrap().is_some());
-        assert!(admit_in_core_descriptor("EPSG:25832").unwrap().is_some());
-        assert!(try_in_core_transform("EPSG:4258", "EPSG:25832", &options).is_some());
+        let state = runtime_state_snapshot().unwrap();
+        assert!(
+            admit_in_core_descriptor("EPSG:4258", &state)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            admit_in_core_descriptor("EPSG:25832", &state)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            try_in_core_transform_with_state("EPSG:4258", "EPSG:25832", &options, &state,)
+                .is_some()
+        );
     }
 
     #[test]
     fn admits_epsg_102100_web_mercator_alias() {
-        assert!(admit_in_core_descriptor("EPSG:102100").unwrap().is_some());
+        let state = runtime_state_snapshot().unwrap();
+        assert!(
+            admit_in_core_descriptor("EPSG:102100", &state)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
     fn admits_nad83_spcs_tm_pair() {
         let options = TransformOptions::default();
-        assert!(admit_in_core_descriptor("EPSG:4269").unwrap().is_some());
-        assert!(admit_in_core_descriptor("EPSG:32145").unwrap().is_some());
-        assert!(try_in_core_transform("EPSG:4269", "EPSG:32145", &options).is_some());
+        let state = runtime_state_snapshot().unwrap();
+        assert!(
+            admit_in_core_descriptor("EPSG:4269", &state)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            admit_in_core_descriptor("EPSG:32145", &state)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            try_in_core_transform_with_state("EPSG:4269", "EPSG:32145", &options, &state,)
+                .is_some()
+        );
     }
 
     fn all_method_codes() -> Vec<&'static str> {

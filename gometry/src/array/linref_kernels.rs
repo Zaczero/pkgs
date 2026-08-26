@@ -52,8 +52,8 @@ pub(crate) fn line_locate_point_on_lines(
 ) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(move || match &model {
-            crs::MetricModel::Geodesic(crs) => {
-                crs::with_geodesic_coordseq_collect_rows(crs, |metric| {
+            crs::MetricModel::Geodesic { crs, state } => {
+                crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
                     let map = row_map.as_deref();
                     (0..logical_len)
                         .map(|row| {

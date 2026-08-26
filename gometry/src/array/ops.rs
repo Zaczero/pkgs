@@ -370,7 +370,7 @@ impl PyGeometryArray {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let model = resolve_metric(self.crs_str(), unit, "shortest_line")?;
-        if let crs::MetricModel::Geodesic(crs) = model {
+        if let crs::MetricModel::Geodesic { crs, state } = model {
             if let Some(geometry) = exact_geometry(other) {
                 Frame::compatible_parts(
                     self.crs_ref(),
@@ -385,9 +385,10 @@ impl PyGeometryArray {
                 let missing = self.missing().cloned();
                 let rows = Python::attach(|py| {
                     py.detach(move || {
-                        crs::with_resolved_ellipsoid_metric(
+                        crs::with_resolved_ellipsoid_metric_at(
                             &crs,
                             &[right.shape()],
+                            &state,
                             |crs, metric| {
                                 let (semi_major, flattening) = metric.ellipsoid_parameters();
                                 right.prepare_geodesic_parts(
@@ -440,7 +441,7 @@ impl PyGeometryArray {
                 let missing_rows = missing.clone();
                 let rows = Python::attach(|py| {
                     py.detach(move || {
-                        crs::with_resolved_ellipsoid_metric(&crs, &[], |crs, metric| {
+                        crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
                             Ok(lefts
                                 .storage()
@@ -500,11 +501,11 @@ impl PyGeometryArray {
             let (lefts, rights) = (self.clone(), array.clone());
             let model = resolve_metric(self.crs_str(), unit, "nearest_points")?;
             let missing = crate::array::missing::union_pair(self.missing(), array.missing());
-            if let crs::MetricModel::Geodesic(crs) = model {
+            if let crs::MetricModel::Geodesic { crs, state } = model {
                 let missing_rows = missing.clone();
                 let pairs = py
                     .detach(move || {
-                        crs::with_resolved_ellipsoid_metric(&crs, &[], |crs, metric| {
+                        crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
                             Ok(lefts
                                 .storage()

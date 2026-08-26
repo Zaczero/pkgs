@@ -5,7 +5,7 @@
 //! Rust-side LRUs still own the PROJ DB work; this layer stores the
 //! IntoPyObject materialization so warm hits return an isolation-safe copy
 //! instead of re-building nested dicts. Entries are stamped with
-//! [`crate::crs::runtime_config_generation`] and dropped on generation bump
+//! [`crate::crs::RuntimeState::generation`] and dropped on generation bump
 //! (`crs_clear_cache` / runtime config changes) — same lifetime as the CRS
 //! thread-local LRUs.
 //!
@@ -192,7 +192,8 @@ pub(crate) fn units_py_list<'py>(
     category: Option<&str>,
     allow_deprecated: bool,
 ) -> PyResult<Bound<'py, PyList>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     UNITS_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -207,7 +208,7 @@ pub(crate) fn units_py_list<'py>(
             },
             |e| shallow_copy_list(py, &e.list),
             || {
-                let items = crs::units(authority, category, allow_deprecated)?;
+                let items = crs::units_with_state(authority, category, allow_deprecated, &state)?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -228,7 +229,8 @@ pub(crate) fn celestial_bodies_py_list<'py>(
     py: Python<'py>,
     authority: Option<&str>,
 ) -> PyResult<Bound<'py, PyList>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     BODIES_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -239,7 +241,7 @@ pub(crate) fn celestial_bodies_py_list<'py>(
             |e| e.authority.as_deref() == authority,
             |e| shallow_copy_list(py, &e.list),
             || {
-                let items = crs::celestial_bodies(authority)?;
+                let items = crs::celestial_bodies_with_state(authority, &state)?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -256,7 +258,8 @@ pub(crate) fn celestial_bodies_py_list<'py>(
 
 /// Cached `crs_authorities` list (generation-stamped, isolation-copied).
 pub(crate) fn authorities_py_list(py: Python<'_>) -> PyResult<Bound<'_, PyList>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     AUTHORITIES_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -267,7 +270,7 @@ pub(crate) fn authorities_py_list(py: Python<'_>) -> PyResult<Bound<'_, PyList>>
             |_| true,
             |e| shallow_copy_list(py, &e.list),
             || {
-                let items = crs::authorities()?;
+                let items = crs::authorities_with_state(&state)?;
                 let list = PyList::empty(py);
                 for item in items {
                     list.append(item)?;
@@ -286,7 +289,8 @@ pub(crate) fn crs_info_py_dict<'py>(
     py: Python<'py>,
     normalized_crs: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     INFO_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -297,7 +301,7 @@ pub(crate) fn crs_info_py_dict<'py>(
             |e| e.crs == normalized_crs,
             |e| isolation_copy_dict(py, &e.dict),
             || {
-                let info = (*crs::info(normalized_crs)?).clone();
+                let info = (*crs::info_with_state(normalized_crs, &state)?).clone();
                 let built = info.into_pyobject(py)?;
                 let owned = freeze_top_dict(py, built)?;
                 Ok(InfoPyEntry {
@@ -317,7 +321,8 @@ pub(crate) fn crs_operation_py_dict<'py>(
     target: &str,
     options: &crs::TransformOptions,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     OPERATION_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -328,7 +333,7 @@ pub(crate) fn crs_operation_py_dict<'py>(
             |e| e.source == source && e.target == target && e.options == *options,
             |e| isolation_copy_dict(py, &e.dict),
             || {
-                let info = crs::operation_info(source, target, options)?;
+                let info = crs::operation_info_with_state(source, target, options, &state)?;
                 let built = info.into_pyobject(py)?;
                 let owned = freeze_top_dict(py, built)?;
                 Ok(OperationPyEntry {
@@ -350,7 +355,8 @@ pub(crate) fn crs_operations_py_list<'py>(
     target: &str,
     options: &crs::TransformOptions,
 ) -> PyResult<Bound<'py, PyList>> {
-    let generation = crs::runtime_config_generation();
+    let state = crs::runtime_state_snapshot()?;
+    let generation = state.generation;
     OPERATIONS_PY_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         py_lru_resolve(
@@ -361,7 +367,7 @@ pub(crate) fn crs_operations_py_list<'py>(
             |e| e.source == source && e.target == target && e.options == *options,
             |e| isolation_copy_operations_list(py, &e.list),
             || {
-                let items = crs::operations_info(source, target, options)?;
+                let items = crs::operations_info_with_state(source, target, options, &state)?;
                 let list = PyList::empty(py);
                 for item in items {
                     let built = item.into_pyobject(py)?;

@@ -114,14 +114,18 @@ impl GeodesicPruner {
     /// `None` when the
     /// ellipsoid is not oblate (the bound's proof needs `0 ≤ f < 1`) — callers
     /// fall back to the exact full scan.
-    pub(crate) fn new(crs: &str, point: Point) -> Option<Self> {
+    pub(crate) fn new_at(
+        crs: &str,
+        point: Point,
+        state: &crate::crs::RuntimeState,
+    ) -> Option<Self> {
         // Out-of-domain coordinates fall back to the exact path so they raise
         // the same domain error every other geodesic spelling raises, instead
         // of being silently pruned to an empty window.
         if !(-180.0..=180.0).contains(&point.x) || !(-90.0..=90.0).contains(&point.y) {
             return None;
         }
-        let shape = crs::ellipsoid_shape(crs).ok()?;
+        let shape = crs::ellipsoid_shape_at(crs, state).ok()?;
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
         let one_minus_f = 1.0 - flattening;
@@ -265,7 +269,8 @@ mod tests {
     }
 
     fn pruner(lon: f64, lat: f64) -> GeodesicPruner {
-        GeodesicPruner::new("EPSG:4326", Point::new(lon, lat).expect("finite"))
+        let state = crs::runtime_state_snapshot().expect("CRS runtime state is readable");
+        GeodesicPruner::new_at("EPSG:4326", Point::new(lon, lat).expect("finite"), &state)
             .expect("WGS84 is oblate and the point is in domain")
     }
 

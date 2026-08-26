@@ -3,13 +3,16 @@
 //! Wraps a cached pipeline for repeated coordinate transforms; reaches the FFI
 //! pipeline engine and helpers in the parent `crs` module via `use super::*`.
 
+use std::sync::Arc;
+
 use crate::crs::transform::TransformedBounds3d;
 use crate::crs::{
-    InCoreTransform, ProjDirection, Shape, TransformOptions, begin_transform_observation,
-    coordinate_identity_crs, ensure_geographic_domain, ensure_geographic_lonlat, in_core_xy_op,
-    is_geographic_crs, record_transform_engine, take_accuracy_diagnostic, transform_in_core_bounds,
+    InCoreTransform, ProjDirection, RuntimeState, Shape, TransformOptions,
+    begin_transform_observation, coordinate_identity_crs, ensure_geographic_domain,
+    ensure_geographic_lonlat, in_core_xy_op, is_geographic_crs_with_state, record_transform_engine,
+    runtime_state_snapshot, take_accuracy_diagnostic, transform_in_core_bounds,
     transform_in_core_bounds_3d, transform_in_core_xy_batch, transform_proj_shapes,
-    try_in_core_transform, validate_coordinate_lanes, with_proj_pipeline,
+    try_in_core_transform_with_state, validate_coordinate_lanes, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{Bounds, Bounds3D};
@@ -20,6 +23,16 @@ impl Transformer {
     }
 
     pub(crate) fn new_with_options(source: &str, target: &str, options: TransformOptions) -> Self {
+        let state = runtime_state_snapshot().expect("CRS runtime state must remain readable");
+        Self::new_with_options_at(source, target, options, state)
+    }
+
+    pub(crate) fn new_with_options_at(
+        source: &str,
+        target: &str,
+        options: TransformOptions,
+        state: Arc<RuntimeState>,
+    ) -> Self {
         // A motion between unequal coordinate epochs is a real PROJ
         // operation, even when the CRS labels are otherwise identical.  Do
         // not let the same-CRS identity shortcut erase that time-dependent
@@ -30,9 +43,11 @@ impl Transformer {
             // Same-CRS identity still validates geographic domain (same class
             // as geodesic equality shortcuts) — never a silent pass for
             // out-of-domain latitudes.
-            let source_geographic = is_geographic_crs(source).unwrap_or(false);
+            let source_geographic = is_geographic_crs_with_state(source, &state).unwrap_or(false);
             TransformOperation::Identity { source_geographic }
-        } else if let Some(transform) = try_in_core_transform(source, target, &options) {
+        } else if let Some(transform) =
+            try_in_core_transform_with_state(source, target, &options, &state)
+        {
             TransformOperation::InCore(transform)
         } else {
             TransformOperation::Proj {
@@ -41,7 +56,7 @@ impl Transformer {
                 options,
             }
         };
-        Self { operation }
+        Self { operation, state }
     }
 
     pub(crate) const fn is_in_core(&self) -> bool {
@@ -106,7 +121,7 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| {
+            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
                 transform_proj_shapes(transformer, shapes, options.source_epoch)
             }),
         };
@@ -148,46 +163,52 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| match zt {
-                crate::Zt::None => {
-                    if let Some(epoch) = options.source_epoch {
-                        // PROJ broadcasts a length-1 time lane as a constant
-                        // across every coordinate — no per-vertex epoch buffer.
-                        let mut t = [epoch];
-                        transformer.transform_lanes(
-                            x,
-                            y,
-                            None,
-                            Some(t.as_mut_slice()),
-                            ProjDirection::Forward,
-                        )
-                    } else {
-                        transformer.require_epoch_lane()?;
-                        transformer.transform_lanes(x, y, None, None, ProjDirection::Forward)
-                    }
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                |transformer| match zt {
+                    crate::Zt::None => {
+                        if let Some(epoch) = options.source_epoch {
+                            // PROJ broadcasts a length-1 time lane as a constant
+                            // across every coordinate — no per-vertex epoch buffer.
+                            let mut t = [epoch];
+                            transformer.transform_lanes(
+                                x,
+                                y,
+                                None,
+                                Some(t.as_mut_slice()),
+                                ProjDirection::Forward,
+                            )
+                        } else {
+                            transformer.require_epoch_lane()?;
+                            transformer.transform_lanes(x, y, None, None, ProjDirection::Forward)
+                        }
+                    },
+                    crate::Zt::Z(z) => {
+                        if let Some(epoch) = options.source_epoch {
+                            let mut t = [epoch];
+                            transformer.transform_lanes(
+                                x,
+                                y,
+                                Some(z),
+                                Some(t.as_mut_slice()),
+                                ProjDirection::Forward,
+                            )
+                        } else {
+                            transformer.require_epoch_lane()?;
+                            transformer.transform_lanes(x, y, Some(z), None, ProjDirection::Forward)
+                        }
+                    },
+                    crate::Zt::T(t) => {
+                        transformer.transform_lanes(x, y, None, Some(t), ProjDirection::Forward)
+                    },
+                    crate::Zt::Zt { z, t } => {
+                        transformer.transform_lanes(x, y, Some(z), Some(t), ProjDirection::Forward)
+                    },
                 },
-                crate::Zt::Z(z) => {
-                    if let Some(epoch) = options.source_epoch {
-                        let mut t = [epoch];
-                        transformer.transform_lanes(
-                            x,
-                            y,
-                            Some(z),
-                            Some(t.as_mut_slice()),
-                            ProjDirection::Forward,
-                        )
-                    } else {
-                        transformer.require_epoch_lane()?;
-                        transformer.transform_lanes(x, y, Some(z), None, ProjDirection::Forward)
-                    }
-                },
-                crate::Zt::T(t) => {
-                    transformer.transform_lanes(x, y, None, Some(t), ProjDirection::Forward)
-                },
-                crate::Zt::Zt { z, t } => {
-                    transformer.transform_lanes(x, y, Some(z), Some(t), ProjDirection::Forward)
-                },
-            }),
+            ),
         };
         self.finish_execution(result, !x.is_empty())
     }
@@ -214,7 +235,7 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| {
+            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
                 if transformer.requires_coordinate_epoch() {
                     return Err(crate::crs::CrsError::message(
                         "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
@@ -257,7 +278,7 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| {
+            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
                 if transformer.requires_coordinate_epoch() {
                     return Err(crate::crs::CrsError::message(
                         "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
@@ -293,7 +314,7 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| {
+            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
                 if transformer.requires_coordinate_epoch() {
                     return Err(crate::crs::CrsError::message(
                         "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
@@ -332,7 +353,7 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline(source, target, options, |transformer| {
+            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
                 if transformer.requires_coordinate_epoch() {
                     return Err(crate::crs::CrsError::message(
                         "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
@@ -349,6 +370,7 @@ impl Transformer {
 
 pub(crate) struct Transformer {
     operation: TransformOperation,
+    state: Arc<RuntimeState>,
 }
 
 #[expect(

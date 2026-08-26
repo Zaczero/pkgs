@@ -9,8 +9,9 @@ use std::borrow::Cow;
 
 use crate::crs::in_core::Pole;
 use crate::crs::{
-    AreaOfInterest, CrsError, Shape, UtmCatalogOptions, factors, info, is_wgs84_lonlat, normalize,
-    parse_epsg, to_projjson, transform, utm_crs, utm_zones,
+    AreaOfInterest, CrsError, RuntimeState, Shape, UtmCatalogOptions, factors_at, info_with_state,
+    is_wgs84_lonlat, normalize, parse_epsg, to_projjson_with_options_at, transform_at, utm_crs,
+    utm_zones_at,
 };
 use crate::error::Result;
 
@@ -22,10 +23,19 @@ pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
 /// `source_crs` is mandatory by design: interpreting unframed coordinates as
 /// longitude/latitude would turn a convenience method into a relabeling trap.
 pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<String> {
+    let state = crate::crs::runtime_state_snapshot()?;
+    estimate_local_crs_at(shape, source_crs, &state)
+}
+
+pub(crate) fn estimate_local_crs_at(
+    shape: &Shape,
+    source_crs: &str,
+    state: &RuntimeState,
+) -> Result<String> {
     let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
         Cow::Borrowed(shape)
     } else {
-        Cow::Owned(transform(shape, source_crs, "EPSG:4326")?)
+        Cow::Owned(transform_at(shape, source_crs, "EPSG:4326", state)?)
     };
     let extent = LocalExtent::from_shape(&lonlat)?.ok_or(CrsError::EmptyGeometry)?;
 
@@ -39,10 +49,10 @@ pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<Stri
             Pole::North => "EPSG:5041",
             Pole::South => "EPSG:5042",
         };
-        if candidate_fits(ups, &extent.samples)? {
+        if candidate_fits(ups, &extent.samples, state)? {
             return Ok(ups.to_owned());
         }
-        return best_custom_candidate(source_crs, &extent);
+        return best_custom_candidate(source_crs, &extent, state);
     }
 
     let utm = best_utm_from_anchor(
@@ -51,12 +61,13 @@ pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<Stri
             latitude: extent.latitude,
         },
         source_crs,
+        state,
     )?;
-    if candidate_fits(&utm, &extent.samples)? {
+    if candidate_fits(&utm, &extent.samples, state)? {
         return Ok(utm);
     }
 
-    best_custom_candidate(source_crs, &extent).map_err(|_| {
+    best_custom_candidate(source_crs, &extent, state).map_err(|_| {
         CrsError::invalid(format!(
             "geometry cannot be represented by one local conformal CRS within the {:.1}% linear scale-error limit; split the geometry or choose a projected CRS explicitly",
             LOCAL_SCALE_ERROR_LIMIT * 100.0
@@ -64,17 +75,21 @@ pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<Stri
     })
 }
 
-/// Whether `candidate` satisfies the local scale-error contract over `shape`.
-pub(crate) fn local_crs_fits(shape: &Shape, source_crs: &str, candidate: &str) -> Result<bool> {
+pub(crate) fn local_crs_fits_at(
+    shape: &Shape,
+    source_crs: &str,
+    candidate: &str,
+    state: &RuntimeState,
+) -> Result<bool> {
     let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
         Cow::Borrowed(shape)
     } else {
-        Cow::Owned(transform(shape, source_crs, "EPSG:4326")?)
+        Cow::Owned(transform_at(shape, source_crs, "EPSG:4326", state)?)
     };
     let Some(extent) = LocalExtent::from_shape(&lonlat)? else {
         return Ok(true);
     };
-    candidate_fits(candidate, &extent.samples)
+    candidate_fits(candidate, &extent.samples, state)
 }
 
 #[derive(Debug)]
@@ -163,9 +178,9 @@ fn circular_longitude_extent(longitudes: &mut Vec<f64>) -> (f64, f64, f64) {
     (west, east, normalize_longitude(midpoint))
 }
 
-fn candidate_fits(candidate: &str, samples: &[(f64, f64)]) -> Result<bool> {
+fn candidate_fits(candidate: &str, samples: &[(f64, f64)], state: &RuntimeState) -> Result<bool> {
     for &(longitude, latitude) in samples {
-        let factor = factors(candidate, longitude, latitude, false)?;
+        let factor = factors_at(candidate, longitude, latitude, false, state)?;
         let error = (factor.meridional_scale - 1.0)
             .abs()
             .max((factor.parallel_scale - 1.0).abs());
@@ -176,18 +191,26 @@ fn candidate_fits(candidate: &str, samples: &[(f64, f64)]) -> Result<bool> {
     Ok(true)
 }
 
-fn best_custom_candidate(source_crs: &str, extent: &LocalExtent) -> Result<String> {
-    let info = info(source_crs)?;
+fn best_custom_candidate(
+    source_crs: &str,
+    extent: &LocalExtent,
+    state: &RuntimeState,
+) -> Result<String> {
+    let info = info_with_state(source_crs, state)?;
     let base = info
         .geodetic_crs
         .as_ref()
         .map_or(source_crs, |geodetic| geodetic.crs.as_str());
-    let mut base_crs: serde_json::Value =
-        serde_json::from_str(&to_projjson(base)?).map_err(|e| {
-            CrsError::invalid(format!(
-                "could not preserve the source datum in a local projected CRS: {e}"
-            ))
-        })?;
+    let mut base_crs: serde_json::Value = serde_json::from_str(&to_projjson_with_options_at(
+        base,
+        &crate::crs::CrsProjJsonOptions::default(),
+        state,
+    )?)
+    .map_err(|e| {
+        CrsError::invalid(format!(
+            "could not preserve the source datum in a local projected CRS: {e}"
+        ))
+    })?;
     base_crs
         .as_object_mut()
         .ok_or_else(|| CrsError::invalid("source geodetic CRS did not export as an object"))?
@@ -220,7 +243,7 @@ fn best_custom_candidate(source_crs: &str, extent: &LocalExtent) -> Result<Strin
     .to_string();
     let candidates = [candidate];
     for candidate in candidates {
-        if candidate_fits(&candidate, &extent.samples)? {
+        if candidate_fits(&candidate, &extent.samples, state)? {
             return normalize(&candidate);
         }
     }
@@ -254,7 +277,11 @@ impl UtmZone {
     }
 }
 
-fn best_utm_from_anchor(local: LocalProjectionAnchor, crs: &str) -> Result<String> {
+fn best_utm_from_anchor(
+    local: LocalProjectionAnchor,
+    crs: &str,
+    state: &RuntimeState,
+) -> Result<String> {
     let zone = utm_zone(local.longitude, local.latitude);
     let pole = if local.latitude >= 0.0 {
         Pole::North
@@ -262,10 +289,16 @@ fn best_utm_from_anchor(local: LocalProjectionAnchor, crs: &str) -> Result<Strin
         Pole::South
     };
     if !has_wgs84_datum_fast_path(crs)
-        && let Some(source_datum) = source_utm_datum_name(crs)?
+        && let Some(source_datum) = source_utm_datum_name(crs, state)?
         && !is_wgs84_utm_datum_name(&source_datum)
-        && let Some(candidate) =
-            best_utm_from_catalog(&source_datum, local.longitude, local.latitude, zone, pole)?
+        && let Some(candidate) = best_utm_from_catalog(
+            &source_datum,
+            local.longitude,
+            local.latitude,
+            zone,
+            pole,
+            state,
+        )?
     {
         return Ok(candidate);
     }
@@ -276,8 +309,8 @@ fn has_wgs84_datum_fast_path(crs: &str) -> bool {
     is_wgs84_lonlat(crs) || parse_epsg(crs) == Some(3857) || utm_crs(crs).is_some()
 }
 
-fn source_utm_datum_name(crs: &str) -> Result<Option<String>> {
-    let info = info(crs)?;
+fn source_utm_datum_name(crs: &str, state: &RuntimeState) -> Result<Option<String>> {
+    let info = info_with_state(crs, state)?;
     Ok(info
         .geodetic_crs
         .as_ref()
@@ -295,18 +328,22 @@ fn best_utm_from_catalog(
     lat: f64,
     zone: UtmZone,
     pole: Pole,
+    state: &RuntimeState,
 ) -> Result<Option<String>> {
-    let items = utm_zones(&UtmCatalogOptions {
-        datum_name: Some(datum_name.to_owned()),
-        area: Some(AreaOfInterest {
-            west: lon,
-            south: lat,
-            east: lon,
-            north: lat,
-        }),
-        contains_area: false,
-        allow_deprecated: false,
-    })?;
+    let items = utm_zones_at(
+        &UtmCatalogOptions {
+            datum_name: Some(datum_name.to_owned()),
+            area: Some(AreaOfInterest {
+                west: lon,
+                south: lat,
+                east: lon,
+                north: lat,
+            }),
+            contains_area: false,
+            allow_deprecated: false,
+        },
+        state,
+    )?;
     Ok(items
         .into_iter()
         .find(|item| {

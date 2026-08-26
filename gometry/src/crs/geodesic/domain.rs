@@ -2,7 +2,8 @@ use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
 use crate::boundary::geographic::invalid_lonlat_error;
-use crate::crs::geodesic::{CrsError, ensure_geographic_degree_units, info};
+use crate::crs::geodesic::{CrsError, ensure_geographic_degree_units};
+use crate::crs::{RuntimeState, info_with_state};
 use crate::error::Result;
 use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
 
@@ -69,8 +70,8 @@ pub(crate) fn ensure_latitudes_in_domain(latitudes: &[f64], radians: bool) -> Re
     Ok(())
 }
 
-pub(crate) fn ensure_geodesic_lonlat_crs(crs: &str) -> Result<()> {
-    let info = info(crs)?;
+pub(crate) fn ensure_geodesic_lonlat_crs_at(crs: &str, state: &RuntimeState) -> Result<()> {
+    let info = info_with_state(crs, state)?;
     if info.kind.starts_with("geographic") {
         ensure_geographic_degree_units(crs, &info)?;
         return Ok(());

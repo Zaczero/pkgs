@@ -201,8 +201,12 @@ impl PyGeometryArray {
                 return Ok(self.clone());
             }
             let output = frame.output;
-            let transformer =
-                crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
+            let transformer = crs::Transformer::new_with_options_at(
+                &frame.source,
+                &frame.target,
+                frame.options,
+                frame.state,
+            );
             let result = self
                 .map_masked_points_to_crs_detached(py, output, transformer)?
                 .expect("masked packed points have a packed transform path");
@@ -245,8 +249,12 @@ impl PyGeometryArray {
             return Ok(self.clone());
         }
         let output = frame.output;
-        let transformer =
-            crs::Transformer::new_with_options(&frame.source, &frame.target, frame.options);
+        let transformer = crs::Transformer::new_with_options_at(
+            &frame.source,
+            &frame.target,
+            frame.options,
+            frame.state,
+        );
         if let GeometryArrayStorage::Mixed(_) = self.storage() {
             // Borrow array-owned shapes — no deep clone before the batched
             // PROJ transform; land outputs in array-owned mixed/packed.

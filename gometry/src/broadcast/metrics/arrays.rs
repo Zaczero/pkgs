@@ -93,7 +93,7 @@ pub(crate) fn array_crs_metric_float(
             {
                 // Domain validation before the identity zeros path: out-of-
                 // domain latitudes must still raise under a geodesic model.
-                if matches!(model, crs::MetricModel::Geodesic(_)) {
+                if matches!(model, crs::MetricModel::Geodesic { .. }) {
                     for (row_index, row) in lefts.iter_rows().enumerate() {
                         if missing.as_ref().is_some_and(|mask| mask[row_index]) {
                             continue;
@@ -452,14 +452,15 @@ pub(crate) fn array_crs_distances(
             // Geodesic scalar-fixed packed points: the geodesic cache resolves
             // ONCE and raw columns stream through the same point kernel (the
             // per-row lane re-resolves the CRS cache for every pair).
-            if let (crs::MetricModel::Geodesic(crs), Shape::Point(target)) =
+            if let (crs::MetricModel::Geodesic { crs, state }, Shape::Point(target)) =
                 (&model, right.shape.shape())
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
+                    let state = Arc::clone(state);
                     let target = *target;
                     move |xs, ys| {
-                        crs::geodesic_point_distances(&crs, xs, ys, target)
+                        crs::geodesic_point_distances(&crs, xs, ys, target, &state)
                             .map_err(PackedColumnError::Batch)
                     }
                 })?
@@ -468,10 +469,11 @@ pub(crate) fn array_crs_distances(
             }
             // Geodesic point-array -> fixed complex shape: one prepared
             // geodesic BVH over the fixed operand, one stack for all probes.
-            if let crs::MetricModel::Geodesic(crs) = &model
+            if let crs::MetricModel::Geodesic { crs, state } = &model
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
+                    let state = Arc::clone(state);
                     let right_shape = Arc::clone(&right.shape);
                     let right_cache = Arc::clone(&right.frame_cache);
                     move |xs, ys| {
@@ -481,6 +483,7 @@ pub(crate) fn array_crs_distances(
                             ys,
                             &right_shape,
                             &right_cache,
+                            &state,
                         )
                         .map_err(PackedColumnError::Batch)
                     }
@@ -491,15 +494,16 @@ pub(crate) fn array_crs_distances(
             // Geodesic scalar-fixed general rows: resolve the CRS/ellipsoid once,
             // build the fixed operand's geodesic parts once, then let every array
             // row use its own persistent handle cache.
-            if let crs::MetricModel::Geodesic(crs) = model {
+            if let crs::MetricModel::Geodesic { crs, state } = model {
                 let array = array.clone();
                 let right_shape = Arc::clone(&right.shape);
                 let right_cache = Arc::clone(&right.frame_cache);
                 let missing = array.missing().cloned();
                 let rows = py.detach(move || {
-                    crs::with_resolved_ellipsoid_metric(
+                    crs::with_resolved_ellipsoid_metric_at(
                         &crs,
                         &[right_shape.shape()],
+                        &state,
                         |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
                             right_shape.prepare_geodesic_parts(
@@ -974,16 +978,17 @@ pub(crate) fn array_crs_dwithin_scalar(
                 missing.as_ref(),
             )
         },
-        crs::MetricModel::Geodesic(crs) => {
+        crs::MetricModel::Geodesic { crs, state } => {
             // Packed point lane: one geodesic cache resolve, raw columns
             // through the same point kernel (mirrors the distances lane).
             if let Shape::Point(target) = other.shape.shape()
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
+                    let state = Arc::clone(&state);
                     let target = *target;
                     move |xs, ys| {
-                        crs::geodesic_point_distances(&crs, xs, ys, target)
+                        crs::geodesic_point_distances(&crs, xs, ys, target, &state)
                             .map_err(PackedColumnError::Batch)
                     }
                 })?
@@ -1000,6 +1005,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             if !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
+                    let state = Arc::clone(&state);
                     let other_shape = Arc::clone(&other.shape);
                     let other_cache = Arc::clone(&other.frame_cache);
                     move |xs, ys| {
@@ -1010,6 +1016,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             &other_shape,
                             &other_cache,
                             distance,
+                            &state,
                         )
                         .map_err(PackedColumnError::Batch)
                     }
@@ -1022,38 +1029,43 @@ pub(crate) fn array_crs_dwithin_scalar(
             let other_cache = Arc::clone(&other.frame_cache);
             let missing = array.missing().cloned();
             let rows = py.detach(move || {
-                crs::with_resolved_ellipsoid_metric(&crs, &[other_shape.shape()], |crs, metric| {
-                    let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    other_shape.prepare_geodesic_parts(
-                        &other_cache,
-                        crs,
-                        semi_major,
-                        flattening,
-                        metric,
-                    )?;
-                    Ok(array_owned
-                        .storage()
-                        .iter_rows()
-                        .enumerate()
-                        .map(|(row_index, row)| {
-                            if missing.as_ref().is_some_and(|mask| mask[row_index]) {
-                                return Ok(false);
-                            }
-                            let left = array_owned.prepared_row(row_index, row);
-                            let left_cache = array_owned.row_frame_cache(row_index);
-                            left.geodesic_dwithin_cached(
-                                &left_cache,
-                                &other_shape,
-                                &other_cache,
-                                crs,
-                                semi_major,
-                                flattening,
-                                metric,
-                                distance,
-                            )
-                        })
-                        .collect_rows())
-                })
+                crs::with_resolved_ellipsoid_metric_at(
+                    &crs,
+                    &[other_shape.shape()],
+                    &state,
+                    |crs, metric| {
+                        let (semi_major, flattening) = metric.ellipsoid_parameters();
+                        other_shape.prepare_geodesic_parts(
+                            &other_cache,
+                            crs,
+                            semi_major,
+                            flattening,
+                            metric,
+                        )?;
+                        Ok(array_owned
+                            .storage()
+                            .iter_rows()
+                            .enumerate()
+                            .map(|(row_index, row)| {
+                                if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                                    return Ok(false);
+                                }
+                                let left = array_owned.prepared_row(row_index, row);
+                                let left_cache = array_owned.row_frame_cache(row_index);
+                                left.geodesic_dwithin_cached(
+                                    &left_cache,
+                                    &other_shape,
+                                    &other_cache,
+                                    crs,
+                                    semi_major,
+                                    flattening,
+                                    metric,
+                                    distance,
+                                )
+                            })
+                            .collect_rows())
+                    },
+                )
             })?;
             bool_array_mask_missing(py, rows.map_err(rows_err)?, array.missing())
         },

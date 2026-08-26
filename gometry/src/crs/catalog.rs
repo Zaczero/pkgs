@@ -32,14 +32,17 @@ pub(crate) use cf::{
     add_cf_projection_parameters, is_operation_method, is_transverse_mercator,
 };
 pub(crate) use export::{
-    ProjStringVersion, cached_export, crs_to_2d_export, crs_to_3d_export, ellipsoids,
-    prime_meridians, proj_operations, same, to_proj, to_projjson, to_projjson_with_options,
-    to_wkt_with_options,
+    ProjStringVersion, cached_export, ellipsoids, prime_meridians, proj_operations, same, to_proj,
+    to_projjson, to_projjson_with_options, to_projjson_with_options_at, to_wkt_with_options,
 };
 #[cfg(test)]
 pub(crate) use identify::authority_matches;
 pub(crate) use identify::{
-    identify, non_deprecated, search, to_2d, to_3d, to_authority, to_cf, to_epsg,
+    identify, non_deprecated, search, to_2d, to_3d, to_authority, to_authority_with_state, to_cf,
+    to_epsg,
 };
-pub(crate) use lookup::{authorities, catalog, celestial_bodies, codes, geoid_models};
-pub(crate) use units::{unit_info, units, utm_zones};
+pub(crate) use lookup::{
+    authorities_with_state, catalog, catalog_with_state, celestial_bodies_with_state, codes,
+    geoid_models,
+};
+pub(crate) use units::{unit_info, units_with_state, utm_zones, utm_zones_at};

@@ -388,10 +388,18 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
             let (semi_major, flattening) = metric.ellipsoid_parameters();
             let data = ShapeData::new(shape.clone());
             let frame_cache = FrameDependentCaches::default();
+            let runtime_state = crate::crs::runtime_state_snapshot()?;
             data.prepare_geodesic_parts(&frame_cache, "EPSG:4326", semi_major, flattening, metric)?;
             assert_eq!(
                 streamed,
-                data.geodesic_cap_cached(&frame_cache, "EPSG:4326", semi_major, flattening, metric),
+                data.geodesic_cap_cached(
+                    &frame_cache,
+                    "EPSG:4326",
+                    semi_major,
+                    flattening,
+                    metric,
+                    &runtime_state,
+                ),
                 "{name}: cached cap"
             );
             Ok(())

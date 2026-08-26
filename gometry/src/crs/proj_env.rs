@@ -4,8 +4,8 @@
 //! fixtures stub this module so `context.rs` can be `#[path]`-included under
 //! bare `rustc` without pulling `proj-sys` or the rest of the CRS tree.
 
-use crate::crs::runtime::{apply_runtime_config, runtime_config_snapshot};
-use crate::crs::{CrsError, ProjContext};
+use crate::crs::runtime::apply_runtime_config;
+use crate::crs::{CrsError, ProjContext, RuntimeState};
 use crate::error::{Error, Result};
 
 /// Opaque raw context type — production is `proj_sys::PJ_CONTEXT`.
@@ -46,7 +46,6 @@ pub(super) fn create_failed() -> Error {
     CrsError::invalid("PROJ context creation returned null".to_owned())
 }
 
-pub(super) fn prepare(context: &ProjContext) -> Result<()> {
-    let config = runtime_config_snapshot()?;
-    apply_runtime_config(context, &config)
+pub(super) fn prepare_with_state(context: &ProjContext, state: &RuntimeState) -> Result<()> {
+    apply_runtime_config(context, &state.config)
 }

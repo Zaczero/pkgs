@@ -25,7 +25,7 @@ pub struct PyCrs {
     pub(crate) canonical: Crs,
     /// Shared with the process-wide CRS info cache — store the `Arc`, never
     /// deep-clone the heavy `CrsInfo` into this cell. Stamped with
-    /// [`crs::runtime_config_generation`] so ``crs_clear_cache`` /
+    /// [`crs::RuntimeState::generation`] so ``crs_clear_cache`` /
     /// ``crs_configure`` re-resolve instead of returning permanently stale
     /// metadata from a prior PROJ database.
     info: Mutex<Option<(u64, Arc<crs::CrsInfo>)>>,
@@ -54,7 +54,12 @@ impl PyCrs {
     /// Returns an `Arc` so the receiver cell can be re-resolved after a
     /// runtime-config generation bump without dangling references.
     pub(crate) fn cached_info(&self) -> PyResult<Arc<crs::CrsInfo>> {
-        let generation = crs::runtime_config_generation();
+        let state = crs::runtime_state_snapshot()?;
+        self.cached_info_at(&state)
+    }
+
+    fn cached_info_at(&self, state: &crs::RuntimeState) -> PyResult<Arc<crs::CrsInfo>> {
+        let generation = state.generation;
         {
             let guard = self
                 .info
@@ -67,7 +72,7 @@ impl PyCrs {
             }
         }
         // Resolve outside the lock (PROJ may take its own locks).
-        let resolved = crs::info(&self.canonical)?;
+        let resolved = crs::info_with_state(&self.canonical, state)?;
         {
             let mut guard = self
                 .info
@@ -86,7 +91,16 @@ impl PyCrs {
 
     /// Isolation-safe Python dict for ``CRS.info``, cached on this receiver.
     pub(crate) fn cached_info_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let generation = crs::runtime_config_generation();
+        let state = crs::runtime_state_snapshot()?;
+        self.cached_info_dict_at(py, &state)
+    }
+
+    fn cached_info_dict_at<'py>(
+        &self,
+        py: Python<'py>,
+        state: &crs::RuntimeState,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let generation = state.generation;
         {
             let guard = self
                 .info_py
@@ -99,7 +113,7 @@ impl PyCrs {
             }
         }
         // Build outside the lock (IntoPyObject may take the GIL / call Python).
-        let info = (*self.cached_info()?).clone();
+        let info = (*self.cached_info_at(state)?).clone();
         let built = info.into_pyobject(py)?;
         let owned = super::list_cache::freeze_top_dict(py, built)?;
         let out = super::list_cache::isolation_copy_dict(py, &owned)?;

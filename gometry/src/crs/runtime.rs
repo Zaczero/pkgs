@@ -7,13 +7,15 @@
 use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+use std::sync::Arc;
 
 use smol_str::SmolStr;
 
 use crate::crs::{
     AtomicU64, CRS_CANONICAL_CACHE, CRS_CANONICAL_CACHE_CAPACITY, CStr, Confidence, CrsError,
-    OnceLock, Ordering, ProjContext, RefCell, RuntimeConfig, RwLock, c_char,
-    ensure_thread_caches_current, info, lru_resolve, parse_epsg, ptr, to_authority,
+    OnceLock, Ordering, ProjContext, RefCell, RuntimeConfig, RuntimeState, RwLock, c_char,
+    ensure_thread_caches_current, info_with_state, lru_resolve, parse_epsg, ptr,
+    to_authority_with_state,
 };
 use crate::error::Result;
 
@@ -171,9 +173,13 @@ pub(crate) fn cstring(value: impl Into<Vec<u8>>) -> Result<std::ffi::CString> {
 /// WKT/ProjJSON carry caller-authored conversion parameters that PROJ's `info`
 /// may canonicalize to a database EPSG record — keep the definition string for
 /// transform/admission so in_core never shadows mismatched params.
-fn projected_operation_params_match(lhs: &str, authority_crs: &str) -> Result<bool> {
-    let lhs_info = info(lhs)?;
-    let rhs_info = info(authority_crs)?;
+fn projected_operation_params_match(
+    lhs: &str,
+    authority_crs: &str,
+    state: &RuntimeState,
+) -> Result<bool> {
+    let lhs_info = info_with_state(lhs, state)?;
+    let rhs_info = info_with_state(authority_crs, state)?;
     if !lhs_info.is_projected() || !rhs_info.is_projected() {
         return Ok(true);
     }
@@ -226,7 +232,8 @@ pub(crate) fn canonicalize(value: &str) -> Result<SmolStr> {
     // Canonicalization repeats heavily across scalar CRS calls (e.g. the geodesic
     // inverse loop). Cache the small input->canonical string mapping so the hot
     // path avoids cloning the heavy `CrsInfo` struct on every call.
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    ensure_thread_caches_current(&state);
     CRS_CANONICAL_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
@@ -234,7 +241,7 @@ pub(crate) fn canonicalize(value: &str) -> Result<SmolStr> {
             CRS_CANONICAL_CACHE_CAPACITY,
             |(key, _)| *key == normalized,
             || {
-                let crs_info = info(&normalized)?;
+                let crs_info = info_with_state(&normalized, &state)?;
                 let canonical = if crs_definition_must_stay_verbatim(&normalized) {
                     normalized.clone()
                 } else if parse_epsg(&normalized).is_some() {
@@ -246,16 +253,17 @@ pub(crate) fn canonicalize(value: &str) -> Result<SmolStr> {
                 {
                     let authority_crs = format!("{authority}:{code}");
                     if crs_info.is_projected()
-                        && !projected_operation_params_match(&normalized, &authority_crs)?
+                        && !projected_operation_params_match(&normalized, &authority_crs, &state)?
                     {
                         normalized.clone()
                     } else {
                         authority_crs
                     }
-                } else if let Some((authority, code)) = to_authority(
+                } else if let Some((authority, code)) = to_authority_with_state(
                     &normalized,
                     None,
                     Confidence::try_new("min_confidence", 70)?,
+                    &state,
                 )? {
                     format!("{authority}:{code}")
                 } else {
@@ -269,7 +277,7 @@ pub(crate) fn canonicalize(value: &str) -> Result<SmolStr> {
 }
 
 pub(crate) fn runtime_config() -> Result<RuntimeConfig> {
-    runtime_config_snapshot()
+    Ok((*runtime_state_snapshot()?.config).clone())
 }
 
 pub(crate) fn configure_runtime(
@@ -290,20 +298,24 @@ pub(crate) fn configure_runtime(
         "user_writable_directory",
         user_writable_directory.as_deref(),
     )?;
-    let mut config = runtime_config_lock()
+    let mut state = runtime_state_lock()
         .write()
         .map_err(|_| CrsError::invalid("CRS runtime config lock is poisoned".to_owned()))?;
+    let mut config = (*state.config).clone();
     if let Some(search_paths) = search_paths {
         config.search_paths = Some(search_paths);
     }
     if let Some(user_writable_directory) = user_writable_directory {
         config.user_writable_directory = Some(user_writable_directory);
     }
-    let updated = config.clone();
-    bump_runtime_config_generation();
-    drop(config);
-    ensure_thread_caches_current();
-    Ok(updated)
+    let updated = Arc::new(RuntimeState {
+        generation: state.generation.wrapping_add(1),
+        config: Arc::new(config),
+    });
+    *state = Arc::clone(&updated);
+    drop(state);
+    ensure_thread_caches_current(&updated);
+    Ok((*updated.config).clone())
 }
 
 fn validate_runtime_path(name: &str, value: Option<&str>) -> Result<()> {
@@ -320,42 +332,50 @@ fn validate_runtime_path(name: &str, value: Option<&str>) -> Result<()> {
 }
 
 pub(crate) fn clear_cache() {
-    bump_runtime_config_generation();
-    ensure_thread_caches_current();
+    let updated = {
+        let mut state = runtime_state_lock()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let updated = Arc::new(RuntimeState {
+            generation: state.generation.wrapping_add(1),
+            config: Arc::clone(&state.config),
+        });
+        *state = Arc::clone(&updated);
+        updated
+    };
+    ensure_thread_caches_current(&updated);
 }
 
 pub(crate) fn reset_runtime_config() -> Result<RuntimeConfig> {
-    let mut config = runtime_config_lock()
+    let mut state = runtime_state_lock()
         .write()
         .map_err(|_| CrsError::invalid("CRS runtime config lock is poisoned".to_owned()))?;
-    *config = RuntimeConfig::default();
-    let updated = config.clone();
-    bump_runtime_config_generation();
-    drop(config);
-    ensure_thread_caches_current();
-    Ok(updated)
+    let updated = Arc::new(RuntimeState {
+        generation: state.generation.wrapping_add(1),
+        config: Arc::new(RuntimeConfig::default()),
+    });
+    *state = Arc::clone(&updated);
+    drop(state);
+    ensure_thread_caches_current(&updated);
+    Ok((*updated.config).clone())
 }
 
-pub(crate) static PROJ_CONFIG: OnceLock<RwLock<RuntimeConfig>> = OnceLock::new();
-pub(crate) static PROJ_CONFIG_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub(crate) static PROJ_STATE: OnceLock<RwLock<Arc<RuntimeState>>> = OnceLock::new();
 
-pub(crate) fn runtime_config_lock() -> &'static RwLock<RuntimeConfig> {
-    PROJ_CONFIG.get_or_init(|| RwLock::new(RuntimeConfig::default()))
+pub(crate) fn runtime_state_lock() -> &'static RwLock<Arc<RuntimeState>> {
+    PROJ_STATE.get_or_init(|| {
+        RwLock::new(Arc::new(RuntimeState {
+            generation: 0,
+            config: Arc::new(RuntimeConfig::default()),
+        }))
+    })
 }
 
-pub(crate) fn runtime_config_snapshot() -> Result<RuntimeConfig> {
-    runtime_config_lock()
+pub(crate) fn runtime_state_snapshot() -> Result<Arc<RuntimeState>> {
+    runtime_state_lock()
         .read()
         .map_err(|_| CrsError::invalid("CRS runtime config lock is poisoned".to_owned()))
-        .map(|config| config.clone())
-}
-
-pub(crate) fn bump_runtime_config_generation() {
-    PROJ_CONFIG_GENERATION.fetch_add(1, Ordering::AcqRel);
-}
-
-pub(crate) fn runtime_config_generation() -> u64 {
-    PROJ_CONFIG_GENERATION.load(Ordering::Acquire)
+        .map(|state| Arc::clone(&state))
 }
 
 /// Apply process runtime search-path / writable-directory settings to a live

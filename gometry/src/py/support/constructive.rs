@@ -195,8 +195,8 @@ pub(crate) fn metric_constructive_shape(
         crate::crs::MetricModel::Planar { to_metre } => {
             Ok(kernel(shape, distance / to_metre.get())?)
         },
-        crate::crs::MetricModel::Geodesic(_) => {
-            geodesic_local_shape(shape, crs, true, |shape| kernel(shape, distance))
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            geodesic_local_shape(shape, crs, true, state, |shape| kernel(shape, distance))
         },
     }
 }
@@ -216,8 +216,10 @@ pub(crate) fn metric_constructive_shape_budgeted(
         crate::crs::MetricModel::Planar { to_metre } => {
             kernel(shape, distance / to_metre.get(), budget)
         },
-        crate::crs::MetricModel::Geodesic(_) => {
-            geodesic_local_shape(shape, crs, true, |shape| kernel(shape, distance, budget))
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            geodesic_local_shape(shape, crs, true, state, |shape| {
+                kernel(shape, distance, budget)
+            })
         },
     }
 }
@@ -236,8 +238,8 @@ pub(crate) fn metric_optional_constructive_shape(
         crate::crs::MetricModel::Planar { to_metre } => {
             kernel(shape, tolerance.map(|value| value / to_metre.get()))
         },
-        crate::crs::MetricModel::Geodesic(_) => {
-            geodesic_local_shape(shape, crs, true, |shape| kernel(shape, tolerance))
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            geodesic_local_shape(shape, crs, true, state, |shape| kernel(shape, tolerance))
         },
     }
 }
@@ -257,9 +259,10 @@ pub(crate) fn metric_concave_hull(
         crate::crs::MetricModel::Planar { to_metre } => {
             shape.concave_hull(concavity, length_threshold / to_metre.get())
         },
-        crate::crs::MetricModel::Geodesic(_) => geodesic_by_identity(
+        crate::crs::MetricModel::Geodesic { state, .. } => geodesic_by_identity(
             shape,
             crs,
+            state,
             |projected| {
                 let mut seen = HashSet::with_capacity(projected.coord_count());
                 let mut pairs = Vec::with_capacity(projected.coord_count());
@@ -298,6 +301,7 @@ pub(crate) fn metric_concave_hull(
 pub(crate) fn geodesic_by_identity(
     shape: &Shape,
     crs: Option<&str>,
+    state: &crate::crs::RuntimeState,
     plan_fn: impl FnOnce(&Shape) -> Result<Vec<VertexProvenance>>,
     rebuild: impl FnOnce(Vec<Point>) -> Result<Shape>,
 ) -> Result<Shape> {
@@ -306,8 +310,8 @@ pub(crate) fn geodesic_by_identity(
     }
     let original = shape.points_vec();
     let source = crs.unwrap_or("EPSG:4326");
-    let local = crate::crs::estimate_local_crs(shape, source)?;
-    let projected = crate::crs::transform(shape, source, &local)?;
+    let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
+    let projected = crate::crs::transform_at(shape, source, &local, state)?;
     if projected.coord_count() != original.len() {
         return Err(crate::crs::CrsError::invalid(
             "internal identity projection changed point count",
@@ -332,8 +336,8 @@ pub(crate) fn metric_minimum_bounding_circle(
         // distance-accurate metric op, so it uses the local projection WITHOUT
         // the scale-error fit check (`checked = false`) and stays usable at
         // city-to-continental extent — unlike buffer/offset above.
-        crate::crs::MetricModel::Geodesic(_) => {
-            geodesic_local_shape(shape, crs, false, Shape::minimum_bounding_circle)
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            geodesic_local_shape(shape, crs, false, state, Shape::minimum_bounding_circle)
         },
     }
 }
@@ -352,26 +356,33 @@ pub(crate) fn metric_minimum_bounding_radius(
         crate::crs::MetricModel::Planar { to_metre } => {
             Ok(shape.minimum_bounding_radius() * to_metre.get())
         },
-        crate::crs::MetricModel::Geodesic(geodesic_crs) => {
+        crate::crs::MetricModel::Geodesic {
+            crs: geodesic_crs,
+            state,
+        } => {
             if shape.is_empty() {
                 return Ok(f64::NAN);
             }
-            geodesic_minimum_bounding_radius(shape, geodesic_crs)
+            geodesic_minimum_bounding_radius(shape, geodesic_crs, state)
         },
     }
 }
 
-fn geodesic_minimum_bounding_radius(shape: &Shape, crs: &str) -> Result<f64> {
+fn geodesic_minimum_bounding_radius(
+    shape: &Shape,
+    crs: &str,
+    state: &crate::crs::RuntimeState,
+) -> Result<f64> {
     let points = shape.unique_xy_points();
     match points.as_slice() {
         [] => Ok(f64::NAN),
         [_] => Ok(0.0),
-        [left, right] => crate::crs::with_ellipsoid_metric(crs, &[shape], |metric| {
+        [left, right] => crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
             Ok(metric.segment_length(*left, *right) / 2.0)
         }),
         _ => {
             let (center, _) = smallest_enclosing_circle(&points);
-            crate::crs::with_ellipsoid_metric(crs, &[shape], |metric| {
+            crate::crs::with_ellipsoid_metric_at(crs, &[shape], state, |metric| {
                 let mut radius: f64 = 0.0;
                 for point in points {
                     radius = radius.max(metric.segment_length(center, point));
@@ -399,12 +410,13 @@ pub(crate) fn metric_interpolate_m(
         crate::crs::MetricModel::Planar { .. } => {
             shape.interpolate_m(range, overwrite, crate::geometry::point_distance)
         },
-        crate::crs::MetricModel::Geodesic(geodesic_crs) => {
-            crate::crs::with_ellipsoid_metric(geodesic_crs, &[shape], |metric| {
-                use crate::geometry::GeodesicMetric as _;
-                shape.interpolate_m(range, overwrite, |a, b| metric.segment_length(a, b))
-            })
-        },
+        crate::crs::MetricModel::Geodesic {
+            crs: geodesic_crs,
+            state,
+        } => crate::crs::with_ellipsoid_metric_at(geodesic_crs, &[shape], state, |metric| {
+            use crate::geometry::GeodesicMetric as _;
+            shape.interpolate_m(range, overwrite, |a, b| metric.segment_length(a, b))
+        }),
     }
 }
 
@@ -424,22 +436,23 @@ fn geodesic_local_shape(
     shape: &Shape,
     crs: Option<&str>,
     checked: bool,
+    state: &crate::crs::RuntimeState,
     op: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     if shape.is_empty() {
         return op(shape);
     }
     let source = crs.unwrap_or("EPSG:4326");
-    let local = crate::crs::estimate_local_crs(shape, source)?;
-    let projected = crate::crs::transform(shape, source, &local)?;
+    let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
+    let projected = crate::crs::transform_at(shape, source, &local, state)?;
     let result = op(&projected)?;
-    let restored = crate::crs::transform(&result, &local, source)?;
+    let restored = crate::crs::transform_at(&result, &local, source, state)?;
     // Distance-driven ops (buffer/offset/densify) demand metric accuracy, so
     // they reject a result that exceeds the local projection's linear
     // scale-error budget. The minimum bounding *circle* is an intentionally
     // approximate bounding primitive (like bounds/centroid) that must remain
     // usable at city-to-continental scale, so it skips the fit check.
-    if checked && !crate::crs::local_crs_fits(&restored, source, &local)? {
+    if checked && !crate::crs::local_crs_fits_at(&restored, source, &local, state)? {
         return Err(crate::crs::CrsError::invalid(format!(
             "constructive result exceeds the {:.1}% linear scale-error limit in one local projection; use a smaller distance, split the geometry, or choose a projected CRS explicitly",
             crate::crs::LOCAL_SCALE_ERROR_LIMIT * 100.0

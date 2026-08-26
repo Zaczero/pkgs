@@ -280,9 +280,11 @@ impl ShapeData {
         crs: &str,
         semi_major: f64,
         flattening: f64,
+        runtime_generation: u64,
         metric: &impl SegmentMetric,
     ) -> Result<std::sync::Arc<LineIndex>> {
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key =
+            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
@@ -332,7 +334,12 @@ impl ShapeData {
         flattening: f64,
         metric: &impl GeodesicMetric,
     ) -> Result<()> {
-        let key = GeodesicPartsKey::new(crs, semi_major, flattening);
+        let key = GeodesicPartsKey::new_at_generation(
+            crs,
+            semi_major,
+            flattening,
+            metric.runtime_generation(),
+        );
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
@@ -602,10 +609,10 @@ mod frame_cache_tests {
         )));
         let cache = FrameDependentCaches::default();
         let first = shape
-            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, &PlanarMetric)
+            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
             .expect("line index");
         let second = shape
-            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, &PlanarMetric)
+            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
             .expect("cached line index");
         assert!(Arc::ptr_eq(&first, &second));
     }
@@ -686,6 +693,12 @@ pub struct GeodesicSegmentWitness {
 /// the geometry layer stays free of any CRS/ellipsoid dependency. Implemented
 /// in `crs.rs` over a `geographiclib` `Geodesic`.
 pub trait GeodesicMetric {
+    /// Runtime generation used to namespace CRS-dependent prepared state.
+    /// Geometry-only test metrics use the default zero generation.
+    fn runtime_generation(&self) -> u64 {
+        0
+    }
+
     /// Precompute the ellipsoidal metadata shared by every exact probe of one
     /// segment.
     fn make_segment(&self, start: Point, end: Point) -> GeodesicSegment;

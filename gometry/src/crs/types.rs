@@ -672,6 +672,17 @@ pub(crate) struct RuntimeConfig {
     pub user_writable_directory: Option<String>,
 }
 
+/// Immutable configuration and generation used by one CRS operation.
+///
+/// The runtime publishes this value by replacing an `Arc`, so a context and
+/// every cache or metadata observation for one operation can retain the same
+/// configuration even if another thread reconfigures PROJ meanwhile.
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeState {
+    pub generation: u64,
+    pub config: std::sync::Arc<RuntimeConfig>,
+}
+
 #[derive(Debug, Clone, IntoPyObject)]
 pub(crate) struct IdentifyCandidate {
     pub crs: String,

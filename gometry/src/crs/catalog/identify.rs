@@ -4,17 +4,17 @@ use crate::crs::catalog::{
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
     add_cf_lambert_conformal_conic_parameters, add_cf_lambert_cylindrical_equal_area_parameters,
     add_cf_mercator_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cached_export, crs_to_2d_export, crs_to_3d_export,
-    is_operation_method, is_transverse_mercator, to_wkt_with_options,
+    add_cf_projection_parameters, cached_export, is_operation_method, is_transverse_mercator,
 };
 use crate::crs::{
     AuthorityObjectInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
     CRS_SEARCH_CACHE, CRS_SEARCH_CACHE_CAPACITY, CachedAuthorityObjects, CachedCrsAuthorityMatches,
     CachedCrsSearch, CfValue, Confidence, CrsError, CrsExportKind, CrsInfo, CrsObjectKind,
     CrsSearchOptions, CrsWktOptions, IdentifyCandidate, NON_DEPRECATED_CACHE,
-    NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, WktVersion, authority_object_info,
-    cstring, ensure_thread_caches_current, info, lru_resolve, normalize,
-    proj_context_error_message, validate_min_confidence, with_proj_context,
+    NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, RuntimeState, WktVersion,
+    authority_object_info, cstring, ensure_thread_caches_current, info_with_state, lru_resolve,
+    normalize, proj_context_error_message, runtime_state_snapshot, validate_min_confidence,
+    with_proj_context_at,
 };
 use crate::error::Result;
 
@@ -37,8 +37,17 @@ fn cf_proj_units_token(unit_name: &str, to_metre: f64) -> String {
 }
 
 pub(crate) fn identify(value: &str, authority: Option<&str>) -> Result<Vec<IdentifyCandidate>> {
+    let state = runtime_state_snapshot()?;
+    identify_with_state(value, authority, &state)
+}
+
+pub(crate) fn identify_with_state(
+    value: &str,
+    authority: Option<&str>,
+    state: &RuntimeState,
+) -> Result<Vec<IdentifyCandidate>> {
     let normalized = normalize(value)?;
-    ProjObject::new(&normalized)?.identify(authority, normalized)
+    ProjObject::new_with_state(&normalized, state)?.identify(authority, normalized)
 }
 
 pub(crate) fn to_authority(
@@ -46,21 +55,44 @@ pub(crate) fn to_authority(
     authority: Option<&str>,
     min_confidence: Confidence,
 ) -> Result<Option<(String, String)>> {
-    Ok(authority_matches(value, authority, min_confidence)?
-        .into_iter()
-        .find_map(|candidate| match (candidate.authority, candidate.code) {
-            (Some(authority), Some(code)) => Some((authority, code)),
-            _ => None,
-        }))
+    let state = runtime_state_snapshot()?;
+    to_authority_with_state(value, authority, min_confidence, &state)
 }
 
+pub(crate) fn to_authority_with_state(
+    value: &str,
+    authority: Option<&str>,
+    min_confidence: Confidence,
+    state: &RuntimeState,
+) -> Result<Option<(String, String)>> {
+    Ok(
+        authority_matches_with_state(value, authority, min_confidence, state)?
+            .into_iter()
+            .find_map(|candidate| match (candidate.authority, candidate.code) {
+                (Some(authority), Some(code)) => Some((authority, code)),
+                _ => None,
+            }),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn authority_matches(
     value: &str,
     authority: Option<&str>,
     min_confidence: Confidence,
 ) -> Result<Vec<IdentifyCandidate>> {
+    let state = runtime_state_snapshot()?;
+    authority_matches_with_state(value, authority, min_confidence, &state)
+}
+
+pub(crate) fn authority_matches_with_state(
+    value: &str,
+    authority: Option<&str>,
+    min_confidence: Confidence,
+    state: &RuntimeState,
+) -> Result<Vec<IdentifyCandidate>> {
     validate_min_confidence(min_confidence);
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     let normalized = normalize(value)?;
     let authority = authority.map(str::to_owned);
     CRS_AUTHORITY_MATCH_CACHE.with(|items| {
@@ -74,7 +106,7 @@ pub(crate) fn authority_matches(
                     && item.min_confidence == min_confidence
             },
             || {
-                let candidates = ProjObject::new(&normalized)?
+                let candidates = ProjObject::new_with_state(&normalized, state)?
                     .identify(authority.as_deref(), normalized.clone())?;
                 let items: Vec<_> = candidates
                     .into_iter()
@@ -104,28 +136,41 @@ pub(crate) fn to_epsg(value: &str, min_confidence: Confidence) -> Result<Option<
 }
 
 pub(crate) fn to_2d(value: &str, name: Option<&str>) -> Result<String> {
+    let state = runtime_state_snapshot()?;
     cached_export(
         value,
         || CrsExportKind::To2d {
             name: name.map(str::to_owned),
         },
-        crs_to_2d_export,
+        |key, state| crate::crs::catalog::export::crs_to_2d_export_at(key, state),
+        &state,
     )
 }
 
 pub(crate) fn to_3d(value: &str, name: Option<&str>) -> Result<String> {
+    let state = runtime_state_snapshot()?;
     cached_export(
         value,
         || CrsExportKind::To3d {
             name: name.map(str::to_owned),
         },
-        crs_to_3d_export,
+        |key, state| crate::crs::catalog::export::crs_to_3d_export_at(key, state),
+        &state,
     )
 }
 
 pub(crate) fn to_cf(value: &str, wkt_version: WktVersion) -> Result<Vec<(&'static str, CfValue)>> {
+    let state = runtime_state_snapshot()?;
+    to_cf_with_state(value, wkt_version, &state)
+}
+
+fn to_cf_with_state(
+    value: &str,
+    wkt_version: WktVersion,
+    state: &RuntimeState,
+) -> Result<Vec<(&'static str, CfValue)>> {
     let normalized = normalize(value)?;
-    let info = info(&normalized)?;
+    let info = info_with_state(&normalized, state)?;
     // Compound CRSs are not a single CF grid_mapping; reject rather than
     // silently truncating to the horizontal ellipsoid metadata alone.
     if info.is_compound() {
@@ -133,7 +178,12 @@ pub(crate) fn to_cf(value: &str, wkt_version: WktVersion) -> Result<Vec<(&'stati
             "CRS.to_cf() does not support compound CRS {normalized}; convert components separately"
         )));
     }
-    let wkt = to_wkt_with_options(&normalized, wkt_version, &CrsWktOptions::default())?;
+    let wkt = crate::crs::catalog::export::to_wkt_with_options_at(
+        &normalized,
+        wkt_version,
+        &CrsWktOptions::default(),
+        state,
+    )?;
     let mut items = Vec::with_capacity(16);
     items.push(("crs_wkt", CfValue::String(wkt)));
     if let Some(ellipsoid) = &info.ellipsoid {
@@ -251,7 +301,15 @@ fn push_cf_grid_mapping(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo
 }
 
 pub(crate) fn non_deprecated(value: &str) -> Result<Vec<AuthorityObjectInfo>> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    non_deprecated_with_state(value, &state)
+}
+
+pub(crate) fn non_deprecated_with_state(
+    value: &str,
+    state: &RuntimeState,
+) -> Result<Vec<AuthorityObjectInfo>> {
+    ensure_thread_caches_current(state);
     let normalized = normalize(value)?;
     NON_DEPRECATED_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -260,7 +318,7 @@ pub(crate) fn non_deprecated(value: &str) -> Result<Vec<AuthorityObjectInfo>> {
             NON_DEPRECATED_CACHE_CAPACITY,
             |item| item.crs == normalized,
             || {
-                let items = ProjObject::new(&normalized)?.non_deprecated()?;
+                let items = ProjObject::new_with_state(&normalized, state)?.non_deprecated()?;
                 Ok(CachedAuthorityObjects {
                     crs: normalized.clone(),
                     items,
@@ -272,7 +330,16 @@ pub(crate) fn non_deprecated(value: &str) -> Result<Vec<AuthorityObjectInfo>> {
 }
 
 pub(crate) fn search(name: &str, options: &CrsSearchOptions) -> Result<Vec<AuthorityObjectInfo>> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    search_with_state(name, options, &state)
+}
+
+pub(crate) fn search_with_state(
+    name: &str,
+    options: &CrsSearchOptions,
+    state: &RuntimeState,
+) -> Result<Vec<AuthorityObjectInfo>> {
+    ensure_thread_caches_current(state);
     options.validate()?;
     let name = name.trim();
     if name.is_empty() {
@@ -290,7 +357,7 @@ pub(crate) fn search(name: &str, options: &CrsSearchOptions) -> Result<Vec<Autho
                 Ok(CachedCrsSearch {
                     name: name.to_owned(),
                     options: options.clone(),
-                    items: search_uncached(name, options)?,
+                    items: search_uncached(name, options, state)?,
                 })
             },
         )?;
@@ -298,7 +365,11 @@ pub(crate) fn search(name: &str, options: &CrsSearchOptions) -> Result<Vec<Autho
     })
 }
 
-fn search_uncached(name: &str, options: &CrsSearchOptions) -> Result<Vec<AuthorityObjectInfo>> {
+fn search_uncached(
+    name: &str,
+    options: &CrsSearchOptions,
+    state: &RuntimeState,
+) -> Result<Vec<AuthorityObjectInfo>> {
     let name = cstring(name)?;
     let authority = options.authority.as_deref().map(cstring).transpose()?;
     let types = options
@@ -306,7 +377,7 @@ fn search_uncached(name: &str, options: &CrsSearchOptions) -> Result<Vec<Authori
         .map(CrsObjectKind::to_proj)
         .into_iter()
         .collect::<Vec<_>>();
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         // SAFETY: DOC-H. Typed context; strings and optional type slice live for
         // the call; returns caller-owned object list or null.
         let list = unsafe {

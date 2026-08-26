@@ -7,6 +7,8 @@
 //! share long definitions cheaply.
 //! Re-exported at the crate root for `use super::*` / `crate::` consumers.
 
+use std::sync::Arc;
+
 use smol_str::SmolStr;
 
 use crate::crs::CrsError;
@@ -160,6 +162,7 @@ pub(crate) struct GeometryTransformFrame {
     pub(crate) output: Frame,
     pub(crate) options: crs::TransformOptions,
     pub(crate) identity: bool,
+    pub(crate) state: Arc<crs::RuntimeState>,
 }
 
 impl Frame {
@@ -487,6 +490,7 @@ impl GeometryTransformFrame {
         explicit_epoch: Option<f64>,
         mut options: crs::TransformOptions,
     ) -> Result<Self> {
+        let state = crs::runtime_state_snapshot()?;
         let source_crs = source.crs_owned().ok_or_else(|| {
             CrsError::message("cannot transform coordinates without source CRS metadata")
         })?;
@@ -501,10 +505,16 @@ impl GeometryTransformFrame {
             Some(epoch) => Some(epoch),
             None if same_crs => source.epoch(),
             None => match source.epoch() {
-                Some(epoch) if crs::is_dynamic(&target)? => Some(epoch),
+                Some(epoch) if crs::is_dynamic_with_state(&target, &state)? => Some(epoch),
                 _ => None,
             },
         };
+        if explicit_epoch.is_some()
+            && output_epoch.is_some()
+            && !crs::is_dynamic_with_state(&target, &state)?
+        {
+            return Err(FrameError::EpochRequiresDynamicCrs { crs: target }.into());
+        }
         let identity = same_crs && output_epoch == source.epoch();
         options.source_epoch = source.epoch();
         options.target_epoch = output_epoch;
@@ -512,11 +522,15 @@ impl GeometryTransformFrame {
             source: source_crs,
             target: target.clone(),
             // `explicit_epoch` is user input, so this frame is untrusted ingress
-            // and takes the checked constructor: an epoch aimed at a static
-            // target must raise, never trip `from_trusted_parts`'s assertion.
-            output: Frame::new(Some(target), output_epoch)?,
+            // and was checked against the retained runtime state above. Build
+            // the output directly so the same state is not re-snapshotted.
+            output: match output_epoch {
+                Some(epoch) => Frame::CrsEpoch(target, epoch),
+                None => Frame::Crs(target),
+            },
             options,
             identity,
+            state,
         })
     }
 }

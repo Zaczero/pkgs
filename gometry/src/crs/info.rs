@@ -9,10 +9,10 @@ use crate::crs::{
     CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY, CString,
     CachedCrsInfo, CachedProjectionFactorsObject, CrsError, CrsInfo, CrsProjOptions, DatumInfo,
     EngineInfo, OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns,
-    ProjectionFactors, TransformOptions, c_option_ptrs, copy_proj_c_string,
+    ProjectionFactors, RuntimeState, TransformOptions, c_option_ptrs, copy_proj_c_string,
     create_crs_transform_object, cstring, ensure_thread_caches_current, lru_resolve, normalize,
-    normalize_pair, proj_context_error_message, with_proj_context, with_proj_diagnostic_pipeline,
-    with_proj_pipeline,
+    normalize_pair, proj_context_error_message, runtime_state_snapshot, with_proj_context_at,
+    with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::column_all_finite;
@@ -38,7 +38,15 @@ impl AngularUnit {
 }
 
 pub(crate) fn info(value: &str) -> Result<std::sync::Arc<CrsInfo>> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    info_with_state(value, &state)
+}
+
+pub(crate) fn info_with_state(
+    value: &str,
+    state: &RuntimeState,
+) -> Result<std::sync::Arc<CrsInfo>> {
+    ensure_thread_caches_current(state);
     let normalized = normalize(value)?;
     CRS_INFO_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -47,7 +55,7 @@ pub(crate) fn info(value: &str) -> Result<std::sync::Arc<CrsInfo>> {
             CRS_INFO_CACHE_CAPACITY,
             |item| item.crs == normalized,
             || {
-                let info = ProjObject::new(&normalized)?.info(normalized.clone());
+                let info = ProjObject::new_with_state(&normalized, state)?.info(normalized.clone());
                 Ok(CachedCrsInfo {
                     crs: normalized.clone(),
                     info: std::sync::Arc::new(info),
@@ -76,17 +84,24 @@ fn datum_is_dynamic(datum: &DatumInfo) -> bool {
 /// horizontal component is dynamic (e.g. EPSG:9707 = WGS 84 + height) is
 /// dynamic even when the compound object's own datum slot is empty.
 pub(crate) fn is_dynamic(value: &str) -> Result<bool> {
-    is_dynamic_info(info(value)?.as_ref())
+    let state = runtime_state_snapshot()?;
+    is_dynamic_with_state(value, &state)
 }
 
-fn is_dynamic_info(crs: &CrsInfo) -> Result<bool> {
+pub(crate) fn is_dynamic_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
+    is_dynamic_info(info_with_state(value, state)?.as_ref(), state)
+}
+
+fn is_dynamic_info(crs: &CrsInfo, state: &RuntimeState) -> Result<bool> {
     if crs.datum.as_ref().is_some_and(datum_is_dynamic) {
         return Ok(true);
     }
     // Compound components only — never re-resolve a datum/ensemble authority
     // code as a CRS (EPSG:6326 is a datum ensemble, not a constructible CRS).
     for sub in &crs.sub_crs {
-        if !sub.crs.is_empty() && is_dynamic(&sub.crs)? {
+        if !sub.crs.is_empty()
+            && is_dynamic_info(info_with_state(&sub.crs, state)?.as_ref(), state)?
+        {
             return Ok(true);
         }
     }
@@ -99,32 +114,35 @@ pub(crate) fn factors(
     latitude: f64,
     radians: bool,
 ) -> Result<ProjectionFactors> {
-    let mut factors = factors_batch(
+    let state = runtime_state_snapshot()?;
+    factors_at(target, longitude, latitude, radians, &state)
+}
+
+pub(crate) fn factors_at(
+    target: &str,
+    longitude: f64,
+    latitude: f64,
+    radians: bool,
+    state: &RuntimeState,
+) -> Result<ProjectionFactors> {
+    let mut factors = factors_batch_with_state(
         target,
         &[longitude],
         &[latitude],
         AngularUnit::from_radians(radians),
+        state,
     )?;
     Ok(factors.remove(0))
 }
 
-pub(crate) fn factors_batch(
+fn factors_batch_with_state(
     target: &str,
     longitudes: &[f64],
     latitudes: &[f64],
     unit: AngularUnit,
+    state: &RuntimeState,
 ) -> Result<Vec<ProjectionFactors>> {
-    if longitudes.len() != latitudes.len() {
-        return Err(CrsError::invalid(
-            "factor coordinates must have the same length".to_owned(),
-        ));
-    }
-    if !column_all_finite(longitudes) || !column_all_finite(latitudes) {
-        return Err(CrsError::invalid(
-            "factor coordinates must be finite".to_owned(),
-        ));
-    }
-    ensure_thread_caches_current();
+    ensure_thread_caches_current(state);
     let target = normalize(target)?;
     CRS_FACTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -132,7 +150,7 @@ pub(crate) fn factors_batch(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
             |item| item.crs == target,
-            || projection_factors_object(&target),
+            || projection_factors_object(&target, state),
         )?;
         longitudes
             .iter()
@@ -164,7 +182,6 @@ pub(crate) fn factor_columns(
     latitudes: &[f64],
     radians: bool,
 ) -> Result<ProjectionFactorColumns> {
-    let unit = AngularUnit::from_radians(radians);
     if longitudes.len() != latitudes.len() {
         return Err(CrsError::invalid(
             "factor coordinates must have the same length".to_owned(),
@@ -175,7 +192,19 @@ pub(crate) fn factor_columns(
             "factor coordinates must be finite".to_owned(),
         ));
     }
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot()?;
+    factor_columns_with_state(target, longitudes, latitudes, radians, &state)
+}
+
+fn factor_columns_with_state(
+    target: &str,
+    longitudes: &[f64],
+    latitudes: &[f64],
+    radians: bool,
+    state: &RuntimeState,
+) -> Result<ProjectionFactorColumns> {
+    let unit = AngularUnit::from_radians(radians);
+    ensure_thread_caches_current(state);
     let target = normalize(target)?;
     CRS_FACTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -183,7 +212,7 @@ pub(crate) fn factor_columns(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
             |item| item.crs == target,
-            || projection_factors_object(&target),
+            || projection_factors_object(&target, state),
         )?;
         cache[index]
             .object
@@ -191,10 +220,13 @@ pub(crate) fn factor_columns(
     })
 }
 
-fn projection_factors_object(target: &str) -> Result<CachedProjectionFactorsObject> {
+fn projection_factors_object(
+    target: &str,
+    state: &RuntimeState,
+) -> Result<CachedProjectionFactorsObject> {
     let target_definition = cstring(target)?;
-    let context =
-        ProjContext::new().map_err(|error| CrsError::crs_create(target, error.to_string()))?;
+    let context = ProjContext::new_with_state(state)
+        .map_err(|error| CrsError::crs_create(target, error.to_string()))?;
     let target_object = create_crs_transform_object(&context, &target_definition, target, None)?;
     let mut projection = projection_string_for_factors(&context, &target_object, target)?;
     if let Some(stripped) = projection.strip_suffix(" +type=crs") {
@@ -233,15 +265,16 @@ fn projection_string_for_factors(
     proj_c_string!(value)
         .ok_or_else(|| CrsError::export(target, "PROJ string", proj_context_error_message(context)))
 }
-pub(crate) fn operation_info(
+pub(crate) fn operation_info_with_state(
     source: &str,
     target: &str,
     options: &TransformOptions,
+    state: &RuntimeState,
 ) -> Result<OperationInfo> {
     let (source, target) = normalize_pair(source, target)?;
     let source_info = source.clone();
     let target_info = target.clone();
-    with_proj_pipeline(&source, &target, options, |pipeline| {
+    with_proj_pipeline_at(&source, &target, options, state, |pipeline| {
         Ok(pipeline.operation_info(
             source_info,
             target_info,
@@ -258,6 +291,19 @@ pub(crate) fn operation_info_at(
     y: f64,
     zt: crate::ZtValues,
     options: &TransformOptions,
+) -> Result<OperationInfo> {
+    let state = runtime_state_snapshot()?;
+    operation_info_at_with_state(source, target, x, y, zt, options, &state)
+}
+
+pub(crate) fn operation_info_at_with_state(
+    source: &str,
+    target: &str,
+    x: f64,
+    y: f64,
+    zt: crate::ZtValues,
+    options: &TransformOptions,
+    state: &RuntimeState,
 ) -> Result<OperationInfo> {
     let finite_zt = match &zt {
         crate::Zt::None => true,
@@ -278,12 +324,12 @@ pub(crate) fn operation_info_at(
     };
     options.validate()?;
     if options.only_best == Some(true) || options.force_over {
-        return operation_info(source, target, options);
+        return operation_info_with_state(source, target, options, state);
     }
     let (source, target) = normalize_pair(source, target)?;
     let source_info = source.clone();
     let target_info = target.clone();
-    with_proj_diagnostic_pipeline(&source, &target, options, |pipeline| {
+    with_proj_diagnostic_pipeline_at(&source, &target, options, state, |pipeline| {
         pipeline.operation_info_at(
             source_info,
             target_info,
@@ -295,29 +341,6 @@ pub(crate) fn operation_info_at(
             t,
         )
     })
-}
-
-/// Copy path entries from a `proj_info()` snapshot under [`PROJ_INFO_LOCK`].
-///
-/// # Safety
-///
-/// Call only while holding the lock that serialized `proj_info()` and while
-/// the returned `paths` pointers remain valid (before any concurrent
-/// `proj_info()` can free them). `path_count` is the count reported by that
-/// same call.
-unsafe fn proj_info_paths_locked(info: &proj_sys::PJ_INFO) -> Vec<String> {
-    if info.paths.is_null() || info.path_count == 0 {
-        return Vec::new();
-    }
-    let mut paths = Vec::with_capacity(info.path_count);
-    for index in 0..info.path_count {
-        // SAFETY: LIST(path_count) under the lock that owns the snapshot.
-        let path = unsafe { *info.paths.add(index) };
-        if let Some(path) = proj_c_string!(path) {
-            paths.push(path);
-        }
-    }
-    paths
 }
 
 pub(crate) const DATABASE_METADATA_KEYS: [&str; 10] = [
@@ -348,14 +371,14 @@ pub(super) fn database_metadata(context: &ProjContext) -> Vec<(String, String)> 
         .collect()
 }
 
-pub(crate) fn engine_info() -> Result<EngineInfo> {
+pub(crate) fn engine_info_with_state(state: &RuntimeState) -> Result<EngineInfo> {
     // `proj_info()` returns pointers into PROJ's mutable global metadata
     // storage. Concurrent `proj_info()` rewrites/frees that backing after the
     // call returns (reproduced on free-threaded CPython 3.14t: corrupt search
     // paths and empty version strings). Own every string *immediately* under a
     // process-wide lock, before any other PROJ/context work can run.
     let snapshot = owned_proj_info_snapshot();
-    with_proj_context(|context| {
+    with_proj_context_at(state, |context| {
         // SAFETY: DOC-H. Typed live context; returned paths/directory are
         // context-lifetime C strings copied immediately.
         let (database_path, user_writable_directory) = unsafe {
@@ -376,7 +399,7 @@ pub(crate) fn engine_info() -> Result<EngineInfo> {
             minor: snapshot.minor,
             patch: snapshot.patch,
             search_path: snapshot.search_path,
-            paths: snapshot.paths,
+            paths: state.config.search_paths.clone().unwrap_or_default(),
             database_path,
             database_metadata: database_metadata(context),
             user_writable_directory,
@@ -395,7 +418,6 @@ struct OwnedProjInfo {
     minor: i32,
     patch: i32,
     search_path: Option<String>,
-    paths: Vec<String>,
 }
 
 /// Serializes `proj_info()` + all string copies. PROJ releases its own mutex
@@ -418,8 +440,6 @@ fn owned_proj_info_snapshot() -> OwnedProjInfo {
         minor: info.minor,
         patch: info.patch,
         search_path: proj_c_string!(info.searchpath),
-        // SAFETY: still under PROJ_INFO_LOCK; paths remain live until unlock.
-        paths: unsafe { proj_info_paths_locked(&info) },
     }
 }
 

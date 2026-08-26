@@ -2,15 +2,16 @@ use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError,
-    ensure_thread_caches_current, info, lru_resolve,
+    ensure_thread_caches_current, lru_resolve,
 };
+use crate::crs::{RuntimeState, info_with_state, runtime_state_snapshot};
 use crate::error::Result;
 
-fn cached_geodesic_object(crs: &str) -> Result<CachedGeodesicObject> {
+fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeodesicObject> {
     // Reuse the cached CRS introspection (`info` is LRU-backed) instead of a
     // fresh `ProjObject` FFI parse — the ellipsoid is identical and this CRS was
     // already resolved to reach the geodesic path.
-    let crs_info = info(crs)?;
+    let crs_info = info_with_state(crs, state)?;
     let ellipsoid = crs_info.ellipsoid.as_ref().ok_or_else(|| {
         CrsError::invalid(format!(
             "{crs} does not expose an ellipsoid for geodesic use"
@@ -45,14 +46,24 @@ pub(crate) fn with_geodesic_cache<T, E>(
     map_err: impl Fn(crate::error::Error) -> E,
     f: impl FnOnce(&Geodesic) -> Result<T, E>,
 ) -> Result<T, E> {
-    ensure_thread_caches_current();
+    let state = runtime_state_snapshot().map_err(&map_err)?;
+    with_geodesic_cache_at(crs, &state, map_err, f)
+}
+
+pub(crate) fn with_geodesic_cache_at<T, E>(
+    crs: &str,
+    state: &RuntimeState,
+    map_err: impl Fn(crate::error::Error) -> E,
+    f: impl FnOnce(&Geodesic) -> Result<T, E>,
+) -> Result<T, E> {
+    ensure_thread_caches_current(state);
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
             &mut cache,
             CRS_GEODESIC_CACHE_CAPACITY,
             |item| item.crs == crs,
-            || cached_geodesic_object(crs),
+            || cached_geodesic_object(crs, state),
         )
         .map_err(&map_err)?;
         f(&cache[index].object)
@@ -61,4 +72,12 @@ pub(crate) fn with_geodesic_cache<T, E>(
 
 pub(crate) fn with_geodesic<T>(crs: &str, f: impl FnOnce(&Geodesic) -> Result<T>) -> Result<T> {
     with_geodesic_cache(crs, |error| error, f)
+}
+
+pub(crate) fn with_geodesic_at<T>(
+    crs: &str,
+    state: &RuntimeState,
+    f: impl FnOnce(&Geodesic) -> Result<T>,
+) -> Result<T> {
+    with_geodesic_cache_at(crs, state, |error| error, f)
 }

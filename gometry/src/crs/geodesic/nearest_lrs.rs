@@ -1,8 +1,9 @@
 use crate::Finite;
+use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    DistanceMode, EllipsoidMetric, Result, ensure_geodesic_lonlat_crs, ensure_geographic_coordseq,
-    ensure_geographic_domain, ensure_geographic_lonlat, normalize, with_geodesic,
-    with_geodesic_cache,
+    DistanceMode, EllipsoidMetric, Result, ensure_geodesic_lonlat_crs_at,
+    ensure_geographic_coordseq, ensure_geographic_domain, ensure_geographic_lonlat, normalize,
+    with_geodesic_at, with_geodesic_cache_at,
 };
 use crate::geometry::{
     CoordSeq, FrameDependentCaches, LineIndex, MeasureRange, Point, Shape, ShapeData,
@@ -17,17 +18,24 @@ pub(crate) fn geodesic_line_interpolate(
     frame_cache: &FrameDependentCaches,
     distance: f64,
     distance_mode: impl Into<DistanceMode>,
+    state: &RuntimeState,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs(crs)?;
+    ensure_geodesic_lonlat_crs_at(crs, state)?;
     ensure_geographic_domain(shape)?;
     let distance = Finite::try_new("distance", distance)?.get();
     let crs = normalize(crs)?;
-    with_geodesic(&crs, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic(geodesic);
+    with_geodesic_at(&crs, &state, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
-        let index =
-            shape.geodesic_line_index(frame_cache, &crs, semi_major, flattening, &metric)?;
+        let index = shape.geodesic_line_index(
+            frame_cache,
+            &crs,
+            semi_major,
+            flattening,
+            state.generation,
+            &metric,
+        )?;
         Ok(Shape::Point(index.interpolate(
             distance,
             distance_mode.is_normalized(),
@@ -44,16 +52,23 @@ pub(crate) fn geodesic_line_substring(
     frame_cache: &FrameDependentCaches,
     range: MeasureRange,
     distance_mode: impl Into<DistanceMode>,
+    state: &RuntimeState,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs(crs)?;
+    ensure_geodesic_lonlat_crs_at(crs, state)?;
     ensure_geographic_domain(shape)?;
     let crs = normalize(crs)?;
-    with_geodesic(&crs, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic(geodesic);
+    with_geodesic_at(&crs, &state, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
-        let index =
-            shape.geodesic_line_index(frame_cache, &crs, semi_major, flattening, &metric)?;
+        let index = shape.geodesic_line_index(
+            frame_cache,
+            &crs,
+            semi_major,
+            flattening,
+            state.generation,
+            &metric,
+        )?;
         index.substring(range, distance_mode.is_normalized(), &metric)
     })
 }
@@ -66,57 +81,60 @@ pub(crate) fn geodesic_line_locate(
     frame_cache: &FrameDependentCaches,
     point: Point,
     distance_mode: impl Into<DistanceMode>,
+    state: &RuntimeState,
 ) -> Result<f64> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs(crs)?;
+    ensure_geodesic_lonlat_crs_at(crs, state)?;
     ensure_geographic_domain(shape)?;
     ensure_geographic_lonlat(point.x, point.y)?;
     let crs = normalize(crs)?;
-    with_geodesic(&crs, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic(geodesic);
+    with_geodesic_at(&crs, &state, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
-        let index =
-            shape.geodesic_line_index(frame_cache, &crs, semi_major, flattening, &metric)?;
+        let index = shape.geodesic_line_index(
+            frame_cache,
+            &crs,
+            semi_major,
+            flattening,
+            state.generation,
+            &metric,
+        )?;
         Ok(index.locate_point(point, distance_mode.is_normalized(), &metric))
     })
 }
 
-/// Internal entry for geodesic metric helpers: geographic CRS check, optional
-/// input lon/lat domain validation, thread-cache refresh, CRS normalization,
-/// and cached [`Geodesic`] lookup — then invoke `f` with the normalized CRS
-/// string and ellipsoid metric.
-pub(crate) fn with_geodesic_erased<T, E>(
+pub(crate) fn with_geodesic_erased_at<T, E>(
     crs: &str,
     shapes: &[&Shape],
+    state: &RuntimeState,
     map_err: impl Fn(crate::error::Error) -> E,
     f: impl FnOnce(&str, &EllipsoidMetric<'_>) -> Result<T, E>,
 ) -> Result<T, E> {
-    ensure_geodesic_lonlat_crs(crs).map_err(&map_err)?;
+    ensure_geodesic_lonlat_crs_at(crs, state).map_err(&map_err)?;
     for shape in shapes {
         ensure_geographic_domain(shape).map_err(&map_err)?;
     }
     let crs = normalize(crs).map_err(&map_err)?;
-    with_geodesic_cache(&crs, map_err, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic(geodesic);
+    with_geodesic_cache_at(&crs, state, map_err, |geodesic| {
+        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
         f(&crs, &metric)
     })
 }
 
-/// Resolve the ellipsoid metric once for packed-line LRS batch lanes (CRS
-/// validation + geodesic cache lookup happen outside the per-row loop).
-pub(crate) fn with_geodesic_coordseq_metric<T>(
+pub(crate) fn with_geodesic_coordseq_metric_at<T>(
     crs: &str,
+    state: &RuntimeState,
     f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<T>,
 ) -> Result<T> {
-    with_geodesic_erased(crs, &[], |error| error, |_, metric| f(metric))
+    with_geodesic_erased_at(crs, &[], state, |error| error, |_, metric| f(metric))
 }
 
-/// [`with_geodesic_coordseq_metric`] sibling for [`CollectRows`] batch lanes.
-pub(crate) fn with_geodesic_coordseq_collect_rows<T>(
+pub(crate) fn with_geodesic_coordseq_collect_rows_at<T>(
     crs: &str,
+    state: &RuntimeState,
     f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<Vec<T>, (usize, crate::error::Error)>,
 ) -> Result<Vec<T>, (usize, crate::error::Error)> {
-    with_geodesic_erased(crs, &[], |error| (0, error), |_, metric| f(metric))
+    with_geodesic_erased_at(crs, &[], state, |error| (0, error), |_, metric| f(metric))
 }
 
 /// Packed-line column kernel for geodesic `line_interpolate_point`: one

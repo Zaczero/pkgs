@@ -13,29 +13,38 @@
 use std::ptr::NonNull;
 
 use super::proj_env::{self, ContextRaw, EnvResult};
+use super::{RuntimeState, runtime_state_snapshot};
 
 #[cfg(test)]
 thread_local! {
     static CONTEXT_CREATION_HOOK: std::cell::RefCell<Option<(
         std::sync::Arc<std::sync::Barrier>,
         std::sync::Arc<std::sync::Barrier>,
+        Option<std::sync::Arc<std::sync::Mutex<Option<(u64, Option<Vec<String>>)>>>>,
     )>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(super) fn install_context_creation_hook(
+pub(super) fn install_context_creation_state_hook(
     entered: std::sync::Arc<std::sync::Barrier>,
     resume: std::sync::Arc<std::sync::Barrier>,
+    observed: std::sync::Arc<std::sync::Mutex<Option<(u64, Option<Vec<String>>)>>>,
 ) {
-    CONTEXT_CREATION_HOOK.with(|hook| *hook.borrow_mut() = Some((entered, resume)));
+    CONTEXT_CREATION_HOOK.with(|hook| *hook.borrow_mut() = Some((entered, resume, Some(observed))));
 }
 
 #[cfg(test)]
-fn run_context_creation_hook() {
+fn run_context_creation_hook(state: &RuntimeState) {
     let hook = CONTEXT_CREATION_HOOK.with(|hook| hook.borrow_mut().take());
-    if let Some((entered, resume)) = hook {
+    if let Some((entered, resume, observed)) = hook {
         entered.wait();
         resume.wait();
+        if let Some(observed) = observed {
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((state.generation, state.config.search_paths.clone()));
+        }
     }
 }
 
@@ -48,16 +57,21 @@ pub(crate) struct ProjContext {
 }
 
 impl ProjContext {
-    /// Create a configured context via [`proj_env`].
+    #[cfg(test)]
     pub(crate) fn new() -> EnvResult<Self> {
+        let state = runtime_state_snapshot()?;
+        Self::new_with_state(&state)
+    }
+
+    pub(crate) fn new_with_state(state: &RuntimeState) -> EnvResult<Self> {
         #[cfg(test)]
-        run_context_creation_hook();
+        run_context_creation_hook(state);
         // SAFETY: `context_create` returns null or a uniquely owned context on
         // this thread; we adopt into the RAII owner before any fallible work.
         let ptr = unsafe { proj_env::context_create() };
         let raw = NonNull::new(ptr).ok_or_else(proj_env::create_failed)?;
         let context = Self { raw };
-        proj_env::prepare(&context)?;
+        proj_env::prepare_with_state(&context, state)?;
         Ok(context)
     }
 
@@ -81,7 +95,15 @@ impl Drop for ProjContext {
 /// The closure receives `&ProjContext` so a safe crate-internal caller cannot
 /// return a raw `*mut PJ_CONTEXT` and use it after the owner drops.
 pub(crate) fn with_proj_context<R>(operation: impl FnOnce(&ProjContext) -> R) -> EnvResult<R> {
-    let context = ProjContext::new()?;
+    let state = runtime_state_snapshot()?;
+    with_proj_context_at(&state, operation)
+}
+
+pub(crate) fn with_proj_context_at<R>(
+    state: &RuntimeState,
+    operation: impl FnOnce(&ProjContext) -> R,
+) -> EnvResult<R> {
+    let context = ProjContext::new_with_state(state)?;
     Ok(operation(&context))
 }
 

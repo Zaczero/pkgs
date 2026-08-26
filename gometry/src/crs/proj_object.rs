@@ -7,7 +7,7 @@
 use crate::crs::{
     AngularUnit, AuthorityObjectInfo, Confidence, CrsError, CrsInfo, CrsProjJsonOptions,
     CrsProjOptions, CrsWktOptions, IdentifyCandidate, OwnedPj, ProjContext, ProjIntList,
-    ProjObjList, ProjObject, ProjectionFactorColumns, ProjectionFactors, area_of_use,
+    ProjObjList, ProjObject, ProjectionFactorColumns, ProjectionFactors, RuntimeState, area_of_use,
     authority_object_info, axes, axis_role, c_option_ptrs, compound_axis_metadata,
     coordinate_system_type, copy_proj_c_string, crs_type_name, cstring, datum_info, domain_infos,
     ellipsoid_info, exported_owned_crs, id_authority, optional_c_string,
@@ -17,10 +17,10 @@ use crate::crs::{
 use crate::error::Result;
 
 impl ProjObject {
-    pub(super) fn new(crs: &str) -> Result<Self> {
+    pub(super) fn new_with_state(crs: &str, state: &RuntimeState) -> Result<Self> {
         let definition = cstring(crs)?;
-        let context =
-            ProjContext::new().map_err(|error| CrsError::crs_create(crs, error.to_string()))?;
+        let context = ProjContext::new_with_state(state)
+            .map_err(|error| CrsError::crs_create(crs, error.to_string()))?;
         // SAFETY: DOC-H. Typed live context; definition is a live CString;
         // returns uniquely owned PJ or null.
         let object = unsafe { proj_sys::proj_create(context.as_ptr(), definition.as_ptr()) };
