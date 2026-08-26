@@ -327,12 +327,53 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
     # The free full variant uses the same explicit pooled ownership.
     full_polygons, cuts, dangles, invalid = gm.polygonize_full(lines)
     assert len(full_polygons) == 1
-    assert (len(cuts), len(dangles), len(invalid)) == (0, 0, 0)
+    assert [sum(len(row) for row in groups) for groups in (cuts, dangles, invalid)] == [
+        0,
+        0,
+        0,
+    ]
     assert not hasattr(lines, 'polygonize_full')
 
     masked = gm.GeometryArray([lines[0], None, lines[1], lines[2]])
     assert gm.polygonize(masked) == polygons
     assert gm.polygonize_full(masked).polygons == full_polygons
+
+
+def test_polygonize_auto_nodes_crossing_linework() -> None:
+    lines = gm.MultiLineString([
+        [(0, 0), (2, 2)],
+        [(0, 2), (2, 0)],
+        [(0, 0), (2, 0)],
+        [(2, 0), (2, 2)],
+        [(2, 2), (0, 2)],
+        [(0, 2), (0, 0)],
+    ])
+
+    polygons = lines.polygonize()
+
+    assert len(polygons) == 4
+    assert [polygon.area for polygon in polygons] == [1.0] * 4
+
+
+def test_polygonize_full_groups_noded_diagnostics_by_source_row() -> None:
+    square = gm.LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
+    crossing = gm.LineString([(-1, 1), (3, 1)])
+
+    result = gm.polygonize_full(gm.GeometryArray([square, crossing]))
+
+    assert len(result.dangles) == 2
+    assert len(result.dangles[0]) == 0
+    assert [line.to_wkt() for line in result.dangles[1]] == [
+        'LINESTRING (2 1, 3 1)',
+        'LINESTRING (-1 1, 0 1)',
+    ]
+    assert [
+        sum(len(row) for row in groups)
+        for groups in (
+            result.cut_edges,
+            result.invalid_rings,
+        )
+    ] == [0, 0]
 
 
 def test_pickle_and_copy_round_trip_all_data_types() -> None:

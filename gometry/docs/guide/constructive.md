@@ -352,9 +352,11 @@ explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
 keeps input edges as constraints. [`voronoi_polygons`][gometry.Geometry.voronoi_polygons]
 returns the dual Voronoi cells. [`polygonize`][gometry.Geometry.polygonize]
-assembles polygons from a collection of noded linework (the inverse of taking
-boundaries). These return a [`GeometryArray`][gometry.GeometryArray] — a
-vectorized container you iterate, index, and `len()` directly.
+assembles polygons from a collection of linework, automatically splitting
+crossings and overlaps before polygonization (the inverse of taking boundaries).
+The scalar and pooled free-function forms return a
+[`GeometryArray`][gometry.GeometryArray] — a vectorized container you iterate,
+index, and `len()` directly. The row-wise array method returns [`Groups`][gometry.Groups].
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -387,7 +389,8 @@ read-only `float64` NumPy column.
     [`voronoi_edges`][gometry.Geometry.voronoi_edges] returns the cell boundaries
     as lines, and
     [`polygonize_full`][gometry.polygonize_full] additionally reports dangles,
-    cut edges, and invalid rings for pooled raw linework.
+    cut edges, and invalid rings for pooled linework, grouped by source row as
+    [`Groups`][gometry.Groups].
     [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize] is row-wise and returns
     [`Groups`][gometry.Groups]; pass the array directly to either free function to opt into one
     pooled graph. CDT

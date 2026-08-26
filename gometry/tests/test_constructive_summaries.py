@@ -304,19 +304,26 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
     assert polygons[0].geometry_type == 'Polygon'
     assert polygons[0].area == pytest.approx(1)
     assert [
-        len(part) for part in (full_polygons, full_cuts, full_dangles, full_invalid)
+        len(full_polygons),
+        *[
+            sum(len(row) for row in groups)
+            for groups in (full_cuts, full_dangles, full_invalid)
+        ],
     ] == [1, 0, 1, 0]
     assert full_polygons.crs == 'EPSG:3857'
-    assert full_dangles[0].to_wkt() == 'LINESTRING (2 2, 3 3)'
+    assert full_dangles[0][0].to_wkt() == 'LINESTRING (2 2, 3 3)'
     assert top_level_full[0][0].area == pytest.approx(1)
-    assert [len(part) for part in invalid_full] == [0, 0, 0, 1]
-    assert invalid_full[3][0].to_wkt() == 'LINESTRING (0 0, 1 0, 0 0)'
+    assert [
+        len(invalid_full[0]),
+        *[sum(len(row) for row in groups) for groups in invalid_full[1:]],
+    ] == [0, 0, 0, 1]
+    assert invalid_full[3][0][0].to_wkt() == 'LINESTRING (0 0, 1 0, 0 0)'
     assert len(top_level) == 1
     assert len(array_polygons) == 1
     assert len(pooled_full[0]) == 1
-    assert len(pooled_full[2]) == 1
+    assert len(pooled_full[2][0]) == 1
     assert pooled_full.polygons.crs == 'EPSG:3857'
-    assert pooled_full.dangles.crs == 'EPSG:3857'
+    assert pooled_full.dangles[0].crs == 'EPSG:3857'
     assert len(with_hole) == 2
     np.testing.assert_allclose(
         sorted(round(polygon.area, 4) for polygon in with_hole), [4.0, 12.0]
@@ -355,9 +362,12 @@ def test_polygonize_full_preserves_epoch() -> None:
     ring = gm.MultiLineString(
         [[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]], crs=4326, epoch=2020.0
     )
-    for arr in gm.polygonize_full([ring]):
-        assert arr.crs == 'EPSG:4326'
-        assert arr.epoch == 2020.0
+    result = gm.polygonize_full([ring])
+    assert result.polygons.crs == 'EPSG:4326'
+    assert result.polygons.epoch == 2020.0
+    for groups in (result.cut_edges, result.dangles, result.invalid_rings):
+        assert groups[0].crs == 'EPSG:4326'
+        assert groups[0].epoch == 2020.0
 
 
 def test_empty_polygon_rejects_non_iterable_holes() -> None:

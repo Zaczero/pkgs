@@ -3454,9 +3454,10 @@ class Geometry:
         """
 
     def polygonize(self) -> GeometryArray[Polygon]:
-        """Build polygons from a geometry's own noded linework. Each geometry is
-        polygonized in isolation; to reconstruct polygons from a pile of edges pooled
-        across many geometries, use free function ``polygonize`` on an iterable of
+        """Build polygons from a geometry's own linework, automatically noding
+        crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
+        polygons from a pile of edges pooled across many geometries, use free function
+        ``polygonize`` on an iterable of
         values. Input ordinates are carried where possible; unsourceable noding seams
         yield XY.
 
@@ -3469,7 +3470,7 @@ class Geometry:
         Raises
         ------
         InvalidGeometryError
-            If polygons cannot be assembled from the noded linework.
+            If polygons cannot be assembled from the linework.
 
         Examples
         --------
@@ -8593,8 +8594,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """
 
     def polygonize(self) -> Groups[GeometryArray[Polygon]]:
-        """Build polygons from a geometry's own noded linework. Each geometry is
-        polygonized in isolation; to reconstruct polygons from a pile of edges pooled
+        """Build polygons from a geometry's own linework, automatically noding
+        crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
+        polygons from a pile of edges pooled
         across many geometries, use free function ``polygonize`` on an iterable of
         values. Input ordinates are carried where possible; unsourceable noding seams
         yield XY.
@@ -8611,7 +8613,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         Raises
         ------
         InvalidGeometryError
-            If polygons cannot be assembled from the noded linework.
+            If polygons cannot be assembled from the linework.
 
         Examples
         --------
@@ -16500,7 +16502,8 @@ def polygonize_full(
     Returns
     -------
     PolygonizeResult
-        Pooled polygons, cut edges, dangles, and invalid rings.
+        Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
+        invalid rings.
 
     Examples
     --------

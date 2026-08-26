@@ -95,6 +95,7 @@ pub(crate) use segment_index::uses_linear_plan_for_len;
 mod segments;
 mod tessellation;
 mod topology;
+pub(crate) use topology::TopologyGraph;
 mod util;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -141,7 +142,7 @@ pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetri
 pub(crate) use linear::MeasureRange;
 use linear::{normalize_line_distance, push_distinct_point};
 pub(crate) use ordinates::carry_overlay_ordinates;
-use ordinates::{carry_each, carry_ordinates};
+use ordinates::{carry_each, carry_each_rows, carry_ordinates};
 pub(crate) use overlay::{
     OverlayOp, Strictness, disjoint_overlay_combine, empty_shape_for_dimension,
     empty_shape_for_dimension_with_axes,
@@ -415,12 +416,6 @@ impl Shape {
                 geometries.iter().map(Self::segment_count).sum()
             },
         }
-    }
-
-    pub(crate) fn segments(&self) -> Vec<Segment> {
-        let mut segments = Vec::with_capacity(self.segment_count());
-        self.for_each_segment(|segment| segments.push(segment));
-        segments
     }
 
     fn point_only_points(&self) -> Vec<Point> {

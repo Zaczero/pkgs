@@ -58,6 +58,7 @@ pub(crate) struct SourceEdge {
     pub(crate) kind: SourceEdgeKind,
     pub(crate) component: u32,
     pub(crate) ring: Option<u32>,
+    pub(crate) source_row: u32,
     pub(crate) artificial: bool,
 }
 
@@ -124,8 +125,16 @@ impl TopologyGraph {
     /// existing planar XY noder in both spaces.
     pub(super) fn build(shape: &Shape, space: TopologySpace) -> Self {
         let mut builder = GraphBuilder::new(shape, space);
-        builder.collect(shape);
+        builder.collect(shape, 0);
         builder.finish(shape)
+    }
+
+    pub(crate) fn cartesian_many(shapes: &[&Shape]) -> Self {
+        let mut builder = GraphBuilder::new_many(shapes, TopologySpace::Cartesian);
+        for (source_row, shape) in shapes.iter().enumerate() {
+            builder.collect(shape, source_row as u32);
+        }
+        builder.finish_many(shapes)
     }
 
     pub(crate) fn cartesian(shape: &Shape) -> Self {
@@ -241,7 +250,25 @@ impl GraphBuilder {
         }
     }
 
-    fn collect(&mut self, shape: &Shape) {
+    fn new_many(shapes: &[&Shape], space: TopologySpace) -> Self {
+        let axes = shapes
+            .iter()
+            .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
+        Self {
+            space,
+            axes,
+            source_edges: Vec::new(),
+            source_points: Vec::new(),
+            chart_edges: Vec::new(),
+            area_support: Vec::new(),
+            nodes: Vec::new(),
+            node_lookup: HashMap::new(),
+            line_boundary: HashSet::new(),
+            next_component: 0,
+        }
+    }
+
+    fn collect(&mut self, shape: &Shape, source_row: u32) {
         match shape {
             Shape::Empty(..) => {},
             Shape::Point(point) => {
@@ -254,21 +281,21 @@ impl GraphBuilder {
                     self.push_source_point(point, component);
                 }
             },
-            Shape::LineString(line) => self.collect_line(line),
+            Shape::LineString(line) => self.collect_line(line, source_row),
             Shape::MultiLineString(lines) => {
                 for line in lines {
-                    self.collect_line(line);
+                    self.collect_line(line, source_row);
                 }
             },
-            Shape::Polygon(polygon) => self.collect_polygon(polygon),
+            Shape::Polygon(polygon) => self.collect_polygon(polygon, source_row),
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    self.collect_polygon(polygon);
+                    self.collect_polygon(polygon, source_row);
                 }
             },
             Shape::GeometryCollection(parts) => {
                 for part in parts {
-                    self.collect(part);
+                    self.collect(part, source_row);
                 }
             },
         }
@@ -280,7 +307,7 @@ impl GraphBuilder {
         component
     }
 
-    fn collect_line(&mut self, line: &CoordSeq) {
+    fn collect_line(&mut self, line: &CoordSeq, source_row: u32) {
         let component = self.component();
         let mut first = None;
         let mut last = None;
@@ -295,7 +322,14 @@ impl GraphBuilder {
                 first = Some(self.key(start.xy()));
             }
             last = Some(self.key(end.xy()));
-            self.push_source_edge(SourceEdgeKind::Line, component, None, start, end);
+            self.push_source_edge(
+                SourceEdgeKind::Line,
+                component,
+                None,
+                source_row,
+                start,
+                end,
+            );
         }
         if has_edge {
             // OGC line boundaries are the mod-2 endpoints of the complete
@@ -312,7 +346,7 @@ impl GraphBuilder {
         }
     }
 
-    fn collect_polygon(&mut self, polygon: &Polygon) {
+    fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) {
         let shell = self.chart_ring(polygon.shell.coords());
         let holes = polygon
             .holes
@@ -341,6 +375,7 @@ impl GraphBuilder {
                     SourceEdgeKind::Area,
                     component,
                     Some(ring_index),
+                    source_row,
                     start,
                     end,
                 );
@@ -358,6 +393,7 @@ impl GraphBuilder {
         kind: SourceEdgeKind,
         component: u32,
         ring: Option<u32>,
+        source_row: u32,
         start: Point,
         end: Point,
     ) {
@@ -373,6 +409,7 @@ impl GraphBuilder {
             kind,
             component,
             ring,
+            source_row,
             // This graph does not manufacture pole-cap or seam-following
             // source edges. Keeping the bit explicit prevents a future chart
             // helper from accidentally promoting one to a boundary.
@@ -473,7 +510,30 @@ impl GraphBuilder {
         }
     }
 
-    fn finish(mut self, shape: &Shape) -> TopologyGraph {
+    fn finish(self, shape: &Shape) -> TopologyGraph {
+        self.finish_dimensions(
+            dimension(shape, DimMode::Declared),
+            dimension(shape, DimMode::Effective),
+        )
+    }
+
+    fn finish_many(self, shapes: &[&Shape]) -> TopologyGraph {
+        let declared_dimension = shapes
+            .iter()
+            .filter_map(|shape| dimension(shape, DimMode::Declared))
+            .max();
+        let effective_dimension = shapes
+            .iter()
+            .filter_map(|shape| dimension(shape, DimMode::Effective))
+            .max();
+        self.finish_dimensions(declared_dimension, effective_dimension)
+    }
+
+    fn finish_dimensions(
+        mut self,
+        declared_dimension: Option<Dimension>,
+        effective_dimension: Option<Dimension>,
+    ) -> TopologyGraph {
         let (atomic, provenance) = crate::geometry::overlay::self_node_segments_sourced(
             &self
                 .chart_edges
@@ -544,8 +604,6 @@ impl GraphBuilder {
         for &id in &line_boundary {
             self.nodes[id.index()].support.line_boundary = true;
         }
-        let declared_dimension = dimension(shape, DimMode::Declared);
-        let effective_dimension = dimension(shape, DimMode::Effective);
         let boundary_dimension = if edges.iter().any(|edge| edge.is_boundary) {
             Some(Dimension::Curve)
         } else if !line_boundary.is_empty()
@@ -555,6 +613,17 @@ impl GraphBuilder {
         } else {
             None
         };
+        edges.sort_by(|left, right| {
+            left.sources
+                .first()
+                .cmp(&right.sources.first())
+                .then_with(|| {
+                    PointKey::new(left.segment.start).cmp(&PointKey::new(right.segment.start))
+                })
+                .then_with(|| {
+                    PointKey::new(left.segment.end).cmp(&PointKey::new(right.segment.end))
+                })
+        });
         TopologyGraph {
             space: self.space,
             axes: self.axes,

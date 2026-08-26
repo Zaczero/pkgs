@@ -20,9 +20,7 @@ mod shape;
 mod voronoi;
 mod voronoi_dcel;
 
-pub(crate) use boundary::{
-    collect_xy_chains, line_boundary, multiline_boundary, rings_to_boundary,
-};
+pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
 pub(crate) use delaunay::{
     CdtRefinement, constrained_triangle_vertices, delaunay_triangulation_spade,
 };

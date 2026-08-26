@@ -204,7 +204,10 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert sum(polygon.area for polygon in gometry_polygonized) == pytest.approx(
         sum(polygon.area for polygon in shapely_polygonized)
     )
-    assert [len(part) for part in gometry_full] == [
+    assert [
+        len(gometry_full.polygons),
+        *[sum(len(row) for row in groups) for groups in gometry_full[1:]],
+    ] == [
         len(shapely_full[0].geoms),
         len(shapely_full[1].geoms),
         len(shapely_full[2].geoms),

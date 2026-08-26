@@ -60,6 +60,10 @@ assert_type(
     gm.GeometryArray([LINE]).polygonize(), gm.Groups[gm.GeometryArray[gm.Polygon]]
 )
 assert_type(gm.polygonize_full([LINE]), gm.PolygonizeResult)
+assert_type(
+    gm.polygonize_full([LINE]).dangles,
+    gm.Groups[gm.GeometryArray[gm.LineString]],
+)
 assert_type(POINTS.simplify(0.1, method='vw'), gm.GeometryArray[gm.Point])
 assert_type(cast('gm.Polygon', POINT.buffer(1.0)), gm.Polygon)
 assert_type(cast('gm.Polygon', LINE.buffer(0.5)), gm.Polygon)

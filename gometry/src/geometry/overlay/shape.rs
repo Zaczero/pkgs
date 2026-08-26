@@ -2,24 +2,23 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use ahash::HashSetExt as _;
+use ahash::{HashMapExt as _, HashSetExt as _};
 
 use crate::error::Result;
 use crate::geometry::overlay::{
     DimensionalParts, OverlayOp, OverlayWorkItem, RectSide, Strictness, axis_rectangle,
     binary_areal_overlay, build_areal_arrangement, build_overlay_shape, clip_polygonal_parts,
-    collect_line_segments, contained_shortcut_impl, dedup_segments_to_coordseqs,
-    disjoint_overlay_combine, dissolve_polygons, empty_nary_overlay_shape, empty_overlay_shape,
-    for_each_overlapping_pair, has_mixed_non_empty_topological_dimensions, line_line_cross_points,
-    merge_chains, overlay_lines_general, overlay_points, overlay_work_clusters,
-    polygon_line_touch_points, proper_rect_intersection, rect_boundary_contact, rect_polygon,
-    self_node_segments, symmetric_difference_cluster_balanced,
+    collect_line_segments, contained_shortcut_impl, disjoint_overlay_combine, dissolve_polygons,
+    empty_nary_overlay_shape, empty_overlay_shape, has_mixed_non_empty_topological_dimensions,
+    line_line_cross_points, merge_chains, overlay_lines_general, overlay_points,
+    overlay_work_clusters, polygon_line_touch_points, proper_rect_intersection,
+    rect_boundary_contact, rect_polygon, symmetric_difference_cluster_balanced,
     symmetric_difference_cluster_ordered, union_lines, window_clip_large_operands,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
-    PointKey, Polygon, Segment, Shape, XY, carry_ordinates, carry_overlay_ordinates, line_segments,
-    shared_segment_part, topology_split, undirected_segment_edge_key,
+    Bounds, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq,
+    PointKey, Polygon, Segment, Shape, TopologyGraph, XY, carry_ordinates, carry_overlay_ordinates,
+    segment_projection, topology_split, undirected_segment_edge_key,
 };
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
@@ -561,8 +560,11 @@ impl Shape {
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
     pub(crate) fn node(&self, strictness: Strictness) -> Result<Self> {
-        let noded = dedup_segments_to_coordseqs(self_node_segments(&self.segments()))
-            .into_iter()
+        let graph = TopologyGraph::cartesian(self);
+        let noded = graph
+            .edges
+            .iter()
+            .map(|edge| CoordSeq::from(vec![edge.segment.start.point(), edge.segment.end.point()]))
             .map(|line| LineSeq::try_new(line).expect("noded segment has two vertices"))
             .collect::<Vec<_>>();
         let noded = if noded.is_empty() {
@@ -603,68 +605,19 @@ impl Shape {
     }
 
     pub fn shared_paths(&self, other: &Self) -> Result<Self> {
-        let left = self
+        self.linework()
+            .map_err(|_| GeometryErrorKind::LinealRequired)?;
+        other
             .linework()
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
-        let right = other
-            .linework()
-            .map_err(|_| GeometryErrorKind::LinealRequired)?;
-        let mut same = Vec::new();
-        let mut opposite = Vec::new();
-        let mut same_seen: HashSet<(PointKey, PointKey)> = HashSet::new();
-        let mut opposite_seen: HashSet<(PointKey, PointKey)> = HashSet::new();
-        let push_shared = |lines: &mut Vec<Vec<Point>>,
-                           seen: &mut HashSet<(PointKey, PointKey)>,
-                           line: Vec<Point>| {
-            if line.len() >= 2 {
-                let key = undirected_segment_edge_key(Segment {
-                    start: line[0].xy(),
-                    end: line[line.len() - 1].xy(),
-                });
-                if seen.insert(key) {
-                    lines.push(line);
-                }
-            }
-        };
-        // Flattened segment lists keep the line-major iteration order; the
-        // candidate engine prunes disjoint-envelope pairs above the
-        // crossover with the same observable order.
-        let left_segments: Vec<Segment> =
-            left.iter().flat_map(|line| line_segments(*line)).collect();
-        let right_segments: Vec<Segment> =
-            right.iter().flat_map(|line| line_segments(*line)).collect();
-        for_each_overlapping_pair::<true>(
-            &left_segments,
-            &right_segments,
-            |left_segment, right_segment| {
-                if let Some((same_direction, shared)) =
-                    shared_segment_part(left_segment, right_segment)
-                {
-                    let shared: Vec<Point> = shared.into_iter().map(XY::point).collect();
-                    if same_direction {
-                        push_shared(&mut same, &mut same_seen, shared);
-                    } else {
-                        push_shared(&mut opposite, &mut opposite_seen, shared);
-                    }
-                }
-            },
-        );
-        let opposite_keys: HashSet<(PointKey, PointKey)> = opposite_seen;
-        same.retain(|line| {
-            line.len() < 2
-                || !opposite_keys.contains(&undirected_segment_edge_key(Segment {
-                    start: line[0].xy(),
-                    end: line[line.len() - 1].xy(),
-                }))
-        });
+        let graph = TopologyGraph::cartesian_many(&[self, other]);
+        let (same, opposite) = shared_paths_from_graph(&graph);
         let same = same
             .into_iter()
-            .map(CoordSeq::from)
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
         let opposite = opposite
             .into_iter()
-            .map(CoordSeq::from)
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
         let result = Self::GeometryCollection(
@@ -684,4 +637,105 @@ impl Shape {
         );
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }
+}
+
+fn shared_paths_from_graph(graph: &TopologyGraph) -> (Vec<CoordSeq>, Vec<CoordSeq>) {
+    let mut same = Vec::new();
+    let mut opposite = Vec::new();
+    let mut same_path_direction = HashMap::new();
+    let mut opposite_path_direction = HashMap::new();
+    let mut same_keys = HashSet::new();
+    let mut opposite_keys = HashSet::new();
+
+    for edge in &graph.edges {
+        let mut left_direction = None;
+        let mut left_mask = 0_u8;
+        let mut right_mask = 0_u8;
+        for &source_index in &edge.sources {
+            let source = &graph.source_edges[source_index as usize];
+            let direction = source_direction(edge.segment, source.segment);
+            match source.source_row {
+                0 => {
+                    left_direction.get_or_insert(direction);
+                    left_mask |= if direction { 1 } else { 2 };
+                },
+                1 => {
+                    right_mask |= if direction { 1 } else { 2 };
+                },
+                _ => {},
+            }
+        }
+        let Some(left_direction) = left_direction else {
+            continue;
+        };
+        let has_same_direction = left_mask & right_mask != 0;
+        let has_opposite_direction = (left_mask & 1 != 0 && right_mask & 2 != 0)
+            || (left_mask & 2 != 0 && right_mask & 1 != 0);
+        if !has_same_direction && !has_opposite_direction {
+            continue;
+        }
+        let key = undirected_segment_edge_key(edge.segment);
+        let segment = if left_direction {
+            edge.segment
+        } else {
+            Segment {
+                start: edge.segment.end,
+                end: edge.segment.start,
+            }
+        };
+        let line = CoordSeq::from(vec![segment.start.point(), segment.end.point()]);
+        if has_opposite_direction {
+            opposite_keys.insert(key);
+            opposite_path_direction.insert(key, segment);
+            opposite.push(line);
+        } else {
+            same_keys.insert(key);
+            same_path_direction.insert(key, segment);
+            same.push(line);
+        }
+    }
+
+    same.retain(|line| {
+        let start = line.first().expect("shared path atom has a start");
+        let end = line.point_at(1);
+        !opposite_keys.contains(&undirected_segment_edge_key(Segment {
+            start: start.xy(),
+            end: end.xy(),
+        }))
+    });
+    same_keys.retain(|key| !opposite_keys.contains(key));
+    same_path_direction.retain(|key, _| same_keys.contains(key));
+
+    (
+        orient_shared_paths(merge_chains(same), &same_path_direction),
+        orient_shared_paths(merge_chains(opposite), &opposite_path_direction),
+    )
+}
+
+fn source_direction(piece: Segment, source: Segment) -> bool {
+    let start = segment_projection(piece.start, source);
+    let end = segment_projection(piece.end, source);
+    end.cmp_along(&start).is_ge()
+}
+
+fn orient_shared_paths(
+    paths: Vec<CoordSeq>,
+    directions: &HashMap<(PointKey, PointKey), Segment>,
+) -> Vec<CoordSeq> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let start = path.first().expect("shared path has a start").xy();
+            let end = path.point_at(1).xy();
+            let key = undirected_segment_edge_key(Segment { start, end });
+            let Some(expected) = directions.get(&key) else {
+                return path;
+            };
+            if start == expected.start && end == expected.end {
+                path
+            } else {
+                path.iter().rev().collect()
+            }
+        })
+        .collect()
 }

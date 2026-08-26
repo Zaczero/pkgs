@@ -69,6 +69,14 @@ impl Groups {
         Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
     }
 
+    pub(crate) fn from_geometry_rows(frame: crate::Frame, rows: Vec<Vec<Shape>>) -> PyResult<Self> {
+        let mut builder = CsrBuilder::<Shape>::new();
+        for row in rows {
+            builder.push_row(row).map_err(pyo3::PyErr::from)?;
+        }
+        Self::from_geometry_builder(frame, builder)
+    }
+
     /// Adopt a point CSR builder whose logical rows contain groups of four
     /// vertices per triangle, materializing the packed triangle geometry
     /// column only after CSR construction completes.

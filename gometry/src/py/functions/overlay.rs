@@ -10,8 +10,8 @@ use pyo3::types::PyAny;
 
 pub(crate) use crate::geometry::OverlayOp;
 use crate::{
-    Frame, GeometryErrorKind, PyGeometry, PyGeometryArray, Shape, SimplifyMethod, Typed,
-    exact_geometry, exact_geometry_array, geometry,
+    CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
+    SimplifyMethod, Typed, exact_geometry, exact_geometry_array, geometry,
 };
 
 fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
@@ -23,6 +23,29 @@ fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
     }
     let array = PyGeometryArray::new(values, None, None)?;
     Ok((array.frame.clone(), array.present_shapes()))
+}
+
+fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
+    let array = if let Some(array) = exact_geometry_array(values) {
+        array.clone()
+    } else if exact_geometry(values).is_some() {
+        let geometry = exact_geometry(values).expect("checked scalar geometry");
+        return Ok((geometry.frame.clone(), vec![geometry.shape.shape().clone()]));
+    } else {
+        PyGeometryArray::new(values, None, None)?
+    };
+    let frame = array.frame.clone();
+    let shapes = array
+        .masked_shape_rows()
+        .map(|(missing, shape)| {
+            if missing {
+                Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+            } else {
+                shape.into_owned()
+            }
+        })
+        .collect();
+    Ok((frame, shapes))
 }
 
 /// The shared tail of the n-ary reductions (`union_all` general path,
@@ -382,7 +405,8 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 /// Returns
 /// -------
 /// PolygonizeResult
-///     Pooled polygons, cut edges, dangles, and invalid rings.
+///     Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
+///     invalid rings.
 #[pyfunction]
 ///
 /// Examples
@@ -396,7 +420,7 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 /// >>> result.polygons.to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
 pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (metadata, shapes) = pooled_shapes(values)?;
+    let (metadata, shapes) = pooled_shapes_with_rows(values)?;
     let full = py.detach(move || {
         let mut refs = Vec::new();
         crate::boundary::try_reserve_vec(&mut refs, shapes.len())?;

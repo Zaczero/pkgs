@@ -15,9 +15,10 @@ use crate::geometry::{
 mod graph;
 mod sections;
 mod staging;
+pub(crate) use graph::TopologyGraph;
 pub(super) use graph::{
     AreaSupport, ChartRing, NodeSupport, SourceEdge, SourceEdgeKind, SourcePoint, TopologyEdge,
-    TopologyGraph, TopologyNode, TopologyNodeId, TopologySpace,
+    TopologyNode, TopologyNodeId, TopologySpace,
 };
 pub(super) use sections::{
     compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,

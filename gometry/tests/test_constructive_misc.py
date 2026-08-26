@@ -584,7 +584,7 @@ def test_vertex_inventing_ops_have_fixed_2d_results() -> None:
     )
     polygons, _cuts, dangles, _invalid = gm.polygonize_full([z_with_dangle])
     assert polygons[0].coordinate_axes == 'XYZ'
-    assert dangles and all(d.coordinate_axes == 'XYZ' for d in dangles)
+    assert dangles[0] and all(d.coordinate_axes == 'XYZ' for d in dangles[0])
     bowtie_z = gm.from_wkt('POLYGON Z ((0 0 1, 2 2 5, 2 0 3, 0 2 7, 0 0 1))')
     assert bowtie_z.repair().coordinate_axes == 'XY'
     assert bowtie_z.repair().force_2d().coordinate_axes == 'XY'

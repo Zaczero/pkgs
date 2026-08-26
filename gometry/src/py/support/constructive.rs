@@ -12,6 +12,7 @@ use crate::py::support::{
     PyGeometryArray, PyResult, PyTypeError, Python, Result, Shape, VoronoiBoundary, exact_geometry,
     polygonize_result_type, py_geometry_array,
 };
+use crate::py::vectors::Groups;
 
 /// Non-optional Voronoi `clip` input: Rust default is padded; explicit Python
 /// ``None`` is rejected.
@@ -161,9 +162,9 @@ pub(crate) fn py_polygonize_full(
     let frame = Frame::new(crs.cloned(), epoch)?;
     let result = polygonize_result_type(py)?.call1((
         py_geometry_array(full.polygons, &frame),
-        py_geometry_array(full.cuts, &frame),
-        py_geometry_array(full.dangles, &frame),
-        py_geometry_array(full.invalid_rings, &frame),
+        Groups::from_geometry_rows(frame.clone(), full.cuts)?,
+        Groups::from_geometry_rows(frame.clone(), full.dangles)?,
+        Groups::from_geometry_rows(frame.clone(), full.invalid_rings)?,
     ))?;
     Ok(result.unbind())
 }

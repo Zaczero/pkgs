@@ -103,6 +103,7 @@ from gometry._lib import (
     Geometry,
     GeometryArray,
     GeometryError,
+    Groups,
     LineString,
     Point,
     Polygon,
@@ -756,22 +757,22 @@ class PolygonizeResult(NamedTuple):
     """Full polygonization output: the polygons plus the leftover linework.
 
     Returned by `polygonize_full`; unpacks as ``(polygons, cut_edges,
-    dangles, invalid_rings)``, or use the named fields. Each field is a
-    `GeometryArray`; the three diagnostic arrays are empty when the input
-    nodes cleanly into polygons.
+    dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
+    pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
+    with one row per input source.
     """
 
     polygons: GeometryArray[Polygon]
     """The polygons formed from the noded linework."""
 
-    cut_edges: GeometryArray[LineString]
-    """Edges that border two polygons (each used twice, both sides covered)."""
+    cut_edges: Groups[GeometryArray[LineString]]
+    """Noded edges that are not part of a polygon, grouped by source row."""
 
-    dangles: GeometryArray[LineString]
-    """Edges with at least one free end — not part of any polygon."""
+    dangles: Groups[GeometryArray[LineString]]
+    """Noded edges with at least one free end, grouped by source row."""
 
-    invalid_rings: GeometryArray[LineString]
-    """Rings that close but bound no valid polygon area."""
+    invalid_rings: Groups[GeometryArray[LineString]]
+    """Invalid noded rings or duplicate edges, grouped by source row."""
 
 
 class SupportsGeoInterface(Protocol):

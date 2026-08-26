@@ -849,9 +849,10 @@ Groups of GeometryArray
 ", doc_polygonize!(@tail))
     };
     (@body) => {
-        r"Build polygons from a geometry's own noded linework. Each geometry is
-polygonized in isolation; to reconstruct polygons from a pile of edges pooled
-across many geometries, use free function ``polygonize`` on an iterable of
+        r"Build polygons from a geometry's own linework, automatically noding
+crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
+polygons from a pile of edges pooled across many geometries, use free function
+``polygonize`` on an iterable of
 values. Input ordinates are carried where possible; unsourceable noding seams
 yield XY."
     };
@@ -860,7 +861,7 @@ yield XY."
 Raises
 ------
 InvalidGeometryError
-    If polygons cannot be assembled from the noded linework.
+    If polygons cannot be assembled from the linework.
 
 Examples
 --------

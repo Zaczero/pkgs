@@ -3,25 +3,8 @@ use std::collections::hash_map::Entry;
 use crate::collections::HashMap;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HashMapExt as _, LineSeq, Point, PointKey,
-    Shape, XY, same_point,
+    Shape, same_point,
 };
-
-/// Every linear chain (lines, rings) of every shape as XY rows, read
-/// straight off the borrowed coordinate columns — the polygonize noding
-/// input, with no intermediate `Vec<Point>` staging.
-pub(crate) fn collect_xy_chains(shapes: &[&Shape]) -> Vec<Vec<XY>> {
-    let mut lines: Vec<Vec<XY>> = Vec::new();
-    for shape in shapes {
-        shape.for_each_segment_chain(|chain| {
-            lines.push(
-                std::iter::zip(chain.xs(), chain.ys())
-                    .map(|(&x, &y)| XY::new(x, y))
-                    .collect(),
-            );
-        });
-    }
-    lines
-}
 
 /// Narrow ring linework to its boundary shape, mirroring
 /// [`line_parts_to_shape`]: nothing → empty, one ring → `LineString`, more →

@@ -801,3 +801,15 @@ def test_shared_paths_tiny_collinear_segments_stay_same_direction() -> None:
         forward, backward = gm.parts(gm.shared_paths(line, line))
         assert not forward.is_empty, length
         assert backward.is_empty, length
+
+
+def test_shared_paths_jointly_nodes_partial_overlaps_into_maximal_runs() -> None:
+    left = gm.LineString([(0, 0), (2, 0), (4, 0)])
+
+    same, opposite = gm.parts(gm.shared_paths(left, gm.LineString([(1, 0), (3, 0)])))
+    assert same.to_wkt() == 'MULTILINESTRING ((1 0, 2 0, 3 0))'
+    assert opposite.is_empty
+
+    same, opposite = gm.parts(gm.shared_paths(left, gm.LineString([(3, 0), (1, 0)])))
+    assert same.is_empty
+    assert opposite.to_wkt() == 'MULTILINESTRING ((1 0, 2 0, 3 0))'

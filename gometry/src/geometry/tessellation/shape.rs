@@ -5,14 +5,14 @@ use crate::error::Result;
 use crate::geometry::derived::monotone_chain_hull;
 use crate::geometry::tessellation::{
     CdtRefinement, Site, build_area_lines, certified_delaunay, collect_sample_triangles,
-    collect_xy_chains, constrained_triangle_vertices, earcut_polygon_with, line_boundary,
-    multiline_boundary, polygonize_full, polygonize_lines, rings_to_boundary, sample_weighted,
-    snap_sites, triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
+    polygonize_full, polygonize_lines, rings_to_boundary, sample_weighted, snap_sites,
+    triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
-    Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, VoronoiBoundary, carry_each,
-    empty_geometry, line_segments,
+    Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, VoronoiBoundary,
+    carry_each, carry_each_rows, empty_geometry, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -489,11 +489,12 @@ impl Shape {
     /// Polygonize many shapes as one noding universe: every line part from
     /// every input participates in a single assembly (the array form — rings
     /// that close across elements still close). Output rings reuse input
-    /// vertices, so Z/M is carried by position; `strict` (the `'strict'`
-    /// while the default raises (the `'error'` policy).
+    /// vertices and interpolate noding vertices from source edges, so Z/M is
+    /// carried by provenance; `strict` selects strict ordinate verification
+    /// while the default uses the lenient degradation policy.
     pub fn polygonize_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let lines = collect_xy_chains(shapes);
-        let polygons = polygonize_lines(&lines)
+        let graph = TopologyGraph::cartesian_many(shapes);
+        let polygons = polygonize_lines(&graph)
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -509,8 +510,8 @@ impl Shape {
     ///
     /// [`polygonize_all`]: Self::polygonize_all
     pub fn build_area_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
-        let lines = collect_xy_chains(shapes);
-        let polygons = build_area_lines(&lines)
+        let graph = TopologyGraph::cartesian_many(shapes);
+        let polygons = build_area_lines(&graph)
             .into_iter()
             .map(Self::Polygon)
             .collect();
@@ -539,13 +540,13 @@ impl Shape {
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for
     /// polygons, cut edges, dangles, and invalid rings alike.
     pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
-        let lines = collect_xy_chains(shapes);
-        let full = polygonize_full(&lines);
+        let graph = TopologyGraph::cartesian_many(shapes);
+        let full = polygonize_full(&graph, shapes.len());
         Ok(PolygonizeFull {
             polygons: carry_each(full.polygons, shapes, "polygonize_full", strict)?,
-            cuts: carry_each(full.cuts, shapes, "polygonize_full", strict)?,
-            dangles: carry_each(full.dangles, shapes, "polygonize_full", strict)?,
-            invalid_rings: carry_each(full.invalid_rings, shapes, "polygonize_full", strict)?,
+            cuts: carry_each_rows(full.cuts, shapes, "polygonize_full", strict)?,
+            dangles: carry_each_rows(full.dangles, shapes, "polygonize_full", strict)?,
+            invalid_rings: carry_each_rows(full.invalid_rings, shapes, "polygonize_full", strict)?,
         })
     }
 }

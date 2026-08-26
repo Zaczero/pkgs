@@ -3,17 +3,13 @@ use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::{
-    Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, PointKey,
-    Polygon, PolygonizeFull, Ring, Segment, Shape, XY, compare_point_slices, line_segments,
-    open_xy_cycle_winding, ordered_edge, orient_ring, ring_contains_interior, ring_decision_area,
-    same_point,
+    Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, Polygon,
+    PolygonizeFull, Ring, Segment, Shape, TopologyGraph, XY, compare_point_slices, line_segments,
+    open_xy_cycle_winding, orient_ring, point_on_segment, ring_contains_interior,
+    ring_decision_area, segment_projection,
 };
 
 type Face = (Vec<XY>, f64);
-
-pub(crate) fn polygonize_segments(lines: &[Vec<XY>]) -> Vec<Segment> {
-    lines.iter().flat_map(line_segments).collect()
-}
 
 /// Positive-area face rings from a built arrangement — CCW walks only, rings
 /// `take`n to avoid cloning.
@@ -98,14 +94,17 @@ pub(crate) fn polygonize_faces_from_arrangement(
     // (its immediate container); a face with no container is a top-level shell.
     let mut parents = vec![None; faces.len()];
     for index in 0..faces.len() {
-        let Some(test_point) = faces[index].0.first().copied() else {
+        if faces[index].0.is_empty() {
             continue;
-        };
-        let point_envelope =
-            AABB::from_corners([test_point.x, test_point.y], [test_point.x, test_point.y]);
-        // Parent = the smallest-area face that strictly contains the point,
-        // ties broken by earliest sort position (faces are area-descending, so
-        // this matches the prior `candidate < index` forward scan).
+        }
+        let child_box = Bounds::from_xy_iter(faces[index].0.iter().copied());
+        let point_envelope = AABB::from_corners([child_box.minx(), child_box.miny()], [
+            child_box.maxx(),
+            child_box.maxy(),
+        ]);
+        // Parent = the smallest-area face that strictly contains at least one
+        // child vertex, ignoring shared boundary vertices. Ties are broken by
+        // earliest sort position (faces are area-descending).
         let mut best: Option<(f64, usize)> = None;
         for entry in tree.locate_in_envelope_intersecting(point_envelope) {
             let candidate = entry.data;
@@ -113,13 +112,16 @@ pub(crate) fn polygonize_faces_from_arrangement(
                 continue;
             }
             let (ring, area) = &faces[candidate];
-            if ring_contains_interior(ring, test_point)
-                && best.is_none_or(|(best_area, best_pos)| {
-                    area.total_cmp(&best_area)
-                        .then(candidate.cmp(&best_pos))
-                        .is_lt()
-                })
-            {
+            if faces[index].0.iter().copied().any(|point| {
+                !ring
+                    .array_windows::<2>()
+                    .any(|[start, end]| point_on_segment(point, *start, *end))
+                    && ring_contains_interior(ring, point)
+            }) && best.is_none_or(|(best_area, best_pos)| {
+                area.total_cmp(&best_area)
+                    .then(candidate.cmp(&best_pos))
+                    .is_lt()
+            }) {
                 best = Some((*area, candidate));
             }
         }
@@ -129,9 +131,8 @@ pub(crate) fn polygonize_faces_from_arrangement(
     (faces, parents)
 }
 
-pub(crate) fn polygonize_faces(lines: &[Vec<XY>]) -> (Vec<Face>, Vec<Option<usize>>) {
-    let segments = polygonize_segments(lines);
-    let mut arrangement = Arrangement::new_with_rings(&segments);
+pub(crate) fn polygonize_faces(graph: &TopologyGraph) -> (Vec<Face>, Vec<Option<usize>>) {
+    let mut arrangement = arrangement_from_graph(graph);
     polygonize_faces_from_arrangement(&mut arrangement)
 }
 
@@ -140,8 +141,8 @@ pub(crate) fn polygonize_faces(lines: &[Vec<XY>]) -> (Vec<Face>, Vec<Option<usiz
 /// so a nested ring is BOTH a hole of its container and a shell in its own
 /// right — exactly like GEOS (a donut yields the holed annulus AND the inner
 /// disk).
-pub(crate) fn polygonize_lines(lines: &[Vec<XY>]) -> Vec<Polygon> {
-    let (faces, parents) = polygonize_faces(lines);
+pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Vec<Polygon> {
+    let (faces, parents) = polygonize_faces(graph);
     let children = children_of(&parents);
     (0..faces.len())
         .map(|index| {
@@ -174,8 +175,8 @@ pub(crate) fn children_of(parents: &[Option<usize>]) -> Vec<Vec<usize>> {
 /// produces. Only even-depth faces are shells; their holes are the odd-depth
 /// faces immediately nested within. The right model for dissolving a cell-grid
 /// coverage into its outline.
-pub(crate) fn build_area_lines(lines: &[Vec<XY>]) -> Vec<Polygon> {
-    let (faces, parents) = polygonize_faces(lines);
+pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Vec<Polygon> {
+    let (faces, parents) = polygonize_faces(graph);
     let children = children_of(&parents);
     // Parents point to earlier (larger-area) positions, so depth folds forward.
     let mut depths = vec![0_usize; faces.len()];
@@ -200,9 +201,8 @@ pub(crate) fn build_area_lines(lines: &[Vec<XY>]) -> Vec<Polygon> {
         .collect()
 }
 
-pub(crate) fn polygonize_full(lines: &[Vec<XY>]) -> PolygonizeFull {
-    let segments = polygonize_segments(lines);
-    let mut arrangement = Arrangement::new_with_rings(&segments);
+pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) -> PolygonizeFull {
+    let mut arrangement = arrangement_from_graph(graph);
     let (faces, parents) = polygonize_faces_from_arrangement(&mut arrangement);
     let children = children_of(&parents);
     let polygons: Vec<Polygon> = (0..faces.len())
@@ -216,50 +216,44 @@ pub(crate) fn polygonize_full(lines: &[Vec<XY>]) -> PolygonizeFull {
         })
         .collect();
     let used_segments = polygon_segment_keys(&polygons);
-    let mut counted_segments = counted_line_segments(lines);
-    let mut cuts = Vec::new();
-    let mut dangles = Vec::new();
-    let mut invalid_rings = Vec::new();
+    let mut cuts = vec![Vec::new(); source_row_count];
+    let mut dangles = vec![Vec::new(); source_row_count];
+    let mut invalid_rings = vec![Vec::new(); source_row_count];
+    let mut degree = HashMap::with_capacity(graph.nodes.len());
+    for edge in &graph.edges {
+        *degree.entry(edge.start).or_insert(0_usize) += 1;
+        *degree.entry(edge.end).or_insert(0_usize) += 1;
+    }
 
-    // Classify each unique edge at its first appearance in the input, not in
-    // hash-map order — cuts/dangles/invalid-rings come out in a deterministic,
-    // input-aligned order.
-    for line in lines {
-        for input_segment in line_segments(line) {
-            if same_point(input_segment.start, input_segment.end) {
+    // Each noded edge keeps every source owner. Emit one diagnostic per source
+    // row and atomic piece, so pooled inputs retain ownership without replaying
+    // the raw, pre-noding segment list.
+    for edge in &graph.edges {
+        let key = undirected_edge_key(edge.segment.start, edge.segment.end);
+        let mut rows = Vec::with_capacity(edge.sources.len());
+        for &source_index in &edge.sources {
+            let row = graph.source_edges[source_index as usize].source_row as usize;
+            if !rows.contains(&row) {
+                rows.push(row);
+            }
+        }
+        for row in rows {
+            if row >= source_row_count {
                 continue;
             }
-            let edge = ordered_edge(
-                PointKey::new(input_segment.start),
-                PointKey::new(input_segment.end),
-            );
-            let Some((count, segment)) = counted_segments.remove(&edge) else {
-                continue;
-            };
-            if count > 1 {
-                invalid_rings.push(Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        segment.start,
-                        segment.end,
-                        segment.start,
-                    ]))
-                    .expect("invalid-ring diagnostic line has three vertices"),
-                ));
+            if edge.sources.len() > 1 {
+                invalid_rings[row].push(diagnostic_line(edge.segment, true));
                 continue;
             }
-            if used_segments.contains(&edge) {
+            if used_segments.contains(&key) {
                 continue;
             }
-            let shape = Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![segment.start, segment.end]))
-                    .expect("dangle/cut diagnostic line has two vertices"),
-            );
-            if arrangement.vertex_degree(segment.start) <= 1
-                || arrangement.vertex_degree(segment.end) <= 1
+            if degree.get(&edge.start).copied().unwrap_or(0) <= 1
+                || degree.get(&edge.end).copied().unwrap_or(0) <= 1
             {
-                dangles.push(shape);
+                dangles[row].push(diagnostic_line(edge.segment, false));
             } else {
-                cuts.push(shape);
+                cuts[row].push(diagnostic_line(edge.segment, false));
             }
         }
     }
@@ -272,36 +266,65 @@ pub(crate) fn polygonize_full(lines: &[Vec<XY>]) -> PolygonizeFull {
     }
 }
 
-pub(crate) fn polygon_segment_keys(polygons: &[Polygon]) -> HashSet<(PointKey, PointKey)> {
+fn arrangement_from_graph(graph: &TopologyGraph) -> Arrangement {
+    let segments: Vec<_> = graph.edges.iter().map(|edge| edge.segment).collect();
+    let weights: Vec<_> = graph
+        .edges
+        .iter()
+        .map(|edge| {
+            edge.sources
+                .iter()
+                .map(|&source_index| {
+                    source_direction(
+                        edge.segment,
+                        graph.source_edges[source_index as usize].segment,
+                    )
+                })
+                .sum()
+        })
+        .collect();
+    Arrangement::build::<true>(&segments, |index| weights[index])
+}
+
+fn source_direction(piece: Segment, source: Segment) -> i32 {
+    let start = segment_projection(piece.start, source);
+    let end = segment_projection(piece.end, source);
+    if end.cmp_along(&start).is_ge() { 1 } else { -1 }
+}
+
+fn undirected_edge_key(
+    start: XY,
+    end: XY,
+) -> (crate::geometry::PointKey, crate::geometry::PointKey) {
+    let left = crate::geometry::PointKey::new(start);
+    let right = crate::geometry::PointKey::new(end);
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
+fn diagnostic_line(segment: crate::geometry::Segment, closed: bool) -> Shape {
+    let mut points = vec![segment.start, segment.end];
+    if closed {
+        points.push(segment.start);
+    }
+    Shape::LineString(
+        LineSeq::try_new(CoordSeq::from(points)).expect("diagnostic line has two vertices"),
+    )
+}
+
+pub(crate) fn polygon_segment_keys(
+    polygons: &[Polygon],
+) -> HashSet<(crate::geometry::PointKey, crate::geometry::PointKey)> {
     let mut keys = HashSet::new();
     for polygon in polygons {
         for ring in polygon.rings() {
             for segment in line_segments(&ring) {
-                keys.insert(ordered_edge(
-                    PointKey::new(segment.start),
-                    PointKey::new(segment.end),
-                ));
+                keys.insert(undirected_edge_key(segment.start, segment.end));
             }
         }
     }
     keys
-}
-
-pub(crate) fn counted_line_segments(
-    lines: &[Vec<XY>],
-) -> HashMap<(PointKey, PointKey), (usize, Segment)> {
-    let mut counts = HashMap::new();
-    for line in lines {
-        for segment in line_segments(line) {
-            if same_point(segment.start, segment.end) {
-                continue;
-            }
-            let edge = ordered_edge(PointKey::new(segment.start), PointKey::new(segment.end));
-            counts
-                .entry(edge)
-                .and_modify(|(count, _)| *count += 1)
-                .or_insert((1, segment));
-        }
-    }
-    counts
 }
