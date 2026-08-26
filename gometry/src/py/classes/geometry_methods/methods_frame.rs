@@ -295,17 +295,18 @@ impl PyGeometry {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        if frame.identity {
-            return Ok(Typed(self.clone()));
-        }
-        let transformer = crs::Transformer::new_with_options_at(
+        let output = frame.output;
+        let transformer = crs::TransformPlan::new_with_options_at(
             &frame.source,
             &frame.target,
             frame.options,
             frame.state,
-        );
+        )?;
+        if transformer.is_identity() {
+            return Ok(Typed(self.clone()));
+        }
         let shape = transformer.transform_shape(&self.shape)?;
-        drain_accuracy_warning(py)?;
-        Ok(Typed(Self::with_frame(shape, frame.output)))
+        drain_accuracy_warning(py, &transformer.execution())?;
+        Ok(Typed(Self::with_frame(shape, output)))
     }
 }

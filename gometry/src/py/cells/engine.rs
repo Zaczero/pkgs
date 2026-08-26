@@ -196,7 +196,7 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         for &row in &present {
             crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]).map_err(PyErr::from)?;
         }
-        crate::crs::Transformer::new(crs, "EPSG:4326").transform_coordinates(
+        crate::crs::TransformPlan::new(crs, "EPSG:4326").transform_coordinates(
             &mut px,
             &mut py,
             crate::Zt::None,

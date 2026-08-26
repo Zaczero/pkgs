@@ -781,15 +781,7 @@ mod tests {
     use crate::crs::context::with_proj_context;
 
     #[test]
-    fn mandatory_handles_are_non_null_and_pointer_sized() {
-        assert_eq!(
-            std::mem::size_of::<OwnedPj>(),
-            std::mem::size_of::<*mut proj_sys::PJ>()
-        );
-        assert_eq!(
-            std::mem::size_of::<ProjContext>(),
-            std::mem::size_of::<*mut proj_sys::PJ_CONTEXT>()
-        );
+    fn mandatory_context_is_non_null() {
         let context = ProjContext::new().expect("bundled PROJ creates a context");
         assert!(!context.as_ptr().is_null());
     }

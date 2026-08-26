@@ -9,10 +9,10 @@ use crate::crs::{
     CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY, CString,
     CachedCrsInfo, CachedProjectionFactorsObject, CrsError, CrsInfo, CrsProjOptions, DatumInfo,
     EngineInfo, OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns,
-    ProjectionFactors, RuntimeState, TransformOptions, c_option_ptrs, copy_proj_c_string,
-    create_crs_transform_object, cstring, ensure_thread_caches_current, lru_resolve, normalize,
-    normalize_pair, proj_context_error_message, runtime_state_snapshot, with_proj_context_at,
-    with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
+    ProjectionFactors, RuntimeState, TransformExecution, TransformOptions, c_option_ptrs,
+    copy_proj_c_string, create_crs_transform_object, cstring, ensure_thread_caches_current,
+    lru_resolve, normalize, normalize_pair, proj_context_error_message, runtime_state_snapshot,
+    with_proj_context_at, with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::column_all_finite;
@@ -274,13 +274,16 @@ pub(crate) fn operation_info_with_state(
     let (source, target) = normalize_pair(source, target)?;
     let source_info = source.clone();
     let target_info = target.clone();
-    with_proj_pipeline_at(&source, &target, options, state, |pipeline| {
-        Ok(pipeline.operation_info(
+    let execution = TransformExecution::default();
+    with_proj_pipeline_at(&source, &target, options, state, &execution, |pipeline| {
+        let info = pipeline.operation_info(
             source_info,
             target_info,
             options.source_epoch,
             options.target_epoch,
-        ))
+        );
+        execution.record_operation(info.clone());
+        Ok(info)
     })
 }
 
@@ -329,8 +332,9 @@ pub(crate) fn operation_info_at_with_state(
     let (source, target) = normalize_pair(source, target)?;
     let source_info = source.clone();
     let target_info = target.clone();
-    with_proj_diagnostic_pipeline_at(&source, &target, options, state, |pipeline| {
-        pipeline.operation_info_at(
+    let execution = TransformExecution::default();
+    with_proj_diagnostic_pipeline_at(&source, &target, options, state, &execution, |pipeline| {
+        let info = pipeline.operation_info_at(
             source_info,
             target_info,
             options.source_epoch,
@@ -339,7 +343,9 @@ pub(crate) fn operation_info_at_with_state(
             y,
             z,
             t,
-        )
+            &execution,
+        )?;
+        Ok(execution.operation().unwrap_or(info))
     })
 }
 

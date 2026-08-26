@@ -11,9 +11,8 @@
 
 use crate::crs::{
     CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
-    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformOptions, Transformer, coordinate_identity_crs, info,
-    info_with_state, normalize_pair, proj_error_message, runtime_state_snapshot,
-    with_proj_operation_at, with_proj_pipeline_at,
+    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformOptions, TransformPlan, info,
+    info_with_state, proj_error_message, runtime_state_snapshot, with_proj_operation_at,
 };
 use crate::error::Result;
 use crate::geometry::{LineSeq, MOrdinate, ZOrdinate};
@@ -32,12 +31,12 @@ pub(crate) fn transform_at(
     target: &str,
     state: &RuntimeState,
 ) -> Result<Shape> {
-    Transformer::new_with_options_at(
+    TransformPlan::new_with_options_at(
         source,
         target,
         TransformOptions::default(),
         std::sync::Arc::new(state.clone()),
-    )
+    )?
     .transform_shape(shape)
 }
 
@@ -48,9 +47,11 @@ pub(crate) fn transform_coordinates(
     y: &mut [f64],
     zt: crate::ZtLanes<'_>,
     options: TransformOptions,
-) -> Result<()> {
+) -> Result<TransformExecution> {
     let state = runtime_state_snapshot()?;
-    Transformer::new_with_options_at(source, target, options, state).transform_coordinates(x, y, zt)
+    let plan = TransformPlan::new_with_options_at(source, target, options, state)?;
+    plan.transform_coordinates(x, y, zt)?;
+    Ok(plan.execution())
 }
 
 /// Shared densify gate for the bounds transforms: capped, and at least 2 when
@@ -72,10 +73,12 @@ fn validate_bounds_densify(target: &str, densify: u32, state: &RuntimeState) -> 
 
 trait BoundsTransform: Copy {
     fn validate(source: &str, bounds: Self, state: &RuntimeState) -> Result<()>;
-    fn crosses_antimeridian(bounds: Self) -> bool;
-    fn transform_one(transformer: &Transformer, bounds: Self, densify: u32) -> Result<Self>;
-    fn transform_one_proj(transformer: &ProjPipeline, bounds: Self, densify: u32) -> Result<Self>;
-    fn transform_many(transformer: &Transformer, rows: &[Self], densify: u32) -> Result<Vec<Self>>;
+    fn transform_one(transformer: &TransformPlan, bounds: Self, densify: u32) -> Result<Self>;
+    fn transform_many(
+        transformer: &TransformPlan,
+        rows: &[Self],
+        densify: u32,
+    ) -> Result<Vec<Self>>;
 }
 
 impl BoundsTransform for (f64, f64, f64, f64) {
@@ -83,19 +86,15 @@ impl BoundsTransform for (f64, f64, f64, f64) {
         validate_transform_bounds_with_state(source, bounds, state)
     }
 
-    fn crosses_antimeridian(bounds: Self) -> bool {
-        bounds.0 > bounds.2
-    }
-
-    fn transform_one(transformer: &Transformer, bounds: Self, densify: u32) -> Result<Self> {
+    fn transform_one(transformer: &TransformPlan, bounds: Self, densify: u32) -> Result<Self> {
         transformer.transform_bounds(bounds, densify)
     }
 
-    fn transform_one_proj(transformer: &ProjPipeline, bounds: Self, densify: u32) -> Result<Self> {
-        transformer.transform_bounds(bounds, densify)
-    }
-
-    fn transform_many(transformer: &Transformer, rows: &[Self], densify: u32) -> Result<Vec<Self>> {
+    fn transform_many(
+        transformer: &TransformPlan,
+        rows: &[Self],
+        densify: u32,
+    ) -> Result<Vec<Self>> {
         transformer.transform_bounds_many(rows, densify)
     }
 }
@@ -105,19 +104,15 @@ impl BoundsTransform for TransformedBounds3d {
         validate_transform_bounds_3d_with_state(source, bounds, state)
     }
 
-    fn crosses_antimeridian(bounds: Self) -> bool {
-        bounds.0 > bounds.3
-    }
-
-    fn transform_one(transformer: &Transformer, bounds: Self, densify: u32) -> Result<Self> {
+    fn transform_one(transformer: &TransformPlan, bounds: Self, densify: u32) -> Result<Self> {
         transformer.transform_bounds_3d(bounds, densify)
     }
 
-    fn transform_one_proj(transformer: &ProjPipeline, bounds: Self, densify: u32) -> Result<Self> {
-        transformer.transform_bounds_3d(bounds, densify)
-    }
-
-    fn transform_many(transformer: &Transformer, rows: &[Self], densify: u32) -> Result<Vec<Self>> {
+    fn transform_many(
+        transformer: &TransformPlan,
+        rows: &[Self],
+        densify: u32,
+    ) -> Result<Vec<Self>> {
         transformer.transform_bounds_3d_many(rows, densify)
     }
 }
@@ -129,24 +124,17 @@ fn transform_bounds_row<B: BoundsTransform>(
     densify: u32,
     options: TransformOptions,
     state: std::sync::Arc<RuntimeState>,
-) -> Result<B> {
+) -> Result<(B, TransformExecution)> {
     B::validate(source, bounds, &state)?;
-    reject_bounds_epochs(&options)?;
-    if coordinate_identity_crs(source, target) {
-        return Ok(bounds);
+    let validation_state = std::sync::Arc::clone(&state);
+    let plan = TransformPlan::new_with_options_at(source, target, options, state)?;
+    if plan.is_identity() {
+        let transformed = B::transform_one(&plan, bounds, densify)?;
+        return Ok((transformed, plan.execution()));
     }
-    validate_bounds_densify(target, densify, &state)?;
-    if B::crosses_antimeridian(bounds) {
-        let (source, target) = normalize_pair(source, target)?;
-        return with_proj_pipeline_at(&source, &target, &options, &state, |transformer| {
-            B::transform_one_proj(transformer, bounds, densify)
-        });
-    }
-    B::transform_one(
-        &Transformer::new_with_options_at(source, target, options, state),
-        bounds,
-        densify,
-    )
+    validate_bounds_densify(target, densify, &validation_state)?;
+    let transformed = B::transform_one(&plan, bounds, densify)?;
+    Ok((transformed, plan.execution()))
 }
 
 fn transform_bounds_rows<B: BoundsTransform>(
@@ -156,44 +144,19 @@ fn transform_bounds_rows<B: BoundsTransform>(
     densify: u32,
     options: TransformOptions,
     state: std::sync::Arc<RuntimeState>,
-) -> Result<Vec<B>> {
+) -> Result<(Vec<B>, TransformExecution)> {
     for &bounds in rows {
         B::validate(source, bounds, &state)?;
     }
-    reject_bounds_epochs(&options)?;
-    if coordinate_identity_crs(source, target) {
-        return Ok(rows.to_vec());
+    let validation_state = std::sync::Arc::clone(&state);
+    let plan = TransformPlan::new_with_options_at(source, target, options, state)?;
+    if plan.is_identity() {
+        let transformed = B::transform_many(&plan, rows, densify)?;
+        return Ok((transformed, plan.execution()));
     }
-    validate_bounds_densify(target, densify, &state)?;
-    if rows.iter().any(|&bounds| B::crosses_antimeridian(bounds)) {
-        return rows
-            .iter()
-            .map(|&bounds| {
-                transform_bounds_row(
-                    source,
-                    target,
-                    bounds,
-                    densify,
-                    options.clone(),
-                    std::sync::Arc::clone(&state),
-                )
-            })
-            .collect();
-    }
-    B::transform_many(
-        &Transformer::new_with_options_at(source, target, options, state),
-        rows,
-        densify,
-    )
-}
-
-fn reject_bounds_epochs(options: &TransformOptions) -> Result<()> {
-    if options.source_epoch.is_some() || options.target_epoch.is_some() {
-        return Err(CrsError::message(
-            "bounds transform does not support coordinate epochs until time-aware bounds are implemented",
-        ));
-    }
-    Ok(())
+    validate_bounds_densify(target, densify, &validation_state)?;
+    let transformed = B::transform_many(&plan, rows, densify)?;
+    Ok((transformed, plan.execution()))
 }
 
 pub(crate) fn transform_bounds(
@@ -202,7 +165,7 @@ pub(crate) fn transform_bounds(
     bounds: (f64, f64, f64, f64),
     densify: u32,
     options: TransformOptions,
-) -> Result<(f64, f64, f64, f64)> {
+) -> Result<((f64, f64, f64, f64), TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_row(source, target, bounds, densify, options, state)
 }
@@ -213,7 +176,7 @@ pub(crate) fn transform_bounds_many(
     rows: &[(f64, f64, f64, f64)],
     densify: u32,
     options: TransformOptions,
-) -> Result<Vec<(f64, f64, f64, f64)>> {
+) -> Result<(Vec<(f64, f64, f64, f64)>, TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_rows(source, target, rows, densify, options, state)
 }
@@ -224,7 +187,7 @@ pub(crate) fn transform_bounds_3d(
     bounds: (f64, f64, f64, f64, f64, f64),
     densify: u32,
     options: TransformOptions,
-) -> Result<(f64, f64, f64, f64, f64, f64)> {
+) -> Result<((f64, f64, f64, f64, f64, f64), TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_row(source, target, bounds, densify, options, state)
 }
@@ -235,7 +198,7 @@ pub(crate) fn transform_bounds_3d_many(
     rows: &[(f64, f64, f64, f64, f64, f64)],
     densify: u32,
     options: TransformOptions,
-) -> Result<Vec<TransformedBounds3d>> {
+) -> Result<(Vec<TransformedBounds3d>, TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_rows(source, target, rows, densify, options, state)
 }
@@ -246,7 +209,7 @@ pub(crate) fn apply_operation(
     x: &mut [f64],
     y: &mut [f64],
     zt: crate::ZtLanes<'_>,
-) -> Result<()> {
+) -> Result<TransformExecution> {
     let definition = definition.trim();
     if definition.is_empty() {
         return Err(CrsError::invalid(
@@ -254,9 +217,11 @@ pub(crate) fn apply_operation(
         ));
     }
     let state = runtime_state_snapshot()?;
-    with_proj_operation_at(definition, &state, |operation| {
-        transform_coordinates_with_pipeline(operation, direction, x, y, zt)
-    })
+    let execution = TransformExecution::default();
+    with_proj_operation_at(definition, &state, &execution, |operation| {
+        transform_coordinates_with_pipeline(operation, direction, x, y, zt, &execution)
+    })?;
+    Ok(execution)
 }
 
 pub(crate) fn parse_epsg(value: &str) -> Option<u32> {
@@ -417,23 +382,24 @@ pub(crate) fn transform_coordinates_with_pipeline(
     x: &mut [f64],
     y: &mut [f64],
     zt: crate::ZtLanes<'_>,
+    execution: &crate::crs::TransformExecution,
 ) -> Result<()> {
     match zt {
         crate::Zt::None => {
             validate_coordinate_lanes(x, y, crate::Zt::None)?;
-            transformer.transform_lanes(x, y, None, None, direction)
+            transformer.transform_lanes(x, y, None, None, direction, execution)
         },
         crate::Zt::Z(z) => {
             validate_coordinate_lanes(x, y, crate::Zt::Z(&*z))?;
-            transformer.transform_lanes(x, y, Some(z), None, direction)
+            transformer.transform_lanes(x, y, Some(z), None, direction, execution)
         },
         crate::Zt::T(t) => {
             validate_coordinate_lanes(x, y, crate::Zt::T(&*t))?;
-            transformer.transform_lanes(x, y, None, Some(t), direction)
+            transformer.transform_lanes(x, y, None, Some(t), direction, execution)
         },
         crate::Zt::Zt { z, t } => {
             validate_coordinate_lanes(x, y, crate::Zt::Zt { z: &*z, t: &*t })?;
-            transformer.transform_lanes(x, y, Some(z), Some(t), direction)
+            transformer.transform_lanes(x, y, Some(z), Some(t), direction, execution)
         },
     }
 }
@@ -442,12 +408,13 @@ pub(crate) fn transform_proj_shapes(
     transformer: &ProjPipeline,
     shapes: &[&Shape],
     source_epoch: Option<f64>,
+    execution: &crate::crs::TransformExecution,
 ) -> Result<Vec<Shape>> {
     let mut scratch = TransformScratch::new();
     for shape in shapes {
         scratch.extend_shape(shape);
     }
-    scratch.transform(transformer, source_epoch)?;
+    scratch.transform(transformer, source_epoch, execution)?;
     let (xy_len, xyz_len) = (scratch.xy.xs.len(), scratch.xyz.xs.len());
     let mut cursor = scratch.cursor();
     let rebuilt = shapes
@@ -554,7 +521,12 @@ impl TransformScratch {
         }
     }
 
-    fn transform(&mut self, transformer: &ProjPipeline, source_epoch: Option<f64>) -> Result<()> {
+    fn transform(
+        &mut self,
+        transformer: &ProjPipeline,
+        source_epoch: Option<f64>,
+        execution: &crate::crs::TransformExecution,
+    ) -> Result<()> {
         if !self.xy.xs.is_empty() {
             let mut epoch = broadcast_epoch(transformer, source_epoch)?;
             transformer.transform_lanes(
@@ -563,6 +535,7 @@ impl TransformScratch {
                 None,
                 epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
                 ProjDirection::Forward,
+                execution,
             )?;
         }
         if !self.xyz.xs.is_empty() {
@@ -573,6 +546,7 @@ impl TransformScratch {
                 Some(&mut self.xyz.zs),
                 epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
                 ProjDirection::Forward,
+                execution,
             )?;
         }
         Ok(())

@@ -8,25 +8,13 @@
 //! (XY/XYZ/XYZT lanes). Reaches the FFI primitives, thread-local caches, and
 //! error helpers in the parent `crs` module via `use super::*`.
 
-use crate::crs::runtime::{begin_proj_operation, publish_accuracy_diagnostic};
 use crate::crs::{
     CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
-    ProjPipeline, ProjTransformOptions, RuntimeState, TransformOptions, coordinates_are_finite,
-    create_crs_transform_object, cstring, operation_info_from_pj, proj_context_error_message,
-    proj_transform_error, ptr,
+    ProjPipeline, ProjTransformOptions, RuntimeState, TransformExecution, TransformOptions,
+    coordinates_are_finite, create_crs_transform_object, cstring, operation_info_from_pj,
+    proj_context_error_message, proj_transform_error, ptr,
 };
 use crate::error::Result;
-
-fn begin_accuracy_diagnostics_for_batch() {
-    if let Some(message) = super::take_accuracy_diagnostic() {
-        // A batch may invoke the pipeline once per row (mixed arrays and
-        // densified bounds). Preserve an earlier affected-row diagnostic so
-        // the Python boundary still emits exactly one warning for the batch.
-        publish_accuracy_diagnostic(message);
-    } else {
-        super::begin_accuracy_diagnostics();
-    }
-}
 
 impl ProjPipeline {
     pub(crate) fn new_with_state(
@@ -121,9 +109,14 @@ impl ProjPipeline {
         &self,
         bounds: (f64, f64, f64, f64),
         densify: u32,
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
     ) -> Result<(f64, f64, f64, f64)> {
+        if source_epoch.is_some() {
+            return self.transform_bounds_with_epoch(bounds, densify, source_epoch, execution);
+        }
         super::record_transform_engine(false);
-        begin_accuracy_diagnostics_for_batch();
+        self.context.clear_diagnostic();
         let densify = densify as i32;
         let mut out_xmin = f64::NAN;
         let mut out_ymin = f64::NAN;
@@ -155,24 +148,142 @@ impl ProjPipeline {
                 .iter()
                 .all(|value| value.is_finite())
         {
+            if let Some(message) = self.context.take_diagnostic() {
+                execution.record_diagnostic(message);
+            }
             Ok((out_xmin, out_ymin, out_xmax, out_ymax))
         } else {
+            if let Some(message) = self.context.take_diagnostic() {
+                execution.record_diagnostic(message);
+            }
             // SAFETY: DOC-H. Live transform queried immediately after the failed call.
             let error = unsafe { proj_sys::proj_errno(transform) };
             Err(GeometryErrorKind::projection(proj_transform_error(error)))
         }
     }
 
+    fn transform_bounds_with_epoch(
+        &self,
+        bounds: (f64, f64, f64, f64),
+        densify: u32,
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
+    ) -> Result<(f64, f64, f64, f64)> {
+        let Some(epoch) = source_epoch else {
+            unreachable!("epoch bounds path requires a source epoch");
+        };
+        let segments = densify as usize + 1;
+        let edge_points = segments + 1;
+        let mut x = Vec::with_capacity(edge_points * 4);
+        let mut y = Vec::with_capacity(edge_points * 4);
+        let mut edge = |start: (f64, f64), end: (f64, f64)| {
+            for index in 0..=segments {
+                let fraction = index as f64 / segments as f64;
+                x.push(start.0 + (end.0 - start.0) * fraction);
+                y.push(start.1 + (end.1 - start.1) * fraction);
+            }
+        };
+        edge((bounds.0, bounds.1), (bounds.2, bounds.1));
+        edge((bounds.2, bounds.1), (bounds.2, bounds.3));
+        edge((bounds.2, bounds.3), (bounds.0, bounds.3));
+        edge((bounds.0, bounds.3), (bounds.0, bounds.1));
+        let mut epoch_lane = [epoch];
+        self.transform_lanes(
+            &mut x,
+            &mut y,
+            None,
+            Some(&mut epoch_lane),
+            ProjDirection::Forward,
+            execution,
+        )?;
+        let (mut minx, mut miny) = (x[0], y[0]);
+        let (mut maxx, mut maxy) = (x[0], y[0]);
+        for (&x, &y) in x.iter().zip(&y).skip(1) {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+        }
+        Ok((minx, miny, maxx, maxy))
+    }
+
+    fn transform_bounds_3d_with_epoch(
+        &self,
+        bounds: (f64, f64, f64, f64, f64, f64),
+        densify: u32,
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
+    ) -> Result<(f64, f64, f64, f64, f64, f64)> {
+        let Some(epoch) = source_epoch else {
+            unreachable!("epoch bounds path requires a source epoch");
+        };
+        let segments = densify as usize + 1;
+        let edge_points = segments + 1;
+        let mut x = Vec::with_capacity(edge_points * 12);
+        let mut y = Vec::with_capacity(edge_points * 12);
+        let mut z = Vec::with_capacity(edge_points * 12);
+        let mut edge = |start: (f64, f64, f64), end: (f64, f64, f64)| {
+            for index in 0..=segments {
+                let fraction = index as f64 / segments as f64;
+                x.push(start.0 + (end.0 - start.0) * fraction);
+                y.push(start.1 + (end.1 - start.1) * fraction);
+                z.push(start.2 + (end.2 - start.2) * fraction);
+            }
+        };
+        let (minx, miny, minz, maxx, maxy, maxz) = bounds;
+        for (x0, x1, y0, y1, z0, z1) in [
+            (minx, maxx, miny, miny, minz, minz),
+            (minx, maxx, miny, miny, maxz, maxz),
+            (minx, maxx, maxy, maxy, minz, minz),
+            (minx, maxx, maxy, maxy, maxz, maxz),
+            (minx, minx, miny, maxy, minz, minz),
+            (minx, minx, miny, maxy, maxz, maxz),
+            (maxx, maxx, miny, maxy, minz, minz),
+            (maxx, maxx, miny, maxy, maxz, maxz),
+            (minx, minx, miny, miny, minz, maxz),
+            (minx, minx, maxy, maxy, minz, maxz),
+            (maxx, maxx, miny, miny, minz, maxz),
+            (maxx, maxx, maxy, maxy, minz, maxz),
+        ] {
+            edge((x0, y0, z0), (x1, y1, z1));
+        }
+        let mut epoch_lane = [epoch];
+        self.transform_lanes(
+            &mut x,
+            &mut y,
+            Some(&mut z),
+            Some(&mut epoch_lane),
+            ProjDirection::Forward,
+            execution,
+        )?;
+        let (mut minx, mut miny, mut minz) = (x[0], y[0], z[0]);
+        let (mut maxx, mut maxy, mut maxz) = (x[0], y[0], z[0]);
+        for ((&x, &y), &z) in x.iter().zip(&y).zip(&z).skip(1) {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            minz = minz.min(z);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+            maxz = maxz.max(z);
+        }
+        Ok((minx, miny, minz, maxx, maxy, maxz))
+    }
+
     pub(crate) fn transform_bounds_3d(
         &self,
         bounds: (f64, f64, f64, f64, f64, f64),
         densify: u32,
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         if densify == 0 {
-            return self.transform_bounds_3d_corners(bounds);
+            return self.transform_bounds_3d_corners(bounds, source_epoch, execution);
+        }
+        if source_epoch.is_some() {
+            return self.transform_bounds_3d_with_epoch(bounds, densify, source_epoch, execution);
         }
         super::record_transform_engine(false);
-        begin_accuracy_diagnostics_for_batch();
+        self.context.clear_diagnostic();
         let densify = densify as i32;
         let mut out_xmin = f64::NAN;
         let mut out_ymin = f64::NAN;
@@ -210,8 +321,14 @@ impl ProjPipeline {
                 .iter()
                 .all(|value| value.is_finite())
         {
+            if let Some(message) = self.context.take_diagnostic() {
+                execution.record_diagnostic(message);
+            }
             Ok((out_xmin, out_ymin, out_zmin, out_xmax, out_ymax, out_zmax))
         } else {
+            if let Some(message) = self.context.take_diagnostic() {
+                execution.record_diagnostic(message);
+            }
             // SAFETY: DOC-H. Live transform queried immediately after the failed call.
             let error = unsafe { proj_sys::proj_errno(transform) };
             Err(GeometryErrorKind::projection(proj_transform_error(error)))
@@ -221,6 +338,8 @@ impl ProjPipeline {
     pub(crate) fn transform_bounds_3d_corners(
         &self,
         bounds: (f64, f64, f64, f64, f64, f64),
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         let mut x = [
             bounds.0, bounds.0, bounds.0, bounds.0, bounds.3, bounds.3, bounds.3, bounds.3,
@@ -231,7 +350,15 @@ impl ProjPipeline {
         let mut z = [
             bounds.2, bounds.5, bounds.2, bounds.5, bounds.2, bounds.5, bounds.2, bounds.5,
         ];
-        self.transform_lanes(&mut x, &mut y, Some(&mut z), None, ProjDirection::Forward)?;
+        let mut epoch = source_epoch.map(|value| [value]);
+        self.transform_lanes(
+            &mut x,
+            &mut y,
+            Some(&mut z),
+            epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
+            ProjDirection::Forward,
+            execution,
+        )?;
         let mut xmin = x[0];
         let mut ymin = y[0];
         let mut zmin = z[0];
@@ -262,12 +389,8 @@ impl ProjPipeline {
         mut z: Option<&mut [f64]>,
         mut t: Option<&mut [f64]>,
         direction: ProjDirection,
+        execution: &TransformExecution,
     ) -> Result<()> {
-        // Every lane transform converges here before entering PROJ. Starting
-        // diagnostics at the FFI seam means a future public or internal
-        // consumer cannot accidentally bypass callback capture; Python
-        // boundaries drain the captured message once per enclosing call.
-        begin_accuracy_diagnostics_for_batch();
         // The `unsafe` `proj_trans_generic` call below reads/writes each lane
         // up to `x.len()` elements, so a length mismatch would be an
         // out-of-bounds FFI access (UB). Keep those safety preconditions
@@ -298,7 +421,7 @@ impl ProjPipeline {
             return Ok(());
         }
         super::record_transform_engine(false);
-        begin_proj_operation();
+        self.context.clear_diagnostic();
         // SAFETY: DOC-LANE. The fallible checks above prove x/y/z equality and a
         // t lane of len x or 1. All pointers come from exclusive Rust-owned f64
         // slices and remain live for this synchronous call; null/count-zero
@@ -332,12 +455,18 @@ impl ProjPipeline {
                 t_stride,
                 t_count,
             );
-            if transformed == x.len() && coordinates_are_finite(x, y, z.as_deref(), t.as_deref()) {
+            let result = if transformed == x.len()
+                && coordinates_are_finite(x, y, z.as_deref(), t.as_deref())
+            {
                 Ok(())
             } else {
                 let error = proj_sys::proj_errno(transform);
                 Err(GeometryErrorKind::projection(proj_transform_error(error)))
+            };
+            if let Some(message) = self.context.take_diagnostic() {
+                execution.record_diagnostic(message);
             }
+            result
         }
     }
 
@@ -351,7 +480,9 @@ impl ProjPipeline {
         y: f64,
         z: Option<f64>,
         t: Option<f64>,
+        execution: &TransformExecution,
     ) -> Result<OperationInfo> {
+        self.context.clear_diagnostic();
         let transform = self.transform.as_ptr();
         // SAFETY: DOC-H. Typed self owners; proj_trans takes coordinates by
         // value; returned last-used operation is uniquely owned when non-null.
@@ -365,14 +496,22 @@ impl ProjPipeline {
             );
             let error = proj_sys::proj_errno(transform);
             if error != 0 || !output.v[0].is_finite() || !output.v[1].is_finite() {
+                if let Some(message) = self.context.take_diagnostic() {
+                    execution.record_diagnostic(message);
+                }
                 return Err(GeometryErrorKind::projection(proj_transform_error(error)));
             }
+        }
+        if let Some(message) = self.context.take_diagnostic() {
+            execution.record_diagnostic(message);
         }
         // SAFETY: DOC-H. Live transform; returns uniquely owned PJ or null.
         let operation = unsafe { proj_sys::proj_trans_get_last_used_operation(transform) };
         // SAFETY: non-null is uniquely owned.
         let Some(operation) = (unsafe { OwnedPj::try_from_owned(operation) }) else {
-            return Ok(self.operation_info(source, target, source_epoch, target_epoch));
+            let info = self.operation_info(source, target, source_epoch, target_epoch);
+            execution.record_operation(info.clone());
+            return Ok(info);
         };
         // SAFETY: DOC-H. Typed context + owned operation.
         let normalized = unsafe {
@@ -381,14 +520,16 @@ impl ProjPipeline {
         // SAFETY: non-null normalized is uniquely owned.
         let normalized = unsafe { OwnedPj::try_from_owned(normalized) };
         let operation_for_info = normalized.as_ref().unwrap_or(&operation);
-        Ok(operation_info_from_pj(
+        let info = operation_info_from_pj(
             &self.context,
             operation_for_info,
             source,
             target,
             source_epoch,
             target_epoch,
-        ))
+        );
+        execution.record_operation(info.clone());
+        Ok(info)
     }
 
     pub(crate) fn operation_info(
@@ -416,11 +557,14 @@ impl ProjPipeline {
         y: &[f64],
         z: Option<&[f64]>,
         t: Option<&[f64]>,
+        source_epoch: Option<f64>,
+        execution: &TransformExecution,
     ) -> Result<Vec<f64>> {
         let mut roundtrip_x = x.to_vec();
         let mut roundtrip_y = y.to_vec();
         let mut roundtrip_z = z.map(<[f64]>::to_vec);
         let mut roundtrip_t = t.map(<[f64]>::to_vec);
+        let mut epoch = source_epoch.map(|value| [value]);
         for _ in 0..iterations {
             // Out and back through the optional-lane kernel; absent z/t lanes
             // pass straight through as null PROJ lanes.
@@ -429,8 +573,11 @@ impl ProjPipeline {
                     &mut roundtrip_x,
                     &mut roundtrip_y,
                     roundtrip_z.as_deref_mut(),
-                    roundtrip_t.as_deref_mut(),
+                    roundtrip_t
+                        .as_deref_mut()
+                        .or_else(|| epoch.as_mut().map(<[f64; 1]>::as_mut_slice)),
                     leg,
+                    execution,
                 )?;
             }
         }

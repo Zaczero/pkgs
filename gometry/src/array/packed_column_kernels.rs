@@ -759,7 +759,7 @@ pub(crate) fn ensure_geographic_columns_present(
 }
 
 pub(crate) fn map_coordseq_to_crs(
-    transformer: &crs::Transformer,
+    transformer: &crs::TransformPlan,
     seq: &CoordSeq,
 ) -> crate::error::Result<CoordSeq> {
     let mut xs = Arc::<[f64]>::from(seq.xs());
@@ -781,7 +781,7 @@ pub(crate) fn map_coordseq_to_crs(
 /// allocation is filled directly instead of materializing a dense gathered
 /// array and scattering it in a second packed pass.
 pub(crate) fn map_masked_point_columns_to_crs(
-    transformer: &crs::Transformer,
+    transformer: &crs::TransformPlan,
     coords: &CoordSeq,
     missing: &[bool],
     present_count: usize,

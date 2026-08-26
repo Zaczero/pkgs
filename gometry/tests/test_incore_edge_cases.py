@@ -358,14 +358,14 @@ def test_z_m_preserved_geometry_array() -> None:
     out = arr.to_crs(WEB_MERCATOR)
     coords = gm.get_coordinates(out, axes='XYZM')
     assert len(coords) == 2
-    assert coords[0][2:] == pytest.approx([1.0, 3.0])
-    assert coords[1][2:] == pytest.approx([2.0, 4.0])
+    assert coords[0][0][2:] == pytest.approx([1.0, 3.0])
+    assert coords[1][0][2:] == pytest.approx([2.0, 4.0])
     ref_xy = [
         _pyproj_fwd(WGS84, WEB_MERCATOR, lon, lat)
         for lon, lat in ((0.0, 0.0), (10.0, 10.0))
     ]
-    assert coords[0][:2] == pytest.approx(ref_xy[0], abs=ABS_TOL_M)
-    assert coords[1][:2] == pytest.approx(ref_xy[1], abs=ABS_TOL_M)
+    assert coords[0][0][:2] == pytest.approx(ref_xy[0], abs=ABS_TOL_M)
+    assert coords[1][0][:2] == pytest.approx(ref_xy[1], abs=ABS_TOL_M)
 
 
 def test_z_preserved_raw_transform_coordinates() -> None:

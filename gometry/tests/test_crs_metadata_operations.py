@@ -47,6 +47,46 @@ def test_crs_roundtrip_admitted_in_core_pair_scalar_and_zt_batch() -> None:
     assert proj_pipeline['entries'] == 0
 
 
+def test_same_crs_unequal_epochs_use_a_real_plan_on_every_transform_surface() -> None:
+    """Epoch motion must not be erased by the CRS identity shortcut."""
+    source = gm.Point(1_000_000.0, 2_000_000.0, z=3_000_000.0, crs=7789, epoch=2010.0)
+    cases = [
+        lambda: gm.crs_transform(
+            7789,
+            7789,
+            1_000_000.0,
+            2_000_000.0,
+            3_000_000.0,
+            source_epoch=2010.0,
+            target_epoch=2020.0,
+        ),
+        lambda: source.to_crs(7789, epoch=2020.0),
+        lambda: gm.GeometryArray([source]).to_crs(7789, epoch=2020.0),
+        lambda: gm.crs_transform_bounds(
+            7789,
+            7789,
+            (1_000_000.0, 2_000_000.0, 3_000_000.0, 1_000_001.0, 2_000_001.0, 3_000_001.0),
+            densify=0,
+            source_epoch=2010.0,
+            target_epoch=2020.0,
+        ),
+        lambda: gm.crs_roundtrip(
+            7789,
+            7789,
+            1_000_000.0,
+            2_000_000.0,
+            3_000_000.0,
+            source_epoch=2010.0,
+            target_epoch=2020.0,
+        ),
+    ]
+    for transform in cases:
+        gm.crs_clear_cache()
+        result = transform()
+        assert result is not None
+        assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+
 def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     json.loads(gm.CRS(4326).to_projjson())
     operation = gm.CRS(4326).operation(3857)
@@ -76,7 +116,8 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     at_accuracy = gm.CRS(4326).operation(3857, at=(-73.0, 41.0))['accuracy']
     assert at_accuracy is None or isinstance(at_accuracy, float)
     assert gm.crs_roundtrip(4326, 3857, -73.0, 41.0) < 1e-09
-    assert gm.crs_roundtrip(4267, 4326, -75.0, 40.0) < 1e-06
+    with pytest.warns(gm.AccuracyWarning, match='us_noaa_conus[.]tif'):
+        assert gm.crs_roundtrip(4267, 4326, -75.0, 40.0) < 1e-06
     assert gm.crs_roundtrip(4979, 4978, -73.0, 41.0, 10.0) < 1e-06
     roundtrip_batch = gm.crs_roundtrip(4326, 3857, [-73.0, -72.0], [41.0, 41.0])
     assert len(roundtrip_batch) == 2

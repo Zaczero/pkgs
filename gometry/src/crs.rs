@@ -129,9 +129,8 @@ use proj::{
 pub(crate) use rhumb::rhumb_distance_crs;
 pub(crate) use rhumb::{rhumb_bearing_crs_at, rhumb_destination_crs_at, rhumb_distance_crs_at};
 pub(crate) use runtime::{
-    begin_accuracy_diagnostics, canonicalize, clear_cache, configure_runtime,
-    coordinate_identity_crs, cstring, normalize, normalize_pair, reset_runtime_config,
-    runtime_config, runtime_state_snapshot, take_accuracy_diagnostic,
+    canonicalize, clear_cache, configure_runtime, coordinate_identity_crs, cstring, normalize,
+    normalize_pair, reset_runtime_config, runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{
     apply_operation, coordinates_are_finite, is_geographic_crs, is_geographic_crs_with_state,
@@ -139,7 +138,7 @@ pub(crate) use transform::{
     transform_bounds_3d, transform_bounds_3d_many, transform_bounds_many, transform_coordinates,
     transform_proj_shapes, validate_coordinate_lanes,
 };
-pub(crate) use transformer::Transformer;
+pub(crate) use transformer::TransformPlan;
 pub(crate) use types::{
     AreaOfInterest, AreaOfUse, AuthorityObjectInfo, AxisInfo, CacheBucketInfo, CacheInfo,
     CelestialBodyInfo, CfValue, CrsCatalogInfo, CrsCatalogOptions, CrsComparison,
@@ -149,7 +148,8 @@ pub(crate) use types::{
     GeodesicInverseInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo, OperationInfo,
     OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo, ProjDirection,
     ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors, RuntimeConfig,
-    RuntimeState, TransformOptions, UnitInfo, UtmCatalogOptions, WktAxisRule, WktVersion,
+    RuntimeState, TransformExecution, TransformOptions, UnitInfo, UtmCatalogOptions, WktAxisRule,
+    WktVersion,
 };
 
 const GOLDEN_RATIO: f64 = 0.618_033_988_749_894_9;

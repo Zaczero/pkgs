@@ -878,7 +878,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         output_frame: Frame,
-        transformer: crate::crs::Transformer,
+        transformer: crate::crs::TransformPlan,
     ) -> PyResult<Option<Self>> {
         if !matches!(self.storage(), GeometryArrayStorage::Points { .. }) {
             return Ok(None);

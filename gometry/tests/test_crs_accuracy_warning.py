@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import shutil
 import sys
 import threading
@@ -99,6 +100,14 @@ def test_internal_transform_diagnostic_does_not_leak_to_next_call() -> None:
 def test_all_primary_transform_surfaces_warn(transform) -> None:
     with pytest.warns(gm.AccuracyWarning) as seen:
         transform()
+    assert len(seen) == 1
+    assert 'us_noaa_conus.tif' in str(seen[0].message)
+
+
+def test_roundtrip_transform_surface_warns_once() -> None:
+    with pytest.warns(gm.AccuracyWarning) as seen:
+        result = gm.crs_roundtrip(4267, 4326, -104.0, 40.0)
+    assert math.isfinite(result)
     assert len(seen) == 1
     assert 'us_noaa_conus.tif' in str(seen[0].message)
 

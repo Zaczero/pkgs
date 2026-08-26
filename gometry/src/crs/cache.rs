@@ -3,13 +3,12 @@
 //! invalidation, `cache_info`, and the `with_proj_pipeline`/
 //! `with_proj_operation` cached accessors. Reached via `use super::*`.
 
-use crate::crs::runtime::{finish_proj_operation, publish_accuracy_diagnostic};
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformOptions, UnitInfo, WktVersion,
-    proj_env, runtime_state_snapshot,
+    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformOptions,
+    UnitInfo, WktVersion, proj_env, runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -354,6 +353,7 @@ pub(super) fn with_proj_pipeline_at<R>(
     target: &str,
     options: &TransformOptions,
     state: &RuntimeState,
+    execution: &TransformExecution,
     transform: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
     ensure_thread_caches_current(state);
@@ -373,17 +373,23 @@ pub(super) fn with_proj_pipeline_at<R>(
                 })
             },
         )?;
+        let diagnostics_before = execution.diagnostic_count();
         let result = transform(&cache[index].pipeline);
-        if let Some(message) = finish_proj_operation() {
+        if execution.diagnostic_count() > diagnostics_before {
             // PROJ disables this diagnostic after the first attempted
             // coordinate on a PJ. Retaining that PJ would make a later call in
             // another region repeat the first grid name. Evict only degraded
             // pipelines so the next call gets a coordinate-correct selection;
             // a batch still makes one FFI call and one failed attempt total.
             cache.remove(index);
-            publish_accuracy_diagnostic(message.clone());
-            result
-                .map_err(|error| CrsError::transform(source, target, format!("{error}; {message}")))
+            result.map_err(|error| {
+                let message = execution.diagnostic().unwrap_or_default();
+                if message.is_empty() {
+                    CrsError::transform(source, target, error.to_string())
+                } else {
+                    CrsError::transform(source, target, format!("{error}; {message}"))
+                }
+            })
         } else {
             result.map_err(|error| CrsError::transform(source, target, error.to_string()))
         }
@@ -403,7 +409,8 @@ pub(super) fn with_proj_diagnostic_pipeline<R>(
     inspect: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
     let state = runtime_state_snapshot()?;
-    with_proj_diagnostic_pipeline_at(source, target, options, &state, inspect)
+    let execution = TransformExecution::default();
+    with_proj_diagnostic_pipeline_at(source, target, options, &state, &execution, inspect)
 }
 
 pub(super) fn with_proj_diagnostic_pipeline_at<R>(
@@ -411,6 +418,7 @@ pub(super) fn with_proj_diagnostic_pipeline_at<R>(
     target: &str,
     options: &TransformOptions,
     state: &RuntimeState,
+    execution: &TransformExecution,
     inspect: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
     ensure_thread_caches_current(state);
@@ -430,14 +438,19 @@ pub(super) fn with_proj_diagnostic_pipeline_at<R>(
                 })
             },
         )?;
-        inspect(&cache[index].pipeline)
-            .map_err(|error| CrsError::transform(source, target, error.to_string()))
+        let diagnostics_before = execution.diagnostic_count();
+        let result = inspect(&cache[index].pipeline);
+        if execution.diagnostic_count() > diagnostics_before {
+            cache.remove(index);
+        }
+        result.map_err(|error| CrsError::transform(source, target, error.to_string()))
     })
 }
 
 pub(super) fn with_proj_operation_at<R>(
     definition: &str,
     state: &RuntimeState,
+    execution: &TransformExecution,
     transform: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
     ensure_thread_caches_current(state);
@@ -454,8 +467,12 @@ pub(super) fn with_proj_operation_at<R>(
                 })
             },
         )?;
-        transform(&cache[index].operation)
-            .map_err(|error| CrsError::transform("coordinates", definition, error.to_string()))
+        let diagnostics_before = execution.diagnostic_count();
+        let result = transform(&cache[index].operation);
+        if execution.diagnostic_count() > diagnostics_before {
+            cache.remove(index);
+        }
+        result.map_err(|error| CrsError::transform("coordinates", definition, error.to_string()))
     })
 }
 
@@ -467,8 +484,8 @@ mod tests {
     use crate::crs::catalog::{authority_matches, catalog_with_state};
     use crate::crs::operations::operations_info;
     use crate::crs::{
-        CrsObjectKind, ProjDirection, WGS84_A, apply_operation, catalog, clear_cache,
-        configure_runtime, factors, geodesic_direct_columns, geodesic_interpolates,
+        CrsObjectKind, ProjDirection, TransformPlan, WGS84_A, apply_operation, catalog,
+        clear_cache, configure_runtime, factors, geodesic_direct_columns, geodesic_interpolates,
         geodesic_inverse, geodesic_inverses, info, non_deprecated, operation_info_at,
         reset_runtime_config, rhumb_distance_crs, same, search, to_wkt_with_options,
         transform_coordinates,
@@ -716,6 +733,35 @@ mod tests {
             assert_eq!(cache[0].source, "EPSG:4326");
             assert_eq!(cache[0].target, "EPSG:3857");
         });
+    }
+
+    #[test]
+    fn reusable_degraded_plan_reprobes_after_each_diagnostic() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        clear_cache();
+        let plan = TransformPlan::new("EPSG:4267", "EPSG:4326");
+        for (index, (x, y)) in [(-104.0, 40.0), (-100.0, 55.0)].into_iter().enumerate() {
+            let mut x = [x];
+            let mut y = [y];
+            plan.transform_coordinates(&mut x, &mut y, crate::Zt::None)
+                .unwrap();
+            assert_eq!(plan.execution().diagnostic_count(), index + 1);
+            PROJ_CACHE.with(|cache| assert!(cache.borrow().is_empty()));
+        }
+    }
+
+    #[test]
+    fn unequal_epochs_do_not_select_identity_plan() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = runtime_state_snapshot().unwrap();
+        let options = TransformOptions {
+            source_epoch: Some(2010.0),
+            target_epoch: Some(2020.0),
+            ..TransformOptions::default()
+        };
+        let plan =
+            TransformPlan::new_with_options_at("EPSG:7789", "EPSG:7789", options, state).unwrap();
+        assert!(!plan.is_identity());
     }
 
     #[test]

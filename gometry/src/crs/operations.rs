@@ -11,8 +11,8 @@ use std::simd::num::SimdFloat as _;
 use crate::crs::{
     CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CachedCrsOperations, CrsError,
     OperationInfo, OwnedPj, ProjContext, ProjDirection, ProjObjList, ProjOperationFactoryContext,
-    RuntimeState, TransformOptions, Transformer, create_crs_transform_object, cstring,
-    ensure_thread_caches_current, is_wgs84_lonlat, lonlat_to_web_mercator_xy, lru_resolve,
+    RuntimeState, TransformExecution, TransformOptions, TransformPlan, create_crs_transform_object,
+    cstring, ensure_thread_caches_current, is_wgs84_lonlat, lonlat_to_web_mercator_xy, lru_resolve,
     normalize_pair, operation_info_from_pj, proj_context_error_message, runtime_state_snapshot,
     validate_coordinate_lanes, web_mercator_to_lonlat_xy, with_proj_diagnostic_pipeline_at,
 };
@@ -28,7 +28,7 @@ pub(crate) fn roundtrip_errors(
     iterations: i32,
     direction: ProjDirection,
     options: &TransformOptions,
-) -> Result<Vec<f64>> {
+) -> Result<(Vec<f64>, TransformExecution)> {
     if iterations <= 0 {
         return Err(CrsError::invalid(format!(
             "roundtrip iterations must be a positive integer, got {iterations}"
@@ -46,37 +46,58 @@ pub(crate) fn roundtrip_errors(
     if options.allows_in_core() && z.is_none() && t.is_none() {
         if is_wgs84_lonlat(&source) && target == "EPSG:3857" {
             return roundtrip_web_mercator_errors(x, y, direction, iterations, true)
+                .map(|errors| (errors, TransformExecution::default()))
                 .map_err(|error| CrsError::transform(source, target, error.to_string()));
         }
         if source == "EPSG:3857" && is_wgs84_lonlat(&target) {
             return roundtrip_web_mercator_errors(x, y, direction, iterations, false)
+                .map(|errors| (errors, TransformExecution::default()))
                 .map_err(|error| CrsError::transform(source, target, error.to_string()));
         }
     }
     let state = runtime_state_snapshot()?;
     if options.allows_in_core() {
-        let forward = Transformer::new_with_options_at(
+        let forward = TransformPlan::new_with_options_at(
             &source,
             &target,
             options.clone(),
             std::sync::Arc::clone(&state),
-        );
-        let reverse = Transformer::new_with_options_at(
+        )?;
+        let reverse = TransformPlan::new_with_options_at(
             &target,
             &source,
             TransformOptions::default(),
             std::sync::Arc::clone(&state),
-        );
+        )?;
         if forward.is_in_core() && reverse.is_in_core() {
             return roundtrip_errors_with_transformers(
                 &forward, &reverse, direction, iterations, x, y, zt,
             )
+            .map(|errors| (errors, forward.execution()))
             .map_err(|error| CrsError::transform(source, target, error.to_string()));
         }
     }
-    with_proj_diagnostic_pipeline_at(&source, &target, options, &state, |pipeline| {
-        pipeline.roundtrip_errors(direction, iterations, x, y, z, t)
-    })
+    let execution = TransformExecution::default();
+    let errors = with_proj_diagnostic_pipeline_at(
+        &source,
+        &target,
+        options,
+        &state,
+        &execution,
+        |pipeline| {
+            pipeline.roundtrip_errors(
+                direction,
+                iterations,
+                x,
+                y,
+                z,
+                t,
+                options.source_epoch,
+                &execution,
+            )
+        },
+    )?;
+    Ok((errors, execution))
 }
 
 enum RoundtripZt<'a> {
@@ -120,7 +141,7 @@ impl<'a> RoundtripZt<'a> {
 
     fn transform_with(
         &mut self,
-        transformer: &Transformer,
+        transformer: &TransformPlan,
         x: &mut [f64],
         y: &mut [f64],
     ) -> Result<()> {
@@ -158,8 +179,8 @@ impl<'a> RoundtripZt<'a> {
 }
 
 fn roundtrip_errors_with_transformers(
-    forward: &Transformer,
-    reverse: &Transformer,
+    forward: &TransformPlan,
+    reverse: &TransformPlan,
     direction: ProjDirection,
     iterations: i32,
     x: &[f64],

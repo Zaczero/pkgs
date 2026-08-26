@@ -1,4 +1,4 @@
-//! The public `Transformer` handle (`impl Transformer`).
+//! The public `TransformPlan` handle (`impl TransformPlan`).
 //!
 //! Wraps a cached pipeline for repeated coordinate transforms; reaches the FFI
 //! pipeline engine and helpers in the parent `crs` module via `use super::*`.
@@ -7,17 +7,17 @@ use std::sync::Arc;
 
 use crate::crs::transform::TransformedBounds3d;
 use crate::crs::{
-    InCoreTransform, ProjDirection, RuntimeState, Shape, TransformOptions,
+    InCoreTransform, ProjDirection, RuntimeState, Shape, TransformExecution, TransformOptions,
     begin_transform_observation, coordinate_identity_crs, ensure_geographic_domain,
     ensure_geographic_lonlat, in_core_xy_op, is_geographic_crs_with_state, record_transform_engine,
-    runtime_state_snapshot, take_accuracy_diagnostic, transform_in_core_bounds,
-    transform_in_core_bounds_3d, transform_in_core_xy_batch, transform_proj_shapes,
-    try_in_core_transform_with_state, validate_coordinate_lanes, with_proj_pipeline_at,
+    runtime_state_snapshot, transform_in_core_bounds, transform_in_core_bounds_3d,
+    transform_in_core_xy_batch, transform_proj_shapes, try_in_core_transform_with_state,
+    validate_coordinate_lanes, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{Bounds, Bounds3D};
 
-impl Transformer {
+impl TransformPlan {
     pub(crate) fn new(source: &str, target: &str) -> Self {
         Self::new_with_options(source, target, TransformOptions::default())
     }
@@ -25,6 +25,7 @@ impl Transformer {
     pub(crate) fn new_with_options(source: &str, target: &str, options: TransformOptions) -> Self {
         let state = runtime_state_snapshot().expect("CRS runtime state must remain readable");
         Self::new_with_options_at(source, target, options, state)
+            .expect("CRS transform plan must be valid")
     }
 
     pub(crate) fn new_with_options_at(
@@ -32,7 +33,9 @@ impl Transformer {
         target: &str,
         options: TransformOptions,
         state: Arc<RuntimeState>,
-    ) -> Self {
+    ) -> Result<Self> {
+        options.validate()?;
+        let plan_options = options.clone();
         // A motion between unequal coordinate epochs is a real PROJ
         // operation, even when the CRS labels are otherwise identical.  Do
         // not let the same-CRS identity shortcut erase that time-dependent
@@ -43,7 +46,7 @@ impl Transformer {
             // Same-CRS identity still validates geographic domain (same class
             // as geodesic equality shortcuts) — never a silent pass for
             // out-of-domain latitudes.
-            let source_geographic = is_geographic_crs_with_state(source, &state).unwrap_or(false);
+            let source_geographic = is_geographic_crs_with_state(source, &state)?;
             TransformOperation::Identity { source_geographic }
         } else if let Some(transform) =
             try_in_core_transform_with_state(source, target, &options, &state)
@@ -56,7 +59,23 @@ impl Transformer {
                 options,
             }
         };
-        Self { operation, state }
+        begin_transform_observation();
+        Ok(Self {
+            operation,
+            state,
+            execution: TransformExecution::default(),
+            source: source.to_owned(),
+            target: target.to_owned(),
+            options: plan_options,
+        })
+    }
+
+    pub(crate) fn execution(&self) -> TransformExecution {
+        self.execution.clone()
+    }
+
+    pub(crate) const fn is_identity(&self) -> bool {
+        matches!(self.operation, TransformOperation::Identity { .. })
     }
 
     pub(crate) const fn is_in_core(&self) -> bool {
@@ -68,10 +87,6 @@ impl Transformer {
 
     fn begin_execution(&self) {
         begin_transform_observation();
-        // Internal consumers do not have a Python warning boundary. Discard
-        // anything they left behind before this execution; the PROJ FFI seam
-        // starts diagnostics when this transform actually reaches it.
-        let _ = take_accuracy_diagnostic();
     }
 
     fn finish_execution<T>(&self, result: Result<T>, executed: bool) -> Result<T> {
@@ -121,9 +136,21 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
-                transform_proj_shapes(transformer, shapes, options.source_epoch)
-            }),
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |transformer| {
+                    transform_proj_shapes(
+                        transformer,
+                        shapes,
+                        options.source_epoch,
+                        &self.execution,
+                    )
+                },
+            ),
         };
         self.finish_execution(result, !shapes.is_empty())
     }
@@ -168,6 +195,7 @@ impl Transformer {
                 target,
                 options,
                 &self.state,
+                &self.execution,
                 |transformer| match zt {
                     crate::Zt::None => {
                         if let Some(epoch) = options.source_epoch {
@@ -180,10 +208,18 @@ impl Transformer {
                                 None,
                                 Some(t.as_mut_slice()),
                                 ProjDirection::Forward,
+                                &self.execution,
                             )
                         } else {
                             transformer.require_epoch_lane()?;
-                            transformer.transform_lanes(x, y, None, None, ProjDirection::Forward)
+                            transformer.transform_lanes(
+                                x,
+                                y,
+                                None,
+                                None,
+                                ProjDirection::Forward,
+                                &self.execution,
+                            )
                         }
                     },
                     crate::Zt::Z(z) => {
@@ -195,18 +231,36 @@ impl Transformer {
                                 Some(z),
                                 Some(t.as_mut_slice()),
                                 ProjDirection::Forward,
+                                &self.execution,
                             )
                         } else {
                             transformer.require_epoch_lane()?;
-                            transformer.transform_lanes(x, y, Some(z), None, ProjDirection::Forward)
+                            transformer.transform_lanes(
+                                x,
+                                y,
+                                Some(z),
+                                None,
+                                ProjDirection::Forward,
+                                &self.execution,
+                            )
                         }
                     },
-                    crate::Zt::T(t) => {
-                        transformer.transform_lanes(x, y, None, Some(t), ProjDirection::Forward)
-                    },
-                    crate::Zt::Zt { z, t } => {
-                        transformer.transform_lanes(x, y, Some(z), Some(t), ProjDirection::Forward)
-                    },
+                    crate::Zt::T(t) => transformer.transform_lanes(
+                        x,
+                        y,
+                        None,
+                        Some(t),
+                        ProjDirection::Forward,
+                        &self.execution,
+                    ),
+                    crate::Zt::Zt { z, t } => transformer.transform_lanes(
+                        x,
+                        y,
+                        Some(z),
+                        Some(t),
+                        ProjDirection::Forward,
+                        &self.execution,
+                    ),
                 },
             ),
         };
@@ -228,6 +282,24 @@ impl Transformer {
                 Ok(bounds)
             },
             TransformOperation::InCore(operation) => {
+                if bounds.0 > bounds.2 {
+                    let (source, target) = crate::crs::normalize_pair(&self.source, &self.target)?;
+                    return with_proj_pipeline_at(
+                        &source,
+                        &target,
+                        &self.options,
+                        &self.state,
+                        &self.execution,
+                        |transformer| {
+                            transformer.transform_bounds(
+                                bounds,
+                                densify,
+                                self.options.source_epoch,
+                                &self.execution,
+                            )
+                        },
+                    );
+                }
                 let bounds = Bounds::new_unchecked(bounds.0, bounds.1, bounds.2, bounds.3);
                 transform_in_core_bounds(operation, bounds, densify).map(Bounds::into_tuple)
             },
@@ -235,14 +307,26 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
-                if transformer.requires_coordinate_epoch() {
-                    return Err(crate::crs::CrsError::message(
-                        "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
-                    ));
-                }
-                transformer.transform_bounds(bounds, densify)
-            }),
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |transformer| {
+                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
+                        return Err(crate::crs::CrsError::message(
+                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
+                        ));
+                    }
+                    transformer.transform_bounds(
+                        bounds,
+                        densify,
+                        options.source_epoch,
+                        &self.execution,
+                    )
+                },
+            ),
         };
         self.finish_execution(result, true)
     }
@@ -263,6 +347,13 @@ impl Transformer {
                 }
                 Ok(rows.to_vec())
             },
+            TransformOperation::InCore(operation)
+                if rows.iter().any(|bounds| bounds.0 > bounds.2) =>
+            {
+                rows.iter()
+                    .map(|bounds| self.transform_bounds(*bounds, densify))
+                    .collect()
+            },
             TransformOperation::InCore(operation) => rows
                 .iter()
                 .map(|bounds| {
@@ -278,16 +369,30 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
-                if transformer.requires_coordinate_epoch() {
-                    return Err(crate::crs::CrsError::message(
-                        "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
-                    ));
-                }
-                rows.iter()
-                    .map(|bounds| transformer.transform_bounds(*bounds, densify))
-                    .collect()
-            }),
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |transformer| {
+                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
+                        return Err(crate::crs::CrsError::message(
+                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
+                        ));
+                    }
+                    rows.iter()
+                        .map(|bounds| {
+                            transformer.transform_bounds(
+                                *bounds,
+                                densify,
+                                options.source_epoch,
+                                &self.execution,
+                            )
+                        })
+                        .collect()
+                },
+            ),
         };
         self.finish_execution(result, !rows.is_empty())
     }
@@ -307,6 +412,24 @@ impl Transformer {
                 Ok(bounds)
             },
             TransformOperation::InCore(operation) => {
+                if bounds.0 > bounds.3 {
+                    let (source, target) = crate::crs::normalize_pair(&self.source, &self.target)?;
+                    return with_proj_pipeline_at(
+                        &source,
+                        &target,
+                        &self.options,
+                        &self.state,
+                        &self.execution,
+                        |transformer| {
+                            transformer.transform_bounds_3d(
+                                bounds,
+                                densify,
+                                self.options.source_epoch,
+                                &self.execution,
+                            )
+                        },
+                    );
+                }
                 transform_in_core_bounds_3d(operation, Bounds3D::from(bounds), densify)
                     .map(Bounds3D::into_tuple)
             },
@@ -314,14 +437,26 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
-                if transformer.requires_coordinate_epoch() {
-                    return Err(crate::crs::CrsError::message(
-                        "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
-                    ));
-                }
-                transformer.transform_bounds_3d(bounds, densify)
-            }),
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |transformer| {
+                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
+                        return Err(crate::crs::CrsError::message(
+                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
+                        ));
+                    }
+                    transformer.transform_bounds_3d(
+                        bounds,
+                        densify,
+                        options.source_epoch,
+                        &self.execution,
+                    )
+                },
+            ),
         };
         self.finish_execution(result, true)
     }
@@ -342,6 +477,13 @@ impl Transformer {
                 }
                 Ok(rows.to_vec())
             },
+            TransformOperation::InCore(operation)
+                if rows.iter().any(|bounds| bounds.0 > bounds.3) =>
+            {
+                rows.iter()
+                    .map(|bounds| self.transform_bounds_3d(*bounds, densify))
+                    .collect()
+            },
             TransformOperation::InCore(operation) => rows
                 .iter()
                 .map(|bounds| {
@@ -353,24 +495,42 @@ impl Transformer {
                 source,
                 target,
                 options,
-            } => with_proj_pipeline_at(source, target, options, &self.state, |transformer| {
-                if transformer.requires_coordinate_epoch() {
-                    return Err(crate::crs::CrsError::message(
-                        "bounds transform requires a coordinate epoch; time-aware bounds are not implemented",
-                    ));
-                }
-                rows.iter()
-                    .map(|bounds| transformer.transform_bounds_3d(*bounds, densify))
-                    .collect()
-            }),
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |transformer| {
+                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
+                        return Err(crate::crs::CrsError::message(
+                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
+                        ));
+                    }
+                    rows.iter()
+                        .map(|bounds| {
+                            transformer.transform_bounds_3d(
+                                *bounds,
+                                densify,
+                                options.source_epoch,
+                                &self.execution,
+                            )
+                        })
+                        .collect()
+                },
+            ),
         };
         self.finish_execution(result, !rows.is_empty())
     }
 }
 
-pub(crate) struct Transformer {
+pub(crate) struct TransformPlan {
     operation: TransformOperation,
     state: Arc<RuntimeState>,
+    execution: TransformExecution,
+    source: String,
+    target: String,
+    options: TransformOptions,
 }
 
 #[expect(

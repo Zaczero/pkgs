@@ -161,7 +161,6 @@ pub(crate) struct GeometryTransformFrame {
     pub(crate) target: Crs,
     pub(crate) output: Frame,
     pub(crate) options: crs::TransformOptions,
-    pub(crate) identity: bool,
     pub(crate) state: Arc<crs::RuntimeState>,
 }
 
@@ -515,7 +514,6 @@ impl GeometryTransformFrame {
         {
             return Err(FrameError::EpochRequiresDynamicCrs { crs: target }.into());
         }
-        let identity = same_crs && output_epoch == source.epoch();
         options.source_epoch = source.epoch();
         options.target_epoch = output_epoch;
         Ok(Self {
@@ -529,7 +527,6 @@ impl GeometryTransformFrame {
                 None => Frame::Crs(target),
             },
             options,
-            identity,
             state,
         })
     }
@@ -758,7 +755,6 @@ mod tests {
             crs::TransformOptions::default(),
         )
         .unwrap();
-        assert!(same.identity);
         assert_eq!(same.output.epoch(), Some(2020.0));
         assert_eq!(same.options.source_epoch, Some(2020.0));
         assert_eq!(same.options.target_epoch, Some(2020.0));
@@ -772,7 +768,6 @@ mod tests {
             crs::TransformOptions::default(),
         )
         .unwrap();
-        assert!(!dynamic_target.identity);
         assert_eq!(dynamic_target.output.crs_str(), Some("EPSG:3857"));
         assert_eq!(dynamic_target.output.epoch(), Some(2020.0));
 

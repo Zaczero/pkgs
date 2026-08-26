@@ -32,8 +32,11 @@ pub(crate) struct TransformOptionArgs<'py> {
 /// Python-visible transform boundaries call this after their native batch has
 /// completed, so a warning is emitted once per operation rather than once per
 /// coordinate or from the `extern "C"` PROJ callback.
-pub(crate) fn drain_accuracy_warning(py: Python<'_>) -> PyResult<()> {
-    if let Some(message) = crs::take_accuracy_diagnostic() {
+pub(crate) fn drain_accuracy_warning(
+    py: Python<'_>,
+    execution: &crs::TransformExecution,
+) -> PyResult<()> {
+    if let Some(message) = execution.take_diagnostic() {
         let message = std::ffi::CString::new(message)
             .map_err(|_| GeometryError::new_err("PROJ diagnostic contained a NUL byte"))?;
         PyErr::warn(py, &py.get_type::<AccuracyWarning>(), &message, 1)?;
@@ -288,14 +291,11 @@ pub(crate) fn crs_transform(
         force_over,
     }
     .parse()?;
-    let result = py.detach(|| {
+    let execution = py.detach(|| {
         let (x, y, zt) = coordinates.columns_mut();
         crs::transform_coordinates(&source, &target, x, y, zt, options)
-    });
-    if result.is_ok() {
-        super::warn_about_accuracy_degradation(py)?;
-    }
-    result?;
+    })?;
+    drain_accuracy_warning(py, &execution)?;
     coordinates_to_matrix_py(py, coordinates)
 }
 
@@ -357,10 +357,11 @@ pub(crate) fn crs_apply(
     direction: crs::ProjDirection,
 ) -> PyResult<Py<PyAny>> {
     let mut coordinates = CrsCoordinateArgs::parse(py, x, y, z, t)?;
-    py.detach(|| {
+    let execution = py.detach(|| {
         let (x, y, zt) = coordinates.columns_mut();
         crs::apply_operation(operation, direction, x, y, zt)
     })?;
+    drain_accuracy_warning(py, &execution)?;
     coordinates_to_py(py, coordinates)
 }
 
@@ -596,28 +597,28 @@ pub(crate) fn crs_transform_bounds(
         force_over,
     }
     .parse()?;
-    let result = match classify_bounds_shape(py, &items, first_scalar)? {
+    let (result, execution) = (match classify_bounds_shape(py, &items, first_scalar)? {
         BoundsShape::One(values) => match values.as_slice() {
-            [minx, miny, maxx, maxy] => Ok(crs::transform_bounds(
-                &source,
-                &target,
-                (*minx, *miny, *maxx, *maxy),
-                densify,
-                options,
-            )?
-            .into_pyobject(py)?
-            .unbind()
-            .into()),
-            [minx, miny, minz, maxx, maxy, maxz] => Ok(crs::transform_bounds_3d(
-                &source,
-                &target,
-                (*minx, *miny, *minz, *maxx, *maxy, *maxz),
-                densify,
-                options,
-            )?
-            .into_pyobject(py)?
-            .unbind()
-            .into()),
+            [minx, miny, maxx, maxy] => {
+                let (result, execution) = crs::transform_bounds(
+                    &source,
+                    &target,
+                    (*minx, *miny, *maxx, *maxy),
+                    densify,
+                    options,
+                )?;
+                Ok((result.into_pyobject(py)?.unbind().into(), execution))
+            },
+            [minx, miny, minz, maxx, maxy, maxz] => {
+                let (result, execution) = crs::transform_bounds_3d(
+                    &source,
+                    &target,
+                    (*minx, *miny, *minz, *maxx, *maxy, *maxz),
+                    densify,
+                    options,
+                )?;
+                Ok((result.into_pyobject(py)?.unbind().into(), execution))
+            },
             _ => Err(crate::py::errors::GeometryError::new_err(
                 "bounds must be a 4-tuple or 6-tuple of finite floats",
             )),
@@ -625,7 +626,7 @@ pub(crate) fn crs_transform_bounds(
         BoundsShape::Many(rows) => {
             let columns = rows.first().map_or(4, BoundsRow::width);
             let len = rows.len();
-            let out = py.detach(move || {
+            let (out, execution) = py.detach(move || {
                 let capacity = len.checked_mul(columns).ok_or_else(|| {
                     crate::py::errors::GeometryError::new_err("bounds matrix size overflows usize")
                 })?;
@@ -640,13 +641,19 @@ pub(crate) fn crs_transform_bounds(
                             },
                         })?;
                     }
-                    for transformed in
-                        crs::transform_bounds_many(&source, &target, &input_rows, densify, options)?
-                    {
+                    let (transformed, execution) = crs::transform_bounds_many(
+                        &source,
+                        &target,
+                        &input_rows,
+                        densify,
+                        options,
+                    )?;
+                    for transformed in transformed {
                         for value in <[f64; 4]>::from(transformed) {
                             crate::try_push(&mut out, value)?;
                         }
                     }
+                    Ok::<_, PyErr>((out, execution))
                 } else {
                     let mut input_rows = crate::try_vec_with_capacity(len)?;
                     for row in rows {
@@ -657,27 +664,29 @@ pub(crate) fn crs_transform_bounds(
                             },
                         })?;
                     }
-                    for transformed in crs::transform_bounds_3d_many(
+                    let (transformed, execution) = crs::transform_bounds_3d_many(
                         &source,
                         &target,
                         &input_rows,
                         densify,
                         options,
-                    )? {
+                    )?;
+                    for transformed in transformed {
                         for value in <[f64; 6]>::from(transformed) {
                             crate::try_push(&mut out, value)?;
                         }
                     }
+                    Ok::<_, PyErr>((out, execution))
                 }
-                Ok::<_, PyErr>(out)
             })?;
-            crate::py::numpy::float64_matrix(py, out, len, columns)
+            Ok((
+                crate::py::numpy::float64_matrix(py, out, len, columns)?,
+                execution,
+            ))
         },
-    };
-    if result.is_ok() {
-        drain_accuracy_warning(py)?;
-    }
-    result
+    })?;
+    drain_accuracy_warning(py, &execution)?;
+    Ok(result)
 }
 
 enum BoundsRow {
@@ -889,9 +898,10 @@ pub(crate) fn crs_roundtrip(
     .parse()?;
     let (x, y, zt) = coordinates.columns();
     // Bulk PROJ work runs detached, like `transform`/`apply`.
-    let errors = py.detach(|| {
+    let (errors, execution) = py.detach(|| {
         crs::roundtrip_errors(&source, &target, x, y, zt, iterations, direction, &options)
     })?;
+    drain_accuracy_warning(py, &execution)?;
     if coordinates.scalar {
         Ok(errors[0].into_pyobject(py)?.unbind().into())
     } else {

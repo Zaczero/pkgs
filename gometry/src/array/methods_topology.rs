@@ -197,20 +197,21 @@ impl PyGeometryArray {
                 coordinate_epoch_option("epoch", epoch)?,
                 options,
             )?;
-            if frame.identity {
-                return Ok(self.clone());
-            }
             let output = frame.output;
-            let transformer = crs::Transformer::new_with_options_at(
+            let transformer = crs::TransformPlan::new_with_options_at(
                 &frame.source,
                 &frame.target,
                 frame.options,
                 frame.state,
-            );
+            )?;
+            if transformer.is_identity() {
+                return Ok(self.clone());
+            }
+            let execution = transformer.execution();
             let result = self
                 .map_masked_points_to_crs_detached(py, output, transformer)?
                 .expect("masked packed points have a packed transform path");
-            crate::py::crs::drain_accuracy_warning(py)?;
+            crate::py::crs::drain_accuracy_warning(py, &execution)?;
             return Ok(result);
         }
         if let Some(mask) = self.missing().cloned() {
@@ -245,16 +246,17 @@ impl PyGeometryArray {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        if frame.identity {
-            return Ok(self.clone());
-        }
         let output = frame.output;
-        let transformer = crs::Transformer::new_with_options_at(
+        let transformer = crs::TransformPlan::new_with_options_at(
             &frame.source,
             &frame.target,
             frame.options,
             frame.state,
-        );
+        )?;
+        if transformer.is_identity() {
+            return Ok(self.clone());
+        }
+        let execution = transformer.execution();
         if let GeometryArrayStorage::Mixed(_) = self.storage() {
             // Borrow array-owned shapes — no deep clone before the batched
             // PROJ transform; land outputs in array-owned mixed/packed.
@@ -266,7 +268,7 @@ impl PyGeometryArray {
                 let borrowed: Vec<_> = shapes.iter().collect();
                 transformer.transform_shapes(&borrowed)
             })?;
-            crate::py::crs::drain_accuracy_warning(py)?;
+            crate::py::crs::drain_accuracy_warning(py, &execution)?;
             Ok(Self::from_shapes(shapes, output))
         } else {
             let result = self
@@ -280,7 +282,7 @@ impl PyGeometryArray {
                         ),
                     ))
                 })?;
-            crate::py::crs::drain_accuracy_warning(py)?;
+            crate::py::crs::drain_accuracy_warning(py, &execution)?;
             Ok(result)
         }
     }

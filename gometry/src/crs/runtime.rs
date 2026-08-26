@@ -11,21 +11,17 @@ use std::sync::Arc;
 
 use smol_str::SmolStr;
 
+use crate::crs::context::ProjDiagnostic;
 use crate::crs::{
     AtomicU64, CRS_CANONICAL_CACHE, CRS_CANONICAL_CACHE_CAPACITY, CStr, Confidence, CrsError,
-    OnceLock, Ordering, ProjContext, RefCell, RuntimeConfig, RuntimeState, RwLock, c_char,
-    ensure_thread_caches_current, info_with_state, lru_resolve, parse_epsg, ptr,
+    OnceLock, Ordering, ProjContext, RuntimeConfig, RuntimeState, RwLock, c_char,
+    ensure_thread_caches_current, info_with_state, lru_resolve, parse_epsg,
     to_authority_with_state,
 };
 use crate::error::Result;
 
 const PROJ_INI: &str = "[general]\nnetwork = off\ncdn_endpoint = https://cdn.proj.org\ncache_enabled = on\ncache_size_MB = 300\ncache_ttl_sec = 86400\ntmerc_default_algo = poder_engsager\n";
 const MAX_PROJ_DIAGNOSTIC_BYTES: usize = 4096;
-
-thread_local! {
-    static PROJ_DIAGNOSTIC: RefCell<Option<String>> = const { RefCell::new(None) };
-    static CURRENT_ACCURACY_DIAGNOSTIC: RefCell<Option<String>> = const { RefCell::new(None) };
-}
 
 static PROJ_CONFIG_DIRECTORY: OnceLock<std::result::Result<std::path::PathBuf, String>> =
     OnceLock::new();
@@ -71,35 +67,8 @@ fn proj_config_directory() -> Result<&'static std::path::Path> {
     }
 }
 
-pub(super) fn begin_proj_operation() {
-    let _ = PROJ_DIAGNOSTIC.try_with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            *slot = None;
-        }
-    });
-}
-
-pub(super) fn finish_proj_operation() -> Option<String> {
-    PROJ_DIAGNOSTIC
-        .try_with(|slot| slot.try_borrow_mut().ok().and_then(|mut slot| slot.take()))
-        .ok()
-        .flatten()
-}
-
-pub(crate) fn begin_accuracy_diagnostics() {
-    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| *diagnostic.borrow_mut() = None);
-}
-
-pub(super) fn publish_accuracy_diagnostic(message: String) {
-    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| *diagnostic.borrow_mut() = Some(message));
-}
-
-pub(crate) fn take_accuracy_diagnostic() -> Option<String> {
-    CURRENT_ACCURACY_DIAGNOSTIC.with(|diagnostic| diagnostic.borrow_mut().take())
-}
-
 unsafe extern "C" fn capture_proj_diagnostic(
-    _app_data: *mut std::ffi::c_void,
+    app_data: *mut std::ffi::c_void,
     _level: i32,
     message: *const c_char,
 ) {
@@ -118,13 +87,13 @@ unsafe extern "C" fn capture_proj_diagnostic(
     }
     let end = bytes.len().min(MAX_PROJ_DIAGNOSTIC_BYTES);
     let message = String::from_utf8_lossy(&bytes[..end]).into_owned();
-    // An FFI callback must never unwind. `try_with` and `try_borrow_mut` make
-    // TLS destruction and accidental re-entry harmless rather than panicking.
-    let _ = PROJ_DIAGNOSTIC.try_with(|slot| {
-        if let Ok(mut slot) = slot.try_borrow_mut() {
-            *slot = Some(message);
-        }
-    });
+    if app_data.is_null() {
+        return;
+    }
+    // SAFETY: `app_data` is the stable boxed diagnostic slot owned by the live
+    // context that registered this callback. PROJ invokes it synchronously.
+    let diagnostic = unsafe { &*(app_data.cast::<ProjDiagnostic>()) };
+    diagnostic.store(message);
 }
 
 pub(crate) fn normalize(value: &str) -> Result<String> {
@@ -389,7 +358,7 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
     unsafe {
         proj_sys::proj_log_func(
             context.as_ptr(),
-            ptr::null_mut(),
+            context.diagnostic_ptr(),
             Some(capture_proj_diagnostic),
         );
         // Missing-best-grid diagnostics are emitted at DEBUG. TRACE would add

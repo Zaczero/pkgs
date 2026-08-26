@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyModule, PyTuple};
 use serde_json::Value;
 
-use crate::py::errors::{AccuracyWarning, CRSError, GeometryError};
+use crate::py::errors::{CRSError, GeometryError};
 use crate::{
     CoordinateInput, Crs, CrsCoordinateArgs, accuracy_option, broadcast_coordinate_group,
     coordinate_epoch_option, crs, crs_arc, finite_coordinate_required, finite_f64_required,
@@ -70,13 +70,4 @@ pub(crate) fn crs_html_escape(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-fn warn_about_accuracy_degradation(py: Python<'_>) -> PyResult<()> {
-    if let Some(message) = crs::take_accuracy_diagnostic() {
-        let message = std::ffi::CString::new(message)
-            .map_err(|_| GeometryError::new_err("PROJ diagnostic contained a NUL byte"))?;
-        PyErr::warn(py, &py.get_type::<AccuracyWarning>(), &message, 1)?;
-    }
-    Ok(())
 }

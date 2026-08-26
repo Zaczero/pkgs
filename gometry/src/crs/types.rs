@@ -324,6 +324,75 @@ pub(crate) struct TransformOptions {
     pub force_over: bool,
 }
 
+#[derive(Debug, Default)]
+struct TransformExecutionState {
+    accuracy_diagnostic: Option<String>,
+    diagnostic_events: usize,
+    operation: Option<OperationInfo>,
+}
+
+/// State accumulated by one [`TransformPlan`] execution.
+///
+/// The handle is cloneable so a plan can cross the Python GIL-release seam
+/// while its caller retains access to diagnostics. It is deliberately not
+/// thread-local: one plan owns one execution record, including the selected
+/// operation and the first degraded-grid diagnostic in a batch.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TransformExecution {
+    state: std::sync::Arc<std::sync::Mutex<TransformExecutionState>>,
+}
+
+impl TransformExecution {
+    pub(crate) fn record_diagnostic(&self, message: String) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.diagnostic_events = state.diagnostic_events.saturating_add(1);
+        if state.accuracy_diagnostic.is_none() {
+            state.accuracy_diagnostic = Some(message);
+        }
+    }
+
+    pub(crate) fn diagnostic_count(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .diagnostic_events
+    }
+
+    pub(crate) fn take_diagnostic(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accuracy_diagnostic
+            .take()
+    }
+
+    pub(crate) fn diagnostic(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accuracy_diagnostic
+            .clone()
+    }
+
+    pub(crate) fn record_operation(&self, operation: OperationInfo) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operation = Some(operation);
+    }
+
+    pub(crate) fn operation(&self) -> Option<OperationInfo> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operation
+            .clone()
+    }
+}
+
 crate::tokens::token_enum! {
     /// Direction of a PROJ pipeline application.
     pub(crate) enum ProjDirection("direction", normalize = lowercase_token, token = none, param = "direction") {
