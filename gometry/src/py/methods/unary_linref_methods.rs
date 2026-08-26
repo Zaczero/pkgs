@@ -333,7 +333,12 @@ impl PyGeometry {
         normalized: bool,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>> {
-        if count.is_some() || at.is_none_or(|value| value.extract::<f64>().is_err()) {
+        let at_is_scalar = at
+            .map(|value| crate::f64_scalar_named("at", value))
+            .transpose()?
+            .flatten()
+            .is_some();
+        if count.is_some() || !at_is_scalar {
             if basis != LineReferenceBasis::Distance {
                 return Err(GeometryError::new_err(
                     "count and multiple at values require basis='distance'",
@@ -347,6 +352,7 @@ impl PyGeometry {
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
             let m = F64Param::parse_raw(at, "at", unary_len!(scalar))?;
+            m.ensure_finite("at")?;
             let value = unary_spine_shapes!(
                 scalar,
                 py,
@@ -362,6 +368,7 @@ impl PyGeometry {
         }
         let op = crate::dispatch::Operation::LineInterpolate;
         let distance = F64Param::parse_raw(at, "at", unary_len!(scalar))?;
+        distance.ensure_finite("distance")?;
         let model = op
             .resolver_with_line_unit(unit, normalized)
             .resolve_ctx(
@@ -397,6 +404,8 @@ impl PyGeometry {
             reject_m_basis_distance_options(normalized, unit)?;
             let start = F64Param::parse_raw(start, "start", unary_len!(scalar))?;
             let end = F64Param::parse_raw(end, "end", unary_len!(scalar))?;
+            start.ensure_finite("start")?;
+            end.ensure_finite("end")?;
             return unary_spine_shapes!(
                 scalar,
                 py,
@@ -412,6 +421,8 @@ impl PyGeometry {
         let op = crate::dispatch::Operation::LineSubstring;
         let start_distance = F64Param::parse_raw(start, "start", unary_len!(scalar))?;
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(scalar))?;
+        start_distance.ensure_finite("start")?;
+        end_distance.ensure_finite("end")?;
         let model = op
             .resolver_with_line_unit(unit, normalized)
             .resolve_ctx(
@@ -445,6 +456,8 @@ impl PyGeometry {
     ) -> PyResult<Typed> {
         let start_m = F64Param::parse_raw(start_m, "start_m", unary_len!(scalar))?;
         let end_m = F64Param::parse_raw(end_m, "end_m", unary_len!(scalar))?;
+        start_m.ensure_finite("start_m")?;
+        end_m.ensure_finite("end_m")?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -571,6 +584,7 @@ impl PyGeometryArray {
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
             let m = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
+            m.ensure_finite("at")?;
             let value = unary_spine_shapes!(
                 array,
                 py,
@@ -586,6 +600,7 @@ impl PyGeometryArray {
         }
         let op = crate::dispatch::Operation::LineInterpolate;
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
+        distance.ensure_finite("distance")?;
         let model = op
             .resolver_with_line_unit(unit, normalized)
             .resolve_ctx(
@@ -631,6 +646,8 @@ impl PyGeometryArray {
             reject_m_basis_distance_options(normalized, unit)?;
             let start = F64Param::parse_raw(start, "start", unary_len!(array, self))?;
             let end = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
+            start.ensure_finite("start")?;
+            end.ensure_finite("end")?;
             return unary_spine_shapes!(
                 array,
                 py,
@@ -646,6 +663,8 @@ impl PyGeometryArray {
         let op = crate::dispatch::Operation::LineSubstring;
         let start_distance = F64Param::parse_raw(start, "start", unary_len!(array, self))?;
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
+        start_distance.ensure_finite("start")?;
+        end_distance.ensure_finite("end")?;
         let model = op
             .resolver_with_line_unit(unit, normalized)
             .resolve_ctx(
@@ -690,6 +709,8 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let start_m = F64Param::parse_raw(start_m, "start_m", unary_len!(array, self))?;
         let end_m = F64Param::parse_raw(end_m, "end_m", unary_len!(array, self))?;
+        start_m.ensure_finite("start_m")?;
+        end_m.ensure_finite("end_m")?;
         unary_spine_shapes!(
             array,
             py,

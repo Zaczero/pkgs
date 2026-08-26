@@ -41,7 +41,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         curve: SpatialCurve,
-        level: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         self.spatial_key_impl(py, curve, level, bounds)

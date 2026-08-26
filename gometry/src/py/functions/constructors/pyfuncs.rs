@@ -156,10 +156,20 @@ pub(super) fn points(
     }
     // Sibling length pin (D11): a list/buffer column establishes the count so
     // a bare `itertools.repeat` sibling rejects instantly instead of hanging.
-    let established = crate::coordinate_sequence_len_hint(x)
-        .or_else(|| crate::coordinate_sequence_len_hint(y))
-        .or_else(|| z.and_then(crate::coordinate_sequence_len_hint))
-        .or_else(|| m.and_then(crate::coordinate_sequence_len_hint));
+    let mut established = crate::coordinate_sequence_len_hint(x, "x")?;
+    if established.is_none() {
+        established = crate::coordinate_sequence_len_hint(y, "y")?;
+    }
+    if established.is_none()
+        && let Some(value) = z
+    {
+        established = crate::coordinate_sequence_len_hint(value, "z")?;
+    }
+    if established.is_none()
+        && let Some(value) = m
+    {
+        established = crate::coordinate_sequence_len_hint(value, "m")?;
+    }
     let mut x = crate::coordinate_input_with_expected(py, x, "x", established, &|| {
         "x must be finite".into()
     })?;

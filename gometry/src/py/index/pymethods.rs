@@ -46,30 +46,21 @@ pub(crate) fn _unpickle_spatial_index(
 }
 
 fn parse_handle_like(value: &Bound<'_, PyAny>) -> PyResult<usize> {
-    if value.cast_exact::<PyBool>().is_ok() {
-        return Err(PyTypeError::new_err(
-            "spatial index handle must be an integer",
-        ));
-    }
-    if let Ok(handle) = parse_spatial_index_handle(value) {
-        return Ok(handle);
-    }
-    let indexed = value
-        .call_method0(pyo3::intern!(value.py(), "__index__"))
-        .map_err(|_| PyTypeError::new_err("spatial index handle must be an integer"))?;
-    let handle = indexed
-        .extract::<i64>()
-        .map_err(|_| GeometryError::new_err("spatial index handle is too large"))?;
-    if handle < 0 {
-        return Err(GeometryError::new_err(
-            "spatial index handle must be non-negative",
-        ));
-    }
-    usize::try_from(handle).map_err(|_| GeometryError::new_err("spatial index handle is too large"))
+    parse_spatial_index_handle(value)
 }
 
-fn handle_like_or_none(value: &Bound<'_, PyAny>) -> Option<usize> {
-    parse_handle_like(value).ok()
+fn handle_like_or_none(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+    if value.cast_exact::<PyBool>().is_ok() {
+        return Ok(None);
+    }
+    if value
+        .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    let integer = crate::py_index_object("spatial index handle", value)?;
+    Ok(integer.extract::<usize>().ok())
 }
 
 #[pymethods]
@@ -195,8 +186,8 @@ impl PySpatialIndex {
     /// Returns
     /// -------
     /// bool
-    pub(crate) fn __contains__(&self, handle: &Bound<'_, PyAny>) -> bool {
-        handle_like_or_none(handle).is_some_and(|handle| self.is_live_handle(handle))
+    pub(crate) fn __contains__(&self, handle: &Bound<'_, PyAny>) -> PyResult<bool> {
+        Ok(handle_like_or_none(handle)?.is_some_and(|handle| self.is_live_handle(handle)))
     }
 
     /// Iterate live handles lazily in ascending handle order.
@@ -740,7 +731,7 @@ impl PySpatialIndex {
         &self,
         py: Python<'_>,
         geom: &Bound<'_, PyAny>,
-        k: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] k: i64,
         max_distance: Option<f64>,
         return_distance: bool,
         unit: Option<DistanceUnit>,

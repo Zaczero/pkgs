@@ -28,7 +28,7 @@
 
 use pyo3::exceptions::{PyMemoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PySequence;
+use pyo3::types::{PyIterator, PySequence};
 
 /// Soft upper bound for a single **initial** reservation from an external
 /// length *hint* (`__len__`, etc.). Large enough to avoid thrash on typical
@@ -38,6 +38,55 @@ use pyo3::types::PySequence;
 /// `try_reserve_next` on actual observed elements — never promote a hint to
 /// an exact allocation or iteration count (AGENTS carrier 3).
 pub(crate) const MAX_RESERVE_HINT: usize = 1 << 12; // 4096 elements
+
+/// Check pending Python signals often enough that a native loop over a Python
+/// iterator remains interruptible without paying for a signal check on every
+/// item.
+pub(crate) const PYTHON_SIGNAL_STRIDE: usize = 64;
+
+pub(crate) fn check_python_signals(py: Python<'_>, item: usize) -> PyResult<()> {
+    if item.is_multiple_of(PYTHON_SIGNAL_STRIDE) {
+        py.check_signals()?;
+    }
+    Ok(())
+}
+
+/// Acquire a Python iterator while distinguishing a plain non-iterable from
+/// an iterable provider whose protocol raised. The latter exception is part
+/// of the caller's input and must not be rewritten as a type classification.
+pub(crate) fn py_iter_or_error<'py>(
+    value: &Bound<'py, PyAny>,
+    error: impl FnOnce() -> PyErr,
+) -> PyResult<Bound<'py, PyIterator>> {
+    match value.try_iter() {
+        Ok(iter) => Ok(iter),
+        Err(protocol_error)
+            if protocol_error.is_instance_of::<PyTypeError>(value.py())
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
+                    .is_none()
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
+                    .is_none() =>
+        {
+            Err(error())
+        },
+        Err(protocol_error) => Err(protocol_error),
+    }
+}
+
+/// Read a Python size only when the object actually exposes ``__len__``.
+/// Missing length is normal for a one-shot iterator; an error from a supplied
+/// ``__len__`` belongs to the provider and must not be demoted to "no hint".
+pub(crate) fn advisory_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+    let Some(len) = value.getattr_opt(pyo3::intern!(value.py(), "__len__"))? else {
+        return Ok(None);
+    };
+    if !len.is_callable() {
+        return Err(PyTypeError::new_err("__len__ must be callable"));
+    }
+    value.len().map(Some)
+}
 
 /// Fallibly reserve capacity for `additional` more elements, treating the
 /// count as an untrusted **hint**. Oversized hints are clamped to
@@ -177,53 +226,38 @@ pub(crate) fn collect_bool_mask(
     mask: &Bound<'_, PyAny>,
     expected_len: usize,
 ) -> PyResult<Vec<bool>> {
-    // Fast path: exact list/tuple of the right length via per-item extract.
-    if let Ok(sequence) = mask.cast::<PySequence>() {
-        // Capture length once for the mismatch check only — never as
-        // `Vec::with_capacity` input via FromPyObject.
-        let reported = sequence.len()?;
-        if reported != expected_len {
-            return Err(PyValueError::new_err(format!(
-                "mask length {reported} does not match array length {expected_len}"
-            )));
-        }
-        let mut out = try_vec_with_capacity(expected_len)?;
-        for index in 0..expected_len {
-            let item = sequence.get_item(index)?;
-            let bit: bool = item
-                .extract()
-                .map_err(|_| PyTypeError::new_err("mask elements must be bool"))?;
-            out.push(bit);
-        }
-        return Ok(out);
+    if let Some(reported_len) = advisory_len(mask)?
+        && reported_len != expected_len
+    {
+        return Err(PyValueError::new_err(format!(
+            "mask length {reported_len} does not match array length {expected_len}"
+        )));
     }
-    // Iterable fallback (no __len__): collect with fallible growth, then check.
-    if let Ok(iter) = mask.try_iter() {
-        let mut out = Vec::new();
-        for item in iter {
-            let item = item?;
-            let bit: bool = item
-                .extract()
-                .map_err(|_| PyTypeError::new_err("mask elements must be bool"))?;
-            try_push(&mut out, bit)?;
-            if out.len() > expected_len {
-                return Err(PyValueError::new_err(format!(
-                    "mask length {} does not match array length {expected_len}",
-                    out.len()
-                )));
-            }
+    // The iterator is the source of truth even for sequences: ``__len__`` is
+    // only a reservation hint and a lying sequence must not lose or invent
+    // rows. Exact collection reads one extra item to detect excess.
+    collect_py_iter_exact(
+        mask,
+        expected_len,
+        |item| {
+            item.extract::<bool>()
+                .map_err(|_| PyTypeError::new_err("mask elements must be bool"))
+        },
+        |got| {
+            PyValueError::new_err(format!(
+                "mask length {got} does not match array length {expected_len}"
+            ))
+        },
+    )
+    .map_err(|error| {
+        if error.is_instance_of::<pyo3::exceptions::PyTypeError>(mask.py())
+            && error.to_string().contains("not iterable")
+        {
+            PyTypeError::new_err("mask must be a sequence or iterable of bool")
+        } else {
+            error
         }
-        if out.len() != expected_len {
-            return Err(PyValueError::new_err(format!(
-                "mask length {} does not match array length {expected_len}",
-                out.len()
-            )));
-        }
-        return Ok(out);
-    }
-    Err(PyTypeError::new_err(
-        "mask must be a sequence or iterable of bool",
-    ))
+    })
 }
 
 /// Collect sequence elements once (classify + materialize in one pass) with
@@ -232,19 +266,35 @@ pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResu
     // Prefer the iterator protocol so a lying `__len__` cannot force a huge
     // empty allocation; fallible per-item growth handles real large sequences.
     let any = sequence.as_any();
-    if let Ok(iter) = any.try_iter() {
-        let mut out = Vec::new();
-        for item in iter {
-            try_push(&mut out, item?.unbind())?;
-        }
-        return Ok(out);
+    match any.try_iter() {
+        Ok(iter) => {
+            let mut out = Vec::new();
+            for (index, item) in iter.enumerate() {
+                check_python_signals(any.py(), index)?;
+                try_push(&mut out, item?.unbind())?;
+            }
+            return Ok(out);
+        },
+        Err(err)
+            if err.is_instance_of::<pyo3::exceptions::PyTypeError>(any.py())
+                && any
+                    .getattr_opt(pyo3::intern!(any.py(), "__iter__"))?
+                    .is_none() => {},
+        Err(err) => return Err(err),
     }
-    // Fallback: capture len once as a clamped *hint*, then get_item. Growth is
-    // fallible; no hard "too large to materialize" reject of valid lengths.
-    let reported = sequence.len()?;
-    let mut out = try_vec_with_capacity_hint(reported)?;
-    for index in 0..reported {
-        try_push(&mut out, sequence.get_item(index)?.unbind())?;
+    // Legacy getitem-only sequences have no iterator attribute. Walk until
+    // their protocol raises IndexError; the reported length remains advisory.
+    let mut out = Vec::new();
+    let mut index = 0;
+    loop {
+        check_python_signals(any.py(), index)?;
+        let item = match sequence.get_item(index) {
+            Ok(item) => item,
+            Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
+            Err(error) => return Err(error),
+        };
+        try_push(&mut out, item.unbind())?;
+        index = index.saturating_add(1);
     }
     Ok(out)
 }
@@ -257,19 +307,33 @@ pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<u8
     })?;
     let any = sequence.as_any();
     let mut out = Vec::new();
-    if let Ok(iter) = any.try_iter() {
-        for item in iter {
-            let item = item?;
-            let bytes = extract_bytes_payload(&item)?;
-            try_push(&mut out, bytes)?;
-        }
-        return Ok(out);
+    match any.try_iter() {
+        Ok(iter) => {
+            for (index, item) in iter.enumerate() {
+                check_python_signals(any.py(), index)?;
+                let item = item?;
+                let bytes = extract_bytes_payload(&item)?;
+                try_push(&mut out, bytes)?;
+            }
+            return Ok(out);
+        },
+        Err(err)
+            if err.is_instance_of::<pyo3::exceptions::PyTypeError>(any.py())
+                && any
+                    .getattr_opt(pyo3::intern!(any.py(), "__iter__"))?
+                    .is_none() => {},
+        Err(err) => return Err(err),
     }
-    let reported = sequence.len()?;
-    out = try_vec_with_capacity_hint(reported)?;
-    for index in 0..reported {
-        let item = sequence.get_item(index)?;
+    let mut index = 0;
+    loop {
+        check_python_signals(any.py(), index)?;
+        let item = match sequence.get_item(index) {
+            Ok(item) => item,
+            Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
+            Err(error) => return Err(error),
+        };
         try_push(&mut out, extract_bytes_payload(&item)?)?;
+        index = index.saturating_add(1);
     }
     Ok(out)
 }
@@ -356,58 +420,70 @@ fn with_i8_buffer_owned<R>(
     f(&owned)
 }
 
-/// Collect a Python sequence/iterable of extractable items without trusting
-/// `__len__` for capacity (the D01 keystone: never `Vec::with_capacity` from
-/// a lying length). One pass: iterate, extract, fallible push.
-pub(crate) fn collect_extracted_sequence<T>(
-    value: &Bound<'_, PyAny>,
-    what: &str,
-) -> PyResult<Vec<T>>
-where
-    for<'a, 'py> T: FromPyObject<'a, 'py>,
-{
-    if let Ok(iter) = value.try_iter() {
-        let mut out = Vec::new();
-        for item in iter {
-            let item = item?;
-            let parsed: T = item.extract().map_err(|_| {
-                PyTypeError::new_err(format!("{what} elements have the wrong type"))
-            })?;
-            try_push(&mut out, parsed)?;
-        }
-        return Ok(out);
-    }
-    // Sequence without iterator: walk by index with a clamped length *hint*.
-    if let Ok(sequence) = value.cast::<PySequence>() {
-        let reported = sequence.len()?;
-        let mut out = try_vec_with_capacity_hint(reported)?;
-        for index in 0..reported {
-            let item = sequence.get_item(index)?;
-            let parsed: T = item.extract().map_err(|_| {
-                PyTypeError::new_err(format!("{what} elements have the wrong type"))
-            })?;
-            try_push(&mut out, parsed)?;
-        }
-        return Ok(out);
-    }
-    Err(PyTypeError::new_err(format!(
-        "{what} must be a sequence or iterable"
-    )))
-}
-
 /// Collect `u64` ids for pickle reconstructors (cells, coverages, …).
 pub(crate) fn collect_u64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<u64>> {
-    collect_extracted_sequence(value, what)
+    collect_py_iter(value, |item| try_u64_item(&item, what))
 }
 
 /// Collect `usize` handles for pickle reconstructors (spatial index live rows).
 pub(crate) fn collect_usize_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<usize>> {
-    collect_extracted_sequence(value, what)
+    collect_py_iter(value, |item| try_usize_item(&item, what))
 }
 
 /// Collect `i64` CSR offsets / int groups for pickle reconstructors.
 pub(crate) fn collect_i64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<i64>> {
-    collect_extracted_sequence(value, what)
+    collect_py_iter(value, |item| try_i64_item(&item, what))
+}
+
+fn try_u64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<u64> {
+    match crate::py_u64_required(what, value) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(value.py())
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+                    .is_none() =>
+        {
+            Err(PyTypeError::new_err(format!(
+                "{what} elements have the wrong type"
+            )))
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn try_usize_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<usize> {
+    match crate::py_usize_required(what, value) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(value.py())
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+                    .is_none() =>
+        {
+            Err(PyTypeError::new_err(format!(
+                "{what} elements have the wrong type"
+            )))
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
+    match crate::py_i64_required(what, value) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(value.py())
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+                    .is_none() =>
+        {
+            Err(PyTypeError::new_err(format!(
+                "{what} elements have the wrong type"
+            )))
+        },
+        Err(error) => Err(error),
+    }
 }
 
 /// THE mandatory entry for every Python-iterable → `Vec` boundary.
@@ -447,14 +523,27 @@ pub(crate) fn collect_i64_sequence(value: &Bound<'_, PyAny>, what: &str) -> PyRe
 /// [`crate::py::crs::functions_config`] for the search-path loop.
 pub(crate) fn collect_py_iter<'py, T>(
     values: &Bound<'py, PyAny>,
+    map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
+) -> PyResult<Vec<T>> {
+    let iter = values.try_iter()?;
+    collect_py_iter_from_iter(values, iter, map)
+}
+
+/// Collect from an iterator that the caller already acquired. Keeping the
+/// acquisition outside the collector lets callers distinguish a non-iterable
+/// scalar from an iterator provider that failed during acquisition, without a
+/// destructive second probe.
+pub(crate) fn collect_py_iter_from_iter<'py, T>(
+    values: &Bound<'py, PyAny>,
+    mut iter: Bound<'py, PyIterator>,
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
 ) -> PyResult<Vec<T>> {
     let mut out = Vec::new();
     // Length is a clamped *hint* only — never a validity gate.
-    if let Ok(hint) = values.len() {
+    if let Some(hint) = advisory_len(values)? {
         try_reserve_hint(&mut out, hint)?;
     }
-    let mut iter = values.try_iter()?;
+    let mut index = 0;
     loop {
         let item = match iter.next() {
             None => break,
@@ -464,6 +553,8 @@ pub(crate) fn collect_py_iter<'py, T>(
                 return Err(err);
             },
         };
+        check_python_signals(values.py(), index)?;
+        index = index.saturating_add(1);
         // Reserve a slot for `T` before mapping so outer growth is fallible.
         // Free retained items *before* boxing `PyMemoryError` (see invariant).
         if try_reserve_next_raw(&mut out).is_err() {
@@ -493,12 +584,24 @@ pub(crate) fn collect_py_iter<'py, T>(
 pub(crate) fn collect_py_iter_exact<'py, T>(
     values: &Bound<'py, PyAny>,
     expected: usize,
+    map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
+    on_len: impl FnOnce(usize) -> PyErr,
+) -> PyResult<Vec<T>> {
+    let iter = values.try_iter()?;
+    collect_py_iter_exact_from_iter(values, iter, expected, map, on_len)
+}
+
+/// Exact collector sibling for callers that already acquired the iterator.
+pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
+    values: &Bound<'py, PyAny>,
+    mut iter: Bound<'py, PyIterator>,
+    expected: usize,
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
     let mut out = try_vec_with_capacity(expected)?;
-    let mut iter = values.try_iter()?;
-    for _ in 0..expected {
+    for index in 0..expected {
+        check_python_signals(values.py(), index)?;
         let Some(item) = iter.next() else {
             break;
         };
@@ -536,6 +639,32 @@ pub(crate) fn collect_py_iter_exact<'py, T>(
             drop(out);
             Err(on_len(expected.saturating_add(1)))
         },
+    }
+}
+
+/// Bounded collector sibling for callers that already acquired the iterator.
+pub(crate) fn collect_py_iter_at_most_from_iter<'py, T>(
+    values: &Bound<'py, PyAny>,
+    mut iter: Bound<'py, PyIterator>,
+    maximum: usize,
+    mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
+    on_excess: impl FnOnce(usize) -> PyErr,
+) -> PyResult<Vec<T>> {
+    let mut out = Vec::new();
+    for index in 0..maximum {
+        check_python_signals(values.py(), index)?;
+        let Some(item) = iter.next() else {
+            return Ok(out);
+        };
+        let item = item?;
+        let value = map(item)?;
+        try_push(&mut out, value)?;
+    }
+    check_python_signals(values.py(), maximum)?;
+    match iter.next() {
+        None => Ok(out),
+        Some(Err(err)) => Err(err),
+        Some(Ok(_)) => Err(on_excess(maximum.saturating_add(1))),
     }
 }
 

@@ -90,7 +90,7 @@ pub(crate) fn from_wkt(
             .unbind());
     }
     let error = || PyTypeError::new_err("expected WKT string or iterable of WKT strings");
-    let iter = data.try_iter().map_err(|_| error())?;
+    let iter = crate::py_iter_or_error(data, error)?;
     let array = stream_bulk_srid(
         iter,
         fallback,
@@ -185,23 +185,21 @@ pub(crate) fn from_wkb(
         Err(err) if err.is_instance_of::<PyTypeError>(py) => {},
         Err(err) => return Err(err),
     }
-    if let Ok(values) = data.try_iter() {
-        let arena = io::WkbCoordArena::new();
-        let array = stream_bulk_srid(
-            values,
-            fallback,
-            parsed_epoch,
-            "WKB import",
-            "EWKB SRID",
-            move |data, rows| {
-                let parsed = parse_wkb_payload_batch(data, &arena)?;
-                rows.try_push(parsed.shape)?;
-                Ok(StreamedSridRow::Present(parsed.srid))
-            },
-        )?;
-        return Ok(array.into_pyobject(py)?.unbind().into());
-    }
-    Err(PyTypeError::new_err(
-        "expected WKB bytes or iterable of WKB bytes",
-    ))
+    let values = crate::py_iter_or_error(data, || {
+        PyTypeError::new_err("expected WKB bytes or iterable of WKB bytes")
+    })?;
+    let arena = io::WkbCoordArena::new();
+    let array = stream_bulk_srid(
+        values,
+        fallback,
+        parsed_epoch,
+        "WKB import",
+        "EWKB SRID",
+        move |data, rows| {
+            let parsed = parse_wkb_payload_batch(data, &arena)?;
+            rows.try_push(parsed.shape)?;
+            Ok(StreamedSridRow::Present(parsed.srid))
+        },
+    )?;
+    Ok(array.into_pyobject(py)?.unbind().into())
 }

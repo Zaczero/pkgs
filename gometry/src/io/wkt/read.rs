@@ -841,8 +841,8 @@ mod tests {
 
     #[test]
     fn ascii_point_cursor_preserves_ordinates() {
-        let point = parse_wkt_ascii_point_impl::<true, true>(b"1 2 3 4")
-            .expect("ASCII point parses");
+        let point =
+            parse_wkt_ascii_point_impl::<true, true>(b"1 2 3 4").expect("ASCII point parses");
         assert_eq!(point.x, 1.0);
         assert_eq!(point.y, 2.0);
         assert_eq!(point.z(), Some(3.0));

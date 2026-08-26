@@ -174,21 +174,24 @@ impl GridKind {
     }
 
     pub(crate) fn id_from_value(self, value: &Bound<'_, PyAny>) -> PyResult<u64> {
-        if self != Self::GeohashCell
-            && value.cast_exact::<PyBool>().is_err()
-            && value.cast::<PyInt>().is_ok()
-        {
-            let id = value.extract::<u64>().map_err(|_| {
-                parse_error(
-                    format!(
-                        "{} id must be a non-negative 64-bit integer",
-                        self.class_name()
-                    ),
-                    self.parse_format(),
-                )
-            })?;
-            self.validate_id(id)?;
-            return Ok(id);
+        if self != Self::GeohashCell && value.cast_exact::<PyBool>().is_err() {
+            if value
+                .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+                .is_some()
+            {
+                let integer = crate::py_index_object(self.class_name(), value)?;
+                let id = integer.extract::<u64>().map_err(|_| {
+                    parse_error(
+                        format!(
+                            "{} id must be a non-negative 64-bit integer",
+                            self.class_name()
+                        ),
+                        self.parse_format(),
+                    )
+                })?;
+                self.validate_id(id)?;
+                return Ok(id);
+            }
         }
         match self {
             Self::H3Cell => h3_id_from_object(value),
@@ -197,6 +200,14 @@ impl GridKind {
             Self::GeohashCell => geohash_id_from_object(value),
         }
     }
+}
+
+pub(super) fn is_custom_index_provider(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    Ok(value.cast_exact::<PyBool>().is_err()
+        && value.cast::<PyInt>().is_err()
+        && value
+            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+            .is_some())
 }
 
 macro_rules! id_from_object {
@@ -208,27 +219,35 @@ macro_rules! id_from_object {
         }
     ) => {
         fn $function(value: &Bound<'_, PyAny>) -> PyResult<u64> {
-            let id_attr = value.getattr("id").ok();
+            let id_attr = value.getattr_opt(pyo3::intern!(value.py(), "id"))?;
             if let Some(id_attr) = id_attr.as_ref()
-                && let Ok($id) = id_attr.extract::<u64>()
+                && let Some($id) = crate::py_u64_if_index("id", id_attr)?
             {
                 $validate?;
                 return Ok($id);
             }
             let $text: String = if $string_attr == "id" {
-                id_attr.as_ref().map_or_else(
-                    || value.extract(),
-                    |attr| attr.extract().or_else(|_| value.extract()),
-                )?
+                match id_attr.as_ref() {
+                    Some(attr) => text_or_value(attr, value)?,
+                    None => value.extract()?,
+                }
             } else {
-                value.getattr($string_attr).map_or_else(
-                    |_| value.extract(),
-                    |attr| attr.extract().or_else(|_| value.extract()),
-                )?
+                match value.getattr_opt(pyo3::intern!(value.py(), $string_attr))? {
+                    Some(attr) => text_or_value(&attr, value)?,
+                    None => value.extract()?,
+                }
             };
             $parse_text
         }
     };
+}
+
+fn text_or_value(attr: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<String> {
+    match attr.extract::<String>() {
+        Ok(text) => Ok(text),
+        Err(error) if error.is_instance_of::<PyTypeError>(attr.py()) => value.extract(),
+        Err(error) => Err(error),
+    }
 }
 
 id_from_object! {
@@ -275,21 +294,26 @@ fn geohash_id_from_object(value: &Bound<'_, PyAny>) -> PyResult<u64> {
 }
 
 fn tile_id_from_value(value: &Bound<'_, PyAny>) -> PyResult<u64> {
-    if let Ok(id_attr) = value.getattr("id")
-        && id_attr.is_instance_of::<PyInt>()
+    if let Some(id_attr) = value.getattr_opt(pyo3::intern!(value.py(), "id"))?
+        && let Some(id) = crate::py_u64_if_index("tile id", &id_attr)?
     {
-        let id = id_attr.extract::<u64>()?;
         return Tile::from_id(id)
             .map(Tile::id)
             .ok_or_else(|| invalid_cell_id(GridKind::Tile, id));
     }
-    if value.cast_exact::<PyBool>().is_err() && value.cast::<PyInt>().is_ok() {
-        let id = value.extract::<u64>().map_err(|_| {
-            parse_error(
-                "tile id must be a non-negative 64-bit integer",
-                ParseFormat::Tile,
-            )
-        })?;
+    let custom_index = is_custom_index_provider(value)?;
+    if value.cast_exact::<PyBool>().is_err()
+        && let Some(id) = crate::py_u64_if_index("tile id", value).map_err(|error| {
+            if error.is_instance_of::<PyTypeError>(value.py()) && !custom_index {
+                parse_error(
+                    "tile id must be a non-negative 64-bit integer",
+                    ParseFormat::Tile,
+                )
+            } else {
+                error
+            }
+        })?
+    {
         return Tile::from_id(id)
             .map(Tile::id)
             .ok_or_else(|| invalid_cell_id(GridKind::Tile, id));
@@ -492,12 +516,22 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
         }
         return Ok(values);
     }
-    let iter = ids
-        .try_iter()
-        .map_err(|_| PyTypeError::new_err("cell array ids must be an iterable"))?;
-    let mut values = Vec::new();
-    for item in iter {
-        let item = item?;
+    let iter = match ids.try_iter() {
+        Ok(iter) => iter,
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(ids.py())
+                && ids
+                    .getattr_opt(pyo3::intern!(ids.py(), "__iter__"))?
+                    .is_none()
+                && ids
+                    .getattr_opt(pyo3::intern!(ids.py(), "__getitem__"))?
+                    .is_none() =>
+        {
+            return Err(PyTypeError::new_err("cell array ids must be an iterable"));
+        },
+        Err(error) => return Err(error),
+    };
+    crate::collect_py_iter_from_iter(ids, iter, |item| {
         if let Some(item_kind) = grid_kind_from_cell(&item)
             && item_kind != kind
         {
@@ -507,9 +541,8 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
                 item_kind.class_name(),
             )));
         }
-        crate::try_push(&mut values, kind.id_from_value(&item)?)?;
-    }
-    Ok(values)
+        kind.id_from_value(&item)
+    })
 }
 
 pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridKind, Vec<u64>)> {
@@ -536,13 +569,25 @@ pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridK
             "cell array type is required for raw id arrays and buffers",
         ));
     }
-    let iter = values.try_iter().map_err(|_| {
-        PyTypeError::new_err("cell array values must be an iterable of typed cell objects")
-    })?;
+    let iter = match values.try_iter() {
+        Ok(iter) => iter,
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(values.py())
+                && values
+                    .getattr_opt(pyo3::intern!(values.py(), "__iter__"))?
+                    .is_none()
+                && values
+                    .getattr_opt(pyo3::intern!(values.py(), "__getitem__"))?
+                    .is_none() =>
+        {
+            return Err(PyTypeError::new_err(
+                "cell array values must be an iterable of typed cell objects",
+            ));
+        },
+        Err(error) => return Err(error),
+    };
     let mut kind = None;
-    let mut ids = Vec::new();
-    for item in iter {
-        let item = item?;
+    let ids = crate::collect_py_iter_from_iter(values, iter, |item| {
         let item_kind = grid_kind_from_cell(&item).ok_or_else(|| {
             PyTypeError::new_err(
                 "cell array type is required for raw ids, tokens, and mixed or ambiguous values",
@@ -559,8 +604,8 @@ pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridK
         } else {
             kind = Some(item_kind);
         }
-        crate::try_push(&mut ids, item_kind.id_from_value(&item)?)?;
-    }
+        item_kind.id_from_value(&item)
+    })?;
     let kind =
         kind.ok_or_else(|| PyTypeError::new_err("cell array type is required for an empty input"))?;
     Ok((kind, ids))

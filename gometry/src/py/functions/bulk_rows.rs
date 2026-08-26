@@ -35,6 +35,7 @@ pub(crate) fn stream_bulk<'py>(
     for (row, item) in iter.enumerate() {
         row_count = row + 1;
         let item = item?;
+        crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
             // Final-order kind-preserving placeholder (Stage 3); no later scatter.
             crate::try_push(&mut missing_rows, row)?;
@@ -87,6 +88,7 @@ pub(crate) fn stream_bulk_srid<'py>(
     for (row, item) in iter.enumerate() {
         row_count = row + 1;
         let item = item?;
+        crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
             crate::try_push(&mut missing_rows, row)?;
             rows.try_push_missing()?;

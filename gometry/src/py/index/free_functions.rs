@@ -62,7 +62,7 @@ pub(crate) fn nearest(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     geom: &Bound<'_, PyAny>,
-    k: i64,
+    #[pyo3(from_py_with = crate::strict_i64)] k: i64,
     max_distance: Option<f64>,
     return_distance: bool,
     unit: Option<DistanceUnit>,

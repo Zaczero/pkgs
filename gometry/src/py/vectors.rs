@@ -246,33 +246,65 @@ impl Groups {
     /// shared row comparator for membership (`in`, any row) and positional
     /// equality (`==`, row-aligned) — so the two can never disagree. Internal
     /// (not a `#[pymethods]` surface).
-    fn row_matches(&self, row: usize, item: &Bound<'_, PyAny>) -> bool {
-        match &self.values {
-            GroupsValues::Int64(_) => {
-                // Generic per-element iteration: rows come back to Python as
-                // ndarrays (which fail a `PySequence` cast), and any iterable
-                // of ints should compare equal to a row.
-                let Ok(iter) = item.try_iter() else {
-                    return false;
-                };
-                let values = self.int64_row_slice(row);
-                let mut expected = values.iter();
-                for candidate in iter {
-                    let Ok(candidate) = candidate.and_then(|value| value.extract::<i64>()) else {
-                        return false;
-                    };
-                    if expected.next() != Some(&candidate) {
-                        return false;
-                    }
-                }
-                expected.next().is_none()
+    fn parse_int64_row_item(item: &Bound<'_, PyAny>) -> PyResult<Option<Vec<i64>>> {
+        let iter = match item.try_iter() {
+            Ok(iter) => iter,
+            Err(error)
+                if error.is_instance_of::<PyTypeError>(item.py())
+                    && item
+                        .getattr_opt(pyo3::intern!(item.py(), "__iter__"))?
+                        .is_none()
+                    && item
+                        .getattr_opt(pyo3::intern!(item.py(), "__getitem__"))?
+                        .is_none() =>
+            {
+                return Ok(None);
             },
-            GroupsValues::Geometry(_) => item.cast::<PyGeometryArray>().is_ok_and(|other| {
+            Err(error) => return Err(error),
+        };
+        let mut values = crate::try_vec_with_capacity(0)?;
+        for (position, candidate) in iter.enumerate() {
+            crate::check_python_signals(item.py(), position)?;
+            let candidate = candidate?;
+            if candidate.cast_exact::<pyo3::types::PyBool>().is_ok() {
+                return Ok(None);
+            }
+            let index = match crate::py_index_object("row value", &candidate) {
+                Ok(index) => index,
+                Err(error)
+                    if error.is_instance_of::<PyTypeError>(item.py())
+                        && candidate
+                            .getattr_opt(pyo3::intern!(item.py(), "__index__"))?
+                            .is_none() =>
+                {
+                    return Ok(None);
+                },
+                Err(error) => return Err(error),
+            };
+            let candidate = match index.extract::<i64>() {
+                Ok(candidate) => candidate,
+                Err(_) => return Ok(None),
+            };
+            crate::try_push(&mut values, candidate)?;
+        }
+        Ok(Some(values))
+    }
+
+    fn int64_row_matches(&self, row: usize, expected: &[i64]) -> bool {
+        let values = self.int64_row_slice(row);
+        values == expected
+    }
+
+    fn row_matches(&self, row: usize, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match &self.values {
+            GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
+                .is_some_and(|expected| self.int64_row_matches(row, &expected))),
+            GroupsValues::Geometry(_) => Ok(item.cast::<PyGeometryArray>().is_ok_and(|other| {
                 geometry_arrays_equal(&self.geometry_row_view(row), other.get())
-            }),
-            GroupsValues::Cells(_) => item
+            })),
+            GroupsValues::Cells(_) => Ok(item
                 .cast::<PyCellArray>()
-                .is_ok_and(|other| self.cell_row_view(row).logical_eq(other.get())),
+                .is_ok_and(|other| self.cell_row_view(row).logical_eq(other.get()))),
         }
     }
 }
@@ -604,8 +636,24 @@ impl Groups {
     /// Returns
     /// -------
     /// bool
-    fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
-        (0..self.rows.len()).any(|row| self.row_matches(row, item))
+    fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if matches!(&self.values, GroupsValues::Int64(_)) {
+            let Some(expected) = Self::parse_int64_row_item(item)? else {
+                return Ok(false);
+            };
+            for row in 0..self.rows.len() {
+                if self.int64_row_matches(row, &expected) {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+        for row in 0..self.rows.len() {
+            if self.row_matches(row, item)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// First index of an equal row in ``[start, stop)``.
@@ -629,7 +677,12 @@ impl Groups {
     /// ValueError
     ///     If no row in the window equals ``value``.
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
-    fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
+    fn index(
+        &self,
+        value: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
+    ) -> PyResult<usize> {
         let len = self.rows.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
@@ -641,10 +694,22 @@ impl Groups {
         };
         let start = clamp(start);
         let stop = stop.map_or(len, clamp);
-        if start < stop
-            && let Some(row) = (start..stop).find(|&row| self.row_matches(row, value))
-        {
-            return Ok(row);
+        if start < stop {
+            if matches!(&self.values, GroupsValues::Int64(_)) {
+                if let Some(expected) = Self::parse_int64_row_item(value)? {
+                    for row in start..stop {
+                        if self.int64_row_matches(row, &expected) {
+                            return Ok(row);
+                        }
+                    }
+                }
+            } else {
+                for row in start..stop {
+                    if self.row_matches(row, value)? {
+                        return Ok(row);
+                    }
+                }
+            }
         }
         let value = value
             .repr()
@@ -663,10 +728,20 @@ impl Groups {
     /// Returns
     /// -------
     /// int
-    fn count(&self, value: &Bound<'_, PyAny>) -> usize {
-        (0..self.rows.len())
-            .filter(|&row| self.row_matches(row, value))
-            .count()
+    fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        if matches!(&self.values, GroupsValues::Int64(_)) {
+            let Some(expected) = Self::parse_int64_row_item(value)? else {
+                return Ok(0);
+            };
+            return Ok((0..self.rows.len())
+                .filter(|&row| self.int64_row_matches(row, &expected))
+                .count());
+        }
+        let mut count = 0;
+        for row in 0..self.rows.len() {
+            count += usize::from(self.row_matches(row, value)?);
+        }
+        Ok(count)
     }
 
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -677,17 +752,25 @@ impl Groups {
         let Ok(sequence) = other.cast::<PySequence>() else {
             return Ok(py.NotImplemented());
         };
-        if sequence.len()? != self.rows.len() {
-            return false.into_py_any(py);
-        }
         // Positional, row-aligned: row `i` must equal `sequence[i]` (NOT mere
         // membership — order and multiplicity are significant, as for any
-        // Python sequence equality).
+        // Python sequence equality). Do not use `__len__` as a semantic gate:
+        // a provider's size hint is advisory and may lie.
+        let mut items = sequence.try_iter()?;
         for row in 0..self.rows.len() {
-            let item = sequence.get_item(row)?;
-            if !self.row_matches(row, &item) {
+            crate::check_python_signals(py, row)?;
+            let Some(item) = items.next() else {
+                return false.into_py_any(py);
+            };
+            let item = item?;
+            if !self.row_matches(row, &item)? {
                 return false.into_py_any(py);
             }
+        }
+        match items.next() {
+            None => {},
+            Some(Err(error)) => return Err(error),
+            Some(Ok(_)) => return false.into_py_any(py),
         }
         true.into_py_any(py)
     }

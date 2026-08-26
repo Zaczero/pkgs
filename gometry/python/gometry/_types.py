@@ -118,7 +118,7 @@ def mapping_as_dict(value: Any) -> dict[Any, Any]:
     advisory and never limits a provider's key stream. Honest ``dict``
     instances take a shallow-copy fast path.
     """
-    if isinstance(value, dict):
+    if type(value) is dict:
         return dict(value)
     keys_fn = getattr(value, 'keys', None)
     if keys_fn is None or not callable(keys_fn):

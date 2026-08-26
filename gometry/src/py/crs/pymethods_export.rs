@@ -107,7 +107,7 @@ impl PyCrs {
         pretty: bool,
         output_axis: crs::WktAxisRule,
         strict: bool,
-        indentation_width: i128,
+        #[pyo3(from_py_with = crate::strict_i128)] indentation_width: i128,
     ) -> PyResult<String> {
         crs_to_wkt(
             slf.as_any(),
@@ -155,11 +155,11 @@ impl PyCrs {
     /// True
     fn to_proj(
         slf: &Bound<'_, Self>,
-        version: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] version: i64,
         pretty: bool,
         approximate_tmerc: bool,
-        indentation_width: i64,
-        max_line_length: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] indentation_width: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] max_line_length: i64,
     ) -> PyResult<String> {
         crs_to_proj(
             slf.as_any(),
@@ -199,7 +199,7 @@ impl PyCrs {
     fn to_projjson(
         slf: &Bound<'_, Self>,
         pretty: bool,
-        indentation_width: i128,
+        #[pyo3(from_py_with = crate::strict_i128)] indentation_width: i128,
     ) -> PyResult<String> {
         crs_to_projjson(slf.as_any(), pretty, indentation_width)
     }

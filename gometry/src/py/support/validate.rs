@@ -12,8 +12,8 @@ use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny, PyAnyMethods as _,
-    PyBool, PyErr, PyInt, PyResult, PyTypeError, Python, Shape, coordinate_values,
-    finite_f64_required, non_negative_int, py_i64_bounded, py_i64_required,
+    PyErr, PyResult, PyTypeError, Python, Shape, finite_f64_required, non_negative_int,
+    py_i64_bounded, py_i64_required,
 };
 
 /// Collect a typed scalar lane from any iterable (sequence, generator, ...),
@@ -32,13 +32,21 @@ where
 {
     let error = || PyTypeError::new_err(format!("{name} must be an iterable of {kind}"));
     let mut out = Vec::new();
-    if let Ok(hint) = value.len() {
+    if let Some(hint) = crate::advisory_len(value)? {
         crate::try_reserve_hint(&mut out, hint)?;
     }
-    let iter = value.try_iter().map_err(|_| error())?;
-    for item in iter {
-        let item = item.map_err(|_| error())?;
-        let parsed: T = item.extract().map_err(|_| error())?;
+    let iter = crate::py_iter_or_error(value, || error())?;
+    for (index, item) in iter.enumerate() {
+        crate::check_python_signals(value.py(), index)?;
+        let item = item?;
+        let parsed: T = item.extract::<T>().map_err(|conversion| {
+            let conversion: PyErr = conversion.into();
+            if conversion.is_instance_of::<PyTypeError>(value.py()) {
+                error()
+            } else {
+                conversion
+            }
+        })?;
         crate::try_push(&mut out, parsed)?;
     }
     Ok(out)
@@ -109,15 +117,8 @@ pub(crate) fn validate_nearest_k(k: i64) -> PyResult<usize> {
 }
 
 pub(crate) fn parse_spatial_index_handle(value: &Bound<'_, PyAny>) -> PyResult<usize> {
-    if value.cast_exact::<PyBool>().is_ok() || value.cast::<PyInt>().is_err() {
-        // Wrong type -> plain `TypeError`, like every non-int-where-int lane.
-        return Err(PyTypeError::new_err(
-            "spatial index handle must be an integer",
-        ));
-    }
-    let handle = value
-        .extract::<i64>()
-        .map_err(|_| GeometryError::new_err("spatial index handle is too large"))?;
+    // Wrong type -> plain `TypeError`, like every non-int-where-int lane.
+    let handle = crate::py_i64_required("spatial index handle", value)?;
     if handle < 0 {
         return Err(GeometryError::new_err(
             "spatial index handle must be non-negative",
@@ -210,7 +211,11 @@ pub(crate) fn parse_curve_bounds(
     let Some(value) = value else {
         return Ok(None);
     };
-    let values = coordinate_values(value.py(), value, "bounds")?;
+    let values = crate::coordinate_values_exact(value.py(), value, "bounds", 4, |got| {
+        GeometryError::new_err(format!(
+            "bounds must be finite (minx, miny, maxx, maxy) with min <= max; got {got} values"
+        ))
+    })?;
     let [minx, miny, maxx, maxy] = values.as_slice() else {
         return Err(GeometryError::new_err(format!(
             "bounds must be (minx, miny, maxx, maxy), got {} values",

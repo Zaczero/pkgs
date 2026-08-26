@@ -339,7 +339,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 pub(crate) fn from_polyline(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
-    precision: i32,
+    #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
     crs: Wgs84DefaultCrs,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
@@ -364,7 +364,7 @@ pub(crate) fn from_polyline(
         .unbind());
     }
     let error = || PyTypeError::new_err("expected polyline string or iterable of strings");
-    let iter = data.try_iter().map_err(|_| error())?;
+    let iter = crate::py_iter_or_error(data, error)?;
     let array = stream_bulk(iter, crs, epoch, None, |item, rows| {
         let text = item
             .cast::<pyo3::types::PyString>()

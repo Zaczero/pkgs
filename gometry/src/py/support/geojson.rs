@@ -27,7 +27,7 @@ use crate::py::support::{
 pub(crate) fn mapping_as_dict<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
-    if let Ok(dict) = value.cast::<PyDict>() {
+    if let Ok(dict) = value.cast_exact::<PyDict>() {
         return Ok(Some(dict.copy()?));
     }
     let Some(keys_attr) = value.getattr_opt(pyo3::intern!(value.py(), "keys"))? else {
@@ -46,7 +46,8 @@ pub(crate) fn mapping_as_dict<'py>(
     let dict = PyDict::new(py);
     // try_iter uses PyObject_GetIter: accepts ``__iter__`` *and* legacy
     // ``__getitem__``-sequence keys (same as builtin dict(mapping)).
-    for key in keys.try_iter()? {
+    for (index, key) in keys.try_iter()?.enumerate() {
+        crate::check_python_signals(value.py(), index)?;
         let key = key?;
         // Distinct-key invariant: reject repeats before set_item overwrites.
         if dict.contains(&key)? {
@@ -64,7 +65,7 @@ pub(crate) fn mapping_as_dict<'py>(
 /// consume a one-shot key stream or swallow a raising ``keys()`` as "not a
 /// mapping". The conversion owner ([`mapping_as_dict`]) is the only caller.
 pub(crate) fn is_mapping_like(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    if value.cast::<PyDict>().is_ok() {
+    if value.cast_exact::<PyDict>().is_ok() {
         return Ok(true);
     }
     let Some(keys_attr) = value.getattr_opt(pyo3::intern!(value.py(), "keys"))? else {

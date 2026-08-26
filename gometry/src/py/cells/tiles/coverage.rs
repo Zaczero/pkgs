@@ -97,7 +97,7 @@ pub(super) fn tile_cover(
     geom: &Bound<'_, PyAny>,
     zoom: &Bound<'_, PyAny>,
     cell_rule: CellRule,
-    max_cells: Option<i64>,
+    #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     let max_cells = parse_max_cells(max_cells)?;
     grid_cover_dispatch(

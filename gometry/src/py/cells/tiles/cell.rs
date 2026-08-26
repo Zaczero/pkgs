@@ -6,7 +6,7 @@
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::pymethods;
-use pyo3::types::{PyAny, PyBool, PyDict, PyInt, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyDict, PyTuple};
 
 use crate::Typed;
 use crate::curves::morton_interleave;
@@ -47,7 +47,9 @@ crate::heapless!(PyTile);
 /// Rebuild a pickled Tile from its packed id (internal; see
 /// ``Tile.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_tile(id: u64) -> PyResult<PyTile> {
+pub(super) fn _unpickle_tile(
+    #[pyo3(from_py_with = crate::strict_u64)] id: u64,
+) -> PyResult<PyTile> {
     Tile::from_id(id)
         .map(|cell| PyTile { cell })
         .ok_or_else(|| {
@@ -63,8 +65,13 @@ pub(crate) fn tile_arg(cell: &Bound<'_, PyAny>) -> PyResult<Tile> {
     if let Ok(cell) = cell.cast_exact::<PyTile>() {
         return Ok(cell.get().cell);
     }
-    if cell.cast_exact::<PyBool>().is_err() && cell.cast::<PyInt>().is_ok() {
-        let id = cell.extract::<u64>().map_err(|_| {
+    if cell.cast_exact::<PyBool>().is_err()
+        && cell
+            .getattr_opt(pyo3::intern!(cell.py(), "__index__"))?
+            .is_some()
+    {
+        let integer = crate::py_index_object("tile id", cell)?;
+        let id = integer.extract::<u64>().map_err(|_| {
             parse_error(
                 "tile id must be a non-negative 64-bit integer",
                 crate::error::ParseFormat::Tile,

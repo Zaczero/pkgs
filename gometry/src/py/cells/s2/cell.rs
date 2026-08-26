@@ -155,8 +155,13 @@ pub(crate) fn s2_cell_id(cell: &Bound<'_, PyAny>) -> PyResult<CellId> {
         let cell = cell.get();
         return Ok(cell.cell);
     }
-    if cell.cast_exact::<PyBool>().is_err() && cell.cast::<PyInt>().is_ok() {
-        let id = cell.extract::<u64>().map_err(|_| {
+    if cell.cast_exact::<PyBool>().is_err()
+        && cell
+            .getattr_opt(pyo3::intern!(cell.py(), "__index__"))?
+            .is_some()
+    {
+        let integer = crate::py_index_object("S2 cell id", cell)?;
+        let id = integer.extract::<u64>().map_err(|_| {
             parse_error(
                 "S2 cell id must be a non-negative 64-bit integer",
                 ParseFormat::S2,
@@ -192,7 +197,7 @@ pub(crate) fn s2_boundary_geometry(cell: CellId) -> PyGeometry {
     PyGeometry::wgs84(S2GeomCell::from_id(cell).boundary_shape())
 }
 use pyo3::pymethods;
-use pyo3::types::{PyBool, PyInt};
+use pyo3::types::PyBool;
 
 use crate::Typed;
 use crate::boundary::geographic::validate_lonlat_xy;

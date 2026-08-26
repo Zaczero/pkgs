@@ -6,8 +6,8 @@ use crate::geometry::{LineSeq, MOrdinate, ShapePart, ZOrdinate};
 use crate::py::support::{
     Bound, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
     PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, classify_input,
-    coerce_geometry, coordinate_values, exact_geometry, is_mapping_like, is_py_bytes_or_bytearray,
-    push_ring_shapes, pyfunction, with_one_byte_buffer,
+    coerce_geometry, coordinate_values_at_most, coordinate_values_exact, exact_geometry,
+    is_mapping_like, is_py_bytes_or_bytearray, push_ring_shapes, pyfunction, with_one_byte_buffer,
 };
 
 pub(crate) enum CoercedCollectedGeometryItems {
@@ -360,7 +360,9 @@ pub(crate) fn extract_points(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Point>> {
     let coordinates = crate::collect_py_iter(value, |item| {
-        coordinate_values(item.py(), &item, "coordinate")
+        coordinate_values_at_most(item.py(), &item, "coordinate", 4, |got| {
+            InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
+        })
     })?;
     let z = optional_coordinates(z, coordinates.len(), "z")?;
     let m = optional_coordinates(m, coordinates.len(), "m")?;
@@ -405,7 +407,9 @@ pub(crate) fn extract_points(
 }
 
 pub(crate) fn extract_coordinate(value: &Bound<'_, PyAny>) -> PyResult<Point> {
-    let coordinate = coordinate_values(value.py(), value, "coordinate")?;
+    let coordinate = coordinate_values_at_most(value.py(), value, "coordinate", 4, |got| {
+        InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
+    })?;
     if coordinate.len() < 2 {
         return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
     }
@@ -486,7 +490,11 @@ pub(crate) fn optional_coordinates(
     if value.is_none() {
         return Ok(None);
     }
-    let values = coordinate_values(value.py(), value, name)?;
+    let values = coordinate_values_exact(value.py(), value, name, expected_len, |got| {
+        InvalidGeometryError::new_err(format!(
+            "{name} must have the same length as x/y coordinates (got length {got})"
+        ))
+    })?;
     if values.len() != expected_len {
         return Err(InvalidGeometryError::new_err(format!(
             "{name} must have the same length as x/y coordinates"

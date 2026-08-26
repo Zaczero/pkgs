@@ -52,7 +52,11 @@ impl PyGeometry {
     /// >>> gm.LineString([(-120.2, 38.5), (-120.95, 40.7)]).to_polyline()
     /// '_p~iF~ps|U_ulLnnqC'
     #[pyo3(signature = (*, precision = 5, drop_epoch = false))]
-    pub fn to_polyline(&self, precision: i32, drop_epoch: bool) -> PyResult<String> {
+    pub fn to_polyline(
+        &self,
+        #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
+        drop_epoch: bool,
+    ) -> PyResult<String> {
         crate::py::errors::require_epoch_drop(
             self.epoch(),
             drop_epoch,
@@ -101,7 +105,7 @@ impl PyGeometry {
     pub fn spatial_key(
         &self,
         curve: SpatialCurve,
-        level: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<u64>> {
         self.spatial_key_impl(curve, level, bounds)

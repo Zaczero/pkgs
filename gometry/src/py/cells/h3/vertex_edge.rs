@@ -130,7 +130,9 @@ impl PyH3Vertex {
 /// Rebuild a pickled `H3Vertex` from its 64-bit index (internal; see
 /// ``H3Vertex.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_h3_vertex(id: u64) -> PyResult<PyH3Vertex> {
+pub(super) fn _unpickle_h3_vertex(
+    #[pyo3(from_py_with = crate::strict_u64)] id: u64,
+) -> PyResult<PyH3Vertex> {
     Ok(PyH3Vertex {
         vertex: validate_h3_index_id::<VertexIndex>(id)?,
     })
@@ -348,7 +350,9 @@ pub(super) fn h3_edge_index(value: &Bound<'_, PyAny>) -> PyResult<DirectedEdgeIn
 /// Rebuild a pickled `H3Edge` from its 64-bit index (internal; see
 /// ``H3Edge.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_h3_edge(id: u64) -> PyResult<PyH3Edge> {
+pub(super) fn _unpickle_h3_edge(
+    #[pyo3(from_py_with = crate::strict_u64)] id: u64,
+) -> PyResult<PyH3Edge> {
     Ok(PyH3Edge {
         edge: validate_h3_index_id::<DirectedEdgeIndex>(id)?,
     })

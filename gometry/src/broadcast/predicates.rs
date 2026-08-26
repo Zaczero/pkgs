@@ -718,8 +718,8 @@ pub(crate) fn xy_predicate(
     // Streaming owner: pin bare one-shot iterators with the sibling length when
     // known so each coordinate column is drained once (not twice via independent
     // `coordinate_input` + broadcast).
-    let x_hint = coordinate_sequence_len_hint(x);
-    let y_hint = coordinate_sequence_len_hint(y);
+    let x_hint = coordinate_sequence_len_hint(x, "x")?;
+    let y_hint = coordinate_sequence_len_hint(y, "y")?;
     let mut x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
     let mut y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
     if x.values.len() != y.values.len() && !x.scalar && !y.scalar {
@@ -753,8 +753,8 @@ pub(crate) fn xy_predicate_geometry(
     inclusive: bool,
     scalar_prepared: bool,
 ) -> PyResult<Py<PyAny>> {
-    let x_hint = coordinate_sequence_len_hint(x);
-    let y_hint = coordinate_sequence_len_hint(y);
+    let x_hint = coordinate_sequence_len_hint(x, "x")?;
+    let y_hint = coordinate_sequence_len_hint(y, "y")?;
     let x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
     let y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
     xy_predicate_geometry_inputs(py, geometry, x, y, inclusive, scalar_prepared)

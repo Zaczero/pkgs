@@ -160,7 +160,9 @@ grid_free_functions! {
 /// Rebuild a pickled H3Cell from its 64-bit index (internal; see
 /// ``H3Cell.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_h3_cell(id: u64) -> PyResult<PyH3Cell> {
+pub(super) fn _unpickle_h3_cell(
+    #[pyo3(from_py_with = crate::strict_u64)] id: u64,
+) -> PyResult<PyH3Cell> {
     Ok(PyH3Cell {
         cell: validate_h3_index_id::<CellIndex>(id)?,
     })

@@ -176,8 +176,7 @@ pub(super) fn coordinate_vertices(
                     CoordinateAxes::new(HasZ(z.is_some()), HasM(m.is_some()))
                 } else {
                     coordinates
-                        .getattr("shape")
-                        .ok()
+                        .getattr_opt(pyo3::intern!(coordinates.py(), "shape"))?
                         .and_then(|shape| shape.extract::<Vec<usize>>().ok())
                         .and_then(|shape| match shape.as_slice() {
                             [0, 2] => Some(CoordinateAxes::XY),
@@ -254,12 +253,19 @@ pub(crate) fn build_polygon(
     if shell_coords.is_empty() {
         // `holes` must still be a (possibly empty) iterable: a wrong-kind value
         // is a TypeError, never silently ignored.
-        if let Some(holes) = holes
-            && holes.try_iter()?.next().is_some()
-        {
-            return Err(InvalidGeometryError::new_err(
-                "an empty polygon cannot have holes",
-            ));
+        if let Some(holes) = holes {
+            let mut holes = crate::py_iter_or_error(holes, || {
+                PyTypeError::new_err("polygon holes must be an iterable")
+            })?;
+            match holes.next() {
+                None => {},
+                Some(Err(error)) => return Err(error),
+                Some(Ok(_)) => {
+                    return Err(InvalidGeometryError::new_err(
+                        "an empty polygon cannot have holes",
+                    ));
+                },
+            }
         }
         return geometry_with_crs_epoch(
             Shape::typed_empty(EmptyKind::Polygon, shell_coords.axes()),
@@ -639,8 +645,10 @@ pub(super) fn build_geometry_array(
     // Stream directly into StreamingShapes — no intermediate Vec<Shape>.
     let frame = parse_crs_epoch(crs, epoch)?;
     let mut rows = crate::array::StreamingShapes::new();
-    for item_value in values.try_iter()? {
-        rows.try_push(item(&item_value?)?)?;
+    for (row, item_value) in values.try_iter()?.enumerate() {
+        let item_value = item_value?;
+        crate::check_python_signals(item_value.py(), row)?;
+        rows.try_push(item(&item_value)?)?;
     }
     Ok(rows.finish(frame))
 }

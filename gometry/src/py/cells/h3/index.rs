@@ -10,7 +10,7 @@ use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyInt};
+use pyo3::types::PyBool;
 
 use crate::py::errors::{ParseFormat, parse_error};
 
@@ -119,8 +119,13 @@ pub(super) fn parse_h3_index<I: H3Index>(
     if let Some(index) = native(value) {
         return Ok(index);
     }
-    if value.cast_exact::<PyBool>().is_err() && value.cast::<PyInt>().is_ok() {
-        let id = value.extract::<u64>().map_err(|_| {
+    if value.cast_exact::<PyBool>().is_err()
+        && value
+            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+            .is_some()
+    {
+        let integer = crate::py_index_object("H3 index id", value)?;
+        let id = integer.extract::<u64>().map_err(|_| {
             parse_error(
                 format!("{} id must be a non-negative 64-bit integer", I::ENTITY),
                 ParseFormat::H3,
@@ -148,7 +153,7 @@ where
             I::ARRAY_ENTITY
         )));
     }
-    let mut out = Vec::with_capacity(bytes.len() / width);
+    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
     for chunk in bytes.chunks_exact(width) {
         // SAFETY: dtype matched by extract; tobytes is native-endian for T.
         let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
@@ -158,7 +163,7 @@ where
                 I::ARRAY_ENTITY
             ))
         })?;
-        out.push(id);
+        crate::try_push(&mut out, id)?;
     }
     Ok(out)
 }

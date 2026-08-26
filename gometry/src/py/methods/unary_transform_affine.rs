@@ -3,9 +3,9 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::py::methods::unary_transform_methods::{
-    Bound, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray, PyResult, Python,
-    affine_about, angle_radians, finite_f64_required, parse_affine_matrix, parse_precision,
-    pymethods,
+    Bound, DefaultedF64Input, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, affine_about, angle_radians, finite_f64_required, parse_affine_matrix,
+    parse_precision, pymethods,
 };
 
 unary_shape_method!(
@@ -158,26 +158,26 @@ impl PyGeometry {
 
     #[doc = doc_skew!(scalar)]
     #[pyo3(
-        signature = (x_angle = 0.0, y_angle = 0.0, *, origin = OriginSpec::Centroid, radians = false),
+        signature = (x_angle = DefaultedF64Input::Default(0.0), y_angle = DefaultedF64Input::Default(0.0), *, origin = OriginSpec::Centroid, radians = false),
         text_signature = "($self, x_angle=0.0, y_angle=0.0, *, origin='centroid', radians=False)"
     )]
     pub fn skew(
         &self,
         py: Python<'_>,
-        x_angle: f64,
-        y_angle: f64,
+        x_angle: DefaultedF64Input,
+        y_angle: DefaultedF64Input,
         origin: OriginSpec,
         radians: bool,
     ) -> PyResult<crate::Typed> {
         let xs = if radians {
-            x_angle
+            x_angle.resolve_scalar(py, "x_angle")?
         } else {
-            x_angle.to_radians()
+            x_angle.resolve_scalar(py, "x_angle")?.to_radians()
         };
         let ys = if radians {
-            y_angle
+            y_angle.resolve_scalar(py, "y_angle")?
         } else {
-            y_angle.to_radians()
+            y_angle.resolve_scalar(py, "y_angle")?.to_radians()
         };
         let spec = origin;
         let tan_x = xs.tan();
@@ -343,26 +343,26 @@ impl PyGeometryArray {
 
     #[doc = doc_skew!(array)]
     #[pyo3(
-        signature = (x_angle = 0.0, y_angle = 0.0, *, origin = OriginSpec::Centroid, radians = false),
+        signature = (x_angle = DefaultedF64Input::Default(0.0), y_angle = DefaultedF64Input::Default(0.0), *, origin = OriginSpec::Centroid, radians = false),
         text_signature = "($self, x_angle=0.0, y_angle=0.0, *, origin='centroid', radians=False)"
     )]
     pub fn skew(
         &self,
         py: Python<'_>,
-        x_angle: f64,
-        y_angle: f64,
+        x_angle: DefaultedF64Input,
+        y_angle: DefaultedF64Input,
         origin: OriginSpec,
         radians: bool,
     ) -> PyResult<Self> {
         let xs = if radians {
-            x_angle
+            x_angle.resolve_scalar(py, "x_angle")?
         } else {
-            x_angle.to_radians()
+            x_angle.resolve_scalar(py, "x_angle")?.to_radians()
         };
         let ys = if radians {
-            y_angle
+            y_angle.resolve_scalar(py, "y_angle")?
         } else {
-            y_angle.to_radians()
+            y_angle.resolve_scalar(py, "y_angle")?.to_radians()
         };
         let spec = origin;
         let tan_x = xs.tan();

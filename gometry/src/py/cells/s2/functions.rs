@@ -80,7 +80,9 @@ pub(crate) fn s2_cells(
 /// Rebuild a pickled S2Cell from its 64-bit id (internal; see
 /// ``S2Cell.__reduce__``).
 #[pyfunction]
-pub(crate) fn _unpickle_s2_cell(id: u64) -> PyResult<PyS2Cell> {
+pub(crate) fn _unpickle_s2_cell(
+    #[pyo3(from_py_with = crate::strict_u64)] id: u64,
+) -> PyResult<PyS2Cell> {
     CellId::from_raw(id)
         .map(|cell| PyS2Cell { cell })
         .ok_or_else(|| {
@@ -377,11 +379,11 @@ pub(crate) fn s2_cover(
     geom: &Bound<'_, PyAny>,
     level: Option<&Bound<'_, PyAny>>,
     cell_rule: CellRule,
-    max_cells: Option<i64>,
-    target_cells: i64,
+    #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
+    #[pyo3(from_py_with = crate::strict_i64)] target_cells: i64,
     min_level: Option<&Bound<'_, PyAny>>,
     max_level: Option<&Bound<'_, PyAny>>,
-    level_mod: i64,
+    #[pyo3(from_py_with = crate::strict_i64)] level_mod: i64,
 ) -> PyResult<Py<PyAny>> {
     let parsed = parse_s2_level_budget(
         level,

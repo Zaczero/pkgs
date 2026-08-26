@@ -213,7 +213,7 @@ pub(crate) fn pluscode_encode(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    length: i64,
+    #[pyo3(from_py_with = crate::strict_i64)] length: i64,
 ) -> PyResult<Py<PyAny>> {
     let length = validate_pluscode_length(length)?;
     let encode = |lon: f64, lat: f64| {
@@ -400,7 +400,7 @@ pub(crate) fn osm_shortlink_encode(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    zoom: i64,
+    #[pyo3(from_py_with = crate::strict_i64)] zoom: i64,
 ) -> PyResult<Py<PyAny>> {
     if !(0..=22).contains(&zoom) {
         return Err(GeometryError::new_err(format!(

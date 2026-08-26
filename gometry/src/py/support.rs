@@ -15,9 +15,10 @@ use crate::{
     PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError, PyTypeMethods,
     Python, RepairMethod, Result, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod, Typed,
     Value, VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option,
-    coordinate_values, exact_geometry, finite_f64_required, geometry_type_err,
-    metric_nearest_points, non_negative_int, push_ring_shapes, py_i64_bounded, py_i64_required,
-    pyfunction, resolve_metric, rows_err, wgs84_crs, with_one_byte_buffer,
+    coordinate_values, coordinate_values_at_most, coordinate_values_exact, exact_geometry,
+    finite_f64_required, geometry_type_err, metric_nearest_points, non_negative_int,
+    push_ring_shapes, py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err,
+    wgs84_crs, with_one_byte_buffer,
 };
 
 pub(crate) type Crs = SmolStr;

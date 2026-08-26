@@ -23,9 +23,14 @@ impl PyCoordinates {
         use std::ops::ControlFlow;
         let py = other.py();
         let mut items = other.try_iter()?;
-        let walk = self
-            .view
-            .try_for_each_point(&mut |coord| match items.next() {
+        let mut position = 0;
+        let walk = self.view.try_for_each_point(&mut |coord| {
+            let current = position;
+            position += 1;
+            if let Err(error) = crate::check_python_signals(py, current) {
+                return ControlFlow::Break(Err(error));
+            }
+            match items.next() {
                 Some(Ok(item)) => match coordinate_tuple(py, coord.point, self.layout) {
                     Ok(expected) => match expected.bind(py).eq(&item) {
                         Ok(true) => ControlFlow::Continue(()),
@@ -36,7 +41,8 @@ impl PyCoordinates {
                 },
                 Some(Err(err)) => ControlFlow::Break(Err(err)),
                 None => ControlFlow::Break(Ok(false)),
-            });
+            }
+        });
         match walk {
             ControlFlow::Break(result) => result,
             ControlFlow::Continue(()) => match items.next() {

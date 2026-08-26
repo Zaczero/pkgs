@@ -29,9 +29,10 @@ pub(crate) fn geometries_from_pyarrow(
     }
 
     let mut storages = Vec::new();
-    if let Ok(chunk_iterable) = value.getattr("chunks") {
-        for chunk in chunk_iterable.try_iter()? {
+    if let Some(chunk_iterable) = value.getattr_opt(pyo3::intern!(py, "chunks"))? {
+        for (index, chunk) in chunk_iterable.try_iter()?.enumerate() {
             let chunk = chunk?;
+            crate::check_python_signals(py, index)?;
             if chunk.len()? == 0 {
                 // D18: discard empty chunks only after validating their start
                 // offset; retention stays O(1) (no storage kept).
@@ -64,8 +65,8 @@ fn ensure_empty_pyarrow_value_offsets(
     value: &Bound<'_, PyAny>,
     field: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<()> {
-    if let Ok(num_chunks) = value.getattr("num_chunks") {
-        let n: usize = num_chunks.extract()?;
+    if let Some(num_chunks) = value.getattr_opt(pyo3::intern!(py, "num_chunks"))? {
+        let n = crate::py_usize_required("num_chunks", &num_chunks)?;
         if n == 0 {
             return Ok(());
         }

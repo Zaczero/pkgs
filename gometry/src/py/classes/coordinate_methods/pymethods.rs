@@ -464,8 +464,8 @@ impl PyCoordinates {
         &self,
         py: Python<'_>,
         value: &Bound<'_, PyAny>,
-        start: i64,
-        stop: Option<i64>,
+        #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
     ) -> PyResult<usize> {
         use std::ops::ControlFlow;
         let len = self.view.len();

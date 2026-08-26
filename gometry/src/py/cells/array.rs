@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -26,7 +26,9 @@ use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::CoordSeq;
 use crate::grid::cell::GridCell;
-use crate::py::cells::grid_kind::{collect_ids, collect_inferred_ids, grid_kind_from_type};
+use crate::py::cells::grid_kind::{
+    collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
+};
 use crate::py::cells::{
     GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _, PyAnyMethods as _,
     PyCellArrayIter, PyRef, checked_depth, py_i64_required, pyfunction, rect_cells_to_polygon,
@@ -816,15 +818,17 @@ impl PyCellArray {
     /// Returns
     /// -------
     /// bool
-    fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
+    fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         if item.is_none() {
-            return (0..self.len()).any(|row| self.is_row_missing(row));
+            return Ok((0..self.len()).any(|row| self.is_row_missing(row)));
         }
-        self.kind()
-            .id_from_value(item)
-            .is_ok_and(|needle| {
-                (0..self.len()).any(|row| !self.is_row_missing(row) && self.id_at(row) == needle)
-            })
+        let custom_index = is_custom_index_provider(item)?;
+        let needle = match self.kind().id_from_value(item) {
+            Ok(needle) => needle,
+            Err(error) if custom_index => return Err(error),
+            Err(_) => return Ok(false),
+        };
+        Ok((0..self.len()).any(|row| !self.is_row_missing(row) && self.id_at(row) == needle))
     }
 
     /// Test whether every row hierarchically contains the paired cell.
@@ -903,16 +907,29 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// ValueError
     ///     If no element in the window equals ``value``.
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
-    fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
+    fn index(
+        &self,
+        value: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
+    ) -> PyResult<usize> {
         let needle = if value.is_none() {
             None
         } else {
-            Some(self.kind().id_from_value(value).map_err(|_| {
-            let value = value
-                .repr()
-                .and_then(|repr| repr.extract::<String>())
-                .unwrap_or_else(|_| "value".to_owned());
-            PyValueError::new_err(format!("{value} is not in array"))
+            let custom_index = is_custom_index_provider(value)?;
+            Some(self.kind().id_from_value(value).map_err(|error| {
+                if (error.is_instance_of::<GeometryError>(value.py())
+                    || error.is_instance_of::<PyTypeError>(value.py()))
+                    && !custom_index
+                {
+                    let value = value
+                        .repr()
+                        .and_then(|repr| repr.extract::<String>())
+                        .unwrap_or_else(|_| "value".to_owned());
+                    PyValueError::new_err(format!("{value} is not in array"))
+                } else {
+                    error
+                }
             })?)
         };
         let len = self.len();
@@ -952,15 +969,19 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// Returns
     /// -------
     /// int
-    fn count(&self, value: &Bound<'_, PyAny>) -> usize {
+    fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
         if value.is_none() {
-            return (0..self.len()).filter(|&row| self.is_row_missing(row)).count();
+            return Ok((0..self.len()).filter(|&row| self.is_row_missing(row)).count());
         }
-        self.kind().id_from_value(value).map_or(0, |needle| {
-            (0..self.len())
-                .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)
-                .count()
-        })
+        let custom_index = is_custom_index_provider(value)?;
+        let needle = match self.kind().id_from_value(value) {
+            Ok(needle) => needle,
+            Err(error) if custom_index => return Err(error),
+            Err(_) => return Ok(0),
+        };
+        Ok((0..self.len())
+            .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)
+            .count())
     }
 
     /// Unique cells and counts, ordered by descending count (pandas

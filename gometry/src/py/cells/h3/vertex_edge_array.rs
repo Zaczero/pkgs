@@ -6,9 +6,9 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::PyAnyMethods as _;
-use pyo3::types::{PyAny, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyInt, PyTuple};
 use pyo3::{Bound, IntoPyObject as _, Py, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
 
 use crate::HeapSize;
@@ -16,6 +16,7 @@ use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_fr
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{CoordSeq, LineSeq};
+use crate::py::cells::grid_kind::is_custom_index_provider;
 use crate::py::cells::h3::{
     DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
@@ -386,11 +387,28 @@ macro_rules! h3_index_array_common {
             /// Returns
             /// -------
             /// bool
-            fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
-                $parse(item).is_ok_and(|needle| {
-                    let needle = u64::from(needle);
-                    (0..self.len()).any(|row| self.id_at(row) == needle)
-                })
+            fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+                let custom_index = is_custom_index_provider(item)?;
+                match $parse(item) {
+                    Ok(needle) => {
+                        let needle = u64::from(needle);
+                        Ok((0..self.len()).any(|row| self.id_at(row) == needle))
+                    },
+                    Err(error)
+                        if item.cast_exact::<PyBool>().is_ok()
+                            || (error.is_instance_of::<crate::py::errors::GeometryError>(item.py())
+                                && !(item.cast_exact::<PyBool>().is_err()
+                                    && item.cast::<PyInt>().is_err()
+                                    && item
+                                        .getattr_opt(pyo3::intern!(item.py(), "__index__"))?
+                                        .is_some()))
+                            || (error.is_instance_of::<PyTypeError>(item.py())
+                                && !custom_index) =>
+                    {
+                        Ok(false)
+                    },
+                    Err(error) => Err(error),
+                }
             }
 
             /// First index of an equal id in ``[start, stop)``.
@@ -408,13 +426,25 @@ macro_rules! h3_index_array_common {
             /// -------
             /// int
             #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
-            fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
-                let needle = $parse(value).map(u64::from).map_err(|_| {
-                    let value = value
-                        .repr()
-                        .and_then(|repr| repr.extract::<String>())
-                        .unwrap_or_else(|_| "value".to_owned());
-                    PyValueError::new_err(format!("{value} is not in array"))
+            fn index(
+                &self,
+                value: &Bound<'_, PyAny>,
+                #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+                #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
+            ) -> PyResult<usize> {
+                let custom_index = is_custom_index_provider(value)?;
+                let needle = $parse(value).map(u64::from).map_err(|error| {
+                    if error.is_instance_of::<crate::py::errors::GeometryError>(value.py())
+                        || (error.is_instance_of::<PyTypeError>(value.py()) && !custom_index)
+                    {
+                        let value = value
+                            .repr()
+                            .and_then(|repr| repr.extract::<String>())
+                            .unwrap_or_else(|_| "value".to_owned());
+                        PyValueError::new_err(format!("{value} is not in array"))
+                    } else {
+                        error
+                    }
                 })?;
                 let len = self.len();
                 let clamp = |bound: i64| -> usize {
@@ -451,12 +481,16 @@ macro_rules! h3_index_array_common {
             /// Returns
             /// -------
             /// int
-            fn count(&self, value: &Bound<'_, PyAny>) -> usize {
-                $parse(value).map(u64::from).map_or(0, |needle| {
-                    (0..self.len())
-                        .filter(|&row| self.id_at(row) == needle)
-                        .count()
-                })
+            fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+                let custom_index = is_custom_index_provider(value)?;
+                let needle = match $parse(value) {
+                    Ok(needle) => u64::from(needle),
+                    Err(error) if custom_index => return Err(error),
+                    Err(_) => return Ok(0),
+                };
+                Ok((0..self.len())
+                    .filter(|&row| self.id_at(row) == needle)
+                    .count())
             }
 
             /// Unique values and counts, ordered by descending count.

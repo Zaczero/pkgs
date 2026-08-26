@@ -29,12 +29,13 @@ impl PyGeometry {
         distance: &Bound<'_, PyAny>,
         cap_style: BufferCapStyle,
         join_style: BufferJoinStyle,
-        quadrant_segments: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] quadrant_segments: i64,
         miter_limit: f64,
         side: BufferSide,
         unit: Option<DistanceUnit>,
     ) -> PyResult<crate::Typed> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(scalar))?;
+        distance.ensure_finite("distance")?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         unary_spine_shapes!(
@@ -69,11 +70,12 @@ impl PyGeometry {
         py: Python<'_>,
         distance: &Bound<'_, PyAny>,
         join_style: BufferJoinStyle,
-        quadrant_segments: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] quadrant_segments: i64,
         miter_limit: f64,
         unit: Option<DistanceUnit>,
     ) -> PyResult<crate::Typed> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(scalar))?;
+        distance.ensure_finite("distance")?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         unary_spine_shapes!(
@@ -317,7 +319,10 @@ impl PyGeometry {
 
     #[doc = doc_subdivide!(scalar)]
     #[pyo3(signature = (*, max_vertices = 256))]
-    pub fn subdivide(&self, max_vertices: i64) -> PyResult<PyGeometryArray> {
+    pub fn subdivide(
+        &self,
+        #[pyo3(from_py_with = crate::strict_i64)] max_vertices: i64,
+    ) -> PyResult<PyGeometryArray> {
         self.subdivide_parts(max_vertices)
     }
 }
@@ -335,12 +340,13 @@ impl PyGeometryArray {
         distance: &Bound<'_, PyAny>,
         cap_style: BufferCapStyle,
         join_style: BufferJoinStyle,
-        quadrant_segments: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] quadrant_segments: i64,
         miter_limit: f64,
         side: BufferSide,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
+        distance.ensure_finite("distance")?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         if let Some(result) =
@@ -380,11 +386,12 @@ impl PyGeometryArray {
         py: Python<'_>,
         distance: &Bound<'_, PyAny>,
         join_style: BufferJoinStyle,
-        quadrant_segments: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] quadrant_segments: i64,
         miter_limit: f64,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let distance = F64Param::parse_raw(distance, "distance", unary_len!(array, self))?;
+        distance.ensure_finite("distance")?;
         let quadrant_segments = validate_buffer_quadrant_segments(quadrant_segments)?;
         let miter_limit = validate_buffer_miter_limit(miter_limit)?;
         crate::dispatch::unary_array_shapes_budgeted(
@@ -654,7 +661,7 @@ impl PyGeometryArray {
     pub fn subdivide(
         &self,
         py: Python<'_>,
-        max_vertices: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] max_vertices: i64,
     ) -> PyResult<crate::py::vectors::Groups> {
         self.subdivide_rows(py, max_vertices)
     }

@@ -10,8 +10,8 @@ use crate::py::row::{
 };
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
-    PyClassInitializer, PyErr, PyRef, PyResult, PySequenceMethods as _, Python, Result, ShapeData,
-    exact_geometry, pyclass, pymethods, wgs84_crs,
+    PyClassInitializer, PyErr, PyRef, PyResult, Python, Result, ShapeData, exact_geometry, pyclass,
+    pymethods, wgs84_crs,
 };
 #[cfg(test)]
 use crate::{Point, Shape};
@@ -455,7 +455,12 @@ impl PyGeometryParts {
     /// ValueError
     ///     If no part in the window equals ``value``.
     #[pyo3(signature = (value, start = 0, stop = None), text_signature = "($self, value, start=0, stop=None)")]
-    fn index(&self, value: &Bound<'_, PyAny>, start: i64, stop: Option<i64>) -> PyResult<usize> {
+    fn index(
+        &self,
+        value: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
+    ) -> PyResult<usize> {
         geometry_parts_index(&self.geometry, value, start, stop)
     }
 
@@ -488,13 +493,21 @@ impl PyGeometryParts {
         let Ok(sequence) = other.cast::<PySequence>() else {
             return Ok(py.NotImplemented());
         };
-        if sequence.len()? != len {
-            return false.into_py_any(py);
-        }
+        let mut items = sequence.try_iter()?;
         for row in 0..len {
-            if !self.part_matches(row, &sequence.get_item(row)?) {
+            crate::check_python_signals(py, row)?;
+            let Some(item) = items.next() else {
+                return false.into_py_any(py);
+            };
+            let item = item?;
+            if !self.part_matches(row, &item) {
                 return false.into_py_any(py);
             }
+        }
+        match items.next() {
+            None => {},
+            Some(Err(error)) => return Err(error),
+            Some(Ok(_)) => return false.into_py_any(py),
         }
         true.into_py_any(py)
     }
@@ -724,8 +737,8 @@ macro_rules! geometry_parts_methods {
             fn index(
                 slf: PyRef<'_, Self>,
                 value: &Bound<'_, PyAny>,
-                start: i64,
-                stop: Option<i64>,
+                #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+                #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
             ) -> PyResult<usize> {
                 geometry_parts_index(&**slf.as_super(), value, start, stop)
             }

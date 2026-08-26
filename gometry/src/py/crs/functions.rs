@@ -1,6 +1,6 @@
 use crate::py::crs::{
-    Borrowed, Bound, CRSError, FromPyObject, Py, PyAny, PyDict, PyErr, PyInt, PyList, PyResult,
-    Python, Value, crs, crs_normalize, json_to_py, pyfunction,
+    Borrowed, Bound, CRSError, FromPyObject, Py, PyAny, PyAnyMethods as _, PyDict, PyErr, PyList,
+    PyResult, Python, Value, crs, crs_normalize, json_to_py, pyfunction,
 };
 
 pub(crate) enum MinConfidence {
@@ -23,10 +23,16 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MinConfidence {
     type Error = PyErr;
 
     fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        let value = value
-            .cast::<PyInt>()?
-            .extract::<u8>()
+        let value = crate::py_index_object("min_confidence", &value.as_any())?
+            .extract::<i64>()
             .map_err(|_| CRSError::new_err("min_confidence must be between 0 and 100"))?;
+        let value = u8::try_from(value)
+            .map_err(|_| CRSError::new_err("min_confidence must be between 0 and 100"))?;
+        if value > 100 {
+            return Err(CRSError::new_err(
+                "min_confidence must be between 0 and 100",
+            ));
+        }
         Ok(Self::Supplied(value))
     }
 }

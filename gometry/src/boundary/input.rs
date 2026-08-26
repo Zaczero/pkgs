@@ -8,24 +8,166 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use numpy::PyUntypedArray;
 use pyo3::FromPyObject;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 
 use crate::py::errors::GeometryError;
-use crate::{Positive, Shape, coordinate_values, crs};
+use crate::{Positive, Shape, coordinate_values_exact, crs};
 
 pub(crate) fn py_i64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // A non-int where an int is required is a plain `TypeError` (like the
     // float lane) — `GeometryError` is for bad *values*: an oversized int has
     // the right type and stays a value error.
-    if value.cast::<pyo3::types::PyInt>().is_err() {
-        return Err(PyTypeError::new_err(format!("{name} must be an integer")));
-    }
-    value
+    let integer = py_index_object(name, value)?;
+    integer
         .extract::<i64>()
         .map_err(|_| GeometryError::new_err(format!("{name} is too large")))
+}
+
+/// Strict unsigned integer admission for packed cell identities and other
+/// public non-negative identifiers. Python ``bool`` is an ``int`` subclass,
+/// but it is not an identifier in any gometry API.
+pub(crate) fn py_u64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<u64> {
+    let integer = py_index_object(name, value)?;
+    integer.extract::<u64>().map_err(|_| {
+        GeometryError::new_err(format!("{name} must be a non-negative 64-bit integer"))
+    })
+}
+
+pub(crate) fn py_u64_if_index(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Option<u64>> {
+    if value.cast_exact::<PyBool>().is_ok() {
+        return Err(PyTypeError::new_err(format!("{name} must be an integer")));
+    }
+    let Some(index) = value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? else {
+        return Ok(None);
+    };
+    let integer = index.call0()?;
+    if integer.cast_exact::<PyBool>().is_ok() || integer.cast::<PyInt>().is_err() {
+        return Err(PyTypeError::new_err(format!(
+            "{name}.__index__() must return an integer"
+        )));
+    }
+    integer.extract::<u64>().map(Some).map_err(|_| {
+        GeometryError::new_err(format!("{name} must be a non-negative 64-bit integer"))
+    })
+}
+
+/// Strict signed machine-index admission. The conversion remains at the
+/// declared platform-index boundary; no intermediate Rust integer is used to
+/// probe the Python value.
+pub(crate) fn py_isize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<isize> {
+    let integer = py_index_object(name, value)?;
+    integer
+        .extract::<isize>()
+        .map_err(|_| PyTypeError::new_err(format!("{name} is too large")))
+}
+
+pub(crate) fn py_usize_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    let integer = py_index_object(name, value)?;
+    integer
+        .extract::<usize>()
+        .map_err(|_| GeometryError::new_err(format!("{name} is too large")))
+}
+
+pub(crate) fn strict_i64(value: &Bound<'_, PyAny>) -> PyResult<i64> {
+    py_i64_required("integer", value)
+}
+
+pub(crate) fn strict_i64_overflow(value: &Bound<'_, PyAny>) -> PyResult<i64> {
+    py_index_object("integer", value)?
+        .extract::<i64>()
+        .map_err(|_| PyOverflowError::new_err("integer is too large"))
+}
+
+pub(crate) fn strict_optional_i64(value: &Bound<'_, PyAny>) -> PyResult<Option<i64>> {
+    if value.is_none() {
+        Ok(None)
+    } else {
+        strict_i64(value).map(Some)
+    }
+}
+
+pub(crate) fn strict_i32(value: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let value = strict_i64(value)?;
+    i32::try_from(value).map_err(|_| GeometryError::new_err("integer is too large"))
+}
+
+pub(crate) fn strict_i32_overflow(value: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let value = strict_i64_overflow(value)?;
+    i32::try_from(value).map_err(|_| PyOverflowError::new_err("integer is too large"))
+}
+
+pub(crate) fn strict_u64(value: &Bound<'_, PyAny>) -> PyResult<u64> {
+    py_u64_required("integer", value)
+}
+
+pub(crate) fn strict_i128(value: &Bound<'_, PyAny>) -> PyResult<i128> {
+    py_index_object("integer", value)?
+        .extract::<i128>()
+        .map_err(|_| GeometryError::new_err("integer is too large"))
+}
+
+/// Admit Python's integer protocol (`__index__`) once, rejecting the special
+/// ``bool`` subtype before conversion. NumPy integer scalars therefore follow
+/// the same path as built-in integers, while arbitrary Python integer
+/// precision remains intact until the caller's declared Rust domain.
+pub(crate) fn py_index_object<'py>(
+    name: &str,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if value.cast_exact::<PyBool>().is_ok() {
+        return Err(PyTypeError::new_err(format!("{name} must be an integer")));
+    }
+    let index = match value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? {
+        Some(index) => index,
+        None => return Err(PyTypeError::new_err(format!("{name} must be an integer"))),
+    };
+    match index.call0() {
+        Ok(integer)
+            if integer.cast::<PyInt>().is_ok() && integer.cast_exact::<PyBool>().is_err() =>
+        {
+            Ok(integer)
+        },
+        Ok(_) => Err(PyTypeError::new_err(format!(
+            "{name}.__index__() must return an integer"
+        ))),
+        Err(error) => Err(error),
+    }
+}
+
+/// Try the public float-like scalar protocol without treating provider
+/// failures as a failed classification. A plain ``TypeError`` means the
+/// value is a sequence; every other exception belongs to the provider.
+pub(crate) fn f64_scalar(value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
+    match value.extract::<f64>() {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.is_instance_of::<PyTypeError>(value.py()) => {
+            if value.cast::<PyUntypedArray>().is_ok() {
+                return Ok(None);
+            }
+            if value
+                .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
+                .is_some()
+            {
+                Err(error)
+            } else {
+                Ok(None)
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn f64_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
+    match f64_scalar(value) {
+        Err(_error) if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() => Err(
+            PyTypeError::new_err(format!("{name} must be a finite float")),
+        ),
+        result => result,
+    }
 }
 
 /// Range-bounded boundary parser: extract an integer and enforce an
@@ -109,8 +251,30 @@ pub(crate) fn bounded_int(
 /// by the grid pair parameters; wrong type raises `TypeError`, wrong arity
 /// `GeometryError`.
 fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(f64, f64)> {
-    let values = coordinate_values(value.py(), value, name)
-        .map_err(|_| PyTypeError::new_err(format!("snap_to_grid {name} must be {expected}")))?;
+    let values = match coordinate_values_exact(value.py(), value, name, 2, |got| {
+        crate::py::errors::parameter_error(
+            format!("snap_to_grid {name} must be {expected}, got {got} values"),
+            name,
+        )
+    }) {
+        Ok(values) => values,
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(value.py())
+                && (value.cast::<PyString>().is_ok()
+                    || value.cast::<PyBytes>().is_ok()
+                    || (value
+                        .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
+                        .is_none()
+                        && value
+                            .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
+                            .is_none())) =>
+        {
+            return Err(PyTypeError::new_err(format!(
+                "snap_to_grid {name} must be {expected}"
+            )));
+        },
+        Err(error) => return Err(error),
+    };
     let [x, y] = values.as_slice() else {
         return Err(crate::py::errors::parameter_error(
             format!(
@@ -126,7 +290,7 @@ fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(
 /// Boundary parser for `snap_to_grid` size: one positive finite float for
 /// a square grid, or an `(sx, sy)` pair.
 pub(crate) fn parse_grid_size(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
-    let pair = if let Ok(size) = value.extract::<f64>() {
+    let pair = if let Some(size) = f64_scalar(value)? {
         (size, size)
     } else {
         grid_pair(value, "size", "a positive number or an (sx, sy) pair")?
@@ -270,28 +434,38 @@ pub(crate) fn angle_radians(name: &str, value: &Bound<'_, PyAny>, radians: bool)
 
 /// Parse a 6-element `(a, b, d, e, xoff, yoff)` affine matrix of finite floats.
 pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6]> {
-    let items = matrix.try_iter().map_err(|_| {
+    let names = ["a", "b", "d", "e", "xoff", "yoff"];
+    let mut position = 0;
+    let iter = crate::py_iter_or_error(matrix, || {
         GeometryError::new_err("affine matrix must be a sequence of 6 finite numbers")
     })?;
-    let names = ["a", "b", "d", "e", "xoff", "yoff"];
-    let mut values = [0.0; 6];
-    let mut count = 0;
-    for item in items {
-        let item = item?;
-        if count == 6 {
-            return Err(GeometryError::new_err(
-                "affine matrix must have exactly 6 elements",
-            ));
-        }
-        values[count] = finite_f64_required(names[count], &item)?;
-        count += 1;
-    }
-    if count != 6 {
-        return Err(GeometryError::new_err(
-            "affine matrix must have exactly 6 elements",
-        ));
-    }
-    Ok(values)
+    let values = crate::collect_py_iter_exact_from_iter(
+        matrix,
+        iter,
+        6,
+        |item| {
+            let name = names[position];
+            position += 1;
+            match finite_f64_required(name, &item) {
+                Ok(value) => Ok(value),
+                Err(error)
+                    if error.is_instance_of::<PyTypeError>(matrix.py())
+                        && item
+                            .getattr_opt(pyo3::intern!(matrix.py(), "__float__"))?
+                            .is_none() =>
+                {
+                    Err(GeometryError::new_err(
+                        "affine matrix must be a sequence of 6 finite numbers",
+                    ))
+                },
+                Err(error) => Err(error),
+            }
+        },
+        |_| GeometryError::new_err("affine matrix must have exactly 6 elements"),
+    )?;
+    values
+        .try_into()
+        .map_err(|_| GeometryError::new_err("affine matrix must have exactly 6 elements"))
 }
 
 /// A parsed `origin` argument for the ergonomic affine helpers: parsed
@@ -339,28 +513,25 @@ impl<'a, 'py> FromPyObject<'a, 'py> for OriginSpec {
 
 /// Parse a 2-element `(x, y)` sequence of finite numbers.
 pub(crate) fn parse_xy_pair(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
-    let py = value.py();
     // Propagate provider exceptions from `__iter__` / `__next__`; only a
     // bare "not iterable" TypeError becomes the domain message.
-    let mut items = match value.try_iter() {
-        Ok(it) => it,
-        Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-            return Err(GeometryError::new_err(
-                "origin must be an (x, y) pair of finite numbers",
-            ));
-        },
-        Err(err) => return Err(err),
-    };
+    let mut items = crate::py_iter_or_error(value, || {
+        GeometryError::new_err("origin must be an (x, y) pair of finite numbers")
+    })?;
     let x = items
         .next()
         .ok_or_else(|| GeometryError::new_err("origin (x, y) pair requires two values"))??;
     let y = items
         .next()
         .ok_or_else(|| GeometryError::new_err("origin (x, y) pair requires two values"))??;
-    if items.next().is_some() {
-        return Err(GeometryError::new_err(
-            "origin (x, y) pair must have exactly two values",
-        ));
+    match items.next() {
+        None => {},
+        Some(Err(error)) => return Err(error),
+        Some(Ok(_)) => {
+            return Err(GeometryError::new_err(
+                "origin (x, y) pair must have exactly two values",
+            ));
+        },
     }
     Ok((
         finite_f64_required("origin x", &x)?,
@@ -397,9 +568,21 @@ pub(crate) fn finite_coordinate_required(name: &str, value: &Bound<'_, PyAny>) -
 }
 
 pub(crate) fn f64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    value
-        .extract::<f64>()
-        .map_err(|_| PyTypeError::new_err(format!("{name} must be a finite float")))
+    let has_float_provider = value
+        .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
+        .is_some();
+    match value.extract::<f64>() {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_instance_of::<PyTypeError>(value.py()) && !has_float_provider => {
+            Err(PyTypeError::new_err(format!(
+                "{name} must be a finite float"
+            )))
+        },
+        Err(_error) if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() => Err(
+            PyTypeError::new_err(format!("{name} must be a finite float")),
+        ),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn finite_f64_option(
@@ -526,7 +709,11 @@ pub(crate) fn parse_area(
     if let Some(area) = area_from_object(value, name)? {
         return Ok(Some(area));
     }
-    let values = coordinate_values(value.py(), value, name)?;
+    let values = coordinate_values_exact(value.py(), value, name, 4, |got| {
+        GeometryError::new_err(format!(
+            "{name} must be a (west, south, east, north) tuple, got {got} values"
+        ))
+    })?;
     let [west, south, east, north] = values.as_slice() else {
         return Err(GeometryError::new_err(format!(
             "{name} must be a (west, south, east, north) tuple, area dictionary, \
@@ -559,36 +746,49 @@ pub(crate) fn area_from_object(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Option<crs::AreaOfInterest>> {
-    if value.hasattr("west_lon_degree")?
-        || value.hasattr("south_lat_degree")?
-        || value.hasattr("east_lon_degree")?
-        || value.hasattr("north_lat_degree")?
-    {
+    let standard = [
+        "west_lon_degree",
+        "south_lat_degree",
+        "east_lon_degree",
+        "north_lat_degree",
+    ];
+    let standard_values = standard
+        .into_iter()
+        .map(|attr| value.getattr_opt(attr))
+        .collect::<PyResult<Vec<_>>>()?;
+    if standard_values.iter().any(Option::is_some) {
+        let [west, south, east, north] = standard_values.as_slice() else {
+            unreachable!("four fixed area attributes");
+        };
         return Ok(Some(crs::AreaOfInterest::new(
-            area_attr_f64(value, name, "west_lon_degree")?,
-            area_attr_f64(value, name, "south_lat_degree")?,
-            area_attr_f64(value, name, "east_lon_degree")?,
-            area_attr_f64(value, name, "north_lat_degree")?,
+            area_value_f64(west.as_ref(), name, standard[0])?,
+            area_value_f64(south.as_ref(), name, standard[1])?,
+            area_value_f64(east.as_ref(), name, standard[2])?,
+            area_value_f64(north.as_ref(), name, standard[3])?,
         )?));
     }
-    if value.hasattr("west")?
-        || value.hasattr("south")?
-        || value.hasattr("east")?
-        || value.hasattr("north")?
-    {
+    let short = ["west", "south", "east", "north"];
+    let short_values = short
+        .into_iter()
+        .map(|attr| value.getattr_opt(attr))
+        .collect::<PyResult<Vec<_>>>()?;
+    if short_values.iter().any(Option::is_some) {
+        let [west, south, east, north] = short_values.as_slice() else {
+            unreachable!("four fixed area attributes");
+        };
         return Ok(Some(crs::AreaOfInterest::new(
-            area_attr_f64(value, name, "west")?,
-            area_attr_f64(value, name, "south")?,
-            area_attr_f64(value, name, "east")?,
-            area_attr_f64(value, name, "north")?,
+            area_value_f64(west.as_ref(), name, short[0])?,
+            area_value_f64(south.as_ref(), name, short[1])?,
+            area_value_f64(east.as_ref(), name, short[2])?,
+            area_value_f64(north.as_ref(), name, short[3])?,
         )?));
     }
     Ok(None)
 }
 
-pub(crate) fn area_attr_f64(value: &Bound<'_, PyAny>, name: &str, attr: &str) -> PyResult<f64> {
-    let value = value.getattr(attr).map_err(|_| {
+fn area_value_f64(value: Option<&Bound<'_, PyAny>>, name: &str, attr: &str) -> PyResult<f64> {
+    let value = value.ok_or_else(|| {
         GeometryError::new_err(format!("{name} object requires attribute \"{attr}\""))
     })?;
-    finite_f64_required(&format!("{name} {attr}"), &value)
+    finite_f64_required(&format!("{name} {attr}"), value)
 }

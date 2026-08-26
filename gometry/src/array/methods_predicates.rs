@@ -390,7 +390,7 @@ impl PyGeometryArray {
     pub fn to_polyline(
         &self,
         py: Python<'_>,
-        precision: i32,
+        #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
         drop_epoch: bool,
     ) -> PyResult<Py<PyAny>> {
         crate::py::errors::require_epoch_drop(self.epoch(), drop_epoch, "to_polyline")?;

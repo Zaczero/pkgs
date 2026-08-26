@@ -1,16 +1,20 @@
 use crate::py::crs::{
     Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
-    PyInt, PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple,
-    PyTupleMethods as _, PyTypeError, coordinate_input, crs, crs_arc, finite_f64_required,
+    PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _,
+    PyTypeError, coordinate_input, crs, crs_arc, finite_f64_required,
 };
 // ---- CRS/CF input parsing (relocated from the crate root; consumed here and
 // by the crate-central `parse_crs`) ----
 
 pub(super) fn crs_epsg_code(value: &Bound<'_, PyAny>) -> PyResult<Option<u32>> {
-    if value.cast_exact::<PyBool>().is_ok() || value.cast::<PyInt>().is_err() {
+    if value.cast_exact::<PyBool>().is_ok()
+        || value
+            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+            .is_none()
+    {
         return Ok(None);
     }
-    let code = value
+    let code = crate::py_index_object("EPSG code", value)?
         .extract::<i64>()
         .map_err(|_| CRSError::new_err("EPSG code is too large"))?;
     if code < 0 {
@@ -148,8 +152,12 @@ pub(super) fn crs_authority_tuple_part(
 }
 
 pub(super) fn crs_authority_tuple_code(value: &Bound<'_, PyAny>, label: &str) -> PyResult<String> {
-    if value.cast_exact::<PyBool>().is_err() && value.cast::<PyInt>().is_ok() {
-        let code = value
+    if value.cast_exact::<PyBool>().is_err()
+        && value
+            .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
+            .is_some()
+    {
+        let code = crate::py_index_object("CRS authority code", value)?
             .extract::<i64>()
             .map_err(|_| CRSError::new_err(format!("{label} code is too large")))?;
         if code < 0 {

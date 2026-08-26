@@ -429,15 +429,12 @@ fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Pyth
                     .get_item(pyo3::intern!(py, "features"))?
                     .ok_or_else(|| feature_parse_error("feature collection requires features"))?;
                 // Fallible growth (D10): infinite feature lists → MemoryError,
-                // never hang/abort via `Vec::collect`. Non-iterable TypeError
-                // stays the historical ParseError message.
-                let items = crate::collect_py_iter(&features, Ok).map_err(|err| {
-                    if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
-                        err
-                    } else {
-                        feature_parse_error("feature collection features must be iterable")
-                    }
+                // never hang/abort via `Vec::collect`. A provider exception is
+                // preserved; only a plain non-iterable gets the parse error.
+                let iter = crate::py_iter_or_error(&features, || {
+                    feature_parse_error("feature collection features must be iterable")
                 })?;
+                let items = crate::collect_py_iter_from_iter(&features, iter, Ok)?;
                 (
                     items,
                     data.get_item(pyo3::intern!(py, "crs"))?.map(Bound::unbind),
@@ -451,15 +448,12 @@ fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Pyth
             },
         }
     } else {
-        let items = crate::collect_py_iter(data, Ok).map_err(|err| {
-            if err.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
-                err
-            } else {
-                feature_parse_error(
-                    "expected a Feature, FeatureCollection, or iterable of Feature mappings",
-                )
-            }
+        let iter = crate::py_iter_or_error(data, || {
+            feature_parse_error(
+                "expected a Feature, FeatureCollection, or iterable of Feature mappings",
+            )
         })?;
+        let items = crate::collect_py_iter_from_iter(data, iter, Ok)?;
         (items, None)
     };
     let mut legacy_crs = collection_legacy_crs.into_iter().collect::<Vec<_>>();

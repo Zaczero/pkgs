@@ -240,24 +240,26 @@ pub(crate) fn crs_geodesic_scalar_fast_path(
     angle_unit: crs::AngleUnit,
 ) -> PyResult<Option<Py<PyDict>>> {
     let z1_scalar = match z1 {
-        Some(value) if !value.is_none() => Some(value.extract::<f64>()),
+        Some(value) if !value.is_none() => Some(crate::f64_scalar_named("z1", value)?),
         _ => None,
     };
     let z2_scalar = match z2 {
-        Some(value) if !value.is_none() => Some(value.extract::<f64>()),
+        Some(value) if !value.is_none() => Some(crate::f64_scalar_named("z2", value)?),
         _ => None,
     };
     let z_pair = match (z1_scalar, z2_scalar) {
         (None, None) => Some((None, None)),
-        (Some(Ok(a)), Some(Ok(b))) if a.is_finite() && b.is_finite() => Some((Some(a), Some(b))),
+        (Some(Some(a)), Some(Some(b))) if a.is_finite() && b.is_finite() => {
+            Some((Some(a), Some(b)))
+        },
         _ => None,
     };
-    let (Some((z1f, z2f)), Ok(lon1f), Ok(lat1f), Ok(lon2f), Ok(lat2f)) = (
+    let (Some((z1f, z2f)), Some(lon1f), Some(lat1f), Some(lon2f), Some(lat2f)) = (
         z_pair,
-        lon1.extract::<f64>(),
-        lat1.extract::<f64>(),
-        lon2.extract::<f64>(),
-        lat2.extract::<f64>(),
+        crate::f64_scalar_named("lon1", lon1)?,
+        crate::f64_scalar_named("lat1", lat1)?,
+        crate::f64_scalar_named("lon2", lon2)?,
+        crate::f64_scalar_named("lat2", lat2)?,
     ) else {
         return Ok(None);
     };
@@ -287,11 +289,11 @@ pub(crate) fn crs_geodesic_direct_scalar_fast_path(
     distance: &Bound<'_, PyAny>,
     angle_unit: crs::AngleUnit,
 ) -> PyResult<Option<Py<PyDict>>> {
-    let (Ok(lon), Ok(lat), Ok(azimuth), Ok(distance)) = (
-        lon.extract::<f64>(),
-        lat.extract::<f64>(),
-        azimuth.extract::<f64>(),
-        distance.extract::<f64>(),
+    let (Some(lon), Some(lat), Some(azimuth), Some(distance)) = (
+        crate::f64_scalar_named("lon", lon)?,
+        crate::f64_scalar_named("lat", lat)?,
+        crate::f64_scalar_named("azimuth", azimuth)?,
+        crate::f64_scalar_named("distance", distance)?,
     ) else {
         return Ok(None);
     };

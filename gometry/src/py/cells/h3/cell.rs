@@ -411,7 +411,11 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> cell.cell_from_local_ij(160, 88).token
     /// '872830828ffffff'
-    fn cell_from_local_ij(&self, i: i32, j: i32) -> PyResult<Self> {
+    fn cell_from_local_ij(
+        &self,
+        #[pyo3(from_py_with = crate::strict_i32)] i: i32,
+        #[pyo3(from_py_with = crate::strict_i32)] j: i32,
+    ) -> PyResult<Self> {
         let cell = CellIndex::try_from(LocalIJ::new(self.cell, CoordIJ::new(i, j)))
             .map_err(|error| GeometryError::new_err(error.to_string()))?;
         Ok(Self { cell })

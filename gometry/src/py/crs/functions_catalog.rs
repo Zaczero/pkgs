@@ -97,7 +97,7 @@ pub(crate) fn crs_search(
     authority: Option<String>,
     kind: Option<String>,
     approximate: bool,
-    limit: i64,
+    #[pyo3(from_py_with = crate::strict_i64)] limit: i64,
 ) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
     let limit = crs_search_limit(limit)?;
     Ok(crs::search(name, &crs::CrsSearchOptions {

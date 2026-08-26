@@ -143,24 +143,32 @@ pub(crate) fn arrow_geometry_input(
     pa: &Bound<'_, PyModule>,
     value: &Bound<'_, PyAny>,
 ) -> PyResult<ArrowGeometryInput> {
-    if value.getattr("type").is_ok() || value.getattr("chunks").is_ok() {
+    if value
+        .getattr_opt(pyo3::intern!(value.py(), "type"))?
+        .is_some()
+        || value
+            .getattr_opt(pyo3::intern!(value.py(), "chunks"))?
+            .is_some()
+    {
         return Ok(ArrowGeometryInput {
             value: value.clone().unbind(),
             field: None,
         });
     }
-    let Ok(names) = value.getattr("column_names") else {
-        return Err(PyTypeError::new_err(
-            "expected a GeoArrow-encoded Arrow array, ChunkedArray, Table, or RecordBatch",
-        ));
-    };
+    let names = value
+        .getattr_opt(pyo3::intern!(value.py(), "column_names"))?
+        .ok_or_else(|| {
+            PyTypeError::new_err(
+                "expected a GeoArrow-encoded Arrow array, ChunkedArray, Table, or RecordBatch",
+            )
+        })?;
     let names = names.extract::<Vec<String>>()?;
     if names.is_empty() {
         return Err(PyTypeError::new_err(
             "Arrow table or record batch has no columns",
         ));
     }
-    let schema = value.getattr("schema").ok();
+    let schema = value.getattr_opt(pyo3::intern!(value.py(), "schema"))?;
     let geometry_name_indexes: Vec<usize> = names
         .iter()
         .enumerate()
@@ -176,7 +184,8 @@ pub(crate) fn arrow_geometry_input(
             value: value.call_method1("column", (index,))?.unbind(),
             field: schema
                 .as_ref()
-                .and_then(|schema| schema.call_method1("field", (index,)).ok())
+                .map(|schema| schema.call_method1("field", (index,)))
+                .transpose()?
                 .map(Bound::unbind),
         });
     }
@@ -185,8 +194,9 @@ pub(crate) fn arrow_geometry_input(
         let column = value.call_method1("column", (index,))?;
         let field = schema
             .as_ref()
-            .and_then(|schema| schema.call_method1("field", (index,)).ok());
-        if arrow_geometry_column_supported(pa, &column, field.as_ref()) {
+            .map(|schema| schema.call_method1("field", (index,)))
+            .transpose()?;
+        if arrow_geometry_column_supported(pa, &column, field.as_ref())? {
             if geometry_column.is_some() {
                 return Err(PyTypeError::new_err(
                     "Arrow table or record batch has multiple geometry-like columns; use table['geometry'] or select one column explicitly",
@@ -209,19 +219,25 @@ pub(crate) fn arrow_geometry_column_supported(
     pa: &Bound<'_, PyModule>,
     value: &Bound<'_, PyAny>,
     field: Option<&Bound<'_, PyAny>>,
-) -> bool {
-    if let Ok(chunks) = value.getattr("chunks") {
-        if let Ok(mut iter) = chunks.try_iter() {
-            return iter.next().transpose().is_ok_and(|chunk| {
-                chunk.map_or_else(
-                    || arrow_value_frame(pa, value, field).is_ok(),
-                    |chunk| arrow_storage_array(pa, &chunk, field).is_ok(),
-                )
-            });
-        }
-        return false;
+) -> PyResult<bool> {
+    if let Some(chunks) = value.getattr_opt(pyo3::intern!(value.py(), "chunks"))? {
+        let mut iter = chunks.try_iter()?;
+        return match iter.next() {
+            None => arrow_probe_type(arrow_value_frame(pa, value, field), value.py()),
+            Some(chunk) => arrow_probe_type(arrow_storage_array(pa, &chunk?, field), value.py()),
+        };
     }
-    arrow_storage_array(pa, value, field).is_ok()
+    arrow_probe_type(arrow_storage_array(pa, value, field), value.py())
+}
+
+/// Table autodetection treats an ordinary unsupported column as a negative
+/// classification, but provider failures must remain visible to the caller.
+fn arrow_probe_type<T>(result: PyResult<T>, py: Python<'_>) -> PyResult<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(error) if error.is_instance_of::<PyTypeError>(py) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn append_arrow_points(

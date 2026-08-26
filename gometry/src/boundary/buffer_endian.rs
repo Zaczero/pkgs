@@ -33,10 +33,7 @@ use crate::py::vectors::Float64Buffer;
         reason = "the GIL build always answers true while the free-threaded build walks the chain"
     )
 )]
-pub(crate) fn exporter_storage_is_stable<T>(
-    py: Python<'_>,
-    buffer: &PyBuffer<T>,
-) -> bool {
+pub(crate) fn exporter_storage_is_stable<T>(py: Python<'_>, buffer: &PyBuffer<T>) -> bool {
     #[cfg(not(Py_GIL_DISABLED))]
     {
         let _ = (py, buffer);
@@ -101,10 +98,7 @@ pub(crate) const fn swap_u64_endian(value: u64) -> u64 {
 ///
 /// # Safety contract
 /// Caller must only pass a C-contiguous `f64` buffer held for this scope.
-pub(crate) fn buffer_to_arc_f64(
-    py: Python<'_>,
-    buffer: &PyBuffer<f64>,
-) -> PyResult<Arc<[f64]>> {
+pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Arc<[f64]>> {
     if !exporter_storage_is_stable(py, buffer) {
         return buffer_to_vec_f64(py, buffer).map(Into::into);
     }
@@ -131,10 +125,7 @@ pub(crate) fn buffer_to_arc_f64(
 
 /// Copy buffer elements to a `Vec<f64>` in host-native order (byteswaps when
 /// the PEP 3118 format is non-native).
-pub(crate) fn buffer_to_vec_f64(
-    py: Python<'_>,
-    buffer: &PyBuffer<f64>,
-) -> PyResult<Vec<f64>> {
+pub(crate) fn buffer_to_vec_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
     let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
@@ -145,10 +136,7 @@ pub(crate) fn buffer_to_vec_f64(
 }
 
 /// Copy buffer elements to a `Vec<u64>` in host-native order.
-pub(crate) fn buffer_to_vec_u64(
-    py: Python<'_>,
-    buffer: &PyBuffer<u64>,
-) -> PyResult<Vec<u64>> {
+pub(crate) fn buffer_to_vec_u64(py: Python<'_>, buffer: &PyBuffer<u64>) -> PyResult<Vec<u64>> {
     let mut values = buffer.to_vec(py)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {

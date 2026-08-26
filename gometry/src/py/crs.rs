@@ -5,14 +5,14 @@
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyDict, PyInt, PyList, PyModule, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyModule, PyTuple};
 use serde_json::Value;
 
 use crate::py::errors::{AccuracyWarning, CRSError, GeometryError};
 use crate::{
     CoordinateInput, Crs, CrsCoordinateArgs, accuracy_option, broadcast_coordinate_group,
-    coordinate_epoch_option, coordinate_input, coordinate_input_with_error, coordinate_values, crs,
-    crs_arc, finite_coordinate_required, finite_f64_required, json_to_py, parse_area, parse_crs,
+    coordinate_epoch_option, coordinate_input, coordinate_input_with_error, crs, crs_arc,
+    finite_coordinate_required, finite_f64_required, json_to_py, parse_area, parse_crs,
 };
 
 mod functions;

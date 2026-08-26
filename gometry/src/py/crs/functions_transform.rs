@@ -6,10 +6,12 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::exceptions::PyTypeError;
+
 use crate::check_i32_min;
 use crate::py::crs::{
     Bound, CrsCoordinateArgs, IntoPyObject as _, Py, PyAny, PyAnyMethods as _, PyErr, PyResult,
-    Python, accuracy_option, coordinate_epoch_option, coordinate_values, crs, crs_normalize,
+    Python, accuracy_option, coordinate_epoch_option, crs, crs_normalize,
     finite_coordinate_required, parse_area, pyfunction,
 };
 use crate::py::errors::{AccuracyWarning, GeometryError};
@@ -529,7 +531,7 @@ pub(crate) fn crs_transform_bounds(
     source: &Bound<'_, PyAny>,
     target: &Bound<'_, PyAny>,
     bounds: &Bound<'_, PyAny>,
-    densify: i64,
+    #[pyo3(from_py_with = crate::strict_i64_overflow)] densify: i64,
     area_of_interest: Option<&Bound<'_, PyAny>>,
     source_epoch: Option<&Bound<'_, PyAny>>,
     target_epoch: Option<&Bound<'_, PyAny>>,
@@ -546,10 +548,37 @@ pub(crate) fn crs_transform_bounds(
             densify,
         )
     })?;
-    // Materialize once (one-shot generators + D10 MemoryError on unbounded
-    // streams), then classify structurally as One | Many — never treat a
-    // scalar parse failure as evidence of batch input.
-    let items = crate::collect_py_iter(bounds, Ok)?;
+    // Acquire once and classify from the first item. A scalar bounds tuple is
+    // fixed-arity and therefore reads at most six ordinates plus one excess
+    // check; a row stream remains an ordinary materialized batch.
+    let mut iter = crate::py_iter_or_error(bounds, || {
+        PyTypeError::new_err("bounds must be a 4-tuple or 6-tuple of finite floats")
+    })?;
+    let Some(first) = iter.next() else {
+        return Err(GeometryError::new_err(
+            "bounds must be a 4-tuple or 6-tuple of finite floats",
+        ));
+    };
+    let first = first?;
+    let items = if crate::f64_scalar_named("bounds", &first)?.is_some() {
+        let rest = crate::collect_py_iter_at_most_from_iter(bounds, iter, 5, Ok, |_| {
+            GeometryError::new_err("bounds must be a 4-tuple or 6-tuple of finite floats")
+        })?;
+        let mut items = Vec::new();
+        crate::try_push(&mut items, first)?;
+        for value in rest {
+            crate::try_push(&mut items, value)?;
+        }
+        items
+    } else {
+        let rest = crate::collect_py_iter_from_iter(bounds, iter, Ok)?;
+        let mut items = Vec::new();
+        crate::try_push(&mut items, first)?;
+        for value in rest {
+            crate::try_push(&mut items, value)?;
+        }
+        items
+    };
     let source = crs_normalize(source)?;
     let target = crs_normalize(target)?;
     let options = TransformOptionArgs {
@@ -668,16 +697,12 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
             "bounds must be a 4-tuple or 6-tuple of finite floats",
         ));
     }
-    let is_scalar = items[0].extract::<f64>().is_ok();
+    let is_scalar = crate::f64_scalar_named("bounds", &items[0])?.is_some();
     if is_scalar {
-        let mut values = Vec::with_capacity(items.len());
+        let mut values = crate::try_vec_with_capacity(items.len())?;
         for item in items {
             // Match coordinate_values' element contract: f64-extractable only.
-            let value = item.extract::<f64>().map_err(|_| {
-                pyo3::exceptions::PyTypeError::new_err(
-                    "bounds must be a float or an iterable of finite floats",
-                )
-            })?;
+            let value = crate::finite_f64_required("bounds", item)?;
             values.push(value);
         }
         if !matches!(values.len(), 4 | 6) {
@@ -691,7 +716,11 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
     crate::try_reserve_hint(&mut rows, items.len())?;
     let mut width = None;
     for item in items {
-        let values = coordinate_values(py, item, "bounds")?;
+        let values = crate::coordinate_values_at_most(py, item, "bounds", 6, |got| {
+            GeometryError::new_err(format!(
+                "bounds rows must be 4-tuples or 6-tuples of finite floats; got {got} values"
+            ))
+        })?;
         let row_width = values.len();
         if !matches!(row_width, 4 | 6) {
             return Err(crate::py::errors::GeometryError::new_err(
@@ -808,7 +837,7 @@ pub(crate) fn crs_roundtrip(
     y: &Bound<'_, PyAny>,
     z: Option<&Bound<'_, PyAny>>,
     t: Option<&Bound<'_, PyAny>>,
-    iterations: i32,
+    #[pyo3(from_py_with = crate::strict_i32_overflow)] iterations: i32,
     direction: crs::ProjDirection,
     area_of_interest: Option<&Bound<'_, PyAny>>,
     source_epoch: Option<&Bound<'_, PyAny>>,

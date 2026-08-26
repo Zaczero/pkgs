@@ -106,7 +106,13 @@ pub(crate) fn parse_row_index_or_slice(
         });
     }
     Ok(RowIndexOrSlice::Index(normalize_row(
-        index.extract()?,
+        crate::py_isize_required(label, index).map_err(|error| {
+            if error.is_instance_of::<crate::GeometryError>(index.py()) {
+                PyIndexError::new_err(format!("{label} index is too large"))
+            } else {
+                error
+            }
+        })?,
         len,
         label,
     )?))
@@ -212,6 +218,12 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
     if is_bool_scalar(index) {
         return Err(bool_scalar_error(C::LABEL));
     }
-    let index: isize = index.extract()?;
+    let index = crate::py_isize_required(C::INDEX_LABEL, index).map_err(|error| {
+        if error.is_instance_of::<crate::GeometryError>(index.py()) {
+            PyIndexError::new_err(format!("{} index is too large", C::INDEX_LABEL))
+        } else {
+            error
+        }
+    })?;
     container.scalar_row(py, normalize_row(index, len, C::INDEX_LABEL)?)
 }

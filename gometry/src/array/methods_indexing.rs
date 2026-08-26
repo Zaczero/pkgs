@@ -85,7 +85,11 @@ pub(crate) fn numpy_fancy_index(
 fn owned_bool_mask_from_tobytes(index: &Bound<'_, PyAny>) -> PyResult<Vec<bool>> {
     let py_bytes = index.call_method0("tobytes")?;
     let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    Ok(bytes.iter().map(|&b| b != 0).collect())
+    let mut out = crate::try_vec_with_capacity(bytes.len())?;
+    for &byte in bytes {
+        crate::try_push(&mut out, byte != 0)?;
+    }
+    Ok(out)
 }
 
 pub(crate) fn numpy_integer_fancy_index<T>(
@@ -124,16 +128,17 @@ where
             "{label} NumPy integer index buffer length is invalid"
         )));
     }
-    let mut out = Vec::with_capacity(bytes.len() / width);
+    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
     for chunk in bytes.chunks_exact(width) {
         // SAFETY: `T: Element` for integer dtypes used here; bytes come from
         // NumPy's native-endian `tobytes()` for that dtype.
         let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
-        out.push(
+        crate::try_push(
+            &mut out,
             value
                 .try_into()
                 .map_err(|_| PyIndexError::new_err(format!("{label} index is too large")))?,
-        );
+        )?;
     }
     Ok(out)
 }
@@ -162,12 +167,21 @@ pub(crate) fn classify_and_collect_fancy_index(
     // Trusted-shape fast lane: exact builtins are ABI-honest length sources.
     let any = sequence.as_any();
     if let Ok(list) = any.cast::<PyList>() {
-        return classify_and_collect_exact_list(list);
+        let snapshot = list.to_tuple();
+        let snapshot = snapshot.cast::<PySequence>()?.clone();
+        return classify_and_collect_generic_sequence(py, &snapshot);
     }
     if let Ok(tuple) = any.cast::<PyTuple>() {
         return classify_and_collect_exact_tuple(tuple);
     }
 
+    classify_and_collect_generic_sequence(py, sequence)
+}
+
+fn classify_and_collect_generic_sequence(
+    py: Python<'_>,
+    sequence: &Bound<'_, PySequence>,
+) -> PyResult<CollectedFancyIndex> {
     let items = crate::collect_sequence_items(sequence)?;
     if items.is_empty() {
         return Ok(CollectedFancyIndex::Empty);
@@ -185,8 +199,18 @@ pub(crate) fn classify_and_collect_fancy_index(
             if matches!(kind, FancyIndex::Invalid) {
                 return Ok(CollectedFancyIndex::Invalid);
             }
-            mask.push(bound.extract::<bool>()?);
-        } else if bound.cast::<PyInt>().is_ok() {
+            crate::try_push(&mut mask, bound.extract::<bool>()?)?;
+        } else {
+            let integer = match crate::py_index_object("index", bound) {
+                Ok(integer) => integer,
+                Err(error)
+                    if error.is_instance_of::<PyTypeError>(py)
+                        && bound.getattr_opt(pyo3::intern!(py, "__index__"))?.is_none() =>
+                {
+                    return Ok(CollectedFancyIndex::Invalid);
+                },
+                Err(error) => return Err(error),
+            };
             kind = match kind {
                 FancyIndex::Empty | FancyIndex::Indices => FancyIndex::Indices,
                 _ => FancyIndex::Invalid,
@@ -194,9 +218,12 @@ pub(crate) fn classify_and_collect_fancy_index(
             if matches!(kind, FancyIndex::Invalid) {
                 return Ok(CollectedFancyIndex::Invalid);
             }
-            indices.push(bound.extract::<isize>()?);
-        } else {
-            return Ok(CollectedFancyIndex::Invalid);
+            crate::try_push(
+                &mut indices,
+                integer
+                    .extract::<isize>()
+                    .map_err(|_| PyIndexError::new_err("index is too large"))?,
+            )?;
         }
     }
     Ok(match kind {
@@ -205,23 +232,6 @@ pub(crate) fn classify_and_collect_fancy_index(
         FancyIndex::Mask => CollectedFancyIndex::Mask(mask),
         FancyIndex::Invalid => CollectedFancyIndex::Invalid,
     })
-}
-
-/// Exact `list` fancy-index ingest.
-///
-/// Free-threading soundness: never snapshot `len` then call
-/// [`PyListMethods::get_item_unchecked`] — another thread can shrink the list
-/// between those steps (UB). Nested `extract` / type checks can also suspend a
-/// critical section, so one outer critical section around the whole classify
-/// loop is not enough.
-///
-/// Shape: take an **owned immutable snapshot** via [`PyListMethods::to_tuple`]
-/// (synchronized list→tuple copy under the list's free-threaded lock), then
-/// reuse the exact-tuple lane. Classification and nested Python work run only
-/// on the frozen tuple, which cannot shrink under concurrent mutation.
-fn classify_and_collect_exact_list(list: &Bound<'_, PyList>) -> PyResult<CollectedFancyIndex> {
-    let snapshot = list.to_tuple();
-    classify_and_collect_exact_tuple(&snapshot)
 }
 
 /// Exact `tuple`: same single-pass shape as the list lane (no PyObject staging).
@@ -236,15 +246,15 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
         let py = tuple.py();
         let true_ptr = PyBool::new(py, true).as_ptr();
         let false_ptr = PyBool::new(py, false).as_ptr();
-        let mut mask = Vec::with_capacity(len);
+        let mut mask = crate::try_vec_with_capacity(len)?;
         for i in 0..len {
             // SAFETY: `i` is in `0..len` for this exact tuple.
             let item = unsafe { tuple.get_item_unchecked(i) };
             let ptr = item.as_ptr();
             if ptr == true_ptr {
-                mask.push(true);
+                crate::try_push(&mut mask, true)?;
             } else if ptr == false_ptr {
-                mask.push(false);
+                crate::try_push(&mut mask, false)?;
             } else {
                 return Ok(CollectedFancyIndex::Invalid);
             }
@@ -252,18 +262,32 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
         return Ok(CollectedFancyIndex::Mask(mask));
     }
     if first.cast::<PyInt>().is_ok() {
-        let mut indices = Vec::with_capacity(len);
+        let mut indices = crate::try_vec_with_capacity(len)?;
         for i in 0..len {
             // SAFETY: `i` is in `0..len` for this exact tuple.
             let item = unsafe { tuple.get_item_unchecked(i) };
-            if item.cast_exact::<PyBool>().is_ok() || item.cast::<PyInt>().is_err() {
+            if item.cast_exact::<PyBool>().is_ok() {
                 return Ok(CollectedFancyIndex::Invalid);
             }
-            indices.push(item.extract::<isize>()?);
+            if item.cast::<PyInt>().is_err() {
+                let sequence = tuple.cast::<PySequence>()?.clone();
+                return classify_and_collect_generic_sequence(tuple.py(), &sequence);
+            }
+            crate::try_push(
+                &mut indices,
+                crate::py_isize_required("index", &item).map_err(|error| {
+                    if error.is_instance_of::<PyTypeError>(tuple.py()) {
+                        PyIndexError::new_err("index is too large")
+                    } else {
+                        error
+                    }
+                })?,
+            )?;
         }
         return Ok(CollectedFancyIndex::Indices(indices));
     }
-    Ok(CollectedFancyIndex::Invalid)
+    let sequence = tuple.cast::<PySequence>()?.clone();
+    classify_and_collect_generic_sequence(tuple.py(), &sequence)
 }
 
 impl HeapSize for PyGeometryArray {
@@ -402,8 +426,8 @@ impl PyGeometryArray {
     pub fn index(
         &self,
         value: &Bound<'_, PyAny>,
-        start: i64,
-        stop: Option<i64>,
+        #[pyo3(from_py_with = crate::strict_i64)] start: i64,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
     ) -> PyResult<usize> {
         let len = self.storage().len();
         let clamp = |bound: i64| -> usize {
@@ -694,7 +718,9 @@ impl PyGeometryArray {
         positions: &Bound<'_, PyAny>,
         values: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        let positions = crate::collect_py_iter(positions, |item| item.extract::<isize>())?;
+        let positions = crate::collect_py_iter(positions, |item| {
+            crate::py_isize_required("position", &item)
+        })?;
         let values = crate::collect_py_iter(values, Ok)?;
         if positions.len() != values.len() {
             return Err(PyValueError::new_err(format!(
@@ -704,7 +730,7 @@ impl PyGeometryArray {
             )));
         }
         let n = self.storage().len();
-        let mut rows: Vec<(usize, Option<Shape>)> = Vec::with_capacity(positions.len());
+        let mut rows: Vec<(usize, Option<Shape>)> = crate::try_vec_with_capacity(positions.len())?;
         for (position, value) in positions.into_iter().zip(values) {
             if position < 0 || position as usize >= n {
                 return Err(PyIndexError::new_err(format!(
@@ -713,7 +739,7 @@ impl PyGeometryArray {
             }
             let row = position as usize;
             if value.is_none() {
-                rows.push((row, None));
+                crate::try_push(&mut rows, (row, None))?;
                 continue;
             }
             let Some(geometry) = exact_geometry(&value) else {
@@ -725,7 +751,7 @@ impl PyGeometryArray {
             // The column keeps its own stored label; the scattered row only
             // has to name the same frame.
             self.frame.compatible(&geometry.frame, "_replace_at")?;
-            rows.push((row, Some(geometry.shape.shape().clone())));
+            crate::try_push(&mut rows, (row, Some(geometry.shape.shape().clone())))?;
         }
         // Packed identity XY points: copy ordinate columns once and patch
         // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).

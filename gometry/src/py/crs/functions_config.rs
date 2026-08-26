@@ -57,8 +57,12 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     if value.is_none() {
         return Ok(None);
     }
-    if let Ok(path) = parse_path(value, "search_paths") {
-        return Ok(Some(vec![path]));
+    if value.cast::<pyo3::types::PyString>().is_ok()
+        || value
+            .getattr_opt(pyo3::intern!(value.py(), "__fspath__"))?
+            .is_some()
+    {
+        return Ok(Some(vec![parse_path(value, "search_paths")?]));
     }
     // Specialized fallible loop (not bare collect_py_iter + extract::<String>):
     // each path is an owned heap `String`. Outer `Vec` growth *and* per-item
@@ -66,16 +70,14 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     // *before* boxing `PyMemoryError` — otherwise RLIMIT_AS aborts while the
     // exception is constructed (`memory allocation of N bytes failed`).
     let mut paths = Vec::new();
-    if let Ok(hint) = value.len()
-        && crate::try_reserve_hint(&mut paths, hint).is_err()
-    {
-        return Err(crate::grow_sequence_error());
+    if let Some(hint) = crate::advisory_len(value)? {
+        crate::try_reserve_hint(&mut paths, hint)?;
     }
-    let Ok(mut iter) = value.try_iter() else {
-        return Err(PyTypeError::new_err(
+    let mut iter = crate::py_iter_or_error(value, || {
+        PyTypeError::new_err(
             "search_paths must be a string/path-like path or an iterable of string/path-like paths",
-        ));
-    };
+        )
+    })?;
     loop {
         let item = match iter.next() {
             None => break,
@@ -85,6 +87,7 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
                 return Err(err);
             },
         };
+        crate::check_python_signals(value.py(), paths.len())?;
         if paths.len() == paths.capacity() {
             let additional = paths.capacity().max(8);
             if paths.try_reserve(additional).is_err() {
@@ -97,6 +100,10 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
             Err(PathTakeError::Oom) => {
                 drop(paths);
                 return Err(crate::string_alloc_error());
+            },
+            Err(PathTakeError::Provider(err)) => {
+                drop(paths);
+                return Err(err);
             },
             Err(PathTakeError::Err(err)) => {
                 drop(paths);
@@ -115,6 +122,7 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
 enum PathTakeError {
     /// Allocator refused the owned-string reservation (no `PyErr` yet).
     Oom,
+    Provider(PyErr),
     Err(PyErr),
 }
 
@@ -127,16 +135,20 @@ fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<Stri
         let s = py_str.to_str().map_err(PathTakeError::Err)?;
         return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
     }
-    let os = value.py().import("os").map_err(PathTakeError::Err)?;
-    let path = os
-        .getattr("fspath")
-        .map_err(PathTakeError::Err)?
-        .call1((value,))
-        .map_err(|_| {
+    let fspath = value
+        .getattr_opt(pyo3::intern!(value.py(), "__fspath__"))
+        .map_err(PathTakeError::Provider)?
+        .ok_or_else(|| {
             PathTakeError::Err(PyTypeError::new_err(format!(
                 "{name} must be a string or path-like path"
             )))
         })?;
+    if !fspath.is_callable() {
+        return Err(PathTakeError::Err(PyTypeError::new_err(format!(
+            "{name} must be a string or path-like path"
+        ))));
+    }
+    let path = fspath.call0().map_err(PathTakeError::Provider)?;
     if let Ok(py_str) = path.cast::<pyo3::types::PyString>() {
         let s = py_str.to_str().map_err(PathTakeError::Err)?;
         return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
@@ -152,6 +164,7 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
     match take_path_string(value, name) {
         Ok(s) => Ok(s),
         Err(PathTakeError::Oom) => Err(crate::string_alloc_error()),
+        Err(PathTakeError::Provider(err)) => Err(err),
         Err(PathTakeError::Err(err)) => Err(err),
     }
 }

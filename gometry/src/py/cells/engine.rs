@@ -46,12 +46,25 @@ pub(super) fn cell_items<'py>(cells: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'
         return Ok(vec![cells.clone()]);
     }
     // Fallible growth (D10): `h3_union(itertools.repeat(cell))` etc. must
-    // MemoryError rather than hang / capacity-overflow abort.
-    match crate::collect_py_iter(cells, Ok) {
-        Ok(items) => Ok(items),
-        Err(error) if error.is_instance_of::<PyTypeError>(cells.py()) => Ok(vec![cells.clone()]),
-        Err(error) => Err(error),
-    }
+    // MemoryError rather than hang / capacity-overflow abort. A scalar is
+    // recognized from the absence of both iterable protocols; an exception
+    // raised by a supplied protocol belongs to that provider.
+    let iter = match cells.try_iter() {
+        Ok(iter) => iter,
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(cells.py())
+                && cells
+                    .getattr_opt(pyo3::intern!(cells.py(), "__iter__"))?
+                    .is_none()
+                && cells
+                    .getattr_opt(pyo3::intern!(cells.py(), "__getitem__"))?
+                    .is_none() =>
+        {
+            return Ok(vec![cells.clone()]);
+        },
+        Err(error) => return Err(error),
+    };
+    crate::collect_py_iter_from_iter(cells, iter, Ok)
 }
 
 /// Resolve a bounding-cell query into validated lon/lat bounds: a Geometry
@@ -86,9 +99,26 @@ pub(super) fn bounding_query_bounds(value: &Bound<'_, PyAny>) -> PyResult<crate:
             InvalidGeometryError::new_err("bounding cell requires a non-empty geometry")
         });
     }
-    if let Ok(values) = crate::coordinate_values(value.py(), value, "bounds")
-        && let [minx, miny, maxx, maxy] = values.as_slice()
-    {
+    let values = match crate::coordinate_values_exact(value.py(), value, "bounds", 4, |got| {
+        GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
+    }) {
+        Ok(values) => values,
+        Err(error)
+            if error.is_instance_of::<PyTypeError>(value.py())
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
+                    .is_none()
+                && value
+                    .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
+                    .is_none() =>
+        {
+            return Err(PyTypeError::new_err(
+                "expected a Geometry, GeometryArray, or (minx, miny, maxx, maxy) bounds",
+            ));
+        },
+        Err(error) => return Err(error),
+    };
+    if let [minx, miny, maxx, maxy] = values.as_slice() {
         if !(minx <= maxx && miny <= maxy) {
             return Err(GeometryError::new_err(
                 "bounds must be ordered (minx <= maxx, miny <= maxy)",
