@@ -236,6 +236,12 @@ pub(crate) fn grid_cover_dispatch<'py>(
             return Ok(Vec::new());
         }
         let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
+        // Scalar factories reject empty sources, but an array must retain row
+        // alignment. Represent a present empty exactly like a missing row in
+        // the ragged cell result: an empty group, not a batch error.
+        if shape.is_empty() {
+            return Ok(Vec::new());
+        }
         let remaining = remaining_cover_budget(produced, max_cells)?;
         if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
             return Err(crate::py::cells::coverage_ops::cover_budget_err(

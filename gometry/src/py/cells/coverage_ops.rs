@@ -332,7 +332,11 @@ pub(crate) fn coverage_factory_shapes(
 ) -> PyResult<(PyGeometry, Shape, bool)> {
     let membership_geometry = coverage_factory_geometry(geometry, label)?;
     let shape = membership_geometry.shape.as_ref();
-    let (cover_shape, cover_is_split) = cover_working_shape(&geometry.frame, shape)?;
+    // `membership_geometry` is the admitted WGS84 source. Derive the working
+    // image from that frame, never from the caller's pre-reprojection frame:
+    // a projected source may become antimeridian-crossing only after this
+    // conversion.
+    let (cover_shape, cover_is_split) = cover_working_shape(&membership_geometry.frame, shape)?;
     Ok((membership_geometry, cover_shape, cover_is_split))
 }
 

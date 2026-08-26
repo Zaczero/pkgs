@@ -443,6 +443,65 @@ def test_d2_h3_cells_geometry_array_missing_rows():
     assert cells[2] is not None
 
 
+@pytest.mark.parametrize(
+    ('name', 'kwargs'),
+    [
+        ('h3', {'resolution': 2}),
+        ('s2', {'level': 3}),
+        ('geohash', {'precision': 3}),
+        ('tile', {'zoom': 3}),
+    ],
+)
+def test_grid_cover_normalizes_projected_and_geographic_seam_sources(name, kwargs):
+    """Every coverer sees the same normalized WGS84 seam source."""
+    source = gm.LineString([(179.0, -10.0), (-179.0, 10.0)], crs=4326)
+    variants = [
+        source.set_crs(None),
+        source,
+        source.set_crs('OGC:CRS84', overwrite=True),
+        source.to_crs(3857),
+    ]
+    cover = getattr(gm, f'{name}_cover')
+    results = [
+        {
+            str(cell)
+            for cell in cover(
+                variant,
+                cell_rule='overlap',
+                max_cells=None,
+                **kwargs,
+            )
+        }
+        for variant in variants
+    ]
+    assert results[1:] == [results[0]] * (len(results) - 1)
+
+
+@pytest.mark.parametrize(
+    ('name', 'kwargs'),
+    [
+        ('h3', {'resolution': 2}),
+        ('s2', {'level': 3}),
+        ('geohash', {'precision': 3}),
+        ('tile', {'zoom': 3}),
+    ],
+)
+def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
+    """Present empty and missing rows preserve source-row association."""
+    source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326).to_crs(3857)
+    array = gm.GeometryArray(
+        [
+            source,
+            gm.from_wkt('POLYGON EMPTY', crs=3857),
+            None,
+        ]
+    )
+    cover = getattr(gm, f'{name}_cover')
+    groups = cover(array, cell_rule='overlap', max_cells=None, **kwargs)
+    assert [len(group) for group in groups] == [len(groups[0]), 0, 0]
+    assert len(groups[0]) > 0
+
+
 # ---------------------------------------------------------------------------
 # D3 - CellArray equality uses visible values
 # ---------------------------------------------------------------------------
