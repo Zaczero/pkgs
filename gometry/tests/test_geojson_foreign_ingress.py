@@ -298,12 +298,78 @@ def test_d22_geometry_array_adopts_embedded_when_crs_omitted() -> None:
     arr = gm.GeometryArray([_legacy_mapping('EPSG:3857')])
     assert arr.crs == 'EPSG:3857'
     assert arr[0].to_wkt() == 'POINT (1 2)'
-
     arr_iface = gm.GeometryArray([_Geo3857()])
     assert arr_iface.crs == 'EPSG:3857'
 
     req = gm.require(_legacy_mapping('EPSG:3857'))
     assert req.crs == 'EPSG:3857'
+
+
+def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface() -> None:
+    """All GeoJSON carriers use the same structured geometry path."""
+    payload = {
+        'type': 'GeometryCollection',
+        'geometries': [
+            {'type': 'LineString', 'coordinates': [[0, 0], [1, {'bad': True}]]}
+        ],
+    }
+
+    class Interface:
+        @property
+        def __geo_interface__(self):
+            return payload
+
+    errors = []
+    for value in (json.dumps(payload), payload, Interface()):
+        with pytest.raises(gm.ParseError) as exc_info:
+            gm.from_geojson(value, crs=None)
+        errors.append(exc_info.value)
+
+    assert [(error.format, error.path) for error in errors] == [
+        ('geojson', '$.geometries[0].coordinates[1][1]')
+    ] * 3
+
+    with pytest.raises(gm.ParseError) as iterable_error:
+        gm.from_geojson([payload], crs=None)
+    assert iterable_error.value.path == '$[0].geometries[0].coordinates[1][1]'
+
+    collection = {
+        'type': 'FeatureCollection',
+        'features': [
+            {'type': 'Feature', 'geometry': payload, 'properties': {}},
+        ],
+    }
+    with pytest.raises(gm.ParseError) as collection_error:
+        gm.from_geojson(collection)
+    assert collection_error.value.path == (
+        '$.features[0].geometry.geometries[0].coordinates[1][1]'
+    )
+
+    feature = {'type': 'Feature', 'geometry': payload, 'properties': {}}
+    for value in (feature, json.dumps(feature)):
+        with pytest.raises(gm.ParseError) as feature_error:
+            gm.from_features(value)
+        assert feature_error.value.path == (
+            '$.geometry.geometries[0].coordinates[1][1]'
+        )
+
+
+def test_require_feature_projection_ignores_opaque_properties() -> None:
+    class Opaque:
+        pass
+
+    feature = {
+        'type': 'Feature',
+        'properties': {'opaque': Opaque()},
+        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+    }
+    assert gm.require(feature).to_wkt() == 'POINT (1 2)'
+
+
+def test_wkt_looking_text_keeps_wkt_format_after_auto_selection() -> None:
+    with pytest.raises(gm.ParseError) as exc_info:
+        gm.require('POINT (0)')
+    assert exc_info.value.format == 'wkt'
 
 
 def test_d22_geometry_array_crs_free_when_omitted() -> None:

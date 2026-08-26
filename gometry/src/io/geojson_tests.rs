@@ -150,13 +150,6 @@ fn empty_geojson_coordinate_arrays_become_typed_empty_shapes() {
             parse_geojson(&value).unwrap(),
             Shape::typed_empty(expected, CoordinateAxes::XY)
         );
-        let text = serde_json::to_string(&value).unwrap();
-        let parsed = parse_geojson_text(&text).unwrap().input;
-        assert!(matches!(
-            parsed,
-            GeoJsonInput::Geometry(shape)
-                if shape == Shape::typed_empty(expected, CoordinateAxes::XY)
-        ));
     }
 }
 
@@ -194,11 +187,7 @@ fn nested_empty_members_are_preserved_by_both_geojson_readers() {
             "kind={kind}"
         );
 
-        let text = serde_json::to_string(&value).unwrap();
-        let GeoJsonInput::Geometry(seeded) = parse_geojson_text(&text).unwrap().input else {
-            panic!("direct geometry expected");
-        };
-        assert_eq!(seeded, direct, "kind={kind}");
+        assert_eq!(direct, parse_geojson(&value).unwrap(), "kind={kind}");
     }
 }
 

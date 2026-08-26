@@ -15,7 +15,8 @@ use serde_json::Value;
 
 use crate::py::errors::parse_error;
 use crate::{
-    Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool, try_collect_results,
+    Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool,
+    try_collect_results,
 };
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
@@ -104,13 +105,6 @@ pub(crate) fn geojson_dict_prepared<'py>(
     geojson_dict_raw(py, prepared.as_ref())
 }
 
-/// Raw Shape → GeoJSON dict (no domain / antimeridian preparation). Prefer
-/// [`geojson_dict_prepared`] for RFC 7946 Feature / `to_geojson` surfaces.
-pub(crate) fn geojson_dict<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
-    crate::io::validate_geojson_value::<true>(shape)?;
-    geojson_dict_raw(py, shape)
-}
-
 fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
     let dict = PyDict::new(py);
     match shape {
@@ -151,7 +145,7 @@ fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, 
             let values: Vec<Py<PyAny>> = try_collect_results(
                 geometries
                     .iter()
-                    .map(|geometry| Ok(geojson_dict(py, geometry)?.unbind().into())),
+                    .map(|geometry| Ok(geojson_dict_raw(py, geometry)?.unbind().into())),
             )?;
             dict.set_item("type", "GeometryCollection")?;
             dict.set_item("geometries", PyList::new(py, values)?)?;

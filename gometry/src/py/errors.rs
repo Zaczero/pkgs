@@ -355,6 +355,7 @@ impl From<Error> for PyErr {
                     "position",
                     Attr::OptionalInt(error.position().map(|value| value as i64)),
                 ),
+                ("path", Attr::OptionalStr(error.path())),
             ]),
             ErrorKind::Frame(kind) => match kind {
                 // Operands or collection items disagree on frame metadata;
@@ -449,6 +450,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .setattr("target", py.None())?;
     py.get_type::<ParseError>().setattr("format", py.None())?;
     py.get_type::<ParseError>().setattr("position", py.None())?;
+    py.get_type::<ParseError>().setattr("path", py.None())?;
     let geometry_type = geometry_type_error(py)?;
     geometry_type.setattr("expected", py.None())?;
     geometry_type.setattr("got", py.None())?;

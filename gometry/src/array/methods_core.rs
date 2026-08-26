@@ -22,7 +22,8 @@ use crate::array::{
     line_is_ccw, line_is_closed, line_is_simple, line_is_valid, line_logical_len,
     map_coordinates_callback, parse_coordinate_replacement, parse_crs, physical_row,
     point_logical_len, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
-    replace_shape_coordinates, slice_replacement_for_shape, total_bounds_from_columns,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
+    total_bounds_from_columns,
 };
 
 fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -> PyResult<Vec<T>> {
@@ -347,6 +348,7 @@ impl PyGeometryArray {
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
         use pyo3::types::{PyDict, PyList};
+        require_geojson_crs(self.crs_str())?;
         if self.has_m() || self.epoch().is_some() {
             return Err(crate::PyTypeError::new_err(
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
@@ -362,7 +364,12 @@ impl PyGeometryArray {
                 py.None().into_bound(py)
             } else {
                 let geometry = self.geometry_at(row);
-                crate::boundary::convert::geojson_dict(py, geometry.shape.shape())?.into_any()
+                crate::boundary::convert::geojson_dict_prepared(
+                    py,
+                    geometry.shape.shape(),
+                    self.crs_str().is_some(),
+                )?
+                .into_any()
             };
             feature.set_item("geometry", geometry)?;
             features.append(feature)?;

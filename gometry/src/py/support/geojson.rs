@@ -6,6 +6,47 @@ use crate::py::support::{
     PyOnceLock, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _, PyTypeMethods as _,
     Python, Shape, Value,
 };
+use crate::py::wire_crs::has_ewkt_srid_prefix;
+
+const WKT_TYPE_KEYWORD_MAX: usize = 20;
+
+fn strip_wkt_type_axes_suffix(token: &[u8]) -> &[u8] {
+    if token.ends_with(b"ZM") {
+        &token[..token.len() - 2]
+    } else if token.ends_with(b"Z") || token.ends_with(b"M") {
+        &token[..token.len() - 1]
+    } else {
+        token
+    }
+}
+
+/// Select WKT before trying GeoJSON so malformed WKT-looking strings retain
+/// the WKT error format instead of being reported as JSON failures.
+pub(crate) fn is_wkt_string(text: &str) -> bool {
+    let trimmed = text.trim();
+    if has_ewkt_srid_prefix(text) {
+        return true;
+    }
+    let keyword_len = trimmed
+        .find(|ch: char| !ch.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    if keyword_len == 0 || keyword_len > WKT_TYPE_KEYWORD_MAX {
+        return false;
+    }
+    let mut upper = [0_u8; WKT_TYPE_KEYWORD_MAX];
+    upper[..keyword_len].copy_from_slice(&trimmed.as_bytes()[..keyword_len]);
+    upper[..keyword_len].make_ascii_uppercase();
+    matches!(
+        strip_wkt_type_axes_suffix(&upper[..keyword_len]),
+        b"POINT"
+            | b"LINESTRING"
+            | b"POLYGON"
+            | b"MULTIPOINT"
+            | b"MULTILINESTRING"
+            | b"MULTIPOLYGON"
+            | b"GEOMETRYCOLLECTION"
+    )
+}
 
 /// Borrow `value` as a dict when it is one, or convert any other mapping
 /// (`Mapping`, `MappingProxyType`, keys()-only ducks — anything with ``keys``)
@@ -120,8 +161,8 @@ enum JsonProjection {
 ///   binary64 (same rule as TEXT coordinate integer tokens); non-exact
 ///   integers raise rather than silently round.
 ///
-/// Coordinate exactness for the i64/u64 range is enforced later by
-/// [`crate::io::json_number_to_f64`] / the text visitors — one shared rule.
+/// Coordinate exactness for the i64/u64 range is enforced later by the shared
+/// Value decoder via [`crate::io::json_number_to_f64`].
 fn py_int_to_json_number(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(i) = value.extract::<i64>() {
         return Ok(Value::Number(i.into()));
@@ -168,10 +209,11 @@ fn py_to_json_value_inner(
     depth: usize,
 ) -> PyResult<Value> {
     if depth >= crate::io::MAX_PARSE_DEPTH {
-        return Err(GeometryError::new_err(format!(
+        return Err(crate::io::IoError::geojson(format!(
             "JSON nesting exceeds the limit of {}",
             crate::io::MAX_PARSE_DEPTH
-        )));
+        ))
+        .into());
     }
     if value.is_none() {
         return Ok(Value::Null);
@@ -222,23 +264,29 @@ fn py_to_json_value_inner(
         return Ok(Value::Object(map));
     }
     if let Ok(list) = value.cast::<PyList>() {
-        return list
-            .iter()
-            .map(|item| py_to_json_value_inner(&item, projection, depth + 1))
-            .collect::<PyResult<_>>()
-            .map(Value::Array);
+        let mut values = crate::try_vec_with_capacity(list.len())?;
+        for item in list.iter() {
+            crate::try_push(
+                &mut values,
+                py_to_json_value_inner(&item, projection, depth + 1)?,
+            )?;
+        }
+        return Ok(Value::Array(values));
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
-        return tuple
-            .iter()
-            .map(|item| py_to_json_value_inner(&item, projection, depth + 1))
-            .collect::<PyResult<_>>()
-            .map(Value::Array);
+        let mut values = crate::try_vec_with_capacity(tuple.len())?;
+        for item in tuple.iter() {
+            crate::try_push(
+                &mut values,
+                py_to_json_value_inner(&item, projection, depth + 1)?,
+            )?;
+        }
+        return Ok(Value::Array(values));
     }
     // Integers: keep i64/u64 as integer JSON numbers (CRS/PROJJSON codes, etc.);
     // large exact PyLongs become finite binary64; non-exact large ints raise.
-    // Coordinate exactness for the i64/u64 range is shared with the TEXT path
-    // via json_number_to_f64 / visit_i64/u64.
+    // Coordinate exactness for the i64/u64 range is enforced by the shared
+    // Value decoder via json_number_to_f64.
     if value.cast::<PyInt>().is_ok() && value.cast::<PyBool>().is_err() {
         return py_int_to_json_number(value);
     }
@@ -278,22 +326,6 @@ pub(crate) fn parse_geojson_bytes_like(value: &Bound<'_, PyAny>) -> PyResult<Opt
         value,
         parse_geojson_slice,
     )?))
-}
-
-fn parse_geojson_mapping(value: &Bound<'_, PyAny>) -> PyResult<Value> {
-    if let Some(dict) = mapping_as_dict(value)? {
-        return py_to_json_value(&dict);
-    }
-    // Exotic mapping types that are not dict-shaped: fall back to `json.dumps`.
-    let text = json_dumps(value.py())?
-        .call1((value,))?
-        .extract::<String>()?;
-    Ok(serde_json::from_str(&text)
-        .map_err(|error| crate::io::IoError::geojson(error.to_string()))?)
-}
-
-pub(crate) fn parse_geojson_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
-    parse_geojson_input(value, parse_geojson_mapping)
 }
 
 fn parse_geojson_input(
@@ -353,7 +385,7 @@ pub(crate) enum GeoJsonDecodeContext {
 /// Collects every nested legacy ``crs`` declaration from the still-wrapped
 /// value, resolves them through
 /// [`reconcile_legacy_geojson_crs`](crate::io::reconcile_legacy_geojson_crs),
-/// selects the shape payload per `context`, parses via `io::parse_geojson`,
+/// selects the shape payload per `context`, parses via `io::parse_geojson_at`,
 /// and returns `(Shape, Frame::new(resolved_crs, epoch))`. This is the sole
 /// Shape+Frame owner for GeoJSON coerce paths — there is no second validation
 /// loop or frame-attachment helper.
@@ -363,35 +395,50 @@ pub(crate) fn coerce_geojson_geometry_value(
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
     epoch: Option<f64>,
 ) -> PyResult<Option<(Shape, Frame)>> {
+    coerce_geojson_geometry_value_at(value, context, policy, epoch, "$")
+}
+
+pub(crate) fn coerce_geojson_geometry_value_at(
+    value: &Value,
+    context: GeoJsonDecodeContext,
+    policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
+    epoch: Option<f64>,
+    base_path: &str,
+) -> PyResult<Option<(Shape, Frame)>> {
     let mut declarations = Vec::new();
     crate::io::collect_geojson_legacy_crs(value, &mut declarations);
     let resolved = crate::io::reconcile_legacy_geojson_crs(&declarations, policy)?;
-    let Some(geometry_value) = select_geojson_geometry_value(value, context)? else {
+    let Some((geometry_value, path)) = select_geojson_geometry_value(value, context, base_path)?
+    else {
         return Ok(None);
     };
-    let shape = crate::io::parse_geojson(geometry_value)?;
+    let shape = crate::io::parse_geojson_at(geometry_value, &path)?;
     let frame = Frame::new(resolved.map(crate::crs_arc), epoch)?;
     Ok(Some((shape, frame)))
 }
 
-fn select_geojson_geometry_value(
-    value: &Value,
+fn select_geojson_geometry_value<'a>(
+    value: &'a Value,
     context: GeoJsonDecodeContext,
-) -> PyResult<Option<&Value>> {
+    base_path: &str,
+) -> PyResult<Option<(&'a Value, String)>> {
     match context {
-        GeoJsonDecodeContext::GeometrySlot => Ok(Some(value)),
+        GeoJsonDecodeContext::GeometrySlot => Ok(Some((value, base_path.to_owned()))),
         GeoJsonDecodeContext::GeometryLike | GeoJsonDecodeContext::NullableRow => {
             let Some(object) = value.as_object() else {
-                return Ok(Some(value));
+                return Ok(Some((value, base_path.to_owned())));
             };
             if object.get("type").and_then(Value::as_str) != Some("Feature") {
-                return Ok(Some(value));
+                return Ok(Some((value, base_path.to_owned())));
             }
             // Top-level Feature: enforce §7.1 before unwrapping geometry.
-            crate::io::reject_rfc7946_value_object(object)?;
-            let geometry = object
-                .get("geometry")
-                .ok_or_else(|| crate::io::IoError::geojson("GeoJSON Feature requires geometry"))?;
+            crate::io::reject_rfc7946_value_object(object)
+                .map_err(|error| error.with_parse_path(base_path))?;
+            let geometry_path = format!("{base_path}.geometry");
+            let geometry = object.get("geometry").ok_or_else(|| {
+                crate::io::IoError::geojson("GeoJSON Feature requires geometry")
+                    .with_parse_path(base_path)
+            })?;
             if geometry.is_null() {
                 return match context {
                     GeoJsonDecodeContext::NullableRow => Ok(None),
@@ -400,11 +447,12 @@ fn select_geojson_geometry_value(
                          FeatureCollection with from_geojson/from_features, where null \
                          geometries become missing rows",
                     )
+                    .with_parse_path(&geometry_path)
                     .into()),
                     GeoJsonDecodeContext::GeometrySlot => unreachable!("matched above"),
                 };
             }
-            Ok(Some(geometry))
+            Ok(Some((geometry, geometry_path)))
         },
     }
 }

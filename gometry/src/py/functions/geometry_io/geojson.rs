@@ -17,9 +17,10 @@ use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::{
     CoordinateAxes, Crs, Frame, GeoJsonDecodeContext, Polygon, PyGeometry, PyGeometryArray,
     ScalarOrIterator, Shape, Typed, Wgs84DefaultCrs, classify_scalar_or_iterator,
-    coerce_geojson_geometry_value, coordinate_epoch_option, exact_geometry, exact_geometry_array,
-    guard_epoch_frame, io, is_py_bytes_or_bytearray, mapping_as_dict, parse_geojson_geometry_value,
-    py_bool, py_to_json_value, require_geojson_crs, with_one_byte_buffer,
+    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, coordinate_epoch_option,
+    exact_geometry, exact_geometry_array, guard_epoch_frame, io, is_py_bytes_or_bytearray,
+    mapping_as_dict, parse_geojson_geometry_value, py_bool, py_to_json_value, require_geojson_crs,
+    with_one_byte_buffer,
 };
 
 /// Parse `geojson` from a string or mapping.
@@ -118,8 +119,11 @@ pub(crate) fn from_geojson(
     // Build Frame only after classification — the vector path never needs it.
     if let ScalarOrIterator::Iterator(iter) = classify_scalar_or_iterator(data)? {
         let crs_for_rows = crs.clone();
-        let array = stream_bulk(iter, crs, parsed_epoch, None, move |data, rows| {
-            if let Some(shape) = parse_geojson_shape_input(data, crs_for_rows.as_ref())? {
+        let array = stream_bulk(iter, crs, parsed_epoch, None, move |data, rows, row| {
+            let path = format!("$[{row}]");
+            if let Some(shape) =
+                parse_geojson_shape_input(data, crs_for_rows.as_ref(), &path)?
+            {
                 rows.try_push(shape)?;
                 Ok(StreamedRow::Present(None))
             } else {
@@ -128,37 +132,18 @@ pub(crate) fn from_geojson(
         })?;
         return Ok(array.into_pyobject(py)?.unbind().into());
     }
-    let frame = Frame::new(crs.clone(), parsed_epoch)?;
     let fixed = io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref());
-    if let Ok(text) = data.cast::<pyo3::types::PyString>() {
-        let text = text.to_cow()?;
-        // Legacy ``crs`` is captured during the typed text probe (own then
-        // nested, same order as collect_geojson_legacy_crs) — no second full
-        // Value parse of the document just to walk CRS members.
-        let parsed = io::parse_geojson_text(text.as_ref())?;
-        let mut declarations = crate::try_vec_with_capacity(parsed.legacy_crs.len())?;
-        for declaration in &parsed.legacy_crs {
-            crate::try_push(&mut declarations, declaration)?;
-        }
-        io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
-        return match parsed.input {
-            io::GeoJsonInput::Geometry(shape) => Ok(Typed(PyGeometry::with_frame(shape, frame))
-                .into_pyobject(py)?
-                .unbind()),
-            io::GeoJsonInput::FeatureCollection(features) => {
-                let (shapes, mask) = feature_shapes_and_missing(features)?;
-                let array = PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(mask);
-                Ok(array.into_pyobject(py)?.unbind().into())
-            },
-        };
-    }
+    // Every GeoJSON carrier enters the same projected Value decoder. The
+    // direct serde seed used to make text a second geometry parser, which
+    // produced different paths and error details from mappings/interfaces.
     let parsed = parse_geojson_geometry_value(data)?;
     if let Some(features) = geojson_feature_collection(&parsed)? {
         let mut declarations = Vec::new();
         io::collect_geojson_legacy_crs(&parsed, &mut declarations);
         io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
         let (shapes, mask) = feature_value_shapes_and_missing(features)?;
-        let array = PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(mask);
+        let array = PyGeometryArray::from_shapes(shapes, Frame::new(crs.clone(), parsed_epoch)?)
+            .with_missing_mask(mask);
         return Ok(array.into_pyobject(py)?.unbind().into());
     }
     // Scalar Geometry or Feature: one shared coercer (GeometryLike + Fixed).
@@ -176,9 +161,6 @@ pub(crate) fn from_geojson(
         )
         .into());
     };
-    debug_assert_eq!(coerced_frame.crs_ref(), frame.crs_ref());
-    debug_assert_eq!(coerced_frame.epoch(), frame.epoch());
-    let _ = frame;
     Ok(Typed(PyGeometry::with_frame(shape, coerced_frame))
         .into_pyobject(py)?
         .unbind())
@@ -291,6 +273,21 @@ fn invalid_feature_json_utf8(error: std::str::Utf8Error) -> PyErr {
     io::IoError::geojson(format!("invalid GeoJSON feature JSON: {error}")).into()
 }
 
+#[derive(Clone, Copy)]
+enum FeaturePathKind {
+    Single,
+    Collection,
+    Sequence,
+}
+
+fn feature_geometry_path(kind: FeaturePathKind, row: usize) -> String {
+    match kind {
+        FeaturePathKind::Single => "$.geometry".to_owned(),
+        FeaturePathKind::Collection => format!("$.features[{row}].geometry"),
+        FeaturePathKind::Sequence => format!("$[{row}].geometry"),
+    }
+}
+
 fn parse_features_text(
     py: Python<'_>,
     text: &str,
@@ -303,13 +300,22 @@ fn parse_features_text(
     // `c\u0072s`) as they appear. There is no whole-document prefilter and no
     // second `serde_json::from_str` for legacy-CRS validation.
     let mut deserializer = serde_json::Deserializer::from_str(text);
-    let (rows_meta, collection_legacy) = if text.trim_start().starts_with('{') {
-        FeatureTopMeta::deserialize(&mut deserializer)
+    let (rows_meta, collection_legacy, path_kind) = if text.trim_start().starts_with('{') {
+        let (rows, legacy, is_collection) = FeatureTopMeta::deserialize(&mut deserializer)
             .map_err(invalid_feature_json)?
-            .into_rows()?
+            .into_rows()?;
+        (
+            rows,
+            legacy,
+            if is_collection {
+                FeaturePathKind::Collection
+            } else {
+                FeaturePathKind::Single
+            },
+        )
     } else {
         match FeatureRowsMeta::deserialize(&mut deserializer).map_err(invalid_feature_json)? {
-            FeatureRowsMeta::Rows(rows) => (rows, None),
+            FeatureRowsMeta::Rows(rows) => (rows, None, FeaturePathKind::Sequence),
             FeatureRowsMeta::NotIterable => {
                 return Err(feature_parse_error(
                     "expected a Feature, FeatureCollection, or iterable of Feature mappings",
@@ -326,8 +332,9 @@ fn parse_features_text(
         io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
     }
     let mut rows = crate::try_vec_with_capacity(rows_meta.len())?;
-    for meta in rows_meta {
-        let (row, nested) = feature_row_from_meta(meta)?;
+    for (row_index, meta) in rows_meta.into_iter().enumerate() {
+        let (row, nested) =
+            feature_row_from_meta(meta, feature_geometry_path(path_kind, row_index))?;
         for legacy in &nested {
             io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
         }
@@ -357,11 +364,15 @@ enum FeatureSideData {
 
 struct FeatureRow {
     geometry: FeatureGeometryInput,
+    geometry_path: String,
     properties: FeatureSideData,
     id: FeatureSideData,
 }
 
-fn feature_row_from_meta(feature: FeatureRowMeta) -> PyResult<(FeatureRow, Vec<Value>)> {
+fn feature_row_from_meta(
+    feature: FeatureRowMeta,
+    geometry_path: String,
+) -> PyResult<(FeatureRow, Vec<Value>)> {
     let FeatureRowMeta::Mapping {
         kind,
         geometry,
@@ -398,6 +409,7 @@ fn feature_row_from_meta(feature: FeatureRowMeta) -> PyResult<(FeatureRow, Vec<V
     Ok((
         FeatureRow {
             geometry,
+            geometry_path,
             properties: FeatureSideData::Json(properties),
             id: FeatureSideData::Json(id),
         },
@@ -413,7 +425,7 @@ struct PythonFeatureRows {
 fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<PythonFeatureRows> {
     // Keystone first (not abc.Mapping): keys()-only ducks that dict() accepts
     // must enter the Feature/FeatureCollection branch without an ABC gate.
-    let (items, collection_legacy_crs) = if let Some(data) = mapping_as_dict(data)? {
+    let (items, collection_legacy_crs, path_kind) = if let Some(data) = mapping_as_dict(data)? {
         match python_mapping_kind(&data)? {
             Some(PythonFeatureKind::Collection) => {
                 // RFC 7946 §7.1: FeatureCollection must not carry Geometry/Feature
@@ -445,9 +457,12 @@ fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Pyth
                 (
                     items,
                     data.get_item(pyo3::intern!(py, "crs"))?.map(Bound::unbind),
+                    FeaturePathKind::Collection,
                 )
             },
-            Some(PythonFeatureKind::Feature) => (vec![data.into_any()], None),
+            Some(PythonFeatureKind::Feature) => {
+                (vec![data.into_any()], None, FeaturePathKind::Single)
+            },
             _ => {
                 return Err(feature_parse_error(
                     "expected a Feature, FeatureCollection, or iterable of Feature mappings",
@@ -461,14 +476,15 @@ fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Pyth
             )
         })?;
         let items = crate::collect_py_iter_from_iter(data, iter, Ok)?;
-        (items, None)
+        (items, None, FeaturePathKind::Sequence)
     };
     let mut legacy_crs = Vec::new();
     if let Some(legacy) = collection_legacy_crs {
         crate::try_push(&mut legacy_crs, legacy)?;
     }
-    let rows = crate::try_collect_results(items.iter().map(|item| {
-        let (row, row_legacy_crs) = python_feature_row(py, item)?;
+    let rows = crate::try_collect_results(items.iter().enumerate().map(|(index, item)| {
+        let (row, row_legacy_crs) =
+            python_feature_row(py, item, feature_geometry_path(path_kind, index))?;
         if let Some(legacy) = row_legacy_crs {
             crate::try_push(&mut legacy_crs, legacy)?;
         }
@@ -500,6 +516,7 @@ fn python_mapping_kind(mapping: &Bound<'_, PyDict>) -> PyResult<Option<PythonFea
 fn python_feature_row(
     py: Python<'_>,
     feature: &Bound<'_, PyAny>,
+    geometry_path: String,
 ) -> PyResult<(FeatureRow, Option<Py<PyAny>>)> {
     // keys()+seen copier (N4): accept keys()-only ducks, not only abc.Mapping.
     let feature = mapping_as_dict(feature)?
@@ -541,6 +558,7 @@ fn python_feature_row(
     Ok((
         FeatureRow {
             geometry,
+            geometry_path,
             properties: FeatureSideData::Python(properties),
             id: FeatureSideData::Python(id),
         },
@@ -612,17 +630,21 @@ fn build_features(
                 crate::try_push(&mut missing_rows, row_index)?;
             },
             FeatureGeometryInput::Json(value) => {
-                crate::try_push(&mut shapes, io::parse_geojson(&value)?)?;
+                crate::try_push(
+                    &mut shapes,
+                    io::parse_geojson_at(&value, &row.geometry_path)?,
+                )?;
             },
             FeatureGeometryInput::Python(value) => {
                 // Geometry slot only — nested Feature must not unwrap (object/
                 // text/bytes parity). CRS was already reconciled for the batch.
                 let parsed = parse_geojson_geometry_value(value.bind(py))?;
-                let Some((shape, _)) = coerce_geojson_geometry_value(
+                let Some((shape, _)) = coerce_geojson_geometry_value_at(
                     &parsed,
                     GeoJsonDecodeContext::GeometrySlot,
                     io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref()),
                     None,
+                    &row.geometry_path,
                 )?
                 else {
                     return Err(feature_parse_error("each feature must have a geometry"));
@@ -679,10 +701,10 @@ struct FeatureTopMeta {
 }
 
 impl FeatureTopMeta {
-    fn into_rows(self) -> PyResult<(Vec<FeatureRowMeta>, Option<Value>)> {
+    fn into_rows(self) -> PyResult<(Vec<FeatureRowMeta>, Option<Value>, bool)> {
         match self.kind.as_deref() {
             Some("FeatureCollection") => match self.features {
-                Some(FeatureRowsMeta::Rows(rows)) => Ok((rows, self.legacy_crs)),
+                Some(FeatureRowsMeta::Rows(rows)) => Ok((rows, self.legacy_crs, true)),
                 Some(FeatureRowsMeta::NotIterable) => Err(feature_parse_error(
                     "feature collection features must be iterable",
                 )),
@@ -697,6 +719,7 @@ impl FeatureTopMeta {
                     legacy_crs: self.legacy_crs,
                 }],
                 None,
+                false,
             )),
             _ => Err(feature_parse_error(
                 "expected a Feature, FeatureCollection, or iterable of Feature mappings",
@@ -1014,28 +1037,6 @@ impl<'de> Deserialize<'de> for FeatureGeometryValue {
 
 /// Split parsed features into **final-order** shapes (missing → kind-preserving
 /// placeholder when present rows share one packable kind) plus missing mask.
-fn feature_shapes_and_missing(
-    features: Vec<Option<Shape>>,
-) -> PyResult<(Vec<Shape>, Option<MissingMask>)> {
-    let row_count = features.len();
-    let mut missing_rows = Vec::new();
-    let placeholder = homogeneous_missing_placeholder(features.iter().filter_map(|s| s.as_ref()))?;
-    let mut shapes = Vec::new();
-    crate::try_reserve_pair(&mut shapes, &mut missing_rows, row_count).map_err(PyErr::from)?;
-    for (row, shape) in features.into_iter().enumerate() {
-        if let Some(shape) = shape {
-            crate::try_push(&mut shapes, shape)?;
-        } else {
-            crate::try_push(&mut missing_rows, row)?;
-            crate::try_push(&mut shapes, placeholder.clone())?;
-        }
-    }
-    Ok((
-        shapes,
-        crate::array::sparse_missing_mask(row_count, &missing_rows),
-    ))
-}
-
 /// When every present shape is the same packable kind/axes, return a
 /// kind-preserving missing placeholder so final-order arrays stay packed
 /// (D2 GeoArrow native). Otherwise the generic NaN point placeholder.
@@ -1401,6 +1402,7 @@ fn feature_parse_error(message: &'static str) -> PyErr {
 fn parse_geojson_shape_input(
     data: &Bound<'_, PyAny>,
     crs: Option<&Crs>,
+    base_path: &str,
 ) -> PyResult<Option<Shape>> {
     if exact_geometry(data).is_some() || exact_geometry_array(data).is_some() {
         return Err(PyTypeError::new_err(
@@ -1408,40 +1410,18 @@ fn parse_geojson_shape_input(
         ));
     }
     let fixed = io::LegacyGeoJsonCrsPolicy::Fixed(crs.map(AsRef::as_ref));
-    if let Ok(text) = data.cast::<pyo3::types::PyString>() {
-        let text = text.to_cow()?;
-        if let Ok(parsed) = io::parse_geojson_text(text.as_ref()) {
-            for declaration in &parsed.legacy_crs {
-                io::reconcile_legacy_geojson_crs(std::slice::from_ref(&declaration), fixed)?;
-            }
-            return match parsed.input {
-                io::GeoJsonInput::Geometry(shape) => Ok(Some(shape)),
-                io::GeoJsonInput::FeatureCollection(_) => Err(io::IoError::geojson(
-                    "GeoJSON FeatureCollection is a feature set, not one geometry; use from_geojson (returns a GeometryArray) or from_features",
-                )
-                .into()),
-            };
-        }
-        // A null-geometry Feature is the one valid scalar-row form that the
-        // geometry-only text parser deliberately rejects. Retain the value
-        // fallback for that missing-row case (and for identical diagnostics on
-        // malformed input); ordinary geometry strings stay on the direct
-        // column decoder above.
-        let parsed: Value = serde_json::from_str(text.as_ref())
-            .map_err(|error| io::IoError::geojson(error.to_string()))?;
-        return Ok(coerce_geojson_geometry_value(
-            &parsed,
-            GeoJsonDecodeContext::NullableRow,
-            fixed,
-            None,
-        )?
-        .map(|(shape, _)| shape));
-    }
+    // Keep scalar rows on the same Value decoder as document and interface
+    // inputs. In particular, do not optimistically run the text seed and then
+    // swallow its error before trying JSON again.
     let parsed = parse_geojson_geometry_value(data)?;
-    Ok(
-        coerce_geojson_geometry_value(&parsed, GeoJsonDecodeContext::NullableRow, fixed, None)?
-            .map(|(shape, _)| shape),
-    )
+    Ok(coerce_geojson_geometry_value_at(
+        &parsed,
+        GeoJsonDecodeContext::NullableRow,
+        fixed,
+        None,
+        base_path,
+    )?
+    .map(|(shape, _)| shape))
 }
 
 /// The features of a `GeoJSON` ``FeatureCollection``, or `None` for any other
@@ -1454,35 +1434,44 @@ fn geojson_feature_collection(value: &Value) -> PyResult<Option<&Vec<Value>>> {
         return Ok(None);
     }
     // RFC 7946 §7.1: FeatureCollection must not carry Geometry/Feature members.
-    io::reject_rfc7946_value_object(object)?;
+    io::reject_rfc7946_value_object(object).map_err(|error| error.with_parse_path("$"))?;
     object
         .get("features")
         .and_then(Value::as_array)
         .map(Some)
-        .ok_or_else(|| io::IoError::geojson("GeoJSON FeatureCollection requires features").into())
+        .ok_or_else(|| {
+            io::IoError::geojson("GeoJSON FeatureCollection requires features")
+                .with_parse_path("$.features")
+                .into()
+        })
 }
 
 /// FeatureCollection member decoder: each element MUST be a Feature (RFC 7946
 /// §3.3) — identical for dict / str / bytes frontends.
-fn geojson_feature_collection_member(value: &Value) -> PyResult<Option<Shape>> {
+fn geojson_feature_collection_member(value: &Value, path: &str) -> PyResult<Option<Shape>> {
     let Some(object) = value.as_object() else {
         return Err(
-            io::IoError::geojson("GeoJSON FeatureCollection features must be Features").into(),
+            io::IoError::geojson("GeoJSON FeatureCollection features must be Features")
+                .with_parse_path(path)
+                .into(),
         );
     };
     if object.get("type").and_then(Value::as_str) != Some("Feature") {
         return Err(
-            io::IoError::geojson("GeoJSON FeatureCollection features must be Features").into(),
+            io::IoError::geojson("GeoJSON FeatureCollection features must be Features")
+                .with_parse_path(path)
+                .into(),
         );
     }
-    io::reject_rfc7946_value_object(object)?;
-    let geometry = object
-        .get("geometry")
-        .ok_or_else(|| io::IoError::geojson("GeoJSON Feature requires geometry"))?;
+    io::reject_rfc7946_value_object(object).map_err(|error| error.with_parse_path(path))?;
+    let geometry = object.get("geometry").ok_or_else(|| {
+        io::IoError::geojson("GeoJSON Feature requires geometry").with_parse_path(path)
+    })?;
     if geometry.is_null() {
         Ok(None)
     } else {
-        Ok(Some(io::parse_geojson(geometry)?))
+        let geometry_path = format!("{path}.geometry");
+        Ok(Some(io::parse_geojson_at(geometry, &geometry_path)?))
     }
 }
 
@@ -1492,8 +1481,9 @@ fn feature_value_shapes_and_missing(
     let mut present = Vec::new();
     let mut slots = Vec::new();
     crate::try_reserve_pair(&mut present, &mut slots, features.len()).map_err(PyErr::from)?;
-    for feature in features {
-        let shape = geojson_feature_collection_member(feature)?;
+    for (row, feature) in features.iter().enumerate() {
+        let feature_path = format!("$.features[{row}]");
+        let shape = geojson_feature_collection_member(feature, &feature_path)?;
         if let Some(s) = &shape {
             crate::try_push(&mut present, s.clone())?;
         }

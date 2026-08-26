@@ -154,6 +154,43 @@ def test_b1_to_feature_requires_explicit_epoch_drop() -> None:
     assert decoded.geometries[0].epoch is None
 
 
+@pytest.mark.parametrize(
+    ('geometry', 'interface_error'),
+    [
+        pytest.param(gm.Point(1, 2, m=3), TypeError, id='m'),
+        pytest.param(
+            gm.from_wkt('MULTIPOINT (EMPTY, (0 0))'),
+            gm.InvalidGeometryError,
+            id='empty-multipart-member',
+        ),
+    ],
+)
+def test_to_geojson_and_geo_interface_reject_unrepresentable_states(
+    geometry, interface_error
+) -> None:
+    """Both RFC 7946 geometry surfaces reject the same lossy states."""
+    with pytest.raises(gm.InvalidGeometryError):
+        geometry.to_geojson()
+    with pytest.raises(interface_error):
+        _ = geometry.__geo_interface__
+
+
+def test_geo_interface_uses_to_geojson_geographic_preparation() -> None:
+    crossing = gm.from_wkt(
+        'LINESTRING (170 0, -170 0)',
+        crs=4326,
+    )
+    assert json.loads(crossing.to_geojson()) == crossing.__geo_interface__
+    array_interface = gm.GeometryArray([crossing]).__geo_interface__
+    assert array_interface['features'][0]['geometry'] == json.loads(crossing.to_geojson())
+
+    projected = gm.Point(1, 2, crs=3857)
+    with pytest.raises(gm.CRSError):
+        projected.to_geojson()
+    with pytest.raises(gm.CRSError):
+        _ = projected.__geo_interface__
+
+
 # ---------------------------------------------------------------------------
 # B2 — GeoJSON default CRS84 matches GeoParquet absent-CRS default
 # ---------------------------------------------------------------------------

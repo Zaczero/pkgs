@@ -1,17 +1,13 @@
 use std::borrow::Cow;
-use std::fmt;
 
-use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::geometry::{
     CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ZOrdinate,
 };
 use crate::io::{
-    CoordSeq, CoordinateAxes, Coordinates, GeoJsonInput, GeoJsonTextParse, GeometryErrorKind,
-    GeometryKind, IoError, IoGeometryKind, LineSeq, ParseFormat, Point, Polygon, Result, Ring,
-    Shape, crs, parse_content,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, IoError, LineSeq,
+    ParseFormat, Point, Polygon, Result, Ring, Shape, crs, parse_content,
 };
 
 #[cfg(test)]
@@ -336,679 +332,64 @@ fn write_geojson_number(out: &mut String, value: f64) {
 /// Content violations discovered while deserializing (non-finite ordinates,
 /// short lines) surface as parse errors: the caller's failure domain is "this
 /// serialized input is bad", with the structural rule as the detail.
+#[cfg(test)]
 pub(crate) fn parse_geojson(value: &Value) -> Result<Shape> {
-    parse_geojson_inner(value).map_err(|error| parse_content(ParseFormat::GeoJson, error))
+    parse_geojson_at(value, "$")
 }
 
-pub(crate) fn parse_geojson_text(text: &str) -> Result<GeoJsonTextParse> {
-    let probe = parse_geojson_probe(text)?;
-    if let Some(kind) = direct_coordinate_kind(&probe.geometry_type) {
-        // RFC 7946 §7.1 before the direct coordinate decode.
-        // coordinate_members count may exceed one (last-wins); presence is
-        // enough for §7.1 — merge into the probe's member flags.
-        let mut members = probe.members;
-        if probe.coordinate_members > 0 {
-            members.set(DefiningMembers::COORDINATES);
-        }
-        reject_rfc7946_cross_type_members(&probe.geometry_type, members)?;
-        let mut deserializer = serde_json::Deserializer::from_str(text);
-        let object = DirectGeoJsonSeed {
-            kind,
-            coordinate_members: probe.coordinate_members,
-        }
-        .deserialize(&mut deserializer)
-        .map_err(|error| IoError::geojson(error.to_string()))?;
-        deserializer
-            .end()
-            .map_err(|error| IoError::geojson(error.to_string()))?;
-        return Ok(GeoJsonTextParse {
-            input: GeoJsonInput::Geometry(object.shape),
-            legacy_crs: probe.legacy_crs,
-        });
-    }
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let object = GeoJsonObject::deserialize(&mut deserializer)
-        .map_err(|error| IoError::geojson(error.to_string()))?;
-    deserializer
-        .end()
-        .map_err(|error| IoError::geojson(error.to_string()))?;
-    let input = geojson_object_to_input(object)?;
-    Ok(GeoJsonTextParse {
-        input,
-        legacy_crs: probe.legacy_crs,
-    })
+/// Parse one geometry while retaining its JSON structural path. All Python
+/// carriers normalize to `Value` before calling this owner, so text, mappings,
+/// and `__geo_interface__` report the same location for the same malformed
+/// geometry.
+pub(crate) fn parse_geojson_at(value: &Value, path: &str) -> Result<Shape> {
+    let path = JsonPath::from(path);
+    parse_geojson_inner(value, &path)
 }
-
-/// The first pass records the final ``type``, how many duplicate
-/// ``coordinates`` members exist, and every legacy ``crs`` declaration in the
-/// same order as [`collect_geojson_legacy_crs`] (own first, then nested by
-/// type). Coordinates / properties payloads are skipped via `IgnoredAny` so
-/// the probe never builds a coordinate tree. The second pass then deserializes
-/// the LAST coordinates member straight into its concrete geometry columns
-/// while skipping shadowed duplicates, preserving serde_json's map semantics
-/// and arbitrary object-key order.
-///
-/// Final-member policy also applies to ``type`` (R18): a non-string intermediate
-/// ``type`` does not abort if a later string ``type`` wins — matching the
-/// bytes/dict frontends that collapse via ``serde_json::Value`` last-wins.
-struct GeoJsonProbe {
-    geometry_type: String,
-    coordinate_members: usize,
-    /// Defining members that must be excluded for the final type (RFC 7946 §7.1).
-    members: DefiningMembers,
-    /// Legacy ``crs`` members (own then nested), reconciliation order.
-    legacy_crs: Vec<Value>,
-}
-
-fn parse_geojson_probe(text: &str) -> Result<GeoJsonProbe> {
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let probe = deserializer
-        .deserialize_map(GeoJsonProbeVisitor)
-        .map_err(|error| IoError::geojson(error.to_string()))?;
-    deserializer
-        .end()
-        .map_err(|error| IoError::geojson(error.to_string()))?;
-    Ok(probe)
-}
-
-struct GeoJsonProbeVisitor;
-
-impl<'de> Visitor<'de> for GeoJsonProbeVisitor {
-    type Value = GeoJsonProbe;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a GeoJSON object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut geometry_type: Option<Value> = None;
-        let mut coordinate_members = 0;
-        let mut members = DefiningMembers::default();
-        // Own `crs` last-wins (serde_json map semantics); nested lists are
-        // collected as their containers are visited, then assembled below in
-        // collect_geojson_legacy_crs order (own first, then children).
-        let mut own_crs: Option<Value> = None;
-        let mut nested_from_geometry: Vec<Value> = Vec::new();
-        let mut nested_from_features: Vec<Value> = Vec::new();
-        let mut nested_from_geometries: Vec<Value> = Vec::new();
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            match key.as_ref() {
-                "type" => geometry_type = Some(map.next_value()?),
-                "crs" => own_crs = Some(map.next_value()?),
-                "coordinates" => {
-                    coordinate_members += 1;
-                    members.set(DefiningMembers::COORDINATES);
-                    let _ = map.next_value::<IgnoredAny>()?;
-                },
-                "geometries" => {
-                    members.set(DefiningMembers::GEOMETRIES);
-                    nested_from_geometries = map.next_value_seed(LegacyCrsArraySeed)?;
-                },
-                "geometry" => {
-                    members.set(DefiningMembers::GEOMETRY);
-                    nested_from_geometry = map.next_value_seed(LegacyCrsObjectSeed)?;
-                },
-                "properties" => {
-                    members.set(DefiningMembers::PROPERTIES);
-                    let _ = map.next_value::<IgnoredAny>()?;
-                },
-                "features" => {
-                    members.set(DefiningMembers::FEATURES);
-                    nested_from_features = map.next_value_seed(LegacyCrsArraySeed)?;
-                },
-                _ => {
-                    let _ = map.next_value::<IgnoredAny>()?;
-                },
-            }
-        }
-        let geometry_type = match geometry_type {
-            Some(Value::String(s)) => s,
-            Some(_) => {
-                return Err(de::Error::custom(
-                    "invalid type: expected a string for GeoJSON type",
-                ));
-            },
-            None => {
-                return Err(de::Error::custom("GeoJSON geometry requires a type"));
-            },
-        };
-        let legacy_crs = assemble_legacy_crs(
-            &geometry_type,
-            own_crs,
-            nested_from_geometry,
-            nested_from_features,
-            nested_from_geometries,
-        );
-        Ok(GeoJsonProbe {
-            geometry_type,
-            coordinate_members,
-            members,
-            legacy_crs,
-        })
-    }
-}
-
-/// Assemble declarations in [`collect_geojson_legacy_crs`] order: own `crs`
-/// first (if any), then children selected by the final `type`.
-fn assemble_legacy_crs(
-    geometry_type: &str,
-    own_crs: Option<Value>,
-    nested_from_geometry: Vec<Value>,
-    nested_from_features: Vec<Value>,
-    nested_from_geometries: Vec<Value>,
-) -> Vec<Value> {
-    let mut out = Vec::new();
-    if let Some(crs) = own_crs {
-        out.push(crs);
-    }
-    match geometry_type {
-        "Feature" => out.extend(nested_from_geometry),
-        "FeatureCollection" => out.extend(nested_from_features),
-        "GeometryCollection" => out.extend(nested_from_geometries),
-        _ => {},
-    }
-    out
-}
-
-/// Nested GeoJSON object: collect legacy CRS only (skip coordinate payloads).
-struct LegacyCrsObjectSeed;
-
-impl<'de> DeserializeSeed<'de> for LegacyCrsObjectSeed {
-    type Value = Vec<Value>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(LegacyCrsObjectVisitor)
-    }
-}
-
-struct LegacyCrsObjectVisitor;
-
-impl<'de> Visitor<'de> for LegacyCrsObjectVisitor {
-    type Value = Vec<Value>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a GeoJSON object (legacy CRS walk)")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut geometry_type: Option<String> = None;
-        let mut own_crs: Option<Value> = None;
-        let mut nested_from_geometry = Vec::new();
-        let mut nested_from_features = Vec::new();
-        let mut nested_from_geometries = Vec::new();
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            match key.as_ref() {
-                "type" => {
-                    // Last-wins string type; non-string intermediate ignored
-                    // if a later string wins (same as the top-level probe).
-                    if let Value::String(s) = map.next_value::<Value>()? {
-                        geometry_type = Some(s);
-                    }
-                },
-                "crs" => own_crs = Some(map.next_value()?),
-                "geometry" => nested_from_geometry = map.next_value_seed(LegacyCrsObjectSeed)?,
-                "features" => nested_from_features = map.next_value_seed(LegacyCrsArraySeed)?,
-                "geometries" => nested_from_geometries = map.next_value_seed(LegacyCrsArraySeed)?,
-                _ => {
-                    let _ = map.next_value::<IgnoredAny>()?;
-                },
-            }
-        }
-        Ok(assemble_legacy_crs(
-            geometry_type.as_deref().unwrap_or(""),
-            own_crs,
-            nested_from_geometry,
-            nested_from_features,
-            nested_from_geometries,
-        ))
-    }
-
-    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(self)
-    }
-
-    fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_i64<E>(self, _: i64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_u64<E>(self, _: u64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_f64<E>(self, _: f64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_str<E>(self, _: &str) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        Ok(Vec::new())
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        while seq.next_element::<IgnoredAny>()?.is_some() {}
-        Ok(Vec::new())
-    }
-}
-
-/// Array of nested GeoJSON objects (features / geometries): concatenate each
-/// child's CRS list in array order.
-struct LegacyCrsArraySeed;
-
-impl<'de> DeserializeSeed<'de> for LegacyCrsArraySeed {
-    type Value = Vec<Value>;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(LegacyCrsArrayVisitor)
-    }
-}
-
-struct LegacyCrsArrayVisitor;
-
-impl<'de> Visitor<'de> for LegacyCrsArrayVisitor {
-    type Value = Vec<Value>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a GeoJSON array (legacy CRS walk)")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut out = Vec::new();
-        while let Some(child) = seq.next_element_seed(LegacyCrsObjectSeed)? {
-            out.extend(child);
-        }
-        Ok(out)
-    }
-}
-
-fn direct_coordinate_kind(value: &str) -> Option<IoGeometryKind> {
-    match value {
-        "Point" => Some(IoGeometryKind::Point),
-        "MultiPoint" => Some(IoGeometryKind::MultiPoint),
-        "LineString" => Some(IoGeometryKind::LineString),
-        "MultiLineString" => Some(IoGeometryKind::MultiLineString),
-        "Polygon" => Some(IoGeometryKind::Polygon),
-        "MultiPolygon" => Some(IoGeometryKind::MultiPolygon),
-        _ => None,
-    }
-}
-
-struct DirectGeoJsonObject {
-    shape: Shape,
-}
-
-struct DirectGeoJsonSeed {
-    kind: IoGeometryKind,
-    coordinate_members: usize,
-}
-
-impl<'de> DeserializeSeed<'de> for DirectGeoJsonSeed {
-    type Value = DirectGeoJsonObject;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(DirectGeoJsonObjectVisitor {
-            kind: self.kind,
-            coordinate_members: self.coordinate_members,
-        })
-    }
-}
-
-struct DirectGeoJsonObjectVisitor {
-    kind: IoGeometryKind,
-    coordinate_members: usize,
-}
-
-impl<'de> Visitor<'de> for DirectGeoJsonObjectVisitor {
-    type Value = DirectGeoJsonObject;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a GeoJSON geometry object")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut remaining_coordinates = self.coordinate_members;
-        let mut shape = None;
-        while let Some(key) = map.next_key::<Cow<'de, str>>()? {
-            match key.as_ref() {
-                "coordinates" => {
-                    remaining_coordinates = remaining_coordinates.saturating_sub(1);
-                    if remaining_coordinates == 0 {
-                        shape = Some(map.next_value_seed(ShapeCoordinatesSeed(self.kind))?);
-                    } else {
-                        let _ = map.next_value::<IgnoredAny>()?;
-                    }
-                },
-                // Legacy ``crs`` is reconciled by walking the raw JSON value.
-                _ => {
-                    let _ = map.next_value::<IgnoredAny>()?;
-                },
-            }
-        }
-        Ok(DirectGeoJsonObject {
-            shape: shape
-                .ok_or_else(|| de::Error::custom("GeoJSON geometry requires coordinates"))?,
-        })
-    }
-}
-
-struct CoordinateNumberSeed(&'static str);
-
-impl<'de> DeserializeSeed<'de> for CoordinateNumberSeed {
-    type Value = f64;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(CoordinateNumberVisitor(self.0))
-    }
-}
-
-struct CoordinateNumberVisitor(&'static str);
-
-impl Visitor<'_> for CoordinateNumberVisitor {
-    type Value = f64;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
-    }
-
-    fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        value
-            .is_finite()
-            .then_some(value)
-            .ok_or_else(|| E::custom(self.0))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        i64_to_exact_f64(value).map_err(E::custom)
-    }
-
-    fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        u64_to_exact_f64(value).map_err(E::custom)
-    }
-}
-
-#[path = "geojson_seeds.rs"]
-mod geojson_seeds;
-use geojson_seeds::ShapeCoordinatesSeed;
 
 #[path = "geojson_object.rs"]
 mod geojson_object;
 // Crate-visible for from_features defining-member flags + shared §7.1 check.
 pub(crate) use geojson_object::{
-    DefiningMembers, i64_to_exact_f64, json_number_to_f64, reject_rfc7946_cross_type_members,
-    u64_to_exact_f64,
-};
-use geojson_object::{
-    FeatureGeometry, GeoJsonObject, JsonCoordinates, defining_members_from_object,
+    DefiningMembers, json_number_to_f64, reject_rfc7946_cross_type_members,
 };
 
-fn geojson_object_to_input(object: GeoJsonObject) -> Result<GeoJsonInput> {
-    reject_rfc7946_cross_type_members(
-        &object.geometry_type,
-        defining_members_from_object(&object),
-    )?;
-    match object.geometry_type.as_str() {
-        "FeatureCollection" => {
-            let features = object
-                .features
-                .ok_or_else(|| IoError::geojson("GeoJSON FeatureCollection requires features"))?;
-            Ok(GeoJsonInput::FeatureCollection(
-                features
-                    .into_iter()
-                    .map(|feature| feature.geometry)
-                    .collect(),
-            ))
-        },
-        // Top-level Feature: unwrap the geometry slot once (geometry-only decode
-        // below rejects nested Feature-in-geometry).
-        "Feature" => feature_geometry(object.geometry)?
-            .map(GeoJsonInput::Geometry)
-            .ok_or_else(|| {
-                IoError::geojson(
-                    "Feature has null geometry (an unlocated feature); parse the \
-                     FeatureCollection with from_geojson/from_features, where null \
-                     geometries become missing rows",
-                )
-            }),
-        _ => geojson_object_to_shape(object).map(GeoJsonInput::Geometry),
+fn json_number(value: &Value, message: &'static str) -> Result<f64> {
+    match value {
+        Value::Number(number) => json_number_to_f64(number),
+        _ => Err(IoError::geojson(message)),
     }
 }
 
-/// Geometry-slot decoder: RFC 7946 Geometry objects only — never a Feature or
-/// FeatureCollection. Nested GeometryCollection members use this same rule.
-fn geojson_object_to_shape(object: GeoJsonObject) -> Result<Shape> {
-    reject_rfc7946_cross_type_members(
-        &object.geometry_type,
-        defining_members_from_object(&object),
-    )?;
-    let coordinates = || {
-        object
-            .coordinates
-            .as_ref()
-            .ok_or_else(|| IoError::geojson("GeoJSON geometry requires coordinates"))
-    };
-    match object.geometry_type.as_str() {
-        "Feature" => Err(IoError::geojson(
-            "GeoJSON geometry must be a Geometry object, not a Feature",
-        )),
-        "FeatureCollection" => Err(IoError::geojson(
-            "GeoJSON FeatureCollection is a feature set, not one geometry; \
-             use from_geojson (returns a GeometryArray) or from_features",
-        )),
-        "GeometryCollection" => Ok(Shape::geometry_collection(
-            object
-                .geometries
-                .ok_or_else(|| IoError::geojson("GeometryCollection requires geometries"))?
-                .into_iter()
-                .map(|geometry| geometry.0)
-                .collect(),
-        )),
-        "Point" => {
-            let coords = coordinates()?;
-            if coords.is_empty_array() {
-                Ok(Shape::empty_point())
-            } else {
-                Ok(Shape::Point(geojson_point(coords)?))
-            }
-        },
-        "MultiPoint" => {
-            let coords = coordinates()?;
-            if coords.is_empty_array() {
-                Ok(Shape::typed_empty(
-                    GeometryKind::MultiPoint,
-                    CoordinateAxes::XY,
-                ))
-            } else {
-                Ok(Shape::MultiPoint(parse_geojson_multipoint(coords)?))
-            }
-        },
-        "LineString" => {
-            let points = geojson_points(coordinates()?)?;
-            if points.is_empty() {
-                Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
-            } else {
-                Ok(Shape::LineString(LineSeq::try_new(points)?))
-            }
-        },
-        "MultiLineString" => {
-            let coords = coordinates()?;
-            if coords.is_empty_array() {
-                Ok(Shape::typed_empty(
-                    GeometryKind::MultiLineString,
-                    CoordinateAxes::XY,
-                ))
-            } else {
-                Ok(Shape::MultiLineString(parse_geojson_multilinestring(
-                    coords,
-                )?))
-            }
-        },
-        "Polygon" => {
-            let coords = coordinates()?;
-            if coords.is_empty_array() {
-                Ok(Shape::empty_polygon())
-            } else {
-                Ok(Shape::Polygon(geojson_polygon(coords)?))
-            }
-        },
-        "MultiPolygon" => {
-            let coords = coordinates()?;
-            if coords.is_empty_array() {
-                Ok(Shape::typed_empty(
-                    GeometryKind::MultiPolygon,
-                    CoordinateAxes::XY,
-                ))
-            } else {
-                Ok(Shape::MultiPolygon(parse_geojson_multipolygon(coords)?))
-            }
-        },
-        value => Err(IoError::geojson(format!(
-            "unsupported GeoJSON geometry type {value:?}"
-        ))),
-    }
+fn json_is_empty_array(value: &Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty)
 }
 
-fn feature_geometry(geometry: FeatureGeometry) -> Result<Option<Shape>> {
-    match geometry {
-        FeatureGeometry::Missing => Err(IoError::geojson("GeoJSON Feature requires geometry")),
-        // RFC 7946 §3.2: an unlocated feature has geometry: null — a valid
-        // feature that becomes a missing row.
-        FeatureGeometry::Null => Ok(None),
-        FeatureGeometry::Geometry(geometry) => Ok(Some(geometry.0)),
-    }
-}
-
-trait GeoJsonCoords: Sized {
-    fn as_number(&self, message: &'static str) -> Result<f64>;
-    fn as_array(&self, message: &'static str) -> Result<&[Self]>;
-    fn is_empty_array(&self) -> bool;
-}
-
-impl GeoJsonCoords for JsonCoordinates {
-    fn is_empty_array(&self) -> bool {
-        matches!(self, Self::Array(values) if values.is_empty())
-    }
-
-    fn as_array(&self, message: &'static str) -> Result<&[Self]> {
-        match self {
-            Self::Array(values) => Ok(values),
-            Self::Number(_) => Err(IoError::geojson(message)),
-        }
-    }
-
-    fn as_number(&self, message: &'static str) -> Result<f64> {
-        match self {
-            Self::Number(value) => Ok(*value),
-            Self::Array(_) => Err(IoError::geojson(message)),
-        }
-    }
-}
-
-impl GeoJsonCoords for Value {
-    fn is_empty_array(&self) -> bool {
-        matches!(self, Self::Array(values) if values.is_empty())
-    }
-
-    fn as_array(&self, message: &'static str) -> Result<&[Self]> {
-        match self {
-            Self::Array(values) => Ok(values.as_slice()),
-            _ => Err(IoError::geojson(message)),
-        }
-    }
-
-    fn as_number(&self, message: &'static str) -> Result<f64> {
-        match self {
-            Self::Number(number) => json_number_to_f64(number),
-            _ => Err(IoError::geojson(message)),
-        }
-    }
-}
-
-fn parse_point<C: GeoJsonCoords>(value: &C) -> Result<Point> {
-    let pair = value.as_array("coordinate must be an array")?;
+fn parse_point(value: &Value, path: &JsonPath) -> Result<Point> {
+    let pair = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("coordinate must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     if pair.len() < 2 {
-        return Err(IoError::geojson("coordinate requires x and y"));
+        return Err(IoError::geojson("coordinate requires x and y").with_parse_path(path.as_str()));
     }
     if pair.len() > 3 {
         return Err(IoError::geojson(
             "GeoJSON coordinates support XY or XYZ only; M coordinates are not supported",
-        ));
+        )
+        .with_parse_path(path.as_str()));
     }
     let z = pair
         .get(2)
-        .map(|value| value.as_number("z coordinate must be numeric"))
+        .map(|value| {
+            json_number(value, "z coordinate must be numeric")
+                .map_err(|error| error.with_parse_path(&path.index(2).0))
+        })
         .transpose()?;
-    let x = pair[0].as_number("x coordinate must be numeric")?;
-    let y = pair[1].as_number("y coordinate must be numeric")?;
+    let x = json_number(&pair[0], "x coordinate must be numeric")
+        .map_err(|error| error.with_parse_path(&path.index(0).0))?;
+    let y = json_number(&pair[1], "y coordinate must be numeric")
+        .map_err(|error| error.with_parse_path(&path.index(1).0))?;
     // RFC 7946 §4 fixes GeoJSON coordinates to the WGS84 lon/lat domain: a
     // parsed document claiming a position outside it is malformed, not planar
     // data to trust silently.
@@ -1016,151 +397,173 @@ fn parse_point<C: GeoJsonCoords>(value: &C) -> Result<Point> {
         return Err(IoError::geojson(format!(
             "GeoJSON {label} {value} is outside the WGS84 domain (longitude \
              [-180, 180], latitude [-90, 90])"
-        )));
+        ))
+        .with_parse_path(path.as_str()));
     }
     Point::new_axes(x, y, ZOrdinate(z), MOrdinate(None))
+        .map_err(|error| error.with_parse_path(path.as_str()))
 }
 
 /// Error text for within-sequence mixed XY/XYZ (and siblings). Shared by the
-/// Value decoder and the seeded text decoder so frontends stay in lockstep.
+/// Value decoder so every GeoJSON frontend stays in lockstep.
 pub(super) const fn geojson_mixed_axes_message() -> &'static str {
     "GeoJSON coordinate sequences must be dimensionally uniform \
      (every position in one sequence shares the same axes); \
      this one mixes XY and XYZ positions"
 }
 
-fn parse_points<C: GeoJsonCoords>(value: &C) -> Result<CoordSeq> {
-    let positions = value.as_array("coordinates must be an array")?;
+fn parse_points(value: &Value, path: &JsonPath) -> Result<CoordSeq> {
+    let positions = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("coordinates must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     let Some((first, rest)) = positions.split_first() else {
         return Ok(CoordSeq::empty(CoordinateAxes::XY));
     };
-    let first = parse_point(first)?;
+    let first = parse_point(first, &path.index(0))?;
     let axes = CoordinateAxes::from_point(first);
-    let mut points = CoordSeqBuilder::with_capacity(axes, positions.len());
+    let mut points = CoordSeqBuilder::try_with_capacity(axes, positions.len())?;
     points.push(first);
-    for position in rest {
-        let point = parse_point(position)?;
+    for (index, position) in rest.iter().enumerate() {
+        let point = parse_point(position, &path.index(index + 1))?;
         // See `geojson_mixed_axes_message`: no NaN-fill promotion — non-finite
         // coordinates are illegal and 0 would invent elevation.
         if CoordinateAxes::from_point(point) != axes {
-            return Err(IoError::geojson(geojson_mixed_axes_message()));
+            return Err(IoError::geojson(geojson_mixed_axes_message())
+                .with_parse_path(&path.index(index + 1).0));
         }
         points.push(point);
     }
     points.finish()
 }
 
-fn parse_polygon<C: GeoJsonCoords>(value: &C) -> Result<Polygon> {
-    let rings = value.as_array("Polygon coordinates must be an array")?;
+fn parse_polygon(value: &Value, path: &JsonPath) -> Result<Polygon> {
+    let rings = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("Polygon coordinates must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     let Some(shell) = rings.first() else {
-        return Err(IoError::geojson("Polygon requires a shell"));
+        return Err(IoError::geojson("Polygon requires a shell").with_parse_path(path.as_str()));
     };
-    Ok(Polygon::new(
-        parse_geojson_ring(shell)?,
-        rings[1..]
-            .iter()
-            .map(parse_geojson_ring)
-            .collect::<Result<_>>()?,
-    ))
+    let shell = parse_geojson_ring(shell, &path.index(0))?;
+    let mut holes = try_vec_with_capacity(rings.len().saturating_sub(1))?;
+    for (index, ring) in rings.iter().enumerate().skip(1) {
+        try_push_vec(&mut holes, parse_geojson_ring(ring, &path.index(index))?)?;
+    }
+    Ok(Polygon::new(shell, holes))
 }
 
-fn parse_geojson_ring<C: GeoJsonCoords>(value: &C) -> Result<Ring> {
-    let points = parse_points(value)?;
+fn parse_geojson_ring(value: &Value, path: &JsonPath) -> Result<Ring> {
+    let points = parse_points(value, path)?;
     if points.len() < Ring::MIN_VERTICES_CLOSED {
         return Err(IoError::geojson(format!(
             "Polygon ring requires at least {} coordinates",
             Ring::MIN_VERTICES_CLOSED
-        )));
+        ))
+        .with_parse_path(path.as_str()));
     }
     let first = points.point_at(0);
     let last = points.point_at(points.len() - 1);
     // RFC 7946 §3.1.6: first and last position values must be identical on
     // every active ordinate (X/Y/Z/M), not just the planar XY pair.
     if !crate::geometry::same_active_position(first, last) {
-        return Err(IoError::geojson("Polygon ring must be explicitly closed"));
+        return Err(IoError::geojson("Polygon ring must be explicitly closed")
+            .with_parse_path(path.as_str()));
     }
     Ok(Ring::from_trusted_closed(points))
 }
 
-fn parse_geojson_multipoint<C: GeoJsonCoords>(value: &C) -> Result<MultiPoint> {
-    let positions = value.as_array("MultiPoint coordinates must be an array")?;
+fn parse_geojson_multipoint(value: &Value, path: &JsonPath) -> Result<MultiPoint> {
+    let positions = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("MultiPoint coordinates must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = Vec::with_capacity(positions.len());
-    for position in positions {
-        if position.is_empty_array() {
-            members.push(MultiMember::Empty);
+    let mut members = try_vec_with_capacity(positions.len())?;
+    for (index, position) in positions.iter().enumerate() {
+        if json_is_empty_array(position) {
+            try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
-        let point = parse_point(position)?;
+        let point = parse_point(position, &path.index(index))?;
         let point_axes = CoordinateAxes::from_point(point);
         match axes {
             None => axes = Some(point_axes),
             Some(expected) if expected != point_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message()));
+                return Err(IoError::geojson(geojson_mixed_axes_message())
+                    .with_parse_path(&path.index(index).0));
             },
             Some(_) => {},
         }
-        members.push(MultiMember::Value(point));
+        try_push_vec(&mut members, MultiMember::Value(point))?;
     }
     MultiPoint::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
 
-fn parse_geojson_multilinestring<C: GeoJsonCoords>(value: &C) -> Result<MultiLineString> {
-    let lines = value.as_array("MultiLineString coordinates must be an array")?;
+fn parse_geojson_multilinestring(value: &Value, path: &JsonPath) -> Result<MultiLineString> {
+    let lines = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("MultiLineString coordinates must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = Vec::with_capacity(lines.len());
-    for line in lines {
-        let points = parse_points(line)?;
+    let mut members = try_vec_with_capacity(lines.len())?;
+    for (index, line) in lines.iter().enumerate() {
+        let line_path = path.index(index);
+        let points = parse_points(line, &line_path)?;
         if points.is_empty() {
-            members.push(MultiMember::Empty);
+            try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
         let line_axes = points.axes();
         match axes {
             None => axes = Some(line_axes),
             Some(expected) if expected != line_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message()));
+                return Err(IoError::geojson(geojson_mixed_axes_message())
+                    .with_parse_path(line_path.as_str()));
             },
             Some(_) => {},
         }
-        members.push(MultiMember::Value(LineSeq::try_new(points)?));
+        try_push_vec(
+            &mut members,
+            MultiMember::Value(
+                LineSeq::try_new(points).map_err(|error| error.with_parse_path(line_path.as_str()))?,
+            ),
+        )?;
     }
     MultiLineString::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
 
-fn parse_geojson_multipolygon<C: GeoJsonCoords>(value: &C) -> Result<MultiPolygon> {
-    let polygons = value.as_array("MultiPolygon coordinates must be an array")?;
+fn parse_geojson_multipolygon(value: &Value, path: &JsonPath) -> Result<MultiPolygon> {
+    let polygons = value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| IoError::geojson("MultiPolygon coordinates must be an array"))
+        .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = Vec::with_capacity(polygons.len());
-    for polygon in polygons {
-        if polygon.is_empty_array() {
-            members.push(MultiMember::Empty);
+    let mut members = try_vec_with_capacity(polygons.len())?;
+    for (index, polygon) in polygons.iter().enumerate() {
+        let polygon_path = path.index(index);
+        if json_is_empty_array(polygon) {
+            try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
-        let polygon = parse_polygon(polygon)?;
+        let polygon = parse_polygon(polygon, &polygon_path)?;
         let polygon_axes = polygon.shell.coords().axes();
         match axes {
             None => axes = Some(polygon_axes),
             Some(expected) if expected != polygon_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message()));
+                return Err(IoError::geojson(geojson_mixed_axes_message())
+                    .with_parse_path(polygon_path.as_str()));
             },
             Some(_) => {},
         }
-        members.push(MultiMember::Value(polygon));
+        try_push_vec(&mut members, MultiMember::Value(polygon))?;
     }
     MultiPolygon::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
-}
-
-fn geojson_point(value: &JsonCoordinates) -> Result<Point> {
-    parse_point(value)
-}
-
-fn geojson_points(value: &JsonCoordinates) -> Result<CoordSeq> {
-    parse_points(value)
-}
-
-fn geojson_polygon(value: &JsonCoordinates) -> Result<Polygon> {
-    parse_polygon(value)
 }
 
 /// Top-level legacy ``crs`` member on a `GeoJSON` object, if present.
@@ -1348,7 +751,44 @@ pub(crate) fn reject_rfc7946_value_object(object: &serde_json::Map<String, Value
 /// Geometry-slot `Value` decoder: Geometry objects only (RFC 7946 §3.1).
 /// A Feature or FeatureCollection in a geometry slot is always an error —
 /// top-level Feature unwrap lives in document/context decoders, not here.
-fn parse_geojson_inner(value: &Value) -> Result<Shape> {
+#[derive(Clone)]
+struct JsonPath(String);
+
+fn try_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>> {
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, capacity)?;
+    Ok(output)
+}
+
+fn try_push_vec<T>(output: &mut Vec<T>, value: T) -> Result<()> {
+    crate::boundary::try_push_vec(output, value)
+}
+
+impl JsonPath {
+    fn from(path: &str) -> Self {
+        Self(path.to_owned())
+    }
+
+    fn key(&self, key: &str) -> Self {
+        Self(format!("{}.{}", self.0, key))
+    }
+
+    fn index(&self, index: usize) -> Self {
+        Self(format!("{}[{}]", self.0, index))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn parse_geojson_inner(value: &Value, path: &JsonPath) -> Result<Shape> {
+    parse_geojson_inner_impl(value, path)
+        .map_err(|error| parse_content(ParseFormat::GeoJson, error))
+        .map_err(|error| error.with_parse_path(path.as_str()))
+}
+
+fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
     let object = value
         .as_object()
         .ok_or_else(|| IoError::geojson("GeoJSON geometry must be an object"))?;
@@ -1369,30 +809,43 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
         // silently collapses into a GeometryCollection.
         return Err(IoError::geojson(
             "GeoJSON FeatureCollection is a feature set, not one geometry; \
-             use from_geojson (returns a GeometryArray) or from_features",
+            use from_geojson (returns a GeometryArray) or from_features",
         ));
     }
+    let coordinates_path = path.key("coordinates");
     let coordinates = || {
         object
             .get("coordinates")
-            .ok_or_else(|| IoError::geojson("GeoJSON geometry requires coordinates"))
+            .ok_or_else(|| {
+                IoError::geojson("GeoJSON geometry requires coordinates")
+                    .with_parse_path(coordinates_path.as_str())
+            })
     };
     match geometry_type {
-        "GeometryCollection" => Ok(Shape::geometry_collection(
-            object
+        "GeometryCollection" => {
+            let geometries_path = path.key("geometries");
+            let geometries = object
                 .get("geometries")
                 .and_then(Value::as_array)
-                .ok_or_else(|| IoError::geojson("GeometryCollection requires geometries"))?
-                .iter()
-                .map(parse_geojson)
-                .collect::<Result<_>>()?,
-        )),
+                .ok_or_else(|| {
+                    IoError::geojson("GeometryCollection requires geometries")
+                        .with_parse_path(geometries_path.as_str())
+                })?;
+            let mut parsed = try_vec_with_capacity(geometries.len())?;
+            for (index, geometry) in geometries.iter().enumerate() {
+                try_push_vec(
+                    &mut parsed,
+                    parse_geojson_inner(geometry, &geometries_path.index(index))?,
+                )?;
+            }
+            Ok(Shape::geometry_collection(parsed))
+        },
         "Point" => {
             let coords = coordinates()?;
             if coords.as_array().is_some_and(Vec::is_empty) {
                 Ok(Shape::empty_point())
             } else {
-                Ok(Shape::Point(json_point(coords)?))
+                Ok(Shape::Point(parse_point(coords, &path.key("coordinates"))?))
             }
         },
         "MultiPoint" => {
@@ -1403,15 +856,21 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
                     CoordinateAxes::XY,
                 ))
             } else {
-                Ok(Shape::MultiPoint(parse_geojson_multipoint(coords)?))
+                Ok(Shape::MultiPoint(parse_geojson_multipoint(
+                    coords,
+                    &path.key("coordinates"),
+                )?))
             }
         },
         "LineString" => {
-            let points = json_points(coordinates()?)?;
+            let points = parse_points(coordinates()?, &path.key("coordinates"))?;
             if points.is_empty() {
                 Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
             } else {
-                Ok(Shape::LineString(LineSeq::try_new(points)?))
+                Ok(Shape::LineString(
+                    LineSeq::try_new(points)
+                        .map_err(|error| error.with_parse_path(coordinates_path.as_str()))?,
+                ))
             }
         },
         "MultiLineString" => {
@@ -1422,9 +881,10 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
                     CoordinateAxes::XY,
                 ))
             } else {
-                Ok(Shape::MultiLineString(parse_geojson_multilinestring(
-                    coords,
-                )?))
+                Ok(Shape::MultiLineString(
+                    parse_geojson_multilinestring(coords, &coordinates_path)
+                        .map_err(|error| error.with_parse_path(coordinates_path.as_str()))?,
+                ))
             }
         },
         "Polygon" => {
@@ -1432,7 +892,7 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
             if coords.as_array().is_some_and(Vec::is_empty) {
                 Ok(Shape::empty_polygon())
             } else {
-                Ok(Shape::Polygon(json_polygon(coords)?))
+                Ok(Shape::Polygon(parse_polygon(coords, &coordinates_path)?))
             }
         },
         "MultiPolygon" => {
@@ -1443,25 +903,16 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
                     CoordinateAxes::XY,
                 ))
             } else {
-                Ok(Shape::MultiPolygon(parse_geojson_multipolygon(coords)?))
+                Ok(Shape::MultiPolygon(
+                    parse_geojson_multipolygon(coords, &coordinates_path)
+                        .map_err(|error| error.with_parse_path(coordinates_path.as_str()))?,
+                ))
             }
         },
         value => Err(IoError::geojson(format!(
             "unsupported GeoJSON geometry type {value:?}"
         ))),
     }
-}
-
-fn json_point(value: &Value) -> Result<Point> {
-    parse_point(value)
-}
-
-fn json_points(value: &Value) -> Result<CoordSeq> {
-    parse_points(value)
-}
-
-fn json_polygon(value: &Value) -> Result<Polygon> {
-    parse_polygon(value)
 }
 
 #[cfg(test)]

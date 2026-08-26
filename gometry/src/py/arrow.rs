@@ -545,9 +545,11 @@ pub(crate) fn geometries_from_arrow(
             "from_arrow expects foreign Arrow data; a Geometry or GeometryArray is already decoded",
         ));
     }
-    if value.getattr("type").is_ok()
-        || value.getattr("chunks").is_ok()
-        || value.getattr("column_names").is_ok()
+    if value.getattr_opt(pyo3::intern!(py, "type"))?.is_some()
+        || value.getattr_opt(pyo3::intern!(py, "chunks"))?.is_some()
+        || value
+            .getattr_opt(pyo3::intern!(py, "column_names"))?
+            .is_some()
     {
         let pa = pyarrow_module(py)?;
         return geometries_from_pyarrow(py, pa, value, crs, epoch);

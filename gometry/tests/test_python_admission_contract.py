@@ -191,6 +191,16 @@ def test_arrow_table_probe_preserves_column_provider_error() -> None:
         gm.from_arrow(Table())
 
 
+def test_arrow_format_probe_preserves_top_level_provider_error() -> None:
+    class RaisingType:
+        @property
+        def type(self):
+            raise RuntimeError('top-level type provider boom')
+
+    with pytest.raises(RuntimeError, match='top-level type provider boom'):
+        gm.from_arrow(RaisingType())
+
+
 def test_iter_and_len_provider_errors_are_not_reclassified() -> None:
     class RaisingIter:
         def __iter__(self):

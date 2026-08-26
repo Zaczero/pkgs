@@ -8,16 +8,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::py::errors::crs_mismatch_error;
-use crate::py::wire_crs::{
-    guard_embedded_crs_conflict, has_ewkt_srid_prefix, prefer_wire_alias_crs, split_ewkt_srid,
-};
+use crate::py::wire_crs::{guard_embedded_crs_conflict, prefer_wire_alias_crs, split_ewkt_srid};
 use crate::{
     CoordinateAxes, Crs, Frame, FrameAdoption, FrameEdit, GeoJsonDecodeContext, HeapSize,
     InvalidGeometryError, PyGeometry, PyGeometryArray, Typed, ValidationIssue,
     coerce_geojson_geometry_value, crs_arc, crs_label, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, geometry, guard_epoch_frame, io, is_mapping_like,
-    is_one_byte_buffer, parse_crs, parse_geojson_slice, parse_geojson_value, parse_wkb_geometry,
-    with_one_byte_buffer,
+    is_one_byte_buffer, is_wkt_string, parse_crs, parse_geojson_geometry_value,
+    parse_geojson_slice, parse_wkb_geometry, with_one_byte_buffer,
 };
 
 /// Parse and require a geometry contract at an input boundary.
@@ -260,56 +258,6 @@ fn require_array_contract(
     Ok(array)
 }
 
-/// GEOMETRYCOLLECTIONZM is the longest accepted WKT type keyword (20 bytes).
-const WKT_TYPE_KEYWORD_MAX: usize = 20;
-
-fn strip_wkt_type_axes_suffix(token: &[u8]) -> &[u8] {
-    if token.ends_with(b"ZM") {
-        &token[..token.len() - 2]
-    } else if token.ends_with(b"Z") || token.ends_with(b"M") {
-        &token[..token.len() - 1]
-    } else {
-        token
-    }
-}
-
-fn is_wkt_string(text: &str) -> bool {
-    // Mirror `split_ewkt_srid`: the EWKT prefix is ASCII-case-insensitive
-    // (`srid=4326;POINT ...` is still EWKT, not a failed GeoJSON decode).
-    // Compact PostGIS suffixes (`POINTM`, `MULTILINESTRINGZM`, …) count as WKT
-    // so `require` does not misroute them to the GeoJSON decoder.
-    let trimmed = text.trim();
-    // Any SRID= prefix is declared EWKT; let the WKT/EWKT parser produce the
-    // diagnostic (a malformed SRID must not fall through to the GeoJSON decoder).
-    // The prefix rule itself is shared with `split_ewkt_srid` so the classifier
-    // and the parser cannot drift apart.
-    if has_ewkt_srid_prefix(text) {
-        return true;
-    }
-    let body = trimmed;
-    let keyword_len = body
-        .find(|ch: char| !ch.is_ascii_alphabetic())
-        .unwrap_or(body.len());
-    if keyword_len == 0 || keyword_len > WKT_TYPE_KEYWORD_MAX {
-        return false;
-    }
-    let mut upper = [0_u8; WKT_TYPE_KEYWORD_MAX];
-    upper[..keyword_len].copy_from_slice(&body.as_bytes()[..keyword_len]);
-    upper[..keyword_len].make_ascii_uppercase();
-    // Strip compact Z / M / ZM suffixes before matching the base type.
-    let base = strip_wkt_type_axes_suffix(&upper[..keyword_len]);
-    matches!(
-        base,
-        b"POINT"
-            | b"LINESTRING"
-            | b"POLYGON"
-            | b"MULTIPOINT"
-            | b"MULTILINESTRING"
-            | b"MULTIPOLYGON"
-            | b"GEOMETRYCOLLECTION"
-    )
-}
-
 fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry> {
     let (body, srid) = split_ewkt_srid(text)?;
     let embedded = io::crs_from_optional_srid(srid)?;
@@ -376,7 +324,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
     if is_one_byte_buffer(geom) {
         return parse_require_buffer(geom, fallback);
     }
-    let parsed = parse_geojson_value(geom)?;
+    let parsed = parse_geojson_geometry_value(geom)?;
     parse_require_geojson_value(&parsed, fallback)
 }
 

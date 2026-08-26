@@ -436,6 +436,8 @@ class ParseError(GeometryError):
     """Which codec rejected the input."""
     position: int | None
     """WKT UTF-8 input length; WKB true detection byte offset; otherwise None when unavailable."""
+    path: str | None
+    """JSONPath-like location of the malformed value, when available."""
 
 @final
 class CoordinatesIterator:

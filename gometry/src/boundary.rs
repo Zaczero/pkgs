@@ -8,7 +8,7 @@ pub(crate) mod metadata;
 pub(crate) mod reserve;
 
 pub(crate) use buffer_endian::{buffer_copy_to_slice_u64, buffer_to_vec_u64};
-pub(crate) use convert::{coordinates_object, geojson_dict, json_to_py, point_tuple};
+pub(crate) use convert::{coordinates_object, geojson_dict_prepared, json_to_py, point_tuple};
 pub(crate) use coordinate_input::{
     CoordinateInput, CrsCoordinateArgs, DefaultedF64Input, DefaultedI64Input, F64Param, I64Param,
     Zt, ZtLaneRefs, ZtLanes, ZtValues, broadcast_coordinate_group, broadcast_coordinate_input,
@@ -38,13 +38,12 @@ pub(crate) use metadata::{
     crs_operationally_equal, epoch_label, epochs_equal, wgs84_crs,
 };
 pub(crate) use reserve::{
-    advisory_len, check_python_signals, CsrBuilder, checked_length_sum, collect_bool_mask, collect_bytes_rows,
-    collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
-    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
-    collect_sequence_items,
-    collect_u64_sequence, collect_usize_sequence, copy_one_byte_buffer, grow_sequence_error,
-    is_one_byte_buffer, py_iter_or_error, string_alloc_error, try_collect_results, try_push, try_push_heap,
-    try_push_pair, try_push_vec, try_reserve_heap, try_reserve_hint, try_reserve_pair,
-    try_reserve_vec,
-    try_string_from_str, try_vec_with_capacity, try_vec_with_capacity_hint, with_one_byte_buffer,
+    CsrBuilder, advisory_len, check_python_signals, checked_length_sum, collect_bool_mask,
+    collect_bytes_rows, collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
+    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
+    collect_py_strings, collect_sequence_items, collect_u64_sequence, collect_usize_sequence,
+    copy_one_byte_buffer, grow_sequence_error, is_one_byte_buffer, py_iter_or_error,
+    string_alloc_error, try_collect_results, try_push, try_push_heap, try_push_pair, try_push_vec,
+    try_reserve_heap, try_reserve_hint, try_reserve_pair, try_reserve_vec, try_string_from_str,
+    try_vec_with_capacity, try_vec_with_capacity_hint, with_one_byte_buffer,
 };

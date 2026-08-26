@@ -95,9 +95,9 @@ pub(crate) use frame_args::{
 };
 pub(crate) use geojson::{
     GeoJsonDecodeContext, ScalarOrIterator, classify_scalar_or_iterator,
-    coerce_geojson_geometry_value, is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs,
-    mapping_as_dict, parse_geojson_geometry_value, parse_geojson_slice, parse_geojson_value,
-    py_to_json_value, require_geojson_crs,
+    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, is_mapping_like,
+    is_py_bytes_or_bytearray, is_wgs84_family_crs, is_wkt_string, mapping_as_dict,
+    parse_geojson_geometry_value, parse_geojson_slice, py_to_json_value, require_geojson_crs,
 };
 pub(crate) use io_encoders::{box_polygon, wrapped_box};
 pub(crate) use linref::{

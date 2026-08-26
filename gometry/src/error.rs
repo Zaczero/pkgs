@@ -76,6 +76,13 @@ impl Error {
         }
         self
     }
+
+    pub(crate) fn with_parse_path(mut self, path: &str) -> Self {
+        if let ErrorKind::Io(error) = self.0.as_mut() {
+            error.set_path_if_missing(path);
+        }
+        self
+    }
 }
 
 impl From<ErrorKind> for Error {

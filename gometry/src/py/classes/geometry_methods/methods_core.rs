@@ -7,9 +7,9 @@ use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
 };
 use crate::{
-    Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, geojson_dict,
+    Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, geojson_dict_prepared,
     map_coordinates_callback, parse_coordinate_replacement, render_shape_html, render_shape_svg,
-    replace_shape_coordinates,
+    replace_shape_coordinates, require_geojson_crs,
 };
 
 #[pymethods]
@@ -338,12 +338,13 @@ impl PyGeometry {
 
     #[getter("__geo_interface__")]
     pub fn geo_interface<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        require_geojson_crs(self.crs_str())?;
         if self.has_m() || self.epoch().is_some() {
             return Err(PyTypeError::new_err(
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
             ));
         }
-        geojson_dict(py, &self.shape)
+        geojson_dict_prepared(py, &self.shape, self.crs_str().is_some())
     }
     /// Area in CRS-natural units for the geometry's CRS.
     ///

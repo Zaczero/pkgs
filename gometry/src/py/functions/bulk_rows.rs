@@ -26,6 +26,7 @@ pub(crate) fn stream_bulk<'py>(
     mut parse_row: impl FnMut(
         &Bound<'py, PyAny>,
         &mut crate::array::StreamingShapes,
+        usize,
     ) -> PyResult<StreamedRow>,
 ) -> PyResult<PyGeometryArray> {
     let mut rows = crate::array::StreamingShapes::new();
@@ -42,7 +43,7 @@ pub(crate) fn stream_bulk<'py>(
             rows.try_push_missing()?;
             continue;
         }
-        match parse_row(&item, &mut rows).map_err(|err| crate::note_array_row(err, row))? {
+        match parse_row(&item, &mut rows, row).map_err(|err| crate::note_array_row(err, row))? {
             StreamedRow::Present(row_crs) => {
                 if let Some(context) = crs_context {
                     first_crs.admit(row_crs, fallback.as_ref(), row, context)?;

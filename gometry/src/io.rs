@@ -34,6 +34,7 @@ pub struct IoError {
     format: ParseFormat,
     detail: Box<str>,
     position: Option<usize>,
+    path: Option<Box<str>>,
 }
 
 impl IoError {
@@ -44,6 +45,16 @@ impl IoError {
 
     pub const fn position(&self) -> Option<usize> {
         self.position
+    }
+
+    pub(crate) fn set_path_if_missing(&mut self, path: &str) {
+        if self.path.is_none() {
+            self.path = Some(path.into());
+        }
+    }
+
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.path.as_deref()
     }
 
     pub(crate) const fn set_position_if_missing(&mut self, position: usize) {
@@ -57,6 +68,7 @@ impl IoError {
             format,
             detail: detail.into(),
             position: None,
+            path: None,
         }
         .into()
     }
@@ -70,6 +82,7 @@ impl IoError {
             format,
             detail: detail.into(),
             position: Some(position),
+            path: None,
         }
         .into()
     }
@@ -297,24 +310,6 @@ struct WktHeader<'a> {
     body: Option<&'a str>,
 }
 
-pub(crate) enum GeoJsonInput {
-    Geometry(Shape),
-    /// One entry per feature; ``None`` is RFC 7946's null geometry (a valid
-    /// feature with no geometry — a missing row downstream).
-    FeatureCollection(Vec<Option<Shape>>),
-}
-
-/// Parsed `GeoJSON` text geometry / FeatureCollection shapes.
-///
-/// Legacy ``crs`` declarations are captured during the typed text probe (same
-/// order as [`collect_geojson_legacy_crs`]) so callers need no second full
-/// `serde_json::Value` parse of the text.
-pub(crate) struct GeoJsonTextParse {
-    pub input: GeoJsonInput,
-    /// Legacy ``crs`` members in reconciliation order (own, then nested).
-    pub legacy_crs: Vec<serde_json::Value>,
-}
-
 fn parse_content(format: ParseFormat, error: CrateError) -> CrateError {
     match error.kind() {
         crate::error::ErrorKind::Geometry(_) => IoError::parse(format, error.to_string()),
@@ -327,12 +322,13 @@ mod wkb;
 mod wkt;
 
 #[cfg(test)]
+pub(crate) use geojson::parse_geojson;
+#[cfg(test)]
 pub(crate) use geojson::to_geojson_string_with_z;
 pub(crate) use geojson::{
     DefiningMembers, LegacyGeoJsonCrsPolicy, collect_geojson_legacy_crs, geojson_output_shape,
-    parse_geojson, parse_geojson_text, reconcile_legacy_geojson_crs,
-    reject_rfc7946_cross_type_members, reject_rfc7946_value_object, to_geojson_string,
-    validate_geojson_value,
+    parse_geojson_at, reconcile_legacy_geojson_crs, reject_rfc7946_cross_type_members,
+    reject_rfc7946_value_object, to_geojson_string, validate_geojson_value,
 };
 pub(crate) use wkb::{
     WkbCoordArena, parse_wkb, parse_wkb_batch, to_wkb, to_wkb_len, wkb_len, write_wkb_into,

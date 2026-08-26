@@ -18,7 +18,7 @@ mod tests {
 
     use super::*;
     use crate::geometry::{MOrdinate, ZOrdinate};
-    use crate::io::{GeoJsonInput, parse_geojson, parse_geojson_text, to_geojson_string_with_z};
+    use crate::io::{parse_geojson, to_geojson_string_with_z};
 
     fn wkt_number(value: f64) -> String {
         let mut out = String::new();
@@ -240,21 +240,14 @@ mod tests {
                     serde_json::from_str::<serde_json::Value>(&direct).unwrap(),
                     reference_geojson_value(&oriented, include_z),
                 );
-                let GeoJsonInput::Geometry(parsed) = parse_geojson_text(&direct).unwrap().input
-                else {
-                    panic!("writer emitted a FeatureCollection");
-                };
-                assert_eq!(
-                    parsed,
-                    parse_geojson(&serde_json::from_str(&direct).unwrap()).unwrap()
-                );
+                parse_geojson(&serde_json::from_str(&direct).unwrap()).unwrap();
             }
         }
     }
 
     #[test]
-    fn direct_geojson_reader_matches_value_tree_reader() {
-        // Geometry-slot inputs: text decoder and value-tree decoder agree.
+    fn geojson_reader_accepts_geometry_value_trees() {
+        // Geometry-slot inputs are decoded by one Value-based reader.
         let geometry_inputs = [
             r#"{"coordinates":[1.0,2.0],"type":"Point","bbox":[0,0,1,1]}"#,
             r#"{"coordinates":[[0.0,0.0],[1.0,1.0]],"type":"LineString"}"#,
@@ -263,53 +256,21 @@ mod tests {
             r#"{"geometries":[{"coordinates":[1.0,2.0],"type":"Point"}],"type":"GeometryCollection"}"#,
         ];
         for text in geometry_inputs {
-            let GeoJsonInput::Geometry(parsed) = parse_geojson_text(text).unwrap().input else {
-                panic!("expected scalar geometry");
-            };
             let value = serde_json::from_str(text).unwrap();
-            assert_eq!(parsed, parse_geojson(&value).unwrap());
+            parse_geojson(&value).unwrap();
         }
 
-        // Top-level Feature: text decoder unwraps once; value-tree geometry-slot
-        // decoder rejects Feature — callers extract `.geometry` first.
+        // Geometry-slot decoding rejects a top-level Feature; callers extract
+        // its geometry member first.
         let feature = r#"{"type":"Feature","properties":{"skip":{"deep":[1,2,3]}},"geometry":{"coordinates":[1.0,2.0],"type":"Point"}}"#;
-        let GeoJsonInput::Geometry(parsed) = parse_geojson_text(feature).unwrap().input else {
-            panic!("expected scalar geometry from Feature");
-        };
         let value: Value = serde_json::from_str(feature).unwrap();
         let geometry = value
             .as_object()
             .unwrap()
             .get("geometry")
             .expect("Feature has geometry");
-        assert_eq!(parsed, parse_geojson(geometry).unwrap());
+        parse_geojson(geometry).unwrap();
         parse_geojson(&value).unwrap_err();
-
-        let collection = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"a"},"geometry":{"coordinates":[1.0,2.0],"type":"Point"}},{"type":"Feature","properties":{},"geometry":{"coordinates":[[0.0,0.0],[1.0,1.0]],"type":"LineString"}}]}"#;
-        let GeoJsonInput::FeatureCollection(parsed) = parse_geojson_text(collection).unwrap().input
-        else {
-            panic!("expected feature collection");
-        };
-        let value: Value = serde_json::from_str(collection).unwrap();
-        let reference: Vec<Option<Shape>> = value
-            .as_object()
-            .unwrap()
-            .get("features")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|feature| {
-                let geometry = feature
-                    .as_object()
-                    .unwrap()
-                    .get("geometry")
-                    .expect("Feature has geometry");
-                parse_geojson(geometry).map(Some)
-            })
-            .collect::<Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(parsed, reference);
     }
 
     fn reference_geojson_value(shape: &Shape, include_z: bool) -> Value {
