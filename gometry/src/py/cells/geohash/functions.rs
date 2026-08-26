@@ -6,7 +6,7 @@ use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::py::cells::geohash::cell::{PyGeohashCell, geohash_cell_arg};
 use crate::py::cells::geohash::coverage::geohash_cell_array;
 use crate::py::cells::{
-    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_bounds,
+    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
     dispatch_grid_cell_array, pyfunction,
 };
 use crate::py::errors::GeometryError;
@@ -79,9 +79,10 @@ pub(super) fn geohash_cells(
 
 /// Return the deepest single geohash cell containing a geometry or lon/lat bounds.
 ///
-/// Walks the corner cells up to their common prefix. There is no global
-/// geohash root, so bounds that straddle the precision-1 grid have no
-/// containing cell and raise.
+/// Descends the cell containing the lower corner and accepts it only after its
+/// complete rectangle contains both axes of the query. There is no global
+/// wrapped geohash cell, so an antimeridian-spanning region has no single-cell
+/// result and raises.
 ///
 /// Parameters
 /// ----------
@@ -110,13 +111,23 @@ pub(super) fn geohash_cells(
 /// 'u33'
 #[pyfunction]
 pub(super) fn geohash_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyGeohashCell> {
-    let bounds = bounding_query_bounds(value)?;
-    let sw = Geohash::from_lonlat(bounds.minx(), bounds.miny(), GEOHASH_MAX_PRECISION);
-    let ne = Geohash::from_lonlat(bounds.maxx(), bounds.maxy(), GEOHASH_MAX_PRECISION);
+    let query = bounding_query_region(value)?;
+    if query.crosses_antimeridian {
+        return Err(GeometryError::new_err(
+            "no single geohash cell contains the bounds (they span the antimeridian)",
+        ));
+    }
+    let bounds = query.bounds;
+    let finest = Geohash::from_lonlat(bounds.minx(), bounds.miny(), GEOHASH_MAX_PRECISION);
     for precision in (1..=GEOHASH_MAX_PRECISION).rev() {
-        let (a, b) = (sw.parent_at(precision), ne.parent_at(precision));
-        if a == b {
-            return Ok(PyGeohashCell { cell: a });
+        let cell = finest.parent_at(precision);
+        let cell_bounds = cell.bounds();
+        if cell_bounds.minx() <= bounds.minx()
+            && bounds.maxx() <= cell_bounds.maxx()
+            && cell_bounds.miny() <= bounds.miny()
+            && bounds.maxy() <= cell_bounds.maxy()
+        {
+            return Ok(PyGeohashCell { cell });
         }
     }
     Err(GeometryError::new_err(

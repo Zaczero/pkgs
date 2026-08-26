@@ -38,8 +38,8 @@ pub(crate) use construct::{
 pub(super) use engine::grid_cover_dispatch;
 pub(crate) use engine::grid_lonlat_points;
 use engine::{
-    bounding_query_bounds, cell_items, cell_limit_err, coverage_to_polygon, lonlat_point_geometry,
-    rect_cells_to_polygon,
+    bounding_query_bounds, bounding_query_region, cell_items, cell_limit_err, coverage_to_polygon,
+    lonlat_point_geometry, rect_cells_to_polygon,
 };
 pub(crate) use grid_kind::{GridKind, uncompact_floor_error};
 pub(crate) use h3::{PyH3EdgeArray, PyH3VertexArray};

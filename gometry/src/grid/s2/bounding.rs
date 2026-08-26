@@ -20,10 +20,10 @@
 //!      must be `≥ +margin_eps` (absolute floor + relative to edge-normal
 //!      magnitude). Near a boundary or at tiny scale, stop at the coarser
 //!      containing cell — never over-descend on near-zero false positives.
-//!    - Multi-child margin ties use canonical [`CellId::from_point`] ownership
-//!      of the bbox center.
-//!    - Zero-width/height cube-edge segments may reconcile to the Hilbert LCA
-//!      of samples when the halfspace sibling is wrong for dual assignment.
+//!    - A child is selected only when it is the unique positive-margin child;
+//!      shared-edge ownership never selects a candidate.
+//!    - Zero-width/height regions are still checked as complete closed
+//!      rectangles; cell-id ownership at a shared edge is not a proof.
 //!
 //! Coverer fail-open `Boundary` is intentionally unused here (correct for
 //! outer covers, not multi-face proof). No amplification beyond the bbox.
@@ -43,17 +43,15 @@ use crate::grid::s2::projection::{NUM_FACES, Point3, lonlat_to_point};
 /// the lon/lat bounding box (multi-face span). Near cell boundaries the result
 /// may be one level coarser than the theoretical deepest (always containing).
 ///
-/// Antimeridian-crossing shapes (west > east bounds, or geometry that crosses
-/// ±180) derive candidates from **normalized spherical samples** (vertices +
-/// short-arc edge midpoints) rather than the planar lon/lat envelope, which
-/// would take the long way around and reject real containing cells.
+/// Antimeridian-crossing shapes use the complete normalized spherical extent,
+/// represented as two closed longitude windows. A candidate is accepted only
+/// when both windows pass the cell halfspaces; vertex ownership is never a
+/// containment certificate.
 pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
     let mut n_points = 0_usize;
     let mut only: Option<Point3> = None;
-    let mut samples: Vec<(f64, f64)> = Vec::new();
     shape.for_each_point(|point| {
         n_points += 1;
-        samples.push((point.x, point.y));
         if n_points == 1 {
             only = Some(point_from_lonlat(point.x, point.y));
         }
@@ -69,32 +67,37 @@ pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
     }
 
     let bounds = shape.bounds()?;
-    // Seam / wrap: use spherical sample LCA (vertices already collected).
+    // Seam / wrap: preserve the narrow physical extent instead of taking the
+    // 358-degree planar envelope. The windows are proved as complete
+    // rectangles, including their interiors and shared seam endpoints.
     if bounds.minx() > bounds.maxx() || shape.crosses_antimeridian() {
-        return bounding_cell_from_samples(&samples);
+        let bounds = crate::geometry::geographic_crossing_bounds(shape)?;
+        return bounding_cell_regions(bounds);
     }
     bounding_cell_bbox(bounds)
 }
 
-/// Deepest cell containing every lon/lat sample (Hilbert LCA of L30 leaves,
-/// raised until closed halfspaces contain all samples). Used for
-/// antimeridian-normalized spherical extents.
-fn bounding_cell_from_samples(samples: &[(f64, f64)]) -> Option<CellId> {
-    if samples.is_empty() {
-        return None;
+/// Deepest cell whose closed spherical halfspaces contain every rectangle in
+/// a seam-aware extent. L30 leaves only choose an ancestor path; acceptance is
+/// exclusively by complete halfspace proofs.
+fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
+    let windows = longitude_windows(bounds);
+    let mut leaves = Vec::with_capacity(windows.len() * 4);
+    for window in &windows {
+        leaves.extend([
+            CellId::from_lonlat(window.lon0.to_degrees(), bounds.miny()),
+            CellId::from_lonlat(window.lon1.to_degrees(), bounds.miny()),
+            CellId::from_lonlat(window.lon1.to_degrees(), bounds.maxy()),
+            CellId::from_lonlat(window.lon0.to_degrees(), bounds.maxy()),
+        ]);
     }
-    if samples.len() == 1 {
-        return Some(CellId::from_lonlat(samples[0].0, samples[0].1));
-    }
-    let mut leaves: Vec<CellId> = samples
-        .iter()
-        .map(|&(lon, lat)| CellId::from_lonlat(lon, lat))
-        .collect();
     leaves.sort_unstable();
     leaves.dedup();
-    // Hilbert LCA: walk all leaves up until they share one cell.
+    if leaves.is_empty() {
+        return None;
+    }
     let mut level = leaves[0].level();
-    let candidate = loop {
+    let mut candidate = loop {
         let at = leaves
             .iter()
             .map(|leaf| leaf.parent(level).unwrap_or(*leaf))
@@ -107,20 +110,69 @@ fn bounding_cell_from_samples(samples: &[(f64, f64)]) -> Option<CellId> {
         }
         level -= 1;
     };
-    let mut candidate = candidate;
-    // Raise until every sample is closed-contained (halfspaces).
     loop {
-        let bbox_samples_ok = samples.iter().all(|&(lon, lat)| {
-            let p = point_from_lonlat(lon, lat);
-            Cell::from_id(candidate).contains_point(p)
-        });
-        if bbox_samples_ok {
-            return Some(candidate);
+        if windows
+            .iter()
+            .all(|window| bbox_closed_in_cell(candidate, window))
+        {
+            return Some(deepest_margin_child_regions(candidate, &windows));
         }
         if candidate.level() == 0 {
             return None;
         }
         candidate = candidate.parent(candidate.level() - 1)?;
+    }
+}
+
+fn longitude_windows(bounds: Bounds) -> Vec<LonLatBBox> {
+    let lat0 = bounds.miny().to_radians();
+    let lat1 = bounds.maxy().to_radians();
+    if bounds.minx() <= bounds.maxx() {
+        vec![LonLatBBox {
+            lon0: bounds.minx().to_radians(),
+            lon1: bounds.maxx().to_radians(),
+            lat0,
+            lat1,
+        }]
+    } else {
+        vec![
+            LonLatBBox {
+                lon0: bounds.minx().to_radians(),
+                lon1: std::f64::consts::PI,
+                lat0,
+                lat1,
+            },
+            LonLatBBox {
+                lon0: -std::f64::consts::PI,
+                lon1: bounds.maxx().to_radians(),
+                lat0,
+                lat1,
+            },
+        ]
+    }
+}
+
+fn deepest_margin_child_regions(root: CellId, windows: &[LonLatBBox]) -> CellId {
+    let mut current = root;
+    loop {
+        let Some(children) = current.children() else {
+            return current;
+        };
+        let mut containing = children.into_iter().filter(|&child| {
+            windows
+                .iter()
+                .all(|window| bbox_margin_in_cell(child, window))
+        });
+        let Some(child) = containing.next() else {
+            return current;
+        };
+        // Positive-margin children are disjoint. Retain the parent if
+        // arithmetic ever reports a second one rather than choosing by a
+        // point owner at a shared boundary.
+        if containing.next().is_some() {
+            return current;
+        }
+        current = child;
     }
 }
 
@@ -172,71 +224,11 @@ pub(crate) fn bounding_cell_bbox(bounds: Bounds) -> Option<CellId> {
     }
     let root = margin_root.unwrap_or_else(|| closed_root.expect("n_closed == 1"));
 
-    let cell = deepest_margin_child(root, &bbox, minx, miny, maxx, maxy);
-    Some(hilbert_reconcile(cell, &bbox, minx, miny, maxx, maxy))
+    Some(deepest_margin_child(root, &bbox))
 }
 
-/// Ensure the halfspace result Hilbert-contains same-face corner/edge samples.
-///
-/// Cube-edge lon/lat segments can closed-contain under halfspaces in a sibling
-/// of the Hilbert-owning cell (shared edge, dual leaf assignment). When the
-/// halfspace cell misses those leaves, prefer the single-face Hilbert LCA of
-/// the samples when it still closed-contains the bbox. Never walk the
-/// halfspace cell up to a face root solely for dual-edge samples — geometric
-/// closed containment remains authoritative there.
-fn hilbert_reconcile(
-    halfspace: CellId,
-    bbox: &LonLatBBox,
-    minx: f64,
-    miny: f64,
-    maxx: f64,
-    maxy: f64,
-) -> CellId {
-    let samples = bbox_hilbert_samples(minx, miny, maxx, maxy);
-    if hilbert_samples_ok(halfspace, &samples) {
-        return halfspace;
-    }
-    // Solid area boxes keep geometric halfspace authority (corner leaves on a
-    // face diagonal may dual-assign; that is not a non-containing verdict).
-    // Zero-width / zero-height segments on cube edges need the Hilbert LCA:
-    // halfspaces can pick the wrong sibling of a shared edge.
-    // Plain == so -0.0 and +0.0 count as a zero-width/height edge.
-    #[expect(
-        clippy::float_cmp,
-        reason = "finite bbox edges; signed zero must match"
-    )]
-    let degenerate = minx == maxx || miny == maxy;
-    if !degenerate {
-        return halfspace;
-    }
-    let face = halfspace.face();
-    let same_face: Vec<CellId> = samples
-        .iter()
-        .copied()
-        .filter(|leaf| leaf.face() == face)
-        .collect();
-    if same_face.len() >= 2
-        && let Some(mut lca) = common_ancestor(&same_face)
-    {
-        // Walk LCA up only until it closed-contains.
-        loop {
-            if bbox_closed_in_cell(lca, bbox) && hilbert_samples_ok(lca, &samples) {
-                return lca;
-            }
-            let level = lca.level();
-            if level == 0 {
-                break;
-            }
-            match lca.parent(level - 1) {
-                Some(p) => lca = p,
-                None => break,
-            }
-        }
-    }
-    halfspace
-}
-
-/// Corner + edge-midpoint L30 leaves of the lon/lat rectangle.
+/// Corner + edge-midpoint L30 leaves used only by independent test oracles.
+#[cfg(test)]
 fn bbox_hilbert_samples(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Vec<CellId> {
     let mx = f64::midpoint(minx, maxx);
     let my = f64::midpoint(miny, maxy);
@@ -264,6 +256,7 @@ fn bbox_hilbert_samples(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Vec<CellI
 ///
 /// Samples dual-assigned to another face are ignored (cube-edge leaf policy);
 /// if none share the cell's face the check is vacuously true.
+#[cfg(test)]
 fn hilbert_samples_ok(cell: CellId, samples: &[CellId]) -> bool {
     let face = cell.face();
     for &leaf in samples {
@@ -282,14 +275,7 @@ fn hilbert_samples_ok(cell: CellId, samples: &[CellId]) -> bool {
 /// HARD INVARIANT: never descend on near-zero halfspace mins. If no child
 /// clears [`bbox_margin_in_cell`], stop at the current coarser cell that does
 /// contain the bbox (via the closed root / prior margin steps).
-fn deepest_margin_child(
-    root: CellId,
-    bbox: &LonLatBBox,
-    minx: f64,
-    miny: f64,
-    maxx: f64,
-    maxy: f64,
-) -> CellId {
+fn deepest_margin_child(root: CellId, bbox: &LonLatBBox) -> CellId {
     let mut current = root;
     loop {
         let Some(children) = current.children() else {
@@ -308,31 +294,9 @@ fn deepest_margin_child(
         match n {
             0 => return current,
             1 => current = margin[0],
-            _ => {
-                let Some(pick) = canonical_owner(&margin[..n], minx, miny, maxx, maxy) else {
-                    return current;
-                };
-                if !bbox_margin_in_cell(pick, bbox) {
-                    return current;
-                }
-                current = pick;
-            },
+            _ => return current,
         }
     }
-}
-
-/// Among containing candidates, the one that Hilbert-owns the bbox center leaf.
-fn canonical_owner(
-    candidates: &[CellId],
-    minx: f64,
-    miny: f64,
-    maxx: f64,
-    maxy: f64,
-) -> Option<CellId> {
-    let lon = f64::midpoint(minx, maxx);
-    let lat = f64::midpoint(miny, maxy);
-    let leaf = CellId::from_lonlat(lon, lat);
-    candidates.iter().copied().find(|&cell| cell.contains(leaf))
 }
 
 /// Closed lon/lat rectangle in radians.
@@ -521,33 +485,6 @@ fn point_from_lonlat(lon: f64, lat: f64) -> Point3 {
         return Point3::new(0.0, 0.0, -1.0);
     }
     lonlat_to_point(lon, lat)
-}
-
-fn common_ancestor(leaves: &[CellId]) -> Option<CellId> {
-    let mut cell = leaves[0];
-    for &other in &leaves[1..] {
-        cell = lca(cell, other)?;
-    }
-    Some(cell)
-}
-
-fn lca(a: CellId, b: CellId) -> Option<CellId> {
-    let lsb = |id: CellId| id.raw() & id.raw().wrapping_neg();
-    let mut bits = a.raw() ^ b.raw();
-    let lsb_a = lsb(a);
-    let lsb_b = lsb(b);
-    if bits < lsb_a {
-        bits = lsb_a;
-    }
-    if bits < lsb_b {
-        bits = lsb_b;
-    }
-    let msb = 63_u32.saturating_sub(bits.leading_zeros());
-    if msb > 60 {
-        return None;
-    }
-    let level = ((60 - msb) / 2) as u8;
-    a.parent(level)
 }
 
 #[cfg(test)]

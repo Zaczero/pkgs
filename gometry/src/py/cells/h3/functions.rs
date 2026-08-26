@@ -1,3 +1,4 @@
+use crate::grid::spherical_arc::{H3BoundingWindow, h3_cell_contains_windows};
 use crate::py::cells::coverage_ops::SortedCells;
 use crate::py::cells::h3::register::build_coverage;
 use crate::py::cells::h3::{
@@ -5,7 +6,7 @@ use crate::py::cells::h3::{
 };
 use crate::py::cells::{
     Bound, CellRule, GeometryError, GridKind, H3_MAX_RESOLUTION, Py, PyAny, PyCellArray, PyResult,
-    Python, bounding_query_bounds, dispatch_grid_cell_array, grid_cover_dispatch, pyfunction,
+    Python, bounding_query_region, dispatch_grid_cell_array, grid_cover_dispatch, pyfunction,
 };
 use crate::py::errors::InvalidGeometryError;
 
@@ -86,8 +87,10 @@ pub(super) fn h3_cells(
 
 /// Return the deepest single H3 cell containing a geometry or lon/lat bounds.
 ///
-/// Walks all four corner cells up to a common ancestor, then verifies the
-/// candidate's actual H3 boundary covers the whole bounds.
+/// Walks a necessary ancestor path, then proves the complete region against
+/// every ordered native H3 edge. Vertex ownership is not a containment proof;
+/// when the finest candidate cannot be proved, a coarser proven ancestor is
+/// returned.
 ///
 /// Parameters
 /// ----------
@@ -116,16 +119,47 @@ pub(super) fn h3_cells(
 /// 2
 #[pyfunction]
 pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
-    // Prove the antimeridian-aware *region*, not merely source vertices.
-    // Vertex-only sampling was the C14 defect: a MultiPoint on the diagonal of
-    // a rectangle returned a root cell that failed to cover the opposite
-    // corners of the promised bounding box.
-    let samples = bounding_cell_region_samples(value)?;
+    let query = bounding_query_region(value)?;
+    let bounds = query.bounds;
+    let ordinary = H3BoundingWindow {
+        west: bounds.minx(),
+        south: bounds.miny(),
+        east: bounds.maxx(),
+        north: bounds.maxy(),
+    };
+    let (windows, window_count) = if query.crosses_antimeridian || bounds.minx() > bounds.maxx() {
+        (
+            [
+                H3BoundingWindow {
+                    west: bounds.minx(),
+                    south: bounds.miny(),
+                    east: 180.0,
+                    north: bounds.maxy(),
+                },
+                H3BoundingWindow {
+                    west: -180.0,
+                    south: bounds.miny(),
+                    east: bounds.maxx(),
+                    north: bounds.maxy(),
+                },
+            ],
+            2,
+        )
+    } else {
+        ([ordinary, ordinary], 1)
+    };
     let max_res = h3_resolution(H3_MAX_RESOLUTION)?;
-    let mut corners: Vec<CellIndex> = samples
-        .iter()
-        .map(|&(lon, lat)| h3_corner_cell(lon, lat, max_res))
-        .collect::<PyResult<_>>()?;
+    let mut corners = Vec::with_capacity(windows.len() * 4);
+    for window in windows.iter().take(window_count) {
+        for (lon, lat) in [
+            (window.west, window.south),
+            (window.east, window.south),
+            (window.east, window.north),
+            (window.west, window.north),
+        ] {
+            crate::try_push(&mut corners, h3_corner_cell(lon, lat, max_res)?)?;
+        }
+    }
     if corners.is_empty() {
         return Err(InvalidGeometryError::new_err(
             "bounding cell requires a non-empty geometry",
@@ -147,7 +181,7 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
     }
     let mut candidate = corners[0];
     loop {
-        if h3_cell_covers_samples(candidate, &samples) {
+        if h3_cell_contains_windows(candidate, &windows[..window_count]) {
             return Ok(PyH3Cell { cell: candidate });
         }
         let current = u8::from(candidate.resolution());
@@ -162,98 +196,10 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
     }
 }
 
-/// Lon/lat points that a bounding cell must contain — the four corners of the
-/// antimeridian-aware region for ordinary input, or the short-arc vertex set
-/// when linework crosses ±180 (planar envelope corners take the long way).
-fn bounding_cell_region_samples(value: &Bound<'_, PyAny>) -> PyResult<Vec<(f64, f64)>> {
-    use crate::geometry::Shape;
-    use crate::{exact_geometry, exact_geometry_array, lonlat_shape, validate_lonlat_shape};
-
-    if let Some(geometry) = exact_geometry(value) {
-        let shape = lonlat_shape(geometry)?;
-        validate_lonlat_shape(&shape)?;
-        return region_samples_for_shape(&shape);
-    }
-    if let Some(array) = exact_geometry_array(value) {
-        let crs = array.crs_str();
-        let mut parts: Vec<Shape> = Vec::new();
-        for (row, shape) in array.storage().iter_shapes().enumerate() {
-            if array.is_row_missing(row) {
-                continue;
-            }
-            let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-            validate_lonlat_shape(&shape)?;
-            if !shape.is_empty() {
-                crate::try_push(&mut parts, shape)?;
-            }
-        }
-        if parts.is_empty() {
-            return Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            ));
-        }
-        let collection = if parts.len() == 1 {
-            parts.pop().expect("one part")
-        } else {
-            Shape::GeometryCollection(parts.into())
-        };
-        return region_samples_for_shape(&collection);
-    }
-    let bounds = bounding_query_bounds(value)?;
-    Ok(rectangle_corner_samples(bounds))
-}
-
-/// Region witnesses for one lon/lat shape.
-///
-/// Non-crossing shapes prove the full lon/lat rectangle (all four corners),
-/// never merely the source vertices. Crossing / wrap shapes use the vertex set
-/// so the short-arc spherical extent is checked rather than the long-way
-/// planar envelope.
-fn region_samples_for_shape(shape: &crate::geometry::Shape) -> PyResult<Vec<(f64, f64)>> {
-    let mut vertex_samples = Vec::new();
-    crate::try_reserve_vec(&mut vertex_samples, shape.coord_count())?;
-    shape.for_each_point(|point| {
-        // The reservation covers every source vertex, so this callback cannot
-        // trigger vector growth while walking the trusted shape.
-        vertex_samples.push((point.x, point.y));
-    });
-    if vertex_samples.is_empty() {
-        return Err(InvalidGeometryError::new_err(
-            "bounding cell requires a non-empty geometry",
-        ));
-    }
-    let Some(bounds) = shape.bounds() else {
-        return Ok(vertex_samples);
-    };
-    if bounds.minx() > bounds.maxx() || shape.crosses_antimeridian() {
-        return Ok(vertex_samples);
-    }
-    Ok(rectangle_corner_samples(bounds))
-}
-
-fn rectangle_corner_samples(bounds: crate::geometry::Bounds) -> Vec<(f64, f64)> {
-    vec![
-        (bounds.minx(), bounds.miny()),
-        (bounds.maxx(), bounds.miny()),
-        (bounds.maxx(), bounds.maxy()),
-        (bounds.minx(), bounds.maxy()),
-    ]
-}
-
 fn h3_corner_cell(lon: f64, lat: f64, resolution: Resolution) -> PyResult<CellIndex> {
     Ok(LatLng::new(lat, lon)
         .map_err(|error| GeometryError::new_err(error.to_string()))?
         .to_cell(resolution))
-}
-
-/// Whether every sample lies inside `cell` via hierarchical id containment
-/// (`LatLng::to_cell` at the cell's resolution). Avoids planar `covers` on
-/// antimeridian-crossing cell polygons, which falsely reject near ±180.
-fn h3_cell_covers_samples(cell: CellIndex, samples: &[(f64, f64)]) -> bool {
-    let res = cell.resolution();
-    samples
-        .iter()
-        .all(|&(lon, lat)| LatLng::new(lat, lon).is_ok_and(|latlng| latlng.to_cell(res) == cell))
 }
 
 pub(in crate::py::cells) fn h3_cell_from_xy(

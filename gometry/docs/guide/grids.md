@@ -339,10 +339,12 @@ print("tile:", gm.tile_bounding_cell(berlin))
 
 ```
 
-Each returns the *deepest* single cell whose extent still covers the whole input
-(for H3, the highest-resolution cell that still contains every corner — res 15 for
-a point-sized input, coarser only when no finer single cell fits). Pass a geometry,
-an array, or a raw `(minx, miny, maxx, maxy)` bounds tuple.
+Each returns the *deepest* single cell whose certified extent covers the complete
+lon/lat bounding region, not just the input vertices. The proof includes region
+interiors and curved cell-edge bulges; seam and pole extents are normalized
+before checking, and polygon holes do not shrink the bounding region. A
+candidate that cannot be proved is replaced by a coarser proven ancestor. Pass
+a geometry, an array, or a raw `(minx, miny, maxx, maxy)` bounds tuple.
 
 ### Dissolving a covering back to one outline
 

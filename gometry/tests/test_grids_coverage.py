@@ -79,6 +79,37 @@ def test_cover_cells_use_free_geometry_predicate() -> None:
     assert gm.disjoint(source, gm.Point(2, 2))
 
 
+@pytest.mark.parametrize('name', ['h3', 's2', 'geohash', 'tile'])
+def test_bounding_cells_prove_the_full_region_not_only_vertices(name) -> None:
+    first = (-4.0263, 11.4529)
+    second = (-13.6235, 6.2313)
+    points = gm.MultiPoint([first, second], crs=4326)
+    bounds = gm.box(
+        min(first[0], second[0]),
+        min(first[1], second[1]),
+        max(first[0], second[0]),
+        max(first[1], second[1]),
+        crs=4326,
+    )
+    factory = getattr(gm, f'{name}_bounding_cell')
+    try:
+        point_result = factory(points)
+    except gm.GeometryError:
+        with pytest.raises(gm.GeometryError):
+            factory(bounds)
+    else:
+        assert point_result == factory(bounds)
+
+
+def test_bounding_cells_use_family_seam_contracts() -> None:
+    line = gm.LineString([(179.9, 0.0), (-179.9, 0.0)], crs=4326)
+    assert gm.h3_bounding_cell(line) is not None
+    assert gm.s2_bounding_cell(line) is not None
+    assert gm.tile_bounding_cell(line).zoom == 0
+    with pytest.raises(gm.GeometryError, match='antimeridian'):
+        gm.geohash_bounding_cell(line)
+
+
 def test_cell_identity_arguments_match_grid_families() -> None:
     cases = [
         (gm.H3Cell(21.0, 52.0, resolution=7),),

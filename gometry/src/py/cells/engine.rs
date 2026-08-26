@@ -67,33 +67,76 @@ pub(super) fn cell_items<'py>(cells: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'
 /// or `GeometryArray` (grid input policy — non-WGS84 frames reproject), or a
 /// bare ``(minx, miny, maxx, maxy)`` lon/lat iterable.
 pub(super) fn bounding_query_bounds(value: &Bound<'_, PyAny>) -> PyResult<crate::geometry::Bounds> {
+    Ok(bounding_query_region(value)?.bounds)
+}
+
+/// The complete geographic extent used by a single-cell query.
+///
+/// A west-of-east extent is a narrow antimeridian window, not the 358 degree
+/// planar envelope.  Keeping that fact beside the bounds prevents each grid
+/// family from silently choosing a different seam interpretation.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BoundingQueryRegion {
+    pub(super) bounds: crate::geometry::Bounds,
+    pub(super) crosses_antimeridian: bool,
+}
+
+pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<BoundingQueryRegion> {
     use crate::geometry::Bounds;
     if let Some(geometry) = exact_geometry(value) {
         let shape = lonlat_shape(geometry)?;
         validate_lonlat_shape(&shape)?;
-        return shape.bounds().ok_or_else(|| {
-            InvalidGeometryError::new_err("bounding cell requires a non-empty geometry")
-        });
+        let bounds = if shape.crosses_antimeridian() {
+            crate::geometry::geographic_crossing_bounds(&shape)
+        } else {
+            shape.bounds()
+        };
+        return match bounds {
+            Some(bounds) => Ok(BoundingQueryRegion {
+                bounds,
+                crosses_antimeridian: shape.crosses_antimeridian(),
+            }),
+            None => Err(InvalidGeometryError::new_err(
+                "bounding cell requires a non-empty geometry",
+            )),
+        };
     }
     if let Some(array) = exact_geometry_array(value) {
         let crs = array.crs_str();
-        let mut folded: Option<Bounds> = None;
+        let mut shapes = Vec::new();
         for (row, shape) in array.storage().iter_shapes().enumerate() {
             if array.is_row_missing(row) {
                 continue;
             }
             let shape = crate::lonlat_shape_under(&shape, crs)?;
             validate_lonlat_shape(&shape)?;
-            if let Some(bounds) = shape.bounds() {
-                folded = Some(folded.map_or(bounds, |mut acc| {
-                    acc.include_bounds(bounds);
-                    acc
-                }));
+            if !shape.is_empty() {
+                crate::try_push(&mut shapes, shape.into_owned())?;
             }
         }
-        return folded.ok_or_else(|| {
-            InvalidGeometryError::new_err("bounding cell requires a non-empty geometry")
-        });
+        let shape = match shapes.len() {
+            0 => {
+                return Err(InvalidGeometryError::new_err(
+                    "bounding cell requires a non-empty geometry",
+                ));
+            },
+            1 => shapes.pop().expect("one shape"),
+            _ => Shape::GeometryCollection(shapes.into()),
+        };
+        let bounds = if shape.crosses_antimeridian() {
+            crate::geometry::geographic_crossing_bounds(&shape)
+        } else {
+            shape.bounds()
+        };
+        return match bounds {
+            Some(bounds) => Ok(BoundingQueryRegion {
+                bounds,
+                crosses_antimeridian: shape.crosses_antimeridian(),
+            }),
+            None => Err(InvalidGeometryError::new_err(
+                "bounding cell requires a non-empty geometry",
+            )),
+        };
     }
     let values = match crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
         GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
@@ -122,7 +165,10 @@ pub(super) fn bounding_query_bounds(value: &Bound<'_, PyAny>) -> PyResult<crate:
         }
         crate::boundary::geographic::validate_lonlat_xy(*minx, *miny)?;
         crate::boundary::geographic::validate_lonlat_xy(*maxx, *maxy)?;
-        return Ok(Bounds::new_unchecked(*minx, *miny, *maxx, *maxy));
+        return Ok(BoundingQueryRegion {
+            bounds: Bounds::new_unchecked(*minx, *miny, *maxx, *maxy),
+            crosses_antimeridian: false,
+        });
     }
     Err(PyTypeError::new_err(
         "expected a Geometry, GeometryArray, or (minx, miny, maxx, maxy) bounds",

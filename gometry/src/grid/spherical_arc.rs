@@ -1860,6 +1860,189 @@ pub(crate) fn exact_h3_bbox_for_cell(cell: h3o::CellIndex) -> DegreeWindowResult
     h3_ordered_arcs(cell).map_or(DegreeWindowResult::Boundary, |arcs| exact_h3_bbox(&arcs))
 }
 
+/// One closed lon/lat rectangle in the physical geographic sheet.
+///
+/// A seam-spanning source supplies two windows. Keeping the windows separate
+/// is important: the interval between west and east is not part of the source
+/// region when west is greater than east.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct H3BoundingWindow {
+    pub(crate) west: f64,
+    pub(crate) south: f64,
+    pub(crate) east: f64,
+    pub(crate) north: f64,
+}
+
+/// Prove that every point in every supplied rectangle is inside `cell`.
+///
+/// H3's public boundary is a rounded presentation. The ordered projection
+/// seeds above retain the true edge arcs, so each edge's oriented great-circle
+/// halfspace is tested over the complete parameter rectangle. A positive
+/// result is the only affirmative answer; failure means that the caller must
+/// try a coarser ancestor or report the family no-single-cell result.
+pub(crate) fn h3_cell_contains_windows(cell: h3o::CellIndex, windows: &[H3BoundingWindow]) -> bool {
+    let Some(arcs) = h3_ordered_arcs(cell) else {
+        return false;
+    };
+    let center = h3o::LatLng::from(cell);
+    let Some(center_longitude) = Bound::exact(center.lng()) else {
+        return false;
+    };
+    let Some(center_latitude) = Bound::exact(center.lat()) else {
+        return false;
+    };
+    let Some(center) = certified_degree_vector(center_longitude, center_latitude) else {
+        return false;
+    };
+
+    let mut inward = [None; MAX_H3_BOUNDARY_ARCS];
+    for (index, arc) in arcs.iter().enumerate() {
+        let Some(side) = arc.normal.dot(center) else {
+            return false;
+        };
+        inward[index] = if side.strictly_positive() {
+            Some(arc.normal)
+        } else if side.strictly_negative() {
+            Some(arc.normal.neg())
+        } else {
+            return false;
+        };
+    }
+
+    windows.iter().all(|window| {
+        let Some(lon0) = degrees_to_radians_bound(window.west) else {
+            return false;
+        };
+        let Some(lon1) = degrees_to_radians_bound(window.east) else {
+            return false;
+        };
+        let Some(lat0) = degrees_to_radians_bound(window.south) else {
+            return false;
+        };
+        let Some(lat1) = degrees_to_radians_bound(window.north) else {
+            return false;
+        };
+        if window.west > window.east || window.south > window.north {
+            return false;
+        }
+        (0..arcs.len()).all(|index| {
+            inward[index].is_some_and(|normal| {
+                h3_plane_min_with_uncertainty(normal, lon0, lon1, lat0, lat1)
+                    .is_some_and(|value| value >= 0.0)
+            })
+        })
+    })
+}
+
+fn degrees_to_radians_bound(value: f64) -> Option<Bound> {
+    degree_bound_to_radians(Bound::exact(value)?)
+}
+
+/// Lower-bound a plane over a rectangle using the analytic scalar minimum and
+/// the raw projection interval's coefficient uncertainty. The scalar minimum
+/// accounts for all four edges and both interior stationary directions; the
+/// final ulp term covers the trigonometric evaluation itself.
+fn h3_plane_min_with_uncertainty(
+    normal: Vec3Bound,
+    lon0: Bound,
+    lon1: Bound,
+    lat0: Bound,
+    lat1: Bound,
+) -> Option<f64> {
+    let nx = normal.x.lo.certified_midpoint(normal.x.hi)?;
+    let ny = normal.y.lo.certified_midpoint(normal.y.hi)?;
+    let nz = normal.z.lo.certified_midpoint(normal.z.hi)?;
+    let nominal = scalar_plane_min(nx, ny, nz, lon0, lon1, lat0, lat1)?;
+    let uncertainty = upward_sum([
+        bound_radius(normal.x)?,
+        bound_radius(normal.y)?,
+        bound_radius(normal.z)?,
+    ])?;
+    let scale = nx.abs().max(ny.abs()).max(nz.abs()).max(1.0);
+    down(nominal - uncertainty - 256.0 * f64::EPSILON * scale)
+}
+
+fn bound_radius(value: Bound) -> Option<f64> {
+    let midpoint = value.lo.certified_midpoint(value.hi)?;
+    (midpoint - value.lo)
+        .max(value.hi - midpoint)
+        .is_finite()
+        .then_some((midpoint - value.lo).max(value.hi - midpoint))
+}
+
+/// Exact stationary-point inventory for `n · (cos(lat)cos(lon),
+/// cos(lat)sin(lon), sin(lat))` over a closed rectangle. This is a proof
+/// helper, not a finite sample test: every candidate comes from a boundary or
+/// a derivative zero of the analytic function.
+fn scalar_plane_min(
+    nx: f64,
+    ny: f64,
+    nz: f64,
+    lon0: Bound,
+    lon1: Bound,
+    lat0: Bound,
+    lat1: Bound,
+) -> Option<f64> {
+    let lon0 = lon0.lo;
+    let lon1 = lon1.hi;
+    let lat0 = lat0.lo;
+    let lat1 = lat1.hi;
+    let mut minimum = f64::INFINITY;
+    let mut visit = |lon: f64, lat: f64| {
+        let value = plane_value(nx, ny, nz, lon, lat);
+        if value.is_finite() {
+            minimum = minimum.min(value);
+        }
+    };
+
+    for &lon in &[lon0, lon1] {
+        for &lat in &[lat0, lat1] {
+            visit(lon, lat);
+        }
+        let s = nx * lon.cos() + ny * lon.sin();
+        let alpha = nz.atan2(s);
+        for k in -1..=1 {
+            let lat = alpha + std::f64::consts::PI * f64::from(k);
+            if lat >= lat0 && lat <= lat1 {
+                visit(lon, lat);
+            }
+        }
+    }
+    for &lat in &[lat0, lat1] {
+        let phi = ny.atan2(nx);
+        for k in -2..=2 {
+            let lon = phi + std::f64::consts::PI + std::f64::consts::TAU * f64::from(k);
+            if lon >= lon0 && lon <= lon1 {
+                visit(lon, lat);
+            }
+        }
+    }
+    let phi = ny.atan2(nx);
+    for base in [phi, phi + std::f64::consts::PI] {
+        for k in -2..=2 {
+            let lon = base + std::f64::consts::TAU * f64::from(k);
+            if lon < lon0 || lon > lon1 {
+                continue;
+            }
+            let s = nx * lon.cos() + ny * lon.sin();
+            let alpha = nz.atan2(s);
+            for k in -1..=1 {
+                let lat = alpha + std::f64::consts::PI * f64::from(k);
+                if lat >= lat0 && lat <= lat1 {
+                    visit(lon, lat);
+                }
+            }
+        }
+    }
+    minimum.is_finite().then_some(minimum)
+}
+
+fn plane_value(nx: f64, ny: f64, nz: f64, lon: f64, lat: f64) -> f64 {
+    let (sin_lon, cos_lon) = lon.sin_cos();
+    let (sin_lat, cos_lat) = lat.sin_cos();
+    cos_lat * (nx * cos_lon + ny * sin_lon) + nz * sin_lat
+}
+
 /// A certified local H3 cell topology.  H3 is not treated as the conjunction
 /// of all edge half-planes: a Class-III reflex vertex is the union of its two
 /// adjacent centre-fan triangles.
@@ -5151,6 +5334,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn h3_region_certificate_covers_the_complete_rectangle() {
+        let cell = h3o::CellIndex::try_from(0x0827_54FF_FFFF_FFFF_u64).unwrap();
+        let center = h3o::LatLng::from(cell);
+        let window = H3BoundingWindow {
+            west: center.lng() - 0.01,
+            south: center.lat() - 0.01,
+            east: center.lng() + 0.01,
+            north: center.lat() + 0.01,
+        };
+        assert!(h3_cell_contains_windows(cell, &[window]));
+        assert!(!h3_cell_contains_windows(cell, &[H3BoundingWindow {
+            west: center.lng() - 1.0,
+            south: center.lat() - 1.0,
+            east: center.lng() + 1.0,
+            north: center.lat() + 1.0,
+        }]));
     }
 
     #[test]

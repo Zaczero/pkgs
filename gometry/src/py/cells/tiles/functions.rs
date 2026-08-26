@@ -6,7 +6,7 @@ use crate::grid::tile::{TILE_MAX_LATITUDE, TILE_MAX_ZOOM, Tile, root as tile_roo
 use crate::py::cells::tiles::cell::{PyTile, tile_arg};
 use crate::py::cells::tiles::coverage::tile_cell_array;
 use crate::py::cells::{
-    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_bounds,
+    Bound, GridKind, PyCellArray, PyResult, Python, bounding_query_region,
     dispatch_grid_cell_array, pyfunction,
 };
 use crate::py::errors::InvalidGeometryError;
@@ -86,10 +86,10 @@ pub(super) fn tile_cells(
 
 /// Return the deepest single tile containing a geometry or lon/lat bounds.
 ///
-/// The mercantile ``bounding_tile``: walks corner tiles up to their common
-/// ancestor. Bounds spanning hemispheres bottom out at the ``z0`` root.
-/// Latitudes outside the Web Mercator domain raise
-/// ``InvalidGeometryError`` (no silent clamp).
+/// The mercantile ``bounding_tile``: descends the lower-corner tile and accepts
+/// a candidate only after its complete lon/lat rectangle contains the query.
+/// An antimeridian-spanning region is contained by the wrapped z0 world tile;
+/// narrower tiles cannot represent both sides of the seam.
 ///
 /// Parameters
 /// ----------
@@ -118,24 +118,45 @@ pub(super) fn tile_cells(
 /// (5, 17, 10)
 #[pyfunction]
 pub(super) fn tile_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyTile> {
-    let bounds = bounding_query_bounds(value)?;
-    let tile_at = |lon: f64, lat: f64| {
-        Tile::from_lonlat(lon, lat, TILE_MAX_ZOOM).ok_or_else(|| {
+    let query = bounding_query_region(value)?;
+    let bounds = query.bounds;
+    if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&bounds.miny()) {
+        return Err(InvalidGeometryError::new_err(format!(
+            "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+            bounds.miny()
+        )));
+    }
+    if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&bounds.maxy()) {
+        return Err(InvalidGeometryError::new_err(format!(
+            "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+            bounds.maxy()
+        )));
+    }
+    if query.crosses_antimeridian {
+        return Ok(PyTile { cell: tile_root() });
+    }
+
+    let mut cell =
+        Tile::from_lonlat(bounds.minx(), bounds.miny(), TILE_MAX_ZOOM).ok_or_else(|| {
             InvalidGeometryError::new_err(format!(
-                "latitude {lat} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees"
+                "latitude {} is outside the Web Mercator domain ±{TILE_MAX_LATITUDE} degrees",
+                bounds.miny()
             ))
-        })
-    };
-    let mut sw = tile_at(bounds.minx(), bounds.miny())?;
-    let mut ne = tile_at(bounds.maxx(), bounds.maxy())?;
-    while sw != ne {
-        if sw.z == 0 {
+        })?;
+    loop {
+        let cell_bounds = cell.bounds();
+        if cell_bounds.minx() <= bounds.minx()
+            && bounds.maxx() <= cell_bounds.maxx()
+            && cell_bounds.miny() <= bounds.miny()
+            && bounds.maxy() <= cell_bounds.maxy()
+        {
+            return Ok(PyTile { cell });
+        }
+        if cell.z == 0 {
             return Ok(PyTile { cell: tile_root() });
         }
-        sw = sw.parent_at(sw.z - 1);
-        ne = ne.parent_at(ne.z - 1);
+        cell = cell.parent_at(cell.z - 1);
     }
-    Ok(PyTile { cell: sw })
 }
 
 grid_free_functions! {
