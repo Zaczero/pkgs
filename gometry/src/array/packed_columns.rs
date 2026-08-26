@@ -430,19 +430,19 @@ fn rebase_polygon_window(
 fn resolve_point_columns<'a>(
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
-) -> PointColumns<'a> {
+) -> Result<PointColumns<'a>> {
     match row_map {
-        RowSelectionRef::Identity => PointColumns {
+        RowSelectionRef::Identity => Ok(PointColumns {
             coords: ColumnSource::Borrowed(coords),
-        },
-        RowSelectionRef::Window { start, len } => PointColumns {
+        }),
+        RowSelectionRef::Window { start, len } => Ok(PointColumns {
             coords: ColumnSource::Owned(
                 coords.view(CoordWindow::trusted(start..start + len, coords.len())),
             ),
-        },
-        RowSelectionRef::Gather(map) => PointColumns {
-            coords: ColumnSource::Owned(gather_point_columns(coords, map)),
-        },
+        }),
+        RowSelectionRef::Gather(map) => Ok(PointColumns {
+            coords: ColumnSource::Owned(gather_point_columns(coords, map)?),
+        }),
     }
 }
 
@@ -524,7 +524,7 @@ fn resolve_packed_columns(
     Ok(match storage {
         GeometryArrayStorage::Mixed(_) => None,
         GeometryArrayStorage::Points { coords, row_map } => Some(PackedColumns::Points(
-            resolve_point_columns(coords, row_map.as_deref()),
+            resolve_point_columns(coords, row_map.as_deref()).map_err(PackedColumnError::Batch)?,
         )),
         GeometryArrayStorage::Lines {
             coords,

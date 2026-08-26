@@ -7,6 +7,7 @@
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
 //! delegates on `Geometry`.
 
+use pyo3::PyErr;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::py::classes::geometry_methods::{
@@ -48,9 +49,12 @@ impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
         shapes: impl IntoIterator<Item = Shape>,
-    ) -> PyGeometryArray {
+    ) -> PyResult<PyGeometryArray> {
         // Shape-native sink: never stage per-part `PyGeometry` wrappers.
-        PyGeometryArray::from_shapes(shapes.into_iter().collect(), self.frame.clone())
+        Ok(PyGeometryArray::from_shapes(
+            crate::try_collect_results(shapes.into_iter().map(|shape| Ok::<_, PyErr>(shape)))?,
+            self.frame.clone(),
+        ))
     }
 
     pub(crate) fn to_wkt_impl(
@@ -139,7 +143,7 @@ impl PyGeometry {
         )))
     }
 
-    pub(crate) fn self_intersections_impl(&self) -> PyGeometryArray {
+    pub(crate) fn self_intersections_impl(&self) -> PyResult<PyGeometryArray> {
         let points = geometry::self_intersections_in_frame(
             self.shape.shape(),
             geometry::is_geographic_frame(&self.frame),
@@ -158,7 +162,7 @@ impl PyGeometry {
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
-            return Ok(self.parts_to_array(self.shape.delaunay_triangles()?));
+            return self.parts_to_array(self.shape.delaunay_triangles()?);
         }
         PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
     }
@@ -180,11 +184,11 @@ impl PyGeometry {
                 PyGeometryArray::packed_triangles(&vertices, self.frame.clone())
             };
         }
-        Ok(self.parts_to_array(self.shape.constrained_delaunay_triangles(refinement)?))
+        self.parts_to_array(self.shape.constrained_delaunay_triangles(refinement)?)
     }
 
     pub(crate) fn polygon_triangles_impl(&self) -> PyResult<PyGeometryArray> {
-        Ok(self.parts_to_array(self.shape.polygon_triangles()?))
+        self.parts_to_array(self.shape.polygon_triangles()?)
     }
 
     pub(crate) fn sample_points_impl(
@@ -201,7 +205,7 @@ impl PyGeometry {
         let points = self
             .shape
             .sample_points(count, crate::geometry::row_sample_seed(seed, 0))?;
-        Ok(self.parts_to_array(points.into_iter().map(Shape::Point)))
+        self.parts_to_array(points.into_iter().map(Shape::Point))
     }
 
     pub(crate) fn voronoi_polygons_impl(
@@ -239,7 +243,7 @@ impl PyGeometry {
     }
 
     pub(crate) fn polygonize_impl(&self) -> PyResult<PyGeometryArray> {
-        Ok(self.parts_to_array(self.shape.polygonize(false)?))
+        self.parts_to_array(self.shape.polygonize(false)?)
     }
 
     pub(crate) fn line_merge_impl(&self) -> PyResult<Typed> {
@@ -255,7 +259,7 @@ impl PyGeometry {
             splitter.epoch(),
             "split",
         )?;
-        Ok(self.parts_to_array(self.shape.split(&splitter.shape, tolerance)?))
+        self.parts_to_array(self.shape.split(&splitter.shape, tolerance)?)
     }
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
@@ -291,6 +295,6 @@ impl PyGeometry {
 
     pub(crate) fn subdivide_parts(&self, max_vertices: i64) -> PyResult<PyGeometryArray> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
-        Ok(self.parts_to_array(self.shape.subdivide(max_vertices, false)?))
+        self.parts_to_array(self.shape.subdivide(max_vertices, false)?)
     }
 }

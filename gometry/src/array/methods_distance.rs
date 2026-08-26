@@ -9,7 +9,7 @@
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Arc, Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, Frame, GeometryArrayStorage,
+    Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage,
     GeometryKind, PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder,
     PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
     column_window, line_crosses_antimeridian, packed_centroid_xy, packed_surface_point,
@@ -292,22 +292,31 @@ impl PyGeometryArray {
             })
         {
             let rows = bounds.len();
-            let mut xs = Vec::with_capacity(rows * 5);
-            let mut ys = Vec::with_capacity(rows * 5);
+            let vertex_count = rows.checked_mul(5).ok_or_else(|| {
+                crate::error::Error::from(crate::error::ResourceError::SizeOverflow)
+            })?;
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            crate::boundary::try_reserve_vec(&mut xs, vertex_count)?;
+            crate::boundary::try_reserve_vec(&mut ys, vertex_count)?;
+            let mut ring_builder = crate::geometry::CsrOffsetBuilder::new();
+            let mut polygon_builder = crate::geometry::CsrOffsetBuilder::new();
+            let mut ring_count = 0_usize;
             for b in bounds.iter() {
                 let bb = b.expect("all bounds present (checked)");
                 xs.extend_from_slice(&[bb.minx(), bb.maxx(), bb.maxx(), bb.minx(), bb.minx()]);
                 ys.extend_from_slice(&[bb.miny(), bb.miny(), bb.maxy(), bb.maxy(), bb.miny()]);
+                ring_builder.push_end(xs.len(), vertex_count)?;
+                ring_count = ring_count.checked_add(1).ok_or_else(|| {
+                    crate::error::Error::from(crate::error::ResourceError::SizeOverflow)
+                })?;
+                polygon_builder.push_end(ring_count, rows)?;
             }
-            let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(
-                (0..=rows).map(|row| row * 5).collect(),
-                rows * 5,
-            )?;
-            let polygon_offsets =
-                CsrOffsetColumn::<PolygonLevel>::try_new((0..=rows).collect(), rows)?;
+            let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
+            let polygon_offsets = polygon_builder.finish(rows)?.cast_level::<PolygonLevel>();
             return Ok(Self::from_result_storage(
                 Arc::new(GeometryArrayStorage::Polygons {
-                    coords: Arc::new(CoordSeq::from_vecs(xs, ys, None, None)),
+                    coords: Arc::new(CoordSeq::try_from_vecs(xs, ys, None, None)?),
                     ring_offsets,
                     polygon_offsets,
                     row_map: RowSelection::Identity,

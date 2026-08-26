@@ -139,9 +139,12 @@ pub(crate) fn try_unary_packed_f64(
 fn packed_bool_lane(
     py: Python<'_>,
     array: &PyGeometryArray,
-    values: Option<Vec<bool>>,
+    values: Option<PyResult<Vec<bool>>>,
 ) -> Option<PyResult<Py<PyAny>>> {
-    let mut values = values?;
+    let mut values = match values? {
+        Ok(values) => values,
+        Err(error) => return Some(Err(error.into())),
+    };
     // Belt-and-braces: kernels that already skip missing rows still get the
     // shape-lane missing sentinel (`false`) applied here. Cheap when the
     // kernel already wrote false for masked slots.
@@ -189,10 +192,10 @@ pub(crate) fn try_unary_packed_bool(
         // false for missing); skip the second mask pass in packed_bool_lane.
         Operation::IsSimple => array
             .is_simple_unary_packed()
-            .map(|values| bool_array(py, values)),
+            .map(|values| values.and_then(|values| bool_array(py, values))),
         Operation::IsValid => array
             .is_valid_unary_packed()
-            .map(|values| bool_array(py, values)),
+            .map(|values| values.and_then(|values| bool_array(py, values))),
         Operation::IsConvex => packed_bool_lane(py, array, Some(array.is_convex_unary_packed())),
         Operation::CrossesAntimeridian => match require_antimeridian_crs(array.crs_str()) {
             Ok(()) => packed_bool_lane(py, array, array.crosses_antimeridian_unary_packed()),

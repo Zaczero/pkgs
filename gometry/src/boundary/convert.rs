@@ -14,7 +14,9 @@ use pyo3::types::{PyAny, PyDict};
 use serde_json::Value;
 
 use crate::py::errors::parse_error;
-use crate::{Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool};
+use crate::{
+    Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool, try_collect_results,
+};
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
     let value = match shape {
@@ -22,25 +24,28 @@ pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<P
         Shape::MultiPoint(points) => points_to_py(py, points)?.unbind().into(),
         Shape::LineString(points) => points_to_py(py, points)?.unbind().into(),
         Shape::MultiLineString(lines) => {
-            let values = lines
-                .iter()
-                .map(|line| Ok(points_to_py(py, line)?.unbind().into()))
-                .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+            let values: Vec<Py<PyAny>> = try_collect_results(
+                lines
+                    .iter()
+                    .map(|line| Ok(points_to_py(py, line)?.unbind().into())),
+            )?;
             PyList::new(py, values)?.unbind().into()
         },
         Shape::Polygon(polygon) => polygon_coordinates_object(py, polygon)?.unbind().into(),
         Shape::MultiPolygon(polygons) => {
-            let values = polygons
-                .iter()
-                .map(|polygon| Ok(polygon_coordinates_object(py, polygon)?.unbind().into()))
-                .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+            let values: Vec<Py<PyAny>> = try_collect_results(
+                polygons
+                    .iter()
+                    .map(|polygon| Ok(polygon_coordinates_object(py, polygon)?.unbind().into())),
+            )?;
             PyList::new(py, values)?.unbind().into()
         },
         Shape::GeometryCollection(geometries) => {
-            let values = geometries
-                .iter()
-                .map(|geometry| coordinates_object(py, geometry))
-                .collect::<PyResult<Vec<_>>>()?;
+            let values = try_collect_results(
+                geometries
+                    .iter()
+                    .map(|geometry| coordinates_object(py, geometry)),
+            )?;
             PyList::new(py, values)?.unbind().into()
         },
         geometry::Shape::Empty(..) => PyList::empty(py).unbind().into(),
@@ -52,10 +57,11 @@ pub(crate) fn polygon_coordinates_object<'py>(
     py: Python<'py>,
     polygon: &Polygon,
 ) -> PyResult<Bound<'py, PyList>> {
-    let values = std::iter::once(&polygon.shell)
-        .chain(polygon.holes.iter())
-        .map(|ring| Ok(points_to_py(py, ring)?.unbind().into()))
-        .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+    let values: Vec<Py<PyAny>> = try_collect_results(
+        std::iter::once(&polygon.shell)
+            .chain(polygon.holes.iter())
+            .map(|ring| Ok(points_to_py(py, ring)?.unbind().into())),
+    )?;
     PyList::new(py, values)
 }
 
@@ -63,10 +69,7 @@ pub(crate) fn points_to_py<'py, C: Coordinates + ?Sized>(
     py: Python<'py>,
     points: &C,
 ) -> PyResult<Bound<'py, PyList>> {
-    let values = points
-        .iter_coords()
-        .map(|point| point_tuple(py, point))
-        .collect::<PyResult<Vec<_>>>()?;
+    let values = try_collect_results(points.iter_coords().map(|point| point_tuple(py, point)))?;
     PyList::new(py, values)
 }
 
@@ -124,10 +127,11 @@ fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, 
             dict.set_item("coordinates", geojson_points_object(py, points, true)?)?;
         },
         Shape::MultiLineString(lines) => {
-            let values = lines
-                .iter()
-                .map(|line| Ok(geojson_points_object(py, line, true)?.unbind().into()))
-                .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+            let values: Vec<Py<PyAny>> = try_collect_results(
+                lines
+                    .iter()
+                    .map(|line| Ok(geojson_points_object(py, line, true)?.unbind().into())),
+            )?;
             dict.set_item("type", "MultiLineString")?;
             dict.set_item("coordinates", PyList::new(py, values)?)?;
         },
@@ -136,18 +140,19 @@ fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, 
             dict.set_item("coordinates", geojson_polygon_object(py, polygon, true)?)?;
         },
         Shape::MultiPolygon(polygons) => {
-            let values = polygons
-                .iter()
-                .map(|polygon| Ok(geojson_polygon_object(py, polygon, true)?.unbind().into()))
-                .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+            let values: Vec<Py<PyAny>> =
+                try_collect_results(polygons.iter().map(|polygon| {
+                    Ok(geojson_polygon_object(py, polygon, true)?.unbind().into())
+                }))?;
             dict.set_item("type", "MultiPolygon")?;
             dict.set_item("coordinates", PyList::new(py, values)?)?;
         },
         Shape::GeometryCollection(geometries) => {
-            let values = geometries
-                .iter()
-                .map(|geometry| Ok(geojson_dict(py, geometry)?.unbind().into()))
-                .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+            let values: Vec<Py<PyAny>> = try_collect_results(
+                geometries
+                    .iter()
+                    .map(|geometry| Ok(geojson_dict(py, geometry)?.unbind().into())),
+            )?;
             dict.set_item("type", "GeometryCollection")?;
             dict.set_item("geometries", PyList::new(py, values)?)?;
         },
@@ -170,10 +175,11 @@ fn geojson_polygon_object<'py>(
     polygon: &Polygon,
     include_z: bool,
 ) -> PyResult<Bound<'py, PyList>> {
-    let values = std::iter::once(&polygon.shell)
-        .chain(polygon.holes.iter())
-        .map(|ring| Ok(geojson_points_object(py, ring, include_z)?.unbind().into()))
-        .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+    let values: Vec<Py<PyAny>> = try_collect_results(
+        std::iter::once(&polygon.shell)
+            .chain(polygon.holes.iter())
+            .map(|ring| Ok(geojson_points_object(py, ring, include_z)?.unbind().into())),
+    )?;
     PyList::new(py, values)
 }
 
@@ -182,10 +188,11 @@ fn geojson_points_object<'py, C: Coordinates + ?Sized>(
     points: &C,
     include_z: bool,
 ) -> PyResult<Bound<'py, PyList>> {
-    let values = points
-        .iter_coords()
-        .map(|point| geojson_point_object(py, point, include_z))
-        .collect::<PyResult<Vec<_>>>()?;
+    let values = try_collect_results(
+        points
+            .iter_coords()
+            .map(|point| geojson_point_object(py, point, include_z)),
+    )?;
     PyList::new(py, values)
 }
 
@@ -229,10 +236,7 @@ pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
         },
         Value::String(value) => value.into_pyobject(py)?.unbind().into(),
         Value::Array(values) => {
-            let values = values
-                .iter()
-                .map(|value| json_to_py(py, value))
-                .collect::<PyResult<Vec<_>>>()?;
+            let values = try_collect_results(values.iter().map(|value| json_to_py(py, value)))?;
             PyList::new(py, values)?.unbind().into()
         },
         Value::Object(values) => {

@@ -37,8 +37,17 @@ impl GridDissolver for H3Dissolver {
         {
             let estimated =
                 ensure_h3_uncompact_budget(cells.as_slice().iter().copied(), resolution)?;
-            let mut expanded = Vec::with_capacity(estimated);
-            expanded.extend(CellIndex::uncompact(cells.as_slice().to_vec(), resolution));
+            let seed = crate::try_collect_results(
+                cells
+                    .as_slice()
+                    .iter()
+                    .copied()
+                    .map(|cell| Ok::<_, pyo3::PyErr>(cell)),
+            )?;
+            let mut expanded = crate::try_vec_with_capacity(estimated)?;
+            for cell in CellIndex::uncompact(seed, resolution) {
+                crate::try_push(&mut expanded, cell)?;
+            }
             Ok(Some(SortedCells::new(expanded)))
         } else {
             Ok(Some(cells.clone()))
@@ -56,20 +65,26 @@ impl GridDissolver for H3Dissolver {
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> Vec<CoordSeq> {
-        cell.edges()
-            .filter_map(|edge| {
-                if is_member(edge.destination()) {
-                    return None;
-                }
-                let points: Vec<Point> = edge
-                    .boundary()
-                    .iter()
-                    .map(|latlng| Point::new_unchecked_xy(latlng.lng(), latlng.lat()))
-                    .collect();
-                Some(CoordSeq::from_points(&points))
-            })
-            .collect()
+    ) -> PyResult<Vec<CoordSeq>> {
+        let mut segments = Vec::new();
+        for edge in cell.edges() {
+            if is_member(edge.destination()) {
+                continue;
+            }
+            let boundary = edge.boundary();
+            let mut points = crate::try_vec_with_capacity(boundary.len())?;
+            for latlng in boundary.iter() {
+                crate::try_push(
+                    &mut points,
+                    Point::new_unchecked_xy(latlng.lng(), latlng.lat()),
+                )?;
+            }
+            crate::try_push(
+                &mut segments,
+                CoordSeq::try_from_points(&points).map_err(pyo3::PyErr::from)?,
+            )?;
+        }
+        Ok(segments)
     }
 
     fn crosses_seam(segment: &CoordSeq) -> bool {

@@ -27,21 +27,25 @@ pub(crate) fn packed_line_measure<'a, F>(
     offsets: &[i32],
     map: impl Into<RowSelectionRef<'a>>,
     measure: F,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
 {
     let map = map.into();
-    (0..line_logical_len(offsets, map))
-        .map(|logical| {
-            let window = map.csr_window(offsets, logical);
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, line_logical_len(offsets, map))?;
+    for logical in 0..line_logical_len(offsets, map) {
+        let window = map.csr_window(offsets, logical);
+        crate::boundary::try_push_vec(
+            &mut output,
             measure(
                 column_window(xs, &window),
                 column_window(ys, &window),
                 window,
-            )
-        })
-        .collect()
+            ),
+        )?;
+    }
+    Ok(output)
 }
 
 pub(crate) fn packed_polygon_measure<'a, F, C>(
@@ -52,26 +56,27 @@ pub(crate) fn packed_polygon_measure<'a, F, C>(
     map: impl Into<RowSelectionRef<'a>>,
     ring_measure: F,
     combine: C,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
     C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
 {
     let map = map.into();
-    (0..polygon_logical_len(polygon_offsets, map))
-        .map(|logical| {
-            let rings = polygon_rings_range(polygon_offsets, map, logical);
-            let ring = |index: usize| {
-                let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-                ring_measure(
-                    column_window(xs, &window),
-                    column_window(ys, &window),
-                    window,
-                )
-            };
-            combine(rings, &ring)
-        })
-        .collect()
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, polygon_logical_len(polygon_offsets, map))?;
+    for logical in 0..polygon_logical_len(polygon_offsets, map) {
+        let rings = polygon_rings_range(polygon_offsets, map, logical);
+        let ring = |index: usize| {
+            let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
+            ring_measure(
+                column_window(xs, &window),
+                column_window(ys, &window),
+                window,
+            )
+        };
+        crate::boundary::try_push_vec(&mut output, combine(rings, &ring))?;
+    }
+    Ok(output)
 }
 
 /// Map a packed centroid column result to a validated point (`POINT EMPTY` on

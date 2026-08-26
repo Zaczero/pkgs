@@ -2,7 +2,6 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::collections::BTreeMap;
 use std::fmt;
 
 use pyo3::exceptions::PyTypeError;
@@ -137,14 +136,17 @@ pub(crate) fn from_geojson(
         // nested, same order as collect_geojson_legacy_crs) — no second full
         // Value parse of the document just to walk CRS members.
         let parsed = io::parse_geojson_text(text.as_ref())?;
-        let declarations: Vec<&Value> = parsed.legacy_crs.iter().collect();
+        let mut declarations = crate::try_vec_with_capacity(parsed.legacy_crs.len())?;
+        for declaration in &parsed.legacy_crs {
+            crate::try_push(&mut declarations, declaration)?;
+        }
         io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
         return match parsed.input {
             io::GeoJsonInput::Geometry(shape) => Ok(Typed(PyGeometry::with_frame(shape, frame))
                 .into_pyobject(py)?
                 .unbind()),
             io::GeoJsonInput::FeatureCollection(features) => {
-                let (shapes, mask) = feature_shapes_and_missing(features);
+                let (shapes, mask) = feature_shapes_and_missing(features)?;
                 let array = PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(mask);
                 Ok(array.into_pyobject(py)?.unbind().into())
             },
@@ -323,13 +325,13 @@ fn parse_features_text(
     if let Some(legacy) = collection_legacy.as_ref() {
         io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
     }
-    let mut rows = Vec::with_capacity(rows_meta.len());
+    let mut rows = crate::try_vec_with_capacity(rows_meta.len())?;
     for meta in rows_meta {
         let (row, nested) = feature_row_from_meta(meta)?;
         for legacy in &nested {
             io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
         }
-        rows.push(row);
+        crate::try_push(&mut rows, row)?;
     }
     build_features(py, rows, crs, epoch)
 }
@@ -375,7 +377,10 @@ fn feature_row_from_meta(feature: FeatureRowMeta) -> PyResult<(FeatureRow, Vec<V
             "each feature must have type \"Feature\"",
         ));
     }
-    let mut nested_legacy_crs = legacy_crs.into_iter().collect::<Vec<_>>();
+    let mut nested_legacy_crs = Vec::new();
+    if let Some(legacy) = legacy_crs {
+        crate::try_push(&mut nested_legacy_crs, legacy)?;
+    }
     let geometry = match geometry {
         FeatureGeometryValue::Missing => {
             return Err(feature_parse_error("each feature must have a geometry"));
@@ -384,7 +389,9 @@ fn feature_row_from_meta(feature: FeatureRowMeta) -> PyResult<(FeatureRow, Vec<V
         FeatureGeometryValue::Value(value) => {
             let mut nested = Vec::new();
             io::collect_geojson_legacy_crs(&value, &mut nested);
-            nested_legacy_crs.extend(nested.into_iter().cloned());
+            for legacy in nested {
+                crate::try_push(&mut nested_legacy_crs, legacy.clone())?;
+            }
             FeatureGeometryInput::Json(value)
         },
     };
@@ -456,15 +463,17 @@ fn python_feature_rows(py: Python<'_>, data: &Bound<'_, PyAny>) -> PyResult<Pyth
         let items = crate::collect_py_iter_from_iter(data, iter, Ok)?;
         (items, None)
     };
-    let mut legacy_crs = collection_legacy_crs.into_iter().collect::<Vec<_>>();
-    let rows = items
-        .iter()
-        .map(|item| {
-            let (row, row_legacy_crs) = python_feature_row(py, item)?;
-            legacy_crs.extend(row_legacy_crs);
-            Ok(row)
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+    let mut legacy_crs = Vec::new();
+    if let Some(legacy) = collection_legacy_crs {
+        crate::try_push(&mut legacy_crs, legacy)?;
+    }
+    let rows = crate::try_collect_results(items.iter().map(|item| {
+        let (row, row_legacy_crs) = python_feature_row(py, item)?;
+        if let Some(legacy) = row_legacy_crs {
+            crate::try_push(&mut legacy_crs, legacy)?;
+        }
+        Ok(row)
+    }))?;
     Ok(PythonFeatureRows { rows, legacy_crs })
 }
 
@@ -591,16 +600,20 @@ fn build_features(
     epoch: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
     let row_count = rows.len();
-    let mut shapes = Vec::with_capacity(row_count);
+    let mut shapes = Vec::new();
     let mut missing_rows = Vec::new();
-    let mut properties = Vec::with_capacity(rows.len());
-    let mut ids = Vec::with_capacity(rows.len());
+    crate::try_reserve_pair(&mut shapes, &mut missing_rows, row_count).map_err(PyErr::from)?;
+    let mut properties = Vec::new();
+    let mut ids = Vec::new();
+    crate::try_reserve_pair(&mut properties, &mut ids, rows.len()).map_err(PyErr::from)?;
     for (row_index, row) in rows.into_iter().enumerate() {
         match row.geometry {
             FeatureGeometryInput::Null => {
-                missing_rows.push(row_index);
+                crate::try_push(&mut missing_rows, row_index)?;
             },
-            FeatureGeometryInput::Json(value) => shapes.push(io::parse_geojson(&value)?),
+            FeatureGeometryInput::Json(value) => {
+                crate::try_push(&mut shapes, io::parse_geojson(&value)?)?;
+            },
             FeatureGeometryInput::Python(value) => {
                 // Geometry slot only — nested Feature must not unwrap (object/
                 // text/bytes parity). CRS was already reconciled for the batch.
@@ -614,33 +627,34 @@ fn build_features(
                 else {
                     return Err(feature_parse_error("each feature must have a geometry"));
                 };
-                shapes.push(shape);
+                crate::try_push(&mut shapes, shape)?;
             },
         }
-        properties.push(match row.properties {
+        let property = match row.properties {
             FeatureSideData::Json(value) => feature_properties_raw_py(py, value.as_deref())?,
             FeatureSideData::Python(value) => value,
-        });
-        ids.push(match row.id {
+        };
+        let id = match row.id {
             FeatureSideData::Json(value) => feature_id_raw_py(py, value.as_deref())?,
             FeatureSideData::Python(value) => value,
-        });
+        };
+        crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
     // Final-order with kind-preserving placeholders (no scatter).
     let geometries = {
         let array = if missing_rows.is_empty() {
             PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)
         } else {
-            let placeholder = homogeneous_missing_placeholder(shapes.iter());
-            let mut full = Vec::with_capacity(row_count);
+            let placeholder = homogeneous_missing_placeholder(shapes.iter())?;
+            let mut full = crate::try_vec_with_capacity(row_count)?;
             let mut present = shapes.into_iter();
             let mut miss = missing_rows.iter().copied().peekable();
             for row in 0..row_count {
                 if miss.peek() == Some(&row) {
                     miss.next();
-                    full.push(placeholder.clone());
+                    crate::try_push(&mut full, placeholder.clone())?;
                 } else {
-                    full.push(present.next().expect("present count matches"));
+                    crate::try_push(&mut full, present.next().expect("present count matches"))?;
                 }
             }
             PyGeometryArray::from_shapes(full, Frame::new(crs, epoch)?)
@@ -854,8 +868,12 @@ impl<'de> Visitor<'de> for FeatureRowsMetaVisitor {
     where
         A: SeqAccess<'de>,
     {
-        let mut rows = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        let mut rows = Vec::new();
         while let Some(row) = seq.next_element()? {
+            if rows.try_reserve(1).is_err() {
+                rows.clear();
+                return Err(de::Error::custom("feature sequence allocation failed"));
+            }
             rows.push(row);
         }
         Ok(FeatureRowsMeta::Rows(rows))
@@ -996,35 +1014,40 @@ impl<'de> Deserialize<'de> for FeatureGeometryValue {
 
 /// Split parsed features into **final-order** shapes (missing → kind-preserving
 /// placeholder when present rows share one packable kind) plus missing mask.
-fn feature_shapes_and_missing(features: Vec<Option<Shape>>) -> (Vec<Shape>, Option<MissingMask>) {
+fn feature_shapes_and_missing(
+    features: Vec<Option<Shape>>,
+) -> PyResult<(Vec<Shape>, Option<MissingMask>)> {
     let row_count = features.len();
     let mut missing_rows = Vec::new();
-    let placeholder = homogeneous_missing_placeholder(features.iter().filter_map(|s| s.as_ref()));
-    let mut shapes = Vec::with_capacity(row_count);
+    let placeholder = homogeneous_missing_placeholder(features.iter().filter_map(|s| s.as_ref()))?;
+    let mut shapes = Vec::new();
+    crate::try_reserve_pair(&mut shapes, &mut missing_rows, row_count).map_err(PyErr::from)?;
     for (row, shape) in features.into_iter().enumerate() {
         if let Some(shape) = shape {
-            shapes.push(shape);
+            crate::try_push(&mut shapes, shape)?;
         } else {
-            missing_rows.push(row);
-            shapes.push(placeholder.clone());
+            crate::try_push(&mut missing_rows, row)?;
+            crate::try_push(&mut shapes, placeholder.clone())?;
         }
     }
-    (
+    Ok((
         shapes,
         crate::array::sparse_missing_mask(row_count, &missing_rows),
-    )
+    ))
 }
 
 /// When every present shape is the same packable kind/axes, return a
 /// kind-preserving missing placeholder so final-order arrays stay packed
 /// (D2 GeoArrow native). Otherwise the generic NaN point placeholder.
-fn homogeneous_missing_placeholder<'a>(present: impl Iterator<Item = &'a Shape>) -> Shape {
+fn homogeneous_missing_placeholder<'a>(
+    present: impl Iterator<Item = &'a Shape>,
+) -> PyResult<Shape> {
     let mut first: Option<&Shape> = None;
     for shape in present {
         match first {
             None => first = Some(shape),
             Some(prev) if !same_packable_kind(prev, shape) => {
-                return PyGeometryArray::missing_placeholder();
+                return Ok(PyGeometryArray::missing_placeholder());
             },
             Some(_) => {},
         }
@@ -1034,16 +1057,17 @@ fn homogeneous_missing_placeholder<'a>(present: impl Iterator<Item = &'a Shape>)
             let axes = CoordinateAxes::from_point(*p);
             let z = axes.has_z().then_some(f64::NAN);
             let m = axes.has_m().then_some(f64::NAN);
-            Shape::Point(crate::geometry::Point::new_unchecked_axes(
+            Ok(Shape::Point(crate::geometry::Point::new_unchecked_axes(
                 f64::NAN,
                 f64::NAN,
                 crate::geometry::ZOrdinate(z),
                 crate::geometry::MOrdinate(m),
-            ))
+            )))
         },
         Some(Shape::LineString(line)) => {
             let axes = line.axes();
-            let mut b = crate::geometry::CoordSeqBuilder::with_capacity(axes, 2);
+            let mut b = crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 2)
+                .map_err(PyErr::from)?;
             let pt = crate::geometry::Point::new_unchecked_axes(
                 f64::NAN,
                 f64::NAN,
@@ -1052,15 +1076,16 @@ fn homogeneous_missing_placeholder<'a>(present: impl Iterator<Item = &'a Shape>)
             );
             b.push(pt);
             b.push(pt);
-            Shape::LineString(crate::geometry::LineSeq::from_trusted(
-                b.finish_infallible(),
-            ))
+            Ok(Shape::LineString(crate::geometry::LineSeq::from_trusted(
+                b.finish_unchecked(),
+            )))
         },
         Some(Shape::Polygon(poly)) => {
             // Kind-preserving missing placeholder for hole-bearing polygons too
             // (D2): packable storage keeps mask/offsets; do not demote to WKB.
             let axes = poly.shell.coords().axes();
-            let mut b = crate::geometry::CoordSeqBuilder::with_capacity(axes, 4);
+            let mut b = crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 4)
+                .map_err(PyErr::from)?;
             let pt = crate::geometry::Point::new_unchecked_axes(
                 f64::NAN,
                 f64::NAN,
@@ -1072,12 +1097,12 @@ fn homogeneous_missing_placeholder<'a>(present: impl Iterator<Item = &'a Shape>)
             }
             // Empty hole list on the placeholder; present rows keep their holes.
             // Packed admission tolerates missing shells as NaN rings.
-            Shape::Polygon(Polygon::new(
-                crate::geometry::Ring::from_trusted_closed(b.finish_infallible()),
+            Ok(Shape::Polygon(Polygon::new(
+                crate::geometry::Ring::from_trusted_closed(b.finish_unchecked()),
                 Vec::new(),
-            ))
+            )))
         },
-        _ => PyGeometryArray::missing_placeholder(),
+        _ => Ok(PyGeometryArray::missing_placeholder()),
     }
 }
 
@@ -1221,7 +1246,7 @@ impl RawJsonToPy<'_, '_> {
     fn parse_object(&mut self, depth: usize) -> PyResult<Py<PyAny>> {
         self.consume(b'{')?;
         self.skip_whitespace();
-        let mut values = BTreeMap::<String, Py<PyAny>>::new();
+        let mut values: Vec<(String, Py<PyAny>)> = Vec::new();
         if self.current() != Some(b'}') {
             loop {
                 self.skip_whitespace();
@@ -1231,7 +1256,14 @@ impl RawJsonToPy<'_, '_> {
                 let key = self.parse_string()?;
                 self.skip_whitespace();
                 self.consume(b':')?;
-                values.insert(key, self.parse_value(depth + 1)?);
+                let value = self.parse_value(depth + 1)?;
+                if let Some((_, existing)) =
+                    values.iter_mut().find(|(existing, _)| *existing == key)
+                {
+                    *existing = value;
+                } else {
+                    crate::try_push(&mut values, (key, value))?;
+                }
                 self.skip_whitespace();
                 match self.current() {
                     Some(b',') => self.position += 1,
@@ -1242,8 +1274,7 @@ impl RawJsonToPy<'_, '_> {
         }
         self.consume(b'}')?;
         let dict = PyDict::new(self.py);
-        // Preserve the established key-sorted dict order without materializing
-        // nested raw JSON tails.
+        values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         for (key, value) in values {
             dict.set_item(key, value)?;
         }
@@ -1256,7 +1287,7 @@ impl RawJsonToPy<'_, '_> {
         let mut values = Vec::new();
         if self.current() != Some(b']') {
             loop {
-                values.push(self.parse_value(depth + 1)?);
+                crate::try_push(&mut values, self.parse_value(depth + 1)?)?;
                 self.skip_whitespace();
                 match self.current() {
                     Some(b',') => self.position += 1,
@@ -1380,8 +1411,9 @@ fn parse_geojson_shape_input(
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {
         let text = text.to_cow()?;
         if let Ok(parsed) = io::parse_geojson_text(text.as_ref()) {
-            let declarations: Vec<&Value> = parsed.legacy_crs.iter().collect();
-            io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
+            for declaration in &parsed.legacy_crs {
+                io::reconcile_legacy_geojson_crs(std::slice::from_ref(&declaration), fixed)?;
+            }
             return match parsed.input {
                 io::GeoJsonInput::Geometry(shape) => Ok(Some(shape)),
                 io::GeoJsonInput::FeatureCollection(_) => Err(io::IoError::geojson(
@@ -1457,24 +1489,26 @@ fn geojson_feature_collection_member(value: &Value) -> PyResult<Option<Shape>> {
 fn feature_value_shapes_and_missing(
     features: &[Value],
 ) -> PyResult<(Vec<Shape>, Option<MissingMask>)> {
-    let mut present = Vec::with_capacity(features.len());
-    let mut slots: Vec<Option<Shape>> = Vec::with_capacity(features.len());
+    let mut present = Vec::new();
+    let mut slots = Vec::new();
+    crate::try_reserve_pair(&mut present, &mut slots, features.len()).map_err(PyErr::from)?;
     for feature in features {
         let shape = geojson_feature_collection_member(feature)?;
         if let Some(s) = &shape {
-            present.push(s.clone());
+            crate::try_push(&mut present, s.clone())?;
         }
-        slots.push(shape);
+        crate::try_push(&mut slots, shape)?;
     }
-    let placeholder = homogeneous_missing_placeholder(present.iter());
-    let mut shapes = Vec::with_capacity(slots.len());
+    let placeholder = homogeneous_missing_placeholder(present.iter())?;
+    let mut shapes = Vec::new();
     let mut missing_rows = Vec::new();
+    crate::try_reserve_pair(&mut shapes, &mut missing_rows, slots.len()).map_err(PyErr::from)?;
     for (row, slot) in slots.into_iter().enumerate() {
         if let Some(shape) = slot {
-            shapes.push(shape);
+            crate::try_push(&mut shapes, shape)?;
         } else {
-            missing_rows.push(row);
-            shapes.push(placeholder.clone());
+            crate::try_push(&mut missing_rows, row)?;
+            crate::try_push(&mut shapes, placeholder.clone())?;
         }
     }
     Ok((

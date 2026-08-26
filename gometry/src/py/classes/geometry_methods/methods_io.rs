@@ -4,8 +4,10 @@
 )]
 use std::fmt::Write as _;
 
+use pyo3::exceptions::PyMemoryError;
+
 use crate::py::classes::geometry_methods::{
-    Bound, Py, PyAny, PyAnyMethods as _, PyBytes, PyGeometry, PyResult, Python,
+    Bound, Py, PyAny, PyAnyMethods as _, PyBytes, PyErr, PyGeometry, PyResult, Python,
 };
 use crate::{
     ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
@@ -168,13 +170,13 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         crate::py::arrow::reject_requested_schema(requested_schema)?;
         crate::py::arrow_c::geometry_to_stream_capsule(py, self)
     }
-    pub fn __repr__(&self) -> String {
+    pub fn __repr__(&self) -> PyResult<String> {
         const WKT_LIMIT: usize = 120;
         // Render only the leading WKT bytes the preview needs — a 20k-vertex
         // geometry no longer materializes its full (~megabyte) WKT just to
         // truncate it. The bounded prefix is byte-identical to the full
         // render's, so the truncation result is unchanged.
-        let mut wkt = io::to_wkt_preview(&self.shape, WKT_LIMIT + 1);
+        let mut wkt = io::to_wkt_preview(&self.shape, WKT_LIMIT + 1)?;
         if wkt.len() > WKT_LIMIT {
             wkt.truncate(WKT_LIMIT);
             wkt.push_str("...");
@@ -188,7 +190,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             let _ = write!(out, " @{epoch}");
         }
         out.push('>');
-        out
+        Ok(out)
     }
 
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
@@ -231,8 +233,8 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         overlay_operator(py, slf.as_any(), other, OverlayOp::SymmetricDifference)
     }
 
-    pub fn __str__(&self) -> String {
-        io::to_wkt(&self.shape)
+    pub fn __str__(&self) -> PyResult<String> {
+        Ok(io::to_wkt(&self.shape)?)
     }
 
     /// ``False`` when the geometry is empty; ``True`` otherwise.
@@ -250,10 +252,19 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     pub fn __format__(&self, spec: &str) -> PyResult<String> {
         use std::fmt::Write as _;
         match spec {
-            "" => return Ok(io::to_wkt(&self.shape)),
+            "" => return io::to_wkt(&self.shape).map_err(PyErr::from),
             "x" | "X" => {
                 let wkb = io::to_wkb(&self.shape, None, false)?;
-                let mut out = String::with_capacity(wkb.len() * 2);
+                let capacity = wkb.len().checked_mul(2).ok_or_else(|| {
+                    PyMemoryError::new_err("hexadecimal WKB output size overflows usize")
+                })?;
+                let mut out = String::new();
+                if out.try_reserve(capacity).is_err() {
+                    drop(wkb);
+                    return Err(PyMemoryError::new_err(
+                        "failed to allocate hexadecimal WKB output",
+                    ));
+                }
                 for byte in wkb {
                     let _ = if spec == "x" {
                         write!(out, "{byte:02x}")
@@ -295,7 +306,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             (false, None) => io::WktNumberFormat::Fixed(16),
             (false, Some(precision)) => io::WktNumberFormat::Fixed(precision),
         };
-        Ok(io::to_wkt_display(&self.shape, format))
+        io::to_wkt_display(&self.shape, format).map_err(PyErr::from)
     }
 
     /// Structural value equality: same CRS, coordinate epoch, geometry kind,

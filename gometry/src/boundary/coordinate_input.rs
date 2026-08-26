@@ -462,8 +462,9 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
         let item = std::mem::size_of::<f64>() as isize;
         if stride % item == 0 {
             let step = stride / item;
-            let mut arc: Arc<[std::mem::MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
-            let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
+            let mut values = Vec::<std::mem::MaybeUninit<f64>>::new();
+            crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
+            unsafe { values.set_len(len) };
             // ReadOnlyCell is transparent over T; treating each strided slot as
             // a cell matches PyBuffer::as_slice for the contiguous case.
             let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
@@ -473,13 +474,16 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
             // strided views included). ReadOnlyCell::get is a plain non-atomic
             // load — the producer must stay quiescent for this finite capture.
             unsafe {
-                for (i, slot) in uninit.iter_mut().enumerate() {
-                    let offset = (i as isize)
-                        .checked_mul(step)
-                        .expect("stride index overflow");
+                for (i, slot) in values.iter_mut().enumerate() {
+                    let offset = (i as isize).checked_mul(step).ok_or_else(|| {
+                        pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
+                    })?;
                     slot.write((*base.offset(offset)).get());
                 }
-                return Ok(arc.assume_init());
+                let (ptr, len, capacity) = values.into_raw_parts();
+                // SAFETY: every slot was written above and the transparent
+                // element layouts are identical.
+                return Ok(Vec::from_raw_parts(ptr.cast(), len, capacity).into());
             }
         }
     }
@@ -497,24 +501,31 @@ fn coordseq_from_indirect_nd_buffer(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<CoordSeq> {
     let flat = buffer_to_vec_f64(py, buffer)?;
-    if flat.len() != n * d {
+    let expected = n.checked_mul(d).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("indirect buffer shape overflows usize")
+    })?;
+    if flat.len() != expected {
         return Err(InvalidGeometryError::new_err(
             "indirect buffer item count does not match N×D shape",
         ));
     }
-    let mut xs = Vec::with_capacity(n);
-    let mut ys = Vec::with_capacity(n);
-    let mut zs_col = (d >= 3).then(|| Vec::with_capacity(n));
-    let mut ms_col = (d >= 4).then(|| Vec::with_capacity(n));
+    let mut xs = crate::try_vec_with_capacity(n)?;
+    let mut ys = crate::try_vec_with_capacity(n)?;
+    let mut zs_col = (d >= 3)
+        .then(|| crate::try_vec_with_capacity(n))
+        .transpose()?;
+    let mut ms_col = (d >= 4)
+        .then(|| crate::try_vec_with_capacity(n))
+        .transpose()?;
     for row in 0..n {
         let base = row * d;
-        xs.push(flat[base]);
-        ys.push(flat[base + 1]);
+        crate::try_push(&mut xs, flat[base])?;
+        crate::try_push(&mut ys, flat[base + 1])?;
         if let Some(zs) = zs_col.as_mut() {
-            zs.push(flat[base + 2]);
+            crate::try_push(zs, flat[base + 2])?;
         }
         if let Some(ms) = ms_col.as_mut() {
-            ms.push(flat[base + 3]);
+            crate::try_push(ms, flat[base + 3])?;
         }
     }
     let mut zs: Option<Arc<[f64]>> = zs_col.map(Into::into);
@@ -622,11 +633,12 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
     let swap = !native;
 
-    let fill_column = |col: usize| -> Arc<[f64]> {
+    let fill_column = |col: usize| -> crate::error::Result<Arc<[f64]>> {
         use pyo3::buffer::ReadOnlyCell;
 
-        let mut arc: Arc<[std::mem::MaybeUninit<f64>]> = Arc::new_uninit_slice(n);
-        let uninit = Arc::get_mut(&mut arc).expect("fresh unique Arc");
+        let mut values = Vec::<std::mem::MaybeUninit<f64>>::new();
+        crate::try_reserve_vec(&mut values, n)?;
+        unsafe { values.set_len(n) };
         // Never form `&[f64]` over a buffer another free-threaded mutator may
         // write — load each element through ReadOnlyCell (non-atomic; producer
         // must stay quiescent for this finite capture).
@@ -635,25 +647,46 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         // (checked above); col < d. ReadOnlyCell::get is a plain load — the
         // provider must not write until capture returns.
         unsafe {
-            for (i, slot) in uninit.iter_mut().enumerate() {
+            for (i, slot) in values.iter_mut().enumerate() {
                 let offset = (i as isize)
                     .checked_mul(row_step)
                     .and_then(|row| row.checked_add((col as isize).checked_mul(col_step)?))
-                    .expect("nd buffer index overflow");
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 let mut value = (*base.offset(offset)).get();
                 if swap {
                     value = crate::boundary::buffer_endian::swap_f64_endian(value);
                 }
                 slot.write(value);
             }
-            arc.assume_init()
+            let (ptr, len, capacity) = values.into_raw_parts();
+            // SAFETY: every slot was written above and the element layouts are
+            // identical.
+            Ok(Vec::from_raw_parts(ptr.cast(), len, capacity).into())
         }
     };
 
-    let xs = fill_column(0);
-    let ys = fill_column(1);
-    let mut zs = (d >= 3).then(|| fill_column(2));
-    let mut ms = (d >= 4).then(|| fill_column(3));
+    let xs = fill_column(0).map_err(pyo3::PyErr::from)?;
+    let ys = match fill_column(1) {
+        Ok(values) => values,
+        Err(error) => {
+            drop(xs);
+            return Err(pyo3::PyErr::from(error));
+        },
+    };
+    let mut zs = match (d >= 3).then(|| fill_column(2)).transpose() {
+        Ok(values) => values,
+        Err(error) => {
+            drop((xs, ys));
+            return Err(pyo3::PyErr::from(error));
+        },
+    };
+    let mut ms = match (d >= 4).then(|| fill_column(3)).transpose() {
+        Ok(values) => values,
+        Err(error) => {
+            drop((xs, ys, zs));
+            return Err(pyo3::PyErr::from(error));
+        },
+    };
 
     // Optional parallel z/m columns (only valid when D == 2).
     if let Some(z_col) = z {

@@ -15,6 +15,7 @@ use crate::py::index::{
     point_index_envelope, push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids,
     topology_scalar_pair,
 };
+use crate::{CsrBuilder, try_collect_results, try_push_vec, try_reserve_heap};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,23 +40,31 @@ impl PySpatialIndex {
     }
 
     /// Append every live handle whose envelope intersects `query`.
-    pub(crate) fn collect_intersecting(&self, query: &AABB<[f64; 2]>, out: &mut Vec<usize>) {
-        self.bulk.each_intersecting(query, |idx| out.push(idx));
-        out.extend(
-            self.overflow
-                .locate_in_envelope_intersecting(*query)
-                .map(|entry| entry.idx),
-        );
+    pub(crate) fn collect_intersecting(
+        &self,
+        query: &AABB<[f64; 2]>,
+        out: &mut Vec<usize>,
+    ) -> PyResult<()> {
+        self.bulk
+            .each_intersecting(query, |idx| try_push_vec(out, idx))?;
+        for entry in self.overflow.locate_in_envelope_intersecting(*query) {
+            try_push_vec(out, entry.idx)?;
+        }
+        Ok(())
     }
 
     /// Append every live handle whose envelope is contained in `query`.
-    pub(crate) fn collect_contained(&self, query: &AABB<[f64; 2]>, out: &mut Vec<usize>) {
-        self.bulk.each_contained(query, |idx| out.push(idx));
-        out.extend(
-            self.overflow
-                .locate_in_envelope(*query)
-                .map(|entry| entry.idx),
-        );
+    pub(crate) fn collect_contained(
+        &self,
+        query: &AABB<[f64; 2]>,
+        out: &mut Vec<usize>,
+    ) -> PyResult<()> {
+        self.bulk
+            .each_contained(query, |idx| try_push_vec(out, idx))?;
+        for entry in self.overflow.locate_in_envelope(*query) {
+            try_push_vec(out, entry.idx)?;
+        }
+        Ok(())
     }
 
     /// Append every live handle whose envelope lies within squared distance
@@ -65,14 +74,13 @@ impl PySpatialIndex {
         point: [f64; 2],
         max_distance_2: f64,
         out: &mut Vec<usize>,
-    ) {
+    ) -> PyResult<()> {
         self.bulk
-            .each_within_distance_2(point, max_distance_2, |idx| out.push(idx));
-        out.extend(
-            self.overflow
-                .locate_within_distance(point, max_distance_2)
-                .map(|entry| entry.idx),
-        );
+            .each_within_distance_2(point, max_distance_2, |idx| try_push_vec(out, idx))?;
+        for entry in self.overflow.locate_within_distance(point, max_distance_2) {
+            try_push_vec(out, entry.idx)?;
+        }
+        Ok(())
     }
 
     /// Walk every unordered live pair `(i, j)` with `i < j` whose geometries
@@ -83,7 +91,7 @@ impl PySpatialIndex {
         predicate: IndexPredicate,
         distance: Option<NonNegative>,
         unit: Option<DistanceUnit>,
-        mut found: impl FnMut(usize, usize),
+        mut found: impl FnMut(usize, usize) -> PyResult<()>,
     ) -> PyResult<()> {
         let spec = match predicate {
             IndexPredicate::Topological(predicate) => Some(predicate.spec()),
@@ -95,7 +103,10 @@ impl PySpatialIndex {
             _ => None,
         };
         let radius = distance.map_or(0.0, NonNegative::get);
-        let mut live: Vec<usize> = self.live_entries().map(|entry| entry.idx).collect();
+        let mut live = try_collect_results(
+            self.live_entries()
+                .map(|entry| Ok::<_, pyo3::PyErr>(entry.idx)),
+        )?;
         sort_row_ids(&mut live, self.rows.len());
         let mut candidates = Vec::new();
         for &i in &live {
@@ -112,7 +123,7 @@ impl PySpatialIndex {
                 distance,
                 metric,
                 &mut candidates,
-            );
+            )?;
             candidates.retain(|&j| j > i);
             match (spec, resolved) {
                 (Some(spec), _) => {
@@ -146,7 +157,7 @@ impl PySpatialIndex {
             }
             sort_row_ids(&mut candidates, self.rows.len());
             for &j in &candidates {
-                found(i, j);
+                found(i, j)?;
             }
         }
         Ok(())
@@ -240,20 +251,20 @@ impl PySpatialIndex {
     pub(crate) fn geodesic_row_caps(
         &self,
         metric: &crs::MetricModel,
-    ) -> Option<Arc<GeodesicRowCaps>> {
+    ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
         let crs::MetricModel::Geodesic { state, .. } = metric else {
-            return None;
+            return Ok(None);
         };
         self.geodesic_row_caps_at(metric, state)
     }
 
-    fn geodesic_row_caps_at(
+     fn geodesic_row_caps_at(
         &self,
         metric: &crs::MetricModel,
         runtime_state: &crs::RuntimeState,
-    ) -> Option<Arc<GeodesicRowCaps>> {
+    ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
         let crs::MetricModel::Geodesic { crs, .. } = metric else {
-            return None;
+            return Ok(None);
         };
         let runtime_gen = runtime_state.generation;
         let mut cache = self
@@ -265,7 +276,7 @@ impl PySpatialIndex {
             && cache.runtime_generation == runtime_gen
             && self.rows.len() > 0
         {
-            return cache.caps.clone();
+            return Ok(cache.caps.clone());
         }
         // Resolve the ellipsoid OUTSIDE the metric scope: `with_geodesic`
         // holds the thread-local handle cache borrow across its closure.
@@ -276,9 +287,9 @@ impl PySpatialIndex {
                 runtime_generation: runtime_gen,
                 caps: None,
             };
-            return None;
+            return Ok(None);
         };
-        let built = crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
+        let built = match crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
                 shape,
                 self.rows.len(),
@@ -297,17 +308,22 @@ impl PySpatialIndex {
                     })
                 }),
             ))
-        })
-        .ok()
-        .flatten()
-        .map(Arc::new);
+        }) {
+            Ok(Ok(Some(caps))) => Some(Arc::new(caps)),
+            Ok(Ok(None)) | Err(_) => None,
+            Ok(Err(())) => {
+                return Err(pyo3::exceptions::PyMemoryError::new_err(
+                    "failed to allocate geodesic index bounds",
+                ));
+            },
+        };
         *cache = GeodesicCapsCache {
             row_count: self.rows.len(),
             generation: self.mutation_gen,
             runtime_generation: runtime_gen,
             caps: built.clone(),
         };
-        built
+        Ok(built)
     }
 
     /// Cap-ordered geodesic nearest over non-point rows: sound per-row
@@ -331,7 +347,7 @@ impl PySpatialIndex {
         else {
             return Ok(None);
         };
-        let Some(caps) = self.geodesic_row_caps_at(metric, &runtime_state) else {
+        let Some(caps) = self.geodesic_row_caps_at(metric, runtime_state)? else {
             return Ok(None);
         };
         let crs::MetricModel::Geodesic { crs, .. } = metric else {
@@ -357,17 +373,18 @@ impl PySpatialIndex {
         let Some(query_anchor) = caps.query_anchor(anchor) else {
             return Ok(None);
         };
-        let order: Vec<CapBound> = self
-            .live_entries()
-            .map(|entry| CapBound {
+        let mut order = Vec::new();
+        for entry in self.live_entries() {
+            try_push_vec(&mut order, CapBound {
                 bound: caps.lower_bound(query_anchor, reach, entry.idx),
                 idx: entry.idx,
-            })
-            .collect();
+            })?;
+        }
         let mut order = BinaryHeap::from(order);
         let resolved = crs::ResolvedMetric::from_model(metric)?;
-        let mut nearest: BinaryHeap<NearestCandidate> =
-            BinaryHeap::with_capacity(k.min(self.rows.len() + 1));
+        let mut nearest: BinaryHeap<NearestCandidate> = BinaryHeap::new();
+        try_reserve_heap(&mut nearest, k.min(self.rows.len().saturating_add(1)))
+            .map_err(pyo3::PyErr::from)?;
         while let Some(CapBound { bound, idx }) = order.pop() {
             let ceiling = match (nearest.len() == k).then(|| nearest.peek()) {
                 Some(Some(worst)) => Some(worst.distance),
@@ -397,7 +414,7 @@ impl PySpatialIndex {
             if max_distance.is_some_and(|max| distance > max.get()) {
                 continue;
             }
-            push_nearest_candidate(&mut nearest, k, NearestCandidate::new(distance, idx));
+            push_nearest_candidate(&mut nearest, k, NearestCandidate::new(distance, idx))?;
         }
         Ok(Some(nearest_candidates_from_heap(nearest)))
     }
@@ -429,7 +446,7 @@ impl PySpatialIndex {
         distance: Option<NonNegative>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
-    ) {
+    ) -> PyResult<()> {
         out.clear();
         self.candidate_ids_core_append(
             query_bounds,
@@ -439,7 +456,7 @@ impl PySpatialIndex {
             distance,
             distance_model,
             out,
-        );
+        )
     }
 
     /// [`candidate_ids_core`](Self::candidate_ids_core) without clearing the
@@ -454,9 +471,9 @@ impl PySpatialIndex {
         distance: Option<NonNegative>,
         distance_model: Option<&crs::MetricModel>,
         out: &mut Vec<usize>,
-    ) {
+    ) -> PyResult<()> {
         let Some(query_bounds) = query_bounds else {
-            return;
+            return Ok(());
         };
         let coordinate_distance = distance.and_then(|distance| {
             distance_model
@@ -472,13 +489,13 @@ impl PySpatialIndex {
                     .then_some(([point.x, point.y], distance_2))
             });
         if let Some((query, distance_2)) = point_distance_query {
-            self.collect_within_distance_2(query, distance_2, out);
-            return;
+            self.collect_within_distance_2(query, distance_2, out)?;
+            return Ok(());
         }
         if let Some(distance) = coordinate_distance {
             let query_envelope = bounds_envelope(query_bounds.expand(distance));
-            self.collect_intersecting(&query_envelope, out);
-            return;
+            self.collect_intersecting(&query_envelope, out)?;
+            return Ok(());
         }
         if let Some(distance) = distance {
             let distance = distance.get();
@@ -493,29 +510,32 @@ impl PySpatialIndex {
                 // Windows never overlap (the wrap split is disjoint), so the
                 // concatenation has no duplicates.
                 for window in windows.iter() {
-                    self.collect_intersecting(window, out);
+                    self.collect_intersecting(window, out)?;
                 }
-                return;
+                return Ok(());
             }
             // Cap-table fallback — non-point queries and non-point rows
             // both get a SOUND row filter (a superset of every true dwithin
             // match) instead of the all-rows envelope.
-            if let Some((anchor, reach)) = query_cap
-                && let Some(caps) = distance_model.and_then(|model| self.geodesic_row_caps(model))
-                && let Some(query_anchor) = caps.query_anchor(anchor)
-            {
-                out.extend(
-                    self.live_entries()
-                        .filter(|entry| {
-                            caps.lower_bound(query_anchor, reach, entry.idx) <= distance
-                        })
-                        .map(|entry| entry.idx),
-                );
-                return;
+            if let Some((anchor, reach)) = query_cap {
+                let row_caps = match distance_model {
+                    Some(model) => self.geodesic_row_caps(model)?,
+                    None => None,
+                };
+                if let Some(caps) = row_caps
+                    && let Some(query_anchor) = caps.query_anchor(anchor)
+                {
+                    for entry in self.live_entries().filter(|entry| {
+                        caps.lower_bound(query_anchor, reach, entry.idx) <= distance
+                    }) {
+                        try_push_vec(out, entry.idx)?;
+                    }
+                    return Ok(());
+                }
             }
             let query_envelope = global_geographic_candidate_envelope();
-            self.collect_intersecting(&query_envelope, out);
-            return;
+            self.collect_intersecting(&query_envelope, out)?;
+            return Ok(());
         }
         let query_envelope = bounds_envelope(query_bounds);
         let containment = matches!(
@@ -524,10 +544,11 @@ impl PySpatialIndex {
                 if predicate.spec().index_envelope == Some(IndexEnvelope::ContainedInQuery)
         );
         if containment {
-            self.collect_contained(&query_envelope, out);
+            self.collect_contained(&query_envelope, out)?;
         } else {
-            self.collect_intersecting(&query_envelope, out);
+            self.collect_intersecting(&query_envelope, out)?;
         }
+        Ok(())
     }
 
     /// Candidate handles, sorted (the public `candidates` contract).
@@ -553,7 +574,7 @@ impl PySpatialIndex {
             distance,
             metric,
             &mut ids,
-        );
+        )?;
         sort_row_ids(&mut ids, self.rows.len());
         Ok(ids)
     }
@@ -594,7 +615,7 @@ impl PySpatialIndex {
             candidate_distance,
             metric,
             matches,
-        );
+        )?;
         let PreparedIndexQuery::Dwithin {
             resolved, distance, ..
         } = plan
@@ -634,31 +655,39 @@ impl PySpatialIndex {
         predicate: Predicate,
     ) -> PyResult<RowMatches> {
         let geographic = self.geographic();
-        let mut ids = Vec::new();
-        let mut offsets = Vec::with_capacity(points.len() + 1);
-        offsets.push(0);
+        let mut builder =
+            CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask[row]) {
-                offsets.push(ids.len());
+                let end = builder.len();
+                builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
-            self.collect_intersecting(&point_index_envelope(point, geographic), &mut ids);
-            offsets.push(ids.len());
+            self.collect_intersecting(
+                &point_index_envelope(point, geographic),
+                builder.values_mut(),
+            )?;
+            let end = builder.len();
+            builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
+        let (mut ids, offsets) = builder.finish();
         if ids.is_empty() {
             return Ok(RowMatches { ids, offsets });
         }
 
-        let mut groups: Vec<Vec<(usize, usize)>> =
-            (0..self.rows.len()).map(|_| Vec::new()).collect();
+        let mut groups = crate::try_vec_with_capacity(self.rows.len())?;
+        for _ in 0..self.rows.len() {
+            try_push_vec(&mut groups, Vec::new())?;
+        }
         for row in 0..points.len() {
-            for position in offsets[row]..offsets[row + 1] {
-                groups[ids[position]].push((row, position));
+            for position in offsets[row] as usize..offsets[row + 1] as usize {
+                try_push_vec(&mut groups[ids[position]], (row, position))?;
             }
         }
 
         let spec = predicate.spec();
-        let mut keep = vec![false; ids.len()];
+        let mut keep = crate::try_vec_with_capacity(ids.len())?;
+        keep.resize(ids.len(), false);
         for (idx, group) in groups.iter().enumerate() {
             if group.is_empty() {
                 continue;
@@ -670,8 +699,11 @@ impl PySpatialIndex {
                         crate::geometry::point_is_geographic_pole(points.get(row)).is_none()
                     }));
             if batch_safe {
-                let grouped_points =
-                    PointRows::Gathered(group.iter().map(|&(row, _)| points.get(row)).collect());
+                let grouped_points = PointRows::Gathered(try_collect_results(
+                    group
+                        .iter()
+                        .map(|&(row, _)| Ok::<_, pyo3::PyErr>(points.get(row))),
+                )?);
                 if let Some(mask) = point_batch(&spec, &data, &grouped_points, false, false) {
                     for (&(_, position), accepted) in group.iter().zip(mask) {
                         keep[position] = accepted;
@@ -686,20 +718,22 @@ impl PySpatialIndex {
         }
 
         let mut refined_ids = 0;
-        let mut refined_offsets = Vec::with_capacity(offsets.len());
-        refined_offsets.push(0);
+        let mut refined_offsets = CsrBuilder::<()>::new();
         for row in 0..points.len() {
             let output_start = refined_ids;
-            for position in offsets[row]..offsets[row + 1] {
+            for position in offsets[row] as usize..offsets[row + 1] as usize {
                 if keep[position] {
                     ids[refined_ids] = ids[position];
                     refined_ids += 1;
                 }
             }
             sort_row_ids(&mut ids[output_start..refined_ids], self.rows.len());
-            refined_offsets.push(refined_ids);
+            refined_offsets
+                .push_end(refined_ids)
+                .map_err(pyo3::PyErr::from)?;
         }
         ids.truncate(refined_ids);
+        let (_, refined_offsets) = refined_offsets.finish();
         Ok(RowMatches {
             ids,
             offsets: refined_offsets,
@@ -777,7 +811,7 @@ impl PySpatialIndex {
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {
-            return Ok(self.topological_matches(&geometry.shape, predicate));
+            return self.topological_matches(&geometry.shape, predicate);
         }
         let prepared = plan.row(
             self,
@@ -794,7 +828,7 @@ impl PySpatialIndex {
             candidate_distance,
             metric,
             &mut candidates,
-        );
+        )?;
         self.refine_prepared(geometry, candidates, &plan)
     }
 
@@ -806,10 +840,10 @@ impl PySpatialIndex {
         &self,
         shape: &ShapeData,
         predicate: Predicate,
-    ) -> Vec<usize> {
+    ) -> PyResult<Vec<usize>> {
         let mut matches = Vec::new();
-        self.topological_matches_append(shape, predicate, &mut matches);
-        matches
+        self.topological_matches_append(shape, predicate, &mut matches)?;
+        Ok(matches)
     }
 
     /// Append one topological result row directly into a flat CSR values
@@ -819,7 +853,7 @@ impl PySpatialIndex {
         shape: &ShapeData,
         predicate: Predicate,
         out: &mut Vec<usize>,
-    ) {
+    ) -> PyResult<()> {
         let row_start = out.len();
         if matches!(
             predicate,
@@ -828,21 +862,23 @@ impl PySpatialIndex {
                 | Predicate::ContainsProperly
                 | Predicate::Intersects
         ) && let Some(matches) =
-            self.convex_containment_matches(shape, predicate, self.geographic())
+            self.convex_containment_matches(shape, predicate, self.geographic())?
         {
-            out.extend(matches);
+            for value in matches {
+                try_push_vec(out, value)?;
+            }
             sort_row_ids(&mut out[row_start..], self.rows.len());
-            return;
+            return Ok(());
         }
         let Some(query_bounds) = shape.bounds() else {
-            return;
+            return Ok(());
         };
         let spec = predicate.spec();
         let query_envelope = index_envelope(shape.shape(), query_bounds, self.geographic());
         if spec.index_envelope == Some(IndexEnvelope::ContainedInQuery) {
-            self.collect_contained(&query_envelope, out);
+            self.collect_contained(&query_envelope, out)?;
         } else {
-            self.collect_intersecting(&query_envelope, out);
+            self.collect_intersecting(&query_envelope, out)?;
         }
         let rows = out[row_start..]
             .iter()
@@ -854,6 +890,7 @@ impl PySpatialIndex {
         retain_row(out, row_start, |_| Ok(mask.next().unwrap_or(false)))
             .expect("topological refinement is infallible");
         sort_row_ids(&mut out[row_start..], self.rows.len());
+        Ok(())
     }
 
     /// Ground-up convex-query descent for a small CONVEX hole-free query
@@ -870,37 +907,40 @@ impl PySpatialIndex {
         scalar: &ShapeData,
         predicate: Predicate,
         geographic: bool,
-    ) -> Option<Vec<usize>> {
+    ) -> PyResult<Option<Vec<usize>>> {
         // The MBR-descent accepts whole subtrees via planar corner tests, which
         // are unsound for an antimeridian-crossing query (its planar interior
         // spans the false middle). Fall back to candidates + gated refine.
         if geographic && scalar.shape().crosses_antimeridian() {
-            return None;
+            return Ok(None);
         }
         if let Shape::Polygon(polygon) = scalar.shape()
             && !crate::geometry::uses_linear_plan_for_len(
                 polygon.shell.coords().len().saturating_sub(1),
             )
         {
-            return None;
+            return Ok(None);
         }
-        let ccw = scalar.convex_shell()?;
+        let Some(ccw) = scalar.convex_shell() else {
+            return Ok(None);
+        };
         let Shape::Polygon(container) = scalar.shape() else {
-            return None;
+            return Ok(None);
         };
         let Some(query_bounds) = scalar.bounds() else {
-            return Some(Vec::new());
+            return Ok(Some(Vec::new()));
         };
         // Hoist the shell into a flat slice once; axis-aligned rectangular
         // queries (window/tile lookups — the overwhelmingly common case)
         // degrade the corner test to four strict float comparisons.
         let coords = container.shell.coords();
-        let shell: Vec<XY> = coords
-            .xs()
-            .iter()
-            .zip(coords.ys())
-            .map(|(&x, &y)| XY::new(x, y))
-            .collect();
+        let shell = try_collect_results(
+            coords
+                .xs()
+                .iter()
+                .zip(coords.ys())
+                .map(|(&x, &y)| Ok::<_, pyo3::PyErr>(XY::new(x, y))),
+        )?;
         // Bit equality is the intent: rectangle edges replicate exact
         // coordinates (boxes are built from their bounds).
         let rectangular = shell.array_windows::<2>().all(|[start, end]| {
@@ -922,44 +962,53 @@ impl PySpatialIndex {
         };
         let spec = predicate.spec();
         let mut matches = Vec::new();
-        let accept_entry = |entry: &IndexEntry, matches: &mut Vec<usize>| {
+        let accept_entry = |entry: &IndexEntry, matches: &mut Vec<usize>| -> PyResult<()> {
             if !entry.envelope.intersects(&query_envelope) {
-                return;
+                return Ok(());
             }
             if inside(&entry.envelope) || {
                 let element = self.rows.prepared_row(entry.idx);
                 topology_scalar_pair(&spec, scalar, &element, geographic)
             } {
-                matches.push(entry.idx);
+                try_push_vec(matches, entry.idx)?;
             }
+            Ok(())
         };
         // Bulk STR descent.
         let root_level = self.bulk.root_level();
-        let mut stack: Vec<(usize, u32)> = (0..self.bulk.roots().len() as u32)
-            .map(|node| (root_level, node))
-            .collect();
+        let mut stack = Vec::new();
+        crate::try_reserve_vec(&mut stack, self.bulk.roots().len())?;
+        for node in 0..self.bulk.roots().len() as u32 {
+            try_push_vec(&mut stack, (root_level, node))?;
+        }
         while let Some((level, index)) = stack.pop() {
             let node = self.bulk.node(level, index);
             if !node.envelope.intersects(&query_envelope) {
                 continue;
             }
             if inside(&node.envelope) {
-                self.bulk.collect_subtree(level, node, &mut matches);
+                self.bulk.collect_subtree(level, node, &mut matches)?;
                 continue;
             }
             if level == 0 {
                 for entry in self.bulk.leaf_entries(node) {
                     if self.bulk.is_live(entry.idx) {
-                        accept_entry(entry, &mut matches);
+                        accept_entry(entry, &mut matches)?;
                     }
                 }
             } else {
-                stack.extend(node.children.clone().map(|child| (level - 1, child)));
+                for child in node.children.clone() {
+                    try_push_vec(&mut stack, (level - 1, child))?;
+                }
             }
         }
         // Overflow R-tree descent (usually empty).
-        let mut overflow: Vec<&RTreeNode<IndexEntry>> =
-            self.overflow.root().children().iter().collect();
+        let children = self.overflow.root().children();
+        let mut overflow = Vec::new();
+        crate::try_reserve_vec(&mut overflow, children.len())?;
+        for node in children {
+            try_push_vec(&mut overflow, node)?;
+        }
         while let Some(node) = overflow.pop() {
             match node {
                 RTreeNode::Parent(parent) => {
@@ -968,15 +1017,17 @@ impl PySpatialIndex {
                         continue;
                     }
                     if inside(&envelope) {
-                        collect_subtree_ids(parent, &mut matches);
+                        collect_subtree_ids(parent, &mut matches)?;
                     } else {
-                        overflow.extend(parent.children().iter());
+                        for child in parent.children() {
+                            try_push_vec(&mut overflow, child)?;
+                        }
                     }
                 },
-                RTreeNode::Leaf(entry) => accept_entry(entry, &mut matches),
+                RTreeNode::Leaf(entry) => accept_entry(entry, &mut matches)?,
             }
         }
-        Some(matches)
+        Ok(Some(matches))
     }
 
     /// Column-direct engine for packed point query arrays: one frame check and
@@ -1022,22 +1073,26 @@ impl PySpatialIndex {
         // CSR-direct: every row appends into one flat ids buffer (refine
         // compacts the row window in place, then the window sorts in
         // place) — no per-point `Vec`.
-        let mut ids: Vec<usize> = Vec::new();
-        let mut offsets: Vec<usize> = Vec::with_capacity(points.len() + 1);
-        offsets.push(0);
+        let mut builder =
+            CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
         // Point queries never cross, but index rows can: split-normalize a
         // crossing item before the predicate (resolved once for the array).
         let geographic = self.geographic();
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask[row]) {
-                offsets.push(ids.len());
+                let end = builder.len();
+                builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
             let query = ShapeData::new(Shape::Point(point));
-            let row_start = ids.len();
+            let row_start = builder.len();
             match (coordinate_distance, distance) {
                 (Some(radius), _) => {
-                    self.collect_within_distance_2([point.x, point.y], radius * radius, &mut ids);
+                    self.collect_within_distance_2(
+                        [point.x, point.y],
+                        radius * radius,
+                        builder.values_mut(),
+                    )?;
                 },
                 (None, Some(distance)) => {
                     let distance = distance.get();
@@ -1051,16 +1106,24 @@ impl PySpatialIndex {
                     {
                         Some(windows) => {
                             for window in windows.iter() {
-                                self.collect_intersecting(window, &mut ids);
+                                self.collect_intersecting(window, builder.values_mut())?;
                             }
                         },
-                        None => ids.extend(self.live_entries().map(|entry| entry.idx)),
+                        None => {
+                            for entry in self.live_entries() {
+                                try_push_vec(builder.values_mut(), entry.idx)?;
+                            }
+                        },
                     }
                 },
                 (None, None) => {
-                    self.collect_intersecting(&point_index_envelope(point, geographic), &mut ids);
+                    self.collect_intersecting(
+                        &point_index_envelope(point, geographic),
+                        builder.values_mut(),
+                    )?;
                 },
             }
+            let mut ids = builder.values_mut();
             match (&spec, model, predicate) {
                 (Some(spec), ..) => retain_row(&mut ids, row_start, |idx| {
                     let data = self.rows.prepared_row(idx);
@@ -1092,8 +1155,10 @@ impl PySpatialIndex {
                 _ => {},
             }
             sort_row_ids(&mut ids[row_start..], self.rows.len());
-            offsets.push(ids.len());
+            let end = builder.len();
+            builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
+        let (ids, offsets) = builder.finish();
         Ok(RowMatches { ids, offsets })
     }
 }

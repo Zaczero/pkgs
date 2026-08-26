@@ -313,7 +313,7 @@ pub(crate) fn geometries_from_arrow_storages(
     apply_arrow_batch_frame(&mut geometries, crs.as_ref(), epoch);
     let mask = crate::array::sparse_missing_mask(geometries.len(), &missing_rows);
     Ok(
-        PyGeometryArray::pack_or_mixed(geometries, Frame::new(crs, epoch)?)
+        PyGeometryArray::pack_or_mixed(geometries, Frame::new(crs, epoch)?)?
             .with_missing_mask(mask)
             .into_pyobject(py)?
             .unbind()
@@ -488,25 +488,34 @@ fn masked_pyarrow_import(
     frame: Frame,
 ) -> PyResult<Py<PyAny>> {
     let module = gometry_arrow_module(py)?;
-    let mut mask: Vec<bool> = Vec::new();
-    let mut dense_storages = Vec::with_capacity(storages.len());
+    let total_rows = crate::checked_length_sum(
+        storages
+            .iter()
+            .map(|storage| storage.storage.bind(py).len()),
+    )?;
+    let mut mask = crate::try_vec_with_capacity(total_rows)?;
+    let mut dense_storages = crate::try_vec_with_capacity(storages.len())?;
     for storage in storages {
         // Offsets already validated in geometries_from_arrow_storages (pre-strip).
         let array = storage.storage.bind(py);
         let null_count = array.getattr("null_count")?.extract::<i64>()?;
-        let chunk_mask: Vec<u8> = module.call_method1("missing_mask", (array,))?.extract()?;
-        let chunk_bools: Vec<bool> = chunk_mask.into_iter().map(|byte| byte != 0).collect();
+        let chunk_mask = module.call_method1("missing_mask", (array,))?;
+        let chunk_mask = crate::copy_one_byte_buffer(&chunk_mask)?;
+        let mut chunk_bools = crate::try_vec_with_capacity(chunk_mask.len())?;
+        for byte in chunk_mask {
+            crate::try_push(&mut chunk_bools, byte != 0)?;
+        }
         // Known null_count must agree with the visible validity bitmap (P02).
         ensure_null_count_matches_mask(null_count, chunk_bools.iter().copied())?;
-        mask.extend(chunk_bools);
+        mask.extend_from_slice(&chunk_bools);
         let dense = module.call_method1("strip_missing", (array,))?;
-        dense_storages.push(ArrowStorage {
+        crate::try_push(&mut dense_storages, ArrowStorage {
             storage: dense.unbind(),
             crs: storage.crs,
             epoch: storage.epoch,
             encoding: storage.encoding,
             wkb_offset_width: storage.wkb_offset_width,
-        });
+        })?;
     }
     let dense = geometries_from_arrow_storages(py, dense_storages, None, None)?;
     let dense = dense

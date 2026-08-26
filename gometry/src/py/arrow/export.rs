@@ -2,6 +2,8 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::exceptions::PyOverflowError;
+
 use crate::GeometryArrayStorage;
 use crate::py::arrow::{
     ArrowCoordinateBuffers, CoordSeq, CoordinateAxes, Polygon, Py, PyAny, PyAnyMethods as _,
@@ -9,14 +11,15 @@ use crate::py::arrow::{
     gometry_arrow_module, io, push_i32_le,
 };
 
-pub(crate) fn validity_bitmap_from_missing(mask: &[bool]) -> Vec<u8> {
-    let mut validity = vec![0_u8; mask.len().div_ceil(8)];
+pub(crate) fn validity_bitmap_from_missing(mask: &[bool]) -> PyResult<Vec<u8>> {
+    let mut validity = crate::try_vec_with_capacity(mask.len().div_ceil(8))?;
+    validity.resize(mask.len().div_ceil(8), 0);
     for (row, &missing) in mask.iter().enumerate() {
         if !missing {
             validity[row / 8] |= 1 << (row % 8);
         }
     }
-    validity
+    Ok(validity)
 }
 
 pub(crate) fn push_arrow_polygon(
@@ -25,11 +28,15 @@ pub(crate) fn push_arrow_polygon(
     coordinate_count: &mut usize,
     coordinates: &mut ArrowCoordinateBuffers,
 ) -> PyResult<()> {
-    *coordinate_count += polygon.shell.len();
+    *coordinate_count = coordinate_count
+        .checked_add(polygon.shell.len())
+        .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))?;
     push_i32_le(ring_offsets, *coordinate_count)?;
     coordinates.push_points(&polygon.shell)?;
     for hole in polygon.holes.iter() {
-        *coordinate_count += hole.len();
+        *coordinate_count = coordinate_count
+            .checked_add(hole.len())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))?;
         push_i32_le(ring_offsets, *coordinate_count)?;
         coordinates.push_points(hole)?;
     }
@@ -120,11 +127,19 @@ pub(crate) fn packed_polygons_to_arrow(
             )?
             .unbind());
     }
-    let mut polygon_bytes: Vec<u8> = Vec::with_capacity(polygon_offsets.len() * 4);
+    let polygon_capacity = polygon_offsets
+        .len()
+        .checked_mul(4)
+        .ok_or_else(|| PyOverflowError::new_err("Arrow offset buffer size overflows usize"))?;
+    let mut polygon_bytes: Vec<u8> = crate::try_vec_with_capacity(polygon_capacity)?;
     for &offset in polygon_offsets.iter() {
         polygon_bytes.extend_from_slice(&offset.to_le_bytes());
     }
-    let mut ring_bytes: Vec<u8> = Vec::with_capacity(ring_offsets.len() * 4);
+    let ring_capacity = ring_offsets
+        .len()
+        .checked_mul(4)
+        .ok_or_else(|| PyOverflowError::new_err("Arrow offset buffer size overflows usize"))?;
+    let mut ring_bytes: Vec<u8> = crate::try_vec_with_capacity(ring_capacity)?;
     for &offset in ring_offsets.iter() {
         ring_bytes.extend_from_slice(&offset.to_le_bytes());
     }
@@ -169,7 +184,11 @@ pub(crate) fn packed_lines_to_arrow(
             )?
             .unbind());
     }
-    let mut offset_bytes: Vec<u8> = Vec::with_capacity(offsets.len() * 4);
+    let offset_capacity = offsets
+        .len()
+        .checked_mul(4)
+        .ok_or_else(|| PyOverflowError::new_err("Arrow offset buffer size overflows usize"))?;
+    let mut offset_bytes: Vec<u8> = crate::try_vec_with_capacity(offset_capacity)?;
     for &offset in offsets.iter() {
         offset_bytes.extend_from_slice(&offset.to_le_bytes());
     }
@@ -261,12 +280,12 @@ fn shapes_to_packed_arrow(
     // Build GeoArrow buffers directly from the array-owned shapes.
     match kind {
         PackedKind::Point => {
-            let mut points = Vec::with_capacity(shapes.len());
+            let mut points = crate::try_vec_with_capacity(shapes.len())?;
             for shape in shapes {
                 let Shape::Point(point) = shape else {
                     unreachable!()
                 };
-                points.push(*point);
+                crate::try_push(&mut points, *point)?;
             }
             let seq = CoordSeq::from_points(&points);
             packed_points_to_arrow(py, &seq, crs, epoch).map(Some)
@@ -314,10 +333,15 @@ fn export_arrow_multilinestring_shapes(
     epoch: Option<f64>,
     axes: CoordinateAxes,
 ) -> PyResult<Py<PyAny>> {
-    let mut geometry_offsets = Vec::with_capacity((shapes.len() + 1) * 4);
+    let mut geometry_offsets = Vec::new();
     let mut line_offsets = Vec::new();
-    let total: usize = shapes.iter().map(Shape::coord_count).sum();
-    let mut coordinates = ArrowCoordinateBuffers::with_capacity(axes, total);
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(shape.coord_count())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))
+    })?;
+    let mut coordinates =
+        ArrowCoordinateBuffers::with_capacity(axes, total).map_err(pyo3::PyErr::from)?;
     let mut line_count = 0;
     let mut coordinate_count = 0;
     push_i32_le(&mut geometry_offsets, line_count)?;
@@ -326,10 +350,14 @@ fn export_arrow_multilinestring_shapes(
         let Shape::MultiLineString(lines) = shape else {
             unreachable!()
         };
-        line_count += lines.len();
+        line_count = line_count
+            .checked_add(lines.len())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow line count overflows usize"))?;
         push_i32_le(&mut geometry_offsets, line_count)?;
         for line in lines {
-            coordinate_count += line.len();
+            coordinate_count = coordinate_count.checked_add(line.len()).ok_or_else(|| {
+                PyOverflowError::new_err("Arrow coordinate count overflows usize")
+            })?;
             push_i32_le(&mut line_offsets, coordinate_count)?;
             coordinates.push_points(line)?;
         }
@@ -352,10 +380,15 @@ fn export_arrow_polygon_shapes(
     epoch: Option<f64>,
     axes: CoordinateAxes,
 ) -> PyResult<Py<PyAny>> {
-    let mut polygon_offsets = Vec::with_capacity((shapes.len() + 1) * 4);
+    let mut polygon_offsets = Vec::new();
     let mut ring_offsets = Vec::new();
-    let total: usize = shapes.iter().map(Shape::coord_count).sum();
-    let mut coordinates = ArrowCoordinateBuffers::with_capacity(axes, total);
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(shape.coord_count())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))
+    })?;
+    let mut coordinates =
+        ArrowCoordinateBuffers::with_capacity(axes, total).map_err(pyo3::PyErr::from)?;
     let mut ring_count = 0;
     let mut coordinate_count = 0;
     push_i32_le(&mut polygon_offsets, ring_count)?;
@@ -364,7 +397,14 @@ fn export_arrow_polygon_shapes(
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
-        ring_count += 1 + polygon.holes.len();
+        let ring_total = polygon
+            .holes
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| PyOverflowError::new_err("Arrow ring count overflows usize"))?;
+        ring_count = ring_count
+            .checked_add(ring_total)
+            .ok_or_else(|| PyOverflowError::new_err("Arrow ring count overflows usize"))?;
         push_i32_le(&mut polygon_offsets, ring_count)?;
         push_arrow_polygon(
             polygon,
@@ -391,11 +431,16 @@ fn export_arrow_multipolygon_shapes(
     epoch: Option<f64>,
     axes: CoordinateAxes,
 ) -> PyResult<Py<PyAny>> {
-    let mut multipolygon_offsets = Vec::with_capacity((shapes.len() + 1) * 4);
+    let mut multipolygon_offsets = Vec::new();
     let mut polygon_offsets = Vec::new();
     let mut ring_offsets = Vec::new();
-    let total: usize = shapes.iter().map(Shape::coord_count).sum();
-    let mut coordinates = ArrowCoordinateBuffers::with_capacity(axes, total);
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(shape.coord_count())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))
+    })?;
+    let mut coordinates =
+        ArrowCoordinateBuffers::with_capacity(axes, total).map_err(pyo3::PyErr::from)?;
     let mut polygon_count = 0;
     let mut ring_count = 0;
     let mut coordinate_count = 0;
@@ -406,10 +451,19 @@ fn export_arrow_multipolygon_shapes(
         let Shape::MultiPolygon(polygons) = shape else {
             unreachable!()
         };
-        polygon_count += polygons.len();
+        polygon_count = polygon_count
+            .checked_add(polygons.len())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow polygon count overflows usize"))?;
         push_i32_le(&mut multipolygon_offsets, polygon_count)?;
         for polygon in polygons {
-            ring_count += 1 + polygon.holes.len();
+            let ring_total = polygon
+                .holes
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| PyOverflowError::new_err("Arrow ring count overflows usize"))?;
+            ring_count = ring_count
+                .checked_add(ring_total)
+                .ok_or_else(|| PyOverflowError::new_err("Arrow ring count overflows usize"))?;
             push_i32_le(&mut polygon_offsets, ring_count)?;
             push_arrow_polygon(
                 polygon,
@@ -450,14 +504,21 @@ fn export_arrow_coordseq_shapes(
     points_of: impl Fn(&Shape) -> &CoordSeq,
     arrow_builder: &str,
 ) -> PyResult<Py<PyAny>> {
-    let mut offsets = Vec::with_capacity((shapes.len() + 1) * 4);
-    let total: usize = shapes.iter().map(|shape| points_of(shape).len()).sum();
-    let mut coordinates = ArrowCoordinateBuffers::with_capacity(axes, total);
+    let mut offsets = Vec::new();
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(points_of(shape).len())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))
+    })?;
+    let mut coordinates =
+        ArrowCoordinateBuffers::with_capacity(axes, total).map_err(pyo3::PyErr::from)?;
     let mut coordinate_count = 0;
     push_i32_le(&mut offsets, coordinate_count)?;
     for shape in shapes {
         let points = points_of(shape);
-        coordinate_count += points.len();
+        coordinate_count = coordinate_count
+            .checked_add(points.len())
+            .ok_or_else(|| PyOverflowError::new_err("Arrow coordinate count overflows usize"))?;
         push_i32_le(&mut offsets, coordinate_count)?;
         coordinates.push_points(points)?;
     }
@@ -480,9 +541,13 @@ pub(crate) fn shapes_to_wkb_arrow(
     // multi-row/large WKB that costs more than the copy it saves. Do not
     // re-attempt without new evidence. Scalar `to_wkb` (item 1) keeps
     // `new_with` — one small buffer measured a win.
-    let mut offsets = Vec::with_capacity((shapes.len() + 1) * 4);
-    let total: usize = shapes.iter().map(|shape| io::wkb_len(shape, false)).sum();
-    let mut data = Vec::with_capacity(total);
+    let mut offsets = Vec::new();
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(io::wkb_len(shape, false)?)
+            .ok_or_else(|| PyOverflowError::new_err("WKB size overflows usize"))
+    })?;
+    let mut data = crate::try_vec_with_capacity(total)?;
     push_i32_le(&mut offsets, 0)?;
     for shape in shapes {
         io::write_wkb_to(&mut data, shape, crs, false)?;
@@ -504,17 +569,18 @@ pub(crate) fn storage_to_wkb_arrow(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
-    let mut offsets = Vec::with_capacity((storage.len() + 1) * 4);
+    let mut offsets = Vec::new();
     // Iterate the storage views directly. Packed point/line/polygon rows remain
     // borrowed `ShapeCow` views throughout, so forcing `encoding='wkb'` never
     // materializes a `PyGeometry` per row merely to reach the WKB writer.
     // See `shapes_to_wkb_arrow`: do not switch multi-row WKB to
     // `PyBytes::new_with` without new evidence (measured 0.95× regression).
-    let total: usize = storage
-        .iter_shapes()
-        .map(|shape| io::wkb_len(&shape, false))
-        .sum();
-    let mut data = Vec::with_capacity(total);
+    let total = storage.iter_shapes().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(io::wkb_len(&shape, false)?)
+            .ok_or_else(|| PyOverflowError::new_err("WKB size overflows usize"))
+    })?;
+    let mut data = crate::try_vec_with_capacity(total)?;
     push_i32_le(&mut offsets, 0)?;
     for shape in storage.iter_shapes() {
         io::write_wkb_to(&mut data, &shape, crs, false)?;

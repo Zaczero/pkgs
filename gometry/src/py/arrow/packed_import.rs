@@ -38,7 +38,10 @@ pub(crate) fn packed_linestrings_import(
         let values = array.getattr("values")?;
         let (base, span) = coordinate_span(level.endpoint(0)?, level.endpoint(len)?)?;
         let coordinates = arrow_coordinate_values(py, &values, base, span)?;
-        if !coordinates.all_valid(base, base + span) {
+        let end = base
+            .checked_add(span)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
+        if !coordinates.all_valid(base, end) {
             return Ok(None);
         }
         let chunk_axes =
@@ -51,17 +54,20 @@ pub(crate) fn packed_linestrings_import(
             if range.len() == 1 {
                 return Ok(None);
             }
-            total += range.len();
+            total = match total.checked_add(range.len()) {
+                Some(total) => total,
+                None => return Ok(None),
+            };
             let Ok(offset) = i32::try_from(total) else {
                 return Ok(None);
             };
-            offsets.push(offset);
+            push_offset(&mut offsets, offset, &mut builder)?;
         }
         if multi_chunk {
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                ));
+                )?);
             }
             builder
                 .as_mut()
@@ -132,7 +138,7 @@ pub(crate) fn packed_points_import(
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                ));
+                )?);
             }
             builder
                 .as_mut()
@@ -199,7 +205,10 @@ pub(crate) fn packed_polygons_import(
         let (base, span) = levels.visible_coordinate_span(len)?;
         let values = array.getattr("values")?.getattr("values")?;
         let coordinates = arrow_coordinate_values(py, &values, base, span)?;
-        if !coordinates.all_valid(base, base + span) {
+        let end = base
+            .checked_add(span)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
+        if !coordinates.all_valid(base, end) {
             return Ok(None);
         }
         let chunk_axes =
@@ -227,23 +236,29 @@ pub(crate) fn packed_polygons_import(
                 if arrow_ring_needs_closure(&coordinates, &vertex_range)? {
                     return Ok(None);
                 }
-                total_vertices += vertex_range.len();
+                total_vertices = match total_vertices.checked_add(vertex_range.len()) {
+                    Some(total) => total,
+                    None => return Ok(None),
+                };
                 let Ok(offset) = i32::try_from(total_vertices) else {
                     return Ok(None);
                 };
-                ring_offsets.push(offset);
+                push_offset(&mut ring_offsets, offset, &mut builder)?;
             }
-            total_rings += ring_range.len();
+            total_rings = match total_rings.checked_add(ring_range.len()) {
+                Some(total) => total,
+                None => return Ok(None),
+            };
             let Ok(polygon_offset) = i32::try_from(total_rings) else {
                 return Ok(None);
             };
-            polygon_offsets.push(polygon_offset);
+            push_offset(&mut polygon_offsets, polygon_offset, &mut builder)?;
         }
         if multi_chunk {
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
-                ));
+                )?);
             }
             builder
                 .as_mut()
@@ -294,6 +309,18 @@ fn finish_packed_polygons(
         polygon_offsets,
         frame,
     ))
+}
+
+fn push_offset(
+    offsets: &mut Vec<i32>,
+    offset: i32,
+    builder: &mut Option<ExactArrowCoordinateFill>,
+) -> PyResult<()> {
+    if let Err(error) = crate::try_push_vec(offsets, offset) {
+        builder.take();
+        return Err(pyo3::PyErr::from(error));
+    }
+    Ok(())
 }
 
 fn coordseq_from_arrow_coordinates(coordinates: &ArrowCoordinateValues) -> PyResult<CoordSeq> {

@@ -264,8 +264,11 @@ pub(crate) fn metric_concave_hull(
             crs,
             state,
             |projected| {
-                let mut seen = HashSet::with_capacity(projected.coord_count());
-                let mut pairs = Vec::with_capacity(projected.coord_count());
+                let mut seen = HashSet::new();
+                seen.try_reserve(projected.coord_count())
+                    .map_err(|_| crate::error::ResourceError::Allocation)?;
+                let mut pairs = Vec::new();
+                crate::boundary::try_reserve_vec(&mut pairs, projected.coord_count())?;
                 let mut point_index = 0;
                 projected.for_each_point(|point| {
                     // Projected vertices are 1:1 with the source; the original
@@ -273,6 +276,8 @@ pub(crate) fn metric_concave_hull(
                     let original_index = point_index;
                     point_index += 1;
                     if seen.insert(PointKey::new(point)) {
+                        // The reservation above covers every source vertex;
+                        // insertion cannot exceed that validated count.
                         pairs.push((point, original_index));
                     }
                 });
@@ -282,16 +287,24 @@ pub(crate) fn metric_concave_hull(
                 pairs.sort_unstable_by(|(left, _), (right, _)| {
                     left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
                 });
-                let projected_points: Vec<Point> =
-                    pairs.iter().map(|&(point, _)| point.to_xy()).collect();
-                Ok(crate::geometry::native_concave_hull(
+                let mut projected_points = Vec::new();
+                crate::boundary::try_reserve_vec(&mut projected_points, pairs.len())?;
+                for &(point, _) in &pairs {
+                    crate::boundary::try_push_vec(&mut projected_points, point.to_xy())?;
+                }
+                let mut provenance = Vec::new();
+                crate::boundary::try_reserve_vec(&mut provenance, projected_points.len())?;
+                for index in crate::geometry::native_concave_hull(
                     &projected_points,
                     concavity,
                     length_threshold,
-                )
-                .into_iter()
-                .map(|index| VertexProvenance::Input(pairs[index].1))
-                .collect())
+                ) {
+                    crate::boundary::try_push_vec(
+                        &mut provenance,
+                        VertexProvenance::Input(pairs[index].1),
+                    )?;
+                }
+                Ok(provenance)
             },
             |points| Ok(shape_from_open_hull(&points, Shape::empty_polygon)),
         ),

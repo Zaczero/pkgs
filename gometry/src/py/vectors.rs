@@ -22,7 +22,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PySequence};
 use pyo3::{IntoPyObjectExt as _, ffi};
 
-use crate::HeapSize;
 use crate::array::PyGeometryArray;
 use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
@@ -30,6 +29,7 @@ use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
 use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
+use crate::{CsrBuilder, HeapSize};
 
 /// Format a short preview list of already-rendered row strings.
 ///
@@ -58,7 +58,9 @@ const fn contiguous_positive_window(
 fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<()> {
     // Parameter/content validation — GeometryError, never BufferError (D32:
     // empty offsets used to underflow then surface as BufferError/panic).
-    if offsets.first() != Some(&0) || offsets.last() != Some(&(values_len as i64)) {
+    let values_len = i64::try_from(values_len)
+        .map_err(|_| GeometryError::new_err("CSR values length does not fit in int64"))?;
+    if offsets.first() != Some(&0) || offsets.last() != Some(&values_len) {
         return Err(GeometryError::new_err("invalid CSR offsets"));
     }
     if !offsets.is_sorted() {
@@ -431,25 +433,22 @@ impl Groups {
         }
         let this = slf.borrow();
         let base = this.offsets[this.rows.start];
-        int64_array(
-            slf.py(),
-            this.offsets[this.rows.start..=this.rows.end]
-                .iter()
-                .map(|&offset| offset - base)
-                .collect(),
-        )
+        let mut offsets = crate::try_vec_with_capacity(this.rows.len() + 1)?;
+        for &offset in &this.offsets[this.rows.start..=this.rows.end] {
+            crate::try_push(&mut offsets, offset - base)?;
+        }
+        int64_array(slf.py(), offsets)
     }
 
     /// Per-group element counts (`offsets[i + 1] - offsets[i]`).
     #[getter]
     fn counts(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();
-        int64_array(
-            slf.py(),
-            (this.rows.start..this.rows.end)
-                .map(|row| this.offsets[row + 1] - this.offsets[row])
-                .collect(),
-        )
+        let mut counts = crate::try_vec_with_capacity(this.rows.len())?;
+        for row in this.rows.start..this.rows.end {
+            crate::try_push(&mut counts, this.offsets[row + 1] - this.offsets[row])?;
+        }
+        int64_array(slf.py(), counts)
     }
 
     /// Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
@@ -487,12 +486,14 @@ impl Groups {
         let py = slf.py();
         let row_ids = {
             let this = slf.borrow();
-            let mut row_ids = Vec::with_capacity(this.values_window().len());
+            let mut row_ids = crate::try_vec_with_capacity(this.values_window().len())?;
             for (logical_row, row) in (this.rows.start..this.rows.end).enumerate() {
                 let logical_row = i64::try_from(logical_row)
                     .map_err(|_| PyOverflowError::new_err("row index does not fit in int64"))?;
                 let count = (this.offsets[row + 1] - this.offsets[row]) as usize;
-                row_ids.extend(std::iter::repeat_n(logical_row, count));
+                for value in std::iter::repeat_n(logical_row, count) {
+                    crate::try_push(&mut row_ids, value)?;
+                }
             }
             row_ids
         };
@@ -570,17 +571,25 @@ impl Groups {
                     let rows = slice_rows(start, step, count);
                     match &this.values {
                         GroupsValues::Int64(_) => {
-                            let value_count =
-                                rows.clone().map(|row| this.int64_window(row).len()).sum();
-                            let mut ids = Vec::with_capacity(value_count);
-                            let mut offsets = Vec::with_capacity(count + 1);
-                            offsets.push(0_i64);
+                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
+                                total
+                                    .checked_add(this.int64_window(row).len())
+                                    .ok_or_else(|| {
+                                        PyOverflowError::new_err(
+                                            "Groups values size overflows usize",
+                                        )
+                                    })
+                            })?;
+                            let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count)
+                                .map_err(PyErr::from)?;
                             for row in rows {
-                                ids.extend_from_slice(this.int64_row_slice(row));
-                                offsets.push(i64::try_from(ids.len()).map_err(|_| {
-                                    PyOverflowError::new_err("offset does not fit in int64")
-                                })?);
+                                for &value in this.int64_row_slice(row) {
+                                    builder.push(value).map_err(PyErr::from)?;
+                                }
+                                let end = builder.len();
+                                builder.push_end(end).map_err(PyErr::from)?;
                             }
+                            let (ids, offsets) = builder.finish();
                             let rows = 0..offsets.len() - 1;
                             Self {
                                 values: GroupsValues::Int64(ids.into()),
@@ -593,23 +602,29 @@ impl Groups {
                                 !values.has_missing(),
                                 "Groups geometry values are compact present rows, never masked"
                             );
-                            let value_count = rows
-                                .clone()
-                                .map(|row| this.geometry_indices_window(row).len())
-                                .sum();
-                            let mut offsets = Vec::with_capacity(count + 1);
-                            offsets.push(0_i64);
-                            let mut shapes = Vec::with_capacity(value_count);
+                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
+                                total
+                                    .checked_add(this.geometry_indices_window(row).len())
+                                    .ok_or_else(|| {
+                                        PyOverflowError::new_err(
+                                            "Groups values size overflows usize",
+                                        )
+                                    })
+                            })?;
+                            let mut builder =
+                                CsrBuilder::<Shape>::with_capacity(value_count, count)
+                                    .map_err(PyErr::from)?;
                             for row in rows {
                                 let row_values = values
                                     .gather_logical_row_range(this.geometry_indices_window(row));
-                                shapes.extend(
-                                    row_values.storage().iter_shapes().map(Cow::into_owned),
-                                );
-                                offsets.push(i64::try_from(shapes.len()).map_err(|_| {
-                                    PyOverflowError::new_err("offset does not fit in int64")
-                                })?);
+                                for shape in row_values.storage().iter_shapes().map(Cow::into_owned)
+                                {
+                                    builder.push(shape).map_err(PyErr::from)?;
+                                }
+                                let end = builder.len();
+                                builder.push_end(end).map_err(PyErr::from)?;
                             }
+                            let (shapes, offsets) = builder.finish();
                             let flat = Arc::new(PyGeometryArray::from_shapes(
                                 shapes,
                                 values.frame.clone(),
@@ -619,10 +634,14 @@ impl Groups {
                         },
                         GroupsValues::Cells(values) => {
                             let kind = values.kind();
-                            Self::from_cell_rows(
-                                kind,
-                                rows.map(|row| this.cell_row_view(row).logical_ids()),
-                            )?
+                            let mut builder = CsrBuilder::<u64>::new();
+                            for row in rows {
+                                builder
+                                    .push_row(this.cell_row_view(row).logical_ids()?)
+                                    .map_err(PyErr::from)?;
+                            }
+                            let (ids, offsets) = builder.finish();
+                            Self::from_cell_flat(kind, ids, offsets)?
                         },
                     }
                 };
@@ -809,19 +828,28 @@ impl Groups {
     /// >>> [g.to_wkt() for g in groups.to_list()[0]]
     /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let rows: Vec<Py<PyAny>> = (0..self.rows.len())
-            .map(|row| match &self.values {
-                GroupsValues::Int64(_) => self.int64_row_slice(row).to_vec().into_py_any(py),
+        let mut rows = crate::try_vec_with_capacity(self.rows.len())?;
+        for row in 0..self.rows.len() {
+            let value = match &self.values {
+                GroupsValues::Int64(_) => {
+                    let source = self.int64_row_slice(row);
+                    let mut values = crate::try_vec_with_capacity(source.len())?;
+                    for &value in source {
+                        crate::try_push(&mut values, value)?;
+                    }
+                    values.into_py_any(py)?
+                },
                 GroupsValues::Geometry(_) => {
                     let items = self.geometry_row_view(row).materialized_objects(py)?;
-                    PyList::new(py, items)?.into_py_any(py)
+                    PyList::new(py, items)?.into_py_any(py)?
                 },
                 GroupsValues::Cells(_) => {
                     let items = self.cell_row_view(row).to_cell_list(py)?;
-                    PyList::new(py, items)?.into_py_any(py)
+                    PyList::new(py, items)?.into_py_any(py)?
                 },
-            })
-            .collect::<PyResult<_>>()?;
+            };
+            crate::try_push(&mut rows, value)?;
+        }
         PyList::new(py, rows)?.into_py_any(py)
     }
 
@@ -833,13 +861,22 @@ impl Groups {
         let base = self.offsets[self.rows.start];
         let start = base as usize;
         let end = self.offsets[self.rows.end] as usize;
-        let rebased: Vec<i64> = self.offsets[self.rows.start..=self.rows.end]
-            .iter()
-            .map(|&offset| offset - base)
-            .collect();
+        let mut rebased = crate::try_vec_with_capacity(
+            self.rows
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| PyOverflowError::new_err("Groups offset count overflows usize"))?,
+        )?;
+        for &offset in &self.offsets[self.rows.start..=self.rows.end] {
+            crate::try_push(&mut rebased, offset - base)?;
+        }
         match &self.values {
             GroupsValues::Int64(values) => {
-                let args = (values[start..end].to_vec(), rebased).into_py_any(py)?;
+                let mut copied = crate::try_vec_with_capacity(end - start)?;
+                for &value in &values[start..end] {
+                    crate::try_push(&mut copied, value)?;
+                }
+                let args = (copied, rebased).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_int64_groups"))?

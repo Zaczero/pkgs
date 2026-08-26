@@ -175,10 +175,7 @@ impl AdmittedArrowSchema {
                 "Arrow schema children pointer is null while n_children > 0",
             ));
         }
-        let mut shallow_children = Vec::new();
-        shallow_children.try_reserve(n).map_err(|_| {
-            PyTypeError::new_err("Arrow schema child count is too large to allocate")
-        })?;
+        let mut shallow_children = crate::try_vec_with_capacity(n)?;
         for i in 0..n {
             // SAFETY: index in range; shell pins child table.
             let child_ptr = unsafe { *raw.children.add(i) };
@@ -186,21 +183,23 @@ impl AdmittedArrowSchema {
                 return Err(PyTypeError::new_err("Arrow child schema is null"));
             }
             // SAFETY: child_ptr live under shell; shallow capture only.
-            shallow_children
-                .push(unsafe { Self::capture_node(owner, child_ptr, CaptureDepth::Shallow, 0) }?);
+            crate::try_push(&mut shallow_children, unsafe {
+                Self::capture_node(owner, child_ptr, CaptureDepth::Shallow, 0)
+            }?)?;
         }
         let selected = select_geometry_child_index_from_shallow(&shallow_children)?;
-        let mut children = Vec::with_capacity(n);
+        let mut children = crate::try_vec_with_capacity(n)?;
         for (i, shallow) in shallow_children.into_iter().enumerate() {
             if i == selected {
                 // SAFETY: same child table as above; deep-capture geometry only.
                 let child_ptr = unsafe { *raw.children.add(i) };
                 // SAFETY: child_ptr live under shell; deep geometry subtree.
-                children
-                    .push(unsafe { Self::capture_node(owner, child_ptr, CaptureDepth::Deep, 0) }?);
+                crate::try_push(&mut children, unsafe {
+                    Self::capture_node(owner, child_ptr, CaptureDepth::Deep, 0)
+                }?)?;
             } else {
                 // Already-built shallow sibling (no nested payload).
-                children.push(shallow);
+                crate::try_push(&mut children, shallow)?;
             }
         }
         let name = if raw.name.is_null() {
@@ -265,15 +264,12 @@ impl AdmittedArrowSchema {
         let n = usize::try_from(schema.n_children).map_err(|_| {
             PyTypeError::new_err("Arrow schema n_children is negative or too large")
         })?;
-        let mut children = Vec::new();
+        let mut children = crate::try_vec_with_capacity(n)?;
         match depth {
             CaptureDepth::Shallow => {
                 // No grandchildren — enough for name/extension/format selection.
             },
             CaptureDepth::Deep => {
-                children.try_reserve(n).map_err(|_| {
-                    PyTypeError::new_err("Arrow schema child count is too large to allocate")
-                })?;
                 if n > 0 {
                     if schema.children.is_null() {
                         return Err(PyTypeError::new_err(
@@ -287,12 +283,10 @@ impl AdmittedArrowSchema {
                             if child.is_null() {
                                 return Err(PyTypeError::new_err("Arrow child schema is null"));
                             }
-                            children.push(Self::capture_node(
-                                owner,
-                                child,
-                                CaptureDepth::Deep,
-                                nesting + 1,
-                            )?);
+                            crate::try_push(
+                                &mut children,
+                                Self::capture_node(owner, child, CaptureDepth::Deep, nesting + 1)?,
+                            )?;
                         }
                     }
                 }
@@ -328,13 +322,18 @@ impl AdmittedArrowSchema {
         let Some(raw) = self.metadata_value(b"ARROW:extension:name") else {
             return Ok(None);
         };
-        crate::py::arrow::decode_extension_name(raw.to_vec()).map(Some)
+        let mut value = crate::try_vec_with_capacity(raw.len())?;
+        value.extend_from_slice(raw);
+        crate::py::arrow::decode_extension_name(value).map(Some)
     }
 
-    pub(crate) fn extension_metadata_bytes(&self) -> Vec<u8> {
-        self.metadata_value(b"ARROW:extension:metadata")
-            .map(<[u8]>::to_vec)
-            .unwrap_or_default()
+    pub(crate) fn extension_metadata_bytes(&self) -> PyResult<Vec<u8>> {
+        let Some(raw) = self.metadata_value(b"ARROW:extension:metadata") else {
+            return Ok(Vec::new());
+        };
+        let mut value = crate::try_vec_with_capacity(raw.len())?;
+        value.extend_from_slice(raw);
+        Ok(value)
     }
 }
 
@@ -406,7 +405,9 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<str>> {
     let s = unsafe { CStr::from_ptr(ptr) }
         .to_str()
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
-    Ok(Arc::from(s))
+    let owned = crate::boundary::try_string_from_str(s)
+        .map_err(|()| crate::boundary::string_alloc_error())?;
+    Ok(Arc::from(owned))
 }
 
 type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;
@@ -492,7 +493,7 @@ fn classify_admitted_geometry_array(
     }
     let format = schema.format();
     if let Some(name) = schema.extension_name()? {
-        let metadata = schema.extension_metadata_bytes();
+        let metadata = schema.extension_metadata_bytes()?;
         let (crs, epoch) = crate::py::arrow::parse_geoarrow_extension_metadata(&metadata)?;
         let encoding = GeometryEncoding::from_extension_name(&name)
             .ok_or_else(|| PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION))?;
@@ -657,7 +658,7 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
         return validate_admitted_interleaved_coordinates(schema, size);
     }
     require_admitted_format(schema, "+s")?;
-    let mut fields = Vec::with_capacity(schema.children.len());
+    let mut fields = crate::try_vec_with_capacity(schema.children.len())?;
     for child in schema.children.iter() {
         if child.dictionary_present {
             return Err(PyTypeError::new_err(
@@ -669,7 +670,9 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
                 "geoarrow point ordinate children must be leaves",
             ));
         }
-        fields.push((child.name().to_owned(), child.format() == "g"));
+        let name = crate::boundary::try_string_from_str(child.name())
+            .map_err(|()| crate::boundary::string_alloc_error())?;
+        crate::try_push(&mut fields, (name, child.format() == "g"))?;
     }
     crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())

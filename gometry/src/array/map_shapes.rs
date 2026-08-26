@@ -15,16 +15,24 @@ fn try_map_shape_rows<T, E>(
     storage: &GeometryArrayStorage,
     missing: Option<&MissingMask>,
     mut transform: impl FnMut(&Shape, usize) -> std::result::Result<T, E>,
-) -> std::result::Result<Vec<T>, (usize, E)> {
-    let mut output =
-        Vec::with_capacity(missing.map_or_else(|| storage.len(), MissingMask::present_count));
+) -> std::result::Result<Vec<T>, (usize, E)>
+where
+    E: From<crate::error::Error>,
+{
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(
+        &mut output,
+        missing.map_or_else(|| storage.len(), MissingMask::present_count),
+    )
+    .map_err(|error| (0, E::from(error)))?;
     let mut apply = |shape: &Shape, row| {
         if missing.is_some_and(|mask| mask[row]) {
             return Ok(());
         }
         match transform(shape, row) {
             Ok(value) => {
-                output.push(value);
+                crate::boundary::try_push_vec(&mut output, value)
+                    .map_err(|error| (row, E::from(error)))?;
                 Ok(())
             },
             Err(error) => Err((row, error)),
@@ -57,39 +65,42 @@ fn rebuild_shared_mixed(
     source: &PyGeometryArray,
     shapes: &[Shape],
     changed_present: Vec<Option<Shape>>,
-) -> PyGeometryArray {
+) -> Result<PyGeometryArray> {
     let mut changed = changed_present.into_iter();
-    let mut unchanged = Vec::with_capacity(shapes.len());
-    let mapped: Vec<Shape> = shapes
-        .iter()
-        .enumerate()
-        .map(|(row, shape)| {
+    let mut unchanged = Vec::new();
+    crate::boundary::try_reserve_vec(&mut unchanged, shapes.len())?;
+    let mut mapped = Vec::new();
+    crate::boundary::try_reserve_vec(&mut mapped, shapes.len())?;
+    for (row, shape) in shapes.iter().enumerate() {
+        let mapped_shape = {
             if source.missing().is_some_and(|mask| mask[row]) {
-                unchanged.push(true);
-                return shape.clone();
+                crate::boundary::try_push_vec(&mut unchanged, true)?;
+                shape.clone()
+            } else {
+                match changed
+                    .next()
+                    .expect("one transform result per present row")
+                {
+                    None => {
+                        crate::boundary::try_push_vec(&mut unchanged, true)?;
+                        shape.clone()
+                    },
+                    Some(new_shape) => {
+                        crate::boundary::try_push_vec(&mut unchanged, false)?;
+                        new_shape
+                    },
+                }
             }
-            match changed
-                .next()
-                .expect("one transform result per present row")
-            {
-                None => {
-                    unchanged.push(true);
-                    shape.clone()
-                },
-                Some(new_shape) => {
-                    unchanged.push(false);
-                    new_shape
-                },
-            }
-        })
-        .collect();
+        };
+        crate::boundary::try_push_vec(&mut mapped, mapped_shape)?;
+    }
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
     let mut result = PyGeometryArray::mixed_shapes(mapped, source.frame.clone())
         .with_missing_mask(source.missing().cloned());
     result.frame_caches = FrameCacheRows::mapped_from(&source.frame_caches, &unchanged);
     result.prepared_cache = prepared::mapped_prepared_cache(&source.prepared_cache, &unchanged);
-    result
+    Ok(result)
 }
 
 impl PyGeometryArray {
@@ -227,7 +238,7 @@ impl PyGeometryArray {
                 let changed =
                     try_map_shape_rows(self.storage(), self.missing(), |shape, _| transform(shape))
                         .map_err(|(row, error)| note_array_row(error, row))?;
-                Ok(rebuild_shared_mixed(self, shapes, changed))
+                Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
             // Packed rows re-pack either way — the plain map already
             // never materializes wrappers there (and packed-row clones are
@@ -274,7 +285,7 @@ impl PyGeometryArray {
                 let changed = py
                     .detach(move || try_map_shape_rows(&storage, missing.as_ref(), transform))
                     .map_err(rows_err)?;
-                Ok(rebuild_shared_mixed(self, shapes, changed))
+                Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
             GeometryArrayStorage::Points { .. }
             | GeometryArrayStorage::Lines { .. }
@@ -345,9 +356,16 @@ mod tests {
     fn mapper_reports_original_logical_row_after_skipping_missing() {
         let source = mixed_with_missing();
         let error = try_map_shape_rows(source.storage(), source.missing(), |_, row| {
-            if row == 2 { Err("boom") } else { Ok(()) }
+            if row == 2 {
+                Err::<(), crate::error::Error>(
+                    crate::geometry::GeometryErrorKind::message("boom").into(),
+                )
+            } else {
+                Ok(())
+            }
         })
         .expect_err("row two fails");
-        assert_eq!(error, (2, "boom"));
+        assert_eq!(error.0, 2);
+        assert!(error.1.to_string().contains("boom"));
     }
 }

@@ -58,15 +58,29 @@ impl PyCoordinates {
         let data = if let Some(seq) = self.view.single_seq()
             && seq.len() == rows
         {
-            interleave_coordseq_ordered(seq, &order[..n], missing)
+            interleave_coordseq_ordered(seq, &order[..n], missing)?
         } else {
-            let mut data = Vec::with_capacity(rows * dims);
-            self.view.for_each_point(|coord| {
+            let mut data =
+                crate::try_vec_with_capacity(rows.checked_mul(dims).ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err(
+                        "coordinate matrix size overflows usize",
+                    )
+                })?)?;
+            match self.view.try_for_each_point(&mut |coord| {
                 for &axis in &order[..n] {
-                    data.push(coordinate_ordinate(coord.point, axis).unwrap_or(missing));
+                    match crate::try_push(
+                        &mut data,
+                        coordinate_ordinate(coord.point, axis).unwrap_or(missing),
+                    ) {
+                        Ok(()) => {},
+                        Err(error) => return std::ops::ControlFlow::Break(error),
+                    }
                 }
-            });
-            data
+                std::ops::ControlFlow::Continue(())
+            }) {
+                std::ops::ControlFlow::Continue(()) => data,
+                std::ops::ControlFlow::Break(error) => return Err(error),
+            }
         };
         crate::py::numpy::float64_matrix(py, data, rows, dims)
     }
@@ -82,7 +96,7 @@ struct CoordinateCursor {
     len: usize,
     /// `None` when storage-shaped random access is O(1)/O(log); otherwise a
     /// one-shot materialization shared by every `scalar_row` call.
-    material: Option<std::sync::OnceLock<Vec<crate::geometry::Point>>>,
+    material: Option<std::sync::OnceLock<Option<Vec<crate::geometry::Point>>>>,
 }
 
 impl HeapSize for CoordinateCursor {
@@ -91,7 +105,7 @@ impl HeapSize for CoordinateCursor {
         let material_bytes = self
             .material
             .as_ref()
-            .and_then(std::sync::OnceLock::get)
+            .and_then(|lock| lock.get().and_then(Option::as_ref))
             .map_or(0, |points| {
                 points.len() * std::mem::size_of::<crate::geometry::Point>()
             });
@@ -107,22 +121,35 @@ impl RowContainer for CoordinateCursor {
     }
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
-        let point = self.material.as_ref().map_or_else(
-            || {
-                self.view
-                    .point_at(row)
-                    .expect("iterator index already range-checked")
-                    .point
-            },
-            |lock| {
-                let points = lock.get_or_init(|| {
-                    let mut out = Vec::with_capacity(self.len);
-                    self.view.for_each_point(|coord| out.push(coord.point));
-                    out
-                });
-                points[row]
-            },
-        );
+        let point = if let Some(lock) = &self.material {
+            let points = lock.get_or_init(|| {
+                let Ok(mut out) = crate::try_vec_with_capacity(self.len) else {
+                    return None;
+                };
+                let result = self
+                    .view
+                    .try_for_each_point(
+                        &mut |coord| match crate::try_push(&mut out, coord.point) {
+                            Ok(()) => std::ops::ControlFlow::Continue(()),
+                            Err(_) => std::ops::ControlFlow::Break(()),
+                        },
+                    );
+                if matches!(result, std::ops::ControlFlow::Break(())) {
+                    None
+                } else {
+                    Some(out)
+                }
+            });
+            let Some(points) = points else {
+                return Err(crate::grow_sequence_error());
+            };
+            points[row]
+        } else {
+            self.view
+                .point_at(row)
+                .expect("iterator index already range-checked")
+                .point
+        };
         coordinate_tuple(py, point, self.layout)
     }
 }

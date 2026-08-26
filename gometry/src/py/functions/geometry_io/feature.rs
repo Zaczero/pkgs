@@ -192,7 +192,11 @@ fn aligned_rows<'py>(
     name: &str,
 ) -> PyResult<Vec<Option<Bound<'py, PyAny>>>> {
     let Some(value) = value.filter(|value| !value.is_none()) else {
-        return Ok(std::iter::repeat_n(None, len).collect());
+        let mut rows = crate::try_vec_with_capacity(len)?;
+        for _ in 0..len {
+            rows.push(None);
+        }
+        return Ok(rows);
     };
     if value.is_instance_of::<PyString>()
         || value.is_instance_of::<pyo3::types::PyBytes>()
@@ -214,7 +218,11 @@ fn aligned_rows<'py>(
             }
         ))
     })?;
-    Ok(rows.into_iter().map(Some).collect())
+    let mut aligned = crate::try_vec_with_capacity(rows.len())?;
+    for row in rows {
+        aligned.push(Some(row));
+    }
+    Ok(aligned)
 }
 
 /// Build a GeoJSON FeatureCollection from geometries and aligned side data.
@@ -319,13 +327,15 @@ fn to_feature_collection_impl(
         }
         let array_crs = array.crs_str();
         let properties = if properties.is_none() {
-            std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
-                .take(array.storage().len())
-                .collect::<PyResult<Vec<_>>>()?
+            crate::try_collect_results(
+                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
+                    .take(array.storage().len()),
+            )?
         } else if let Some(props) = &broadcast_properties {
-            std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
-                .take(array.storage().len())
-                .collect::<PyResult<Vec<_>>>()?
+            crate::try_collect_results(
+                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
+                    .take(array.storage().len()),
+            )?
         } else {
             aligned_rows(properties, array.storage().len(), "properties")?
         };
@@ -364,13 +374,15 @@ fn to_feature_collection_impl(
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
         let properties = if properties.is_none() {
-            std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
-                .take(geometry_rows.len())
-                .collect::<PyResult<Vec<_>>>()?
+            crate::try_collect_results(
+                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
+                    .take(geometry_rows.len()),
+            )?
         } else if let Some(props) = &broadcast_properties {
-            std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
-                .take(geometry_rows.len())
-                .collect::<PyResult<Vec<_>>>()?
+            crate::try_collect_results(
+                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
+                    .take(geometry_rows.len()),
+            )?
         } else {
             aligned_rows(properties, geometry_rows.len(), "properties")?
         };

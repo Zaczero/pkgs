@@ -174,7 +174,7 @@ fn bounding_cell_region_samples(value: &Bound<'_, PyAny>) -> PyResult<Vec<(f64, 
             let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
             validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
-                parts.push(shape);
+                crate::try_push(&mut parts, shape)?;
             }
         }
         if parts.is_empty() {
@@ -201,7 +201,10 @@ fn bounding_cell_region_samples(value: &Bound<'_, PyAny>) -> PyResult<Vec<(f64, 
 /// planar envelope.
 fn region_samples_for_shape(shape: &crate::geometry::Shape) -> PyResult<Vec<(f64, f64)>> {
     let mut vertex_samples = Vec::new();
+    crate::try_reserve_vec(&mut vertex_samples, shape.coord_count())?;
     shape.for_each_point(|point| {
+        // The reservation covers every source vertex, so this callback cannot
+        // trigger vector growth while walking the trusted shape.
         vertex_samples.push((point.x, point.y));
     });
     if vertex_samples.is_empty() {
@@ -348,11 +351,12 @@ pub(super) fn h3_cover(
         max_cells,
         |geometry, effective_max_cells| {
             let cells = build_coverage(geometry, resolution, cell_rule, effective_max_cells)?;
-            Ok(SortedCells::from_sorted(cells)
-                .into_vec()
-                .into_iter()
-                .map(u64::from)
-                .collect())
+            crate::try_collect_results(
+                SortedCells::from_sorted(cells)
+                    .into_vec()
+                    .into_iter()
+                    .map(|cell| Ok::<_, pyo3::PyErr>(u64::from(cell))),
+            )
         },
     )
 }

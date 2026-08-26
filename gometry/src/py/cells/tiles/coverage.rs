@@ -29,7 +29,7 @@ impl RectCoverSpec for TileCoverSpec {
         "tile"
     }
 }
-pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyCellArray {
+pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult<PyCellArray> {
     rect_cell_array_for::<TileCoverSpec>(cells)
 }
 

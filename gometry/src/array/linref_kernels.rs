@@ -152,43 +152,47 @@ pub(crate) fn line_interpolate_points_rows(
         let frame = array.frame.clone();
         let (shapes, group_offsets) = py.detach(move || -> PyResult<_> {
             let map = row_map.as_deref();
-            let mut shapes = Vec::new();
-            let mut group_offsets = vec![0_i64];
+            let mut builder = crate::CsrBuilder::<Shape>::new();
             for row in 0..logical_len {
-                if !missing.as_ref().is_some_and(|mask| mask[row]) {
+                let values = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                    Vec::new()
+                } else {
                     let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                    let points = plan
-                        .with_row(row, |plan| {
-                            line_interpolate_points_coordseq(&model, &line, plan)
-                        })
-                        .map_err(|error| note_array_row(error.into(), row))?;
-                    for point in points {
-                        shapes.push(Shape::Point(point));
-                    }
-                }
-                group_offsets.push(shapes.len() as i64);
+                    plan.with_row(row, |plan| {
+                        line_interpolate_points_coordseq(&model, &line, plan)
+                    })
+                    .map_err(|error| note_array_row(error.into(), row))?
+                    .into_iter()
+                    .map(Shape::Point)
+                    .collect()
+                };
+                builder
+                    .push_row(values)
+                    .map_err(|error| note_array_row(error.into(), row))?;
             }
-            Ok((shapes, group_offsets))
+            Ok(builder.finish())
         })?;
         return crate::py::vectors::Groups::from_geometry_flat(
             PyGeometryArray::from_shapes(shapes, frame),
             group_offsets,
         );
     }
-    let mut shapes = Vec::new();
-    let mut offsets = vec![0_i64];
+    let mut builder = crate::CsrBuilder::<Shape>::new();
     for (row, handle) in array.storage().iter_rows().enumerate() {
-        if !array.missing().is_some_and(|mask| mask[row]) {
-            shapes.extend(
-                plan.with_row(row, |plan| {
-                    let line = array.prepared_row(row, handle);
-                    line_interpolate_points_shape(&model, &line, &array.row_frame_cache(row), plan)
-                })
-                .map_err(|error| note_array_row(error.into(), row))?,
-            );
-        }
-        offsets.push(shapes.len() as i64);
+        let values = if array.missing().is_some_and(|mask| mask[row]) {
+            Vec::new()
+        } else {
+            plan.with_row(row, |plan| {
+                let line = array.prepared_row(row, handle);
+                line_interpolate_points_shape(&model, &line, &array.row_frame_cache(row), plan)
+            })
+            .map_err(|error| note_array_row(error.into(), row))?
+        };
+        builder
+            .push_row(values)
+            .map_err(|error| note_array_row(error.into(), row))?;
     }
+    let (shapes, offsets) = builder.finish();
     crate::py::vectors::Groups::from_geometry_flat(
         PyGeometryArray::from_shapes(shapes, array.frame.clone()),
         offsets,

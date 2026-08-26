@@ -17,8 +17,11 @@ const fn wkb_dimension(axes: WkbAxes) -> usize {
     2 + axes.z as usize + axes.m as usize
 }
 
-const fn wkb_coords_len(count: usize, axes: WkbAxes) -> usize {
-    count * wkb_dimension(axes) * size_of::<f64>()
+fn wkb_coords_len(count: usize, axes: WkbAxes) -> Result<usize> {
+    count
+        .checked_mul(wkb_dimension(axes))
+        .and_then(|bytes| bytes.checked_mul(size_of::<f64>()))
+        .ok_or_else(|| IoError::wkb("WKB coordinate byte length overflows usize"))
 }
 
 impl WkbAxes {

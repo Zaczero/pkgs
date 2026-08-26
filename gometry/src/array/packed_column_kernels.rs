@@ -18,8 +18,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::array::packed_columns::{
-    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PolygonColumns, SegmentedRuns,
-    XyColumns, batch_err, row_err,
+    LineColumns, PackedColumnError, PackedColumnResult, PackedColumns, PointColumns,
+    PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
 };
 use crate::array::storage_helpers::{
     packed_line_measure, packed_line_row_pivot, packed_polygon_measure, packed_polygon_row_pivot,
@@ -70,8 +70,10 @@ pub(crate) fn buffer_point_columns(
     let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
     budget.add(total).map_err(batch_err)?;
 
-    let mut unit_x = Vec::with_capacity(steps);
-    let mut unit_y = Vec::with_capacity(steps);
+    let mut unit_x = Vec::new();
+    let mut unit_y = Vec::new();
+    crate::try_reserve_vec(&mut unit_x, steps).map_err(PackedColumnError::Batch)?;
+    crate::try_reserve_vec(&mut unit_y, steps).map_err(PackedColumnError::Batch)?;
     let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
     let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
     for step in 0..steps {
@@ -81,16 +83,18 @@ pub(crate) fn buffer_point_columns(
                 sin_theta * cos_step + cos_theta * sin_step,
             );
         }
-        unit_x.push(cos_theta);
-        unit_y.push(sin_theta);
+        crate::try_push_vec(&mut unit_x, cos_theta).map_err(PackedColumnError::Batch)?;
+        crate::try_push_vec(&mut unit_y, sin_theta).map_err(PackedColumnError::Batch)?;
     }
 
     let XyColumns {
         xs: source_xs,
         ys: source_ys,
     } = points.xy();
-    let mut xs = Vec::with_capacity(total);
-    let mut ys = Vec::with_capacity(total);
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_vec(&mut xs, total).map_err(PackedColumnError::Batch)?;
+    crate::try_reserve_vec(&mut ys, total).map_err(PackedColumnError::Batch)?;
     let mut ring_offsets = CsrOffsetBuilder::new();
     let mut polygon_offsets = CsrOffsetBuilder::new();
     let mut ring_count = 0_usize;
@@ -105,11 +109,13 @@ pub(crate) fn buffer_point_columns(
                 if !x.is_finite() || !y.is_finite() {
                     return Ok(None);
                 }
-                xs.push(x);
-                ys.push(y);
+                crate::try_push_vec(&mut xs, x).map_err(PackedColumnError::Batch)?;
+                crate::try_push_vec(&mut ys, y).map_err(PackedColumnError::Batch)?;
             }
-            xs.push(xs[xs.len() - steps]);
-            ys.push(ys[ys.len() - steps]);
+            let first = xs[xs.len() - steps];
+            let first_y = ys[ys.len() - steps];
+            crate::try_push_vec(&mut xs, first).map_err(PackedColumnError::Batch)?;
+            crate::try_push_vec(&mut ys, first_y).map_err(PackedColumnError::Batch)?;
             ring_count += 1;
             ring_offsets
                 .push_end(xs.len(), i32::MAX as usize)
@@ -164,7 +170,7 @@ pub(crate) fn clip_lines_packed_xy(
     }
     let (xs, ys) = (coords.xs(), coords.ys());
     let offsets = line_columns.offsets();
-    let mut builder = PackedColumnBuilder::like(coords, coords.len());
+    let mut builder = PackedColumnBuilder::try_like(coords, coords.len()).map_err(batch_err)?;
 
     for row in 0..line_columns.rows() {
         let start = offsets[row] as usize;
@@ -198,14 +204,20 @@ pub(crate) fn clip_lines_packed_xy(
                 continue;
             }
             if last_end.is_some_and(|last| same_point(last, clipped_start)) {
-                builder.push_xy(clipped_end.x, clipped_end.y);
+                builder
+                    .push_xy(clipped_end.x, clipped_end.y)
+                    .map_err(batch_err)?;
             } else {
                 part_count += 1;
                 if part_count > 1 {
                     return Ok(None);
                 }
-                builder.push_xy(clipped_start.x, clipped_start.y);
-                builder.push_xy(clipped_end.x, clipped_end.y);
+                builder
+                    .push_xy(clipped_start.x, clipped_start.y)
+                    .map_err(batch_err)?;
+                builder
+                    .push_xy(clipped_end.x, clipped_end.y)
+                    .map_err(batch_err)?;
             }
             last_end = Some(clipped_end);
         }
@@ -236,7 +248,7 @@ pub(crate) fn segmented_planar_lengths(
     xs: &[f64],
     ys: &[f64],
     scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     segmented_planar_lengths_dims::<false>(runs, xs, ys, &[], scale)
 }
 
@@ -247,7 +259,7 @@ pub(crate) fn segmented_planar_lengths_3d(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     segmented_planar_lengths_dims::<true>(runs, xs, ys, zs, scale)
 }
 
@@ -267,10 +279,10 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     let n_groups = runs.n_groups();
     if n_groups == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     debug_assert!(!HAS_Z || zs.len() == xs.len());
     debug_assert_eq!(xs.len(), ys.len());
@@ -284,7 +296,9 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
                 && group_is_short(&runs, n_groups / 2)
                 && group_is_short(&runs, n_groups - 1);
             if sample_short {
-                let mut out = vec![0.0; n_groups];
+                let mut out = Vec::new();
+                crate::boundary::try_reserve_vec(&mut out, n_groups)?;
+                out.resize(n_groups, 0.0);
                 column_stream_identity_lengths::<HAS_Z>(
                     &runs,
                     0..n_groups,
@@ -294,7 +308,7 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
                     scale,
                     &mut out,
                 );
-                return out;
+                return Ok(out);
             }
             return partitioned_identity_lengths::<HAS_Z>(&runs, xs, ys, zs, scale);
         }
@@ -318,17 +332,20 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
         group_offsets: None,
         group_missing: leaf_missing.as_deref(),
     };
-    let leaf_lengths = segmented_planar_lengths_dims::<HAS_Z>(leaf_runs, xs, ys, zs, 1.0);
+    let leaf_lengths = segmented_planar_lengths_dims::<HAS_Z>(leaf_runs, xs, ys, zs, 1.0)?;
     let scale_is_one = scale.to_bits() == 1.0_f64.to_bits();
-    (0..n_groups)
-        .map(|group| {
-            if runs.is_missing(group) {
-                return f64::NAN;
-            }
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, n_groups)?;
+    for group in 0..n_groups {
+        let value = if runs.is_missing(group) {
+            f64::NAN
+        } else {
             let total: f64 = leaf_lengths[runs.group_leaves(group)].iter().sum();
             if scale_is_one { total } else { total * scale }
-        })
-        .collect()
+        };
+        crate::boundary::try_push_vec(&mut output, value)?;
+    }
+    Ok(output)
 }
 
 fn partitioned_identity_lengths<const HAS_Z: bool>(
@@ -337,9 +354,11 @@ fn partitioned_identity_lengths<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     let n_groups = runs.n_groups();
-    let mut out = vec![0.0; n_groups];
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, n_groups)?;
+    out.resize(n_groups, 0.0);
     let mut group = 0;
     while group < n_groups {
         let short = group_is_short(runs, group);
@@ -362,7 +381,7 @@ fn partitioned_identity_lengths<const HAS_Z: bool>(
             fill_per_run_span::<HAS_Z>(runs, span_start..group, xs, ys, zs, scale, &mut out);
         }
     }
-    out
+    Ok(out)
 }
 
 fn fill_per_run_span<const HAS_Z: bool>(
@@ -391,12 +410,14 @@ fn tight_identity_per_run<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     let n = runs.n_groups();
     let offsets = runs.leaf_offsets;
     let missing = runs.group_missing;
     let scale_is_one = scale.to_bits() == 1.0_f64.to_bits();
-    let mut out = vec![0.0; n];
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, n)?;
+    out.resize(n, 0.0);
     for (g, slot) in out.iter_mut().enumerate() {
         if missing.is_some_and(|mask| mask[g]) {
             *slot = f64::NAN;
@@ -418,7 +439,7 @@ fn tight_identity_per_run<const HAS_Z: bool>(
         };
         *slot = if scale_is_one { total } else { total * scale };
     }
-    out
+    Ok(out)
 }
 
 fn per_run_group_length<const HAS_Z: bool>(
@@ -593,7 +614,7 @@ pub(crate) fn line_measure<'a, F>(
     offsets: &[i32],
     map: impl Into<RowSelectionRef<'a>>,
     measure: F,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
 {
@@ -609,7 +630,7 @@ pub(crate) fn line_measure_masked<'a, F>(
     map: impl Into<RowSelectionRef<'a>>,
     missing: Option<&[bool]>,
     measure: F,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
 {
@@ -617,19 +638,23 @@ where
         return line_measure(xs, ys, offsets, map, measure);
     };
     let map = map.into();
-    (0..line_logical_len(offsets, map))
-        .map(|logical| {
-            if missing[logical] {
-                return f64::NAN;
-            }
+    let rows = line_logical_len(offsets, map);
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, rows)?;
+    for logical in 0..rows {
+        let value = if missing[logical] {
+            f64::NAN
+        } else {
             let window = map.csr_window(offsets, logical);
             measure(
                 column_window(xs, &window),
                 column_window(ys, &window),
                 window,
             )
-        })
-        .collect()
+        };
+        crate::boundary::try_push_vec(&mut output, value)?;
+    }
+    Ok(output)
 }
 
 pub(crate) fn polygon_measure<'a, F, C>(
@@ -640,7 +665,7 @@ pub(crate) fn polygon_measure<'a, F, C>(
     map: impl Into<RowSelectionRef<'a>>,
     ring_measure: F,
     combine: C,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
     C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
@@ -667,7 +692,7 @@ pub(crate) fn polygon_measure_masked<'a, F, C>(
     missing: Option<&[bool]>,
     ring_measure: F,
     combine: C,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
     C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
@@ -684,11 +709,13 @@ where
         );
     };
     let map = map.into();
-    (0..polygon_logical_len(polygon_offsets, map))
-        .map(|logical| {
-            if missing[logical] {
-                return f64::NAN;
-            }
+    let rows = polygon_logical_len(polygon_offsets, map);
+    let mut output = Vec::new();
+    crate::boundary::try_reserve_vec(&mut output, rows)?;
+    for logical in 0..rows {
+        let value = if missing[logical] {
+            f64::NAN
+        } else {
             let rings = polygon_rings_range(polygon_offsets, map, logical);
             let ring = |index: usize| {
                 let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
@@ -699,8 +726,10 @@ where
                 )
             };
             combine(rings, &ring)
-        })
-        .collect()
+        };
+        crate::boundary::try_push_vec(&mut output, value)?;
+    }
+    Ok(output)
 }
 
 /// Validate geographic ordinates for present packed rows only. Nullable
@@ -758,17 +787,22 @@ pub(crate) fn map_masked_point_columns_to_crs(
     present_count: usize,
 ) -> crate::error::Result<CoordSeq> {
     debug_assert_eq!(coords.len(), missing.len());
-    let mut xs = Vec::with_capacity(present_count);
-    let mut ys = Vec::with_capacity(present_count);
-    let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut zs = coords.zs().map(|_| Vec::new());
+    crate::try_reserve_vec(&mut xs, present_count)?;
+    crate::try_reserve_vec(&mut ys, present_count)?;
+    if let Some(zs) = zs.as_mut() {
+        crate::try_reserve_vec(zs, present_count)?;
+    }
     for (row, &is_missing) in missing.iter().enumerate() {
         if is_missing {
             continue;
         }
-        xs.push(coords.xs()[row]);
-        ys.push(coords.ys()[row]);
+        crate::try_push_vec(&mut xs, coords.xs()[row])?;
+        crate::try_push_vec(&mut ys, coords.ys()[row])?;
         if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
-            output.push(source[row]);
+            crate::try_push_vec(output, source[row])?;
         }
     }
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
@@ -776,7 +810,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
     });
     transformer.transform_coordinates(&mut xs, &mut ys, zt)?;
 
-    let mut output = CoordSeqBuilder::like_coords(coords, missing.len());
+    let mut output = CoordSeqBuilder::try_with_capacity(coords.axes(), missing.len())?;
     let (missing_z, missing_m) = (coords.zs().map(|_| f64::NAN), coords.ms().map(|_| f64::NAN));
     let mut present_row = 0;
     for (row, &is_missing) in missing.iter().enumerate() {
@@ -832,19 +866,20 @@ pub(crate) fn reduce_lines_or_polygons<R>(
 fn bounds_values_from_columns_impl<const MASKED: bool>(
     columns: &PackedColumns<'_>,
     missing: &[bool],
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     let XyColumns { xs, ys } = columns.xy();
     let rows = columns.row_count();
     // Keep the row result in its natural fixed-width shape while reducing;
     // flattening moves the same allocation into NumPy's one-dimensional lane.
-    let mut values = Vec::with_capacity(rows);
+    let mut values = Vec::new();
+    crate::boundary::try_reserve_vec(&mut values, rows)?;
     match columns {
         PackedColumns::Points(point_columns) => {
             for row in 0..point_columns.len() {
                 if MASKED && missing[row] {
-                    values.push([f64::NAN; 4]);
+                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
                 } else {
-                    values.push([xs[row], ys[row], xs[row], ys[row]]);
+                    crate::try_push_vec(&mut values, [xs[row], ys[row], xs[row], ys[row]])?;
                 }
             }
         },
@@ -852,11 +887,11 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
             let offsets = line_columns.offsets();
             for row in 0..line_columns.rows() {
                 if MASKED && missing[row] {
-                    values.push([f64::NAN; 4]);
+                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
                     continue;
                 }
                 let window = offsets[row] as usize..offsets[row + 1] as usize;
-                values.push(row_bounds_values(xs, ys, window));
+                crate::try_push_vec(&mut values, row_bounds_values(xs, ys, window))?;
             }
         },
         PackedColumns::Polygons(polygon_columns) => {
@@ -864,7 +899,7 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
             let polygon_offsets = polygon_columns.polygon_offsets();
             for row in 0..polygon_columns.rows() {
                 if MASKED && missing[row] {
-                    values.push([f64::NAN; 4]);
+                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
                     continue;
                 }
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
@@ -875,14 +910,14 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
                         ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize;
                     row_bounds_values(xs, ys, shell)
                 };
-                values.push(bounds);
+                crate::try_push_vec(&mut values, bounds)?;
             }
         },
     }
-    values.into_flattened()
+    Ok(values.into_flattened())
 }
 
-pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {
+pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Result<Vec<f64>> {
     bounds_values_from_columns_impl::<false>(columns, &[])
 }
 
@@ -890,21 +925,23 @@ pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64
 pub(crate) fn bounds_values_from_columns_masked(
     columns: &PackedColumns<'_>,
     missing: Option<&[bool]>,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     missing.map_or_else(
         || bounds_values_from_columns(columns),
         |missing| bounds_values_from_columns_impl::<true>(columns, missing),
     )
 }
 
-pub(crate) fn geographic_bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {
+pub(crate) fn geographic_bounds_values_from_columns(
+    columns: &PackedColumns<'_>,
+) -> Result<Vec<f64>> {
     geographic_bounds_values_from_columns_impl::<false>(columns, &[])
 }
 
 pub(crate) fn geographic_bounds_values_from_columns_masked(
     columns: &PackedColumns<'_>,
     missing: Option<&[bool]>,
-) -> Vec<f64> {
+) -> Result<Vec<f64>> {
     missing.map_or_else(
         || geographic_bounds_values_from_columns_impl::<false>(columns, &[]),
         |missing| geographic_bounds_values_from_columns_impl::<true>(columns, missing),
@@ -914,8 +951,13 @@ pub(crate) fn geographic_bounds_values_from_columns_masked(
 fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     columns: &PackedColumns<'_>,
     missing: &[bool],
-) -> Vec<f64> {
-    let mut values = Vec::with_capacity(columns.row_count() * 4);
+) -> Result<Vec<f64>> {
+    let mut values = Vec::new();
+    let capacity = columns
+        .row_count()
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    crate::boundary::try_reserve_vec(&mut values, capacity)?;
     match columns {
         PackedColumns::Points(_) => {
             return if MASKED {
@@ -982,7 +1024,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
             }
         },
     }
-    values
+    Ok(values)
 }
 
 pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {
@@ -1025,7 +1067,7 @@ pub(crate) fn subdivide_line_columns(
     let coords = columns.coords();
     let offsets = columns.offsets();
     let rows = columns.rows();
-    let mut builder = PackedColumnBuilder::like(coords, coords.len());
+    let mut builder = PackedColumnBuilder::try_like(coords, coords.len())?;
     let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     for row in 0..rows {
         let window = offsets[row] as usize..offsets[row + 1] as usize;
@@ -1047,7 +1089,7 @@ pub(crate) fn subdivide_polygon_columns(
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
     let ring_offsets = columns.ring_offsets();
-    let mut builder = PackedColumnBuilder::like(coords, coords.len());
+    let mut builder = PackedColumnBuilder::try_like(coords, coords.len())?;
     let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     for &[start, end] in ring_offsets.array_windows::<2>() {
         let ring_window = start as usize..end as usize;
@@ -1077,7 +1119,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let offsets = line_columns.offsets();
             let XyColumns { xs, ys } = line_columns.xy();
             let rows = line_columns.rows();
-            let mut builder = PackedColumnBuilder::like(coords, xs.len());
+            let mut builder = PackedColumnBuilder::try_like(coords, xs.len()).map_err(batch_err)?;
             for row in 0..rows {
                 let window = offsets[row] as usize..offsets[row + 1] as usize;
                 let pivot = packed_line_row_pivot(spec, xs, ys, window.clone())
@@ -1100,7 +1142,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let polygon_offsets = polygon_columns.polygon_offsets();
             let XyColumns { xs, ys } = polygon_columns.xy();
             let rows = polygon_columns.rows();
-            let mut builder = PackedColumnBuilder::like(coords, xs.len());
+            let mut builder = PackedColumnBuilder::try_like(coords, xs.len()).map_err(batch_err)?;
             for row in 0..rows {
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
                 let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, rings.clone())

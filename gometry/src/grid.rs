@@ -31,7 +31,8 @@ impl CellLimitExceeded {
     }
 }
 
-/// Bounded flat collector for operations that can expand a small grid input.
+/// Bounded flat collector for cell-algebra operations. Public ragged cell
+/// outputs use the shared fallible `CsrBuilder` instead.
 pub(crate) struct CellCollector<T> {
     operation: &'static str,
     values: Vec<T>,
@@ -78,37 +79,9 @@ impl<T> CellCollector<T> {
         self.values
     }
 
+    #[cfg(test)]
     pub(crate) const fn len(&self) -> usize {
         self.values.len()
-    }
-}
-
-/// Direct CSR builder for ragged cell fan-outs. Rows stream into one bounded
-/// flat column instead of first allocating `Vec<Vec<_>>`.
-pub(crate) struct CellGroupsBuilder<T> {
-    cells: CellCollector<T>,
-    offsets: Vec<i64>,
-}
-
-impl<T> CellGroupsBuilder<T> {
-    pub(crate) fn new(operation: &'static str) -> Self {
-        Self {
-            cells: CellCollector::new(operation),
-            offsets: vec![0],
-        }
-    }
-
-    pub(crate) fn push_row(
-        &mut self,
-        values: impl IntoIterator<Item = T>,
-    ) -> Result<(), CellLimitExceeded> {
-        self.cells.extend(values)?;
-        self.offsets.push(self.cells.len() as i64);
-        Ok(())
-    }
-
-    pub(crate) fn finish(self) -> (Vec<T>, Vec<i64>) {
-        (self.cells.into_vec(), self.offsets)
     }
 }
 
@@ -243,22 +216,5 @@ mod budget_tests {
             .unwrap();
         assert_eq!(cells.len(), GRID_MAX_CELLS);
         cells.push(1).unwrap_err();
-    }
-
-    #[test]
-    fn groups_builder_applies_one_cumulative_limit() {
-        let mut groups = CellGroupsBuilder::new("test groups");
-        groups
-            .push_row(std::iter::repeat_n(0_u8, GRID_MAX_CELLS - 1))
-            .unwrap();
-        groups.push_row([1]).unwrap();
-        groups.push_row([2]).unwrap_err();
-        let (cells, offsets) = groups.finish();
-        assert_eq!(cells.len(), GRID_MAX_CELLS);
-        assert_eq!(offsets, [
-            0,
-            (GRID_MAX_CELLS - 1) as i64,
-            GRID_MAX_CELLS as i64
-        ]);
     }
 }

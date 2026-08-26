@@ -1,6 +1,7 @@
 use h3o::CellIndex;
 use pyo3::exceptions::PyMemoryError;
 
+use super::tile::H3TileError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
 use crate::py::cells::coverage_ops::{
     cover_budget_err, coverage_factory_geometry, coverage_factory_shapes,
@@ -50,8 +51,15 @@ pub(super) fn build_coverage(
         CellRule::Center => {
             let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "H3")?;
             let annotated =
-                h3_tile(&cover_shape, resolution, max_cells).map_err(cover_budget_err)?;
-            let cells = annotated.into_iter().map(|cell| cell.cell).collect();
+                h3_tile(&cover_shape, resolution, max_cells).map_err(|error| match error {
+                    H3TileError::Budget(error) => cover_budget_err(error),
+                    H3TileError::Allocation => {
+                        PyMemoryError::new_err("H3 coverage allocation failed")
+                    },
+                })?;
+            let cells = crate::try_collect_results(
+                annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
+            )?;
             (membership_geometry, cells)
         },
         CellRule::Within | CellRule::Overlap | CellRule::Bbox => {
@@ -74,7 +82,9 @@ pub(super) fn build_coverage(
             // true spherical cell stays inside the affine lon/lat source.
             // Therefore uncertainty fails CLOSED here (exclude Boundary), the
             // deliberate inverse of overlap's fail-OPEN completeness rule.
-            let cells = annotated.into_iter().map(|cell| cell.cell).collect();
+            let cells = crate::try_collect_results(
+                annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
+            )?;
             (membership_geometry, cells)
         },
     };

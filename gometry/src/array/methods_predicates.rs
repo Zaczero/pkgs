@@ -314,7 +314,7 @@ impl PyGeometryArray {
     pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         if let Some(mask) = self.missing() {
             let dense = to_arrow_dense(self, py, encoding)?;
-            let validity = crate::py::arrow::validity_bitmap_from_missing(mask);
+            let validity = crate::py::arrow::validity_bitmap_from_missing(mask)?;
             return Ok(crate::py::arrow::gometry_arrow_module(py)?
                 .call_method1(
                     "apply_missing",

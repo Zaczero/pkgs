@@ -6,6 +6,7 @@ use crate::array::{
     CoordSeq, CoordinateAxes, CsrOffsetBuilder, CsrOffsetColumn, PolygonLevel, PyGeometryArray,
     RingLevel, Shape,
 };
+use crate::geometry::CoordSeqBuilder;
 
 impl PyGeometryArray {
     /// `Some((coords, offsets))` when every row is a non-empty `LineString`
@@ -37,29 +38,25 @@ impl PyGeometryArray {
                 Some(existing) if existing != row_axes => return None,
                 Some(_) => {},
             }
-            total += seq.len();
+            total = total.checked_add(seq.len())?;
+            if total > vertex_cap {
+                return None;
+            }
             offset_builder.push_end(total, vertex_cap).ok()?;
         }
-        let axes = axes?;
-        let mut xs: Vec<f64> = Vec::with_capacity(total);
-        let mut ys: Vec<f64> = Vec::with_capacity(total);
-        let mut zs: Option<Vec<f64>> = axes.has_z().then(|| Vec::with_capacity(total));
-        let mut ms: Option<Vec<f64>> = axes.has_m().then(|| Vec::with_capacity(total));
+        let Some(axes) = axes else {
+            return None;
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total).ok()?;
         for shape in replay {
             let Shape::LineString(seq) = shape else {
                 unreachable!("validated in the first pass");
             };
-            xs.extend_from_slice(seq.xs());
-            ys.extend_from_slice(seq.ys());
-            if let (Some(zs), Some(column)) = (zs.as_mut(), seq.zs()) {
-                zs.extend_from_slice(column);
-            }
-            if let (Some(ms), Some(column)) = (ms.as_mut(), seq.ms()) {
-                ms.extend_from_slice(column);
-            }
+            builder.extend_window(seq, 0..seq.len());
         }
+        let coords = builder.finish().ok()?;
         let offsets = offset_builder.finish(total).ok()?;
-        Some((CoordSeq::from_vecs(xs, ys, zs, ms), offsets))
+        Some((coords, offsets))
     }
 
     /// The polygon sibling of [`uniform_line_column`]: every shape must be
@@ -95,7 +92,9 @@ impl PyGeometryArray {
             };
             // Shared structural pack-admission (shell, ≥4 XY-closed rings,
             // uniform axes) — same predicate as streaming + packed GeoArrow.
-            let row_axes = super::polygon_pack_axes(polygon)?;
+            let Some(row_axes) = super::polygon_pack_axes(polygon) else {
+                return None;
+            };
             match axes {
                 None => axes = Some(row_axes),
                 Some(existing) if existing != row_axes => return None,
@@ -104,35 +103,34 @@ impl PyGeometryArray {
             let mut poly_rings = 0_usize;
             for seq in polygon.rings() {
                 debug_assert!(super::ring_seq_is_packable(seq));
-                total_vertices += seq.len();
+                total_vertices = total_vertices.checked_add(seq.len())?;
+                if total_vertices > vertex_cap {
+                    return None;
+                }
                 ring_builder.push_end(total_vertices, vertex_cap).ok()?;
-                ring_index += 1;
-                poly_rings += 1;
+                ring_index = ring_index.checked_add(1)?;
+                if ring_index > vertex_cap {
+                    return None;
+                }
+                poly_rings = poly_rings.checked_add(1)?;
             }
             // polygon_pack_axes already requires a nonempty ring set.
             debug_assert!(poly_rings > 0);
-            polygon_builder.push_end(ring_index, ring_index).ok()?;
+            polygon_builder.push_end(ring_index, vertex_cap).ok()?;
         }
-        let axes = axes?;
-        let mut xs: Vec<f64> = Vec::with_capacity(total_vertices);
-        let mut ys: Vec<f64> = Vec::with_capacity(total_vertices);
-        let mut zs: Option<Vec<f64>> = axes.has_z().then(|| Vec::with_capacity(total_vertices));
-        let mut ms: Option<Vec<f64>> = axes.has_m().then(|| Vec::with_capacity(total_vertices));
+        let Some(axes) = axes else {
+            return None;
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices).ok()?;
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("validated in the first pass");
             };
             for seq in polygon.rings() {
-                xs.extend_from_slice(seq.xs());
-                ys.extend_from_slice(seq.ys());
-                if let (Some(zs), Some(column)) = (zs.as_mut(), seq.zs()) {
-                    zs.extend_from_slice(column);
-                }
-                if let (Some(ms), Some(column)) = (ms.as_mut(), seq.ms()) {
-                    ms.extend_from_slice(column);
-                }
+                builder.extend_window(seq, 0..seq.len());
             }
         }
+        let coords = builder.finish().ok()?;
         let ring_offsets = ring_builder
             .finish(total_vertices)
             .ok()?
@@ -141,11 +139,7 @@ impl PyGeometryArray {
             .finish(ring_index)
             .ok()?
             .cast_level::<PolygonLevel>();
-        Some((
-            CoordSeq::from_vecs(xs, ys, zs, ms),
-            ring_offsets,
-            polygon_offsets,
-        ))
+        Some((coords, ring_offsets, polygon_offsets))
     }
 
     /// The shared point column when every shape is a `Point` of uniform axes,
@@ -154,17 +148,13 @@ impl PyGeometryArray {
     /// rule behind [`from_shapes`](Self::from_shapes) and
     /// [`pack_or_mixed`](Self::pack_or_mixed).
     pub(crate) fn uniform_point_column<'a>(
-        shapes: impl ExactSizeIterator<Item = &'a Shape>,
+        shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
     ) -> Option<CoordSeq> {
         if shapes.len() == 0 {
             return None;
         }
-        let mut xs = Vec::with_capacity(shapes.len());
-        let mut ys = Vec::with_capacity(shapes.len());
-        let mut zs: Option<Vec<f64>> = None;
-        let mut ms: Option<Vec<f64>> = None;
         let mut axes: Option<CoordinateAxes> = None;
-        for shape in shapes {
+        for shape in shapes.clone() {
             let Shape::Point(point) = shape else {
                 return None;
             };
@@ -172,25 +162,21 @@ impl PyGeometryArray {
             match axes {
                 None => {
                     axes = Some(point_axes);
-                    zs = point_axes
-                        .has_z()
-                        .then(|| Vec::with_capacity(xs.capacity()));
-                    ms = point_axes
-                        .has_m()
-                        .then(|| Vec::with_capacity(xs.capacity()));
                 },
                 Some(existing) if existing != point_axes => return None,
                 Some(_) => {},
             }
-            xs.push(point.x);
-            ys.push(point.y);
-            if let Some(zs) = zs.as_mut() {
-                zs.push(point.z().expect("homogeneous Z point column"));
-            }
-            if let Some(ms) = ms.as_mut() {
-                ms.push(point.m().expect("homogeneous M point column"));
-            }
         }
-        Some(CoordSeq::from_vecs(xs, ys, zs, ms))
+        let Some(axes) = axes else {
+            return None;
+        };
+        let mut builder = CoordSeqBuilder::try_with_capacity(axes, shapes.len()).ok()?;
+        for shape in shapes {
+            let Shape::Point(point) = shape else {
+                unreachable!("validated in the first pass");
+            };
+            builder.push(*point);
+        }
+        Some(builder.finish().ok()?)
     }
 }

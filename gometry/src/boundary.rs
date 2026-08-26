@@ -37,10 +37,13 @@ pub(crate) use metadata::{
     crs_operationally_equal, epoch_label, epochs_equal, wgs84_crs,
 };
 pub(crate) use reserve::{
-    advisory_len, check_python_signals, checked_length_sum, collect_bool_mask, collect_bytes_rows,
+    advisory_len, check_python_signals, CsrBuilder, checked_length_sum, collect_bool_mask, collect_bytes_rows,
     collect_i64_sequence, collect_py_iter, collect_py_iter_at_most_from_iter,
-    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter,
-    collect_sequence_items, collect_u64_sequence, collect_usize_sequence, grow_sequence_error,
-    is_one_byte_buffer, py_iter_or_error, string_alloc_error, try_push, try_reserve_hint,
+    collect_py_iter_exact, collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
+    collect_sequence_items,
+    collect_u64_sequence, collect_usize_sequence, copy_one_byte_buffer, grow_sequence_error,
+    is_one_byte_buffer, py_iter_or_error, string_alloc_error, try_collect_results, try_push, try_push_heap,
+    try_push_pair, try_push_vec, try_reserve_heap, try_reserve_hint, try_reserve_pair,
+    try_reserve_vec,
     try_string_from_str, try_vec_with_capacity, try_vec_with_capacity_hint, with_one_byte_buffer,
 };

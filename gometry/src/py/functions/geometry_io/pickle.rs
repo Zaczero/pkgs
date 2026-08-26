@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 
 use crate::array::{MissingMask, RowSelection};
@@ -29,34 +30,44 @@ impl GeometryError {
 
 /// One logical-row map as little-endian `u64` indices (the
 /// architecture-independent `__reduce__` payload for permuted packed arrays).
-pub(crate) fn usize_row_map_le_bytes(values: &[usize]) -> Vec<u8> {
-    let widened: Vec<u64> = values
-        .iter()
-        .map(|&value| u64::try_from(value).expect("row_map index fits u64"))
-        .collect();
-    if cfg!(target_endian = "little") {
-        bytemuck::cast_slice(&widened).to_vec()
-    } else {
-        let mut out = Vec::with_capacity(widened.len().saturating_mul(size_of::<u64>()));
-        for value in widened {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        out
+pub(crate) fn usize_row_map_le_bytes(values: &[usize]) -> PyResult<Vec<u8>> {
+    let byte_len = values
+        .len()
+        .checked_mul(size_of::<u64>())
+        .ok_or_else(|| PyOverflowError::new_err("row map byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    for &value in values {
+        let value = u64::try_from(value)
+            .map_err(|_| PyOverflowError::new_err("row map index does not fit in u64"))?;
+        out.extend_from_slice(&value.to_le_bytes());
     }
+    Ok(out)
 }
 
 /// One packed coordinate column as little-endian f64 bytes (the
 /// architecture-independent `__reduce__` payload; a memcpy on LE targets).
-pub(crate) fn f64_column_le_bytes(values: &[f64]) -> Vec<u8> {
-    if cfg!(target_endian = "little") {
-        bytemuck::cast_slice(values).to_vec()
-    } else {
-        let mut out = Vec::with_capacity(std::mem::size_of_val(values));
-        for value in values {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        out
+pub(crate) fn f64_column_le_bytes(values: &[f64]) -> PyResult<Vec<u8>> {
+    let byte_len = values
+        .len()
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| PyOverflowError::new_err("coordinate byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    for &value in values {
+        out.extend_from_slice(&value.to_le_bytes());
     }
+    Ok(out)
+}
+
+pub(crate) fn i32_column_le_bytes(values: &[i32]) -> PyResult<Vec<u8>> {
+    let byte_len = values
+        .len()
+        .checked_mul(size_of::<i32>())
+        .ok_or_else(|| PyOverflowError::new_err("offset byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    for &value in values {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(out)
 }
 
 /// Canonicalize a CRS string arriving from a pickle payload through the same
@@ -356,12 +367,30 @@ fn admit_pickled_polygon_rings(
     }
 
     // Rebuild through the shared admitter (silent-close / reject).
-    let mut builder = CoordSeqBuilder::like_coords(&seq, width.saturating_add(windows.len()));
-    let mut new_offsets: Vec<i32> = Vec::with_capacity(windows.len().saturating_add(1));
-    new_offsets.push(0);
+    let coord_capacity = width.checked_add(windows.len()).ok_or_else(|| {
+        GeometryError::new_err("polygon-array pickle coordinate count overflows usize")
+    })?;
+    let mut builder =
+        CoordSeqBuilder::try_with_capacity(seq.axes(), coord_capacity).map_err(PyErr::from)?;
+    let offset_capacity = windows.len().checked_add(1).ok_or_else(|| {
+        GeometryError::new_err("polygon-array pickle offset count overflows usize")
+    })?;
+    let mut new_offsets = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut new_offsets, offset_capacity) {
+        drop(builder);
+        return Err(PyErr::from(error));
+    }
+    if let Err(error) = crate::try_push_vec(&mut new_offsets, 0) {
+        drop(builder);
+        return Err(PyErr::from(error));
+    }
     for (start, end) in windows {
         let n = end - start;
-        let mut ring_builder = CoordSeqBuilder::like_coords(&seq, n.saturating_add(1));
+        let ring_capacity = n.checked_add(1).ok_or_else(|| {
+            GeometryError::new_err("polygon-array pickle ring size overflows usize")
+        })?;
+        let mut ring_builder =
+            CoordSeqBuilder::try_with_capacity(seq.axes(), ring_capacity).map_err(PyErr::from)?;
         for index in start..end {
             ring_builder.push_at(&seq, index);
         }
@@ -377,7 +406,10 @@ fn admit_pickled_polygon_rings(
         let next = i32::try_from(builder.len()).map_err(|_| {
             GeometryError::new_err("polygon-array pickle exceeds the offset domain")
         })?;
-        new_offsets.push(next);
+        if let Err(error) = crate::try_push_vec(&mut new_offsets, next) {
+            drop(builder);
+            return Err(PyErr::from(error));
+        }
     }
     let seq = builder.finish().map_err(PyErr::from)?;
     let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_arc_i32(
@@ -425,17 +457,12 @@ fn pickled_usize_row_map(
             &format!("{label} pickle"),
         );
     }
-    let map = bytes
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .map(|chunk| {
-            let value = u64::from_le_bytes(*chunk);
-            usize::try_from(value).map_err(|_| {
-                GeometryError::new_err(format!("{label} pickle row_map index out of range"))
-            })
+    let map = crate::try_collect_results(bytes.as_chunks::<8>().0.iter().map(|chunk| {
+        let value = u64::from_le_bytes(*chunk);
+        usize::try_from(value).map_err(|_| {
+            GeometryError::new_err(format!("{label} pickle row_map index out of range"))
         })
-        .collect::<PyResult<Vec<_>>>()?;
+    }))?;
     RowSelection::gather_checked(map.into(), physical_rows, &format!("{label} pickle"))
 }
 
@@ -446,12 +473,11 @@ fn pickled_i32_csr_offsets(bytes: &[u8], label: &str) -> PyResult<Vec<i32>> {
             "malformed {label} pickle offsets"
         )));
     }
-    Ok(bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|chunk| i32::from_le_bytes(*chunk))
-        .collect())
+    let mut offsets = crate::try_vec_with_capacity(bytes.len() / size_of::<i32>())?;
+    for chunk in bytes.as_chunks::<4>().0 {
+        crate::try_push(&mut offsets, i32::from_le_bytes(*chunk))?;
+    }
+    Ok(offsets)
 }
 
 fn pickled_missing_mask(
@@ -474,7 +500,11 @@ fn pickled_missing_mask(
             "malformed {label} pickle missing mask"
         )));
     }
-    let mask = MissingMask::from_vec(len, bytes.iter().map(|&byte| byte != 0).collect());
+    let mut values = crate::try_vec_with_capacity(len)?;
+    for &byte in bytes {
+        crate::try_push(&mut values, byte != 0)?;
+    }
+    let mask = MissingMask::from_vec(len, values);
     let decoded_present_count = mask.as_ref().map_or(len, MissingMask::present_count);
     if present_count.is_some_and(|present_count| decoded_present_count != present_count) {
         return Err(GeometryError::new_err(format!(
@@ -498,37 +528,51 @@ fn pickled_coordseq(
     zs: Option<&[u8]>,
     ms: Option<&[u8]>,
 ) -> PyResult<CoordSeq> {
-    use std::mem::MaybeUninit;
     use std::sync::Arc;
 
-    let column = |bytes: &[u8]| -> PyResult<Arc<[f64]>> {
+    let column = |bytes: &[u8]| -> crate::error::Result<Arc<[f64]>> {
+        if !bytes.len().is_multiple_of(size_of::<f64>()) {
+            unreachable!("column lengths are validated before allocation");
+        }
+        // Proven count from the byte span (not a caller-supplied length).
+        let chunks = bytes.as_chunks::<8>().0;
+        let len = chunks.len();
+        let mut values = Vec::new();
+        crate::boundary::try_reserve_vec(&mut values, len)?;
+        for chunk in chunks {
+            crate::boundary::try_push_vec(&mut values, f64::from_le_bytes(*chunk))?;
+        }
+        Ok(values.into())
+    };
+    for bytes in [Some(xs), Some(ys), zs, ms].into_iter().flatten() {
         if !bytes.len().is_multiple_of(size_of::<f64>()) {
             return Err(GeometryError::new_err(
                 "malformed packed-array pickle column",
             ));
         }
-        // Proven count from the byte span (not a caller-supplied length).
-        let chunks = bytes.as_chunks::<8>().0;
-        let len = chunks.len();
-        let mut arc: Arc<[MaybeUninit<f64>]> = Arc::new_uninit_slice(len);
-        // SAFETY: unique Arc; every slot is written from the LE bytes below
-        // (enumerate over all `len` chunks). Trusted-code persistence (pickle):
-        // not an authenticity boundary.
-        unsafe {
-            let dst = Arc::get_mut(&mut arc)
-                .unwrap_unchecked()
-                .as_mut_ptr()
-                .cast::<f64>();
-            for (i, chunk) in chunks.iter().enumerate() {
-                dst.add(i).write(f64::from_le_bytes(*chunk));
-            }
-            Ok(arc.assume_init())
-        }
+    }
+    let xs = column(xs).map_err(PyErr::from)?;
+    let ys = match column(ys) {
+        Ok(values) => values,
+        Err(error) => {
+            drop(xs);
+            return Err(PyErr::from(error));
+        },
     };
-    let xs = column(xs)?;
-    let ys = column(ys)?;
-    let zs = zs.map(column).transpose()?;
-    let ms = ms.map(column).transpose()?;
+    let zs = match zs.map(column).transpose() {
+        Ok(values) => values,
+        Err(error) => {
+            drop((xs, ys));
+            return Err(PyErr::from(error));
+        },
+    };
+    let ms = match ms.map(column).transpose() {
+        Ok(values) => values,
+        Err(error) => {
+            drop((xs, ys, zs));
+            return Err(PyErr::from(error));
+        },
+    };
     if xs.len() != ys.len()
         || zs.as_ref().is_some_and(|column| column.len() != xs.len())
         || ms.as_ref().is_some_and(|column| column.len() != xs.len())

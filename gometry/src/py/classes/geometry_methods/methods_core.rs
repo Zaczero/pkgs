@@ -8,7 +8,7 @@ use crate::py::classes::geometry_methods::{
 };
 use crate::{
     Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, geojson_dict,
-    map_coordinates_callback, parse_coordinate_replacement, render_shape_svg,
+    map_coordinates_callback, parse_coordinate_replacement, render_shape_html, render_shape_svg,
     replace_shape_coordinates,
 };
 
@@ -28,16 +28,13 @@ impl PyGeometry {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
-    pub fn _repr_svg_(&self) -> String {
-        render_shape_svg(&self.shape)
+    pub fn _repr_svg_(&self) -> PyResult<String> {
+        Ok(render_shape_svg(&self.shape)?)
     }
 
-    pub fn _repr_html_(&self) -> String {
-        format!(
-            "<div class=\"gometry-geom-html\"><div>{}</div>{}</div>",
-            self.__repr__(),
-            render_shape_svg(&self.shape)
-        )
+    pub fn _repr_html_(&self) -> PyResult<String> {
+        let repr = self.__repr__()?;
+        Ok(render_shape_html(&self.shape, &repr)?)
     }
     /// OGC geometry type name, e.g. ``'Point'`` or ``'MultiPolygon'``.
     ///

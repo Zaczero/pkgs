@@ -60,18 +60,19 @@ fn multipart_members(
         },
         context,
     )?;
-    Ok((
-        members
-            .into_iter()
-            .map(
-                |geometry| match std::sync::Arc::try_unwrap(geometry.shape) {
-                    Ok(data) => data.into_shape(),
-                    Err(shared) => shared.shape().clone(),
-                },
-            )
-            .collect(),
-        frame,
-    ))
+    let member_count = members.len();
+    let mut shapes = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut shapes, member_count) {
+        drop(members);
+        return Err(error.into());
+    }
+    for geometry in members {
+        shapes.push(match std::sync::Arc::try_unwrap(geometry.shape) {
+            Ok(data) => data.into_shape(),
+            Err(shared) => shared.shape().clone(),
+        });
+    }
+    Ok((shapes, frame))
 }
 
 fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<CoordinateAxes> {
@@ -431,14 +432,23 @@ pub(crate) fn build_multi_line_string(
         return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame));
     }
     let axes = homogeneous_multipart_axes(&members, "MultiLineString")?;
-    let line_members = members
-        .into_iter()
-        .map(|shape| match shape {
-            Shape::LineString(line) => MultiMember::Value(line),
-            Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
-            _ => unreachable!("multipart member type checked above"),
-        })
-        .collect::<Vec<_>>();
+    let member_count = members.len();
+    let mut line_members = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut line_members, member_count) {
+        drop(members);
+        return Err(error.into());
+    }
+    for shape in members {
+        crate::try_push_vec(
+            &mut line_members,
+            match shape {
+                Shape::LineString(line) => MultiMember::Value(line),
+                Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
+                _ => unreachable!("multipart member type checked above"),
+            },
+        )
+        .map_err(PyErr::from)?;
+    }
     let shape =
         Shape::MultiLineString(MultiLineString::try_new(axes, line_members).map_err(PyErr::from)?);
     // Match writers (`require_serializable_axes`): reject heterogeneous XY/XYZ
@@ -475,14 +485,23 @@ pub(crate) fn build_multi_polygon(
         return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame));
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPolygon")?;
-    let polygon_members = members
-        .into_iter()
-        .map(|shape| match shape {
-            Shape::Polygon(polygon) => MultiMember::Value(polygon),
-            Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
-            _ => unreachable!("multipart member type checked above"),
-        })
-        .collect::<Vec<_>>();
+    let member_count = members.len();
+    let mut polygon_members = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut polygon_members, member_count) {
+        drop(members);
+        return Err(error.into());
+    }
+    for shape in members {
+        crate::try_push_vec(
+            &mut polygon_members,
+            match shape {
+                Shape::Polygon(polygon) => MultiMember::Value(polygon),
+                Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
+                _ => unreachable!("multipart member type checked above"),
+            },
+        )
+        .map_err(PyErr::from)?;
+    }
     let shape =
         Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;

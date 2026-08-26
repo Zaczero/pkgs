@@ -123,10 +123,11 @@ pub(crate) fn rows_from_indices(
     len: usize,
     label: &str,
 ) -> PyResult<Vec<usize>> {
-    indices
-        .into_iter()
-        .map(|index| normalize_row(index, len, label))
-        .collect()
+    crate::try_collect_results(
+        indices
+            .into_iter()
+            .map(|index| normalize_row(index, len, label)),
+    )
 }
 
 pub(crate) fn collect_slice_rows(start: isize, stop: isize, step: isize) -> Vec<usize> {
@@ -147,11 +148,13 @@ fn mask_rows<C: RowGetItemContainer>(
     if mask.len() != len {
         return Err(C::mask_length_error(mask.len(), len, numpy));
     }
-    Ok(mask
-        .into_iter()
-        .enumerate()
-        .filter_map(|(row, keep)| keep.then_some(row))
-        .collect())
+    let mut rows = crate::try_vec_with_capacity(mask.len())?;
+    for (row, keep) in mask.into_iter().enumerate() {
+        if keep {
+            crate::try_push(&mut rows, row)?;
+        }
+    }
+    Ok(rows)
 }
 
 fn index_type_error(label: &str) -> PyErr {

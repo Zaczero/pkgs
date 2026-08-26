@@ -10,7 +10,7 @@
     reason = "C Data Interface child pointers require stable pointee addresses"
 )]
 
-use std::ffi::{CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 
 use pyo3::exceptions::PyTypeError;
@@ -80,7 +80,7 @@ struct ArrayPrivate {
 struct StreamPrivate {
     schema: SchemaNode,
     array: Option<Box<ArrowArray>>,
-    last_error: CString,
+    last_error: &'static CStr,
 }
 
 #[derive(Clone)]

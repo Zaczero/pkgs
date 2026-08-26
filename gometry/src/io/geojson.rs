@@ -43,7 +43,19 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
 ) -> Result<String> {
     validate_geojson_value::<INCLUDE_Z>(shape)?;
     let prepared = geojson_output_shape(shape, geographic)?;
-    let mut out = String::with_capacity(32 + prepared.coord_count() * 24);
+    let coordinate_bytes = prepared
+        .coord_count()
+        .checked_mul(4096)
+        .ok_or_else(|| IoError::geojson("GeoJSON coordinate byte length overflows usize"))?;
+    let structural_bytes = geojson_structure_count(&prepared)?
+        .checked_mul(128)
+        .ok_or_else(|| IoError::geojson("GeoJSON structural byte length overflows usize"))?;
+    let capacity = coordinate_bytes
+        .checked_add(structural_bytes)
+        .ok_or_else(|| IoError::geojson("GeoJSON output length overflows usize"))?;
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)
 }
@@ -102,6 +114,38 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
             .iter()
             .try_for_each(validate_geojson_value::<INCLUDE_Z>),
         _ => Ok(()),
+    }
+}
+fn geojson_structure_count(shape: &Shape) -> Result<usize> {
+    match shape {
+        Shape::MultiLineString(lines) => lines
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize")),
+        Shape::Polygon(polygon) => polygon
+            .holes
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize")),
+        Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
+            let polygon_count = polygon
+                .holes
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize"))?;
+            total
+                .checked_add(polygon_count)
+                .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize"))
+        }),
+        Shape::GeometryCollection(geometries) => {
+            geometries.iter().try_fold(1_usize, |total, geometry| {
+                let geometry_count = geojson_structure_count(geometry)?;
+                total
+                    .checked_add(geometry_count)
+                    .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize"))
+            })
+        },
+        _ => Ok(1),
     }
 }
 

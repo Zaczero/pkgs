@@ -502,10 +502,18 @@ fn list_offsets_as_usize_window(
     };
     if is_large {
         let raw = arrow_i64_offsets_window(py, array, start, count)?;
-        raw.into_iter().map(i64_offset_to_usize).collect()
+        let mut offsets = crate::try_vec_with_capacity(raw.len())?;
+        for value in raw {
+            crate::try_push(&mut offsets, i64_offset_to_usize(value)?)?;
+        }
+        Ok(offsets)
     } else {
         let raw = arrow_i32_offsets_window(py, array, start, count)?;
-        raw.into_iter().map(i32_offset_to_usize).collect()
+        let mut offsets = crate::try_vec_with_capacity(raw.len())?;
+        for value in raw {
+            crate::try_push(&mut offsets, i32_offset_to_usize(value)?)?;
+        }
+        Ok(offsets)
     }
 }
 
@@ -653,14 +661,15 @@ pub(crate) fn arrow_polygon_from_ring_range(
                 geoarrow_parse_error(format!("Arrow polygon ring: {reason}"))
             }
         })?;
-        shell_and_holes.push(admitted);
+        crate::try_push(&mut shell_and_holes, admitted)?;
     }
     let mut shell_and_holes = shell_and_holes.into_iter();
     let shell = shell_and_holes
         .next()
         .expect("range.is_empty checked above");
-    Ok(Shape::Polygon(Polygon::new(
-        shell,
-        shell_and_holes.collect(),
-    )))
+    let mut holes = crate::try_vec_with_capacity(shell_and_holes.len())?;
+    for hole in shell_and_holes {
+        crate::try_push(&mut holes, hole)?;
+    }
+    Ok(Shape::Polygon(Polygon::new(shell, holes)))
 }

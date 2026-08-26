@@ -26,13 +26,16 @@ fn append_arrow_coordseq_rows(
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
-            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone());
+            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone())?;
             *row += 1;
             continue;
         }
         let range = level.range(index)?;
         let coords = coordinates.coordseq(range.start, range.end, *row)?;
-        geometries.push(PyGeometry::from_shape_crs(build(coords)?, crs.clone()));
+        crate::try_push(
+            geometries,
+            PyGeometry::from_shape_crs(build(coords)?, crs.clone()),
+        )?;
         *row += 1;
     }
     Ok(())
@@ -176,18 +179,19 @@ pub(crate) fn arrow_geometry_input(
                 "expected a GeoArrow-encoded Arrow array, ChunkedArray, Table, or RecordBatch",
             )
         })?;
-    let names = names.extract::<Vec<String>>()?;
+    let names = crate::collect_py_strings(&names, "Arrow column names")?;
     if names.is_empty() {
         return Err(PyTypeError::new_err(
             "Arrow table or record batch has no columns",
         ));
     }
     let schema = value.getattr_opt(pyo3::intern!(value.py(), "schema"))?;
-    let geometry_name_indexes: Vec<usize> = names
-        .iter()
-        .enumerate()
-        .filter_map(|(index, name)| (name == "geometry").then_some(index))
-        .collect();
+    let mut geometry_name_indexes = crate::try_vec_with_capacity(names.len())?;
+    for (index, name) in names.iter().enumerate() {
+        if name == "geometry" {
+            crate::try_push(&mut geometry_name_indexes, index)?;
+        }
+    }
     if geometry_name_indexes.len() > 1 {
         return Err(PyTypeError::new_err(
             "Arrow table or record batch has multiple columns named 'geometry'; select one column explicitly",
@@ -272,14 +276,14 @@ pub(crate) fn append_arrow_points(
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
-            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone());
+            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone())?;
             *row += 1;
             continue;
         }
-        geometries.push(PyGeometry::from_shape_crs(
-            coordinates.point_shape(index, *row)?,
-            crs.clone(),
-        ));
+        crate::try_push(
+            geometries,
+            PyGeometry::from_shape_crs(coordinates.point_shape(index, *row)?, crs.clone()),
+        )?;
         *row += 1;
     }
     Ok(())

@@ -98,16 +98,13 @@ pub(crate) fn require(
     let raw_items = crate::collect_py_iter(value, Ok)?;
     let len = raw_items.len();
     let mut has_missing = false;
-    let mask: Vec<bool> = raw_items
-        .iter()
-        .map(|item| {
-            let missing = item.is_none();
-            has_missing |= missing;
-            missing
-        })
-        .collect();
-    let mut present: Vec<PyGeometry> = Vec::new();
-    crate::try_reserve_hint(&mut present, len)?;
+    let mut mask = crate::try_vec_with_capacity(len)?;
+    for item in &raw_items {
+        let missing = item.is_none();
+        has_missing |= missing;
+        mask.push(missing);
+    }
+    let mut present = crate::try_vec_with_capacity(len)?;
     for (row, item) in raw_items.into_iter().enumerate() {
         if item.is_none() {
             continue;
@@ -118,7 +115,7 @@ pub(crate) fn require(
             parse_require_input(&item, expected.as_ref())
                 .map_err(|error| crate::note_array_row(error, row))?
         };
-        crate::try_push(&mut present, geometry)?;
+        present.push(geometry);
     }
     let frame = Frame::resolve_items(
         &mut present,
@@ -130,22 +127,21 @@ pub(crate) fn require(
     )?;
     let array = if has_missing {
         let mut present_items = present.into_iter();
-        let items: Vec<PyGeometry> = mask
-            .iter()
-            .map(|&missing| {
-                if missing {
-                    PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), frame.clone())
-                } else {
-                    present_items
-                        .next()
-                        .expect("present item count derived from input mask")
-                }
-            })
-            .collect();
-        PyGeometryArray::pack_or_mixed(items, frame)
+        let mut items = crate::try_vec_with_capacity(len)?;
+        for &missing in &mask {
+            let item = if missing {
+                PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), frame.clone())
+            } else {
+                present_items
+                    .next()
+                    .expect("present item count derived from input mask")
+            };
+            items.push(item);
+        }
+        PyGeometryArray::pack_or_mixed(items, frame)?
             .with_missing_mask(crate::array::MissingMask::from_vec(len, mask))
     } else {
-        PyGeometryArray::pack_or_mixed(present, frame)
+        PyGeometryArray::pack_or_mixed(present, frame)?
     };
     let array = require_array_contract(array, expected.as_ref(), axes)?;
     Ok(array.into_pyobject(py)?.into_any().unbind())

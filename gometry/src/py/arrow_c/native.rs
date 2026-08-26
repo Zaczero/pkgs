@@ -28,7 +28,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyMemoryError, PyTypeError};
 use pyo3::prelude::{Bound, Py, PyAny, PyResult, Python};
 #[cfg(test)]
 use pyo3::types::PyBytesMethods as _;
@@ -618,7 +618,7 @@ unsafe fn capture_selected_node(
     let ext_name = schema
         .extension_name()?
         .map(|s| Arc::<str>::from(s.as_str()));
-    let ext_meta = Arc::from(schema.extension_metadata_bytes().as_slice());
+    let ext_meta = Arc::from(schema.extension_metadata_bytes()?.into_boxed_slice());
     build_owned_node_admitted(
         &mut layout,
         schema,
@@ -725,7 +725,7 @@ unsafe fn admit_selected_struct_geometry(
     let child_ext_name = child_schema
         .extension_name()?
         .map(|s| Arc::<str>::from(s.as_str()));
-    let child_ext_meta = Arc::from(child_schema.extension_metadata_bytes().as_slice());
+    let child_ext_meta = Arc::from(child_schema.extension_metadata_bytes()?.into_boxed_slice());
     build_owned_node_admitted(
         &mut child_layout,
         child_schema,
@@ -826,8 +826,8 @@ fn build_owned_node_admitted(
     let (buffers, _) = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
     let effective_missing = merge_owned_row_missing(validated, &buffers, effective_missing)?;
-    let mut field_names = Vec::new();
-    let mut children = Vec::new();
+    let mut field_names = crate::try_vec_with_capacity(validated.n_children)?;
+    let mut children = crate::try_vec_with_capacity(validated.n_children)?;
     if validated.n_children > 0 {
         if schema.children.len() != validated.n_children {
             return Err(crate::py::errors::parse_error(
@@ -835,15 +835,17 @@ fn build_owned_node_admitted(
                 crate::error::ParseFormat::GeoArrow,
             ));
         }
-        field_names.try_reserve(validated.n_children).map_err(|_| {
-            PyTypeError::new_err("Arrow schema child count is too large to allocate")
-        })?;
-        children.try_reserve(validated.n_children).map_err(|_| {
-            PyTypeError::new_err("Arrow array child count is too large to allocate")
-        })?;
         for index in 0..validated.n_children {
             let child_schema = &schema.children[index];
-            field_names.push(child_schema.name().to_owned());
+            let name = match crate::boundary::try_string_from_str(child_schema.name()) {
+                Ok(name) => name,
+                Err(()) => {
+                    drop(children);
+                    drop(field_names);
+                    return Err(crate::boundary::string_alloc_error());
+                },
+            };
+            field_names.push(name);
             // SAFETY: children live under capture shell for this construction.
             let child_array_ptr = unsafe { validated.child_ptr(index)? };
             let child_format = ArrowFormat::parse(child_schema.format())?;
@@ -1004,7 +1006,8 @@ fn project_ancestor_missing(
                     crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
                 })
             };
-            let mut missing = vec![false; child_length];
+            let mut missing = crate::try_vec_with_capacity(child_length)?;
+            missing.resize(child_length, false);
             for (row, &is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
                     continue;
@@ -1040,7 +1043,8 @@ fn project_ancestor_missing(
                     "Arrow fixed-size-list child visible length does not match parent",
                 ));
             }
-            let mut missing = vec![false; child_length];
+            let mut missing = crate::try_vec_with_capacity(child_length)?;
+            missing.resize(child_length, false);
             for (row, &is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
                     continue;
@@ -1074,9 +1078,15 @@ fn merge_owned_row_missing(
                     "Arrow ancestor missing length does not match child length",
                 ));
             }
-            a.to_vec()
+            let mut missing = crate::try_vec_with_capacity(len)?;
+            missing.extend_from_slice(a.as_ref());
+            missing
         },
-        None => vec![false; len],
+        None => {
+            let mut missing = crate::try_vec_with_capacity(len)?;
+            missing.resize(len, false);
+            missing
+        },
     };
     let mut any = missing.iter().any(|&m| m);
     for row in 0..len {
@@ -1152,8 +1162,19 @@ impl NativeArrowType {
     }
 
     #[getter]
-    fn names(&self) -> Vec<String> {
-        self.names.clone()
+    fn names(&self) -> PyResult<Vec<String>> {
+        let mut names = crate::try_vec_with_capacity(self.names.len())?;
+        for name in &self.names {
+            let name = match crate::boundary::try_string_from_str(name) {
+                Ok(name) => name,
+                Err(()) => {
+                    drop(names);
+                    return Err(crate::boundary::string_alloc_error());
+                },
+            };
+            crate::try_push(&mut names, name)?;
+        }
+        Ok(names)
     }
 
     #[getter]
@@ -1257,7 +1278,7 @@ impl NativeArrowArray {
         if index == 0
             && let Some(missing) = self.node.effective_missing.as_ref()
         {
-            let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing);
+            let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing)?;
             return PyBytes::new(py, &bitmap).into_py_any(py);
         }
         native_buffer_at(py, &self.node, index)
@@ -1265,15 +1286,12 @@ impl NativeArrowArray {
 
     fn buffers(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let count = self.node.n_buffers;
-        let mut items = Vec::new();
-        items
-            .try_reserve(count)
-            .map_err(|_| PyTypeError::new_err("Arrow buffer count is too large to allocate"))?;
+        let mut items = crate::try_vec_with_capacity(count)?;
         for index in 0..count {
             if index == 0
                 && let Some(missing) = self.node.effective_missing.as_ref()
             {
-                let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing);
+                let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing)?;
                 items.push(PyBytes::new(py, &bitmap).into_py_any(py)?);
             } else {
                 items.push(native_buffer_at(py, &self.node, index)?);
@@ -1315,12 +1333,35 @@ impl NativeArrowType {
     }
 
     fn from_node(node: &NativeNode) -> PyResult<Self> {
+        let extension_name = match node.extension_name.as_ref() {
+            Some(name) => Some(
+                crate::boundary::try_string_from_str(name)
+                    .map_err(|()| crate::boundary::string_alloc_error())?,
+            ),
+            None => None,
+        };
+        let mut extension_metadata = crate::try_vec_with_capacity(node.extension_metadata.len())?;
+        extension_metadata.extend_from_slice(&node.extension_metadata);
+        let mut names = crate::try_vec_with_capacity(node.field_names.len())?;
+        for name in node.field_names.iter() {
+            let name = match crate::boundary::try_string_from_str(name) {
+                Ok(name) => name,
+                Err(()) => {
+                    drop(names);
+                    drop(extension_metadata);
+                    return Err(crate::boundary::string_alloc_error());
+                },
+            };
+            crate::try_push(&mut names, name)?;
+        }
+        let name = crate::boundary::try_string_from_str(&node.schema_name)
+            .map_err(|()| crate::boundary::string_alloc_error())?;
         Ok(Self {
             node: node.clone(),
-            extension_name: node.extension_name.as_ref().map(|s| s.as_ref().to_owned()),
-            extension_metadata: node.extension_metadata.as_ref().to_vec(),
-            names: node.field_names.as_ref().to_vec(),
-            name: node.schema_name.as_ref().to_owned(),
+            extension_name,
+            extension_metadata,
+            names,
+            name,
         })
     }
 }
@@ -1476,10 +1517,7 @@ fn snapshot_native_buffers(
         return Ok((slots, array.binary_view_data_ranges.clone()));
     }
 
-    let mut snapshots: Vec<Option<OwnedBuffer>> = Vec::new();
-    snapshots
-        .try_reserve_exact(array.n_buffers)
-        .map_err(|_| PyTypeError::new_err("Arrow buffer snapshots are too large to allocate"))?;
+    let mut snapshots = crate::try_vec_with_capacity(array.n_buffers)?;
     snapshots.push(Some(snapshot_one_buffer_range(
         array,
         0,
@@ -1634,7 +1672,8 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
     let first = usize::try_from(read(0)?).map_err(|_| {
         crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
     })?;
-    let mut rebased = raw.to_vec();
+    let mut rebased = crate::try_vec_with_capacity(raw.len())?;
+    rebased.extend_from_slice(&raw);
     let mut last = first;
     for index in 0..slots {
         let value = usize::try_from(read(index)?).map_err(|_| {
@@ -1668,10 +1707,10 @@ fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<[f64]>> {
     }
     let (chunks, rest) = bytes.as_chunks::<8>();
     debug_assert!(rest.is_empty());
-    let values: Vec<f64> = chunks
-        .iter()
-        .map(|chunk| f64::from_le_bytes(*chunk))
-        .collect();
+    let mut values = crate::try_vec_with_capacity(chunks.len())?;
+    for chunk in chunks {
+        crate::try_push(&mut values, f64::from_le_bytes(*chunk))?;
+    }
     Ok(Arc::from(values))
 }
 
@@ -1707,7 +1746,10 @@ fn native_buffer_at(py: Python<'_>, node: &NativeNode, index: usize) -> PyResult
     match slot {
         OwnedBuffer::Bytes(bytes) => PyBytes::new(py, bytes).into_py_any(py),
         OwnedBuffer::F64(values) => {
-            let mut out = Vec::with_capacity(values.len() * 8);
+            let byte_len = values.len().checked_mul(size_of::<f64>()).ok_or_else(|| {
+                PyMemoryError::new_err("Arrow float buffer byte length overflows")
+            })?;
+            let mut out = crate::try_vec_with_capacity(byte_len)?;
             for &v in values.iter() {
                 out.extend_from_slice(&v.to_le_bytes());
             }
@@ -1743,7 +1785,8 @@ pub(crate) fn try_native_admitted_buffer(
         // Float64 values are typed at admission — re-encode LE for the generic
         // byte path only when a caller asks for raw buffer bytes.
         OwnedBuffer::F64(values) => {
-            let mut out = Vec::with_capacity(values.len() * 8);
+            let byte_len = values.len().checked_mul(size_of::<f64>())?;
+            let mut out = crate::try_vec_with_capacity(byte_len).ok()?;
             for &v in values.iter() {
                 out.extend_from_slice(&v.to_le_bytes());
             }
@@ -1779,7 +1822,16 @@ pub(crate) fn try_native_f64_values_arc(
     if start == 0 && end == values.len() {
         return Some(Ok(Arc::clone(values)));
     }
-    Some(Ok(Arc::from(values[start..end].to_vec())))
+    let mut copied = match crate::try_vec_with_capacity(count) {
+        Ok(values) => values,
+        Err(error) => return Some(Err(error)),
+    };
+    for &value in &values[start..end] {
+        if let Err(error) = crate::try_push_vec(&mut copied, value) {
+            return Some(Err(error.into()));
+        }
+    }
+    Some(Ok(Arc::from(copied)))
 }
 
 /// Checked byte span for every `from_raw_parts` length: reject `usize`
@@ -1922,7 +1974,8 @@ fn rebase_owned_binary_view_offsets(
     let OwnedBuffer::Bytes(views) = views else {
         return Ok(views.clone());
     };
-    let mut rebased = views.to_vec();
+    let mut rebased = crate::try_vec_with_capacity(views.len())?;
+    rebased.extend_from_slice(views);
     let (views, remainder) = rebased.as_chunks_mut::<16>();
     debug_assert!(remainder.is_empty());
     for (row, view) in views.iter_mut().enumerate() {

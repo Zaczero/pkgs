@@ -8,12 +8,12 @@ use crate::array::{
     PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection, RowSelectionRef,
 };
 
-pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> CoordSeq {
-    let mut builder = PointColumnBuilder::like_coords(coords, map.len());
+pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {
+    let mut builder = PointColumnBuilder::try_with_capacity(coords.axes(), map.len())?;
     for &physical in map {
         builder.push_at(coords, physical);
     }
-    builder.finish_infallible()
+    builder.finish()
 }
 
 pub(crate) fn gather_line_columns(
@@ -21,7 +21,7 @@ pub(crate) fn gather_line_columns(
     offsets: &[i32],
     map: &[usize],
 ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-    let mut builder = PackedColumnBuilder::like(coords, 0);
+    let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
     for &physical in map {
         let window = offsets[physical] as usize..offsets[physical + 1] as usize;
         builder.push_window(coords, window)?;
@@ -40,7 +40,7 @@ pub(crate) fn gather_polygon_columns(
     CsrOffsetColumn<RingLevel>,
     CsrOffsetColumn<PolygonLevel>,
 )> {
-    let mut builder = PackedColumnBuilder::like(coords, 0);
+    let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
     let mut polygon_builder = CsrOffsetBuilder::new();
     let mut ring_index = 0_usize;
     for &physical in map {
@@ -72,7 +72,7 @@ pub(crate) fn materialized_gather(
         GeometryArrayStorage::Mixed(_) => None,
         GeometryArrayStorage::Points { coords, row_map } => match row_map.as_deref() {
             RowSelectionRef::Gather(map) => Some(GeometryArrayStorage::Points {
-                coords: Arc::new(gather_point_columns(coords, map)),
+                coords: Arc::new(gather_point_columns(coords, map).map_err(batch_err)?),
                 row_map: RowSelection::Identity,
             }),
             _ => None,

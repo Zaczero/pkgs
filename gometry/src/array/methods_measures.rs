@@ -2,14 +2,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::exceptions::PyOverflowError;
 use pyo3::types::PyDict;
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
     Bound, CsrOffsetColumn, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _,
     MissingMask, PackedColumnError, PackedColumns, Py, PyAny, PyAnyMethods as _,
-    PyDictMethods as _, PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError,
-    PyTypeMethods as _, Python, RowSelectionRef, Shape, SpatialCurve, Typed,
+    PyDictMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _,
+    PyTypeError, PyTypeMethods as _, Python, RowSelectionRef, Shape, SpatialCurve, Typed,
     bounds_3d_values_from_columns, bounds_values_from_columns_masked, concat_coord_columns, crs,
     crs_label, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
     line_measure_masked, polygon_measure_masked, pymethods, reduce_lines_or_polygons,
@@ -41,7 +42,7 @@ impl PyGeometryArray {
         if others.is_empty() {
             return Ok(self.clone());
         }
-        let mut borrowed = Vec::with_capacity(others.len());
+        let mut borrowed = crate::try_vec_with_capacity(others.len())?;
         for (offset, item) in others.iter().enumerate() {
             let index = offset + 1;
             let other = item.extract::<pyo3::PyRef<'_, Self>>().map_err(|_| {
@@ -53,11 +54,18 @@ impl PyGeometryArray {
                 ))
             })?;
             self.ensure_concat_frame(&other, index)?;
-            borrowed.push(other);
+            crate::try_push(&mut borrowed, other)?;
         }
-        let mut arrays = Vec::with_capacity(borrowed.len() + 1);
-        arrays.push(self);
-        arrays.extend(borrowed.iter().map(|array| &**array));
+        let mut arrays = crate::try_vec_with_capacity(
+            borrowed
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| PyOverflowError::new_err("too many arrays to concatenate"))?,
+        )?;
+        crate::try_push(&mut arrays, self)?;
+        for array in &borrowed {
+            crate::try_push(&mut arrays, &**array)?;
+        }
         if arrays.len() == 2 {
             self.concat_pair(arrays[1])
         } else {
@@ -360,17 +368,20 @@ impl PyGeometryArray {
     /// 'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
     pub fn union_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
         let strictness = crate::geometry::Strictness::Lenient;
-        let shapes = self.packed_points_as_multipoint().map_or_else(
-            || {
-                self.with_borrowed_shapes(|borrowed| {
-                    borrowed
-                        .iter()
-                        .map(|shape| (*shape).clone())
-                        .collect::<Vec<_>>()
-                })
-            },
-            |multipoint| vec![multipoint],
-        );
+        let shapes = if let Some(multipoint) = self.packed_points_as_multipoint()? {
+            let mut shapes = crate::try_vec_with_capacity(1)?;
+            crate::try_push(&mut shapes, multipoint)?;
+            shapes
+        } else {
+            self.with_borrowed_shapes(|borrowed| {
+                let mut shapes = Vec::new();
+                crate::boundary::try_reserve_vec(&mut shapes, borrowed.len())?;
+                for shape in borrowed {
+                    crate::boundary::try_push_vec(&mut shapes, (*shape).clone())?;
+                }
+                Ok(shapes)
+            })?
+        };
         let geographic = crate::geometry::is_geographic_frame(&self.frame);
         let shape = py.detach(move || Shape::union_all_topo(&shapes, geographic, strictness))?;
         Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
@@ -414,20 +425,20 @@ impl PyGeometryArray {
             // Missing rows leave the group-by entirely (their keys too) —
             // SQL/pandas aggregation semantics.
             let dense = self.drop_missing();
-            let kept: Vec<Bound<'_, PyAny>> = keys
-                .iter()
-                .zip(mask.iter())
-                .filter(|(_, missing)| !**missing)
-                .map(|(key, _)| key.clone())
-                .collect();
+            let mut kept = crate::try_vec_with_capacity(keys.len())?;
+            for (key, missing) in keys.iter().zip(mask.iter()) {
+                if !*missing {
+                    crate::try_push(&mut kept, key.clone())?;
+                }
+            }
             let kept_list = pyo3::types::PyList::new(py, &kept)?;
             return dense.dissolve(py, kept_list.as_any());
         }
         let strictness = crate::geometry::Strictness::Lenient;
-        let mut groups: Vec<Py<PyAny>> = Vec::new();
-        let mut group_shapes: Vec<Vec<Shape>> = Vec::new();
+        let mut groups: Vec<Py<PyAny>> = crate::try_vec_with_capacity(keys.len())?;
+        let mut group_shapes: Vec<Vec<Shape>> = crate::try_vec_with_capacity(keys.len())?;
         let hash_groups = PyDict::new(py);
-        let mut unhashable_groups: Vec<usize> = Vec::new();
+        let mut unhashable_groups: Vec<usize> = crate::try_vec_with_capacity(keys.len())?;
         for (key, (_, shape)) in keys.iter().zip(self.present_shape_rows()) {
             let hashable = match key.hash() {
                 Ok(_) => true,
@@ -462,24 +473,26 @@ impl PyGeometryArray {
                 equal
             };
             if let Some(index) = index {
-                group_shapes[index].push(shape.into_owned());
+                crate::try_push(&mut group_shapes[index], shape.into_owned())?;
             } else {
                 let index = groups.len();
-                groups.push(key.clone().unbind());
-                group_shapes.push(vec![shape.into_owned()]);
+                crate::try_push(&mut groups, key.clone().unbind())?;
+                let mut values = crate::try_vec_with_capacity(1)?;
+                crate::try_push(&mut values, shape.into_owned())?;
+                crate::try_push(&mut group_shapes, values)?;
                 if hashable {
                     hash_groups.set_item(key, index)?;
                 } else {
-                    unhashable_groups.push(index);
+                    crate::try_push(&mut unhashable_groups, index)?;
                 }
             }
         }
         let frame = self.frame.clone();
         let geographic = crate::geometry::is_geographic_frame(&frame);
-        let mut shapes = Vec::with_capacity(group_shapes.len());
+        let mut shapes = crate::try_vec_with_capacity(group_shapes.len())?;
         for group in group_shapes {
             let shape = py.detach(move || Shape::union_all_topo(&group, geographic, strictness))?;
-            shapes.push(shape);
+            crate::try_push(&mut shapes, shape)?;
         }
         Ok((Self::from_shapes(shapes, frame), groups)
             .into_pyobject(py)?
@@ -527,10 +540,13 @@ impl PyGeometryArray {
                     let scale = to_metre.get() * to_metre.get();
                     let ring_offsets = polygon_columns.ring_offsets();
                     let polygon_offsets = polygon_columns.polygon_offsets();
-                    let mut values = Vec::with_capacity(polygon_columns.rows());
+                    let mut values = Vec::new();
+                    crate::boundary::try_reserve_vec(&mut values, polygon_columns.rows())
+                        .map_err(PackedColumnError::Batch)?;
                     for row in 0..polygon_columns.rows() {
                         if missing.as_deref().is_some_and(|mask| mask[row]) {
-                            values.push(f64::NAN);
+                            crate::boundary::try_push_vec(&mut values, f64::NAN)
+                                .map_err(PackedColumnError::Batch)?;
                             continue;
                         }
                         let rings =
@@ -541,7 +557,8 @@ impl PyGeometryArray {
                             ring_offsets,
                             rings,
                         );
-                        values.push(area * scale);
+                        crate::boundary::try_push_vec(&mut values, area * scale)
+                            .map_err(PackedColumnError::Batch)?;
                     }
                     Ok(values)
                 })
@@ -564,7 +581,7 @@ impl PyGeometryArray {
                             .1
                             .abs()
                     };
-                    Ok(polygon_measure_masked(
+                    polygon_measure_masked(
                         xs,
                         ys,
                         polygon_columns.ring_offsets(),
@@ -581,7 +598,8 @@ impl PyGeometryArray {
                             let holes: f64 = (start + 1..end).map(ring).sum();
                             shell - holes
                         },
-                    ))
+                    )
+                    .map_err(PackedColumnError::Batch)
                 })
             },
         }
@@ -603,7 +621,7 @@ impl PyGeometryArray {
         match resolve_metric(self.crs_str(), unit, op_name)? {
             crs::MetricModel::Planar { to_metre } => {
                 self.reduce_packed_columns_detached(py, move |columns| {
-                    Ok(reduce_lines_or_polygons(
+                    let values = reduce_lines_or_polygons(
                         columns,
                         |line_columns| {
                             let XyColumns { xs, ys } = line_columns.xy();
@@ -624,7 +642,8 @@ impl PyGeometryArray {
                                 to_metre.get(),
                             )
                         },
-                    ))
+                    );
+                    values.map_err(PackedColumnError::Batch)
                 })
             },
             model @ crs::MetricModel::Geodesic { .. } => {
@@ -636,7 +655,7 @@ impl PyGeometryArray {
                 self.reduce_packed_columns_detached(py, move |columns| {
                     ensure_geographic_columns_present(&columns, missing.as_deref())
                         .map_err(PackedColumnError::Batch)?;
-                    Ok(match columns {
+                    let values = match columns {
                         PackedColumns::Lines(line_columns) => {
                             let XyColumns { xs, ys } = line_columns.xy();
                             line_measure_masked(
@@ -677,7 +696,8 @@ impl PyGeometryArray {
                         PackedColumns::Points(_) => {
                             unreachable!("length packed lane requires line or polygon storage")
                         },
-                    })
+                    };
+                    values.map_err(PackedColumnError::Batch)
                 })
             },
         }
@@ -692,9 +712,11 @@ impl PyGeometryArray {
         let to_metre =
             crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op_name)?.coordinate_scale();
         if let GeometryArrayStorage::Points { .. } = self.storage() {
-            return Ok(Some(
-                std::iter::repeat_n(0.0, self.storage().len()).collect(),
-            ));
+            let mut values = Vec::new();
+            crate::boundary::try_reserve_vec(&mut values, self.storage().len())
+                .map_err(PyErr::from)?;
+            values.resize(self.storage().len(), 0.0);
+            return Ok(Some(values));
         }
         if !matches!(
             self.storage(),
@@ -704,11 +726,14 @@ impl PyGeometryArray {
         }
         let missing = self.missing().cloned();
         self.reduce_packed_columns_detached(py, move |columns| {
-            Ok(reduce_lines_or_polygons(
+            let values = reduce_lines_or_polygons(
                 columns,
                 |line_columns| {
                     let Some(zs) = line_columns.coords().zs() else {
-                        return std::iter::repeat_n(f64::NAN, line_columns.rows()).collect();
+                        let mut values = Vec::new();
+                        crate::boundary::try_reserve_vec(&mut values, line_columns.rows())?;
+                        values.resize(line_columns.rows(), f64::NAN);
+                        return Ok(values);
                     };
                     let XyColumns { xs, ys } = line_columns.xy();
                     segmented_planar_lengths_3d(
@@ -721,7 +746,10 @@ impl PyGeometryArray {
                 },
                 |polygon_columns| {
                     let Some(zs) = polygon_columns.coords().zs() else {
-                        return std::iter::repeat_n(f64::NAN, polygon_columns.rows()).collect();
+                        let mut values = Vec::new();
+                        crate::boundary::try_reserve_vec(&mut values, polygon_columns.rows())?;
+                        values.resize(polygon_columns.rows(), f64::NAN);
+                        return Ok(values);
                     };
                     let XyColumns { xs, ys } = polygon_columns.xy();
                     segmented_planar_lengths_3d(
@@ -732,7 +760,8 @@ impl PyGeometryArray {
                         to_metre,
                     )
                 },
-            ))
+            );
+            values.map_err(PackedColumnError::Batch)
         })
     }
 
@@ -740,7 +769,7 @@ impl PyGeometryArray {
         let geographic = crate::geometry::is_geographic_frame(&self.frame);
         let missing = self.missing().cloned();
         if let Some(values) = self.reduce_packed_columns_detached(py, move |columns| {
-            Ok(if geographic {
+            let values = if geographic {
                 missing.as_deref().map_or_else(
                     || geographic_bounds_values_from_columns(&columns),
                     |missing| {
@@ -752,7 +781,8 @@ impl PyGeometryArray {
                 )
             } else {
                 bounds_values_from_columns_masked(&columns, missing.as_deref())
-            })
+            };
+            values.map_err(PackedColumnError::Batch)
         })? {
             return Ok(Some(values));
         }
@@ -804,37 +834,55 @@ impl PyGeometryArray {
             first.ensure_concat_frame(other, index + 1)?;
         }
 
-        let total_rows = arrays.iter().map(|array| array.storage().len()).sum();
-        let merged_mask = arrays
-            .iter()
-            .any(|array| array.missing().is_some())
-            .then(|| {
-                let mut mask = Vec::with_capacity(total_rows);
-                for array in arrays {
-                    match array.missing() {
-                        Some(existing) => mask.extend_from_slice(existing),
-                        None => mask.extend(std::iter::repeat_n(false, array.storage().len())),
-                    }
+        let total_rows = arrays.iter().try_fold(0_usize, |total, array| {
+            total
+                .checked_add(array.storage().len())
+                .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))
+        })?;
+        let merged_mask = if arrays.iter().any(|array| array.missing().is_some()) {
+            let mut mask = crate::try_vec_with_capacity(total_rows)?;
+            for array in arrays {
+                match array.missing() {
+                    Some(existing) => {
+                        for &value in existing.iter() {
+                            crate::try_push(&mut mask, value)?;
+                        }
+                    },
+                    None => {
+                        for _ in 0..array.storage().len() {
+                            crate::try_push(&mut mask, false)?;
+                        }
+                    },
                 }
+            }
+            Some(
                 MissingMask::from_vec(total_rows, mask)
-                    .expect("at least one concatenated array has a missing row")
-            });
+                    .expect("at least one concatenated array has a missing row"),
+            )
+        } else {
+            None
+        };
 
         if let Some(packed) = Self::concat_packed_many(arrays)? {
             return Ok(packed.with_missing_mask(merged_mask));
         }
 
-        let mut shapes = Vec::with_capacity(total_rows);
+        let mut shapes = crate::try_vec_with_capacity(total_rows)?;
         for array in arrays {
             match array.storage() {
-                GeometryArrayStorage::Mixed(existing) => shapes.extend(existing.iter().cloned()),
+                GeometryArrayStorage::Mixed(existing) => {
+                    for shape in existing.iter().cloned() {
+                        crate::try_push(&mut shapes, shape)?;
+                    }
+                },
                 _ => {
-                    shapes.extend(
-                        array
-                            .storage()
-                            .iter_shapes()
-                            .map(std::borrow::Cow::into_owned),
-                    );
+                    for shape in array
+                        .storage()
+                        .iter_shapes()
+                        .map(std::borrow::Cow::into_owned)
+                    {
+                        crate::try_push(&mut shapes, shape)?;
+                    }
                 },
             }
         }
@@ -845,17 +893,36 @@ impl PyGeometryArray {
         // Missing masks concatenate row-wise (dense sides contribute
         // all-present runs); computed up front, attached to the merged array.
         let merged_mask: Option<MissingMask> =
-            (self.missing().is_some() || other.missing().is_some()).then(|| {
-                let mut mask = Vec::with_capacity(self.storage().len() + other.storage().len());
+            if self.missing().is_some() || other.missing().is_some() {
+                let total_rows = self
+                    .storage()
+                    .len()
+                    .checked_add(other.storage().len())
+                    .ok_or_else(|| {
+                        PyOverflowError::new_err("concatenated row count overflows usize")
+                    })?;
+                let mut mask = crate::try_vec_with_capacity(total_rows)?;
                 for (array, len) in [(self, self.storage().len()), (other, other.storage().len())] {
                     match array.missing() {
-                        Some(existing) => mask.extend_from_slice(existing),
-                        None => mask.extend(std::iter::repeat_n(false, len)),
+                        Some(existing) => {
+                            for &value in existing.iter() {
+                                crate::try_push(&mut mask, value)?;
+                            }
+                        },
+                        None => {
+                            for _ in 0..len {
+                                crate::try_push(&mut mask, false)?;
+                            }
+                        },
                     }
                 }
-                MissingMask::from_vec(mask.len(), mask)
-                    .expect("at least one side has a present missing mask")
-            });
+                Some(
+                    MissingMask::from_vec(total_rows, mask)
+                        .expect("at least one side has a present missing mask"),
+                )
+            } else {
+                None
+            };
         let merged = self.concat_pair_dense(other)?;
         Ok(merged.with_missing_mask(merged_mask))
     }
@@ -930,17 +997,26 @@ impl PyGeometryArray {
                 right_polygons,
             );
         }
-        let mut shapes: Vec<Shape> = self
+        let total_rows = self
+            .storage()
+            .len()
+            .checked_add(other.storage().len())
+            .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))?;
+        let mut shapes = crate::try_vec_with_capacity(total_rows)?;
+        for shape in self
             .storage()
             .iter_shapes()
             .map(std::borrow::Cow::into_owned)
-            .collect();
-        shapes.extend(
-            other
-                .storage()
-                .iter_shapes()
-                .map(std::borrow::Cow::into_owned),
-        );
+        {
+            crate::try_push(&mut shapes, shape)?;
+        }
+        for shape in other
+            .storage()
+            .iter_shapes()
+            .map(std::borrow::Cow::into_owned)
+        {
+            crate::try_push(&mut shapes, shape)?;
+        }
         Ok(Self::from_shapes(shapes, self.frame.clone()))
     }
 }
@@ -957,11 +1033,13 @@ impl PyGeometryArray {
     ) -> PyResult<crate::Typed> {
         let strictness = crate::geometry::Strictness::Lenient;
         let shapes = self.with_borrowed_shapes(|borrowed| {
-            borrowed
-                .iter()
-                .map(|shape| (*shape).clone())
-                .collect::<Vec<_>>()
-        });
+            let mut shapes = Vec::new();
+            crate::boundary::try_reserve_vec(&mut shapes, borrowed.len())?;
+            for shape in borrowed {
+                crate::boundary::try_push_vec(&mut shapes, (*shape).clone())?;
+            }
+            Ok(shapes)
+        })?;
         let geographic = crate::geometry::is_geographic_frame(&self.frame);
         let shape = py.detach(move || kernel(&shapes, geographic, strictness))?;
         Ok(crate::Typed(PyGeometry::with_frame(

@@ -18,7 +18,7 @@ use crate::py::cells::s2::functions::{
 };
 use crate::py::cells::s2::parse::{bounds_query_shape, parse_s2_level_budget};
 use crate::py::cells::{
-    Bound, CellRule, PyAny, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
+    Bound, CellRule, PyAny, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
 };
 
 /// Level-budget knobs shared by cover construction and lazy membership.
@@ -78,31 +78,46 @@ fn cover_s2_component(
 /// the component ordering or the share of an adaptive target.  The key is the
 /// full XY topology that reaches the grid (Z/M are deliberately absent): it is
 /// an in-process ordering key, never a serialized geometry identity.
-fn s2_component_key(shape: &Shape) -> Vec<u64> {
-    fn append_points(key: &mut Vec<u64>, points: impl IntoIterator<Item = crate::geometry::Point>) {
+fn s2_component_key(shape: &Shape) -> Result<Vec<u64>, S2ComponentCoverError> {
+    fn append_points(
+        key: &mut Vec<u64>,
+        points: impl IntoIterator<Item = crate::geometry::Point>,
+    ) -> Result<(), S2ComponentCoverError> {
         for point in points {
-            key.extend([point.x.to_bits(), point.y.to_bits()]);
+            crate::try_push_vec(key, point.x.to_bits())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(key, point.y.to_bits())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
         }
+        Ok(())
     }
+    let mut key = Vec::new();
     match shape {
-        Shape::Point(point) => vec![0, point.x.to_bits(), point.y.to_bits()],
+        Shape::Point(point) => {
+            crate::try_push_vec(&mut key, 0).map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(&mut key, point.x.to_bits())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(&mut key, point.y.to_bits())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+        },
         Shape::LineString(line) => {
-            let mut key = vec![1, line.len() as u64];
-            append_points(&mut key, line.iter());
-            key
+            crate::try_push_vec(&mut key, 1).map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(&mut key, line.len() as u64)
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+            append_points(&mut key, line.iter())?;
         },
         Shape::Polygon(polygon) => {
-            let mut key = vec![
-                2,
-                polygon.holes.len() as u64,
-                polygon.shell.coord_count() as u64,
-            ];
-            append_points(&mut key, polygon.shell.iter());
+            crate::try_push_vec(&mut key, 2).map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(&mut key, polygon.holes.len() as u64)
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+            crate::try_push_vec(&mut key, polygon.shell.coord_count() as u64)
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+            append_points(&mut key, polygon.shell.iter())?;
             for hole in polygon.holes.iter() {
-                key.push(hole.coord_count() as u64);
-                append_points(&mut key, hole.iter());
+                crate::try_push_vec(&mut key, hole.coord_count() as u64)
+                    .map_err(|_| S2ComponentCoverError::Allocation)?;
+                append_points(&mut key, hole.iter())?;
             }
-            key
         },
         Shape::MultiPoint(..)
         | Shape::MultiLineString(..)
@@ -110,6 +125,7 @@ fn s2_component_key(shape: &Shape) -> Vec<u64> {
         | Shape::GeometryCollection(..)
         | Shape::Empty(..) => unreachable!("S2 cover components must be atomic"),
     }
+    Ok(key)
 }
 
 /// An atomic source component in the canonicalization broad phase.
@@ -149,38 +165,50 @@ fn bounds_contain(outer: crate::geometry::Bounds, inner: crate::geometry::Bounds
 fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCoverError> {
     let mut components = Vec::new();
     visit_grid_cover_components(source, &mut |component| {
-        components.push((s2_component_key(component), component.clone()));
+        crate::try_push_vec(
+            &mut components,
+            (s2_component_key(component)?, component.clone()),
+        )
+        .map_err(|_| S2ComponentCoverError::Allocation)?;
         Ok(())
     })?;
     components.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     components.dedup_by(|left, right| left.0 == right.0);
 
-    let bounds: Vec<_> = components.iter().map(|(_, shape)| shape.bounds()).collect();
-    let index = RTree::bulk_load(
-        bounds
-            .iter()
-            .enumerate()
-            .filter_map(|(entry, bounds)| {
-                bounds.map(|bounds| IndexedS2Component {
-                    index: entry,
-                    envelope: AABB::from_corners([bounds.minx(), bounds.miny()], [
-                        bounds.maxx(),
-                        bounds.maxy(),
-                    ]),
-                })
+    let mut bounds = Vec::new();
+    crate::try_reserve_vec(&mut bounds, components.len())
+        .map_err(|_| S2ComponentCoverError::Allocation)?;
+    for (_, shape) in &components {
+        crate::try_push_vec(&mut bounds, shape.bounds())
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
+    }
+    let mut indexed_bounds = Vec::new();
+    for (entry, bounds) in bounds.iter().enumerate() {
+        if let Some(bounds) = bounds {
+            crate::try_push_vec(&mut indexed_bounds, IndexedS2Component {
+                index: entry,
+                envelope: AABB::from_corners([bounds.minx(), bounds.miny()], [
+                    bounds.maxx(),
+                    bounds.maxy(),
+                ]),
             })
-            .collect(),
-    );
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
+        }
+    }
+    let index = RTree::bulk_load(indexed_bounds);
 
     // Deterministic raw ordering makes equal supports choose one stable
     // representative. Keep only maximal source supports. The R-tree is a
     // broad phase only: `Shape::covers` is still the exact source predicate,
     // never a cell or chord proxy. A component can be discarded only when an
     // exact larger/equal support covers it; the lower key wins an equal pair.
-    let mut canonical = Vec::with_capacity(components.len());
+    let mut canonical = Vec::new();
+    crate::try_reserve_vec(&mut canonical, components.len())
+        .map_err(|_| S2ComponentCoverError::Allocation)?;
     for (candidate_index, (_, candidate)) in components.iter().enumerate() {
         let Some(candidate_bounds) = bounds[candidate_index] else {
-            canonical.push(candidate.clone());
+            crate::try_push_vec(&mut canonical, candidate.clone())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
             continue;
         };
         let candidate_envelope =
@@ -208,7 +236,8 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
                 support.index < candidate_index || !candidate.covers(&components[support.index].1)
             });
         if !subsumed {
-            canonical.push(candidate.clone());
+            crate::try_push_vec(&mut canonical, candidate.clone())
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
         }
     }
     Ok(canonical)
@@ -234,25 +263,42 @@ fn cover_s2_shapes(
     // min-level emission, then apportion only the remaining global budget.
     // An adaptive target below that floor remains a guide, not a rejection.
     let component_targets = if min_level == max_level {
-        vec![target_cells; components.len()]
+        let mut targets = Vec::new();
+        crate::try_reserve_vec(&mut targets, components.len())
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
+        for _ in 0..components.len() {
+            crate::try_push_vec(&mut targets, target_cells)
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
+        }
+        targets
     } else {
-        let mut floors = Vec::with_capacity(components.len());
+        let mut floors = Vec::new();
+        crate::try_reserve_vec(&mut floors, components.len())
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
         for component in &components {
-            floors.push(
+            crate::try_push_vec(
+                &mut floors,
                 cover_s2_component(component, min_level, max_level, level_mod, max_cells, 1)?
                     .into_cells()
                     .len(),
-            );
+            )
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
         }
         let floor_total: usize = floors.iter().sum();
         let remaining = target_cells.saturating_sub(floor_total);
         let per_component = remaining / components.len();
         let remainder = remaining % components.len();
-        floors
-            .into_iter()
-            .enumerate()
-            .map(|(index, floor)| floor + per_component + usize::from(index < remainder))
-            .collect()
+        let mut targets = Vec::new();
+        crate::try_reserve_vec(&mut targets, floors.len())
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
+        for (index, floor) in floors.into_iter().enumerate() {
+            crate::try_push_vec(
+                &mut targets,
+                floor + per_component + usize::from(index < remainder),
+            )
+            .map_err(|_| S2ComponentCoverError::Allocation)?;
+        }
+        targets
     };
     let mut tagged = Vec::new();
     let mut unique = (min_level == max_level)
@@ -278,24 +324,34 @@ fn cover_s2_shapes(
                     .map_err(S2ComponentCoverError::Budget)?;
                 unique.insert(cell, interior);
             } else {
-                tagged.push((cell, interior));
+                crate::try_push_vec(&mut tagged, (cell, interior))
+                    .map_err(|_| S2ComponentCoverError::Allocation)?;
             }
         }
     }
 
     if let Some(unique) = unique {
-        tagged = unique.into_iter().collect();
+        tagged = unique
+            .into_iter()
+            .try_fold(Vec::new(), |mut values, item| {
+                crate::try_push_vec(&mut values, item)
+                    .map_err(|_| S2ComponentCoverError::Allocation)?;
+                Ok::<_, S2ComponentCoverError>(values)
+            })?;
     } else {
         tagged.sort_unstable_by_key(|(cell, _)| *cell);
     }
-    let mut merged = Vec::with_capacity(tagged.len());
+    let mut merged = Vec::new();
+    crate::try_reserve_vec(&mut merged, tagged.len())
+        .map_err(|_| S2ComponentCoverError::Allocation)?;
     for (cell, interior) in tagged {
         if let Some((last, last_interior)) = merged.last_mut()
             && *last == cell
         {
             *last_interior |= interior;
         } else {
-            merged.push((cell, interior));
+            crate::try_push_vec(&mut merged, (cell, interior))
+                .map_err(|_| S2ComponentCoverError::Allocation)?;
         }
     }
     Ok(merged)
@@ -340,27 +396,40 @@ fn membership_from_tagged(
     cover_shape: Shape,
     cell_rule: CellRule,
     bbox_visible: Option<Vec<CellId>>,
-) -> Vec<CellId> {
+) -> PyResult<Vec<CellId>> {
+    if cell_rule == CellRule::Bbox {
+        return Ok(bbox_visible.expect("bbox cells were built"));
+    }
+    let mut cells = Vec::new();
+    crate::try_reserve_vec(&mut cells, tagged.len()).map_err(PyErr::from)?;
     match cell_rule {
         // Overlap already builds the annotated product — seed the inspection
         // partition so interior/boundary do not re-cover.
-        CellRule::Overlap => tagged.into_iter().map(|(cell, _)| cell).collect(),
-        CellRule::Bbox => bbox_visible.expect("bbox cells were built"),
-        CellRule::Within => tagged
-            .into_iter()
-            .filter_map(|(cell, interior)| interior.then_some(cell))
-            .collect(),
+        CellRule::Overlap => {
+            for (cell, _) in tagged {
+                crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
+            }
+        },
+        CellRule::Bbox => unreachable!("bbox membership returned before allocation"),
         // Center: interior is a full-cover certificate (source.covers(rect)),
         // so the cell center is covered; only boundary cells probe the cover
         // working shape (split-normalized). Partition stays cold.
-        CellRule::Center => tagged
-            .into_iter()
-            .filter_map(|(cell, interior)| {
-                (interior || cover_shape.covers_point(S2GeomCell::from_id(cell).center_lonlat()))
-                    .then_some(cell)
-            })
-            .collect(),
+        CellRule::Within | CellRule::Center => {
+            for (cell, interior) in tagged {
+                if cell_rule == CellRule::Within && !interior {
+                    continue;
+                }
+                if cell_rule == CellRule::Center
+                    && !(interior
+                        || cover_shape.covers_point(S2GeomCell::from_id(cell).center_lonlat()))
+                {
+                    continue;
+                }
+                crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
+            }
+        },
     }
+    Ok(cells)
 }
 
 /// Build an exact-classified S2 coverage of `geometry` (the
@@ -409,7 +478,9 @@ pub(crate) fn build_coverage(
             .map_err(|_| PyMemoryError::new_err("S2 coverage allocation failed"))?;
         let mut windows = Vec::new();
         for component in &source_components {
-            windows.extend(bbox_cover_windows(component)?);
+            for window in bbox_cover_windows(component)? {
+                crate::try_push_vec(&mut windows, window).map_err(PyErr::from)?;
+            }
         }
         let cells = cover_s2_shapes(
             windows,
@@ -426,8 +497,8 @@ pub(crate) fn build_coverage(
             },
         })?
         .into_iter()
-        .map(|(cell, _)| cell)
-        .collect();
+        .map(|(cell, _)| Ok::<_, PyErr>(cell));
+        let cells = crate::try_collect_results(cells)?;
         (Vec::new(), Some(cells))
     } else {
         let tagged = cover_s2_components(
@@ -447,7 +518,7 @@ pub(crate) fn build_coverage(
         (tagged, None)
     };
 
-    let cells = membership_from_tagged(tagged, cover_shape, cell_rule, bbox_visible);
+    let cells = membership_from_tagged(tagged, cover_shape, cell_rule, bbox_visible)?;
     let _ = budget.max_cells;
     Ok(cells)
 }
@@ -483,14 +554,20 @@ fn push_bounds_windows(
     let north = bounds.maxy();
     if west > east {
         // Antimeridian wrap: cover [west, 180] and [-180, east] separately.
-        out.push(bounds_query_shape(crate::geometry::Bounds::new_unchecked(
-            west, south, 180.0, north,
-        ))?);
-        out.push(bounds_query_shape(crate::geometry::Bounds::new_unchecked(
-            -180.0, south, east, north,
-        ))?);
+        crate::try_push_vec(
+            out,
+            bounds_query_shape(crate::geometry::Bounds::new_unchecked(
+                west, south, 180.0, north,
+            ))?,
+        )?;
+        crate::try_push_vec(
+            out,
+            bounds_query_shape(crate::geometry::Bounds::new_unchecked(
+                -180.0, south, east, north,
+            ))?,
+        )?;
     } else {
-        out.push(bounds_query_shape(bounds)?);
+        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
     }
     Ok(())
 }

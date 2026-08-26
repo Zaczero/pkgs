@@ -12,8 +12,9 @@ use crate::py::cells::s2::{
     s2_cell_array, s2_cell_from_xy, s2_cell_id,
 };
 use crate::py::cells::{
-    Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyResult, Python, Shape,
-    bounding_query_bounds, dispatch_grid_cell_array, grid_cover_dispatch, parse_error, pyfunction,
+    Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyErr, PyResult, Python,
+    Shape, bounding_query_bounds, dispatch_grid_cell_array, grid_cover_dispatch, parse_error,
+    pyfunction,
 };
 /// Build S2 cells from parallel lon/lat columns.
 ///
@@ -157,7 +158,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
             let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
             validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
-                parts.push(shape);
+                crate::try_push(&mut parts, shape)?;
             }
         }
         if parts.is_empty() {
@@ -239,7 +240,11 @@ grid_free_functions! {
 /// the general union, as do antimeridian-straddling edges (caught per edge).
 ///
 pub(crate) fn s2_dissolve(cells: &[CellId]) -> PyResult<Typed> {
-    dissolve_grid_cells::<S2Dissolver>(SortedCells::new(cells.to_vec()))
+    let mut owned = crate::try_vec_with_capacity(cells.len())?;
+    for &cell in cells {
+        crate::try_push(&mut owned, cell)?;
+    }
+    dissolve_grid_cells::<S2Dissolver>(SortedCells::new(owned))
 }
 
 struct S2Dissolver;
@@ -268,18 +273,20 @@ impl GridDissolver for S2Dissolver {
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> Vec<CoordSeq> {
+    ) -> PyResult<Vec<CoordSeq>> {
         let vertices = S2GeomCell::from_id(cell).vertices_lonlat();
-        cell.edge_neighbors()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(k, neighbor)| {
-                if is_member(neighbor) {
-                    return None;
-                }
-                Some(CoordSeq::from_points(&[vertices[k], vertices[(k + 1) % 4]]))
-            })
-            .collect()
+        let mut segments = Vec::new();
+        for (k, neighbor) in cell.edge_neighbors().into_iter().enumerate() {
+            if is_member(neighbor) {
+                continue;
+            }
+            crate::try_push(
+                &mut segments,
+                CoordSeq::try_from_points(&[vertices[k], vertices[(k + 1) % 4]])
+                    .map_err(PyErr::from)?,
+            )?;
+        }
+        Ok(segments)
     }
 
     fn crosses_seam(segment: &CoordSeq) -> bool {
@@ -411,12 +418,11 @@ pub(crate) fn s2_cover(
                 level_mod,
                 cell_rule,
             )?;
-            Ok(
+            crate::try_collect_results(
                 crate::py::cells::coverage_ops::SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
-                    .map(crate::grid::s2::cellid::CellId::raw)
-                    .collect(),
+                    .map(|cell| Ok::<_, pyo3::PyErr>(crate::grid::s2::cellid::CellId::raw(cell))),
             )
         },
     )

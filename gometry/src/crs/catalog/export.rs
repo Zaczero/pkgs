@@ -268,6 +268,25 @@ pub(crate) fn same_with_state(
         right,
         mode: comparison,
     };
+    let hit = CRS_COMPARISON_CACHE.with(|items| {
+        let mut cache = items.borrow_mut();
+        let Some(index) = cache.iter().position(|item| item.key == key) else {
+            return false;
+        };
+        if index + 1 != cache.len() {
+            let entry = cache.remove(index);
+            cache.push(entry);
+        }
+        true
+    });
+    if hit {
+        return CRS_COMPARISON_CACHE.with(|items| {
+            let cache = items.borrow();
+            Ok(cache[cache.len() - 1].value)
+        });
+    }
+    let value = crs_same_uncached(&key.left, &key.right, key.mode, state)?;
+    ensure_thread_caches_current(state);
     CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
         let index = lru_resolve(
@@ -275,7 +294,6 @@ pub(crate) fn same_with_state(
             CRS_COMPARISON_CACHE_CAPACITY,
             |item| item.key == key,
             || {
-                let value = crs_same_uncached(&key.left, &key.right, key.mode, state)?;
                 Ok(CachedCrsComparison {
                     key: key.clone(),
                     value,

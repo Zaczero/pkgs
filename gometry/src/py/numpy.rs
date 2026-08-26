@@ -92,10 +92,11 @@ pub(crate) fn optional_float64_array(
 ) -> PyResult<Py<PyAny>> {
     float64_array(
         py,
-        values
-            .into_iter()
-            .map(|value| value.unwrap_or(f64::NAN))
-            .collect(),
+        crate::try_collect_results(
+            values
+                .into_iter()
+                .map(|value| Ok::<_, pyo3::PyErr>(value.unwrap_or(f64::NAN))),
+        )?,
     )
 }
 
@@ -123,18 +124,22 @@ pub(crate) fn bounds3d_array(
     values: impl IntoIterator<Item = Option<crate::geometry::Bounds3D>>,
 ) -> PyResult<Py<PyAny>> {
     let values = values.into_iter();
-    let mut out = Vec::with_capacity(values.size_hint().0.saturating_mul(6));
+    let mut out = crate::try_vec_with_capacity_hint(values.size_hint().0.saturating_mul(6))?;
     for row in values {
         match row {
             Some(bounds) => {
-                out.push(bounds.minx);
-                out.push(bounds.miny);
-                out.push(bounds.minz);
-                out.push(bounds.maxx);
-                out.push(bounds.maxy);
-                out.push(bounds.maxz);
+                crate::try_push(&mut out, bounds.minx)?;
+                crate::try_push(&mut out, bounds.miny)?;
+                crate::try_push(&mut out, bounds.minz)?;
+                crate::try_push(&mut out, bounds.maxx)?;
+                crate::try_push(&mut out, bounds.maxy)?;
+                crate::try_push(&mut out, bounds.maxz)?;
             },
-            None => out.extend_from_slice(&[f64::NAN; 6]),
+            None => {
+                for _ in 0..6 {
+                    crate::try_push(&mut out, f64::NAN)?;
+                }
+            },
         }
     }
     let rows = out.len() / 6;
@@ -222,5 +227,12 @@ pub(crate) fn usize_array(
     // Row ids come from CPython-visible sequence lengths (`isize`-bounded by
     // the interpreter); converting to NumPy's fixed `int64` index lane is
     // therefore lossless on supported targets.
-    int64_array(py, values.into_iter().map(|value| value as i64).collect())
+    int64_array(
+        py,
+        crate::try_collect_results(
+            values
+                .into_iter()
+                .map(|value| Ok::<_, pyo3::PyErr>(value as i64)),
+        )?,
+    )
 }

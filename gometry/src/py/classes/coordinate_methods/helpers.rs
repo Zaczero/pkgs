@@ -64,10 +64,14 @@ pub(crate) fn interleave_coordseq_ordered(
     seq: &CoordSeq,
     order: &[CoordinateAxis],
     missing: f64,
-) -> Vec<f64> {
+) -> PyResult<Vec<f64>> {
     let rows = seq.len();
     let dims = order.len();
-    let mut data = vec![0.0_f64; rows * dims];
+    let count = rows.checked_mul(dims).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("coordinate matrix size overflows usize")
+    })?;
+    let mut data = crate::try_vec_with_capacity(count)?;
+    data.resize(count, 0.0);
     let xs = seq.xs();
     let ys = seq.ys();
     let zs = seq.zs();
@@ -95,7 +99,7 @@ pub(crate) fn interleave_coordseq_ordered(
             }
         }
     }
-    data
+    Ok(data)
 }
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout
@@ -134,9 +138,13 @@ pub(crate) fn column_axis_to_py(
 ) -> PyResult<Py<PyAny>> {
     let owner = slf.clone().into_any();
     let this = slf.borrow();
-    match this.view.column(axis) {
+    match this.view.column(axis)? {
         coordinates::CoordinateColumnRef::Missing => {
-            float64_array(py, vec![f64::NAN; this.view.len()])
+            let mut values = crate::try_vec_with_capacity(this.view.len())?;
+            for _ in 0..this.view.len() {
+                crate::try_push(&mut values, f64::NAN)?;
+            }
+            float64_array(py, values)
         },
         column => column_ref_to_py(py, owner, column),
     }
@@ -227,19 +235,30 @@ pub(crate) fn get_coordinates(
     let data = if let Some(seq) = view.single_seq()
         && seq.len() == rows
     {
-        interleave_coordseq_ordered(seq, order, f64::NAN)
+        interleave_coordseq_ordered(seq, order, f64::NAN)?
     } else {
-        let mut data = Vec::with_capacity(rows * dims);
-        view.for_each_point(|coord| {
+        let mut data = crate::try_vec_with_capacity(rows.checked_mul(dims).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("coordinate matrix size overflows usize")
+        })?)?;
+        match view.try_for_each_point(&mut |coord| {
             for &axis in order {
-                data.push(coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN));
+                match crate::try_push(
+                    &mut data,
+                    coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN),
+                ) {
+                    Ok(()) => {},
+                    Err(error) => return std::ops::ControlFlow::Break(error),
+                }
             }
-        });
-        data
+            std::ops::ControlFlow::Continue(())
+        }) {
+            std::ops::ControlFlow::Continue(()) => data,
+            std::ops::ControlFlow::Break(error) => return Err(error),
+        }
     };
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {
-        let indexes = crate::py::numpy::int64_array(py, view.row_index_i64())?;
+        let indexes = crate::py::numpy::int64_array(py, view.row_index_i64()?)?;
         Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
     } else {
         Ok(matrix)

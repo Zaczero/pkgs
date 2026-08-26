@@ -101,12 +101,14 @@ fn arc_csr_offsets_from_i32(arc: Arc<[i32]>) -> Arc<[CsrOffset]> {
 
 /// Amortized CSR offset column builder for hot mutators (simplify, densify, …).
 pub(crate) struct CsrOffsetBuilder {
-    ends: Vec<usize>,
+    builder: crate::boundary::CsrBuilder<()>,
 }
 
 impl Default for CsrOffsetBuilder {
     fn default() -> Self {
-        Self { ends: vec![0] }
+        Self {
+            builder: crate::boundary::CsrBuilder::new(),
+        }
     }
 }
 
@@ -121,19 +123,20 @@ impl CsrOffsetBuilder {
         if vertex_index > vertex_cap {
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
-        let last = *self
-            .ends
-            .last()
-            .expect("CSR builder starts with a zero offset");
-        if vertex_index < last {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        }
-        self.ends.push(vertex_index);
-        Ok(())
+        self.builder.push_end(vertex_index)
     }
 
     pub(crate) fn finish(self, vertex_cap: usize) -> Result<CsrOffsetColumn> {
-        CsrOffsetColumn::from_builder_ends(self.ends, vertex_cap)
+        let (_, offsets) = self.builder.finish();
+        let mut ends = Vec::new();
+        crate::boundary::try_reserve_vec(&mut ends, offsets.len())?;
+        for offset in offsets {
+            crate::boundary::try_push_vec(
+                &mut ends,
+                usize::try_from(offset).expect("CSR offsets are non-negative"),
+            )?;
+        }
+        CsrOffsetColumn::from_builder_ends(ends, vertex_cap)
     }
 }
 
@@ -178,10 +181,7 @@ impl<Level> CsrOffsetColumn<Level> {
     /// count for line/`ring_offsets` columns, ring count for `polygon_offsets`.
     pub fn try_new(ends: Vec<usize>, end_cap: usize) -> Result<Self> {
         validate_csr_ends(&ends, end_cap)?;
-        let offsets: Vec<CsrOffset> = ends
-            .into_iter()
-            .map(CsrOffset::try_from_vertex_index)
-            .collect::<Result<_>>()?;
+        let offsets = offsets_from_ends(ends)?;
         Ok(Self {
             offsets: offsets.into(),
             _level: PhantomData,
@@ -198,10 +198,7 @@ impl<Level> CsrOffsetColumn<Level> {
         if ends.last().is_some_and(|&last| last > end_cap) {
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
-        let offsets: Vec<CsrOffset> = ends
-            .into_iter()
-            .map(CsrOffset::try_from_vertex_index)
-            .collect::<Result<_>>()?;
+        let offsets = offsets_from_ends(ends)?;
         Ok(Self {
             offsets: offsets.into(),
             _level: PhantomData,
@@ -246,8 +243,11 @@ impl<Level> CsrOffsetColumn<Level> {
         let len = prefix.len() + tail_rest.len();
         // Fallible i32 materialization: checked_add per tail end so intermediate
         // non-monotonic / overflowing values cannot hit `unchecked_add` UB.
-        let mut out = Vec::with_capacity(len);
-        out.extend_from_slice(prefix);
+        let mut out = Vec::new();
+        crate::boundary::try_reserve_vec(&mut out, len)?;
+        for &offset in prefix {
+            crate::boundary::try_push_vec(&mut out, offset)?;
+        }
         let mut prev = base;
         for &offset in tail_rest {
             let rebased = base
@@ -259,7 +259,7 @@ impl<Level> CsrOffsetColumn<Level> {
             if (rebased as usize) > end_cap {
                 return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
             }
-            out.push(rebased);
+            crate::boundary::try_push_vec(&mut out, rebased)?;
             prev = rebased;
         }
         Ok(Self {
@@ -314,6 +314,15 @@ fn validate_csr_offsets_i32(offsets: &[i32], end_cap: usize) -> Result<()> {
         return Err(GeometryErrorKind::MalformedCsrOffsets.into());
     }
     Ok(())
+}
+
+fn offsets_from_ends(ends: Vec<usize>) -> Result<Arc<[CsrOffset]>> {
+    let mut offsets = Vec::new();
+    crate::boundary::try_reserve_vec(&mut offsets, ends.len())?;
+    for end in ends {
+        crate::boundary::try_push_vec(&mut offsets, CsrOffset::try_from_vertex_index(end)?)?;
+    }
+    Ok(offsets.into())
 }
 
 fn validate_csr_ends(ends: &[usize], vertex_cap: usize) -> Result<()> {

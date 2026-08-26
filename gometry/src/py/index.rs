@@ -538,6 +538,19 @@ impl IndexRows {
         handle
     }
 
+    /// Reserve both persistent columns before mutating either one. Unlike the
+    /// disposable-output helpers, a failed reserve must leave an existing
+    /// index intact, so this deliberately preserves the current buffers.
+    fn try_reserve(&mut self, additional: usize) -> PyResult<()> {
+        self.boxed.try_reserve(additional).map_err(|_| {
+            pyo3::exceptions::PyMemoryError::new_err("failed to grow spatial index rows")
+        })?;
+        self.live.try_reserve(additional).map_err(|_| {
+            pyo3::exceptions::PyMemoryError::new_err("failed to grow spatial index liveness")
+        })?;
+        Ok(())
+    }
+
     fn is_live(&self, handle: usize) -> bool {
         self.live.get(handle).copied().unwrap_or(false)
     }

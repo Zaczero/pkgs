@@ -15,7 +15,7 @@
 //! class directly (`GeometryError::new_err(...)`, `parse_error(...)`).
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
+use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyType};
@@ -402,6 +402,10 @@ impl From<Error> for PyErr {
                 F::EpochRequiresCrs | F::EpochRequiresDynamicCrs { .. } => {
                     CRSError::new_err(message)
                 },
+            },
+            ErrorKind::Resource(kind) => match kind {
+                crate::error::ResourceError::Allocation => PyMemoryError::new_err(message),
+                crate::error::ResourceError::SizeOverflow => PyOverflowError::new_err(message),
             },
         }
     }

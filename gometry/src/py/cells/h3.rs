@@ -52,8 +52,12 @@ pub(super) fn compact_cells(
 pub(super) fn uncompact_cells_unlimited(
     cells: Vec<CellIndex>,
     resolution: Resolution,
-) -> Vec<CellIndex> {
-    CellIndex::uncompact(cells, resolution).collect()
+) -> PyResult<Vec<CellIndex>> {
+    let mut out = Vec::new();
+    for cell in CellIndex::uncompact(cells, resolution) {
+        crate::try_push(&mut out, cell)?;
+    }
+    Ok(out)
 }
 
 pub(super) fn dissolve_cells(cells: Vec<CellIndex>) -> PyResult<Typed> {

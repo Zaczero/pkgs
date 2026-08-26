@@ -6,72 +6,68 @@ use crate::py::index::{
 };
 pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
     let metadata = index_metadata(&items)?;
-    Ok(spatial_index_rows(
-        items.into_iter().map(Some).collect(),
+    spatial_index_rows(
+        crate::try_collect_results(items.into_iter().map(|item| Ok(Some(item))))?,
         metadata,
-    ))
+    )
 }
 
 /// Build over a sparse row table. ``None`` rows retain their input position as
 /// a permanently non-live handle, so every reported handle remains an original
 /// row id even when missing rows are skipped.
-fn spatial_index_rows(items: Vec<Option<PyGeometry>>, metadata: Option<Frame>) -> PySpatialIndex {
+fn spatial_index_rows(
+    items: Vec<Option<PyGeometry>>,
+    metadata: Option<Frame>,
+) -> PyResult<PySpatialIndex> {
     let geographic = metadata
         .as_ref()
         .is_some_and(crate::geometry::is_geographic_frame);
-    let entries = items
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, item)| {
+    let entries =
+        crate::try_collect_results(items.iter().enumerate().filter_map(|(idx, item)| {
             item.as_ref().and_then(|item| {
                 item.shape.bounds().map(|bounds| {
                     let envelope = index_envelope(item.shape.shape(), bounds, geographic);
-                    IndexEntry { idx, envelope }
+                    Ok(IndexEntry { idx, envelope })
                 })
             })
-        })
-        .collect();
+        }))?;
     let non_prunable_live = items
         .iter()
         .flatten()
         .filter(|item| item.shape.bounds().is_some() && !geodesic_prunable_point(&item.shape))
         .count();
-    let live = items
-        .iter()
-        .map(|item| {
+    let live = crate::try_collect_results(items.iter().map(|item| {
+        Ok::<_, pyo3::PyErr>(
             item.as_ref()
-                .is_some_and(|item| item.shape.bounds().is_some())
-        })
-        .collect();
+                .is_some_and(|item| item.shape.bounds().is_some()),
+        )
+    }))?;
     // `total_rows` spans every input row (incl. skipped empties) so the
     // tombstone bitmap and tree/overflow handle boundary stay aligned to the
     // boxed row positions the query results index into.
     let total_rows = items.len();
     let placeholder_frame = metadata.clone().unwrap_or_default();
-    let rows = items
-        .into_iter()
-        .map(|item| {
-            item.unwrap_or_else(|| {
-                PyGeometry::with_frame(
-                    PyGeometryArray::missing_placeholder(),
-                    placeholder_frame.clone(),
-                )
-            })
-        })
-        .collect();
-    PySpatialIndex {
+    let rows = crate::try_collect_results(items.into_iter().map(|item| {
+        Ok::<_, pyo3::PyErr>(item.unwrap_or_else(|| {
+            PyGeometry::with_frame(
+                PyGeometryArray::missing_placeholder(),
+                placeholder_frame.clone(),
+            )
+        }))
+    }))?;
+    Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
             boxed: rows,
             live,
         },
-        bulk: StaticStrTree::build(entries, total_rows),
+        bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         overflow: RTree::new(),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,
-    }
+    })
 }
 
 /// The column-direct index over a packed point or line array — entries
@@ -84,17 +80,18 @@ fn spatial_index_rows(items: Vec<Option<PyGeometry>>, metadata: Option<Frame>) -
 /// empty-geometry error.
 pub(crate) fn bounds_index_entries(
     bounds: &crate::array::ElementBounds,
-) -> Option<Vec<IndexEntry>> {
-    bounds
-        .iter()
-        .enumerate()
-        .map(|(idx, row_bounds)| {
-            row_bounds.as_ref().copied().map(|bounds| IndexEntry {
-                idx,
-                envelope: bounds_envelope(bounds),
-            })
-        })
-        .collect()
+) -> PyResult<Option<Vec<IndexEntry>>> {
+    let mut entries = Vec::new();
+    for (idx, row_bounds) in bounds.iter().enumerate() {
+        let Some(bounds) = row_bounds.as_ref().copied() else {
+            return Ok(None);
+        };
+        crate::try_push(&mut entries, IndexEntry {
+            idx,
+            envelope: bounds_envelope(bounds),
+        })?;
+    }
+    Ok(Some(entries))
 }
 
 /// Widen antimeridian-crossing rows of a geographic packed array to the
@@ -115,24 +112,23 @@ fn widen_crossing_entries(array: &PyGeometryArray, entries: &mut [IndexEntry]) {
     }
 }
 
-pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> Option<PySpatialIndex> {
+pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<PySpatialIndex>> {
     match array.storage() {
         GeometryArrayStorage::Points { coords, row_map } => {
             if coords.is_empty() {
-                return None;
+                return Ok(None);
             }
             let map = row_map.as_deref();
             let len = crate::array::point_logical_len(coords, map);
             let geographic = crate::geometry::is_geographic_frame(&array.frame);
-            let entries: Vec<IndexEntry> = (0..len)
-                .map(|logical| {
-                    let point = coords.point_at(crate::array::physical_row(map, logical));
-                    IndexEntry {
-                        idx: logical,
-                        envelope: point_index_envelope(point, geographic),
-                    }
-                })
-                .collect();
+            let mut entries = Vec::new();
+            for logical in 0..len {
+                let point = coords.point_at(crate::array::physical_row(map, logical));
+                crate::try_push(&mut entries, IndexEntry {
+                    idx: logical,
+                    envelope: point_index_envelope(point, geographic),
+                })?;
+            }
             let non_prunable_live = (0..len)
                 .filter(|&logical| {
                     let point = coords.point_at(crate::array::physical_row(map, logical));
@@ -140,47 +136,57 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> Option<PySpatialI
                 })
                 .count();
             let total_rows = entries.len();
-            Some(PySpatialIndex {
+            let mut live = Vec::new();
+            crate::try_reserve_vec(&mut live, total_rows).map_err(pyo3::PyErr::from)?;
+            live.resize(total_rows, true);
+            Ok(Some(PySpatialIndex {
                 rows: IndexRows {
                     packed: Some(PackedStore {
                         source: array.clone(),
                     }),
                     boxed: Vec::new(),
-                    live: vec![true; total_rows],
+                    live,
                 },
-                bulk: StaticStrTree::build_dense(entries),
+                bulk: StaticStrTree::build_dense(entries).map_err(pyo3::PyErr::from)?,
                 overflow: RTree::new(),
                 geodesic_caps: std::sync::Mutex::default(),
                 mutation_gen: 0,
                 metadata: Some(array.frame.clone()),
                 non_prunable_live,
-            })
+            }))
         },
         GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. } => {
-            let bounds = array.cached_element_bounds()?;
+            let Some(bounds) = array.cached_element_bounds() else {
+                return Ok(None);
+            };
             if bounds.is_empty() {
-                return None;
+                return Ok(None);
             }
-            let mut entries = bounds_index_entries(&bounds)?;
+            let Some(mut entries) = bounds_index_entries(&bounds)? else {
+                return Ok(None);
+            };
             widen_crossing_entries(array, &mut entries);
             let total_rows = entries.len();
-            Some(PySpatialIndex {
+            let mut live = Vec::new();
+            crate::try_reserve_vec(&mut live, total_rows).map_err(pyo3::PyErr::from)?;
+            live.resize(total_rows, true);
+            Ok(Some(PySpatialIndex {
                 rows: IndexRows {
                     packed: Some(PackedStore {
                         source: array.clone(),
                     }),
                     boxed: Vec::new(),
-                    live: vec![true; total_rows],
+                    live,
                 },
-                bulk: StaticStrTree::build_dense(entries),
+                bulk: StaticStrTree::build_dense(entries).map_err(pyo3::PyErr::from)?,
                 overflow: RTree::new(),
                 geodesic_caps: std::sync::Mutex::default(),
                 mutation_gen: 0,
                 metadata: Some(array.frame.clone()),
                 non_prunable_live: total_rows,
-            })
+            }))
         },
-        GeometryArrayStorage::Mixed(_) => None,
+        GeometryArrayStorage::Mixed(_) => Ok(None),
     }
 }
 
@@ -192,20 +198,20 @@ pub(crate) fn build_spatial_index(values: &Bound<'_, PyAny>) -> PyResult<PySpati
     }
     if let Some(array) = exact_geometry_array(values) {
         if !array.has_missing()
-            && let Some(index) = packed_spatial_index(array)
+            && let Some(index) = packed_spatial_index(array)?
         {
             return Ok(index);
         }
-        let rows: Vec<Option<PyGeometry>> = array
-            .masked_storage_rows()
-            .enumerate()
-            .map(|(index, (missing, row))| {
-                (!missing).then(|| {
-                    let shape = array.prepared_row(index, row).into_owned_data();
-                    PyGeometry::with_frame(shape, array.frame.clone())
-                })
-            })
-            .collect();
+        let rows = crate::try_collect_results(array.masked_storage_rows().enumerate().map(
+            |(index, (missing, row))| {
+                (!missing)
+                    .then(|| {
+                        let shape = array.prepared_row(index, row).into_owned_data();
+                        PyGeometry::with_frame(shape, array.frame.clone())
+                    })
+                    .map_or_else(|| Ok(None), |geometry| Ok(Some(geometry)))
+            },
+        ))?;
         // Frame is adopted only when at least one non-missing geometry is
         // present. A zero-row OR all-missing source leaves the index
         // frame-FREE (adopted by the first successful insert) — locking an
@@ -216,7 +222,7 @@ pub(crate) fn build_spatial_index(values: &Bound<'_, PyAny>) -> PyResult<PySpati
             .iter()
             .any(Option::is_some)
             .then(|| array.frame.clone());
-        return Ok(spatial_index_rows(rows, metadata));
+        return spatial_index_rows(rows, metadata);
     }
 
     let raw_items = crate::collect_py_iter(values, Ok)?;
@@ -227,37 +233,36 @@ pub(crate) fn build_spatial_index(values: &Bound<'_, PyAny>) -> PyResult<PySpati
                 true,
                 crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
             )?
-            .into_items(),
+            .into_items()?,
         );
     }
-    let present: Vec<_> = raw_items
-        .iter()
-        .filter(|item| !item.is_none())
-        .cloned()
-        .collect();
+    let present = crate::try_collect_results(
+        raw_items
+            .iter()
+            .filter(|item| !item.is_none())
+            .map(|item| Ok::<_, pyo3::PyErr>(item.clone())),
+    )?;
     let present = crate::coerce_collected_geometry_items(
         &present,
         true,
         crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
     )?
-    .into_items();
+    .into_items()?;
     let metadata = index_metadata(&present)?;
     let mut present = present.into_iter();
-    let rows = raw_items
-        .into_iter()
-        .map(|item| {
-            if item.is_none() {
-                None
-            } else {
-                Some(
-                    present
-                        .next()
-                        .expect("present rows were coerced from the same input mask"),
-                )
-            }
-        })
-        .collect();
-    Ok(spatial_index_rows(rows, metadata))
+    let rows = crate::try_collect_results(raw_items.into_iter().map(|item| {
+        let row = if item.is_none() {
+            None
+        } else {
+            Some(
+                present
+                    .next()
+                    .expect("present rows were coerced from the same input mask"),
+            )
+        };
+        Ok::<_, pyo3::PyErr>(row)
+    }))?;
+    spatial_index_rows(rows, metadata)
 }
 
 pub(crate) fn restore_spatial_index(
@@ -281,7 +286,8 @@ pub(crate) fn restore_spatial_index(
     }
     let total_rows = rows.len();
     let geographic = crate::geometry::is_geographic_frame(&values.frame);
-    let mut seen = vec![false; total_rows];
+    let mut seen = crate::try_vec_with_capacity(total_rows)?;
+    seen.resize(total_rows, false);
     let mut entries = crate::try_vec_with_capacity_hint(live_handles.len())?;
     let mut non_prunable_live = 0;
     for &handle in live_handles {
@@ -315,7 +321,7 @@ pub(crate) fn restore_spatial_index(
             boxed: rows,
             live: seen,
         },
-        bulk: StaticStrTree::build(entries, total_rows),
+        bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         overflow: RTree::new(),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
@@ -374,20 +380,20 @@ mod ownership_tests {
 
     #[test]
     fn packed_sources_are_indexed_without_build_time_boxes() {
-        let point_index = packed_spatial_index(&points()).unwrap();
+        let point_index = packed_spatial_index(&points()).unwrap().unwrap();
         assert!(point_index.rows.packed.is_some());
         assert!(point_index.rows.boxed.is_empty());
 
-        let line_index = packed_spatial_index(&long_lines()).unwrap();
+        let line_index = packed_spatial_index(&long_lines()).unwrap().unwrap();
         assert!(line_index.rows.packed.is_some());
         assert!(line_index.rows.boxed.is_empty());
 
-        let polygon_index = packed_spatial_index(&polygons()).unwrap();
+        let polygon_index = packed_spatial_index(&polygons()).unwrap().unwrap();
         assert!(polygon_index.rows.packed.is_some());
         assert!(polygon_index.rows.boxed.is_empty());
 
         let source = points();
-        let mut index = packed_spatial_index(&source).unwrap();
+        let mut index = packed_spatial_index(&source).unwrap().unwrap();
         let inserted = index.rows.packed.as_ref().unwrap().source.clone();
         let handles = index.insert_array(&inserted).unwrap();
         assert_eq!(handles, [2, 3]);
@@ -397,7 +403,7 @@ mod ownership_tests {
     #[test]
     fn packed_index_and_source_share_the_persistent_row_arc() {
         let source = long_lines();
-        let index = packed_spatial_index(&source).unwrap();
+        let index = packed_spatial_index(&source).unwrap().unwrap();
         let source_arc = match source.prepared_row(0, source.storage().row(0)) {
             crate::array::PreparedRow::Shared(data) => Arc::clone(data),
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
@@ -405,7 +411,7 @@ mod ownership_tests {
         let indexed_arc = index.rows.prepared_row(0).into_owned_data();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
-        let inverse = packed_spatial_index(&source).unwrap();
+        let inverse = packed_spatial_index(&source).unwrap().unwrap();
         let indexed_first = inverse.rows.prepared_row(0).into_owned_data();
         let source_second = source
             .prepared_row(0, source.storage().row(0))

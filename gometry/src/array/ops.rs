@@ -7,6 +7,7 @@
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
 //! delegates on `GeometryArray`.
 
+use pyo3::exceptions::PyOverflowError;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
@@ -32,17 +33,16 @@ impl PyGeometryArray {
         match self.missing() {
             None => rows.into_py_any(py),
             Some(mask) => {
-                let rows: Vec<Py<PyAny>> = rows
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row, value)| {
-                        if mask[row] {
-                            Ok(py.None())
-                        } else {
-                            value.into_py_any(py)
-                        }
-                    })
-                    .collect::<PyResult<_>>()?;
+                let mut output = Vec::new();
+                for (row, value) in rows.into_iter().enumerate() {
+                    let value = if mask[row] {
+                        py.None()
+                    } else {
+                        value.into_py_any(py)?
+                    };
+                    crate::try_push(&mut output, value)?;
+                }
+                let rows = output;
                 rows.into_py_any(py)
             },
         }
@@ -119,7 +119,7 @@ impl PyGeometryArray {
         } else {
             None
         };
-        let mut output: Vec<Py<PyBytes>> = Vec::with_capacity(len);
+        let mut output: Vec<Py<PyBytes>> = crate::try_vec_with_capacity(len)?;
         let mut next_row = 0_usize;
         while next_row < len {
             let storage = Arc::clone(self.storage_arc());
@@ -144,7 +144,10 @@ impl PyGeometryArray {
                                 })
                                 .map_err(|error| (row, error))?;
                             }
-                            ends.push(buffer.len());
+                            if let Err(error) = crate::try_push_vec(&mut ends, buffer.len()) {
+                                drop(buffer);
+                                return Err((row, error));
+                            }
                             if buffer.len() >= FLUSH_BYTES {
                                 break;
                             }
@@ -153,13 +156,18 @@ impl PyGeometryArray {
                     },
                 )
                 .map_err(rows_err)?;
-            next_row = start_row + ends.len();
+            next_row = start_row
+                .checked_add(ends.len())
+                .ok_or_else(|| PyOverflowError::new_err("WKB row count overflows usize"))?;
             let mut start = 0;
-            output.extend(ends.into_iter().map(|end| {
+            for end in ends {
                 let bytes = PyBytes::new(py, &buffer[start..end]).unbind();
                 start = end;
-                bytes
-            }));
+                if let Err(error) = crate::try_push_vec(&mut output, bytes) {
+                    drop(buffer);
+                    return Err(pyo3::PyErr::from(error));
+                }
+            }
         }
         Ok(output)
     }
@@ -183,47 +191,47 @@ impl PyGeometryArray {
         let geographic = self.crs_str().is_some();
         Ok(if include_z {
             py.detach(move || {
-                shapes
-                    .iter_shapes()
-                    .enumerate()
-                    .map(|(row, shape)| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            Ok(String::new())
-                        } else {
-                            io::to_geojson_string::<true>(&shape, geographic)
-                        }
-                    })
-                    .collect::<crate::error::Result<Vec<String>>>()
+                let mut out = Vec::new();
+                for (row, shape) in shapes.iter_shapes().enumerate() {
+                    let value = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        String::new()
+                    } else {
+                        io::to_geojson_string::<true>(&shape, geographic)?
+                    };
+                    crate::boundary::try_push_vec(&mut out, value)?;
+                }
+                Ok::<Vec<String>, crate::error::Error>(out)
             })?
         } else {
             py.detach(move || {
-                shapes
-                    .iter_shapes()
-                    .enumerate()
-                    .map(|(row, shape)| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            Ok(String::new())
-                        } else {
-                            io::to_geojson_string::<false>(&shape, geographic)
-                        }
-                    })
-                    .collect::<crate::error::Result<Vec<String>>>()
+                let mut out = Vec::new();
+                for (row, shape) in shapes.iter_shapes().enumerate() {
+                    let value = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        String::new()
+                    } else {
+                        io::to_geojson_string::<false>(&shape, geographic)?
+                    };
+                    crate::boundary::try_push_vec(&mut out, value)?;
+                }
+                Ok::<Vec<String>, crate::error::Error>(out)
             })?
         })
     }
 
-    pub(crate) fn validate_impl(&self) -> Vec<Option<PyValidationReport>> {
+    pub(crate) fn validate_impl(&self) -> PyResult<Vec<Option<PyValidationReport>>> {
         let geographic = geometry::is_geographic_frame(&self.frame);
-        (0..self.storage().len())
-            .map(|index| {
-                if self.is_row_missing(index) {
-                    return None;
-                }
+        let mut reports = Vec::new();
+        for index in 0..self.storage().len() {
+            let report = if self.is_row_missing(index) {
+                None
+            } else {
                 let geometry = self.geometry_at(index);
                 let issue = crate::geometry::validate_data_in_frame(&geometry.shape, geographic);
                 Some(PyValidationReport { geometry, issue })
-            })
-            .collect()
+            };
+            crate::try_push(&mut reports, report)?;
+        }
+        Ok(reports)
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {
@@ -233,19 +241,22 @@ impl PyGeometryArray {
         let repaired = py
             .detach(move || {
                 let mut all_present_valid = true;
-                let mut shapes = Vec::with_capacity(storage.len());
+                let mut shapes = Vec::new();
                 for (row, shape) in storage.iter_shapes().enumerate() {
                     if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        shapes.push(shape.into_owned());
+                        crate::boundary::try_push_vec(&mut shapes, shape.into_owned())
+                            .map_err(|error| (row, error))?;
                         continue;
                     }
                     match geometry::repair_shape_in_frame(&shape, geographic, method)
                         .map_err(|error| (row, error))?
                     {
-                        None => shapes.push(shape.into_owned()),
+                        None => crate::boundary::try_push_vec(&mut shapes, shape.into_owned())
+                            .map_err(|error| (row, error))?,
                         Some(repaired) => {
                             all_present_valid = false;
-                            shapes.push(repaired);
+                            crate::boundary::try_push_vec(&mut shapes, repaired)
+                                .map_err(|error| (row, error))?;
                         },
                     }
                 }
@@ -541,7 +552,7 @@ impl PyGeometryArray {
                     pairs,
                     self.frame.clone(),
                     missing,
-                ));
+                )?);
             }
             let missing_rows = missing.clone();
             let pairs = py
@@ -567,7 +578,7 @@ impl PyGeometryArray {
                 pairs,
                 self.frame.clone(),
                 missing,
-            ));
+            )?);
         }
         Err(expected_geometry_or_array())
     }
@@ -669,8 +680,8 @@ impl PyGeometryArray {
                 budget.add(usize::try_from(count.get(row)).expect("validated non-negative"))?;
             }
         }
-        let mut shapes = Vec::with_capacity(budget.used());
-        let mut offsets = vec![0_i64];
+        let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
+            .map_err(pyo3::PyErr::from)?;
         for (row, (is_missing, shape)) in self.masked_shape_rows().enumerate() {
             // An empty row yields an empty group rather than aborting: the
             // columnar contract is that one bad row never fails the batch. The
@@ -687,16 +698,22 @@ impl PyGeometryArray {
                     I64Param::Scalar(value) => row_sample_seed(*value as u64, row),
                     I64Param::PerElement(values) => row_sample_seed(values[row] as u64, 0),
                 };
-                shapes.extend(
-                    shape
-                        .sample_points(count, seed)
-                        .map_err(|error| note_array_row(error.into(), row))?
-                        .into_iter()
-                        .map(Shape::Point),
-                );
+                builder
+                    .push_row(
+                        shape
+                            .sample_points(count, seed)
+                            .map_err(|error| note_array_row(error.into(), row))?
+                            .into_iter()
+                            .map(Shape::Point),
+                    )
+                    .map_err(|error| note_array_row(error.into(), row))?;
+            } else {
+                builder
+                    .push_row(std::iter::empty())
+                    .map_err(|error| note_array_row(error.into(), row))?;
             }
-            offsets.push(shapes.len() as i64);
         }
+        let (shapes, offsets) = builder.finish();
         crate::py::vectors::Groups::from_geometry_flat(
             Self::from_shapes(shapes, self.frame.clone()),
             offsets,

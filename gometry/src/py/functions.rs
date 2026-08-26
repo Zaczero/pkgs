@@ -13,7 +13,7 @@ pub(crate) use geocode::{
 pub(crate) use geometry_io::{
     _unpickle_geometry, _unpickle_geometry_array, _unpickle_line_array, _unpickle_point_array,
     _unpickle_polygon_array, f64_column_le_bytes, from_features, from_geojson, from_wkb, from_wkt,
-    to_feature, to_feature_collection, usize_row_map_le_bytes,
+    i32_column_le_bytes, to_feature, to_feature_collection, usize_row_map_le_bytes,
 };
 pub(crate) use overlay::{
     OverlayOp, coverage_clean, coverage_invalid_edges, coverage_is_valid, coverage_simplify,

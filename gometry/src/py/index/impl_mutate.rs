@@ -9,10 +9,13 @@ use crate::py::index::{
 };
 
 impl PySpatialIndex {
-    pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
-        let mut handles: Vec<usize> = self.live_entries().map(|entry| entry.idx).collect();
+    pub(crate) fn live_handles_sorted(&self) -> PyResult<Vec<usize>> {
+        let mut handles = crate::try_collect_results(
+            self.live_entries()
+                .map(|entry| Ok::<_, pyo3::PyErr>(entry.idx)),
+        )?;
         sort_row_ids(&mut handles, self.rows.len());
-        handles
+        Ok(handles)
     }
 
     pub(crate) fn is_live_handle(&self, handle: usize) -> bool {
@@ -62,11 +65,13 @@ impl PySpatialIndex {
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
             index_envelope(geometry.shape.shape(), bounds, geographic)
         };
-        // The geometry is indexable — adopt the frame on the first insert, commit.
+        let idx = self.rows.len();
+        self.rows.try_reserve(1)?;
+        // The geometry is indexable — adopt the frame only after all fallible
+        // preparation for this mutation has succeeded.
         if self.metadata.is_none() {
             self.metadata = Some(geometry.frame.clone());
         }
-        let idx = self.rows.len();
         self.overflow.insert(IndexEntry { idx, envelope });
         self.non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         self.rows.push(geometry.clone());
@@ -88,20 +93,27 @@ impl PySpatialIndex {
             .or(self.metadata.as_ref())
             .is_some_and(crate::geometry::is_geographic_frame);
         let start = self.rows.len();
-        let mut entries = Vec::with_capacity(items.len());
+        let mut entries = Vec::new();
+        if let Err(error) = crate::try_reserve_vec(&mut entries, items.len()) {
+            drop(items);
+            return Err(pyo3::PyErr::from(error));
+        }
         let mut non_prunable_live = 0;
         for (offset, geometry) in items.iter().enumerate() {
             let bounds = geometry
                 .shape
                 .bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            entries.push(IndexEntry {
+            if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
                 idx: start + offset,
                 envelope: insert_envelope(ShapeRow::Handle(&geometry.shape), bounds, geographic),
-            });
+            }) {
+                drop(items);
+                return Err(pyo3::PyErr::from(error));
+            }
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         }
-        Ok(self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame))
+        self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame)
     }
 
     pub(crate) fn insert_array(&mut self, array: &PyGeometryArray) -> PyResult<Vec<usize>> {
@@ -122,22 +134,34 @@ impl PySpatialIndex {
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
         let geographic = crate::geometry::is_geographic_frame(&array.frame);
         let start = self.rows.len();
-        let mut entries = Vec::with_capacity(len);
-        let mut items = Vec::with_capacity(len);
+        let mut entries = Vec::new();
+        let mut items = Vec::new();
+        if let Err(error) = crate::try_reserve_pair(&mut entries, &mut items, len) {
+            return Err(pyo3::PyErr::from(error));
+        }
         let mut non_prunable_live = 0;
         for (offset, row) in array.storage().iter_rows().enumerate() {
             let bounds = row
                 .quick_bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            entries.push(IndexEntry {
+            if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
                 idx: start + offset,
                 envelope: insert_envelope(row, bounds, geographic),
-            });
+            }) {
+                drop(items);
+                return Err(pyo3::PyErr::from(error));
+            }
             let shape = array.prepared_row(offset, row).into_owned_data();
             non_prunable_live += usize::from(!geodesic_prunable_point(shape.shape()));
-            items.push(PyGeometry::with_frame(shape, array.frame.clone()));
+            if let Err(error) = crate::try_push_vec(
+                &mut items,
+                PyGeometry::with_frame(shape, array.frame.clone()),
+            ) {
+                drop(entries);
+                return Err(pyo3::PyErr::from(error));
+            }
         }
-        Ok(self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame))
+        self.insert_prepared_batch(items, entries, non_prunable_live, adopt_frame)
     }
 
     pub(crate) fn check_insert_frame(&self, frame: &Frame) -> PyResult<()> {
@@ -156,10 +180,15 @@ impl PySpatialIndex {
         entries: Vec<IndexEntry>,
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
-    ) -> Vec<usize> {
+    ) -> PyResult<Vec<usize>> {
         debug_assert_eq!(items.len(), entries.len());
         let start = self.rows.len();
         let count = items.len();
+        let mut handles = crate::try_vec_with_capacity(count)?;
+        for offset in 0..count {
+            crate::try_push(&mut handles, start + offset)?;
+        }
+        self.rows.try_reserve(count)?;
         if let Some(frame) = adopt_frame {
             self.metadata = Some(frame);
         }
@@ -176,7 +205,7 @@ impl PySpatialIndex {
         }
         self.non_prunable_live += non_prunable_live;
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
-        (start..start + count).collect()
+        Ok(handles)
     }
 }
 

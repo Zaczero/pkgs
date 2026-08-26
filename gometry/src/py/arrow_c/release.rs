@@ -166,7 +166,14 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
         if private.is_null() {
             return -1;
         }
-        ptr::write(out, *(*private).schema.clone().into_schema());
+        let schema = match (*private).schema.clone().into_schema() {
+            Ok(schema) => schema,
+            Err(_) => {
+                (*private).last_error = c"failed to materialize Arrow schema";
+                return -1;
+            },
+        };
+        ptr::write(out, *schema);
     }
     0
 }
@@ -210,8 +217,8 @@ pub(crate) unsafe extern "C" fn stream_get_last_error(
     if stream.is_null() {
         return ptr::null();
     }
-    // SAFETY: `last_error` is owned by `StreamPrivate` and lives until stream
-    // release.
+    // SAFETY: `last_error` is stored in `StreamPrivate` and points to static
+    // text, so it remains valid until stream release.
     unsafe {
         let private = (*stream).private_data.cast::<StreamPrivate>();
         if private.is_null() {

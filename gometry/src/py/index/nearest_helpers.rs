@@ -6,8 +6,8 @@ use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
 use crate::py::index::{
-    AABB, BinaryHeap, IndexEntry, Ordering, ParentNode, PointDistance, Py, PyAny, PyResult, Python,
-    RTreeNode, RTreeObject, float64_array, int64_array,
+    AABB, BinaryHeap, IndexEntry, Ordering, ParentNode, PointDistance, Py, PyAny, PyErr, PyResult,
+    Python, RTreeNode, RTreeObject, float64_array, int64_array,
 };
 use crate::py::vectors::Groups;
 /// A frontier node of the best-first nearest traversal — a bulk STR node
@@ -132,9 +132,9 @@ pub(crate) fn push_nearest_candidate(
     nearest: &mut BinaryHeap<NearestCandidate>,
     k: usize,
     candidate: NearestCandidate,
-) {
+) -> PyResult<()> {
     if nearest.len() < k {
-        nearest.push(candidate);
+        crate::try_push_heap(nearest, candidate).map_err(PyErr::from)?;
     } else if let Some(mut worst) = nearest.peek_mut() {
         // Replace-in-place via peek_mut (one sift) instead of pop+push (two).
         // Kept only when the public nearest row improves beyond noise.
@@ -142,6 +142,7 @@ pub(crate) fn push_nearest_candidate(
             *worst = candidate;
         }
     }
+    Ok(())
 }
 
 /// Squared box-to-box distance between two axis-aligned envelopes (0 when they
@@ -179,14 +180,14 @@ pub(crate) fn parse_max_distance(max_distance: Option<f64>) -> PyResult<Option<N
 /// hand-off into `Groups`/join columns.
 pub(crate) struct RowMatches {
     pub(crate) ids: Vec<usize>,
-    pub(crate) offsets: Vec<usize>,
+    pub(crate) offsets: Vec<i64>,
 }
 
 impl RowMatches {
     pub(crate) fn rows(&self) -> impl Iterator<Item = &[usize]> {
         self.offsets
             .array_windows::<2>()
-            .map(|[start, end]| &self.ids[*start..*end])
+            .map(|[start, end]| &self.ids[*start as usize..*end as usize])
     }
 }
 
@@ -214,7 +215,7 @@ pub(crate) fn retain_row(
 pub(crate) fn format_nearest_rows(
     py: Python<'_>,
     ids: Vec<usize>,
-    offsets: Vec<usize>,
+    offsets: Vec<i64>,
     distances: Vec<f64>,
     return_distance: bool,
 ) -> PyResult<Py<PyAny>> {
@@ -231,12 +232,16 @@ pub(crate) fn format_nearest(
     candidates: Vec<NearestCandidate>,
     return_distance: bool,
 ) -> PyResult<Py<PyAny>> {
-    let mut ids = Vec::with_capacity(candidates.len());
-    let mut distances = Vec::with_capacity(usize::from(return_distance) * candidates.len());
+    let mut ids = crate::try_vec_with_capacity(candidates.len())?;
+    let mut distances = if return_distance {
+        crate::try_vec_with_capacity(candidates.len())?
+    } else {
+        Vec::new()
+    };
     for candidate in candidates {
-        ids.push(candidate.idx as i64);
+        crate::try_push(&mut ids, candidate.idx as i64)?;
         if return_distance {
-            distances.push(candidate.distance);
+            crate::try_push(&mut distances, candidate.distance)?;
         }
     }
     let ids = int64_array(py, ids)?;
@@ -248,13 +253,17 @@ pub(crate) fn format_nearest(
 }
 
 /// Every leaf id beneath `parent`, in tree order.
-pub(crate) fn collect_subtree_ids(parent: &ParentNode<IndexEntry>, out: &mut Vec<usize>) {
+pub(crate) fn collect_subtree_ids(
+    parent: &ParentNode<IndexEntry>,
+    out: &mut Vec<usize>,
+) -> crate::error::Result<()> {
     for child in parent.children() {
         match child {
-            RTreeNode::Parent(parent) => collect_subtree_ids(parent, out),
-            RTreeNode::Leaf(entry) => out.push(entry.idx),
+            RTreeNode::Parent(parent) => collect_subtree_ids(parent, out)?,
+            RTreeNode::Leaf(entry) => crate::try_push_vec(out, entry.idx)?,
         }
     }
+    Ok(())
 }
 
 impl RTreeObject for IndexEntry {

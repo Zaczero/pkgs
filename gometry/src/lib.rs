@@ -44,6 +44,30 @@ use boundary::{
     try_reserve_hint, try_string_from_str, try_vec_with_capacity, try_vec_with_capacity_hint,
     validate_lonlat_shape, validate_subdivide_max_vertices, wgs84_crs, with_one_byte_buffer,
 };
+use boundary::{
+    CoordinateInput, CrsCoordinateArgs, CsrBuilder, DefaultedF64Input, DefaultedI64Input, F64Param,
+    Frame, FrameAdoption, FrameEdit, FrameError, GeometryTransformFrame, GridOrigin, I64Param,
+    OriginSpec, Zt, ZtLaneRefs, ZtLanes, ZtValues, accuracy_option, angle_radians,
+    broadcast_coordinate_group, broadcast_coordinate_input, broadcast_crs_coordinate_inputs,
+    buffer_copy_to_slice_u64, buffer_to_vec_u64, cdt_refinement_values, checked_length_sum,
+    collect_bool_mask, collect_bytes_rows, collect_i64_sequence, collect_py_iter,
+    collect_py_iter_exact, collect_py_strings, collect_sequence_items, collect_u64_sequence,
+    collect_usize_sequence, coordinate_arc_values, coordinate_arc_values_exact,
+    coordinate_arc_values_from_buffer, coordinate_epoch_option, coordinate_input,
+    coordinate_input_with_error, coordinate_input_with_expected, coordinate_inputs_are_scalar,
+    coordinate_sequence_len_hint, coordinate_values, coordinates, coordinates_object,
+    copy_one_byte_buffer, crs_arc, crs_arc_str, crs_operationally_equal, epoch_label, epochs_equal,
+    finite_coordinate_required, finite_f64_required, geojson_dict, grow_sequence_error,
+    is_one_byte_buffer, json_to_py, non_negative_int, optional_coordinate_arc_values,
+    optional_coordinate_arc_values_from_buffer, optional_coordinate_input_with_expected,
+    parse_affine_matrix, parse_area, parse_cdt_refinement, parse_geometry_transform_options,
+    parse_grid_size, parse_sample_count, parse_sample_seed, point_tuple, point_xy, positive_int,
+    py_i64_bounded, py_i64_required, string_alloc_error, try_collect_results,
+    try_coordseq_from_nd_buffer, try_push, try_push_heap, try_push_pair, try_push_vec,
+    try_reserve_heap, try_reserve_hint, try_reserve_pair, try_reserve_vec, try_string_from_str,
+    try_vec_with_capacity, try_vec_with_capacity_hint, validate_lonlat_shape,
+    validate_subdivide_max_vertices, wgs84_crs, with_one_byte_buffer,
+};
 mod collections;
 #[cfg(test)]
 mod compile_fail_gate;
@@ -99,11 +123,12 @@ use py::functions::{
     _unpickle_geometry, _unpickle_geometry_array, _unpickle_line_array, _unpickle_point_array,
     _unpickle_polygon_array, _unpickle_validation_report, OverlayOp, PyValidationReport,
     coverage_clean, coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union,
-    difference, f64_column_le_bytes, from_features, from_geojson, from_wkb, from_wkt, intersection,
-    intersection_all, osm_shortlink_encode, osm_shortlink_location, overlay_operator,
-    pluscode_encode, pluscode_polygon, pluscode_recover, pluscode_shorten, polygonize,
-    polygonize_full, require, symmetric_difference, symmetric_difference_all, to_feature,
-    to_feature_collection, union, union_all, usize_row_map_le_bytes,
+    difference, f64_column_le_bytes, from_features, from_geojson, from_wkb, from_wkt,
+    i32_column_le_bytes, intersection, intersection_all, osm_shortlink_encode,
+    osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
+    pluscode_shorten, polygonize, polygonize_full, require, symmetric_difference,
+    symmetric_difference_all, to_feature, to_feature_collection, union, union_all,
+    usize_row_map_le_bytes,
 };
 mod grid;
 mod predicates;
@@ -140,15 +165,15 @@ use py::support::{
     features_type, fixed_geometry_array_nearest_points, geometry_array_line_locate_point_geometry,
     geometry_items, global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame,
     index_bounds, index_envelope, is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs,
-    iterable_lane, line_interpolate_coordseq, line_interpolate_points_coordseq,
-    line_interpolate_points_shape, line_interpolate_shape, line_locate_coordseq, line_locate_shape,
-    line_substring_coordseq, line_substring_shape, mapping_as_dict, metric_concave_hull,
-    metric_constructive_shape, metric_constructive_shape_budgeted, metric_interpolate_m,
-    metric_minimum_bounding_circle, metric_minimum_bounding_radius,
-    metric_optional_constructive_shape, missing_geometry_items_error, note_array_row,
-    optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
-    parse_geojson_geometry_value, parse_geojson_slice, parse_geojson_value, parse_interpolate_plan,
-    parse_precision, parse_spatial_index_handle, parse_wkb_payload, parse_wkb_payload_batch,
+    line_interpolate_coordseq, line_interpolate_points_coordseq, line_interpolate_points_shape,
+    line_interpolate_shape, line_locate_coordseq, line_locate_shape, line_substring_coordseq,
+    line_substring_shape, mapping_as_dict, metric_concave_hull, metric_constructive_shape,
+    metric_constructive_shape_budgeted, metric_interpolate_m, metric_minimum_bounding_circle,
+    metric_minimum_bounding_radius, metric_optional_constructive_shape,
+    missing_geometry_items_error, note_array_row, optional_coordinates, owned_voronoi_boundary,
+    parse_crs, parse_crs_epoch, parse_curve_bounds, parse_geojson_geometry_value,
+    parse_geojson_slice, parse_geojson_value, parse_interpolate_plan, parse_precision,
+    parse_spatial_index_handle, parse_wkb_payload, parse_wkb_payload_batch,
     parse_wkb_payload_bytes, parse_wkt_output_dimension, parts, point_from_bounds,
     point_index_envelope, py_nearest_points, py_polygonize_full, py_text_borrow, py_to_json_value,
     require_geojson_crs, require_locate_point, require_locate_points, resolve_line_metric, rings,
@@ -164,7 +189,7 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyAny, PyBool, PyBytes, PyDict, PyDictMethods, PyInt, PyList, PyModule, PyTuple,
 };
-use render::{geometry_array_svg_grid_html_masked, render_shape_svg};
+use render::{geometry_array_svg_grid_html_masked, render_shape_html, render_shape_svg};
 use rstar::AABB;
 use serde_json::Value;
 

@@ -162,7 +162,11 @@ impl CoordSeq {
             }
             .into());
         }
-        Ok(Self::from_points(points))
+        let mut builder = CoordSeqBuilder::try_with_capacity(first.axes, points.len())?;
+        for &point in points {
+            builder.push(point);
+        }
+        builder.finish()
     }
 
     /// Gather a slice of `XY` (planar, Z/M-less) coordinates into columns — the
@@ -1066,6 +1070,44 @@ impl CoordSeqBuilder {
             ms: axes.has_m().then(|| Vec::with_capacity(capacity)),
             mismatch_axes: None,
         }
+    }
+
+    pub(crate) fn try_with_capacity(
+        axes: CoordinateAxes,
+        capacity: usize,
+    ) -> crate::error::Result<Self> {
+        let mut xs = Vec::new();
+        crate::boundary::try_reserve_vec(&mut xs, capacity)?;
+        let mut ys = Vec::new();
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut ys, capacity) {
+            drop(xs);
+            return Err(error);
+        }
+        let mut zs = None;
+        if axes.has_z() {
+            let mut values = Vec::new();
+            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
+                drop((xs, ys));
+                return Err(error);
+            }
+            zs = Some(values);
+        }
+        let mut ms = None;
+        if axes.has_m() {
+            let mut values = Vec::new();
+            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
+                drop((xs, ys, zs));
+                return Err(error);
+            }
+            ms = Some(values);
+        }
+        Ok(Self {
+            xs,
+            ys,
+            zs,
+            ms,
+            mismatch_axes: None,
+        })
     }
 
     /// Like [`Self::with_capacity`], using a source sequence's axes.

@@ -20,8 +20,11 @@ enum CodeInput {
 impl CodeInput {
     fn parse(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Self> {
         if let Ok(text) = value.cast::<PyString>() {
-            return Ok(Self::Scalar(text.to_cow()?.into_owned()));
+            let text = text.to_str()?;
+            let text =
+                crate::try_string_from_str(text).map_err(|()| crate::string_alloc_error())?;
+            return Ok(Self::Scalar(text));
         }
-        crate::iterable_lane::<String>(value, name, "str").map(Self::Many)
+        crate::collect_py_strings(value, name).map(Self::Many)
     }
 }

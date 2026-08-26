@@ -52,6 +52,7 @@ where
     Ok(out)
 }
 
+
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
     py_i64_bounded("precision", value, 0..=15, &|v| {
         GeometryError::new_err(format!("precision must be between 0 and 15, got {v}"))

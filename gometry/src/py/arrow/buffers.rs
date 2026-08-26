@@ -59,10 +59,10 @@ pub(crate) fn arrow_validity_window(
     // not present on the raw child validity bitmap. Prefer that combined mask
     // (logical window, offset 0) so parent nulls cannot resurrect geometry.
     if let Some(missing) = crate::py::arrow_c::native_arrow_effective_missing(array) {
-        return missing
+        let missing = missing
             .get(start..end)
-            .map(arrow_validity_from_missing_mask)
-            .ok_or_else(|| geoarrow_parse_error("Arrow validity window exceeds array length"));
+            .ok_or_else(|| geoarrow_parse_error("Arrow validity window exceeds array length"))?;
+        return arrow_validity_from_missing_mask(missing);
     }
     let null_count = array.getattr("null_count")?.extract::<i64>()?;
     if null_count == 0 {
@@ -136,17 +136,17 @@ pub(crate) fn arrow_validity_window(
 
 /// Build an `ArrowValidity` over a logical missing mask (`true` = null), with
 /// bitmap offset 0 (the mask already covers only the visible window).
-pub(crate) fn arrow_validity_from_missing_mask(missing: &[bool]) -> ArrowValidity {
+pub(crate) fn arrow_validity_from_missing_mask(missing: &[bool]) -> PyResult<ArrowValidity> {
     if !missing.iter().any(|&is_missing| is_missing) {
-        return ArrowValidity {
+        return Ok(ArrowValidity {
             bitmap: None,
             offset: 0,
-        };
+        });
     }
-    ArrowValidity {
-        bitmap: Some(validity_bitmap_from_missing(missing)),
+    Ok(ArrowValidity {
+        bitmap: Some(validity_bitmap_from_missing(missing)?),
         offset: 0,
-    }
+    })
 }
 
 /// Record a geometry-level null as a missing row (placeholder shape + mask slot).
@@ -155,12 +155,12 @@ pub(crate) fn push_geometry_level_missing(
     missing_rows: &mut Vec<usize>,
     row: usize,
     crs: Option<crate::Crs>,
-) {
-    missing_rows.push(row);
-    geometries.push(crate::PyGeometry::from_shape_crs(
-        crate::PyGeometryArray::missing_placeholder(),
-        crs,
-    ));
+) -> PyResult<()> {
+    let geometry =
+        crate::PyGeometry::from_shape_crs(crate::PyGeometryArray::missing_placeholder(), crs);
+    crate::try_push(missing_rows, row)?;
+    crate::try_push(geometries, geometry)?;
+    Ok(())
 }
 
 impl ArrowValidity {
@@ -392,8 +392,11 @@ impl AdmittedBuffer {
         self.storage.get(self.range.clone()).unwrap_or(&[])
     }
 
-    pub(crate) fn into_owned(self) -> Vec<u8> {
-        self.as_slice().to_vec()
+    pub(crate) fn into_owned(self) -> PyResult<Vec<u8>> {
+        let bytes = self.as_slice();
+        let mut output = crate::try_vec_with_capacity(bytes.len())?;
+        output.extend_from_slice(bytes);
+        Ok(output)
     }
 
     pub(crate) fn subrange(&self, range: std::ops::Range<usize>) -> PyResult<Self> {
@@ -539,8 +542,7 @@ fn required_arrow_buffer_span(
     byte_start: usize,
     byte_end: usize,
 ) -> PyResult<Vec<u8>> {
-    arrow_buffer_span_admitted(py, array, index, name, byte_start, byte_end)
-        .map(AdmittedBuffer::into_owned)
+    arrow_buffer_span_admitted(py, array, index, name, byte_start, byte_end)?.into_owned()
 }
 
 pub(crate) fn arrow_buffer_object<'py>(
@@ -667,10 +669,10 @@ fn owned_f64_arc_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<[f64]>> {
     }
     let (chunks, rest) = bytes.as_chunks::<8>();
     debug_assert!(rest.is_empty());
-    let values: Vec<f64> = chunks
-        .iter()
-        .map(|chunk| f64::from_le_bytes(*chunk))
-        .collect();
+    let mut values = crate::try_vec_with_capacity(chunks.len())?;
+    for chunk in chunks {
+        crate::try_push(&mut values, f64::from_le_bytes(*chunk))?;
+    }
     Ok(Arc::from(values))
 }
 
@@ -728,11 +730,12 @@ pub(crate) fn arrow_buffer_values_span<T>(
         .and_then(|end| end.checked_mul(width))
         .ok_or_else(span_error)?;
     if let Some(admitted) = copy_native_buffer_span(array, index, byte_start, byte_end)? {
-        return Ok(admitted
-            .as_slice()
-            .chunks_exact(width)
-            .map(decode)
-            .collect());
+        let chunks = admitted.as_slice().chunks_exact(width);
+        let mut values = crate::try_vec_with_capacity(chunks.len())?;
+        for chunk in chunks {
+            crate::try_push(&mut values, decode(chunk))?;
+        }
+        return Ok(values);
     }
     let Some(buffer) = arrow_buffer_object(array, index)? else {
         return Err(geoarrow_parse_error(format!(
@@ -743,7 +746,12 @@ pub(crate) fn arrow_buffer_values_span<T>(
     // use it for offset windows too. `PyBuffer::to_vec` would first copy the
     // physical parent and silently restore the one-row-slice cliff.
     let bytes = copy_buffer_span(py, &buffer, byte_start, byte_end).map_err(|_| span_error())?;
-    Ok(bytes.chunks_exact(width).map(decode).collect())
+    let chunks = bytes.chunks_exact(width);
+    let mut values = crate::try_vec_with_capacity(chunks.len())?;
+    for chunk in chunks {
+        crate::try_push(&mut values, decode(chunk))?;
+    }
+    Ok(values)
 }
 
 pub(crate) fn i32_offset_to_usize(value: i32) -> PyResult<usize> {
@@ -777,6 +785,7 @@ pub(crate) fn push_i32_le(values: &mut Vec<u8>, value: usize) -> PyResult<()> {
             "Arrow output exceeds the i32 offset capacity for binary/list arrays",
         )
     })?;
+    crate::try_reserve_vec(values, 4).map_err(pyo3::PyErr::from)?;
     values.extend_from_slice(&value.to_le_bytes());
     Ok(())
 }

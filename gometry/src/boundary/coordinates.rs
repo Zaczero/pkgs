@@ -446,13 +446,13 @@ impl CoordinateView {
     }
 
     /// Resolve one axis to a borrowed or materialized column.
-    pub fn column(&self, axis: CoordinateAxis) -> CoordinateColumnRef<'_> {
+    pub fn column(&self, axis: CoordinateAxis) -> crate::error::Result<CoordinateColumnRef<'_>> {
         if let CoordinateOwner::Array { storage, missing } = &self.owner
             && let GeometryArrayStorage::Points { coords, row_map } = storage.as_ref()
             && missing.is_none()
         {
             if let Some(window) = row_map.as_deref().contiguous_window() {
-                return match axis {
+                return Ok(match axis {
                     CoordinateAxis::X => CoordinateColumnRef::Borrowed(&coords.xs()[window]),
                     CoordinateAxis::Y => CoordinateColumnRef::Borrowed(&coords.ys()[window]),
                     CoordinateAxis::Z => coords.zs().map_or(CoordinateColumnRef::Missing, |zs| {
@@ -461,28 +461,45 @@ impl CoordinateView {
                     CoordinateAxis::M => coords.ms().map_or(CoordinateColumnRef::Missing, |ms| {
                         CoordinateColumnRef::Borrowed(&ms[window])
                     }),
-                };
+                });
             }
             if let Some(map) = row_map.explicit_indices() {
                 let values = match axis {
                     CoordinateAxis::X => coords.xs(),
                     CoordinateAxis::Y => coords.ys(),
                     CoordinateAxis::Z => {
-                        return coords.zs().map_or(CoordinateColumnRef::Missing, |zs| {
-                            CoordinateColumnRef::Dense(map.iter().map(|&row| zs[row]).collect())
-                        });
+                        let Some(zs) = coords.zs() else {
+                            return Ok(CoordinateColumnRef::Missing);
+                        };
+                        let mut out = Vec::new();
+                        crate::boundary::try_reserve_vec(&mut out, map.len())?;
+                        for &row in map.iter() {
+                            crate::boundary::try_push_vec(&mut out, zs[row])?;
+                        }
+                        return Ok(CoordinateColumnRef::Dense(out));
                     },
                     CoordinateAxis::M => {
-                        return coords.ms().map_or(CoordinateColumnRef::Missing, |ms| {
-                            CoordinateColumnRef::Dense(map.iter().map(|&row| ms[row]).collect())
-                        });
+                        let Some(ms) = coords.ms() else {
+                            return Ok(CoordinateColumnRef::Missing);
+                        };
+                        let mut out = Vec::new();
+                        crate::boundary::try_reserve_vec(&mut out, map.len())?;
+                        for &row in map.iter() {
+                            crate::boundary::try_push_vec(&mut out, ms[row])?;
+                        }
+                        return Ok(CoordinateColumnRef::Dense(out));
                     },
                 };
-                return CoordinateColumnRef::Dense(map.iter().map(|&row| values[row]).collect());
+                let mut out = Vec::new();
+                crate::boundary::try_reserve_vec(&mut out, map.len())?;
+                for &row in map.iter() {
+                    crate::boundary::try_push_vec(&mut out, values[row])?;
+                }
+                return Ok(CoordinateColumnRef::Dense(out));
             }
         }
         if let Some(seq) = self.single_seq() {
-            return match axis {
+            return Ok(match axis {
                 CoordinateAxis::X => CoordinateColumnRef::Borrowed(seq.xs()),
                 CoordinateAxis::Y => CoordinateColumnRef::Borrowed(seq.ys()),
                 CoordinateAxis::Z => seq
@@ -491,14 +508,14 @@ impl CoordinateView {
                 CoordinateAxis::M => seq
                     .ms()
                     .map_or(CoordinateColumnRef::Missing, CoordinateColumnRef::Borrowed),
-            };
+            });
         }
-        match axis {
-            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_x()),
-            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_y()),
-            CoordinateAxis::Z => self.gather_optional(Point::z),
-            CoordinateAxis::M => self.gather_optional(Point::m),
-        }
+        Ok(match axis {
+            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_x()?),
+            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_y()?),
+            CoordinateAxis::Z => self.gather_optional(Point::z)?,
+            CoordinateAxis::M => self.gather_optional(Point::m)?,
+        })
     }
 
     /// Stream every flattened coordinate (with path metadata) without
@@ -577,7 +594,7 @@ impl CoordinateView {
     /// Per-coordinate geometry-row index (all `0` for a scalar geometry; grows
     /// to real rows when `array.coords` lands). Backs
     /// `coords(return_index=True)`.
-    pub fn row_index(&self) -> Vec<usize> {
+    pub fn row_index(&self) -> crate::error::Result<Vec<usize>> {
         self.row_index_cast(|row| row)
     }
 
@@ -585,14 +602,14 @@ impl CoordinateView {
     /// coordinate-run altitude (CSR window fills / one fill per run) rather
     /// than per-vertex push. Mirrors [`row_index`] for the `Coordinates.index`
     /// getter and `get_coordinates(..., return_index=True)`.
-    pub fn row_index_i64(&self) -> Vec<i64> {
+    pub fn row_index_i64(&self) -> crate::error::Result<Vec<i64>> {
         self.row_index_cast(|row| row as i64)
     }
 
     /// Shared run-wise row-index emitter. Identity packed storage fills from
     /// CSR offsets (or the point column length); every other owner walks
     /// coordinate runs once and fills each run's span with its logical row id.
-    fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> Vec<T> {
+    fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> crate::error::Result<Vec<T>> {
         let capacity = self.flattened_capacity();
         let zero = cast(0);
 
@@ -603,20 +620,27 @@ impl CoordinateView {
         {
             match storage.as_ref() {
                 GeometryArrayStorage::Points { coords, row_map } if row_map.is_identity() => {
-                    return (0..coords.len()).map(cast).collect();
+                    let mut indexes = Vec::new();
+                    crate::boundary::try_reserve_vec(&mut indexes, coords.len())?;
+                    for row in 0..coords.len() {
+                        crate::boundary::try_push_vec(&mut indexes, cast(row))?;
+                    }
+                    return Ok(indexes);
                 },
                 GeometryArrayStorage::Lines {
                     offsets, row_map, ..
                 } if row_map.is_identity() => {
                     let offsets = offsets.as_slice();
-                    let mut indexes = vec![zero; capacity];
+                    let mut indexes = Vec::new();
+                    crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
+                    indexes.resize(capacity, zero);
                     let n_rows = offsets.len().saturating_sub(1);
                     for row in 0..n_rows {
                         let start = offsets[row] as usize;
                         let end = offsets[row + 1] as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return indexes;
+                    return Ok(indexes);
                 },
                 GeometryArrayStorage::Polygons {
                     ring_offsets,
@@ -626,7 +650,9 @@ impl CoordinateView {
                 } if row_map.is_identity() => {
                     let rings = ring_offsets.as_slice();
                     let polys = polygon_offsets.as_slice();
-                    let mut indexes = vec![zero; capacity];
+                    let mut indexes = Vec::new();
+                    crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
+                    indexes.resize(capacity, zero);
                     let n_rows = polys.len().saturating_sub(1);
                     for row in 0..n_rows {
                         let ring_start = polys[row] as usize;
@@ -638,7 +664,7 @@ impl CoordinateView {
                         let end = rings[ring_end] as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return indexes;
+                    return Ok(indexes);
                 },
                 _ => {},
             }
@@ -646,12 +672,17 @@ impl CoordinateView {
 
         // Scalar geometry: every coordinate belongs to the single owner (id 0).
         if matches!(&self.owner, CoordinateOwner::Shape(_)) {
-            return vec![zero; capacity];
+            let mut indexes = Vec::new();
+            crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
+            indexes.resize(capacity, zero);
+            return Ok(indexes);
         }
 
         // Mask / gather / window / mixed: one fill per coordinate run, logical
         // row ids, missing rows skipped by `for_each`.
-        let mut indexes = vec![zero; capacity];
+        let mut indexes = Vec::new();
+        crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
+        indexes.resize(capacity, zero);
         let mut cursor = 0_usize;
         self.for_each(&mut |geometry, _, _, run| {
             let len = match run {
@@ -663,7 +694,7 @@ impl CoordinateView {
             cursor += len;
         });
         debug_assert_eq!(cursor, capacity);
-        indexes
+        Ok(indexes)
     }
 
     /// The coordinate at `index` (flattened), or `None` if out of range.
@@ -893,13 +924,19 @@ impl CoordinateView {
         }
     }
 
-    fn gather_x(&self) -> Vec<f64> {
-        let mut out = Vec::with_capacity(self.flattened_capacity());
-        self.for_each(&mut |_, _, _, run| match run {
-            CoordinateRun::Seq(seq) => out.extend_from_slice(seq.xs()),
-            CoordinateRun::Point(point) => out.push(point.x),
-        });
-        out
+    fn gather_x(&self) -> crate::error::Result<Vec<f64>> {
+        let mut out = Vec::new();
+        crate::boundary::try_reserve_vec(&mut out, self.flattened_capacity())?;
+        match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
+            &mut out,
+            coord.point.x,
+        ) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        }) {
+            ControlFlow::Continue(()) => Ok(out),
+            ControlFlow::Break(error) => Err(error),
+        }
     }
 }
 
@@ -1167,16 +1204,25 @@ fn visible_coordinate_bits(
 }
 
 impl CoordinateView {
-    fn gather_y(&self) -> Vec<f64> {
-        let mut out = Vec::with_capacity(self.flattened_capacity());
-        self.for_each(&mut |_, _, _, run| match run {
-            CoordinateRun::Seq(seq) => out.extend_from_slice(seq.ys()),
-            CoordinateRun::Point(point) => out.push(point.y),
-        });
-        out
+    fn gather_y(&self) -> crate::error::Result<Vec<f64>> {
+        let mut out = Vec::new();
+        crate::boundary::try_reserve_vec(&mut out, self.flattened_capacity())?;
+        match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
+            &mut out,
+            coord.point.y,
+        ) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        }) {
+            ControlFlow::Continue(()) => Ok(out),
+            ControlFlow::Break(error) => Err(error),
+        }
     }
 
-    fn gather_optional(&self, project: impl Fn(Point) -> Option<f64>) -> CoordinateColumnRef<'_> {
+    fn gather_optional(
+        &self,
+        project: impl Fn(Point) -> Option<f64>,
+    ) -> crate::error::Result<CoordinateColumnRef<'_>> {
         // One pass into a dense f64 lane + 1-byte presence mask (≈9 B/coord).
         // Homogeneous present → Dense (no Option). Fully absent → Missing.
         // Mixed → Nullable once at the end so list paths keep None for absent
@@ -1184,39 +1230,42 @@ impl CoordinateView {
         // (a NaN-only lane would collapse the two). Peak is the dense+mask
         // working set, not a 16 B Option lane overlapping a dense prefix.
         let capacity = self.flattened_capacity();
-        let mut values = Vec::with_capacity(capacity);
-        let mut present = Vec::with_capacity(capacity);
+        let mut values = Vec::new();
+        let mut present = Vec::new();
+        crate::boundary::try_reserve_pair(&mut values, &mut present, capacity)?;
         let mut any = false;
         let mut all_present = true;
-        let mut push = |point: Point| {
-            if let Some(value) = project(point) {
-                any = true;
-                values.push(value);
-                present.push(true);
-            } else {
-                all_present = false;
-                // Placeholder; only read when `present` is true.
-                values.push(0.0);
-                present.push(false);
+        let result = self.try_for_each_point(&mut |coord| {
+            let (value, is_present) = match project(coord.point) {
+                Some(value) => {
+                    any = true;
+                    (value, true)
+                },
+                None => {
+                    all_present = false;
+                    (0.0, false)
+                },
+            };
+            match crate::boundary::try_push_pair(&mut values, &mut present, value, is_present) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(error) => ControlFlow::Break(error),
             }
-        };
-        self.for_each(&mut |_, _, _, run| match run {
-            CoordinateRun::Seq(seq) => seq.iter().for_each(&mut push),
-            CoordinateRun::Point(point) => push(point),
         });
+        if let ControlFlow::Break(error) = result {
+            return Err(error);
+        }
         if !any {
-            return CoordinateColumnRef::Missing;
+            return Ok(CoordinateColumnRef::Missing);
         }
         if all_present {
-            return CoordinateColumnRef::Dense(values);
+            return Ok(CoordinateColumnRef::Dense(values));
         }
-        CoordinateColumnRef::Nullable(
-            values
-                .into_iter()
-                .zip(present)
-                .map(|(value, is_present)| is_present.then_some(value))
-                .collect(),
-        )
+        let mut nullable = Vec::new();
+        crate::boundary::try_reserve_vec(&mut nullable, values.len())?;
+        for (value, is_present) in values.into_iter().zip(present) {
+            crate::boundary::try_push_vec(&mut nullable, is_present.then_some(value))?;
+        }
+        Ok(CoordinateColumnRef::Nullable(nullable))
     }
 }
 
@@ -1437,11 +1486,11 @@ mod tests {
         assert_eq!(seq.xs(), &[0.0, 1.0, 3.0]);
         assert_eq!(seq.ys(), &[0.0, 2.0, 4.0]);
         assert!(matches!(
-            view.column(CoordinateAxis::X),
+            view.column(CoordinateAxis::X).unwrap(),
             CoordinateColumnRef::Borrowed(_)
         ));
         assert!(matches!(
-            view.column(CoordinateAxis::Z),
+            view.column(CoordinateAxis::Z).unwrap(),
             CoordinateColumnRef::Missing
         ));
     }
@@ -1463,7 +1512,7 @@ mod tests {
         assert_eq!(points[points.len() - 1].path.ring, Some(1));
         // X column over the multipart polygon materializes (no single run).
         assert!(matches!(
-            view.column(CoordinateAxis::X),
+            view.column(CoordinateAxis::X).unwrap(),
             CoordinateColumnRef::Dense(_)
         ));
     }
@@ -1547,8 +1596,8 @@ mod tests {
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 5], 5).unwrap();
         let array = PyGeometryArray::packed_lines(coords, offsets, Frame::default());
         let view = array.coordinate_view();
-        assert_eq!(view.row_index_i64(), vec![0, 0, 1, 1, 1]);
-        assert_eq!(view.row_index(), vec![0, 0, 1, 1, 1]);
+        assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1, 1]);
+        assert_eq!(view.row_index().unwrap(), vec![0, 0, 1, 1, 1]);
         assert!(view.single_seq().is_some());
     }
 
@@ -1581,7 +1630,7 @@ mod tests {
         );
         let view = array.coordinate_view();
         // Row 0: shell (5) + hole (5); row 1: shell (5).
-        assert_eq!(view.row_index_i64(), vec![
+        assert_eq!(view.row_index_i64().unwrap(), vec![
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1
         ]);
     }
@@ -1605,7 +1654,7 @@ mod tests {
         );
         let view = gathered.coordinate_view();
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
-        assert_eq!(view.row_index_i64(), vec![0, 0, 1, 1]);
+        assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1]);
         let points = view.collect_points();
         assert_eq!(points[0].point, pt(4.0, 0.0));
         assert_eq!(points[2].point, pt(0.0, 0.0));
@@ -1629,7 +1678,7 @@ mod tests {
         assert_eq!(points[0].point, pt(9.0, 9.0));
         assert_eq!(points[1].point, pt(0.0, 0.0));
         assert_eq!(points[2].point, pt(1.0, 1.0));
-        assert_eq!(view.row_index(), vec![0, 0, 0]);
+        assert_eq!(view.row_index().unwrap(), vec![0, 0, 0]);
     }
 
     #[test]
@@ -1655,7 +1704,7 @@ mod tests {
             .into(),
         );
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
-        match view.column(CoordinateAxis::Z) {
+        match view.column(CoordinateAxis::Z).unwrap() {
             CoordinateColumnRef::Nullable(values) => {
                 assert_eq!(values.len(), 3);
                 assert_eq!(values[0], None);

@@ -37,13 +37,19 @@ pub(super) fn h3_compact_with_floor(
         }
     }
 
-    let (mut out, rest): (Vec<_>, Vec<_>) = cells
-        .into_iter()
-        .partition(|cell| cell.resolution() <= min_resolution);
+    let mut out = Vec::new();
+    let mut rest = Vec::new();
+    for cell in cells {
+        if cell.resolution() <= min_resolution {
+            crate::try_push(&mut out, cell)?;
+        } else {
+            crate::try_push(&mut rest, cell)?;
+        }
+    }
     let mut buckets: std::collections::BTreeMap<Resolution, Vec<CellIndex>> =
         std::collections::BTreeMap::new();
     for cell in rest {
-        buckets.entry(cell.resolution()).or_default().push(cell);
+        crate::try_push(buckets.entry(cell.resolution()).or_default(), cell)?;
     }
     // Finest first: merged parents re-enter the next-coarser bucket so chains
     // of complete sibling groups keep collapsing.
@@ -57,11 +63,13 @@ pub(super) fn h3_compact_with_floor(
             .map_err(|error| GeometryError::new_err(error.to_string()))?;
         for cell in bucket {
             if cell.resolution() < resolution && cell.resolution() > min_resolution {
-                buckets.entry(cell.resolution()).or_default().push(cell);
+                crate::try_push(buckets.entry(cell.resolution()).or_default(), cell)?;
             } else if cell.resolution() < min_resolution {
-                out.extend(cell.children(min_resolution));
+                for child in cell.children(min_resolution) {
+                    crate::try_push(&mut out, child)?;
+                }
             } else {
-                out.push(cell);
+                crate::try_push(&mut out, cell)?;
             }
         }
     }
@@ -85,12 +93,16 @@ pub(in crate::py::cells) fn h3_compact_ids_with_floor(
         .iter()
         .any(|&id| ((id >> 52) & 0x0F) as u8 != resolution)
     {
-        let cells = ids
-            .into_iter()
-            .map(|id| CellIndex::try_from(id).expect("CellArray ids are validated"))
-            .collect();
-        return h3_compact_with_floor(cells, min_resolution)
-            .map(|cells| cells.into_iter().map(u64::from).collect());
+        let cells = crate::try_collect_results(ids.into_iter().map(|id| {
+            Ok::<_, pyo3::PyErr>(CellIndex::try_from(id).expect("CellArray ids are validated"))
+        }))?;
+        return h3_compact_with_floor(cells, min_resolution).and_then(|cells| {
+            crate::try_collect_results(
+                cells
+                    .into_iter()
+                    .map(|cell| Ok::<_, pyo3::PyErr>(u64::from(cell))),
+            )
+        });
     }
 
     ids.sort_unstable();

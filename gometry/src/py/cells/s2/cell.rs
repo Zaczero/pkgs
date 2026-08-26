@@ -4,11 +4,12 @@ use crate::py::cells::{
 };
 use crate::py::errors::{ParseFormat, parse_error};
 
-pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyCellArray {
-    PyCellArray::from_trusted_ids(
-        GridKind::S2Cell,
-        cells.into_iter().map(CellId::raw).collect(),
-    )
+pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyResult<PyCellArray> {
+    let mut ids = Vec::new();
+    for cell in cells {
+        crate::try_push(&mut ids, cell.raw())?;
+    }
+    Ok(PyCellArray::from_trusted_ids(GridKind::S2Cell, ids))
 }
 
 #[pymethods]

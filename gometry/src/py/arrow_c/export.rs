@@ -85,11 +85,12 @@ fn schema_from_storage(
             list_schema(list_schema(coordinate_schema(coords.axes()))),
         ),
         GeometryArrayStorage::Mixed(shapes) => {
-            let refs: Vec<&Shape> = shapes.iter().collect();
+            let refs =
+                crate::try_collect_results(shapes.iter().map(|shape| Ok::<_, pyo3::PyErr>(shape)))?;
             native_storage_schema_shapes(&refs).unwrap_or((GeometryEncoding::Wkb, wkb_schema()))
         },
     };
-    extension_schema(encoding, storage_schema, crs, epoch).map(SchemaNode::into_schema)
+    extension_schema(encoding, storage_schema, crs, epoch).and_then(SchemaNode::into_schema)
 }
 
 fn export_packed_points(
@@ -186,7 +187,11 @@ pub(crate) fn export_from_geometries<'a>(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let geometries = geometries.into_iter().collect::<Vec<_>>();
+    let geometries = crate::try_collect_results(
+        geometries
+            .into_iter()
+            .map(|geometry| Ok::<_, pyo3::PyErr>(geometry)),
+    )?;
     if let Some(export) = export_native(&geometries, crs, epoch)? {
         return Ok(export);
     }
@@ -198,20 +203,25 @@ pub(crate) fn schema_from_geometries<'a>(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<Box<ArrowSchema>> {
-    let geometries = geometries.into_iter().collect::<Vec<_>>();
-    let (encoding, storage_schema) =
-        native_storage_schema(&geometries).unwrap_or_else(|| (GeometryEncoding::Wkb, wkb_schema()));
-    extension_schema(encoding, storage_schema, crs, epoch).map(SchemaNode::into_schema)
+    let geometries = crate::try_collect_results(
+        geometries
+            .into_iter()
+            .map(|geometry| Ok::<_, pyo3::PyErr>(geometry)),
+    )?;
+    let (encoding, storage_schema) = native_storage_schema(&geometries)?
+        .unwrap_or_else(|| (GeometryEncoding::Wkb, wkb_schema()));
+    extension_schema(encoding, storage_schema, crs, epoch).and_then(SchemaNode::into_schema)
 }
 
 pub(crate) fn native_storage_schema(
     geometries: &[&PyGeometry],
-) -> Option<(GeometryEncoding, SchemaNode)> {
-    let shapes: Vec<&Shape> = geometries
-        .iter()
-        .map(|geometry| geometry.shape.shape())
-        .collect();
-    native_storage_schema_shapes(&shapes)
+) -> PyResult<Option<(GeometryEncoding, SchemaNode)>> {
+    let shapes = crate::try_collect_results(
+        geometries
+            .iter()
+            .map(|geometry| Ok::<_, pyo3::PyErr>(geometry.shape.shape())),
+    )?;
+    Ok(native_storage_schema_shapes(&shapes))
 }
 
 pub(crate) fn native_storage_schema_shapes(
@@ -281,10 +291,11 @@ pub(crate) fn export_native(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<Option<ExportedArray>> {
-    let shapes: Vec<&Shape> = geometries
-        .iter()
-        .map(|geometry| geometry.shape.shape())
-        .collect();
+    let shapes = crate::try_collect_results(
+        geometries
+            .iter()
+            .map(|geometry| Ok::<_, pyo3::PyErr>(geometry.shape.shape())),
+    )?;
     export_native_shapes_slice(&shapes, crs, epoch)
 }
 
@@ -293,7 +304,7 @@ pub(crate) fn export_native_shapes(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<Option<ExportedArray>> {
-    let refs: Vec<&Shape> = shapes.iter().collect();
+    let refs = crate::try_collect_results(shapes.iter().map(|shape| Ok::<_, pyo3::PyErr>(shape)))?;
     export_native_shapes_slice(&refs, crs, epoch)
 }
 
@@ -306,12 +317,12 @@ fn export_native_shapes_slice(
         return Ok(None);
     };
     if shapes.iter().all(|s| matches!(s, Shape::Point(_))) {
-        let mut points = Vec::with_capacity(shapes.len());
+        let mut points = crate::try_vec_with_capacity(shapes.len())?;
         for shape in shapes {
             let Shape::Point(point) = shape else {
                 unreachable!()
             };
-            points.push(*point);
+            crate::try_push(&mut points, *point)?;
         }
         let seq = CoordSeq::from_points(&points);
         return Ok(Some(export_with_schema(
@@ -382,7 +393,7 @@ pub(crate) fn export_with_schema(
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
     let schema_node = extension_schema(encoding, storage_schema, crs, epoch)?;
-    let schema = schema_node.clone().into_schema();
+    let schema = schema_node.clone().into_schema()?;
     Ok(ExportedArray {
         schema,
         schema_node,
@@ -395,10 +406,34 @@ pub(crate) fn gather_coordseqs<'a>(
     total: usize,
     seqs: impl Iterator<Item = &'a CoordSeq>,
 ) -> PyResult<CoordSeq> {
-    let mut xs = Vec::with_capacity(total);
-    let mut ys = Vec::with_capacity(total);
-    let mut zs = axes.has_z().then(|| Vec::with_capacity(total));
-    let mut ms = axes.has_m().then(|| Vec::with_capacity(total));
+    let mut xs = Vec::new();
+    crate::try_reserve_vec(&mut xs, total).map_err(PyErr::from)?;
+    let mut ys = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut ys, total) {
+        drop(xs);
+        return Err(PyErr::from(error));
+    }
+    let mut zs = None;
+    if axes.has_z() {
+        let mut values = Vec::new();
+        if let Err(error) = crate::try_reserve_vec(&mut values, total) {
+            drop(xs);
+            drop(ys);
+            return Err(PyErr::from(error));
+        }
+        zs = Some(values);
+    }
+    let mut ms = None;
+    if axes.has_m() {
+        let mut values = Vec::new();
+        if let Err(error) = crate::try_reserve_vec(&mut values, total) {
+            drop(xs);
+            drop(ys);
+            drop(zs);
+            return Err(PyErr::from(error));
+        }
+        ms = Some(values);
+    }
     for seq in seqs {
         xs.extend_from_slice(seq.xs());
         ys.extend_from_slice(seq.ys());
@@ -427,7 +462,8 @@ pub(crate) fn export_single_list_shapes<'a>(
     encoding: GeometryEncoding,
     points_of: impl Fn(&Shape) -> &CoordSeq,
 ) -> PyResult<ExportedArray> {
-    let shapes: Vec<&Shape> = shapes.into_iter().collect();
+    let shapes =
+        crate::try_collect_results(shapes.into_iter().map(|shape| Ok::<_, pyo3::PyErr>(shape)))?;
     // Scalar / single-row: retain the existing CoordSeq Arcs (Item 3).
     if let [shape] = shapes.as_slice() {
         let seq = points_of(shape);
@@ -437,15 +473,25 @@ pub(crate) fn export_single_list_shapes<'a>(
         let array = list_array(offsets, coordinate_array(seq)?)?;
         return export_with_schema(encoding, storage_schema, array, crs, epoch);
     }
-    let total: usize = shapes.iter().map(|shape| points_of(shape).len()).sum();
-    let mut offsets = Vec::with_capacity(shapes.len() + 1);
-    offsets.push(0);
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total.checked_add(points_of(shape).len()).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("Arrow coordinate count overflows usize")
+        })
+    })?;
+    if i32::try_from(total).is_err() {
+        return Err(offset_error());
+    }
+    let mut offsets =
+        crate::try_vec_with_capacity(shapes.len().checked_add(1).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+        })?)?;
+    crate::try_push(&mut offsets, 0)?;
     let mut count = 0_i32;
     for shape in &shapes {
         count = count
             .checked_add(i32::try_from(points_of(shape).len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        offsets.push(count);
+        crate::try_push(&mut offsets, count)?;
     }
     let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
     let storage_schema = list_schema(coordinate_schema(axes));
@@ -459,11 +505,53 @@ pub(crate) fn export_multilines_shapes(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let mut geometry_offsets = vec![0_i32];
-    let mut line_offsets = vec![0_i32];
+    let line_total = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::MultiLineString(items) = shape else {
+            unreachable!()
+        };
+        total.checked_add(items.len()).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("Arrow line count overflows usize")
+        })
+    })?;
+    if i32::try_from(line_total).is_err() {
+        return Err(offset_error());
+    }
+    let point_total = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::MultiLineString(items) = shape else {
+            unreachable!()
+        };
+        items.iter().try_fold(total, |total, line| {
+            total.checked_add(line.len()).ok_or_else(|| {
+                pyo3::exceptions::PyOverflowError::new_err("Arrow coordinate count overflows usize")
+            })
+        })
+    })?;
+    if i32::try_from(point_total).is_err() {
+        return Err(offset_error());
+    }
+    let geometry_capacity = shapes.len().checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let line_capacity = line_total.checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let mut geometry_offsets = Vec::new();
+    crate::try_reserve_vec(&mut geometry_offsets, geometry_capacity).map_err(PyErr::from)?;
+    let mut line_offsets = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut line_offsets, line_capacity) {
+        drop(geometry_offsets);
+        return Err(PyErr::from(error));
+    }
     let mut line_count = 0_i32;
     let mut point_count = 0_i32;
     let mut lines = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut lines, line_total) {
+        drop(geometry_offsets);
+        drop(line_offsets);
+        return Err(PyErr::from(error));
+    }
+    crate::try_push(&mut geometry_offsets, 0_i32)?;
+    crate::try_push(&mut line_offsets, 0_i32)?;
     for shape in shapes {
         let Shape::MultiLineString(items) = shape else {
             unreachable!()
@@ -471,7 +559,7 @@ pub(crate) fn export_multilines_shapes(
         line_count = line_count
             .checked_add(i32::try_from(items.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        geometry_offsets.push(line_count);
+        crate::try_push(&mut geometry_offsets, line_count)?;
         for member in items.members() {
             match member {
                 crate::geometry::MultiMember::Empty => line_offsets.push(point_count),
@@ -480,8 +568,8 @@ pub(crate) fn export_multilines_shapes(
                     point_count = point_count
                         .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
                         .ok_or_else(offset_error)?;
-                    line_offsets.push(point_count);
-                    lines.push(line);
+                    crate::try_push(&mut line_offsets, point_count)?;
+                    crate::try_push_vec(&mut lines, line).map_err(pyo3::PyErr::from)?;
                 },
             }
         }
@@ -515,8 +603,8 @@ pub(crate) fn push_polygon<'a>(
         *point_count = point_count
             .checked_add(i32::try_from(ring.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        ring_offsets.push(*point_count);
-        rings.push(ring);
+        crate::try_push(&mut *ring_offsets, *point_count)?;
+        crate::try_push_vec(rings, ring).map_err(pyo3::PyErr::from)?;
     }
     Ok(())
 }
@@ -527,19 +615,69 @@ pub(crate) fn export_polygons_shapes(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let mut polygon_offsets = vec![0_i32];
-    let mut ring_offsets = vec![0_i32];
+    let ring_total = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::Polygon(polygon) = shape else {
+            unreachable!()
+        };
+        let rings = polygon.holes.len().checked_add(1).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("Arrow ring count overflows usize")
+        })?;
+        total.checked_add(rings).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("Arrow ring count overflows usize")
+        })
+    })?;
+    if i32::try_from(ring_total).is_err() {
+        return Err(offset_error());
+    }
+    let point_total = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::Polygon(polygon) = shape else {
+            unreachable!()
+        };
+        polygon.rings().try_fold(total, |total, ring| {
+            total.checked_add(ring.len()).ok_or_else(|| {
+                pyo3::exceptions::PyOverflowError::new_err("Arrow coordinate count overflows usize")
+            })
+        })
+    })?;
+    if i32::try_from(point_total).is_err() {
+        return Err(offset_error());
+    }
+    let polygon_capacity = shapes.len().checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let ring_capacity = ring_total.checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let mut polygon_offsets = Vec::new();
+    crate::try_reserve_vec(&mut polygon_offsets, polygon_capacity).map_err(PyErr::from)?;
+    let mut ring_offsets = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut ring_offsets, ring_capacity) {
+        drop(polygon_offsets);
+        return Err(PyErr::from(error));
+    }
     let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
     let mut rings = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut rings, ring_total) {
+        drop(polygon_offsets);
+        drop(ring_offsets);
+        return Err(PyErr::from(error));
+    }
+    crate::try_push(&mut polygon_offsets, 0_i32)?;
+    crate::try_push(&mut ring_offsets, 0_i32)?;
     for shape in shapes {
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
-        ring_count = ring_count
-            .checked_add(i32::try_from(1 + polygon.holes.len()).map_err(|_| offset_error())?)
+        let ring_total = polygon
+            .holes
+            .len()
+            .checked_add(1)
             .ok_or_else(offset_error)?;
-        polygon_offsets.push(ring_count);
+        ring_count = ring_count
+            .checked_add(i32::try_from(ring_total).map_err(|_| offset_error())?)
+            .ok_or_else(offset_error)?;
+        crate::try_push(&mut polygon_offsets, ring_count)?;
         push_polygon(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
@@ -557,13 +695,91 @@ pub(crate) fn export_multipolygons_shapes(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let mut multipolygon_offsets = vec![0_i32];
-    let mut polygon_offsets = vec![0_i32];
-    let mut ring_offsets = vec![0_i32];
+    let (polygon_total, ring_total) =
+        shapes
+            .iter()
+            .try_fold((0_usize, 0_usize), |(polygon_total, ring_total), shape| {
+                let Shape::MultiPolygon(polygons) = shape else {
+                    unreachable!()
+                };
+                let rings = polygons.iter().try_fold(0_usize, |total, polygon| {
+                    let ring_count = polygon.holes.len().checked_add(1).ok_or_else(|| {
+                        pyo3::exceptions::PyOverflowError::new_err(
+                            "Arrow ring count overflows usize",
+                        )
+                    })?;
+                    total.checked_add(ring_count).ok_or_else(|| {
+                        pyo3::exceptions::PyOverflowError::new_err(
+                            "Arrow ring count overflows usize",
+                        )
+                    })
+                })?;
+                let polygon_total = polygon_total.checked_add(polygons.len()).ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err(
+                        "Arrow polygon count overflows usize",
+                    )
+                })?;
+                let ring_total = ring_total.checked_add(rings).ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("Arrow ring count overflows usize")
+                })?;
+                Ok::<(usize, usize), PyErr>((polygon_total, ring_total))
+            })?;
+    if i32::try_from(polygon_total).is_err() || i32::try_from(ring_total).is_err() {
+        return Err(offset_error());
+    }
+    let point_total = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::MultiPolygon(polygons) = shape else {
+            unreachable!()
+        };
+        polygons.iter().try_fold(total, |total, polygon| {
+            polygon.rings().try_fold(total, |total, ring| {
+                total.checked_add(ring.len()).ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err(
+                        "Arrow coordinate count overflows usize",
+                    )
+                })
+            })
+        })
+    })?;
+    if i32::try_from(point_total).is_err() {
+        return Err(offset_error());
+    }
+    let multipolygon_capacity = shapes.len().checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let polygon_capacity = polygon_total.checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let ring_capacity = ring_total.checked_add(1).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("Arrow offset count overflows usize")
+    })?;
+    let mut multipolygon_offsets = Vec::new();
+    crate::try_reserve_vec(&mut multipolygon_offsets, multipolygon_capacity)
+        .map_err(PyErr::from)?;
+    let mut polygon_offsets = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut polygon_offsets, polygon_capacity) {
+        drop(multipolygon_offsets);
+        return Err(PyErr::from(error));
+    }
+    let mut ring_offsets = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut ring_offsets, ring_capacity) {
+        drop(multipolygon_offsets);
+        drop(polygon_offsets);
+        return Err(PyErr::from(error));
+    }
     let mut polygon_count = 0_i32;
     let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
     let mut rings = Vec::new();
+    if let Err(error) = crate::try_reserve_vec(&mut rings, ring_total) {
+        drop(multipolygon_offsets);
+        drop(polygon_offsets);
+        drop(ring_offsets);
+        return Err(PyErr::from(error));
+    }
+    crate::try_push(&mut multipolygon_offsets, 0_i32)?;
+    crate::try_push(&mut polygon_offsets, 0_i32)?;
+    crate::try_push(&mut ring_offsets, 0_i32)?;
     for shape in shapes {
         let Shape::MultiPolygon(polygons) = shape else {
             unreachable!()
@@ -571,18 +787,23 @@ pub(crate) fn export_multipolygons_shapes(
         polygon_count = polygon_count
             .checked_add(i32::try_from(polygons.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        multipolygon_offsets.push(polygon_count);
+        crate::try_push(&mut multipolygon_offsets, polygon_count)?;
         for member in polygons.members() {
             match member {
                 crate::geometry::MultiMember::Empty => polygon_offsets.push(ring_count),
                 crate::geometry::MultiMember::Value(index) => {
                     let polygon = &polygons.as_slice()[*index];
-                    ring_count = ring_count
-                        .checked_add(
-                            i32::try_from(1 + polygon.holes.len()).map_err(|_| offset_error())?,
-                        )
+                    let ring_total = polygon
+                        .holes
+                        .len()
+                        .checked_add(1)
                         .ok_or_else(offset_error)?;
-                    polygon_offsets.push(ring_count);
+            ring_count = ring_count
+                    .checked_add(
+                        i32::try_from(ring_total).map_err(|_| offset_error())?,
+                    )
+                    .ok_or_else(offset_error)?;
+                    crate::try_push(&mut polygon_offsets, ring_count)?;
                     push_polygon(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
                 },
             }
@@ -611,10 +832,11 @@ pub(crate) fn export_wkb(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let shapes: Vec<&Shape> = geometries
-        .iter()
-        .map(|geometry| geometry.shape.shape())
-        .collect();
+    let shapes = crate::try_collect_results(
+        geometries
+            .iter()
+            .map(|geometry| Ok::<_, pyo3::PyErr>(geometry.shape.shape())),
+    )?;
     // Prefer array-frame CRS when all rows share it (caller already gated).
     export_wkb_shapes_with_crs(&shapes, crs, epoch)
 }
@@ -624,7 +846,7 @@ pub(crate) fn export_wkb_shapes(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let refs: Vec<&Shape> = shapes.iter().collect();
+    let refs = crate::try_collect_results(shapes.iter().map(|shape| Ok::<_, pyo3::PyErr>(shape)))?;
     export_wkb_shapes_with_crs(&refs, crs, epoch)
 }
 
@@ -633,13 +855,30 @@ fn export_wkb_shapes_with_crs(
     crs: Option<&str>,
     epoch: Option<f64>,
 ) -> PyResult<ExportedArray> {
-    let total = shapes.iter().map(|shape| io::wkb_len(shape, false)).sum();
-    let mut offsets = Vec::with_capacity(shapes.len() + 1);
-    let mut data = Vec::with_capacity(total);
-    offsets.push(0_i32);
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        total
+            .checked_add(io::wkb_len(shape, false)?)
+            .ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("WKB size overflows usize"))
+    })?;
+    if i32::try_from(total).is_err() {
+        return Err(offset_error());
+    }
+    let mut offsets =
+        crate::try_vec_with_capacity(shapes.len().checked_add(1).ok_or_else(|| {
+            pyo3::exceptions::PyOverflowError::new_err("WKB offset count overflows usize")
+        })?)?;
+    let mut data = crate::try_vec_with_capacity(total)?;
+    crate::try_push(&mut offsets, 0_i32)?;
     for shape in shapes {
-        io::write_wkb_to(&mut data, shape, crs, false)?;
-        offsets.push(i32::try_from(data.len()).map_err(|_| offset_error())?);
+        if let Err(error) = io::write_wkb_to(&mut data, shape, crs, false) {
+            drop(data);
+            drop(offsets);
+            return Err(PyErr::from(error));
+        }
+        crate::try_push(
+            &mut offsets,
+            i32::try_from(data.len()).map_err(|_| offset_error())?,
+        )?;
     }
     export_with_schema(
         GeometryEncoding::Wkb,

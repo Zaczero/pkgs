@@ -12,6 +12,7 @@
 //! WGS84 latitude/longitude by definition — and the format stores LAT
 //! first, while gometry is always `(x, y)` = `(lon, lat)`.
 
+use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -42,17 +43,27 @@ fn scale(value: f64, factor: f64) -> i64 {
     (value * factor + 0.5).floor() as i64
 }
 
+fn push_encoded_char(out: &mut String, value: char) -> PyResult<()> {
+    if out.try_reserve(1).is_err() {
+        return Err(PyMemoryError::new_err(
+            "failed to allocate encoded polyline",
+        ));
+    }
+    out.push(value);
+    Ok(())
+}
+
 /// Append one signed value as zig-zag 5-bit chunks offset by 63.
-fn encode_value(value: i64, out: &mut String) {
+fn encode_value(value: i64, out: &mut String) -> PyResult<()> {
     let mut bits = value << 1;
     if value < 0 {
         bits = !bits;
     }
     while bits >= 0x20 {
-        out.push(char::from((0x20 | (bits & 0x1F)) as u8 + 63));
+        push_encoded_char(out, char::from((0x20 | (bits & 0x1F)) as u8 + 63))?;
         bits >>= 5;
     }
-    out.push(char::from(bits as u8 + 63));
+    push_encoded_char(out, char::from(bits as u8 + 63))
 }
 
 fn encode_xy(
@@ -76,14 +87,14 @@ fn encode_xy(
     }
     let lat = scale(y, factor);
     let lon = scale(x, factor);
-    encode_value(lat - previous.0, out);
-    encode_value(lon - previous.1, out);
+    encode_value(lat - previous.0, out)?;
+    encode_value(lon - previous.1, out)?;
     *previous = (lat, lon);
     Ok(())
 }
 
 fn encode_line<C: Coordinates + ?Sized>(points: &C, factor: f64) -> PyResult<String> {
-    let mut out = String::with_capacity(points.coord_count() * 8);
+    let mut out = String::new();
     let mut previous = (0_i64, 0_i64);
     for point in points.iter_coords() {
         encode_xy(point.x, point.y, factor, &mut out, &mut previous)?;
@@ -93,7 +104,7 @@ fn encode_line<C: Coordinates + ?Sized>(points: &C, factor: f64) -> PyResult<Str
 
 fn encode_point(point: Point, factor: f64) -> PyResult<String> {
     // Construct the encoding directly — no Point→Vec→CoordSeq detour.
-    let mut out = String::with_capacity(8);
+    let mut out = String::new();
     let mut previous = (0_i64, 0_i64);
     encode_xy(point.x, point.y, factor, &mut out, &mut previous)?;
     Ok(out)
@@ -118,8 +129,11 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
     // Polyline vertices are always XY lon/lat. Size hint from the encoded
     // length (~5 chars/ordinate worst-case) keeps growth rare without
     // over-reading.
-    let capacity = (data.len() / 6).max(2);
-    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, capacity);
+    // Each vertex needs at least one byte for each of latitude and longitude,
+    // so this bound prevents the builder's infallible push path from growing.
+    let capacity = (data.len() / 2).max(2);
+    let mut builder =
+        CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, capacity).map_err(PyErr::from)?;
     let mut bytes = data.bytes();
     let (mut lat, mut lon) = (0_i64, 0_i64);
     // Hoist constant domain bounds once for the whole stream.
@@ -151,7 +165,7 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
         Point::new(x, y).map_err(|error| ParseError::new_err(error.to_string()))?;
         builder.push_xyzm(x, y, None, None);
     }
-    Ok(builder.finish_infallible())
+    builder.finish().map_err(PyErr::from)
 }
 
 fn shape_from_decoded_polyline(coords: CoordSeq) -> Shape {
@@ -180,8 +194,18 @@ fn python_char_repr(byte: u8) -> String {
 
 /// Double-quoted string with Python-style `\xNN` for non-printables, matching
 /// sibling codec messages that echo the offending input.
-fn python_str_repr(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
+fn python_str_repr(value: &str) -> PyResult<String> {
+    let capacity = value
+        .len()
+        .checked_mul(4)
+        .and_then(|length| length.checked_add(2))
+        .ok_or_else(|| PyMemoryError::new_err("polyline error text size overflows usize"))?;
+    let mut out = String::new();
+    if out.try_reserve(capacity).is_err() {
+        return Err(PyMemoryError::new_err(
+            "failed to allocate polyline error text",
+        ));
+    }
     out.push('"');
     for byte in value.bytes() {
         match byte {
@@ -198,7 +222,7 @@ fn python_str_repr(value: &str) -> String {
         }
     }
     out.push('"');
-    out
+    Ok(out)
 }
 
 /// One zig-zag value from the byte stream; `None` at clean end-of-input.
@@ -222,7 +246,7 @@ fn decode_value(bytes: &mut std::str::Bytes<'_>, source: &str) -> PyResult<Optio
             return Err(ParseError::new_err(format!(
                 "invalid polyline character {} in {}",
                 python_char_repr(byte),
-                python_str_repr(source),
+                python_str_repr(source)?,
             )));
         };
         bits |= i64::from(chunk & 0x1F) << shift;
@@ -259,23 +283,19 @@ pub(crate) fn present_polylines_of(
     factor: f64,
 ) -> PyResult<Vec<(usize, String)>> {
     require_polyline_crs(array.crs_str())?;
-    array
-        .present_shape_rows()
-        .map(|(row, shape)| {
-            let encode = || -> PyResult<String> {
-                if shape.has_z() || shape.has_m() {
-                    return Err(crate::geometry::GeometryErrorKind::ordinate_dropped(
-                        "to_polyline",
-                    )
-                    .into());
-                }
-                encode_shape(shape.as_ref(), factor)
-            };
-            encode()
-                .map(|encoded| (row, encoded))
-                .map_err(|err| note_array_row(err, row))
-        })
-        .collect()
+    crate::try_collect_results(array.present_shape_rows().map(|(row, shape)| {
+        let encode = || -> PyResult<String> {
+            if shape.has_z() || shape.has_m() {
+                return Err(
+                    crate::geometry::GeometryErrorKind::ordinate_dropped("to_polyline").into(),
+                );
+            }
+            encode_shape(shape.as_ref(), factor)
+        };
+        encode()
+            .map(|encoded| (row, encoded))
+            .map_err(|err| note_array_row(err, row))
+    }))
 }
 
 /// Encode one geometry (must be a `LineString` or `Point`).

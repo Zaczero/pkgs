@@ -24,9 +24,14 @@ pub(crate) fn nearest_point_columns_masked(
     pairs: Vec<(Option<(Point, Point)>, CoordinateAxes)>,
     frame: Frame,
     missing: Option<MissingMask>,
-) -> (PyGeometryArray, PyGeometryArray) {
-    let mut left = Vec::with_capacity(pairs.len());
-    let mut right = Vec::with_capacity(pairs.len());
+) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
+    let pair_count = pairs.len();
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    if let Err(error) = crate::try_reserve_pair(&mut left, &mut right, pair_count) {
+        drop(pairs);
+        return Err(error.into());
+    }
     for (row, (pair, common)) in pairs.into_iter().enumerate() {
         if missing.as_ref().is_some_and(|mask| mask[row]) {
             left.push(PyGeometryArray::missing_placeholder());
@@ -37,10 +42,10 @@ pub(crate) fn nearest_point_columns_masked(
         left.push(left_shape);
         right.push(right_shape);
     }
-    (
+    Ok((
         PyGeometryArray::from_shapes(left, frame.clone()).with_missing_mask(missing.clone()),
         PyGeometryArray::from_shapes(right, frame).with_missing_mask(missing),
-    )
+    ))
 }
 
 pub(crate) fn py_nearest_points(
@@ -196,7 +201,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
             pairs,
             array.frame.clone(),
             array.missing().cloned(),
-        ));
+        )?);
     }
     let missing = array.missing().cloned();
     let pairs = py
@@ -225,7 +230,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         pairs,
         array.frame.clone(),
         array.missing().cloned(),
-    ))
+    )?)
 }
 
 /// Extract the query `Point` for a linear-referencing locate, with the

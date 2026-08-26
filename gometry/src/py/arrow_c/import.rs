@@ -142,24 +142,29 @@ pub(crate) unsafe fn schema_metadata_pairs_owned(
         let mut cursor = schema.metadata.cast::<u8>();
         let pair_count = read_metadata_len(&mut cursor)?;
         let mut pairs = Vec::new();
-        pairs
-            .try_reserve(pair_count)
-            .map_err(|_| ParseError::new_err("Arrow C schema metadata is too large to allocate"))?;
+        crate::boundary::try_reserve_vec(&mut pairs, pair_count).map_err(PyErr::from)?;
         for _ in 0..pair_count {
             let key_len = read_metadata_len(&mut cursor)?;
-            let key = std::slice::from_raw_parts(cursor, key_len)
-                .to_vec()
-                .into_boxed_slice();
+            let key = copy_metadata_bytes(std::slice::from_raw_parts(cursor, key_len), &mut pairs)?;
             cursor = cursor.add(key_len);
             let value_len = read_metadata_len(&mut cursor)?;
-            let value = std::slice::from_raw_parts(cursor, value_len)
-                .to_vec()
-                .into_boxed_slice();
+            let value =
+                copy_metadata_bytes(std::slice::from_raw_parts(cursor, value_len), &mut pairs)?;
             cursor = cursor.add(value_len);
             pairs.push((key, value));
         }
         Ok(pairs)
     }
+}
+
+fn copy_metadata_bytes(bytes: &[u8], retained: &mut OwnedMetadataPairs) -> PyResult<Box<[u8]>> {
+    let mut output = Vec::new();
+    if let Err(error) = crate::boundary::try_reserve_vec(&mut output, bytes.len()) {
+        *retained = Vec::new();
+        return Err(error.into());
+    }
+    output.extend_from_slice(bytes);
+    Ok(output.into_boxed_slice())
 }
 
 const unsafe fn read_metadata_i32(cursor: &mut *const u8) -> i32 {

@@ -187,14 +187,12 @@ pub(crate) fn join_pair_columns(
             distance,
             unit,
         )?;
-        let capacity = matches.ids.len();
-        let mut left_ids = Vec::with_capacity(capacity);
-        let mut right_ids = Vec::with_capacity(capacity);
+        let mut left_ids = Vec::new();
+        let mut right_ids = Vec::new();
         for (left_idx, row) in matches.rows().enumerate() {
             let left = left_idx as i64;
             for &idx in row {
-                left_ids.push(left);
-                right_ids.push(idx as i64);
+                crate::try_push_pair(&mut left_ids, &mut right_ids, left, idx as i64)?;
             }
         }
         return Ok((left_ids, right_ids));
@@ -215,9 +213,8 @@ pub(crate) fn join_pair_columns(
                 }
                 let left = left_idx as i64;
                 let shape = array.prepared_row(left_idx, row);
-                for right_idx in index.topological_matches(&shape, topological) {
-                    left_ids.push(left);
-                    right_ids.push(right_idx as i64);
+                for right_idx in index.topological_matches(&shape, topological)? {
+                    crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
                 }
             }
             return Ok((left_ids, right_ids));
@@ -237,8 +234,7 @@ pub(crate) fn join_pair_columns(
             )?;
             let left = left_idx as i64;
             for &right_idx in &scratch {
-                left_ids.push(left);
-                right_ids.push(right_idx as i64);
+                crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
             }
         }
         return Ok((left_ids, right_ids));
@@ -249,8 +245,7 @@ pub(crate) fn join_pair_columns(
     for (left_idx, geometry) in left_items.iter().enumerate() {
         let left = left_idx as i64;
         for right_idx in index.query_exact(geometry, predicate, distance, unit)? {
-            left_ids.push(left);
-            right_ids.push(right_idx as i64);
+            crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
         }
     }
     Ok((left_ids, right_ids))

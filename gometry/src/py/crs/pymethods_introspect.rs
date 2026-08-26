@@ -164,12 +164,12 @@ impl PyCrs {
     /// list of str
     #[getter]
     fn axis_order(&self) -> PyResult<Vec<String>> {
-        Ok(self
-            .cached_info()?
-            .axis_order
-            .iter()
-            .map(|a| (*a).to_owned())
-            .collect())
+        let info = self.cached_info()?;
+        crate::try_collect_results(
+            info.axis_order
+                .iter()
+                .map(|a| Ok::<_, pyo3::PyErr>((*a).to_owned())),
+        )
     }
 
     /// Name of the celestial body (usually ``"Earth"``), if known.

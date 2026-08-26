@@ -111,11 +111,10 @@ pub(crate) trait CollectRows<T> {
 
 impl<T, I: Iterator<Item = Result<T, crate::error::Error>>> CollectRows<T> for I {
     fn collect_rows(self) -> Result<Vec<T>, (usize, crate::error::Error)> {
-        let (low, _) = self.size_hint();
-        let mut out = Vec::with_capacity(low);
+        let mut out = Vec::new();
         for (row, result) in self.enumerate() {
             match result {
-                Ok(value) => out.push(value),
+                Ok(value) => crate::try_push_vec(&mut out, value).map_err(|error| (row, error))?,
                 Err(error) => return Err((row, error)),
             }
         }

@@ -91,7 +91,7 @@ fn try_is_simple_packed(
     }
     array
         .is_simple_unary_packed()
-        .map(|values| bool_array(py, values))
+        .map(|values| values.and_then(|values| bool_array(py, values)))
 }
 
 fn is_simple_array_row_fallback(

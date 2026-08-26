@@ -99,13 +99,10 @@ where
     G: GridCell,
     P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
-    Ok(cell_array_from_keys(
-        kind,
-        cell_children(cell, depth, parse_depth)?,
-    ))
+    cell_array_from_keys(kind, cell_children(cell, depth, parse_depth)?)
 }
 
-pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyCellArray {
+pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyResult<PyCellArray> {
     cell_array_from_keys(kind, cell.neighbors())
 }
 
@@ -191,7 +188,10 @@ pub(crate) fn cell_reduce<G: GridCell>(
 pub(crate) fn cell_array_from_keys<G: GridCell>(
     kind: GridKind,
     cells: impl IntoIterator<Item = G>,
-) -> PyCellArray {
-    let ids: Vec<u64> = cells.into_iter().map(GridCell::hash_key).collect();
-    PyCellArray::from_trusted_ids(kind, ids)
+) -> PyResult<PyCellArray> {
+    let mut ids = Vec::new();
+    for cell in cells {
+        crate::try_push(&mut ids, cell.hash_key())?;
+    }
+    Ok(PyCellArray::from_trusted_ids(kind, ids))
 }

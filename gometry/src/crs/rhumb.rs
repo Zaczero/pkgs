@@ -262,18 +262,39 @@ pub(in crate::crs) fn with_rhumb_at<T>(
     f: impl FnOnce(&RhumbEllipsoid) -> Result<T>,
 ) -> Result<T> {
     ensure_thread_caches_current(state);
+    // Resolve a miss before borrowing this cache: building the rhumb
+    // ellipsoid consults the geodesic/info caches, whose generation check can
+    // clear this cache while another thread changes runtime configuration.
+    let hit = CRS_RHUMB_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let Some(index) = cache.iter().position(|item| item.crs == crs) else {
+            return false;
+        };
+        if index + 1 != cache.len() {
+            let entry = cache.remove(index);
+            cache.push(entry);
+        }
+        true
+    });
+    if hit {
+        return CRS_RHUMB_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            f(&cache[cache.len() - 1].ellipsoid)
+        });
+    }
+
+    let entry = CachedRhumbEllipsoid {
+        crs: crs.to_owned(),
+        ellipsoid: RhumbEllipsoid::for_crs_at(crs, state)?,
+    };
+    ensure_thread_caches_current(state);
     CRS_RHUMB_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
             &mut cache,
             CRS_RHUMB_CACHE_CAPACITY,
             |item| item.crs == crs,
-            || {
-                Ok(CachedRhumbEllipsoid {
-                    crs: crs.to_owned(),
-                    ellipsoid: RhumbEllipsoid::for_crs_at(crs, state)?,
-                })
-            },
+            || Ok(entry),
         )?;
         f(&cache[index].ellipsoid)
     })

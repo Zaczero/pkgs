@@ -3,7 +3,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::IntoPyObjectExt as _;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyMemoryError, PyTypeError};
 
 use crate::geometry::LineSeq;
 use crate::py::cells::{
@@ -179,20 +179,27 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
     // Grid cells are 2-D (lon/lat), so keep independent X/Y columns through
     // the batched transform. This avoids the previous AoS -> CoordSeq -> Shape
     // round-trip; only the final `PointRows` interchange materializes Points.
-    let mut xs = Vec::with_capacity(points.len());
-    let mut ys = Vec::with_capacity(points.len());
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_pair(&mut xs, &mut ys, points.len()).map_err(PyErr::from)?;
     for point in points.iter() {
-        xs.push(point.x);
-        ys.push(point.y);
+        crate::try_push_pair(&mut xs, &mut ys, point.x, point.y).map_err(PyErr::from)?;
     }
     // Transform present rows only: missing placeholders may be non-finite and
     // must not trip domain validation on the identity/real path.
-    let present: Vec<usize> = (0..points.len())
-        .filter(|&row| !array.is_row_missing(row))
-        .collect();
+    let mut present = crate::try_vec_with_capacity(points.len())?;
+    for row in 0..points.len() {
+        if !array.is_row_missing(row) {
+            crate::try_push(&mut present, row)?;
+        }
+    }
     if !present.is_empty() {
-        let mut px: Vec<f64> = present.iter().map(|&r| xs[r]).collect();
-        let mut py: Vec<f64> = present.iter().map(|&r| ys[r]).collect();
+        let mut px = Vec::new();
+        let mut py = Vec::new();
+        crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(PyErr::from)?;
+        for &row in &present {
+            crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]).map_err(PyErr::from)?;
+        }
         crate::crs::Transformer::new(crs, "EPSG:4326").transform_coordinates(
             &mut px,
             &mut py,
@@ -228,24 +235,21 @@ pub(crate) fn grid_cover_dispatch<'py>(
     };
     let crs = array.crs_str();
     let mut produced = 0_usize;
-    let rows = array
-        .masked_shape_rows()
-        .map(|(missing, shape)| {
-            if missing {
-                return Ok(Vec::new());
-            }
-            let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-            let remaining = remaining_cover_budget(produced, max_cells)?;
-            if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
-                return Err(crate::py::cells::coverage_ops::cover_budget_err(
-                    crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
-                ));
-            }
-            let ids = build(&PyGeometry::wgs84(shape), remaining)?;
-            produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
-            Ok(ids)
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+    let rows = crate::try_collect_results(array.masked_shape_rows().map(|(missing, shape)| {
+        if missing {
+            return Ok(Vec::new());
+        }
+        let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
+        let remaining = remaining_cover_budget(produced, max_cells)?;
+        if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
+            return Err(crate::py::cells::coverage_ops::cover_budget_err(
+                crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
+            ));
+        }
+        let ids = build(&PyGeometry::wgs84(shape), remaining)?;
+        produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
+        Ok(ids)
+    }))?;
     crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
 }
 
@@ -315,8 +319,12 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let mut outline: Vec<crate::geometry::CoordSeq> =
-        Vec::with_capacity(cells.as_slice().len() * 4);
+    let capacity = cells
+        .as_slice()
+        .len()
+        .checked_mul(4)
+        .ok_or_else(|| PyMemoryError::new_err("coverage outline size overflows usize"))?;
+    let mut outline = crate::try_vec_with_capacity(capacity)?;
     for cell in cells.as_slice() {
         let bounds = cell.bounds();
         // CCW corners: (minx,miny) -> (maxx,miny) -> (maxx,maxy) -> (minx,maxy).
@@ -332,28 +340,35 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
             let interior =
                 neighbor.is_some_and(|across| cells.as_slice().binary_search(&across).is_ok());
             if !interior {
-                outline.push(crate::geometry::CoordSeq::from_points(&[
-                    corners[side],
-                    corners[(side + 1) % 4],
-                ]));
+                crate::try_push(
+                    &mut outline,
+                    crate::geometry::CoordSeq::try_from_points(&[
+                        corners[side],
+                        corners[(side + 1) % 4],
+                    ])
+                    .map_err(PyErr::from)?,
+                )?;
             }
         }
     }
     if outline.is_empty() {
         return Ok(None);
     }
-    let polygons: Vec<crate::geometry::Polygon> = Shape::build_area_all(
-        &[&Shape::MultiLineString(
-            outline.into_iter().map(LineSeq::from_trusted).collect(),
-        )],
-        true,
-    )?
-    .into_iter()
-    .filter_map(|shape| match shape {
-        Shape::Polygon(polygon) => Some(polygon),
-        _ => None,
-    })
-    .collect();
+    let polygons = crate::try_collect_results(
+        Shape::build_area_all(
+            &[&Shape::MultiLineString(crate::try_collect_results(
+                outline
+                    .into_iter()
+                    .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
+            )?)],
+            true,
+        )?
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Polygon(polygon) => Some(Ok(polygon)),
+            _ => None,
+        }),
+    )?;
     if polygons.is_empty() {
         return Ok(None);
     }
@@ -380,14 +395,10 @@ pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
     if let Some(typed) = rect_dissolve(&cells)? {
         return Ok(typed);
     }
-    let shapes: Vec<Shape> = cells
-        .as_slice()
-        .iter()
-        .map(|cell| {
-            let shape = crate::geometry::bounds_to_shape(cell.bounds());
-            shape.split_antimeridian()
-        })
-        .collect::<crate::error::Result<_>>()?;
+    let shapes = crate::try_collect_results(cells.as_slice().iter().map(|cell| {
+        let shape = crate::geometry::bounds_to_shape(cell.bounds());
+        shape.split_antimeridian().map_err(PyErr::from)
+    }))?;
     coverage_to_polygon(&shapes)
 }
 

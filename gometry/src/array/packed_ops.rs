@@ -2,7 +2,6 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::array::{
@@ -64,25 +63,33 @@ impl PyGeometryArray {
         arrays: &[&Self],
         first: &Self,
         first_coords: &CoordSeq,
-    ) -> Option<Self> {
-        let total_rows: usize = arrays.iter().map(|array| array.storage().len()).sum();
-        let mut builder = PointColumnBuilder::like_coords(first_coords, total_rows);
+    ) -> PyResult<Option<Self>> {
+        let total_rows = arrays.iter().try_fold(0_usize, |total, array| {
+            total.checked_add(array.storage().len()).ok_or_else(|| {
+                pyo3::exceptions::PyOverflowError::new_err("row count overflows usize")
+            })
+        })?;
+        let mut builder =
+            match PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows) {
+                Ok(builder) => builder,
+                Err(error) => return Err(error.into()),
+            };
         for array in arrays {
             let GeometryArrayStorage::Points { coords, row_map } = array.storage() else {
-                return None;
+                return Ok(None);
             };
             if coords.axes() != first_coords.axes() {
-                return None;
+                return Ok(None);
             }
             let map = row_map.as_deref();
             for logical in 0..array.storage().len() {
                 builder.push_at(coords, physical_row(map, logical));
             }
         }
-        Some(Self::packed_points(
+        Ok(Some(Self::packed_points(
             builder.finish_infallible(),
             first.frame.clone(),
-        ))
+        )))
     }
 
     fn concat_packed_lines_many(
@@ -103,12 +110,14 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
-            vertex_count += packed_lines_coord_len(offsets, row_map.as_deref());
+            vertex_count = vertex_count
+                .checked_add(packed_lines_coord_len(offsets, row_map.as_deref()))
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
+                })?;
         }
-        let total_rows: usize = arrays.iter().map(|array| array.storage().len()).sum();
-        let mut builder = PointColumnBuilder::like_coords(first_coords, vertex_count);
-        let mut offset_ends = Vec::with_capacity(total_rows + 1);
-        offset_ends.push(0_usize);
+        let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
+        let mut offset_builder = CsrOffsetBuilder::new();
         for array in arrays {
             let GeometryArrayStorage::Lines {
                 coords,
@@ -121,11 +130,11 @@ impl PyGeometryArray {
             let map = row_map.as_deref();
             for logical in 0..array.storage().len() {
                 builder.extend_window(coords, map.csr_window(offsets, logical));
-                offset_ends.push(builder.len());
+                offset_builder.push_end(builder.len(), vertex_count)?;
             }
         }
         let coords = builder.finish()?;
-        let offsets = CsrOffsetColumn::try_new(offset_ends, vertex_count)?;
+        let offsets = offset_builder.finish(vertex_count)?;
         Ok(Some(Self::packed_lines(
             coords,
             offsets,
@@ -153,16 +162,28 @@ impl PyGeometryArray {
             if coords.axes() != first_coords.axes() {
                 return Ok(None);
             }
-            vertex_count +=
-                packed_polygons_coord_len(ring_offsets, polygon_offsets, row_map.as_deref());
-            ring_count += packed_polygons_ring_len(polygon_offsets, row_map.as_deref());
+            vertex_count = vertex_count
+                .checked_add(packed_polygons_coord_len(
+                    ring_offsets,
+                    polygon_offsets,
+                    row_map.as_deref(),
+                ))
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
+                })?;
+            ring_count = ring_count
+                .checked_add(packed_polygons_ring_len(
+                    polygon_offsets,
+                    row_map.as_deref(),
+                ))
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
+                })?;
         }
-        let total_rows: usize = arrays.iter().map(|array| array.storage().len()).sum();
-        let mut coord_builder = PointColumnBuilder::like_coords(first_coords, vertex_count);
-        let mut ring_ends = Vec::with_capacity(ring_count + 1);
-        ring_ends.push(0_usize);
-        let mut polygon_ends = Vec::with_capacity(total_rows + 1);
-        polygon_ends.push(0_usize);
+        let mut coord_builder =
+            PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
+        let mut ring_builder = CsrOffsetBuilder::new();
+        let mut polygon_builder = CsrOffsetBuilder::new();
         let mut output_rings = 0_usize;
         for array in arrays {
             let GeometryArrayStorage::Polygons {
@@ -182,17 +203,19 @@ impl PyGeometryArray {
                         coords,
                         ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize,
                     );
-                    output_rings += 1;
-                    ring_ends.push(coord_builder.len());
+                    output_rings = output_rings.checked_add(1).ok_or_else(|| {
+                        pyo3::exceptions::PyOverflowError::new_err("ring count overflows usize")
+                    })?;
+                    ring_builder.push_end(coord_builder.len(), vertex_count)?;
                 }
-                polygon_ends.push(output_rings);
+                polygon_builder.push_end(output_rings, ring_count)?;
             }
         }
         let coords = coord_builder.finish()?;
-        let ring_offsets =
-            CsrOffsetColumn::<()>::try_new(ring_ends, vertex_count)?.cast_level::<RingLevel>();
-        let polygon_offsets =
-            CsrOffsetColumn::<()>::try_new(polygon_ends, ring_count)?.cast_level::<PolygonLevel>();
+        let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
+        let polygon_offsets = polygon_builder
+            .finish(ring_count)?
+            .cast_level::<PolygonLevel>();
         Ok(Some(Self::packed_polygons(
             coords,
             ring_offsets,
@@ -212,7 +235,7 @@ impl PyGeometryArray {
             GeometryArrayStorage::Points {
                 coords: first_coords,
                 ..
-            } => Ok(Self::concat_packed_points_many(arrays, first, first_coords)),
+            } => Self::concat_packed_points_many(arrays, first, first_coords),
             GeometryArrayStorage::Lines {
                 coords: first_coords,
                 ..
@@ -453,7 +476,7 @@ impl PyGeometryArray {
         offsets: &[i32],
         rows: impl Iterator<Item = PhysicalRow>,
     ) -> PyResult<Self> {
-        let mut builder = PackedColumnBuilder::like(coords, 0);
+        let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
         for row in rows {
             let row = row.0;
             let window = offsets[row] as usize..offsets[row + 1] as usize;
@@ -506,7 +529,7 @@ impl PyGeometryArray {
         polygon_offsets: &[i32],
         rows: impl Iterator<Item = PhysicalRow>,
     ) -> PyResult<Self> {
-        let mut builder = PackedColumnBuilder::like(coords, 0);
+        let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
         let mut polygon_builder = CsrOffsetBuilder::new();
         let mut ring_index = 0_usize;
         for row in rows {
@@ -570,7 +593,7 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
         let rows = offsets.len() - 1;
-        let mut builder = PackedColumnBuilder::like(coords, xs.len());
+        let mut builder = PackedColumnBuilder::try_like(coords, xs.len())?;
         let mut keep: Vec<bool> = Vec::new();
         for row in 0..rows {
             let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
@@ -587,7 +610,7 @@ impl PyGeometryArray {
             }
             for (slot, &kept) in keep.iter().enumerate() {
                 if kept {
-                    builder.push_vertex(coords, start + slot);
+                    builder.push_vertex(coords, start + slot)?;
                 }
             }
             builder.close_row()?;
@@ -625,20 +648,25 @@ impl PyGeometryArray {
             return Ok(Vec::new());
         }
         let Some(bounds) = bounds else {
-            return Ok(vec![u64::MAX; self.storage().len()]);
+            let mut keys = crate::try_vec_with_capacity(self.storage().len())?;
+            for _ in 0..self.storage().len() {
+                crate::try_push(&mut keys, u64::MAX)?;
+            }
+            return Ok(keys);
         };
         let frame = curves::CurveFrame::new(bounds, level);
-        self.storage()
-            .iter_shapes()
-            .enumerate()
-            .map(|(row, shape)| {
-                Ok(if self.is_row_missing(row) {
+        let mut keys = crate::try_vec_with_capacity(self.storage().len())?;
+        for (row, shape) in self.storage().iter_shapes().enumerate() {
+            crate::try_push(
+                &mut keys,
+                if self.is_row_missing(row) {
                     u64::MAX
                 } else {
                     kind.key(&frame, &shape).unwrap_or(u64::MAX)
-                })
-            })
-            .collect()
+                },
+            )?;
+        }
+        Ok(keys)
     }
 
     /// The array reordered by ascending `keys` (stable, so equal keys keep
@@ -649,14 +677,14 @@ impl PyGeometryArray {
         self.gather_logical_rows(&order)
     }
 
-    pub fn items(&self) -> std::borrow::Cow<'_, [PyGeometry]> {
+    pub fn items(&self) -> PyResult<std::borrow::Cow<'_, [PyGeometry]>> {
         // Mixed no longer stores PyGeometry; materialize through the array
         // geometry_at cache so repeated items()/arr[i] share ShapeData.
-        std::borrow::Cow::Owned(
-            (0..self.storage().len())
-                .map(|index| self.geometry_at(index))
-                .collect(),
-        )
+        let mut items = crate::try_vec_with_capacity(self.storage().len())?;
+        for index in 0..self.storage().len() {
+            crate::try_push(&mut items, self.geometry_at(index))?;
+        }
+        Ok(std::borrow::Cow::Owned(items))
     }
 
     /// Map each row's shape to a `Vec<Shape>` and collect into a per-row
@@ -682,15 +710,16 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let (shapes, offsets) = py
             .detach(move || {
-                let mut items = Vec::new();
-                let mut offsets = vec![0_i64];
+                let mut builder = crate::CsrBuilder::<Shape>::new();
                 for (row, shape) in storage.iter_shapes().enumerate() {
-                    if !missing.as_ref().is_some_and(|mask| mask[row]) {
-                        items.extend(transform(row, &shape).map_err(|error| (row, error))?);
-                    }
-                    offsets.push(items.len() as i64);
+                    let values = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        Vec::new()
+                    } else {
+                        transform(row, &shape).map_err(|error| (row, error))?
+                    };
+                    builder.push_row(values).map_err(|error| (row, error))?;
                 }
-                Ok((items, offsets))
+                Ok::<_, (usize, crate::error::Error)>(builder.finish())
             })
             .map_err(rows_err)?;
         crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
@@ -717,17 +746,16 @@ impl PyGeometryArray {
         let (shapes, offsets) = py
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-                let mut items = Vec::new();
-                let mut offsets = vec![0_i64];
+                let mut builder = crate::CsrBuilder::<Shape>::new();
                 for (row, shape) in storage.iter_shapes().enumerate() {
-                    if !missing.as_ref().is_some_and(|mask| mask[row]) {
-                        items.extend(
-                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?,
-                        );
-                    }
-                    offsets.push(items.len() as i64);
+                    let values = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        Vec::new()
+                    } else {
+                        transform(row, &shape, &mut budget).map_err(|error| (row, error))?
+                    };
+                    builder.push_row(values).map_err(|error| (row, error))?;
                 }
-                Ok((items, offsets))
+                Ok::<_, (usize, crate::error::Error)>(builder.finish())
             })
             .map_err(rows_err)?;
         crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
@@ -754,17 +782,29 @@ impl PyGeometryArray {
         let (vertices, offsets) = py
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-                let mut vertices = Vec::new();
-                let mut offsets = vec![0_i64];
+                let mut builder = crate::CsrBuilder::<Point>::new();
                 for (row, shape) in storage.iter_shapes().enumerate() {
-                    if !missing.as_ref().is_some_and(|mask| mask[row]) {
-                        vertices.extend(
-                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?,
-                        );
+                    let values = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        Vec::new()
+                    } else {
+                        transform(row, &shape, &mut budget).map_err(|error| (row, error))?
+                    };
+                    if values.len() % 4 != 0 {
+                        return Err((
+                            row,
+                            crate::geometry::GeometryErrorKind::Invalid(
+                                "triangle output is not a multiple of four vertices".into(),
+                            )
+                            .into(),
+                        ));
                     }
-                    offsets.push((vertices.len() / 4) as i64);
+                    for value in values {
+                        builder.push(value).map_err(|error| (row, error))?;
+                    }
+                    let end = builder.len() / 4;
+                    builder.push_end(end).map_err(|error| (row, error))?;
                 }
-                Ok((vertices, offsets))
+                Ok::<_, (usize, crate::error::Error)>(builder.finish())
             })
             .map_err(rows_err)?;
         let values = if vertices.is_empty() {
@@ -810,41 +850,56 @@ impl PyGeometryArray {
     /// (`dissolve()`): the same kernel and output as N point rows, with no
     /// per-row boxing or shape clones. `None` for non-point storage, masked
     /// arrays, or empty columns (callers fall back to the generic staging).
-    pub(crate) fn packed_points_as_multipoint(&self) -> Option<Shape> {
+    pub(crate) fn packed_points_as_multipoint(&self) -> Result<Option<Shape>> {
         if self.has_missing() {
-            return None;
+            return Ok(None);
         }
         let GeometryArrayStorage::Points { coords, row_map } = self.storage() else {
-            return None;
+            return Ok(None);
         };
         if coords.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(if row_map.is_identity() {
+        Ok(Some(if row_map.is_identity() {
             Shape::MultiPoint((**coords).clone().into())
         } else {
             let map = row_map.as_deref();
-            let points: Vec<_> = (0..crate::array::point_logical_len(coords, map))
-                .map(|logical| coords.point_at(crate::array::physical_row(map, logical)))
-                .collect();
-            Shape::MultiPoint(CoordSeq::from_points(&points).into())
-        })
+            let mut points = Vec::new();
+            let len = crate::array::point_logical_len(coords, map);
+            crate::boundary::try_reserve_vec(&mut points, len)?;
+            for logical in 0..len {
+                crate::boundary::try_push_vec(
+                    &mut points,
+                    coords.point_at(crate::array::physical_row(map, logical)),
+                )?;
+            }
+            Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(
+                CoordSeq::try_from_points(&points)?,
+            )?)
+        }))
     }
 
     /// Materialize a borrowed `&[&Shape]` view of every row once (`Cow` borrows
     /// boxed storage, stack points for packed) and run `f` over it — the staging
     /// the n-ary `*_all` kernels need, without restating the double-collect.
-    pub(crate) fn with_borrowed_shapes<R>(&self, f: impl FnOnce(&[&Shape]) -> R) -> R {
+    pub(crate) fn with_borrowed_shapes<R>(
+        &self,
+        f: impl FnOnce(&[&Shape]) -> Result<R>,
+    ) -> Result<R> {
         // Aggregates SKIP missing rows (SQL/pandas semantics): stage only the
         // present shapes. Dense arrays stage every row unchanged.
-        let rows: Vec<Cow<'_, Shape>> = self
-            .storage()
-            .iter_shapes()
-            .enumerate()
-            .filter(|(row, _)| !self.is_row_missing(*row))
-            .map(|(_, shape)| shape)
-            .collect();
-        let shapes: Vec<&Shape> = rows.iter().map(Cow::as_ref).collect();
+        let mut rows = Vec::new();
+        crate::boundary::try_reserve_vec(&mut rows, self.storage().len())?;
+        for (row, shape) in self.storage().iter_shapes().enumerate() {
+            if !self.is_row_missing(row) {
+                crate::boundary::try_push_vec(&mut rows, shape)?;
+            }
+        }
+        let mut shapes = Vec::new();
+        crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
+        for shape in &rows {
+            crate::boundary::try_push_vec(&mut shapes, shape.as_ref())?;
+        }
         f(&shapes)
     }
 }

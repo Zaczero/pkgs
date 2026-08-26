@@ -111,7 +111,7 @@ grid_free_functions! {
         contract_doc: "This is cell-ID algebra (the ``compact`` contract): an H3 child's *geometry* does not nest exactly inside its parent, but its id does.",
         parse_error_doc: "If an id or token is not a valid H3 cell.",
         parse_cell: |cell| h3_cell_index(cell).map(H3SetId),
-        array: |cells| h3_cell_array(cells.into_iter().map(|id| id.0).collect()),
+        array: |cells| h3_cell_array(cells.into_iter().map(|id| id.0)),
         union: h3_union,
         intersection: h3_intersection,
         difference: h3_difference,
@@ -192,7 +192,7 @@ pub(super) fn _unpickle_h3_cell(
 /// 12
 pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
     let resolution = parse_h3_resolution(resolution)?;
-    Ok(h3_cell_array(resolution.pentagons().collect()))
+    h3_cell_array(resolution.pentagons())
 }
 
 /// Return the 122 resolution-0 H3 base cells.
@@ -207,6 +207,6 @@ pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArra
 /// >>> import gometry as gm
 /// >>> len(gm.h3_base_cells())
 /// 122
-pub(super) fn h3_base_cells() -> PyCellArray {
-    h3_cell_array(CellIndex::base_cells().collect())
+pub(super) fn h3_base_cells() -> PyResult<PyCellArray> {
+    h3_cell_array(CellIndex::base_cells())
 }

@@ -27,7 +27,9 @@ impl RectCoverSpec for GeohashCoverSpec {
         "geohash"
     }
 }
-pub(super) fn geohash_cell_array(cells: impl IntoIterator<Item = Geohash>) -> PyCellArray {
+pub(super) fn geohash_cell_array(
+    cells: impl IntoIterator<Item = Geohash>,
+) -> PyResult<PyCellArray> {
     rect_cell_array_for::<GeohashCoverSpec>(cells)
 }
 

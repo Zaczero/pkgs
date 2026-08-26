@@ -5,9 +5,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
 use crate::geometry::FrameDependentCaches;
-use crate::py::row::{
-    RowContainer, RowIndexOrSlice, RowIterState, collect_slice_rows, parse_row_index_or_slice,
-};
+use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
     PyClassInitializer, PyErr, PyRef, PyResult, Python, Result, ShapeData, exact_geometry, pyclass,
@@ -339,13 +337,16 @@ fn geometry_parts_getitem(
         <PyGeometryParts as RowContainer>::LABEL,
     )? {
         RowIndexOrSlice::Slice {
-            start, stop, step, ..
+            start, step, count, ..
         } => {
-            let parts: Vec<Typed> = collect_slice_rows(start, stop, step)
-                .into_iter()
-                .filter_map(|row| geometry.shape.part_at(row))
-                .map(|part| geometry.typed_shape(part))
-                .collect();
+            let mut parts = crate::try_vec_with_capacity(count)?;
+            let mut row = start;
+            for _ in 0..count {
+                if let Some(part) = geometry.shape.part_at(row as usize) {
+                    crate::try_push(&mut parts, geometry.typed_shape(part))?;
+                }
+                row += step;
+            }
             Ok(parts.into_pyobject(py)?.into_any().unbind())
         },
         RowIndexOrSlice::Index(row) => {

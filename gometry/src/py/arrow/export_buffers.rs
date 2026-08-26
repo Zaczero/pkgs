@@ -91,23 +91,58 @@ pub(crate) struct ExactArrowCoordinateFill {
 }
 
 impl ExactArrowCoordinateFill {
-    pub(crate) fn with_capacity(axes: CoordinateAxes, coordinate_count: usize) -> Self {
-        use std::sync::Arc;
+    pub(crate) fn with_capacity(axes: CoordinateAxes, coordinate_count: usize) -> PyResult<Self> {
+        fn uninit_column(
+            count: usize,
+        ) -> crate::error::Result<std::sync::Arc<[std::mem::MaybeUninit<f64>]>> {
+            let mut values = Vec::new();
+            crate::try_reserve_vec(&mut values, count)?;
+            // SAFETY: `MaybeUninit<f64>` does not require initialization.
+            unsafe { values.set_len(count) };
+            Ok(values.into())
+        }
+
         // Capacity is a sum of trusted chunk lengths (already validated per
         // chunk); the allocation is proportional to admitted input.
-        Self {
-            xs: Arc::new_uninit_slice(coordinate_count),
-            ys: Arc::new_uninit_slice(coordinate_count),
-            zs: axes
-                .has_z()
-                .then(|| Arc::new_uninit_slice(coordinate_count)),
-            ms: axes
-                .has_m()
-                .then(|| Arc::new_uninit_slice(coordinate_count)),
+        let xs = uninit_column(coordinate_count).map_err(pyo3::PyErr::from)?;
+        let ys = match uninit_column(coordinate_count) {
+            Ok(values) => values,
+            Err(error) => {
+                drop(xs);
+                return Err(pyo3::PyErr::from(error));
+            },
+        };
+        let zs = match axes
+            .has_z()
+            .then(|| uninit_column(coordinate_count))
+            .transpose()
+        {
+            Ok(values) => values,
+            Err(error) => {
+                drop((xs, ys));
+                return Err(pyo3::PyErr::from(error));
+            },
+        };
+        let ms = match axes
+            .has_m()
+            .then(|| uninit_column(coordinate_count))
+            .transpose()
+        {
+            Ok(values) => values,
+            Err(error) => {
+                drop((xs, ys, zs));
+                return Err(pyo3::PyErr::from(error));
+            },
+        };
+        Ok(Self {
+            xs,
+            ys,
+            zs,
+            ms,
             pos: 0,
             capacity: coordinate_count,
             axes,
-        }
+        })
     }
 
     pub(crate) fn append_arrow_coordinates(
@@ -220,21 +255,48 @@ impl ArrowCoordinateBuffers {
         }
     }
 
-    pub(crate) fn with_capacity(axes: CoordinateAxes, coordinate_count: usize) -> Self {
+    pub(crate) fn with_capacity(
+        axes: CoordinateAxes,
+        coordinate_count: usize,
+    ) -> crate::error::Result<Self> {
         let mut buffers = Self::new(axes);
-        buffers.reserve(coordinate_count);
-        buffers
+        buffers.reserve(coordinate_count)?;
+        Ok(buffers)
     }
 
-    pub(crate) fn reserve(&mut self, coordinate_count: usize) {
-        self.xs.reserve(coordinate_count);
-        self.ys.reserve(coordinate_count);
+    pub(crate) fn release(&mut self) {
+        self.xs = Vec::new();
+        self.ys = Vec::new();
         if let Some(values) = &mut self.zs {
-            values.reserve(coordinate_count);
+            *values = Vec::new();
         }
         if let Some(values) = &mut self.ms {
-            values.reserve(coordinate_count);
+            *values = Vec::new();
         }
+    }
+
+    pub(crate) fn reserve(&mut self, coordinate_count: usize) -> crate::error::Result<()> {
+        if let Err(error) = crate::try_reserve_vec(&mut self.xs, coordinate_count) {
+            self.release();
+            return Err(error);
+        }
+        if let Err(error) = crate::try_reserve_vec(&mut self.ys, coordinate_count) {
+            self.release();
+            return Err(error);
+        }
+        if let Some(values) = &mut self.zs {
+            if let Err(error) = crate::try_reserve_vec(values, coordinate_count) {
+                self.release();
+                return Err(error);
+            }
+        }
+        if let Some(values) = &mut self.ms {
+            if let Err(error) = crate::try_reserve_vec(values, coordinate_count) {
+                self.release();
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn push_point(&mut self, point: Point) -> PyResult<()> {
@@ -254,7 +316,8 @@ impl ArrowCoordinateBuffers {
     /// the ordinates bulk-`memcpy` in one `extend_from_slice` per column;
     /// otherwise (scratch `[Point]`) it falls back to per-point appends.
     pub(crate) fn push_points<C: Coordinates + ?Sized>(&mut self, points: &C) -> PyResult<()> {
-        self.reserve(points.coord_count());
+        self.reserve(points.coord_count())
+            .map_err(pyo3::PyErr::from)?;
         let Some((xs, ys)) = points.xy_columns() else {
             for point in points.iter_coords() {
                 self.push_point(point)?;
@@ -388,7 +451,7 @@ mod exact_arrow_fill_tests {
         // PyResult error construction needs an interpreter.
         crate::test_support::initialize_python();
         // XYZ fill + XY-only values must not reach assume_init on Z.
-        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2);
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2).unwrap();
         let err = try_append_raw(&mut fill, &[1.0, 2.0], &[3.0, 4.0], None, None)
             .expect_err("XY into XYZ must fail");
         assert!(err.contains("axes"), "{err}");
@@ -400,7 +463,7 @@ mod exact_arrow_fill_tests {
 
     #[test]
     fn mismatched_axes_cannot_complete_xy_fill_with_z() {
-        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XY, 1);
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XY, 1).unwrap();
         let err = try_append_raw(&mut fill, &[1.0], &[2.0], Some(&[3.0]), None)
             .expect_err("XYZ into XY must fail");
         assert!(err.contains("axes"), "{err}");
@@ -409,7 +472,7 @@ mod exact_arrow_fill_tests {
 
     #[test]
     fn matched_xyz_fill_finishes() {
-        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2);
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 2).unwrap();
         try_append_raw(&mut fill, &[1.0, 2.0], &[3.0, 4.0], Some(&[5.0, 6.0]), None)
             .expect("matched axes");
         let seq = fill.into_coord_seq().expect("full fill");
@@ -423,7 +486,7 @@ mod exact_arrow_fill_tests {
         // Drive the real `append_arrow_coordinates` entry with synthetic
         // `ArrowCoordinateValues` so the shipped axes gate is what fails.
         crate::test_support::initialize_python();
-        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 1);
+        let mut fill = ExactArrowCoordinateFill::with_capacity(CoordinateAxes::XYZ, 1).unwrap();
         let xy_only = ArrowCoordinateValues {
             x: ordinate(&[1.0], "x"),
             y: ordinate(&[2.0], "y"),

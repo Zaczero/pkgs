@@ -48,7 +48,7 @@ impl PyGeometry {
         self.extremes_impl(py)
     }
     #[doc = doc_self_intersections!(scalar)]
-    pub fn self_intersections(&self) -> PyGeometryArray {
+    pub fn self_intersections(&self) -> PyResult<PyGeometryArray> {
         self.self_intersections_impl()
     }
 }

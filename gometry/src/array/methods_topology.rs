@@ -9,8 +9,8 @@ use crate::array::{
     Arc, Bound, CRSError, CoordSeq, CoordinateAxes, FrameEdit, GeometryArrayStorage,
     GeometryTransformFrame, Py, PyAny, PyBytes, PyErr, PyGeometryArray, PyResult, PyTuple,
     PyTupleMethods as _, Python, Result, Shape, coordinate_epoch_option, crs, f64_column_le_bytes,
-    map_coordseq_to_crs, parse_crs, parse_geometry_transform_options, pymethods,
-    usize_row_map_le_bytes,
+    i32_column_le_bytes, map_coordseq_to_crs, parse_crs, parse_geometry_transform_options,
+    pymethods, usize_row_map_le_bytes,
 };
 
 #[pymethods]
@@ -372,17 +372,24 @@ impl PyGeometryArray {
                         .into_py_any(py)?;
                     return Ok((unpickle!("_unpickle_geometry_array"), args));
                 }
-                let column = |values: &[f64]| PyBytes::new(py, &f64_column_le_bytes(values));
+                let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
+                    let bytes = f64_column_le_bytes(values)?;
+                    Ok(PyBytes::new(py, &bytes))
+                };
                 // Empty gather is a valid empty selection — encode as empty
                 // bytes (not omitted Identity).
                 let row_map_bytes = row_map
                     .pickle_row_map_indices()
-                    .map(|map| PyBytes::new(py, &usize_row_map_le_bytes(&map)));
+                    .map(|map| {
+                        let bytes = usize_row_map_le_bytes(&map)?;
+                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
+                    })
+                    .transpose()?;
                 let args = (
-                    column(coords.xs()),
-                    column(coords.ys()),
-                    coords.zs().map(column),
-                    coords.ms().map(column),
+                    column(coords.xs())?,
+                    column(coords.ys())?,
+                    coords.zs().map(column).transpose()?,
+                    coords.ms().map(column).transpose()?,
                     self.crs_str(),
                     self.epoch(),
                     row_map_bytes,
@@ -428,19 +435,23 @@ impl PyGeometryArray {
                         .into_py_any(py)?;
                     return Ok((unpickle!("_unpickle_geometry_array"), args));
                 }
-                let column = |values: &[f64]| PyBytes::new(py, &f64_column_le_bytes(values));
-                let offset_bytes: Vec<u8> = offsets
-                    .iter()
-                    .flat_map(|offset| offset.to_le_bytes())
-                    .collect();
+                let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
+                    let bytes = f64_column_le_bytes(values)?;
+                    Ok(PyBytes::new(py, &bytes))
+                };
+                let offset_bytes = i32_column_le_bytes(offsets)?;
                 let row_map_bytes = row_map
                     .pickle_row_map_indices()
-                    .map(|map| PyBytes::new(py, &usize_row_map_le_bytes(&map)));
+                    .map(|map| {
+                        let bytes = usize_row_map_le_bytes(&map)?;
+                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
+                    })
+                    .transpose()?;
                 let args = (
-                    column(coords.xs()),
-                    column(coords.ys()),
-                    coords.zs().map(column),
-                    coords.ms().map(column),
+                    column(coords.xs())?,
+                    column(coords.ys())?,
+                    coords.zs().map(column).transpose()?,
+                    coords.ms().map(column).transpose()?,
                     PyBytes::new(py, &offset_bytes),
                     self.crs_str(),
                     self.epoch(),
@@ -490,23 +501,26 @@ impl PyGeometryArray {
                         .into_py_any(py)?;
                     return Ok((unpickle!("_unpickle_geometry_array"), args));
                 }
-                let column = |values: &[f64]| PyBytes::new(py, &f64_column_le_bytes(values));
-                let offset_bytes = |offsets: &[i32]| {
-                    offsets
-                        .iter()
-                        .flat_map(|offset| offset.to_le_bytes())
-                        .collect::<Vec<u8>>()
+                let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
+                    let bytes = f64_column_le_bytes(values)?;
+                    Ok(PyBytes::new(py, &bytes))
                 };
                 let row_map_bytes = row_map
                     .pickle_row_map_indices()
-                    .map(|map| PyBytes::new(py, &usize_row_map_le_bytes(&map)));
+                    .map(|map| {
+                        let bytes = usize_row_map_le_bytes(&map)?;
+                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
+                    })
+                    .transpose()?;
+                let ring_offset_bytes = i32_column_le_bytes(ring_offsets)?;
+                let polygon_offset_bytes = i32_column_le_bytes(polygon_offsets)?;
                 let args = (
-                    column(coords.xs()),
-                    column(coords.ys()),
-                    coords.zs().map(column),
-                    coords.ms().map(column),
-                    PyBytes::new(py, &offset_bytes(ring_offsets)),
-                    PyBytes::new(py, &offset_bytes(polygon_offsets)),
+                    column(coords.xs())?,
+                    column(coords.ys())?,
+                    coords.zs().map(column).transpose()?,
+                    coords.ms().map(column).transpose()?,
+                    PyBytes::new(py, &ring_offset_bytes),
+                    PyBytes::new(py, &polygon_offset_bytes),
                     self.crs_str(),
                     self.epoch(),
                     row_map_bytes,

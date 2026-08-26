@@ -53,11 +53,24 @@ impl BulkElement for Option<Bounds> {
     }
 
     fn bulk_into_py(values: Vec<Self>, py: Python<'_>, _frame: &Frame) -> PyResult<Py<PyAny>> {
-        let mut flat = Vec::with_capacity(values.len() * 4);
+        let capacity = values
+            .len()
+            .checked_mul(4)
+            .ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("bounds size overflows"))?;
+        let mut flat = crate::try_vec_with_capacity(capacity)?;
         for bounds in values {
             match bounds {
-                Some(b) => flat.extend_from_slice(&[b.minx(), b.miny(), b.maxx(), b.maxy()]),
-                None => flat.extend_from_slice(&[f64::NAN; 4]),
+                Some(b) => {
+                    crate::try_push(&mut flat, b.minx())?;
+                    crate::try_push(&mut flat, b.miny())?;
+                    crate::try_push(&mut flat, b.maxx())?;
+                    crate::try_push(&mut flat, b.maxy())?;
+                },
+                None => {
+                    for _ in 0..4 {
+                        crate::try_push(&mut flat, f64::NAN)?;
+                    }
+                },
             }
         }
         crate::py::numpy::bounds_array(py, flat)

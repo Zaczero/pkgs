@@ -5,7 +5,7 @@
 use std::ptr;
 
 use crate::py::arrow_c::{
-    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, CString, ExportedArray, GometryArrowArray,
+    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
     ImportedStreamGuard, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
     PyResult, PyTuple, Python, StreamPrivate, apply_top_level_validity, array_capsule_destructor,
     array_capsule_name, c_char, export_from_geometries, export_from_geometry_array, ffi,
@@ -260,7 +260,7 @@ pub(crate) fn stream_from_export(export: ExportedArray) -> Box<ArrowArrayStream>
         private_data: Box::into_raw(Box::new(StreamPrivate {
             schema: export.schema_node,
             array: Some(export.array.into_box()),
-            last_error: CString::new("").expect("empty string has no nul"),
+            last_error: c"",
         }))
         .cast(),
     });

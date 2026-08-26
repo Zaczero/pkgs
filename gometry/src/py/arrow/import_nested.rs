@@ -48,7 +48,7 @@ pub(crate) fn append_arrow_multilinestrings(
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
-            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone());
+            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone())?;
             *row += 1;
             continue;
         }
@@ -86,7 +86,7 @@ pub(crate) fn append_arrow_multilinestrings(
                     .map_err(PyErr::from)?,
             )
         };
-        geometries.push(PyGeometry::from_shape_crs(shape, crs.clone()));
+        crate::try_push(geometries, PyGeometry::from_shape_crs(shape, crs.clone()))?;
         *row += 1;
     }
     Ok(())
@@ -121,7 +121,7 @@ pub(crate) fn append_arrow_polygons(
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
-            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone());
+            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone())?;
             *row += 1;
             continue;
         }
@@ -136,7 +136,7 @@ pub(crate) fn append_arrow_polygons(
             range.len(),
         )?;
         let shape = arrow_polygon_from_ring_range(&coordinates, &ring_level, range, *row)?;
-        geometries.push(PyGeometry::from_shape_crs(shape, crs.clone()));
+        crate::try_push(geometries, PyGeometry::from_shape_crs(shape, crs.clone()))?;
         *row += 1;
     }
     Ok(())
@@ -182,7 +182,7 @@ pub(crate) fn append_arrow_multipolygons(
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
-            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone());
+            push_geometry_level_missing(geometries, missing_rows, *row, crs.clone())?;
             *row += 1;
             continue;
         }
@@ -232,7 +232,7 @@ pub(crate) fn append_arrow_multipolygons(
                     .map_err(PyErr::from)?,
             )
         };
-        geometries.push(PyGeometry::from_shape_crs(shape, crs.clone()));
+        crate::try_push(geometries, PyGeometry::from_shape_crs(shape, crs.clone()))?;
         *row += 1;
     }
     Ok(())
@@ -362,13 +362,16 @@ impl AdmittedWkbPlan {
             len,
         } = self;
         let data_bytes = data.as_slice();
-        let mut shapes = Vec::with_capacity(len);
-        let mut srids = Vec::with_capacity(len);
+        let mut shapes = Vec::new();
+        let mut srids = Vec::new();
         let mut missing_local = Vec::new();
+        crate::boundary::try_reserve_vec(&mut shapes, len)?;
+        crate::boundary::try_reserve_vec(&mut srids, len)?;
+        crate::boundary::try_reserve_vec(&mut missing_local, len)?;
         let arena = io::WkbCoordArena::new();
         for index in 0..len {
             if !validity.is_valid(index) {
-                missing_local.push(index);
+                crate::boundary::try_push_vec(&mut missing_local, index)?;
                 continue;
             }
             let start = offsets[index];
@@ -380,8 +383,8 @@ impl AdmittedWkbPlan {
                 return Err(io::IoError::wkb("Arrow WKB offsets are out of bounds"));
             }
             let parsed = io::parse_wkb_batch(&data_bytes[start..end], &arena)?;
-            shapes.push(parsed.shape);
-            srids.push(parsed.srid);
+            crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
+            crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
         }
         debug_assert_eq!(shapes.len() + missing_local.len(), len);
         Ok(WkbPresentDecode {
@@ -431,11 +434,14 @@ fn push_present_wkb_geometries(
     for local in 0..decoded.chunk_len {
         if missing.peek() == Some(&local) {
             missing.next();
-            missing_rows.push(*row);
-            geometries.push(PyGeometry::from_shape_crs(
-                crate::PyGeometryArray::missing_placeholder(),
-                base_crs.clone(),
-            ));
+            crate::try_push(missing_rows, *row)?;
+            crate::try_push(
+                geometries,
+                PyGeometry::from_shape_crs(
+                    crate::PyGeometryArray::missing_placeholder(),
+                    base_crs.clone(),
+                ),
+            )?;
         } else {
             let (shape, srid) = present
                 .next()
@@ -443,7 +449,7 @@ fn push_present_wkb_geometries(
             let embedded = srid_cache.resolve(srid)?;
             guard_embedded_crs_conflict(embedded.as_deref(), crs, "EWKB SRID")?;
             let row_crs = base_crs.clone().or_else(|| embedded.map(crs_arc));
-            geometries.push(PyGeometry::from_shape_crs(shape, row_crs));
+            crate::try_push(geometries, PyGeometry::from_shape_crs(shape, row_crs))?;
         }
         *row += 1;
     }
@@ -594,17 +600,22 @@ fn decode_binary_view_wkb_present(
         for (index, buf) in &data_buffers {
             resolved.insert(*index, buf.as_slice());
         }
-        let mut shapes = Vec::with_capacity(len);
-        let mut srids = Vec::with_capacity(len);
+        let mut shapes = Vec::new();
+        let mut srids = Vec::new();
         let mut missing_local = Vec::new();
+        crate::boundary::try_reserve_vec(&mut shapes, len)?;
+        crate::boundary::try_reserve_vec(&mut srids, len)?;
+        crate::boundary::try_reserve_vec(&mut missing_local, len)?;
         let arena = io::WkbCoordArena::new();
         for (idx, row) in rows.into_iter().enumerate() {
             match row {
-                WkbRowBytes::Missing => missing_local.push(idx),
+                WkbRowBytes::Missing => {
+                    crate::boundary::try_push_vec(&mut missing_local, idx)?;
+                },
                 WkbRowBytes::Inline { bytes, len } => {
                     let parsed = io::parse_wkb_batch(&bytes[..len], &arena)?;
-                    shapes.push(parsed.shape);
-                    srids.push(parsed.srid);
+                    crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
+                    crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
                 },
                 WkbRowBytes::Span {
                     index, start, end, ..
@@ -617,8 +628,8 @@ fn decode_binary_view_wkb_present(
                             .expect("binary-view range validated before detach"),
                         &arena,
                     )?;
-                    shapes.push(parsed.shape);
-                    srids.push(parsed.srid);
+                    crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
+                    crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
                 },
             }
         }
@@ -726,9 +737,12 @@ fn admit_binary_view_rows(
     }
     let mut rows = crate::try_vec_with_capacity(len)?;
     let mut windows: HashMap<usize, std::ops::Range<usize>> = HashMap::new();
+    windows.try_reserve(len).map_err(|_| {
+        pyo3::exceptions::PyMemoryError::new_err("failed to allocate Arrow binary-view index")
+    })?;
     for idx in 0..len {
         if !validity.is_valid(idx) {
-            rows.push(WkbRowBytes::Missing);
+            crate::try_push(&mut rows, WkbRowBytes::Missing)?;
             continue;
         }
         let start = idx * 16;
@@ -748,10 +762,13 @@ fn admit_binary_view_rows(
                 })
                 .or_insert(*start..*end);
         }
-        rows.push(row);
+        crate::try_push(&mut rows, row)?;
     }
     drop(views);
     let mut data_buffers = HashMap::new();
+    data_buffers.try_reserve(windows.len()).map_err(|_| {
+        pyo3::exceptions::PyMemoryError::new_err("failed to allocate Arrow binary-view buffers")
+    })?;
     for (&index, window) in &windows {
         data_buffers.insert(
             index,
@@ -889,24 +906,28 @@ fn decode_direct_pyarrow_binary_view_wkb_present(
     for index in 0..len {
         let value = storage.get_item(index)?.call_method0("as_py")?;
         if value.is_none() {
-            values.push(None);
+            crate::try_push(&mut values, None)?;
         } else {
-            values.push(Some(value.extract::<Vec<u8>>()?));
+            let bytes = crate::collect_py_iter(&value, |item| item.extract::<u8>())?;
+            crate::try_push(&mut values, Some(bytes))?;
         }
     }
     let parsed = py.detach(move || -> crate::error::Result<WkbPresentDecode> {
         let arena = io::WkbCoordArena::new();
-        let mut shapes = Vec::with_capacity(values.len());
-        let mut srids = Vec::with_capacity(values.len());
+        let mut shapes = Vec::new();
+        let mut srids = Vec::new();
         let mut missing_local = Vec::new();
+        crate::boundary::try_reserve_vec(&mut shapes, values.len())?;
+        crate::boundary::try_reserve_vec(&mut srids, values.len())?;
+        crate::boundary::try_reserve_vec(&mut missing_local, values.len())?;
         for (index, value) in values.iter().enumerate() {
             let Some(bytes) = value.as_deref() else {
-                missing_local.push(index);
+                crate::boundary::try_push_vec(&mut missing_local, index)?;
                 continue;
             };
             let parsed = io::parse_wkb_batch(bytes, &arena)?;
-            shapes.push(parsed.shape);
-            srids.push(parsed.srid);
+            crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
+            crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
         }
         Ok(WkbPresentDecode {
             shapes,
@@ -934,13 +955,19 @@ pub(crate) fn push_parsed_wkb_geometries(
             let embedded = srid_cache.resolve(parsed.srid)?;
             guard_embedded_crs_conflict(embedded.as_deref(), crs, "EWKB SRID")?;
             let row_crs = base_crs.clone().or_else(|| embedded.map(crs_arc));
-            geometries.push(PyGeometry::from_shape_crs(parsed.shape, row_crs));
+            crate::try_push(
+                geometries,
+                PyGeometry::from_shape_crs(parsed.shape, row_crs),
+            )?;
         } else {
-            missing_rows.push(*row);
-            geometries.push(PyGeometry::from_shape_crs(
-                crate::PyGeometryArray::missing_placeholder(),
-                base_crs.clone(),
-            ));
+            crate::try_push(missing_rows, *row)?;
+            crate::try_push(
+                geometries,
+                PyGeometry::from_shape_crs(
+                    crate::PyGeometryArray::missing_placeholder(),
+                    base_crs.clone(),
+                ),
+            )?;
         }
         *row += 1;
     }

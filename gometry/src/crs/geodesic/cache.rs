@@ -57,13 +57,36 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
     f: impl FnOnce(&Geodesic) -> Result<T, E>,
 ) -> Result<T, E> {
     ensure_thread_caches_current(state);
+    // Build a miss outside the cache borrow. `cached_geodesic_object` uses the
+    // CRS-info cache, and a runtime-generation change during that work may
+    // invalidate every thread-local cache, including this one.
+    let hit = CRS_GEODESIC_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let Some(index) = cache.iter().position(|item| item.crs == crs) else {
+            return false;
+        };
+        if index + 1 != cache.len() {
+            let entry = cache.remove(index);
+            cache.push(entry);
+        }
+        true
+    });
+    if hit {
+        return CRS_GEODESIC_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            f(&cache[cache.len() - 1].object)
+        });
+    }
+
+    let entry = cached_geodesic_object(crs, state).map_err(&map_err)?;
+    ensure_thread_caches_current(state);
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let index = lru_resolve(
             &mut cache,
             CRS_GEODESIC_CACHE_CAPACITY,
             |item| item.crs == crs,
-            || cached_geodesic_object(crs, state),
+            || Ok(entry),
         )
         .map_err(&map_err)?;
         f(&cache[index].object)

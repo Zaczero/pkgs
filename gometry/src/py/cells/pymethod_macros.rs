@@ -177,7 +177,7 @@ macro_rules! grid_cell_common_pymethods {
             /// -------
 #[doc = concat!("CellArray of ", $class_name, "")]
             #[getter]
-            fn neighbors(&self) -> PyCellArray {
+            fn neighbors(&self) -> PyResult<PyCellArray> {
                 cell_neighbors_array($kind, self.cell)
             }
 
@@ -363,10 +363,7 @@ macro_rules! grid_free_functions {
             cells: &pyo3::Bound<'_, pyo3::PyAny>,
         ) -> pyo3::PyResult<Vec<$cell_type>> {
             let items = crate::py::cells::cell_items(cells)?;
-            let ids = items
-                .iter()
-                .map(|cell| $parse_cell(cell))
-                .collect::<pyo3::PyResult<Vec<_>>>()?;
+            let ids = crate::try_collect_results(items.iter().map(|cell| $parse_cell(cell)))?;
             Ok(crate::grid::cell_set::normalize(ids))
         }
 
@@ -402,7 +399,7 @@ macro_rules! grid_free_functions {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
             let $array_cells = crate::grid::cell_set::union(left, right);
-            Ok($array_expr)
+            Ok($array_expr?)
         }
 
         #[doc = concat!("Hierarchy-aware intersection of two ", $label, " cell sets.")]
@@ -436,7 +433,7 @@ macro_rules! grid_free_functions {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
             let $array_cells = crate::grid::cell_set::intersection(&left, &right);
-            Ok($array_expr)
+            Ok($array_expr?)
         }
 
         #[doc = concat!("Hierarchy-aware difference of two ", $label, " cell sets.")]
@@ -471,7 +468,7 @@ macro_rules! grid_free_functions {
             let right = $cell_set_arg(right)?;
             let $array_cells = crate::grid::cell_set::difference(&left, &right)
                 .map_err(crate::py::cells::cell_limit_err)?;
-            Ok($array_expr)
+            Ok($array_expr?)
         }
     };
     (@set_input_doc geohash_cell_set_arg) => {

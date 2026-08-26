@@ -169,20 +169,43 @@ fn replacement_from_coordinates_view(
             positional: true,
         });
     }
-    let mut xs = Vec::with_capacity(expected_len);
-    let mut ys = Vec::with_capacity(expected_len);
-    let mut zs = axes.has_z().then(|| Vec::with_capacity(expected_len));
-    let mut ms = axes.has_m().then(|| Vec::with_capacity(expected_len));
-    coords.view.for_each_point(|coord| {
-        xs.push(coord.point.x);
-        ys.push(coord.point.y);
-        if let Some(out) = zs.as_mut() {
-            out.push(coord.point.z().unwrap_or(f64::NAN));
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_pair(&mut xs, &mut ys, expected_len).map_err(PyErr::from)?;
+    let mut zs = axes.has_z().then(Vec::new);
+    if let Some(out) = zs.as_mut() {
+        if let Err(error) = crate::try_reserve_vec(out, expected_len) {
+            return Err(PyErr::from(error));
         }
-        if let Some(out) = ms.as_mut() {
-            out.push(coord.point.m().unwrap_or(f64::NAN));
+    }
+    let mut ms = axes.has_m().then(Vec::new);
+    if let Some(out) = ms.as_mut() {
+        if let Err(error) = crate::try_reserve_vec(out, expected_len) {
+            return Err(PyErr::from(error));
         }
+    }
+    let result = coords.view.try_for_each_point(&mut |coord| {
+        if let Err(error) = crate::try_push_vec(&mut xs, coord.point.x) {
+            return std::ops::ControlFlow::Break(error);
+        }
+        if let Err(error) = crate::try_push_vec(&mut ys, coord.point.y) {
+            return std::ops::ControlFlow::Break(error);
+        }
+        if let Some(out) = zs.as_mut()
+            && let Err(error) = crate::try_push_vec(out, coord.point.z().unwrap_or(f64::NAN))
+        {
+            return std::ops::ControlFlow::Break(error);
+        }
+        if let Some(out) = ms.as_mut()
+            && let Err(error) = crate::try_push_vec(out, coord.point.m().unwrap_or(f64::NAN))
+        {
+            return std::ops::ControlFlow::Break(error);
+        }
+        std::ops::ControlFlow::Continue(())
     });
+    if let std::ops::ControlFlow::Break(error) = result {
+        return Err(PyErr::from(error));
+    }
     Ok(CoordinateReplacement {
         xs: xs.into(),
         ys: ys.into(),
@@ -229,21 +252,37 @@ fn replacement_from_matrix(
     }
     let flat_obj = array.call_method0("ravel")?;
     let flat = coordinate_arc_values(py, &flat_obj, "coordinates")?;
-    let mut xs = Vec::with_capacity(rows);
-    let mut ys = Vec::with_capacity(rows);
-    let mut zs = axes.has_z().then(|| Vec::with_capacity(rows));
-    let mut ms = axes.has_m().then(|| Vec::with_capacity(rows));
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    crate::try_reserve_pair(&mut xs, &mut ys, rows).map_err(PyErr::from)?;
+    let mut zs = axes.has_z().then(Vec::new);
+    if let Some(out) = zs.as_mut() {
+        if let Err(error) = crate::try_reserve_vec(out, rows) {
+            return Err(PyErr::from(error));
+        }
+    }
+    let mut ms = axes.has_m().then(Vec::new);
+    if let Some(out) = ms.as_mut() {
+        if let Err(error) = crate::try_reserve_vec(out, rows) {
+            return Err(PyErr::from(error));
+        }
+    }
     let (order, n) = coordinate_axis_order(axes);
     for row in 0..rows {
         let base = row * width;
         for (column, axis) in order[..n].iter().enumerate() {
             let value = flat[base + column];
             match axis {
-                CoordinateAxis::X => xs.push(value),
-                CoordinateAxis::Y => ys.push(value),
-                CoordinateAxis::Z => zs.as_mut().expect("Z axis present").push(value),
-                CoordinateAxis::M => ms.as_mut().expect("M axis present").push(value),
+                CoordinateAxis::X => crate::try_push_vec(&mut xs, value),
+                CoordinateAxis::Y => crate::try_push_vec(&mut ys, value),
+                CoordinateAxis::Z => {
+                    crate::try_push_vec(zs.as_mut().expect("Z axis present"), value)
+                },
+                CoordinateAxis::M => {
+                    crate::try_push_vec(ms.as_mut().expect("M axis present"), value)
+                },
             }
+            .map_err(PyErr::from)?;
         }
     }
     // X/Y must always be finite. Z/M may carry NaN padding for members that

@@ -388,19 +388,22 @@ pub(crate) fn coordinates_to_matrix_py(
     }
     let rows = x.len();
     let columns = if z.is_some() { 3 } else { 2 };
-    let mut flat = Vec::with_capacity(rows * columns);
+    let capacity = rows.checked_mul(columns).ok_or_else(|| {
+        crate::py::errors::GeometryError::new_err("coordinate matrix size overflows usize")
+    })?;
+    let mut flat = crate::try_vec_with_capacity(capacity)?;
     match z {
         None => {
             for i in 0..rows {
-                flat.push(x[i]);
-                flat.push(y[i]);
+                crate::try_push(&mut flat, x[i])?;
+                crate::try_push(&mut flat, y[i])?;
             }
         },
         Some(z) => {
             for i in 0..rows {
-                flat.push(x[i]);
-                flat.push(y[i]);
-                flat.push(z[i]);
+                crate::try_push(&mut flat, x[i])?;
+                crate::try_push(&mut flat, y[i])?;
+                crate::try_push(&mut flat, z[i])?;
             }
         },
     }
@@ -622,36 +625,47 @@ pub(crate) fn crs_transform_bounds(
             let columns = rows.first().map_or(4, BoundsRow::width);
             let len = rows.len();
             let out = py.detach(move || {
-                let mut out = Vec::with_capacity(len * columns);
+                let capacity = len.checked_mul(columns).ok_or_else(|| {
+                    crate::py::errors::GeometryError::new_err("bounds matrix size overflows usize")
+                })?;
+                let mut out = crate::try_vec_with_capacity(capacity)?;
                 if columns == 4 {
-                    let rows: Vec<_> = rows
-                        .into_iter()
-                        .map(|row| match row {
+                    let mut input_rows = crate::try_vec_with_capacity(len)?;
+                    for row in rows {
+                        crate::try_push(&mut input_rows, match row {
                             BoundsRow::TwoD(bounds) => bounds,
                             BoundsRow::ThreeD(_) => {
                                 unreachable!("checked homogeneous bounds width")
                             },
-                        })
-                        .collect();
+                        })?;
+                    }
                     for transformed in
-                        crs::transform_bounds_many(&source, &target, &rows, densify, options)?
+                        crs::transform_bounds_many(&source, &target, &input_rows, densify, options)?
                     {
-                        out.extend_from_slice(&<[f64; 4]>::from(transformed));
+                        for value in <[f64; 4]>::from(transformed) {
+                            crate::try_push(&mut out, value)?;
+                        }
                     }
                 } else {
-                    let rows: Vec<_> = rows
-                        .into_iter()
-                        .map(|row| match row {
+                    let mut input_rows = crate::try_vec_with_capacity(len)?;
+                    for row in rows {
+                        crate::try_push(&mut input_rows, match row {
                             BoundsRow::ThreeD(bounds) => bounds,
                             BoundsRow::TwoD(_) => {
                                 unreachable!("checked homogeneous bounds width")
                             },
-                        })
-                        .collect();
-                    for transformed in
-                        crs::transform_bounds_3d_many(&source, &target, &rows, densify, options)?
-                    {
-                        out.extend_from_slice(&<[f64; 6]>::from(transformed));
+                        })?;
+                    }
+                    for transformed in crs::transform_bounds_3d_many(
+                        &source,
+                        &target,
+                        &input_rows,
+                        densify,
+                        options,
+                    )? {
+                        for value in <[f64; 6]>::from(transformed) {
+                            crate::try_push(&mut out, value)?;
+                        }
                     }
                 }
                 Ok::<_, PyErr>(out)
@@ -703,7 +717,7 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
         for item in items {
             // Match coordinate_values' element contract: f64-extractable only.
             let value = crate::finite_f64_required("bounds", item)?;
-            values.push(value);
+            crate::try_push(&mut values, value)?;
         }
         if !matches!(values.len(), 4 | 6) {
             return Err(crate::py::errors::GeometryError::new_err(

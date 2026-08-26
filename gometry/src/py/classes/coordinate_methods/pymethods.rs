@@ -70,7 +70,7 @@ impl PyCoordinates {
                 // materialization): membership in the slice's arithmetic
                 // progression is a cheap test per flat position; descending
                 // slices collect ascending and reverse at the end.
-                let mut tuples = Vec::with_capacity(count);
+                let mut tuples = crate::try_vec_with_capacity(count)?;
                 if count > 0 {
                     use std::ops::ControlFlow;
                     let (first, last, stride) = if step > 0 {
@@ -94,13 +94,13 @@ impl PyCoordinates {
                         }
                         next += stride;
                         match self.tuple(py, coord.point) {
-                            Ok(tuple) => {
-                                tuples.push(tuple);
-                                if tuples.len() == count {
+                            Ok(tuple) => match crate::try_push(&mut tuples, tuple) {
+                                Ok(()) if tuples.len() == count => ControlFlow::Break(()),
+                                Ok(()) => ControlFlow::Continue(()),
+                                Err(err) => {
+                                    error = Some(err);
                                     ControlFlow::Break(())
-                                } else {
-                                    ControlFlow::Continue(())
-                                }
+                                },
                             },
                             Err(err) => {
                                 error = Some(err);
@@ -210,7 +210,7 @@ impl PyCoordinates {
     /// the source row for each vertex of a ``GeometryArray``.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::py::numpy::int64_array(py, self.view.row_index_i64())
+        crate::py::numpy::int64_array(py, self.view.row_index_i64()?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
@@ -281,7 +281,7 @@ impl PyCoordinates {
         if index {
             dict.set_item(
                 "index",
-                crate::py::numpy::int64_array(py, slf.borrow().view.row_index_i64())?,
+                crate::py::numpy::int64_array(py, slf.borrow().view.row_index_i64()?)?,
             )?;
         }
         Ok(dict)

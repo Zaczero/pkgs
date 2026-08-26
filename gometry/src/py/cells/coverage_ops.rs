@@ -4,10 +4,11 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::geometry::{CoordSeq, LineSeq, Polygon, Shape, is_geographic_frame};
+use crate::geometry::{CoordSeq, LineSeq, Shape, is_geographic_frame};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::RectGridCell;
 use crate::grid::coverer;
@@ -64,7 +65,7 @@ pub(crate) trait GridDissolver {
     fn exterior_edge_segments(
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
-    ) -> Vec<CoordSeq>;
+    ) -> PyResult<Vec<CoordSeq>>;
     fn crosses_seam(segment: &CoordSeq) -> bool;
     fn fallback_shape(cell: Self::Cell) -> crate::error::Result<Shape>;
 }
@@ -83,25 +84,30 @@ where
         if !any_adjacent {
             // No shared edges: assemble a MultiPolygon of the per-cell
             // polygons directly — never pay union/polygonize.
-            return multipolygon_from_cell_shapes(
+            let shapes = crate::try_collect_results(
                 prepared
                     .as_slice()
                     .iter()
                     .copied()
-                    .map(D::fallback_shape)
-                    .collect::<crate::error::Result<Vec<_>>>()?,
-            );
+                    .map(|cell| D::fallback_shape(cell).map_err(PyErr::from)),
+            )?;
+            return multipolygon_from_cell_shapes(shapes);
         }
         let is_member = |neighbor: D::Cell| prepared.as_slice().binary_search(&neighbor).is_ok();
-        let mut outline: Vec<CoordSeq> = Vec::with_capacity(prepared.as_slice().len() * 2);
+        let capacity = prepared
+            .as_slice()
+            .len()
+            .checked_mul(2)
+            .ok_or_else(|| PyMemoryError::new_err("coverage outline size overflows usize"))?;
+        let mut outline = crate::try_vec_with_capacity(capacity)?;
         let mut crosses_seam = false;
         'scan: for &cell in prepared.as_slice() {
-            for segment in D::exterior_edge_segments(cell, &is_member) {
+            for segment in D::exterior_edge_segments(cell, &is_member)? {
                 if D::crosses_seam(&segment) {
                     crosses_seam = true;
                     break 'scan;
                 }
-                outline.push(segment);
+                crate::try_push(&mut outline, segment)?;
             }
         }
         if !crosses_seam && let Some(typed) = polygonize_outline(outline)? {
@@ -111,12 +117,13 @@ where
     } else {
         cells
     };
-    let shapes: Vec<Shape> = fallback_cells
-        .as_slice()
-        .iter()
-        .copied()
-        .map(D::fallback_shape)
-        .collect::<crate::error::Result<_>>()?;
+    let shapes = crate::try_collect_results(
+        fallback_cells
+            .as_slice()
+            .iter()
+            .copied()
+            .map(|cell| D::fallback_shape(cell).map_err(PyErr::from)),
+    )?;
     coverage_to_polygon(&shapes)
 }
 
@@ -128,16 +135,24 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
             "a coverage needs at least one cell to dissolve into a polygon",
         ));
     }
-    let mut polygons = Vec::with_capacity(shapes.len());
+    let mut polygons = crate::try_vec_with_capacity(shapes.len())?;
     for shape in shapes {
         match shape {
-            Shape::Polygon(polygon) => polygons.push(polygon),
-            Shape::MultiPolygon(parts) => polygons.extend(parts),
+            Shape::Polygon(polygon) => crate::try_push(&mut polygons, polygon)?,
+            Shape::MultiPolygon(parts) => {
+                for polygon in parts {
+                    crate::try_push(&mut polygons, polygon)?;
+                }
+            },
             Shape::GeometryCollection(parts) => {
                 for part in parts {
                     match part {
-                        Shape::Polygon(polygon) => polygons.push(polygon),
-                        Shape::MultiPolygon(multi) => polygons.extend(multi),
+                        Shape::Polygon(polygon) => crate::try_push(&mut polygons, polygon)?,
+                        Shape::MultiPolygon(multi) => {
+                            for polygon in multi {
+                                crate::try_push(&mut polygons, polygon)?;
+                            }
+                        },
                         _ => {},
                     }
                 }
@@ -162,18 +177,21 @@ fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
     if outline.is_empty() {
         return Ok(None);
     }
-    let polygons: Vec<Polygon> = Shape::build_area_all(
-        &[&Shape::MultiLineString(
-            outline.into_iter().map(LineSeq::from_trusted).collect(),
-        )],
-        true,
-    )?
-    .into_iter()
-    .filter_map(|shape| match shape {
-        Shape::Polygon(polygon) => Some(polygon),
-        _ => None,
-    })
-    .collect();
+    let polygons = crate::try_collect_results(
+        Shape::build_area_all(
+            &[&Shape::MultiLineString(crate::try_collect_results(
+                outline
+                    .into_iter()
+                    .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
+            )?)],
+            true,
+        )?
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Polygon(polygon) => Some(Ok(polygon)),
+            _ => None,
+        }),
+    )?;
     if polygons.is_empty() {
         return Ok(None);
     }
@@ -217,24 +235,25 @@ where
 {
     let depth = S::parse_depth(depth)?;
     let (_, cover_shape, _) = coverage_factory_shapes(geometry, S::coverage_label())?;
-    let ids: Vec<u64> = match cell_rule {
-        CellRule::Overlap | CellRule::Bbox => {
+    let ids = match cell_rule {
+        CellRule::Overlap | CellRule::Bbox => crate::try_collect_results(
             coverer::cover(&cover_shape, S::roots(), depth, max_cells)
                 .map_err(cover_budget_err)?
                 .into_iter()
-                .map(|(cell, _)| S::id(&cell))
-                .collect()
-        },
-        CellRule::Within => coverer::cover(&cover_shape, S::roots(), depth, max_cells)
-            .map_err(cover_budget_err)?
-            .into_iter()
-            .filter_map(|(cell, interior)| interior.then_some(S::id(&cell)))
-            .collect(),
-        CellRule::Center => coverer::cover_center(&cover_shape, S::roots(), depth, max_cells)
-            .map_err(cover_budget_err)?
-            .into_iter()
-            .map(|cell| S::id(&cell))
-            .collect(),
+                .map(|(cell, _)| Ok::<_, PyErr>(S::id(&cell))),
+        )?,
+        CellRule::Within => crate::try_collect_results(
+            coverer::cover(&cover_shape, S::roots(), depth, max_cells)
+                .map_err(cover_budget_err)?
+                .into_iter()
+                .filter_map(|(cell, interior)| interior.then_some(Ok::<_, PyErr>(S::id(&cell)))),
+        )?,
+        CellRule::Center => crate::try_collect_results(
+            coverer::cover_center(&cover_shape, S::roots(), depth, max_cells)
+                .map_err(cover_budget_err)?
+                .into_iter()
+                .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
+        )?,
     };
     Ok(SortedCells::from_sorted(ids).into_vec())
 }
@@ -317,7 +336,7 @@ pub(crate) fn coverage_factory_shapes(
 /// Build a `CellArray` from source cell ids through the public factory path.
 pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
     cells: impl IntoIterator<Item = S::Cell>,
-) -> PyCellArray {
+) -> PyResult<PyCellArray> {
     cell_array_from_keys(S::KIND, cells)
 }
 

@@ -7,7 +7,6 @@ use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::PyBool;
 
 use crate::collections::RowIdSortScratch;
-use crate::parse_spatial_index_handle;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexEntry,
     IndexPredicate, IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py, PyAny,
@@ -17,6 +16,7 @@ use crate::py::index::{
     pyfunction, pymethods, query_distance, resolve_metric, restore_spatial_index, spatial_index,
     usize_array, validate_nearest_k,
 };
+use crate::{CsrBuilder, parse_spatial_index_handle};
 
 type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, Vec<usize>));
 
@@ -136,15 +136,15 @@ impl PySpatialIndex {
     /// consumed by ``remove``/``__getitem__``; round-tripping must therefore
     /// preserve tombstones instead of compactly renumbering live rows.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
-        let shapes: Vec<crate::geometry::Shape> = (0..self.rows.len())
-            .map(|handle| self.rows.row(handle).with_shape(std::clone::Clone::clone))
-            .collect();
+        let shapes = crate::try_collect_results((0..self.rows.len()).map(|handle| {
+            Ok::<_, pyo3::PyErr>(self.rows.row(handle).with_shape(std::clone::Clone::clone))
+        }))?;
         let frame = self.metadata.clone().unwrap_or_default();
         let array = crate::PyGeometryArray::from_shapes(shapes, frame);
         let callable = crate::gometry_lib_module(py)?
             .getattr(pyo3::intern!(py, "_unpickle_spatial_index"))?
             .unbind();
-        Ok((callable, (array, self.live_handles_sorted())))
+        Ok((callable, (array, self.live_handles_sorted()?)))
     }
 
     pub(crate) fn __copy__(&self, py: Python<'_>) -> PyResult<Py<Self>> {
@@ -398,16 +398,17 @@ impl PySpatialIndex {
                     "spatial index query",
                 )?;
                 let row_count = array.storage().len();
-                let mut ids = Vec::new();
-                let mut offsets = Vec::with_capacity(row_count + 1);
-                offsets.push(0);
+                let mut builder =
+                    CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
                 for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                     if !missing {
                         let shape = array.prepared_row(row_index, row);
-                        self.topological_matches_append(&shape, topological, &mut ids);
+                        self.topological_matches_append(&shape, topological, builder.values_mut())?;
                     }
-                    offsets.push(ids.len());
+                    let end = builder.len();
+                    builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 }
+                let (ids, offsets) = builder.finish();
                 return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
             }
             // dwithin array queries (the only distance-carrying lane left):
@@ -416,9 +417,8 @@ impl PySpatialIndex {
             // per-row PyGeometry staging.
             let plan = PreparedIndexQuery::for_array(self, array, Some(predicate), distance, unit)?;
             let row_count = array.storage().len();
-            let mut ids = Vec::new();
-            let mut offsets = Vec::with_capacity(row_count + 1);
-            offsets.push(0);
+            let mut builder =
+                CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let seeded = array.row_bounds_seed(row_index);
@@ -426,12 +426,14 @@ impl PySpatialIndex {
                         row,
                         &array.row_frame_cache(row_index),
                         &plan,
-                        &mut ids,
+                        builder.values_mut(),
                         seeded,
                     )?;
                 }
-                offsets.push(ids.len());
+                let end = builder.len();
+                builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
+            let (ids, offsets) = builder.finish();
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -554,8 +556,8 @@ impl PySpatialIndex {
         let mut left = Vec::new();
         let mut right = Vec::new();
         self.for_each_symmetric_pair(predicate, distance, unit, |i, j| {
-            left.push(i as i64);
-            right.push(j as i64);
+            crate::try_push_pair(&mut left, &mut right, i as i64, j as i64)
+                .map_err(pyo3::PyErr::from)
         })?;
         Ok((
             crate::py::numpy::int64_array(py, left)?,
@@ -636,23 +638,21 @@ impl PySpatialIndex {
             let envelope_only =
                 matches!(plan, PreparedIndexQuery::Candidates) && !self.geographic();
             let row_count = array.storage().len();
-            let mut ids = Vec::new();
-            let mut offsets = Vec::with_capacity(row_count + 1);
+            let mut builder =
+                CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
             let mut sort_scratch = RowIdSortScratch::default();
             let (predicate, distance, metric) = plan.candidate_parts();
-            offsets.push(0);
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
-                    let row_start = ids.len();
+                    let row_start = builder.len();
+                    let ids = builder.values_mut();
                     let seeded = array.row_bounds_seed(row_index);
                     if envelope_only {
                         let bounds = match seeded {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
                             crate::array::BoundsSeed::Value(bounds) => bounds,
                         };
-                        self.candidate_ids_core_append(
-                            bounds, None, None, None, None, None, &mut ids,
-                        );
+                        self.candidate_ids_core_append(bounds, None, None, None, None, None, ids)?;
                     } else {
                         let prepared = plan.row(self, row, seeded);
                         self.candidate_ids_core_append(
@@ -662,13 +662,15 @@ impl PySpatialIndex {
                             predicate,
                             distance,
                             metric,
-                            &mut ids,
-                        );
+                            ids,
+                        )?;
                     }
                     sort_scratch.sort(&mut ids[row_start..], self.rows.len());
                 }
-                offsets.push(ids.len());
+                let end = builder.len();
+                builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
+            let (ids, offsets) = builder.finish();
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -757,13 +759,27 @@ impl PySpatialIndex {
             let metric = resolve_metric(self.metric_crs_str(array.crs_str()), unit, "nearest")?;
             let row_count = array.storage().len();
             let row_capacity = k.min(self.__len__());
-            let capacity = row_count.checked_mul(row_capacity).unwrap_or(0);
-            let mut ids = Vec::with_capacity(capacity);
-            let mut distances = Vec::with_capacity(if return_distance { capacity } else { 0 });
-            let mut offsets = Vec::with_capacity(row_count + 1);
-            offsets.push(0);
+            let capacity = row_count.checked_mul(row_capacity).ok_or_else(|| {
+                pyo3::exceptions::PyOverflowError::new_err("nearest output size overflows usize")
+            })?;
+            let mut builder =
+                CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
+            let mut distances = Vec::new();
+            if return_distance {
+                if let Err(error) =
+                    crate::try_reserve_pair(builder.values_mut(), &mut distances, capacity)
+                {
+                    builder.clear();
+                    return Err(pyo3::PyErr::from(error));
+                }
+            } else {
+                if let Err(error) = crate::try_reserve_vec(builder.values_mut(), capacity) {
+                    builder.clear();
+                    return Err(pyo3::PyErr::from(error));
+                }
+            }
             let mut frontier = BinaryHeap::new();
-            let mut leaf_frontier = Vec::with_capacity(crate::py::index::str_tree::NODE_CAP);
+            let mut leaf_frontier = Vec::new();
             for (row_index, (missing, row)) in array.masked_storage_rows().enumerate() {
                 if !missing {
                     let query = array.prepared_row(row_index, row);
@@ -781,14 +797,27 @@ impl PySpatialIndex {
                         &mut leaf_frontier,
                     )?;
                     for candidate in candidates {
-                        ids.push(candidate.idx);
                         if return_distance {
-                            distances.push(candidate.distance);
+                            if let Err(error) = builder.push(candidate.idx) {
+                                drop(distances);
+                                builder.clear();
+                                return Err(pyo3::PyErr::from(error));
+                            }
+                            if let Err(error) =
+                                crate::try_push_vec(&mut distances, candidate.distance)
+                            {
+                                builder.clear();
+                                return Err(pyo3::PyErr::from(error));
+                            }
+                        } else {
+                            builder.push(candidate.idx).map_err(pyo3::PyErr::from)?;
                         }
                     }
                 }
-                offsets.push(ids.len());
+                let end = builder.len();
+                builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
+            let (ids, offsets) = builder.finish();
             return format_nearest_rows(py, ids, offsets, distances, return_distance);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -841,7 +870,12 @@ impl PySpatialIndex {
         } else {
             self.insert_items(geometry_items(values)?)?
         };
-        crate::py::numpy::int64_array(py, handles.into_iter().map(|h| h as i64).collect())
+        let handles = crate::try_collect_results(
+            handles
+                .into_iter()
+                .map(|handle| Ok::<_, pyo3::PyErr>(handle as i64)),
+        )?;
+        crate::py::numpy::int64_array(py, handles)
     }
 
     /// Remove a geometry by its handle. Returns ``True`` if a live geometry

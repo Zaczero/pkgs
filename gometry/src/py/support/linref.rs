@@ -95,28 +95,40 @@ pub(crate) fn line_interpolate_points_coordseq(
         unreachable!("packed column path is planar-only");
     };
     let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
+    let sample_count = match plan {
+        InterpolatePlan::Count(count) => *count,
+        InterpolatePlan::Distances(distances, _) => distances.len(),
+    };
+    let mut points = Vec::new();
+    crate::boundary::try_reserve_vec(&mut points, sample_count)?;
     match plan {
-        InterpolatePlan::Count(count) => (0..*count)
-            .map(|sample| {
+        InterpolatePlan::Count(count) => {
+            for sample in 0..*count {
                 let fraction = if *count > 1 {
                     sample as f64 / (*count - 1) as f64
                 } else {
                     0.0
                 };
-                Ok(index.interpolate(fraction, true, &PlanarMetric))
-            })
-            .collect(),
-        InterpolatePlan::Distances(distances, mode) => distances
-            .iter()
-            .map(|&distance| {
-                Ok(index.interpolate(
-                    mode.planar_along(distance, to_metre.get()),
-                    mode.is_normalized(),
-                    &PlanarMetric,
-                ))
-            })
-            .collect(),
+                crate::boundary::try_push_vec(
+                    &mut points,
+                    index.interpolate(fraction, true, &PlanarMetric),
+                )?;
+            }
+        },
+        InterpolatePlan::Distances(distances, mode) => {
+            for &distance in distances {
+                crate::boundary::try_push_vec(
+                    &mut points,
+                    index.interpolate(
+                        mode.planar_along(distance, to_metre.get()),
+                        mode.is_normalized(),
+                        &PlanarMetric,
+                    ),
+                )?;
+            }
+        },
     }
+    Ok(points)
 }
 
 /// The `line_interpolate_points` row kernel: one cached-index line handle,
@@ -127,24 +139,36 @@ pub(crate) fn line_interpolate_points_shape(
     frame_cache: &crate::geometry::FrameDependentCaches,
     plan: &InterpolatePlan,
 ) -> Result<Vec<Shape>, crate::error::Error> {
+    let sample_count = match plan {
+        InterpolatePlan::Count(count) => *count,
+        InterpolatePlan::Distances(distances, _) => distances.len(),
+    };
+    let mut shapes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut shapes, sample_count)?;
     match plan {
-        InterpolatePlan::Count(count) => (0..*count)
-            .map(|index| {
+        InterpolatePlan::Count(count) => {
+            for index in 0..*count {
                 let fraction = if *count > 1 {
                     index as f64 / (*count - 1) as f64
                 } else {
                     0.0
                 };
-                line_interpolate_shape(model, line, frame_cache, fraction, true)
-            })
-            .collect(),
-        InterpolatePlan::Distances(distances, mode) => distances
-            .iter()
-            .map(|&distance| {
-                line_interpolate_shape_with_mode(model, line, frame_cache, distance, *mode)
-            })
-            .collect(),
+                crate::boundary::try_push_vec(
+                    &mut shapes,
+                    line_interpolate_shape(model, line, frame_cache, fraction, true)?,
+                )?;
+            }
+        },
+        InterpolatePlan::Distances(distances, mode) => {
+            for &distance in distances {
+                crate::boundary::try_push_vec(
+                    &mut shapes,
+                    line_interpolate_shape_with_mode(model, line, frame_cache, distance, *mode)?,
+                )?;
+            }
+        },
     }
+    Ok(shapes)
 }
 
 /// The `line_interpolate_point` row kernel (model resolved once per call by

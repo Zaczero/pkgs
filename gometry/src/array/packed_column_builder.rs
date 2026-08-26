@@ -16,16 +16,59 @@ pub(crate) struct PackedColumnBuilder {
 }
 
 impl PackedColumnBuilder {
-    /// Derive Z/M presence from `coords` once; size the columns with `capacity`
-    /// (pass 0 for the `Vec::new()` select case, `coords.len()` for subdivide).
-    pub(crate) fn like(coords: &CoordSeq, capacity: usize) -> Self {
-        Self {
-            xs: Vec::with_capacity(capacity),
-            ys: Vec::with_capacity(capacity),
-            zs: coords.zs().map(|_| Vec::with_capacity(capacity)),
-            ms: coords.ms().map(|_| Vec::with_capacity(capacity)),
-            offsets: CsrOffsetBuilder::new(),
+    /// Fallible counterpart for public packed-output paths. Every live
+    /// ordinate column is reserved before any generated row is appended.
+    pub(crate) fn try_like(coords: &CoordSeq, capacity: usize) -> CrateResult<Self> {
+        let mut xs = Vec::new();
+        crate::boundary::try_reserve_vec(&mut xs, capacity)?;
+        let mut ys = Vec::new();
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut ys, capacity) {
+            drop(xs);
+            return Err(error);
         }
+        let mut zs = None;
+        if coords.zs().is_some() {
+            let mut values = Vec::new();
+            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
+                drop((xs, ys));
+                return Err(error);
+            }
+            zs = Some(values);
+        }
+        let mut ms = None;
+        if coords.ms().is_some() {
+            let mut values = Vec::new();
+            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
+                drop((xs, ys, zs));
+                return Err(error);
+            }
+            ms = Some(values);
+        }
+        Ok(Self {
+            xs,
+            ys,
+            zs,
+            ms,
+            offsets: CsrOffsetBuilder::new(),
+        })
+    }
+
+    fn try_reserve_columns(&mut self, additional: usize) -> CrateResult<()> {
+        crate::boundary::try_reserve_vec(&mut self.xs, additional)?;
+        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.ys, additional) {
+            return Err(error);
+        }
+        if let Some(zs) = &mut self.zs
+            && let Err(error) = crate::boundary::try_reserve_vec(zs, additional)
+        {
+            return Err(error);
+        }
+        if let Some(ms) = &mut self.ms
+            && let Err(error) = crate::boundary::try_reserve_vec(ms, additional)
+        {
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Copy one CSR vertex window verbatim, then close the row.
@@ -34,6 +77,7 @@ impl PackedColumnBuilder {
         coords: &CoordSeq,
         window: Range<usize>,
     ) -> CrateResult<()> {
+        self.try_reserve_columns(window.len())?;
         let (xs, ys) = (coords.xs(), coords.ys());
         let (zs, ms) = (coords.zs(), coords.ms());
         self.xs.extend_from_slice(column_window(xs, &window));
@@ -58,6 +102,7 @@ impl PackedColumnBuilder {
     ) -> CrateResult<()> {
         let row = coords.view(CoordWindow::trusted(window, coords.len()));
         let result = subdivide(&row, budget)?;
+        self.try_reserve_columns(result.len())?;
         self.xs.extend_from_slice(result.xs());
         self.ys.extend_from_slice(result.ys());
         if let (Some(out), Some(column)) = (self.zs.as_mut(), result.zs()) {
@@ -80,6 +125,7 @@ impl PackedColumnBuilder {
         let transformed = coords
             .view(CoordWindow::trusted(window, coords.len()))
             .try_affine(matrix)?;
+        self.try_reserve_columns(transformed.len())?;
         self.xs.extend_from_slice(transformed.xs());
         self.ys.extend_from_slice(transformed.ys());
         if let (Some(out), Some(column)) = (self.zs.as_mut(), transformed.zs()) {
@@ -104,7 +150,8 @@ impl PackedColumnBuilder {
     }
 
     /// Append one source vertex by column index (simplify keep-mask path).
-    pub(crate) fn push_vertex(&mut self, coords: &CoordSeq, index: usize) {
+    pub(crate) fn push_vertex(&mut self, coords: &CoordSeq, index: usize) -> CrateResult<()> {
+        self.try_reserve_columns(1)?;
         self.xs.push(coords.xs()[index]);
         self.ys.push(coords.ys()[index]);
         if let (Some(out), Some(column)) = (self.zs.as_mut(), coords.zs()) {
@@ -113,12 +160,15 @@ impl PackedColumnBuilder {
         if let (Some(out), Some(column)) = (self.ms.as_mut(), coords.ms()) {
             out.push(column[index]);
         }
+        Ok(())
     }
 
     /// Append a generated XY vertex to an XY-only packed result.
-    pub(crate) fn push_xy(&mut self, x: f64, y: f64) {
+    pub(crate) fn push_xy(&mut self, x: f64, y: f64) -> CrateResult<()> {
+        self.try_reserve_columns(1)?;
         self.xs.push(x);
         self.ys.push(y);
+        Ok(())
     }
 
     /// Close the current CSR row after a custom vertex append sequence.

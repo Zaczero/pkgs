@@ -421,18 +421,24 @@ impl GeodesicRowCaps {
         shape: crs::EllipsoidShape,
         row_count: usize,
         live: impl Iterator<Item = (usize, Option<(Point, f64)>)>,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, ()> {
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
         let one_minus_f = 1.0 - flattening;
-        let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
-        let mut reaches = vec![0.0; row_count];
+        let mut anchors = Vec::new();
+        crate::boundary::try_reserve_vec(&mut anchors, row_count).map_err(|_| ())?;
+        anchors.resize(row_count, (Radians(0.0), Radians(0.0)));
+        let mut reaches = Vec::new();
+        crate::boundary::try_reserve_vec(&mut reaches, row_count).map_err(|_| ())?;
+        reaches.resize(row_count, 0.0);
         for (handle, row) in live {
-            let (anchor, reach) = row?;
+            let Some((anchor, reach)) = row else {
+                return Ok(None);
+            };
             if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
                 // Out-of-domain rows must reach the exact path so they raise
                 // its domain error instead of being silently pruned.
-                return None;
+                return Ok(None);
             }
             anchors[handle] = (
                 reduced_latitude(Degrees(anchor.y), one_minus_f),
@@ -440,12 +446,12 @@ impl GeodesicRowCaps {
             );
             reaches[handle] = reach;
         }
-        Some(Self {
+        Ok(Some(Self {
             minor_radius: major * one_minus_f,
             one_minus_f,
             anchors,
             reaches,
-        })
+        }))
     }
 
     /// The query side of the bound: a reduced anchor for `point`. `None`

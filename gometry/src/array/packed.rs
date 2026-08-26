@@ -652,14 +652,15 @@ impl PyGeometryArray {
     /// when every element is a uniform-axes primitive of that kind (so
     /// `array([points])`, line-returning ops, and polygon-returning ops
     /// auto-pack), otherwise `Mixed`.
-    pub(crate) fn pack_or_mixed(items: Vec<PyGeometry>, frame: Frame) -> Self {
-        Self::from_shapes(
-            items
-                .into_iter()
-                .map(|item| item.shape.shape().clone())
-                .collect(),
-            frame,
-        )
+    pub(crate) fn pack_or_mixed(
+        items: Vec<PyGeometry>,
+        frame: Frame,
+    ) -> crate::error::Result<Self> {
+        let mut shapes = Vec::new();
+        for item in items {
+            crate::boundary::try_push_vec(&mut shapes, item.shape.shape().clone())?;
+        }
+        Ok(Self::from_shapes(shapes, frame))
     }
 
     /// Build an array straight from kernel-output `Shape`s: all-`Point`

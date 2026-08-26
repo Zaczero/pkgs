@@ -18,6 +18,18 @@ use crate::crs::CrsError;
 use crate::geometry::GeometryErrorKind;
 use crate::io::IoError;
 
+/// A fallible allocation at an owned resource boundary.
+///
+/// The error carries no allocation-sized context. Python conversion adds the
+/// user-facing exception only after the producer has released retained output.
+#[derive(Debug, ThisError)]
+pub(crate) enum ResourceError {
+    #[error("memory allocation failed while materializing output")]
+    Allocation,
+    #[error("resource size arithmetic overflowed")]
+    SizeOverflow,
+}
+
 /// Crate-wide result alias. The error parameter defaults to [`Error`] so core
 /// signatures read `Result<T>`, while explicit forms (`Result<T, PyErr>`)
 /// still work under the same import.
@@ -49,6 +61,8 @@ pub(crate) enum ErrorKind {
     Io(#[from] IoError),
     #[error(transparent)]
     Frame(#[from] FrameError),
+    #[error(transparent)]
+    Resource(#[from] ResourceError),
 }
 
 impl Error {
@@ -91,6 +105,12 @@ impl From<IoError> for Error {
 impl From<FrameError> for Error {
     fn from(error: FrameError) -> Self {
         ErrorKind::Frame(error).into()
+    }
+}
+
+impl From<ResourceError> for Error {
+    fn from(error: ResourceError) -> Self {
+        ErrorKind::Resource(error).into()
     }
 }
 

@@ -392,7 +392,7 @@ impl PyGeometryArray {
     }
 
     #[doc = doc_validate!(array)]
-    pub fn validate(&self) -> Vec<Option<PyValidationReport>> {
+    pub fn validate(&self) -> PyResult<Vec<Option<PyValidationReport>>> {
         self.validate_impl()
     }
 

@@ -55,29 +55,32 @@ impl StaticStrTree {
     /// boundary ([`initial_len`](Self::initial_len)) and the index for
     /// `removed[entry.idx]`, both of which must span every input row, not just
     /// the indexed ones.
-    pub(super) fn build(entries: Vec<IndexEntry>, total_rows: usize) -> Self {
+    pub(super) fn build(entries: Vec<IndexEntry>, total_rows: usize) -> crate::error::Result<Self> {
         Self::build_with_removed(entries, total_rows, false)
     }
 
     /// Build a dense bulk tree whose every input row has an entry. Packed
     /// arrays prove this at admission, so the tombstone bitmap can start at
     /// zero without the sparse-path fill pass.
-    pub(super) fn build_dense(entries: Vec<IndexEntry>) -> Self {
+    pub(super) fn build_dense(entries: Vec<IndexEntry>) -> crate::error::Result<Self> {
         let total_rows = entries.len();
         Self::build_with_removed(entries, total_rows, true)
     }
 
-    fn build_with_removed(mut entries: Vec<IndexEntry>, total_rows: usize, dense: bool) -> Self {
+    fn build_with_removed(
+        mut entries: Vec<IndexEntry>,
+        total_rows: usize,
+        dense: bool,
+    ) -> crate::error::Result<Self> {
         let entry_count = entries.len();
-        let removed = if dense {
-            vec![0_u8; total_rows]
-        } else {
-            let mut removed = vec![1_u8; total_rows];
+        let mut removed = Vec::new();
+        crate::boundary::try_reserve_vec(&mut removed, total_rows)?;
+        removed.resize(total_rows, u8::from(!dense));
+        if !dense {
             for entry in &entries {
                 removed[entry.idx] = 0;
             }
-            removed
-        };
+        }
         let mut tree = Self {
             entries: Vec::new(),
             levels: Vec::new(),
@@ -85,7 +88,7 @@ impl StaticStrTree {
             live: entry_count,
         };
         if entry_count == 0 {
-            return tree;
+            return Ok(tree);
         }
         // Sort-tile-recursive: x-sort globally, slice into ~sqrt(leaves)
         // vertical strips, y-sort each strip; consecutive NODE_CAP runs
@@ -108,37 +111,38 @@ impl StaticStrTree {
         for strip in entries.chunks_mut(strip_len) {
             strip.sort_unstable_by(|a, b| center(a, 1).total_cmp(&center(b, 1)));
         }
-        let mut level: Vec<StrNode> = entries
-            .chunks(NODE_CAP)
-            .enumerate()
-            .map(|(node, chunk)| StrNode {
+        let mut level = Vec::new();
+        crate::boundary::try_reserve_vec(&mut level, leaf_count)?;
+        for (node, chunk) in entries.chunks(NODE_CAP).enumerate() {
+            crate::boundary::try_push_vec(&mut level, StrNode {
                 envelope: chunk
                     .iter()
                     .map(|entry| entry.envelope)
                     .reduce(|a, b| a.merged(&b))
                     .expect("chunks are non-empty"),
                 children: range_at(node, chunk.len()),
-            })
-            .collect();
+            })?;
+        }
         tree.entries = entries;
         while level.len() > NODE_CAP {
-            let next: Vec<StrNode> = level
-                .chunks(NODE_CAP)
-                .enumerate()
-                .map(|(node, chunk)| StrNode {
+            let next_count = level.len().div_ceil(NODE_CAP);
+            let mut next = Vec::new();
+            crate::boundary::try_reserve_vec(&mut next, next_count)?;
+            for (node, chunk) in level.chunks(NODE_CAP).enumerate() {
+                crate::boundary::try_push_vec(&mut next, StrNode {
                     envelope: chunk
                         .iter()
                         .map(|child| child.envelope)
                         .reduce(|a, b| a.merged(&b))
                         .expect("chunks are non-empty"),
                     children: range_at(node, chunk.len()),
-                })
-                .collect();
-            tree.levels.push(level);
+                })?;
+            }
+            crate::boundary::try_push_vec(&mut tree.levels, level)?;
             level = next;
         }
-        tree.levels.push(level);
-        tree
+        crate::boundary::try_push_vec(&mut tree.levels, level)?;
+        Ok(tree)
     }
 
     /// Handles `0..initial_len()` belong to this tree; later handles are the
@@ -194,42 +198,59 @@ impl StaticStrTree {
 
     /// Every live handle beneath `node` (the convex descent's whole-subtree
     /// accept).
-    pub(super) fn collect_subtree(&self, level: usize, node: &StrNode, out: &mut Vec<usize>) {
+    pub(super) fn collect_subtree(
+        &self,
+        level: usize,
+        node: &StrNode,
+        out: &mut Vec<usize>,
+    ) -> crate::error::Result<()> {
         if level == 0 {
-            out.extend(self.leaf_entries(node).iter().filter_map(|entry| {
-                let live = self.removed[entry.idx] == 0;
-                live.then_some(entry.idx)
-            }));
-            return;
+            for entry in self.leaf_entries(node) {
+                if self.removed[entry.idx] == 0 {
+                    crate::try_push_vec(out, entry.idx)?;
+                }
+            }
+            return Ok(());
         }
         let range = node.children.start as usize..node.children.end as usize;
         for child in &self.levels[level - 1][range] {
-            self.collect_subtree(level - 1, child, out);
+            self.collect_subtree(level - 1, child, out)?;
         }
+        Ok(())
     }
 
     /// Live handles whose envelope intersects `query`.
-    pub(super) fn each_intersecting(&self, query: &AABB<[f64; 2]>, mut visit: impl FnMut(usize)) {
+    pub(super) fn each_intersecting(
+        &self,
+        query: &AABB<[f64; 2]>,
+        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         self.descend(
             |envelope| intersects(envelope, query),
             |entry| {
                 if intersects(&entry.envelope, query) {
-                    visit(entry.idx);
+                    visit(entry.idx)?;
                 }
+                Ok(())
             },
-        );
+        )
     }
 
     /// Live handles whose envelope is fully contained in `query`.
-    pub(super) fn each_contained(&self, query: &AABB<[f64; 2]>, mut visit: impl FnMut(usize)) {
+    pub(super) fn each_contained(
+        &self,
+        query: &AABB<[f64; 2]>,
+        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         self.descend(
             |envelope| intersects(envelope, query),
             |entry| {
                 if contains_envelope(query, &entry.envelope) {
-                    visit(entry.idx);
+                    visit(entry.idx)?;
                 }
+                Ok(())
             },
-        );
+        )
     }
 
     /// Live handles whose envelope lies within squared distance
@@ -239,16 +260,17 @@ impl StaticStrTree {
         &self,
         point: [f64; 2],
         max_distance_2: f64,
-        mut visit: impl FnMut(usize),
-    ) {
+        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         self.descend(
             |envelope| distance_2(envelope, &point) <= max_distance_2,
             |entry| {
                 if distance_2(&entry.envelope, &point) <= max_distance_2 {
-                    visit(entry.idx);
+                    visit(entry.idx)?;
                 }
+                Ok(())
             },
-        );
+        )
     }
 
     /// Explicit-stack descent: `enter` prunes nodes, `leaf` sees every live
@@ -259,7 +281,11 @@ impl StaticStrTree {
     /// times back-to-back, so a fresh `Vec` per descent is measurable waste
     /// (~560 instr/query). Descents never nest (the `leaf` visitor only records
     /// ids), so one buffer per thread serves every call.
-    fn descend(&self, enter: impl Fn(&AABB<[f64; 2]>) -> bool, mut leaf: impl FnMut(&IndexEntry)) {
+    fn descend(
+        &self,
+        enter: impl Fn(&AABB<[f64; 2]>) -> bool,
+        mut leaf: impl FnMut(&IndexEntry) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
         thread_local! {
             static STACK: std::cell::RefCell<Vec<(usize, u32)>> =
                 const { std::cell::RefCell::new(Vec::new()) };
@@ -267,28 +293,30 @@ impl StaticStrTree {
         STACK.with_borrow_mut(|stack| {
             stack.clear();
             let root_level = self.root_level();
-            stack.extend(
-                (0..self.roots().len() as u32)
-                    .filter(|&node| enter(&self.node(root_level, node).envelope))
-                    .map(|node| (root_level, node)),
-            );
+            crate::try_reserve_vec(stack, self.roots().len())?;
+            for node in 0..self.roots().len() as u32 {
+                if enter(&self.node(root_level, node).envelope) {
+                    crate::try_push_vec(stack, (root_level, node))?;
+                }
+            }
             while let Some((level, index)) = stack.pop() {
                 let node = self.node(level, index);
                 if level == 0 {
                     for entry in self.leaf_entries(node) {
                         if self.removed[entry.idx] == 0 {
-                            leaf(entry);
+                            leaf(entry)?;
                         }
                     }
                     continue;
                 }
                 for child in node.children.clone() {
                     if enter(&self.node(level - 1, child).envelope) {
-                        stack.push((level - 1, child));
+                        crate::try_push_vec(stack, (level - 1, child))?;
                     }
                 }
             }
-        });
+            Ok(())
+        })
     }
 }
 
@@ -398,7 +426,7 @@ mod tests {
     fn brute_force_parity_across_sizes_and_tombstones() {
         for count in [0, 1, 15, 16, 17, 100, 1000] {
             let entries = fixture(count);
-            let mut tree = StaticStrTree::build(entries.clone(), entries.len());
+            let mut tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
             let removed: Vec<usize> = (0..count).filter(|idx| idx % 7 == 3).collect();
             for &handle in &removed {
                 assert!(tree.tombstone(handle));
@@ -416,7 +444,11 @@ mod tests {
                 AABB::from_point([73.0, 131.0]),
             ] {
                 let mut hits = Vec::new();
-                tree.each_intersecting(&query, |idx| hits.push(idx));
+                tree.each_intersecting(&query, |idx| {
+                    hits.push(idx);
+                    Ok(())
+                })
+                .unwrap();
                 assert_eq!(
                     sorted(hits),
                     brute(&entries, &removed, |entry| entry
@@ -424,7 +456,11 @@ mod tests {
                         .intersects(&query))
                 );
                 let mut inside = Vec::new();
-                tree.each_contained(&query, |idx| inside.push(idx));
+                tree.each_contained(&query, |idx| {
+                    inside.push(idx);
+                    Ok(())
+                })
+                .unwrap();
                 assert_eq!(
                     sorted(inside),
                     brute(&entries, &removed, |entry| query
@@ -434,7 +470,11 @@ mod tests {
             let point = [120.0, 90.0];
             for radius_2 in [0.0, 100.0, 10_000.0] {
                 let mut near = Vec::new();
-                tree.each_within_distance_2(point, radius_2, |idx| near.push(idx));
+                tree.each_within_distance_2(point, radius_2, |idx| {
+                    near.push(idx);
+                    Ok(())
+                })
+                .unwrap();
                 assert_eq!(
                     sorted(near),
                     brute(&entries, &removed, |entry| entry
@@ -453,12 +493,16 @@ mod tests {
         let negative = entry(0, [-1.0e308, -1.0e308], [-9.0e307, -9.0e307]);
         let positive = entry(1, [9.0e307, 9.0e307], [1.0e308, 1.0e308]);
 
-        let tree = StaticStrTree::build(vec![positive, negative], 2);
+        let tree = StaticStrTree::build(vec![positive, negative], 2).expect("tree");
         let mut negative_hits = Vec::new();
         tree.each_intersecting(
             &AABB::from_corners([-1.0e308, -1.0e308], [-9.0e307, -9.0e307]),
-            |idx| negative_hits.push(idx),
-        );
+            |idx| {
+                negative_hits.push(idx);
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(negative_hits, [0]);
     }
 }

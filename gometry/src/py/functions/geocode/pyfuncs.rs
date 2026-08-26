@@ -27,32 +27,35 @@ fn geocode_array_codes(
         .ok_or_else(|| crate::py::errors::geometry_type_err("expected Point geometry"))?;
     let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
     if lonlat_frame || points.is_empty() {
-        return points
-            .iter()
-            .enumerate()
-            .map(|(row, point)| {
-                if array.is_row_missing(row) {
-                    return Ok(None);
-                }
-                crate::boundary::geographic::validate_lonlat_point(point)
-                    .map_err(|err| crate::note_array_row(err, row))?;
-                operation(point.x, point.y)
-                    .map(Some)
-                    .map_err(|err| crate::note_array_row(err, row))
-            })
-            .collect();
+        return crate::try_collect_results(points.iter().enumerate().map(|(row, point)| {
+            if array.is_row_missing(row) {
+                return Ok(None);
+            }
+            crate::boundary::geographic::validate_lonlat_point(point)
+                .map_err(|err| crate::note_array_row(err, row))?;
+            operation(point.x, point.y)
+                .map(Some)
+                .map_err(|err| crate::note_array_row(err, row))
+        }));
     }
 
-    let present_rows = (0..points.len())
-        .filter(|&row| !array.is_row_missing(row))
-        .collect::<Vec<_>>();
-    if present_rows.is_empty() {
-        return Ok(vec![None; points.len()]);
+    let mut present_rows = crate::try_vec_with_capacity(points.len())?;
+    for row in 0..points.len() {
+        if !array.is_row_missing(row) {
+            crate::try_push(&mut present_rows, row)?;
+        }
     }
-    let source = present_rows
-        .iter()
-        .map(|&row| points.get(row).xy())
-        .collect::<Vec<_>>();
+    if present_rows.is_empty() {
+        let mut output = crate::try_vec_with_capacity(points.len())?;
+        for _ in 0..points.len() {
+            crate::try_push(&mut output, None)?;
+        }
+        return Ok(output);
+    }
+    let mut source = crate::try_vec_with_capacity(present_rows.len())?;
+    for &row in &present_rows {
+        crate::try_push(&mut source, points.get(row).xy())?;
+    }
     let source_crs = array
         .crs_str()
         .expect("non-lonlat point array carries a CRS");
@@ -61,7 +64,10 @@ fn geocode_array_codes(
     else {
         unreachable!("transform preserves the MultiPoint kind")
     };
-    let mut output = vec![None; points.len()];
+    let mut output = crate::try_vec_with_capacity(points.len())?;
+    for _ in 0..points.len() {
+        crate::try_push(&mut output, None)?;
+    }
     for (index, &row) in present_rows.iter().enumerate() {
         let point = transformed.point_at(index);
         crate::boundary::geographic::validate_lonlat_point(point)
@@ -112,17 +118,13 @@ fn geocode_encode_broadcast(
         [(&mut lon, "longitude"), (&mut lat, "latitude")],
         "lon and lat",
     )?;
-    let encoded = lon
-        .values
-        .iter()
-        .zip(&lat.values)
-        .map(|(&lon, &lat)| {
+    let encoded =
+        crate::try_collect_results(lon.values.iter().zip(&lat.values).map(|(&lon, &lat)| {
             if validate_raw_domain {
                 crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
             }
             operation(lon, lat)
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+        }))?;
     if scalar {
         encoded
             .into_iter()
@@ -154,11 +156,12 @@ fn code_lonlat_broadcast(
             let lon = F64Param::parse(lon, "lon", codes.len())?;
             let lat = F64Param::parse(lat, "lat", codes.len())?;
             py.detach(move || {
-                codes
-                    .iter()
-                    .enumerate()
-                    .map(|(row, code)| operation(code, lon.get(row), lat.get(row)))
-                    .collect::<PyResult<Vec<_>>>()
+                crate::try_collect_results(
+                    codes
+                        .iter()
+                        .enumerate()
+                        .map(|(row, code)| operation(code, lon.get(row), lat.get(row))),
+                )
             })?
             .into_py_any(py)
         },
@@ -265,10 +268,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             .unbind()),
         CodeInput::Many(codes) => {
             let shapes = py.detach(move || {
-                codes
-                    .iter()
-                    .map(|code| polygon_shape(code))
-                    .collect::<PyResult<Vec<_>>>()
+                crate::try_collect_results(codes.iter().map(|code| polygon_shape(code)))
             })?;
             Ok(PyGeometryArray::from_shapes(shapes, frame)
                 .into_pyobject(py)?
@@ -449,14 +449,14 @@ pub(crate) fn osm_shortlink_location(
         CodeInput::Scalar(code) => Ok(shortlink_decode(&code)?.into_pyobject(py)?.unbind().into()),
         CodeInput::Many(codes) => {
             let (lon, lat, zoom) = py.detach(move || {
-                let mut lon = Vec::with_capacity(codes.len());
-                let mut lat = Vec::with_capacity(codes.len());
-                let mut zoom = Vec::with_capacity(codes.len());
+                let mut lon = crate::try_vec_with_capacity(codes.len())?;
+                let mut lat = crate::try_vec_with_capacity(codes.len())?;
+                let mut zoom = crate::try_vec_with_capacity(codes.len())?;
                 for code in &codes {
                     let (x, y, z) = shortlink_decode(code)?;
-                    lon.push(x);
-                    lat.push(y);
-                    zoom.push(i64::from(z));
+                    crate::try_push(&mut lon, x)?;
+                    crate::try_push(&mut lat, y)?;
+                    crate::try_push(&mut zoom, i64::from(z))?;
                 }
                 Ok::<_, PyErr>((lon, lat, zoom))
             })?;

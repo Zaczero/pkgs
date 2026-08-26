@@ -105,7 +105,7 @@ pub(crate) fn split(
                     .map(|shape| geometry.with_shape(shape))
                     .collect(),
                 geometry.frame.clone(),
-            ));
+            )?);
         }
     }
     if let Some(array) = exact_geometry_array(geom) {

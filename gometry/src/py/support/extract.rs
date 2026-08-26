@@ -16,13 +16,16 @@ pub(crate) enum CoercedCollectedGeometryItems {
 }
 
 impl CoercedCollectedGeometryItems {
-    pub(crate) fn into_items(self) -> Vec<PyGeometry> {
+    pub(crate) fn into_items(self) -> PyResult<Vec<PyGeometry>> {
         match self {
-            Self::Items(items) => items,
-            Self::FramelessShapes(shapes) => shapes
-                .into_iter()
-                .map(|shape| PyGeometry::with_epoch(shape, None, None))
-                .collect(),
+            Self::Items(items) => Ok(items),
+            Self::FramelessShapes(shapes) => {
+                let mut items = Vec::new();
+                for shape in shapes {
+                    crate::try_push(&mut items, PyGeometry::with_epoch(shape, None, None))?;
+                }
+                Ok(items)
+            },
         }
     }
 }
@@ -60,8 +63,8 @@ impl<'a> GeometryValues<'a> {
         match self {
             Self::One(geometry) => Ok(vec![geometry.clone()]),
             Self::Array(array) if array.has_missing() => Err(missing_geometry_items_error()),
-            Self::Array(array) => Ok(array.items().into_owned()),
-            Self::Collected(items) => Ok(items.into_items()),
+            Self::Array(array) => Ok(array.items()?.into_owned()),
+            Self::Collected(items) => items.into_items(),
         }
     }
 }
@@ -83,19 +86,15 @@ fn coerce_generic_geometry_items(
     note_rows: bool,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
 ) -> PyResult<Vec<PyGeometry>> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(row, item)| {
-            coerce_geometry(item, policy).map_err(|error| {
-                if note_rows {
-                    crate::note_array_row(error, row)
-                } else {
-                    error
-                }
-            })
+    crate::try_collect_results(items.iter().enumerate().map(|(row, item)| {
+        coerce_geometry(item, policy).map_err(|error| {
+            if note_rows {
+                crate::note_array_row(error, row)
+            } else {
+                error
+            }
         })
-        .collect()
+    }))
 }
 
 /// Pure-bytes GeometryArray ingest: parse WKB/EWKB rows with one SRID
@@ -104,7 +103,7 @@ fn coerce_collected_wkb_items(
     items: &[Bound<'_, PyAny>],
     note_rows: bool,
 ) -> PyResult<CoercedCollectedGeometryItems> {
-    let mut rows = Vec::with_capacity(items.len());
+    let mut rows = crate::try_vec_with_capacity(items.len())?;
     let mut saw_embedded = false;
     let mut srid_cache = crate::io::SridCrsCache::default();
     for (row, item) in items.iter().enumerate() {
@@ -120,17 +119,18 @@ fn coerce_collected_wkb_items(
             .resolve(parsed.srid)
             .map_err(|err| note(err.into()))?;
         saw_embedded |= embedded.is_some();
-        rows.push((parsed.shape, embedded.map(crate::crs_arc)));
+        crate::try_push(&mut rows, (parsed.shape, embedded.map(crate::crs_arc)))?;
     }
     if !saw_embedded {
         return Ok(CoercedCollectedGeometryItems::FramelessShapes(
-            rows.into_iter().map(|(shape, _)| shape).collect(),
+            crate::try_collect_results(rows.into_iter().map(|(shape, _)| Ok(shape)))?,
         ));
     }
     Ok(CoercedCollectedGeometryItems::Items(
-        rows.into_iter()
-            .map(|(shape, crs)| PyGeometry::with_epoch(shape, crs, None))
-            .collect(),
+        crate::try_collect_results(
+            rows.into_iter()
+                .map(|(shape, crs)| Ok(PyGeometry::with_epoch(shape, crs, None))),
+        )?,
     ))
 }
 
@@ -153,7 +153,7 @@ pub(crate) fn coerce_collected_geometry_items(
             return Err(missing_geometry_items_error());
         },
         Some(first) if exact_geometry(first).is_some() => {
-            let mut native_items = Vec::with_capacity(items.len());
+            let mut native_items = crate::try_vec_with_capacity(items.len())?;
             let mut missing_items = 0_usize;
             for item in items {
                 if item.is_none() {
@@ -164,9 +164,11 @@ pub(crate) fn coerce_collected_geometry_items(
                     native_items.clear();
                     break;
                 };
-                native_items.push(geometry.clone());
+                crate::try_push(&mut native_items, geometry.clone())?;
             }
-            if missing_items > 0 && native_items.len() + missing_items == items.len() {
+            if missing_items > 0
+                && native_items.len().checked_add(missing_items) == Some(items.len())
+            {
                 return Err(missing_geometry_items_error());
             }
             if native_items.len() == items.len() {
@@ -208,19 +210,15 @@ pub(crate) fn coerce_collected_geometry_items(
         // with the caller's legacy-CRS policy (Adopt for GeometryArray /
         // require; Fixed for document decoders that pass through elsewhere).
         return Ok(CoercedCollectedGeometryItems::Items(
-            items
-                .iter()
-                .enumerate()
-                .map(|(row, item)| {
-                    coerce_geometry(item, policy).map_err(|err| {
-                        if note_rows {
-                            crate::note_array_row(err, row)
-                        } else {
-                            err
-                        }
-                    })
+            crate::try_collect_results(items.iter().enumerate().map(|(row, item)| {
+                coerce_geometry(item, policy).map_err(|err| {
+                    if note_rows {
+                        crate::note_array_row(err, row)
+                    } else {
+                        err
+                    }
                 })
-                .collect::<PyResult<Vec<_>>>()?,
+            }))?,
         ));
     }
     Ok(CoercedCollectedGeometryItems::Items(
@@ -246,7 +244,7 @@ fn bulk_unary_over_values<T>(
             crate::dispatch::dispatch_unary_simple_same(geom, scalar, array)
         },
         crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items();
+            let mut items = items.into_items()?;
             let frame = crate::Frame::resolve_items(
                 &mut items,
                 crate::FrameAdoption {
@@ -255,7 +253,7 @@ fn bulk_unary_over_values<T>(
                 },
                 "GeometryArray",
             )?;
-            array(&PyGeometryArray::pack_or_mixed(items, frame))
+            array(&PyGeometryArray::pack_or_mixed(items, frame)?)
         },
     }
 }
@@ -287,7 +285,12 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
         geom,
         |geometry| {
             Ok(PyGeometryArray::from_shapes(
-                geometry.shape.parts().collect(),
+                crate::try_collect_results(
+                    geometry
+                        .shape
+                        .parts()
+                        .map(|part| Ok::<_, pyo3::PyErr>(part)),
+                )?,
                 geometry.frame.clone(),
             ))
         },
@@ -295,7 +298,11 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
             let mut parts = Vec::new();
             let frame = array.frame.clone();
             for (_, shape) in array.present_shape_rows() {
+                let mut failure = None;
                 shape.any_part(|part| {
+                    if failure.is_some() {
+                        return true;
+                    }
                     let part = match part {
                         ShapePart::Point(point) => Shape::Point(point),
                         ShapePart::LineString(line) => Shape::LineString(
@@ -306,9 +313,17 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
                         ShapePart::Empty(kind, axes) => Shape::typed_empty(kind, axes),
                         ShapePart::Nested(nested) => nested.clone(),
                     };
-                    parts.push(part);
-                    false
+                    match crate::try_push_vec(&mut parts, part) {
+                        Ok(()) => false,
+                        Err(error) => {
+                            failure = Some(error);
+                            true
+                        },
+                    }
                 });
+                if let Some(error) = failure {
+                    return Err(pyo3::PyErr::from(error));
+                }
             }
             Ok(PyGeometryArray::from_shapes(parts, frame))
         },

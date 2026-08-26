@@ -165,8 +165,11 @@ fn geodesic_rows_to_dict<T>(
                     // Bulk results are zero-copy buffer columns, not one
                     // boxed float per row (the same contract as the CRS
                     // transform lanes).
-                    let column =
-                        crate::py::numpy::float64_array(py, items.iter().map(get).collect())?;
+                    let mut values = crate::try_vec_with_capacity(items.len())?;
+                    for item in items {
+                        crate::try_push(&mut values, get(item))?;
+                    }
+                    let column = crate::py::numpy::float64_array(py, values)?;
                     dict.set_item(key, column)?;
                 }
             },

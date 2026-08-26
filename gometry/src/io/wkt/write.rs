@@ -3,7 +3,7 @@ use crate::io::wkt::{
     extended_srid_code, require_serializable_axes,
 };
 
-pub(crate) fn to_wkt(shape: &Shape) -> String {
+pub(crate) fn to_wkt(shape: &Shape) -> Result<String> {
     format_wkt(shape, None, WktNumberFormat::Shortest)
 }
 
@@ -20,9 +20,21 @@ pub(crate) fn to_wkt_with_dimension(
 ) -> Result<String> {
     // Reject heterogeneous-axis multiparts before inventing missing Z/M as 0.
     require_serializable_axes(shape)?;
-    let body = format_wkt(shape, output_dimension, WktNumberFormat::Shortest);
+    let body = format_wkt(shape, output_dimension, WktNumberFormat::Shortest)?;
     match wkt_srid_prefix(crs, include_srid)? {
-        Some(prefix) => Ok(format!("{prefix}{body}")),
+        Some(prefix) => {
+            let mut output = String::new();
+            let length = prefix
+                .len()
+                .checked_add(body.len())
+                .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
+            output
+                .try_reserve(length)
+                .map_err(|_| crate::error::ResourceError::Allocation)?;
+            output.push_str(&prefix);
+            output.push_str(&body);
+            Ok(output)
+        },
         None => Ok(body),
     }
 }
@@ -98,7 +110,7 @@ impl WktNumberFormat {
 
 /// WKT with display-formatted ordinates (see [`WktNumberFormat`]); backs
 /// `Geometry.__format__`.
-pub(crate) fn to_wkt_display(shape: &Shape, format: WktNumberFormat) -> String {
+pub(crate) fn to_wkt_display(shape: &Shape, format: WktNumberFormat) -> Result<String> {
     format_wkt(shape, None, format)
 }
 
@@ -106,13 +118,24 @@ fn format_wkt(
     shape: &Shape,
     output_dimension: Option<WktDimension>,
     format: WktNumberFormat,
-) -> String {
-    // One output buffer for the whole geometry (the streaming writer never
-    // allocates per coordinate). ~20 bytes covers a typical "x y" pair plus
-    // separator; growth past the estimate is amortized doubling.
-    let mut out = String::with_capacity(24 + shape.coord_count() * 20);
+) -> Result<String> {
+    // Reserve enough for the largest supported fixed-format f64 representation
+    // and for structural tokens, including empty nested geometries.
+    let coordinate_bytes = shape
+        .coord_count()
+        .checked_mul(4096)
+        .ok_or_else(|| IoError::wkt("WKT coordinate byte length overflows usize"))?;
+    let structural_bytes = wkt_structure_count(shape)?
+        .checked_mul(128)
+        .ok_or_else(|| IoError::wkt("WKT structural byte length overflows usize"))?;
+    let capacity = coordinate_bytes
+        .checked_add(structural_bytes)
+        .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX);
-    out
+    Ok(out)
 }
 
 /// WKT rendered only far enough to fill `limit` bytes.
@@ -120,10 +143,48 @@ fn format_wkt(
 /// The leading prefix of the full [`to_wkt`] render, for previews (`repr`,
 /// error messages) that truncate anyway — a huge geometry pays for ~`limit`
 /// bytes, not its whole WKT.
-pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> String {
-    let mut out = String::with_capacity(limit + 16);
+pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
+    let capacity = limit
+        .checked_add(4096)
+        .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
     write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit);
-    out
+    Ok(out)
+}
+
+fn wkt_structure_count(shape: &Shape) -> Result<usize> {
+    match shape {
+        Shape::MultiLineString(lines) => lines
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
+        Shape::Polygon(polygon) => polygon
+            .holes
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
+        Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
+            let polygon_count = polygon
+                .holes
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))?;
+            total
+                .checked_add(polygon_count)
+                .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))
+        }),
+        Shape::GeometryCollection(geometries) => {
+            geometries.iter().try_fold(1_usize, |total, geometry| {
+                let geometry_count = wkt_structure_count(geometry)?;
+                total
+                    .checked_add(geometry_count)
+                    .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))
+            })
+        },
+        _ => Ok(1),
+    }
 }
 
 /// Streaming WKT writer: appends `shape` to `out` with no intermediate

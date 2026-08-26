@@ -238,18 +238,19 @@ fn ensure_pyarrow_point_struct(
         ));
     }
     // Mandatory shared classifier: exact x/y, at most z/m, float64 leaves only.
-    let names: Vec<String> = value_type.getattr("names")?.extract()?;
+    let names_value = value_type.getattr("names")?;
+    let names = crate::collect_py_strings(&names_value, "GeoArrow field names")?;
     let fields_attr = value_type.getattr("fields")?;
     if fields_attr.len()? != names.len() {
         return Err(PyTypeError::new_err(
             "geoarrow point struct field names and fields length disagree",
         ));
     }
-    let mut fields = Vec::with_capacity(names.len());
+    let mut fields = crate::try_vec_with_capacity(names.len())?;
     for (index, name) in names.iter().enumerate() {
         let field_type = fields_attr.get_item(index)?.getattr("type")?;
         let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
-        fields.push((name.as_str(), is_float64));
+        crate::try_push(&mut fields, (name.as_str(), is_float64))?;
     }
     crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())
@@ -992,13 +993,16 @@ fn geoarrow_list_depth(
         return Ok(None);
     }
     let names: Vec<String> = if let Ok(names) = current.getattr("names") {
-        names.extract()?
+        crate::collect_py_strings(&names, "GeoArrow field names")?
     } else {
         // Fall back to field-index name access (matches Python helper).
         let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
-        let mut names = Vec::with_capacity(num_fields);
+        let mut names = crate::try_vec_with_capacity(num_fields)?;
         for index in 0..num_fields {
-            names.push(current.get_item(index)?.getattr("name")?.extract()?);
+            crate::try_push(
+                &mut names,
+                current.get_item(index)?.getattr("name")?.extract()?,
+            )?;
         }
         names
     };

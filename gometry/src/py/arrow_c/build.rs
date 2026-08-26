@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::mem::size_of;
 use std::ptr;
 use std::sync::Arc;
 
@@ -12,19 +13,26 @@ use crate::py::arrow_c::{
 };
 
 impl SchemaNode {
-    pub(crate) fn into_schema(self) -> Box<ArrowSchema> {
+    pub(crate) fn into_schema(self) -> PyResult<Box<ArrowSchema>> {
+        let SchemaNode {
+            format,
+            name,
+            metadata,
+            children,
+        } = self;
+        let children =
+            crate::try_collect_results(children.into_iter().map(|child| child.into_schema()))?;
+        let mut child_ptrs = crate::try_vec_with_capacity(children.len())?;
+        for child in &children {
+            child_ptrs.push(ptr::from_ref(child.as_ref()).cast_mut());
+        }
         let mut private = Box::new(SchemaPrivate {
-            format: CString::new(self.format).expect("schema format has no nul"),
-            name: CString::new(self.name).expect("schema name has no nul"),
-            metadata: self.metadata.map(encode_schema_metadata),
-            children: self.children.into_iter().map(Self::into_schema).collect(),
-            child_ptrs: Vec::new(),
+            format: CString::new(format).expect("schema format has no nul"),
+            name: CString::new(name).expect("schema name has no nul"),
+            metadata: metadata.map(encode_schema_metadata).transpose()?,
+            children,
+            child_ptrs,
         });
-        private.child_ptrs = private
-            .children
-            .iter_mut()
-            .map(|child| ptr::from_mut(child.as_mut()))
-            .collect();
         let schema = ArrowSchema {
             format: private.format.as_ptr(),
             name: private.name.as_ptr(),
@@ -43,20 +51,39 @@ impl SchemaNode {
             release: Some(release_schema),
             private_data: Box::into_raw(private).cast(),
         };
-        Box::new(schema)
+        Ok(Box::new(schema))
     }
 }
 
-pub(crate) fn encode_schema_metadata(pairs: Vec<(String, String)>) -> Vec<u8> {
+pub(crate) fn encode_schema_metadata(pairs: Vec<(String, String)>) -> PyResult<Vec<u8>> {
+    let pair_count = i32::try_from(pairs.len())
+        .map_err(|_| GeometryError::new_err("Arrow schema metadata has too many entries"))?;
+    let mut capacity = size_of::<i32>();
+    for (key, value) in &pairs {
+        i32::try_from(key.len())
+            .map_err(|_| GeometryError::new_err("Arrow schema metadata key is too large"))?;
+        i32::try_from(value.len())
+            .map_err(|_| GeometryError::new_err("Arrow schema metadata value is too large"))?;
+        capacity = capacity
+            .checked_add(size_of::<i32>())
+            .and_then(|size| size.checked_add(key.len()))
+            .and_then(|size| size.checked_add(size_of::<i32>()))
+            .and_then(|size| size.checked_add(value.len()))
+            .ok_or_else(|| GeometryError::new_err("Arrow schema metadata size overflows usize"))?;
+    }
     let mut out = Vec::new();
-    out.extend_from_slice(&(pairs.len() as i32).to_ne_bytes());
+    if let Err(error) = crate::try_reserve_vec(&mut out, capacity) {
+        drop(pairs);
+        return Err(error.into());
+    }
+    out.extend_from_slice(&pair_count.to_ne_bytes());
     for (key, value) in pairs {
         out.extend_from_slice(&(key.len() as i32).to_ne_bytes());
         out.extend_from_slice(key.as_bytes());
         out.extend_from_slice(&(value.len() as i32).to_ne_bytes());
         out.extend_from_slice(value.as_bytes());
     }
-    out
+    Ok(out)
 }
 
 /// One buffer slot whose raw pointer is derived from a retained owner.
@@ -173,29 +200,30 @@ fn make_array_with_offset(
     let mut f64_buffers = Vec::new();
     let mut i32_buffers = Vec::new();
     let mut u8_buffers = Vec::new();
-    let mut buffer_ptrs = Vec::with_capacity(n_buffers);
+    let mut buffer_ptrs = crate::try_vec_with_capacity(n_buffers)?;
     for slot in buffers {
         match slot {
-            OwnedBufferSlot::Null => buffer_ptrs.push(ptr::null()),
+            OwnedBufferSlot::Null => crate::try_push(&mut buffer_ptrs, ptr::null())?,
             OwnedBufferSlot::F64(values) => {
-                buffer_ptrs.push(values.as_ptr().cast());
+                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
                 f64_buffers.push(values);
             },
             OwnedBufferSlot::I32(values) => {
-                buffer_ptrs.push(values.as_ptr().cast());
+                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
                 i32_buffers.push(values);
             },
             OwnedBufferSlot::U8(values) => {
-                buffer_ptrs.push(values.as_ptr().cast());
+                crate::try_push(&mut buffer_ptrs, values.as_ptr().cast())?;
                 u8_buffers.push(values);
             },
         }
     }
 
-    let children: Vec<Box<ArrowArray>> = children
-        .into_iter()
-        .map(GometryArrowArray::into_box)
-        .collect();
+    let children = crate::try_collect_results(
+        children
+            .into_iter()
+            .map(|child| Ok::<_, pyo3::PyErr>(child.into_box())),
+    )?;
     let mut private = Box::new(ArrayPrivate {
         _f64_buffers: f64_buffers,
         _i32_buffers: i32_buffers,
@@ -204,11 +232,12 @@ fn make_array_with_offset(
         children,
         child_ptrs: Vec::new(),
     });
-    private.child_ptrs = private
-        .children
-        .iter_mut()
-        .map(|child| ptr::from_mut(child.as_mut()))
-        .collect();
+    private.child_ptrs = crate::try_collect_results(
+        private
+            .children
+            .iter_mut()
+            .map(|child| Ok::<_, pyo3::PyErr>(ptr::from_mut(child.as_mut()))),
+    )?;
     let n_children_i64 = checked_i64(private.children.len(), "n_children")?;
     let array = ArrowArray {
         length: length_i64,
@@ -266,7 +295,8 @@ pub(crate) fn apply_top_level_validity(
     let total_bits = offset.checked_add(mask.len()).ok_or_else(|| {
         GeometryError::new_err("Arrow geometry export validity span exceeds usize")
     })?;
-    let mut validity = vec![0_u8; total_bits.div_ceil(8)];
+    let mut validity = crate::try_vec_with_capacity(total_bits.div_ceil(8))?;
+    validity.resize(total_bits.div_ceil(8), 0);
     for (row, &missing) in mask.iter().enumerate() {
         if !missing {
             let bit = offset + row;
