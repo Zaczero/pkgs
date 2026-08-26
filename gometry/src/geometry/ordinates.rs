@@ -4,29 +4,28 @@
 
 use rstar::{AABB, RTree, RTreeObject};
 
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::Result;
+use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
-    GeometryErrorKind, HashMapExt as _, MOrdinate, ON_SEGMENT_EPSILON, Point, PointKey, Segment,
-    Shape, XY, ZOrdinate, axis_pow2_scale, point_distance, same_point, scaled_residual,
-    segment_projection,
+    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
+    PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, point_distance, same_point,
+    scaled_residual, segment_projection,
 };
 
 /// Z/M lookup table built from an operation's input vertices and segments,
-/// used to restore ordinates on XY-only geometry-engine output. Exact
-/// vertex matches — the overwhelmingly common case (engine output keeps
-/// input vertices) — resolve through a hash map keyed like [`same_point`]
-/// (bit-exact with ±0.0 unified), so restoring N output vertices is O(N)
-/// instead of O(N x input size); only genuinely new vertices pay the
-/// segment-interpolation scan.
+/// used to restore ordinates on XY-only geometry-engine output. Exact vertex
+/// matches — the overwhelmingly common case (engine output keeps input
+/// vertices) — resolve through a hash map keyed like [`same_point`] (bit-exact
+/// with ±0.0 unified), so restoring N output vertices is O(N) instead of
+/// O(N x input size); only genuinely new vertices pay the segment scan.
 pub(super) struct OrdinateSource {
-    vertices: HashMap<PointKey, Point>,
+    vertices: HashMap<PointKey, Vec<Point>>,
     segments: Vec<(Point, Point)>,
-    /// Lazy R-tree over `segments` for the miss path: engine-jittered
-    /// output vertices miss the exact-match map and would otherwise scan
-    /// every Z/M source segment per vertex (measured: 34 ms of a 35 ms
-    /// Z union). Built only when a miss occurs; candidates test in input
-    /// order, so resolution stays identical to the linear scan.
+    /// Lazy R-tree over `segments` for the miss path: engine-jittered output
+    /// vertices miss the exact-match map and would otherwise scan every Z/M
+    /// source segment per vertex (measured: 34 ms of a 35 ms Z union).
+    /// Built only when a miss occurs.
     segment_tree: std::cell::OnceCell<RTree<SegmentEnvelope>>,
     /// Scale-aware slack for the segment stage: the boolean engine snaps
     /// coordinates to a grid proportional to the input EXTENT, and the
@@ -74,21 +73,24 @@ impl OrdinateSource {
                     .max(bounds.miny().abs())
                     .max(bounds.maxy().abs());
             }
-            shape.for_each_point(|point| {
-                if point.z().is_some() || point.m().is_some() {
-                    // First occurrence wins, like the scan it replaces.
-                    vertices.entry(PointKey::new(point)).or_insert(point);
-                }
-            });
-            shape.for_each_vertex_pair(|start, end| {
-                if start.z().is_some()
-                    || start.m().is_some()
-                    || end.z().is_some()
-                    || end.m().is_some()
+            if !(shape.has_z() || shape.has_m()) {
+                continue;
+            }
+            let graph = TopologyGraph::cartesian(shape);
+            for source in graph.source_points.iter() {
+                add_vertex(&mut vertices, source.point);
+            }
+            for source in graph.source_edges.iter() {
+                add_vertex(&mut vertices, source.start);
+                add_vertex(&mut vertices, source.end);
+                if source.start.z().is_some()
+                    || source.start.m().is_some()
+                    || source.end.z().is_some()
+                    || source.end.m().is_some()
                 {
-                    segments.push((start, end));
+                    segments.push(canonical_segment(source.start, source.end));
                 }
-            });
+            }
         }
         Self {
             vertices,
@@ -119,35 +121,77 @@ impl OrdinateSource {
         })
     }
 
-    /// Resolve Z/M for one XY output point; `None` if it derives from no input
-    /// vertex or segment (the caller then applies its operation semantics).
-    fn resolve(&self, point: Point) -> Option<Point> {
-        if let Some(vertex) = self.vertices.get(&PointKey::new(point)) {
-            return vertex.with_xy(point.x, point.y).ok();
+    /// Resolve each axis independently. A missing source value is not a zero,
+    /// and distinct bit patterns (including signed zero) are conflicting
+    /// values rather than an arbitrary first-source winner.
+    fn resolve(&self, point: Point) -> (Option<f64>, Option<f64>) {
+        let mut z = AxisValue::default();
+        let mut m = AxisValue::default();
+        if let Some(candidates) = self.vertices.get(&PointKey::new(point)) {
+            for &candidate in candidates {
+                z.observe(candidate.z());
+                m.observe(candidate.m());
+            }
         }
-        if self.segments.is_empty() {
-            return None;
+        if self.segments.is_empty() || (z.conflict && m.conflict) {
+            return (z.value(), m.value());
         }
         let pad = self.tolerance;
         let query = AABB::from_corners([point.x - pad, point.y - pad], [
             point.x + pad,
             point.y + pad,
         ]);
-        // Deterministic winner = the LOWEST-index resolving segment, found
-        // by streaming the (tiny) candidate set — no per-miss Vec + sort.
-        let mut winner = usize::MAX;
-        let mut ordinates = None;
         for entry in self.segment_tree().locate_in_envelope_intersecting(query) {
-            if entry.index > winner {
-                continue;
-            }
             let (start, end) = self.segments[entry.index];
             if let Some(resolved) = segment_ordinate_at(start, end, point, self.tolerance) {
-                (winner, ordinates) = (entry.index, Some(resolved));
+                // Exact endpoint candidates are already represented by the
+                // vertex table. Interior source edges still contribute when a
+                // separate source vertex happens to share that XY position.
+                if !same_point(start, point) && !same_point(end, point) {
+                    z.observe(resolved.0);
+                    m.observe(resolved.1);
+                }
             }
         }
-        let (z, m) = ordinates?;
-        Point::new_axes(point.x, point.y, ZOrdinate(z), MOrdinate(m)).ok()
+        (z.value(), m.value())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AxisValue {
+    value: Option<f64>,
+    conflict: bool,
+}
+
+impl AxisValue {
+    fn observe(&mut self, candidate: Option<f64>) {
+        let Some(candidate) = candidate else {
+            return;
+        };
+        match self.value {
+            None => self.value = Some(candidate),
+            Some(value) if value.to_bits() == candidate.to_bits() => {},
+            Some(_) => self.conflict = true,
+        }
+    }
+
+    fn value(self) -> Option<f64> {
+        (!self.conflict).then_some(self.value).flatten()
+    }
+}
+
+fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) {
+    vertices
+        .entry(PointKey::new(point))
+        .or_default()
+        .push(point);
+}
+
+fn canonical_segment(start: Point, end: Point) -> (Point, Point) {
+    if PointKey::new(start) <= PointKey::new(end) {
+        (start, end)
+    } else {
+        (end, start)
     }
 }
 
@@ -254,7 +298,31 @@ pub(super) fn carry_ordinates(
         return Ok(output);
     }
     let source = OrdinateSource::build(inputs);
-    carry_or_degrade(&output, &source, operation, strict)
+    carry_or_degrade(
+        &output,
+        &source,
+        inputs
+            .iter()
+            .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes())),
+        operation,
+        strict,
+    )
+}
+
+/// Carry ordinates for an overlay. The declared axes of an empty result follow
+/// the set operation, while non-empty vertices are admitted by provenance.
+pub(crate) fn carry_overlay_ordinates(
+    output: Shape,
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strict: bool,
+) -> Result<Shape> {
+    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
+        return Ok(output);
+    }
+    let source = OrdinateSource::build(inputs);
+    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
 
 /// Carry Z/M onto each shape in a decomposition result (see
@@ -269,30 +337,75 @@ pub(super) fn carry_each(
         return Ok(outputs);
     }
     let source = OrdinateSource::build(inputs);
+    let declared_axes = inputs
+        .iter()
+        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
     outputs
         .iter()
-        .map(|output| carry_or_degrade(output, &source, operation, strict))
+        .map(|output| carry_or_degrade(output, &source, declared_axes, operation, strict))
         .collect()
 }
 
-/// Source every vertex's Z/M from `source`; on the first unsourceable vertex
-/// either raise in strict internal verification or return the shape flattened
-/// to XY. A fully-sourceable shape carries its Z/M through.
+/// Source every vertex's Z/M from `source`; strict internal verification raises
+/// when a declared axis cannot be carried. Lenient output drops only axes that
+/// have a conflict or an unsourced vertex.
 fn carry_or_degrade(
     output: &Shape,
     source: &OrdinateSource,
+    declared_axes: CoordinateAxes,
     operation: &str,
     strict: bool,
 ) -> Result<Shape> {
-    match output.map_points(&|point| {
-        source
-            .resolve(point)
-            .ok_or_else(|| GeometryErrorKind::ordinate_dropped(operation))
-    }) {
-        Ok(carried) => Ok(carried),
-        Err(_) if !strict => Ok(output.force_2d()),
-        Err(error) => Err(error),
+    match output {
+        Shape::Empty(kind, _) => Ok(Shape::typed_empty(*kind, declared_axes)),
+        Shape::GeometryCollection(geometries) => Ok(Shape::GeometryCollection(
+            geometries
+                .iter()
+                .map(|geometry| {
+                    carry_or_degrade(geometry, source, declared_axes, operation, strict)
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into(),
+        )),
+        _ => {
+            let axes = output_axes(output, source, declared_axes);
+            if strict && axes != declared_axes && !output.is_empty() {
+                return Err(GeometryErrorKind::ordinate_dropped(operation));
+            }
+            output.map_points(&|point| {
+                let (z, m) = source.resolve(point);
+                debug_assert!(
+                    !axes.has_z() || z.is_some(),
+                    "retained Z is not reproducible at {point:?}; axes={axes:?}"
+                );
+                debug_assert!(
+                    !axes.has_m() || m.is_some(),
+                    "retained M is not reproducible at {point:?}; axes={axes:?}"
+                );
+                Ok(Point::new_unchecked_axes(
+                    point.x,
+                    point.y,
+                    ZOrdinate(axes.has_z().then(|| z.expect("retained Z is sourced"))),
+                    MOrdinate(axes.has_m().then(|| m.expect("retained M is sourced"))),
+                ))
+            })
+        },
     }
+}
+
+fn output_axes(
+    output: &Shape,
+    source: &OrdinateSource,
+    declared_axes: CoordinateAxes,
+) -> CoordinateAxes {
+    let mut has_z = declared_axes.has_z();
+    let mut has_m = declared_axes.has_m();
+    output.for_each_point(|point| {
+        let (z, m) = source.resolve(point);
+        has_z &= z.is_some();
+        has_m &= m.is_some();
+    });
+    CoordinateAxes::new(HasZ(has_z), HasM(has_m))
 }
 
 #[cfg(test)]

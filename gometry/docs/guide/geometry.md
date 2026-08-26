@@ -512,16 +512,20 @@ print("m 20..80:", route.line_substring(20.0, 80.0, basis='m'))
 Planar Simple Features predicates are **XY topology** predicates. Whether `a` contains `b` is
 decided in X/Y; Z and M are ignored for the truth value but preserved on the geometry.
 
-Constructive operations preserve ordinates wherever they are derivable and
-return 2D results when they cannot source them:
+Constructive operations resolve `Z` and `M` independently wherever they are
+derivable and drop only the axis that cannot be sourced:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
   [`simplify`][gometry.Geometry.simplify], [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], and
   the triangulations keep every surviving vertex's ordinates.
 - Operations whose new vertices are **resolvable against the input** — overlay,
   [`clip_by_rect`][gometry.Geometry.clip_by_rect], linear referencing — interpolate Z/M along source segments. If
-  any output vertex genuinely cannot be sourced (such as a clip-rectangle corner
-  entering the output), the result is 2D.
+  an axis has a genuinely unsourceable output vertex (such as a clip-rectangle
+  corner entering the output), or conflicting source values, that axis is
+  dropped while the other axis may remain.
+- Empty overlay results retain the axes declared by the operation: `difference`
+  follows its first operand, while the other set operations use the union of
+  their operands' axes.
 - Operations that **compute brand-new points** — [`centroid`][gometry.Geometry.centroid], [`point_on_surface`][gometry.Geometry.point_on_surface], [`envelope`][gometry.Geometry.envelope],
   [`buffer`][gometry.Geometry.buffer], [`minimum_rotated_rectangle`][gometry.Geometry.minimum_rotated_rectangle], [`maximum_inscribed_circle`][gometry.Geometry.maximum_inscribed_circle], `voronoi_*`,
   [`polylabel`][gometry.Geometry.polylabel] — cannot source Z/M for invented vertices, so they return 2D.

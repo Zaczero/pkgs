@@ -269,8 +269,8 @@ mod binary_areal_overlay_tests {
     #[test]
     fn intersection_all_carries_z_once_from_original_inputs() {
         let first = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
-        let second = z_square(1.0, -1.0, 5.0, 3.0, 20.0);
-        let third = z_square(2.0, 1.0, 6.0, 5.0, 30.0);
+        let second = z_square(1.0, -1.0, 5.0, 3.0, 10.0);
+        let third = z_square(2.0, 1.0, 6.0, 5.0, 10.0);
         let result =
             Shape::intersection_all_ordered(&[&first, &second, &third], Strictness::Lenient)
                 .unwrap();
@@ -446,11 +446,122 @@ mod binary_areal_overlay_tests {
         }
         // Overlapping symdiff: seam crossings lie on the uniform-Z/M edges, so
         // they resolve and Z/M carries through under 'auto'.
-        let overlap = zm_square(0.5, 0.5, 1.5, 1.5, 30.0);
+        let overlap = zm_square(0.5, 0.5, 1.5, 1.5, 10.0);
         let carried =
             Shape::symmetric_difference_all_balanced(&[&first, &overlap], Strictness::Lenient)
                 .unwrap();
         assert!(carried.has_z() && carried.has_m(), "{carried:?}");
+    }
+
+    #[test]
+    fn overlay_resolves_conflicting_z_and_equal_m_independently() {
+        let point =
+            |z, m| Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
+        let left = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
+            point(1.0, 7.0),
+            Point::new_axes(2.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(9.0))).unwrap(),
+        ])));
+        let right = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
+            point(11.0, 7.0),
+            Point::new_axes(2.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(9.0))).unwrap(),
+        ])));
+
+        let result = left.union(&right, Strictness::Lenient).unwrap();
+        assert_eq!(result.coordinate_axes(), "XYM");
+        result.for_each_point(|point| {
+            assert_eq!(point.m(), Some(if point.x == 0.0 { 7.0 } else { 9.0 }));
+            assert!(point.z().is_none());
+        });
+    }
+
+    #[test]
+    fn overlay_preserves_signed_zero_and_drops_absent_difference_axis() {
+        let left = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
+            Point::new_axes(0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(None)).unwrap(),
+            Point::new_axes(4.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
+        ])));
+        let xy = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(4.0, 0.0).unwrap(),
+        ])));
+        let intersection = left.intersection(&xy, Strictness::Lenient).unwrap();
+        assert_eq!(intersection.coordinate_axes(), "XYZ");
+        let first = intersection.points_vec().into_iter().next().unwrap();
+        assert_eq!(first.z().unwrap().to_bits(), (-0.0_f64).to_bits());
+        assert!(first.m().is_none());
+
+        let measured = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
+            Point::new_axes(2.0, -1.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+            Point::new_axes(2.0, 1.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
+        ])));
+        let difference = left.difference(&measured, Strictness::Lenient).unwrap();
+        assert_eq!(difference.coordinate_axes(), "XYZ");
+        difference.for_each_point(|point| assert!(point.m().is_none()));
+    }
+
+    #[test]
+    fn empty_overlay_declares_union_axes_without_coordinates() {
+        let z = z_square(0.0, 0.0, 1.0, 1.0, 1.0);
+        let m = zm_square(2.0, 2.0, 3.0, 3.0, 1.0);
+        let result = z.intersection(&m, Strictness::Lenient).unwrap();
+        assert!(matches!(
+            result,
+            Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZM)
+        ));
+    }
+
+    #[test]
+    fn commutative_overlay_operand_reversal_keeps_axes_and_ordinates() {
+        let left = zm_square(0.0, 0.0, 2.0, 2.0, 10.0);
+        let right = zm_square(1.0, 1.0, 3.0, 3.0, 10.0);
+        let signature = |shape: &Shape| {
+            let mut points = shape
+                .points_vec()
+                .into_iter()
+                .map(|point| {
+                    (
+                        point.x.to_bits(),
+                        point.y.to_bits(),
+                        point.z().map(f64::to_bits),
+                        point.m().map(f64::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>();
+            points.sort_unstable();
+            points.dedup();
+            (shape.coordinate_axes(), points)
+        };
+        for op in [
+            OverlayOp::Union,
+            OverlayOp::Intersection,
+            OverlayOp::SymmetricDifference,
+        ] {
+            let forward = op.apply(&left, &right, Strictness::Lenient).unwrap();
+            let reversed = op.apply(&right, &left, Strictness::Lenient).unwrap();
+            assert_eq!(signature(&forward), signature(&reversed), "{}", op.name());
+        }
+    }
+
+    #[test]
+    fn line_merge_drops_only_conflicting_shared_node_axes() {
+        let line = |z, m, end| {
+            LineSeq::from_trusted(CoordSeq::from(vec![
+                Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap(),
+                Point::new_axes(end, 0.0, ZOrdinate(Some(z + 1.0)), MOrdinate(Some(m + 1.0)))
+                    .unwrap(),
+            ]))
+        };
+        let lines = MultiLineString::from_values(CoordinateAxes::XYZM, vec![
+            MultiMember::Value(line(1.0, 10.0, 1.0)),
+            MultiMember::Value(LineSeq::from_trusted(CoordSeq::from(vec![
+                Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0))).unwrap(),
+                Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0))).unwrap(),
+            ]))),
+        ]);
+        let merged = Shape::MultiLineString(lines).line_merge().unwrap();
+        assert_eq!(merged.coordinate_axes(), "XYM");
+        merged.for_each_point(|point| assert!(point.z().is_none()));
+        merged.for_each_point(|point| assert!(point.m().is_some()));
     }
 }
 

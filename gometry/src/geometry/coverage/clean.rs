@@ -5,10 +5,10 @@ use crate::geometry::coverage::{
     valid_coverage_rows,
 };
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, PointKey, Polygon, Ring,
-    Segment, Shape, XY, face_interior_point, line_segments, point_distance, polygon_parts_to_shape,
-    ring_area_measure, ring_contains_interior, self_node_segments, topology_split,
-    undirected_segment_edge_key,
+    Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
+    Ring, Segment, Shape, XY, carry_overlay_ordinates, face_interior_point, line_segments,
+    point_distance, polygon_parts_to_shape, ring_area_measure, ring_contains_interior,
+    self_node_segments, topology_split, undirected_segment_edge_key,
 };
 
 // --- Cleaning ----------------------------------------------------------------
@@ -382,6 +382,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
     let prepared = valid_coverage_rows(coverage, "coverage_union")?;
+    let source_refs: Vec<&Shape> = coverage.iter().map(std::borrow::Borrow::borrow).collect();
     // Preserve dissolve_regions' single-region identity path: one polygon is
     // already the union (bit-identical presentation of the input).
     let mut sole: Option<&Polygon> = None;
@@ -410,9 +411,10 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         }
     }
     if !multi {
-        return Ok(sole.map_or_else(Shape::empty_polygon, |polygon| {
+        let shape = sole.map_or_else(Shape::empty_polygon, |polygon| {
             Shape::Polygon(polygon.clone())
-        }));
+        });
+        return carry_overlay_ordinates(shape, &source_refs, OverlayOp::Union, false);
     }
     // If validation found no repeated edge, rows are pairwise disjoint except
     // for legal point touches. Their input polygon parts already are the
@@ -436,9 +438,19 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
                 _ => unreachable!("coverage rows are polygonal"),
             }
         }
-        return Ok(polygon_parts_to_shape(parts));
+        return carry_overlay_ordinates(
+            polygon_parts_to_shape(parts),
+            &source_refs,
+            OverlayOp::Union,
+            false,
+        );
     }
-    Ok(dissolve_edge_incidences(prepared.edge_incidences))
+    carry_overlay_ordinates(
+        dissolve_edge_incidences(prepared.edge_incidences),
+        &source_refs,
+        OverlayOp::Union,
+        false,
+    )
 }
 
 /// Drop regions that sit inside another region's hole-free interior twice

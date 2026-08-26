@@ -296,6 +296,18 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     assert overflow_offset.is_empty
 
 
+def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
+    z_line = gm.LineString([(0, 0), (1, 0)], z=[1, 2])
+    xy_line = gm.LineString([(10, 0), (11, 0)])
+
+    forward = cast('gm.GeometryArray', gm.union(gm.GeometryArray([z_line]), xy_line))
+    reverse = cast('gm.GeometryArray', gm.union(xy_line, gm.GeometryArray([z_line])))
+
+    assert forward[0].coordinate_axes == 'XY'
+    assert reverse[0].coordinate_axes == 'XY'
+    assert sorted(forward[0].coords.to_nested()) == sorted(reverse[0].coords.to_nested())
+
+
 def test_snap_dedups_only_identical_projected_positions() -> None:
     # Two reference points 5e-13 apart on the unit segment both lie exactly on
     # it; even at tolerance 0 they insert as distinct vertices rather than

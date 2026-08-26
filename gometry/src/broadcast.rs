@@ -96,6 +96,7 @@ where
         right,
         op_name,
         &crate::dispatch::OverlayFastPath,
+        None,
         move |left, right, _ctx| kernel(left, right),
     )
 }
@@ -254,6 +255,7 @@ where
         right,
         op_name,
         crate::dispatch::MetricResolver::None,
+        None,
         move |left, right, _ctx| kernel(left, right),
     )
 }

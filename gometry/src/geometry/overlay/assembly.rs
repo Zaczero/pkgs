@@ -1,6 +1,6 @@
 use crate::geometry::overlay::{
-    DimensionalParts, OverlayOp, dedup_points, empty_shape_for_dimension,
-    for_each_overlapping_pair, for_each_segment_overlap_point,
+    DimensionalParts, OverlayOp, dedup_points, empty_shape_for_dimension_with_axes,
+    for_each_overlapping_pair, for_each_segment_overlap_point, overlay_declared_axes,
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
@@ -26,7 +26,8 @@ pub(crate) fn line_line_cross_points(left: &[Segment], right: &[Segment]) -> Vec
 /// `min(da, db)`, difference `da` (the minuend), union/symdiff `max(da, db)` —
 /// so an empty overlay is `POINT`/`LINESTRING`/`POLYGON EMPTY` consistent with
 /// gometry's typed-empty model and Shapely, instead of an untyped collection.
-/// An empty geometry carries no ordinates, so the result is plain XY.
+/// The empty keeps the operation's declared axes even though it has no
+/// coordinates from which to resolve them.
 pub(crate) fn empty_overlay_shape(a: &Shape, b: &Shape, op: OverlayOp) -> Shape {
     let (da, db) = (a.topological_dimension(), b.topological_dimension());
     let dimension = match op {
@@ -34,7 +35,7 @@ pub(crate) fn empty_overlay_shape(a: &Shape, b: &Shape, op: OverlayOp) -> Shape 
         OverlayOp::Difference => da,
         OverlayOp::Union | OverlayOp::SymmetricDifference => da.max(db),
     };
-    empty_shape_for_dimension(dimension)
+    empty_shape_for_dimension_with_axes(dimension, overlay_declared_axes(&[a, b], op))
 }
 
 /// Dissolve polyline `edges` into maximal connected chains: concatenate
@@ -176,6 +177,17 @@ pub(crate) fn walk_chain(
 /// helper serves both. The array overlay broadcast calls this directly off the
 /// borrowed row shapes, skipping the transient per-pair `ShapeData` handles.
 pub(crate) fn disjoint_overlay_combine(left: &Shape, right: &Shape) -> Shape {
+    // Multipart assembly requires homogeneous members. Strip ordinates only
+    // at this XY-only shortcut; the caller restores each axis from provenance.
+    let left_planar;
+    let right_planar;
+    let (left, right) = if left.has_z() || left.has_m() || right.has_z() || right.has_m() {
+        left_planar = left.force_2d();
+        right_planar = right.force_2d();
+        (&left_planar, &right_planar)
+    } else {
+        (left, right)
+    };
     let mut parts = DimensionalParts::default();
     parts.push_shape(left);
     parts.push_shape(right);

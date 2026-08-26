@@ -459,9 +459,9 @@ def test_derived_ops_have_fixed_2d_results(
     assert fn().coordinate_axes == 'XY', name
 
 
-def test_overlay_restores_zm_by_default_and_force_2d_flattens() -> None:
+def test_overlay_drops_conflicting_zm_and_force_2d_flattens() -> None:
     other = gm.from_wkt('POLYGON ZM ((0 0 1 10, 4 0 2 20, 0 4 3 30, 0 0 1 10))')
-    assert gm.intersection(_ZM_POLY(), other).coordinate_axes == 'XYZM'
+    assert gm.intersection(_ZM_POLY(), other).coordinate_axes == 'XY'
     assert gm.intersection(_ZM_POLY(), other).force_2d().coordinate_axes == 'XY'
 
     def staircase(x0: float, y0: float, steps: int) -> gm.Geometry:
@@ -477,9 +477,7 @@ def test_overlay_restores_zm_by_default_and_force_2d_flattens() -> None:
         return gm.from_wkt(f'POLYGON Z (({wkt}))')
 
     union = gm.union(staircase(0.0, 0.0, 8), staircase(0.6, -0.3, 8))
-    assert union.coordinate_axes == 'XYZ'
-    zs = [z for _, _, z in union.coords]
-    assert all(z is not None and 0 <= z <= 8 for z in zs)
+    assert union.coordinate_axes == 'XY'
 
 
 _KIND_WKTS = {

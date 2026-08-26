@@ -298,17 +298,10 @@ def test_linework_repair_keeps_bowtie_and_nested_hole_regions() -> None:
     assert gm.covers(repaired[1], gm.Point(5, 5))
 
 
-def test_repair_carries_z_and_m_through_the_rebuild() -> None:
+def test_repair_drops_conflicting_z_from_the_rebuild() -> None:
     bowtie_z = gm.from_wkt('POLYGON Z ((0 0 1, 2 2 5, 2 0 3, 0 2 7, 0 0 1))')
     repaired = bowtie_z.repair()
-    assert repaired.coordinate_axes == 'XYZ'
-    coordinates = {
-        tuple(point)
-        for polygon in repaired.coords.to_nested()
-        for ring in polygon
-        for point in ring
-    }
-    assert (1.0, 1.0, 3.0) in coordinates
+    assert repaired.coordinate_axes == 'XY'
 
 
 def test_polygonize_assembles_one_universe_across_array_rows() -> None:

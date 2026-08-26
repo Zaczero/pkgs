@@ -870,10 +870,13 @@ pub(crate) fn empty_clip_shape(subject: &Shape) -> Shape {
         // subject keeps its exact kind; every typed family routes through the
         // ONE dim→empty source so the mapping has a single home.
         Shape::GeometryCollection(_) => {
-            Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+            Shape::typed_empty(GeometryKind::GeometryCollection, subject.axes())
         },
         Shape::Empty(..) => subject.clone(),
-        _ => crate::geometry::empty_shape_for_dimension(subject.topological_dimension()),
+        _ => crate::geometry::empty_shape_for_dimension_with_axes(
+            subject.topological_dimension(),
+            subject.axes(),
+        ),
     }
 }
 

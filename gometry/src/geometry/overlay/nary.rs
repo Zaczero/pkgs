@@ -1,5 +1,6 @@
 use crate::geometry::overlay::{
     DimensionalParts, OverlayOp, Strictness, bbox_overlap_clusters_for_bounds,
+    overlay_declared_axes,
 };
 use crate::geometry::{
     Bounds, CoordinateAxes, Dimension, GeometryKind, HashMapExt as _, Result, Shape,
@@ -126,14 +127,21 @@ pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shap
             .max()
             .expect("non-empty inputs"),
     };
-    empty_shape_for_dimension(dimension)
+    empty_shape_for_dimension_with_axes(dimension, overlay_declared_axes(inputs, op))
 }
 
 pub(crate) fn empty_shape_for_dimension(dimension: Dimension) -> Shape {
+    empty_shape_for_dimension_with_axes(dimension, CoordinateAxes::XY)
+}
+
+pub(crate) fn empty_shape_for_dimension_with_axes(
+    dimension: Dimension,
+    axes: CoordinateAxes,
+) -> Shape {
     match dimension {
-        Dimension::Point => Shape::empty_point(),
-        Dimension::Curve => Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
-        Dimension::Surface => Shape::empty_polygon(),
+        Dimension::Point => Shape::typed_empty(GeometryKind::Point, axes),
+        Dimension::Curve => Shape::typed_empty(GeometryKind::LineString, axes),
+        Dimension::Surface => Shape::typed_empty(GeometryKind::Polygon, axes),
     }
 }
 

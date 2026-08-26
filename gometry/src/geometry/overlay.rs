@@ -2,6 +2,8 @@
 //! `union_all`) and linework set-ops (`line_merge`/`shared_paths`) on `Shape`,
 //! plus the noding/assembly kernel behind them.
 
+use crate::geometry::{CoordinateAxes, Shape};
+
 /// Whether synthesized overlay output must source Z/M from inputs (`Strict`)
 /// or may degrade to plain XY (`Lenient`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +61,20 @@ impl OverlayOp {
     }
 }
 
+/// Coordinate axes an empty overlay declares. Non-empty results resolve each
+/// axis from contributing source values; an empty has no vertices to resolve,
+/// so it retains the operation's full declared source layout instead.
+pub(crate) fn overlay_declared_axes(inputs: &[&Shape], op: OverlayOp) -> CoordinateAxes {
+    match op {
+        OverlayOp::Difference => inputs
+            .first()
+            .map_or(CoordinateAxes::XY, |shape| shape.axes()),
+        OverlayOp::Intersection | OverlayOp::Union | OverlayOp::SymmetricDifference => inputs
+            .iter()
+            .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes())),
+    }
+}
+
 mod areal;
 mod assembly;
 mod clip;
@@ -89,8 +105,9 @@ pub(crate) use mixed::{
 };
 pub(crate) use nary::{
     OverlayWorkItem, empty_nary_overlay_shape, empty_shape_for_dimension,
-    has_mixed_non_empty_topological_dimensions, overlay_work_clusters,
-    symmetric_difference_cluster_balanced, symmetric_difference_cluster_ordered,
+    empty_shape_for_dimension_with_axes, has_mixed_non_empty_topological_dimensions,
+    overlay_work_clusters, symmetric_difference_cluster_balanced,
+    symmetric_difference_cluster_ordered,
 };
 pub(in crate::geometry) use noding::full_noding_events;
 pub(crate) use noding::{

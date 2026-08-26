@@ -52,6 +52,8 @@ pub(crate) enum SourceEdgeKind {
 /// `Some(0)` for a shell, and `Some(n > 0)` for a hole.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SourceEdge {
+    pub(crate) start: Point,
+    pub(crate) end: Point,
     pub(crate) segment: Segment,
     pub(crate) kind: SourceEdgeKind,
     pub(crate) component: u32,
@@ -126,7 +128,7 @@ impl TopologyGraph {
         builder.finish(shape)
     }
 
-    pub(super) fn cartesian(shape: &Shape) -> Self {
+    pub(crate) fn cartesian(shape: &Shape) -> Self {
         Self::build(shape, TopologySpace::Cartesian)
     }
 
@@ -293,10 +295,7 @@ impl GraphBuilder {
                 first = Some(self.key(start.xy()));
             }
             last = Some(self.key(end.xy()));
-            self.push_source_edge(SourceEdgeKind::Line, component, None, Segment {
-                start: start.xy(),
-                end: end.xy(),
-            });
+            self.push_source_edge(SourceEdgeKind::Line, component, None, start, end);
         }
         if has_edge {
             // OGC line boundaries are the mod-2 endpoints of the complete
@@ -338,10 +337,13 @@ impl GraphBuilder {
                 if same_point(start, end) {
                     continue;
                 }
-                self.push_source_edge(SourceEdgeKind::Area, component, Some(ring_index), Segment {
-                    start: start.xy(),
-                    end: end.xy(),
-                });
+                self.push_source_edge(
+                    SourceEdgeKind::Area,
+                    component,
+                    Some(ring_index),
+                    start,
+                    end,
+                );
             }
         }
     }
@@ -356,10 +358,17 @@ impl GraphBuilder {
         kind: SourceEdgeKind,
         component: u32,
         ring: Option<u32>,
-        segment: Segment,
+        start: Point,
+        end: Point,
     ) {
+        let segment = Segment {
+            start: start.xy(),
+            end: end.xy(),
+        };
         let source = self.source_edges.len() as u32;
         self.source_edges.push(SourceEdge {
+            start,
+            end,
             segment,
             kind,
             component,

@@ -18,8 +18,8 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
-    PointKey, Polygon, Segment, Shape, XY, carry_ordinates, line_segments, shared_segment_part,
-    topology_split, undirected_segment_edge_key,
+    PointKey, Polygon, Segment, Shape, XY, carry_ordinates, carry_overlay_ordinates, line_segments,
+    shared_segment_part, topology_split, undirected_segment_edge_key,
 };
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
@@ -135,8 +135,8 @@ impl Shape {
         })
     }
 
-    /// Mixed-dimension set overlay over X/Y, restoring Z/M afterwards via
-    /// `carry_ordinates` (or dropping it when `strict`).
+    /// Mixed-dimension set overlay over X/Y, restoring Z/M afterwards via the
+    /// provenance resolver (or dropping it when `strict`).
     ///
     /// Decomposes both operands into point/line/polygon buckets, evaluates the
     /// operation per dimension, absorbs lower-dimensional pieces covered by the
@@ -155,13 +155,13 @@ impl Shape {
         // would otherwise each rescan every coordinate — 4× the work).
         let (self_bounds, other_bounds) = (self.bounds(), other.bounds());
         if let Some(shape) = self.disjoint_shortcut(other, op, self_bounds, other_bounds) {
-            return carry_ordinates(shape, &[self, other], op.name(), strictness.is_strict());
+            return carry_overlay_ordinates(shape, &[self, other], op, strictness.is_strict());
         }
         if let Some(shape) = self.contained_shortcut(other, op, self_bounds, other_bounds) {
             // A containment shortcut re-presents an input operand verbatim, so
             // every vertex is faithful — Z/M is correct as-is under both
             // policies (nothing synthesized to source or reject).
-            return Ok(shape);
+            return carry_overlay_ordinates(shape, &[self, other], op, strictness.is_strict());
         }
         // A proper intersection of two literal axis-aligned rectangles is
         // four bound selectors, not a clipping problem.  In particular, do
@@ -174,10 +174,10 @@ impl Shape {
             && let (Some(left), Some(right)) = (axis_rectangle(self), axis_rectangle(other))
             && let Some(bounds) = proper_rect_intersection(left, right)
         {
-            return carry_ordinates(
+            return carry_overlay_ordinates(
                 Self::Polygon(rect_polygon(bounds)),
                 &[self, other],
-                op.name(),
+                op,
                 strictness.is_strict(),
             );
         }
@@ -220,7 +220,7 @@ impl Shape {
             && let (Some(left), Some(right)) = (left_parts, right_parts)
             && let Some(shape) = crate::geometry::clean_union::clean_overlay(left, right, op)
         {
-            return carry_ordinates(shape, &[self, other], op.name(), strictness.is_strict());
+            return carry_overlay_ordinates(shape, &[self, other], op, strictness.is_strict());
         }
         // Rectangle-operand intersection (GEOS's RectangleIntersection
         // routing at clip parity): the areal bucket is the linear clip,
@@ -296,7 +296,7 @@ impl Shape {
             points.extend(boundary_touch_points.into_iter().map(XY::point));
         }
         let shape = build_overlay_shape(points, lines, result_polygons);
-        carry_ordinates(shape, &[self, other], op.name(), strictness.is_strict())
+        carry_overlay_ordinates(shape, &[self, other], op, strictness.is_strict())
     }
 
     /// Dissolve every geometry into one mixed-dimension union.
@@ -365,17 +365,10 @@ impl Shape {
         );
         let lines = union_lines(&parts.lines, &dissolved);
         let shape = build_overlay_shape(parts.points.clone(), lines, dissolved);
-        // Ordinate carry sources are the ORIGINAL inputs (pre-split), so Z/M
-        // still lifts from caller-owned vertices.
-        carry_ordinates(
-            shape,
-            &geometries
-                .iter()
-                .map(std::borrow::Borrow::borrow)
-                .collect::<Vec<_>>(),
-            "union_all",
-            strictness.is_strict(),
-        )
+        // Carry from the shapes actually used to assemble the result. In the
+        // geographic lane these include the source-owned seam vertices made
+        // by topology splitting.
+        carry_overlay_ordinates(shape, &sources, OverlayOp::Union, strictness.is_strict())
     }
 
     /// Frame-aware n-ary intersection (see [`Self::union_all_topo`]).
@@ -499,7 +492,12 @@ impl Shape {
             serial += 1;
         }
         let reduced = heap.pop().expect("final work item").shape;
-        carry_ordinates(reduced, inputs, "intersection_all", strictness.is_strict())
+        carry_overlay_ordinates(
+            reduced,
+            inputs,
+            OverlayOp::Intersection,
+            strictness.is_strict(),
+        )
     }
 
     /// Reduce symmetric difference by bbox clusters. Same-dimension clusters
@@ -550,10 +548,10 @@ impl Shape {
             1 => cluster_results.pop().expect("one cluster result"),
             _ => Self::union_all(&cluster_results, Strictness::Lenient)?,
         };
-        carry_ordinates(
+        carry_overlay_ordinates(
             combined,
             inputs,
-            "symmetric_difference_all",
+            OverlayOp::SymmetricDifference,
             strictness.is_strict(),
         )
     }
@@ -576,8 +574,8 @@ impl Shape {
     }
 
     pub fn line_merge(&self) -> Result<Self> {
-        match self {
-            Self::LineString(_) => Ok(self.clone()),
+        let merged = match self {
+            Self::LineString(_) => self.clone(),
             Self::MultiLineString(lines) => {
                 // Dissolve the component lines into maximal chains at degree-2
                 // nodes, splitting every Y/T/X junction (degree `>= 3`) — the
@@ -585,7 +583,7 @@ impl Shape {
                 // sink via [`merge_chains`].
                 let mut chains =
                     merge_chains(lines.iter().map(|line| line.as_coords().clone()).collect());
-                Ok(match chains.len() {
+                match chains.len() {
                     0 => Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
                     1 => Self::LineString(
                         LineSeq::try_new(chains.pop().expect("len == 1"))
@@ -597,10 +595,11 @@ impl Shape {
                             .map(|line| LineSeq::try_new(line).expect("merged chain is lineal"))
                             .collect(),
                     ),
-                })
+                }
             },
-            _ => Err(GeometryErrorKind::LinealRequired.into()),
-        }
+            _ => return Err(GeometryErrorKind::LinealRequired.into()),
+        };
+        carry_ordinates(merged, &[self], "line_merge", false)
     }
 
     pub fn shared_paths(&self, other: &Self) -> Result<Self> {
@@ -668,7 +667,7 @@ impl Shape {
             .map(CoordSeq::from)
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
-        Ok(Self::GeometryCollection(
+        let result = Self::GeometryCollection(
             vec![
                 if same.is_empty() {
                     Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
@@ -682,6 +681,7 @@ impl Shape {
                 },
             ]
             .into(),
-        ))
+        );
+        carry_ordinates(result, &[self, other], "shared_paths", false)
     }
 }

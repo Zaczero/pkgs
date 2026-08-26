@@ -16,7 +16,9 @@ use crate::broadcast::{
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
 use crate::error::Result;
-use crate::geometry::{Dimension, Shape, ShapeData, is_geographic_frame};
+use crate::geometry::{
+    Dimension, OverlayOp, Shape, ShapeData, carry_overlay_ordinates, is_geographic_frame,
+};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type MaskedRows<R> = (Vec<R>, Option<MissingMask>);
@@ -622,6 +624,7 @@ pub(crate) fn dispatch_binary_geometry<F>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     fast_path: &F,
+    overlay_op: Option<OverlayOp>,
     kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
@@ -737,7 +740,9 @@ where
             } {
                 return result;
             }
-            let array = geometry_kernel_over_array(py, left, right_in, op_name, resolver, kernel)?;
+            let array = geometry_kernel_over_array(
+                py, left, right_in, op_name, resolver, overlay_op, kernel,
+            )?;
             Ok(array.into_pyobject(py)?.unbind().into())
         },
     }
@@ -753,6 +758,7 @@ pub(crate) fn geometry_kernel_over_array<K>(
     right: GeometryInput<'_>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
+    overlay_op: Option<OverlayOp>,
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
@@ -814,7 +820,17 @@ where
                             },
                         )
                     }) {
-                        return Ok(result);
+                        return match overlay_op {
+                            Some(overlay_op) => left_row.with_shape(|left| {
+                                carry_overlay_ordinates(
+                                    result,
+                                    &[left, right_shape.shape()],
+                                    overlay_op,
+                                    false,
+                                )
+                            }),
+                            None => Ok(result),
+                        };
                     }
                     let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
                     invoke_topology_geometry_kernel(
@@ -860,7 +876,19 @@ where
                             },
                         )
                     }) {
-                        return Ok(result);
+                        return match overlay_op {
+                            Some(overlay_op) => left_row.with_shape(|left| {
+                                right_row.with_shape(|right| {
+                                    carry_overlay_ordinates(
+                                        result,
+                                        &[left, right],
+                                        overlay_op,
+                                        false,
+                                    )
+                                })
+                            }),
+                            None => Ok(result),
+                        };
                     }
                     let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
                     let right_data =

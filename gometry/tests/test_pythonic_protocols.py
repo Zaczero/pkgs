@@ -666,8 +666,8 @@ def test_validation_report_is_a_value() -> None:
 
 
 def test_operators_match_named_overlay_functions() -> None:
-    a = gm.from_wkt('POLYGON Z ((0 0 0, 2 0 1, 2 2 2, 0 2 1, 0 0 0))')
-    b = gm.from_wkt('POLYGON Z ((1 1 0, 3 1 1, 3 3 2, 1 3 1, 1 1 0))')
+    a = gm.from_wkt('POLYGON Z ((0 0 5, 2 0 5, 2 2 5, 0 2 5, 0 0 5))')
+    b = gm.from_wkt('POLYGON Z ((1 1 5, 3 1 5, 3 3 5, 1 3 5, 1 1 5))')
     assert a & b == gm.intersection(a, b)
     assert (a & b).has_z
 
