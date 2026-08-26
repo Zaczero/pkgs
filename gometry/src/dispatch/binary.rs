@@ -16,9 +16,7 @@ use crate::broadcast::{
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
 use crate::error::Result;
-use crate::geometry::{
-    Dimension, OverlayOp, Shape, ShapeData, carry_overlay_ordinates, is_geographic_frame,
-};
+use crate::geometry::{Shape, ShapeData, is_geographic_frame};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type MaskedRows<R> = (Vec<R>, Option<MissingMask>);
@@ -575,45 +573,7 @@ where
     }
 }
 
-/// Bounds-disjoint overlay shortcut (union/intersection/symmetric_difference).
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum DisjointShortcut {
-    Empty,
-    Combine,
-}
-
-impl DisjointShortcut {
-    pub(crate) fn for_op(op_name: &str) -> Option<Self> {
-        if op_name == crate::OverlayOp::Intersection.name() {
-            Some(Self::Empty)
-        } else if op_name == crate::OverlayOp::Union.name()
-            || op_name == crate::OverlayOp::SymmetricDifference.name()
-        {
-            Some(Self::Combine)
-        } else {
-            None
-        }
-    }
-
-    fn resolve(
-        self,
-        left: Option<crate::geometry::Bounds>,
-        right: Option<crate::geometry::Bounds>,
-        min_dim: impl FnOnce() -> Dimension,
-        combine: impl FnOnce() -> Shape,
-    ) -> Option<Shape> {
-        let (left, right) = (left?, right?);
-        if left.intersects(right) {
-            return None;
-        }
-        Some(match self {
-            Self::Empty => crate::geometry::empty_shape_for_dimension(min_dim()),
-            Self::Combine => combine(),
-        })
-    }
-}
-
-/// Geometry-returning binary dispatch with topology split + overlay disjoint shortcut.
+/// Geometry-returning binary dispatch with topology split.
 #[expect(
     clippy::too_many_lines,
     reason = "cohesive four-shape geometry dispatch; splitting obscures the algorithm"
@@ -624,7 +584,6 @@ pub(crate) fn dispatch_binary_geometry<F>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     fast_path: &F,
-    overlay_op: Option<OverlayOp>,
     kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
@@ -683,9 +642,8 @@ where
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
             let left_fixed = split_operand_arc_for_topology(geographic, &left.shape)?;
-            // Overlay: transient ShapeData only (no prepared-slot persist;
-            // MetricCtx is None so no frame caches). Contained shortcuts still
-            // see a ShapeData handle.
+            // Overlay rows use transient ShapeData only; MetricCtx is None so
+            // no frame-dependent cache is retained.
             let shapes = run_array_rows(
                 py,
                 right,
@@ -740,9 +698,7 @@ where
             } {
                 return result;
             }
-            let array = geometry_kernel_over_array(
-                py, left, right_in, op_name, resolver, overlay_op, kernel,
-            )?;
+            let array = geometry_kernel_over_array(py, left, right_in, op_name, resolver, kernel)?;
             Ok(array.into_pyobject(py)?.unbind().into())
         },
     }
@@ -758,7 +714,6 @@ pub(crate) fn geometry_kernel_over_array<K>(
     right: GeometryInput<'_>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    overlay_op: Option<OverlayOp>,
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
@@ -778,7 +733,6 @@ where
     )?;
     let output_crs = frame.crs_owned();
     let output_epoch = frame.epoch();
-    let disjoint_shortcut = DisjointShortcut::for_op(op_name);
     let row_box = |bounds: &Option<crate::array::ElementBounds>,
                    row: usize|
      -> Option<crate::geometry::Bounds> {
@@ -794,8 +748,6 @@ where
     let (shapes, output_missing) = match right {
         One(right) => {
             let right_shape = split_operand_arc_for_topology(geographic, &right.shape)?;
-            let right_bounds = right_shape.bounds();
-            let right_dim = right_shape.shape().topological_dimension();
             // Pure topology overlay: MetricCtx is None → no frame caches.
             let shapes = run_array_rows(
                 py,
@@ -805,33 +757,6 @@ where
                 metric,
                 move |row, left_row, ctx| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
-                    if let Some(result) = disjoint_shortcut.and_then(|shortcut| {
-                        shortcut.resolve(
-                            left_box,
-                            right_bounds,
-                            || left_row.topological_dimension().min(right_dim),
-                            || {
-                                left_row.with_shape(|left| {
-                                    crate::geometry::disjoint_overlay_combine(
-                                        left,
-                                        right_shape.shape(),
-                                    )
-                                })
-                            },
-                        )
-                    }) {
-                        return match overlay_op {
-                            Some(overlay_op) => left_row.with_shape(|left| {
-                                carry_overlay_ordinates(
-                                    result,
-                                    &[left, right_shape.shape()],
-                                    overlay_op,
-                                    false,
-                                )
-                            }),
-                            None => Ok(result),
-                        };
-                    }
                     let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
                     invoke_topology_geometry_kernel(
                         geographic,
@@ -858,38 +783,6 @@ where
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let right_box =
                         row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
-                    if let Some(result) = disjoint_shortcut.and_then(|shortcut| {
-                        shortcut.resolve(
-                            left_box,
-                            right_box,
-                            || {
-                                left_row
-                                    .topological_dimension()
-                                    .min(right_row.topological_dimension())
-                            },
-                            || {
-                                left_row.with_shape(|left| {
-                                    right_row.with_shape(|right| {
-                                        crate::geometry::disjoint_overlay_combine(left, right)
-                                    })
-                                })
-                            },
-                        )
-                    }) {
-                        return match overlay_op {
-                            Some(overlay_op) => left_row.with_shape(|left| {
-                                right_row.with_shape(|right| {
-                                    carry_overlay_ordinates(
-                                        result,
-                                        &[left, right],
-                                        overlay_op,
-                                        false,
-                                    )
-                                })
-                            }),
-                            None => Ok(result),
-                        };
-                    }
                     let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
                     let right_data =
                         right.warm_prepared_row_or_transient(row, right_row, right_box);

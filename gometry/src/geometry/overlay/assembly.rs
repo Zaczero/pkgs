@@ -1,19 +1,18 @@
+use ahash::HashSetExt as _;
+
 use crate::geometry::overlay::{
-    DimensionalParts, OverlayOp, dedup_points, empty_shape_for_dimension_with_axes,
-    for_each_overlapping_pair, for_each_segment_overlap_point, overlay_declared_axes,
+    OverlayOp, empty_shape_for_dimension_with_axes, overlay_declared_axes,
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
-    LineSeq, Point, PointKey, Polygon, Segment, Shape, XY, point_on_segment,
+    HashSet, LineSeq, Point, PointKey, Polygon, Shape, point_on_segment,
 };
-pub(crate) fn line_line_cross_points(left: &[Segment], right: &[Segment]) -> Vec<Point> {
-    let mut candidates: Vec<XY> = Vec::new();
-    for_each_overlapping_pair::<false>(left, right, |l, r| {
-        for_each_segment_overlap_point(l, r, |point| candidates.push(point));
-    });
-    candidates.into_iter().map(XY::point).collect()
-}
 
+/// Order-preserving topological dedup of overlay output points.
+pub(crate) fn dedup_points(points: &mut Vec<Point>) {
+    let mut seen: HashSet<PointKey> = HashSet::with_capacity(points.len());
+    points.retain(|point| seen.insert(PointKey::new(*point)));
+}
 /// Canonicalize overlay buckets into the narrowest representable `Shape`.
 ///
 /// Points and lines covered by the polygon output are absorbed (a piece inside
@@ -168,38 +167,6 @@ pub(crate) fn walk_chain(
         }
     }
     coords.into()
-}
-
-/// The bounds-disjoint union / symmetric-difference of two shapes: simply both
-/// side by side (no noding — disjoint operands never interact), canonicalized
-/// into the lowest enclosing multi/collection type. For disjoint operands
-/// `union` and `symmetric_difference` coincide (no overlap to subtract), so one
-/// helper serves both. The array overlay broadcast calls this directly off the
-/// borrowed row shapes, skipping the transient per-pair `ShapeData` handles.
-pub(crate) fn disjoint_overlay_combine(left: &Shape, right: &Shape) -> Shape {
-    // Multipart assembly requires homogeneous members. Strip ordinates only
-    // at this XY-only shortcut; the caller restores each axis from provenance.
-    let left_planar;
-    let right_planar;
-    let (left, right) = if left.has_z() || left.has_m() || right.has_z() || right.has_m() {
-        left_planar = left.force_2d();
-        right_planar = right.force_2d();
-        (&left_planar, &right_planar)
-    } else {
-        (left, right)
-    };
-    let mut parts = DimensionalParts::default();
-    parts.push_shape(left);
-    parts.push_shape(right);
-    build_overlay_shape(
-        parts.points,
-        parts.lines.iter().map(|line| (*line).clone()).collect(),
-        parts
-            .polygons
-            .iter()
-            .map(|polygon| (*polygon).clone())
-            .collect(),
-    )
 }
 
 #[expect(

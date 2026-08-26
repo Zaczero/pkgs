@@ -530,7 +530,8 @@ fn parse_geojson_multilinestring(value: &Value, path: &JsonPath) -> Result<Multi
         try_push_vec(
             &mut members,
             MultiMember::Value(
-                LineSeq::try_new(points).map_err(|error| error.with_parse_path(line_path.as_str()))?,
+                LineSeq::try_new(points)
+                    .map_err(|error| error.with_parse_path(line_path.as_str()))?,
             ),
         )?;
     }
@@ -814,12 +815,10 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
     }
     let coordinates_path = path.key("coordinates");
     let coordinates = || {
-        object
-            .get("coordinates")
-            .ok_or_else(|| {
-                IoError::geojson("GeoJSON geometry requires coordinates")
-                    .with_parse_path(coordinates_path.as_str())
-            })
+        object.get("coordinates").ok_or_else(|| {
+            IoError::geojson("GeoJSON geometry requires coordinates")
+                .with_parse_path(coordinates_path.as_str())
+        })
     };
     match geometry_type {
         "GeometryCollection" => {
@@ -867,10 +866,9 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
             if points.is_empty() {
                 Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
             } else {
-                Ok(Shape::LineString(
-                    LineSeq::try_new(points)
-                        .map_err(|error| error.with_parse_path(coordinates_path.as_str()))?,
-                ))
+                Ok(Shape::LineString(LineSeq::try_new(points).map_err(
+                    |error| error.with_parse_path(coordinates_path.as_str()),
+                )?))
             }
         },
         "MultiLineString" => {

@@ -425,13 +425,13 @@ impl WkbBody<'_> {
                 let total = lines.members().iter().try_fold(0_usize, |total, member| {
                     let child = match member {
                         MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
-                        MultiMember::Value(index) => WKB_HEADER_BASE
-                            .checked_add(WKB_COUNT)
-                            .and_then(|prefix| {
+                        MultiMember::Value(index) => {
+                            WKB_HEADER_BASE.checked_add(WKB_COUNT).and_then(|prefix| {
                                 wkb_coords_len(lines.as_slice()[*index].len(), axes)
                                     .ok()
                                     .and_then(|body| prefix.checked_add(body))
-                            }),
+                            })
+                        },
                     }
                     .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
                     total
@@ -444,18 +444,21 @@ impl WkbBody<'_> {
             },
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => {
-                let total = polygons.members().iter().try_fold(0_usize, |total, member| {
-                    let child = match member {
-                        MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
-                        MultiMember::Value(index) => WKB_HEADER_BASE.checked_add(
-                            wkb_polygon_body_len(&polygons.as_slice()[*index], axes)?,
-                        ),
-                    }
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-                    total
-                        .checked_add(child)
-                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
-                })?;
+                let total = polygons
+                    .members()
+                    .iter()
+                    .try_fold(0_usize, |total, member| {
+                        let child = match member {
+                            MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
+                            MultiMember::Value(index) => WKB_HEADER_BASE.checked_add(
+                                wkb_polygon_body_len(&polygons.as_slice()[*index], axes)?,
+                            ),
+                        }
+                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
+                        total
+                            .checked_add(child)
+                            .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+                    })?;
                 WKB_COUNT
                     .checked_add(total)
                     .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))

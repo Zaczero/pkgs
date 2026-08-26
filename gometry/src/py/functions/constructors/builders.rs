@@ -473,14 +473,11 @@ pub(crate) fn build_multi_line_string(
         return Err(error.into());
     }
     for shape in members {
-        crate::try_push_vec(
-            &mut line_members,
-            match shape {
-                Shape::LineString(line) => MultiMember::Value(line),
-                Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
-                _ => unreachable!("multipart member type checked above"),
-            },
-        )
+        crate::try_push_vec(&mut line_members, match shape {
+            Shape::LineString(line) => MultiMember::Value(line),
+            Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
+            _ => unreachable!("multipart member type checked above"),
+        })
         .map_err(PyErr::from)?;
     }
     let shape =
@@ -526,14 +523,11 @@ pub(crate) fn build_multi_polygon(
         return Err(error.into());
     }
     for shape in members {
-        crate::try_push_vec(
-            &mut polygon_members,
-            match shape {
-                Shape::Polygon(polygon) => MultiMember::Value(polygon),
-                Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
-                _ => unreachable!("multipart member type checked above"),
-            },
-        )
+        crate::try_push_vec(&mut polygon_members, match shape {
+            Shape::Polygon(polygon) => MultiMember::Value(polygon),
+            Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
+            _ => unreachable!("multipart member type checked above"),
+        })
         .map_err(PyErr::from)?;
     }
     let shape =

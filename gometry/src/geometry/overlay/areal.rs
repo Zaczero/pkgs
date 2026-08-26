@@ -8,9 +8,8 @@
 )]
 use crate::geometry::overlay::{OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
-    Arrangement, Bounds, Coordinates, HashMapExt as _, Point, Polygon, RingWinding, Segment,
-    SegmentIndex, Shape, XY, assemble_region_polygons, orient_ring, ray_crossing_is_right,
-    ring_winding, same_point, winding_region, wrap_index,
+    Arrangement, Bounds, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
+    assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
 };
 
 pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
@@ -60,49 +59,6 @@ impl ArealArrangement {
 pub(in crate::geometry) struct ArealArrangement {
     pub arrangement: Arrangement<[i32; 2]>,
     pub windings: Vec<[i32; 2]>,
-}
-
-impl ArealArrangement {
-    /// Boundary∩boundary contact straight from the joint arrangement —
-    /// the noding already split every crossing and vertex-on-edge touch,
-    /// so one edge-piece pass answers both verdicts with NO second
-    /// boundary scan: a noded edge with nonzero net multiplicity for
-    /// BOTH operands is a shared collinear run, and a vertex incident to
-    /// both operands' edges but on no shared run is an isolated touch.
-    /// Net-zero pieces bound nothing (the winding doctrine, exactly as
-    /// the native relate reads them).
-    pub(in crate::geometry) fn boundary_contact(&self) -> (Vec<XY>, bool) {
-        let vertices = self.arrangement.vertex_count();
-        let mut incident_left = vec![false; vertices];
-        let mut incident_right = vec![false; vertices];
-        let mut on_shared_run = vec![false; vertices];
-        let mut shares_boundary = false;
-        self.arrangement
-            .for_each_edge_piece(|multiplicity, from, to, _, _| {
-                let left_edge = multiplicity[0] != 0;
-                let right_edge = multiplicity[1] != 0;
-                if left_edge {
-                    incident_left[from as usize] = true;
-                    incident_left[to as usize] = true;
-                }
-                if right_edge {
-                    incident_right[from as usize] = true;
-                    incident_right[to as usize] = true;
-                }
-                if left_edge && right_edge {
-                    shares_boundary = true;
-                    on_shared_run[from as usize] = true;
-                    on_shared_run[to as usize] = true;
-                }
-            });
-        let touch_points = (0..vertices)
-            .filter(|&vertex| {
-                incident_left[vertex] && incident_right[vertex] && !on_shared_run[vertex]
-            })
-            .map(|vertex| self.arrangement.vertex_point(vertex as u32))
-            .collect();
-        (touch_points, shares_boundary)
-    }
 }
 
 fn areal_operand_inventory<P: AsRef<Polygon>>(polygons: &[P]) -> (usize, usize) {
@@ -370,116 +326,4 @@ pub(crate) fn ray_crossing(segment: Segment, probe: XY) -> i32 {
         return if by > ay { 1 } else { -1 };
     }
     0
-}
-
-/// Canonical interior-left walk of one ring (shells CCW, holes CW):
-/// oriented bit-exactly (reversal only), closing duplicate dropped —
-/// `None` for degenerate rings.
-pub(crate) fn canonical_ring_walk<C: Coordinates + ?Sized>(
-    coords: &C,
-    hole: bool,
-) -> Option<Vec<Point>> {
-    let mut walk = orient_ring(coords, hole);
-    if walk.len() > 1 && same_point(walk[0], walk[walk.len() - 1]) {
-        walk.pop();
-    }
-    (walk.len() >= 3).then_some(walk)
-}
-
-/// Dissolve (n-ary union) of polygons. Bbox-disjoint clusters resolve
-/// independently. A two-polygon cluster uses the binary overlay; every
-/// larger connected cluster is one joint arrangement whose union is the
-/// `winding >= 1` region.
-pub(in crate::geometry) fn dissolve_polygons(polygons: Vec<Polygon>) -> Vec<Polygon> {
-    // Disjoint clusters dissolve independently — and SINGLETONS (the
-    // sparse caseload) cost one tiny single-loop arrangement instead of
-    // joining a connected cluster's joint pass. Boxes that do not overlap
-    // cannot interact, so cross-cluster results concatenate exactly.
-    if polygons.len() > 2
-        && let Some(roots) = bbox_overlap_clusters(&polygons)
-    {
-        // Slots in first-occurrence order keep the output deterministic.
-        let mut slot_of: crate::collections::HashMap<usize, usize> =
-            crate::collections::HashMap::new();
-        let mut groups: Vec<Vec<Polygon>> = Vec::new();
-        for (polygon, root) in polygons.into_iter().zip(roots) {
-            let slot = *slot_of.entry(root).or_insert_with(|| {
-                groups.push(Vec::new());
-                groups.len() - 1
-            });
-            groups[slot].push(polygon);
-        }
-        let mut out = Vec::new();
-        for group in groups {
-            out.extend(dissolve_connected(&group));
-        }
-        return out;
-    }
-    dissolve_connected(&polygons)
-}
-
-/// Union-find clustering by bbox overlap via a sweep over `minx`, with a
-/// pair-test budget: `None` for interaction-dense scenes where clustering
-/// cannot pay (one cluster — the joint arrangement handles it). Correctness
-/// never depends on the verdict, only the work shape does.
-pub(crate) fn bbox_overlap_clusters(polygons: &[Polygon]) -> Option<Vec<usize>> {
-    let bounds: Vec<_> = polygons.iter().map(Polygon::bounds).collect();
-    bbox_overlap_clusters_for_bounds(&bounds)
-}
-
-pub(crate) fn bbox_overlap_clusters_for_bounds(bounds: &[Option<Bounds>]) -> Option<Vec<usize>> {
-    let mut boxes: Vec<(Bounds, usize)> = bounds
-        .iter()
-        .enumerate()
-        .map(|(index, bounds)| bounds.map(|bounds| (bounds, index)))
-        .collect::<Option<_>>()?;
-    boxes.sort_unstable_by(|a, b| a.0.minx().total_cmp(&b.0.minx()));
-    let mut components = crate::collections::UnionFind::new(bounds.len());
-    let mut budget = 8 * bounds.len();
-    let mut active: Vec<(Bounds, usize)> = Vec::new();
-    let mut clusters = bounds.len();
-    for &(bounds, index) in &boxes {
-        active.retain(|(candidate, _)| candidate.maxx() >= bounds.minx());
-        budget = budget.checked_sub(active.len())?;
-        for &(candidate, other) in &active {
-            if candidate.maxy() >= bounds.miny()
-                && candidate.miny() <= bounds.maxy()
-                && !components.union(index, other)
-            {
-                clusters -= 1;
-            }
-        }
-        active.push((bounds, index));
-    }
-    (clusters > 1).then(|| {
-        (0..bounds.len())
-            .map(|index| components.find(index))
-            .collect()
-    })
-}
-
-/// One bbox-connected cluster's dissolve.
-pub(crate) fn dissolve_connected(polygons: &[Polygon]) -> Vec<Polygon> {
-    if polygons.len() == 2 {
-        return binary_areal_overlay(&polygons[..1], &polygons[1..], OverlayOp::Union);
-    }
-    winding_region(&polygon_winding_loops(polygons), |winding| winding >= 1)
-}
-
-/// The canonical winding loops of polygons (shells CCW, holes CW) — the
-/// single-winding dissolve input: the union of valid polygons IS the
-/// `winding >= 1` region of their joint arrangement.
-pub(in crate::geometry) fn polygon_winding_loops(
-    polygons: &[Polygon],
-) -> Vec<(Vec<f64>, Vec<f64>)> {
-    let mut loops = Vec::new();
-    for polygon in polygons {
-        for (ring_index, ring) in polygon.rings().enumerate() {
-            let Some(walk) = canonical_ring_walk(&ring, ring_index > 0) else {
-                continue;
-            };
-            loops.push(walk.iter().map(|point| (point.x, point.y)).unzip());
-        }
-    }
-    loops
 }

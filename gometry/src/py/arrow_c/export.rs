@@ -798,11 +798,9 @@ pub(crate) fn export_multipolygons_shapes(
                         .len()
                         .checked_add(1)
                         .ok_or_else(offset_error)?;
-            ring_count = ring_count
-                    .checked_add(
-                        i32::try_from(ring_total).map_err(|_| offset_error())?,
-                    )
-                    .ok_or_else(offset_error)?;
+                    ring_count = ring_count
+                        .checked_add(i32::try_from(ring_total).map_err(|_| offset_error())?)
+                        .ok_or_else(offset_error)?;
                     crate::try_push(&mut polygon_offsets, ring_count)?;
                     push_polygon(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
                 },

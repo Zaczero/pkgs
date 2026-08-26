@@ -1,115 +1,376 @@
+use std::borrow::Borrow;
+
+use crate::error::Result;
 use crate::geometry::overlay::{
-    DimensionalParts, OverlayOp, Strictness, bbox_overlap_clusters_for_bounds,
-    overlay_declared_axes,
+    OverlayOp, build_overlay_shape, dedup_points, overlay_declared_axes,
 };
+use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
-    Bounds, CoordinateAxes, Dimension, GeometryKind, HashMapExt as _, Result, Shape,
+    AreaSign, Arrangement, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
+    GeometryKind, Point, Segment, Shape, TopologyGraph, XY, carry_overlay_ordinates,
+    point_on_segment, same_point, segment_midpoint,
 };
-pub(crate) fn has_mixed_non_empty_topological_dimensions(inputs: &[&Shape]) -> bool {
-    let dimensions = inputs.iter().fold(0_u8, |mask, input| {
-        mask | DimensionalParts::non_empty_dimension_mask(input)
+
+/// Evaluate one or more operands in one canonical overlay arrangement.
+///
+/// The source order is normalized before noding. This is not a reduction: all
+/// operands participate in the same topology graph and every output bucket is
+/// assembled once from that graph.
+pub(crate) fn overlay_all<S: Borrow<Shape>>(
+    geometries: &[S],
+    geographic: bool,
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+) -> Result<Shape> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: op.name(),
+        }
+        .into());
+    }
+
+    let mut sources: Vec<Shape> = geometries
+        .iter()
+        .map(|geometry| {
+            let shape = geometry.borrow();
+            if geographic && shape.crosses_antimeridian() {
+                crate::geometry::topology_split(shape).normalize()
+            } else {
+                shape.normalize()
+            }
+        })
+        .collect();
+
+    // The left operand remains first for the only non-commutative operation.
+    // Every other operation gets a canonical source order before graph
+    // construction, so input permutation cannot affect noding provenance.
+    if op == OverlayOp::Difference {
+        let (left, right) = sources.split_at_mut(1);
+        right.sort_unstable_by(crate::geometry::compare_shapes);
+        let _ = left;
+    } else {
+        sources.sort_unstable_by(crate::geometry::compare_shapes);
+    }
+
+    let refs: Vec<&Shape> = sources.iter().collect();
+    if geometries.len() == 1
+        && op == OverlayOp::Intersection
+        && !(geographic && geometries[0].borrow().crosses_antimeridian())
+    {
+        return Ok(geometries[0].borrow().clone());
+    }
+    let shape = assemble_overlay(&refs, op)?;
+    let shape = if shape.is_empty() {
+        empty_nary_overlay_shape(&refs, op)
+    } else {
+        // Normalize before carrying ordinates: canonical geometry ordering is
+        // XY-defined, while ordinate restoration is a separate provenance pass.
+        shape.normalize()
+    };
+    carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
+}
+
+fn assemble_overlay(inputs: &[&Shape], op: OverlayOp) -> Result<Shape> {
+    let graph = TopologyGraph::cartesian_many(inputs);
+    let source_graphs: Vec<TopologyGraph> = inputs
+        .iter()
+        .map(|shape| TopologyGraph::cartesian(shape))
+        .collect();
+    let polygons = overlay_polygons(&graph, &source_graphs, op);
+    let lines = overlay_lines(&graph, &source_graphs, &polygons, op);
+    let points = overlay_points(&graph, &source_graphs, &polygons, &lines, op);
+    Ok(build_overlay_shape(points, lines, polygons))
+}
+
+fn overlay_polygons(
+    graph: &TopologyGraph,
+    sources: &[TopologyGraph],
+    op: OverlayOp,
+) -> Vec<crate::geometry::Polygon> {
+    if op == OverlayOp::Union
+        && graph.source_points.is_empty()
+        && !graph
+            .edges
+            .iter()
+            .any(|edge| graph.edge_has_line_source(edge))
+    {
+        let loops = source_polygon_loops(sources);
+        if !loops.is_empty() {
+            return crate::geometry::winding_region(&loops, |winding| winding >= 1)
+                .into_iter()
+                .map(canonicalize_polygon)
+                .collect();
+        }
+    }
+    let segments: Vec<Segment> = graph
+        .edges
+        .iter()
+        .filter(|edge| graph.edge_has_area_source(edge))
+        .map(|edge| edge.segment)
+        .collect();
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    // The joint graph already split every area edge at every source contact.
+    // The arrangement below is therefore the one and only face assembly for
+    // both binary and aggregate overlays.
+    let arrangement = Arrangement::new_with_rings(&segments);
+    let selected: Vec<i32> = arrangement
+        .faces
+        .iter()
+        .map(|face| {
+            let Some(probe) = face_probe(face.ring.as_slice(), face.decision_area.sign()) else {
+                return 0;
+            };
+            let area_membership: Vec<bool> = sources
+                .iter()
+                .enumerate()
+                .map(|(source_row, source)| {
+                    face_area_side(&face.ring, graph, source_row as u32)
+                        .unwrap_or_else(|| source.contains_area_interior(probe))
+                })
+                .collect();
+            if keep_area_face(&area_membership, op) {
+                1
+            } else {
+                0
+            }
+        })
+        .collect();
+    crate::geometry::assemble_region_polygons(arrangement.region_rings(&selected, |keep| keep != 0))
+        .into_iter()
+        .map(canonicalize_polygon)
+        .collect()
+}
+
+fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> {
+    sources
+        .iter()
+        .flat_map(|source| source.area_support.iter())
+        .flat_map(|support| support.source.rings())
+        .filter_map(|ring| {
+            let mut points: Vec<Point> = ring.iter_coords().collect();
+            if points.len() > 1 && same_point(points[0], *points.last().expect("non-empty ring")) {
+                points.pop();
+            }
+            (points.len() >= 3).then(|| points.into_iter().map(|point| (point.x, point.y)).unzip())
+        })
+        .collect()
+}
+
+fn face_area_side(ring: &[XY], graph: &TopologyGraph, source_row: u32) -> Option<bool> {
+    ring.array_windows::<2>().find_map(|[start, end]| {
+        graph.edges.iter().find_map(|edge| {
+            let same_edge = (same_point(edge.segment.start, *start)
+                && same_point(edge.segment.end, *end))
+                || (same_point(edge.segment.start, *end) && same_point(edge.segment.end, *start));
+            same_edge.then(|| graph.area_source_side_for_row(edge, *start, *end, source_row))?
+        })
+    })
+}
+
+fn canonicalize_polygon(polygon: crate::geometry::Polygon) -> crate::geometry::Polygon {
+    let shell = crate::geometry::Ring::from_trusted_closed(crate::geometry::CoordSeq::from(
+        drop_collinear_vertices(polygon.shell.coords()),
+    ));
+    let holes = polygon
+        .holes
+        .iter()
+        .map(|hole| {
+            crate::geometry::Ring::from_trusted_closed(crate::geometry::CoordSeq::from(
+                drop_collinear_vertices(hole.coords()),
+            ))
+        })
+        .collect();
+    crate::geometry::Polygon::new(shell, holes)
+}
+
+fn drop_collinear_vertices(coords: &crate::geometry::CoordSeq) -> Vec<Point> {
+    let mut vertices: Vec<Point> = coords.iter_coords().collect();
+    if vertices.len() <= 4 {
+        return vertices;
+    }
+    vertices.pop();
+    loop {
+        if vertices.len() <= 3 {
+            break;
+        }
+        let Some(index) = (0..vertices.len()).find(|&index| {
+            let previous = vertices[(index + vertices.len() - 1) % vertices.len()];
+            let current = vertices[index];
+            let next = vertices[(index + 1) % vertices.len()];
+            point_on_segment(current, previous, next)
+        }) else {
+            break;
+        };
+        vertices.remove(index);
+    }
+    vertices.push(vertices[0]);
+    vertices
+}
+
+fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
+    if ring.len() < 4 || sign == AreaSign::Zero {
+        return None;
+    }
+    // Probe just to the left of an edge, which is the side represented by the
+    // face walk. Sampling the side rather than the ring centroid keeps nested
+    // disconnected cycles in distinct arrangement faces.
+    let start = ring[0];
+    let end = ring[1];
+    let coordinate_scale = start
+        .x
+        .abs()
+        .max(start.y.abs())
+        .max(end.x.abs())
+        .max(end.y.abs());
+    if !coordinate_scale.is_finite() || coordinate_scale == 0.0 {
+        return None;
+    }
+    let dx = end.x / coordinate_scale - start.x / coordinate_scale;
+    let dy = end.y / coordinate_scale - start.y / coordinate_scale;
+    let length = dx.hypot(dy);
+    if !length.is_finite() || length == 0.0 {
+        return None;
+    }
+    let midpoint = XY::new(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y));
+    let normal_x = -dy / length;
+    let normal_y = dx / length;
+    let mut offset = (coordinate_scale * 1e-7 * length).max(f64::from_bits(1));
+    loop {
+        let probe = XY::new(
+            midpoint.x + normal_x * offset,
+            midpoint.y + normal_y * offset,
+        );
+        if probe.x.is_finite() && probe.y.is_finite() {
+            return Some(probe);
+        }
+        offset *= 0.5;
+        if offset == 0.0 {
+            return None;
+        }
+    }
+}
+
+fn keep_area_face(membership: &[bool], op: OverlayOp) -> bool {
+    match op {
+        OverlayOp::Union => membership.iter().any(|&inside| inside),
+        OverlayOp::Intersection => {
+            !membership.is_empty() && membership.iter().all(|&inside| inside)
+        },
+        OverlayOp::Difference => {
+            membership.first().copied().unwrap_or(false)
+                && membership[1..].iter().all(|&inside| !inside)
+        },
+        OverlayOp::SymmetricDifference => {
+            membership.iter().filter(|&&inside| inside).count() % 2 == 1
+        },
+    }
+}
+
+fn overlay_lines(
+    graph: &TopologyGraph,
+    sources: &[TopologyGraph],
+    polygons: &[crate::geometry::Polygon],
+    op: OverlayOp,
+) -> Vec<crate::geometry::CoordSeq> {
+    let mut lines = Vec::new();
+    for edge in &graph.edges {
+        let line_source = graph.edge_has_line_source(edge);
+        if !line_source && op != OverlayOp::Intersection {
+            continue;
+        }
+        let midpoint = segment_midpoint(edge.segment);
+        let covered: Vec<bool> = sources
+            .iter()
+            .enumerate()
+            .map(|(source_row, source)| {
+                source.locate_edge_piece(edge.segment) != TopologyLocation::Exterior
+                    || graph.edge_has_line_source_for_row(edge, source_row as u32)
+            })
+            .collect();
+        let line_membership: Vec<bool> = sources
+            .iter()
+            .enumerate()
+            .map(|(source_row, source)| {
+                source.has_line_support(midpoint.xy())
+                    || graph.edge_has_line_source_for_row(edge, source_row as u32)
+            })
+            .collect();
+        let result_covers = polygons
+            .iter()
+            .any(|polygon| polygon.covers_point(midpoint));
+        let keep = match op {
+            OverlayOp::Intersection => covered.iter().all(|&present| present) && !result_covers,
+            OverlayOp::Union => line_membership.iter().any(|&present| present) && !result_covers,
+            OverlayOp::Difference => {
+                line_membership.first().copied().unwrap_or(false)
+                    && covered[1..].iter().all(|&present| !present)
+                    && !result_covers
+            },
+            OverlayOp::SymmetricDifference => {
+                line_membership.iter().filter(|&&present| present).count() % 2 == 1
+                    && !result_covers
+            },
+        };
+        if keep {
+            lines.push(crate::geometry::CoordSeq::from(vec![
+                edge.segment.start,
+                edge.segment.end,
+            ]));
+        }
+    }
+    lines
+}
+
+fn overlay_points(
+    graph: &TopologyGraph,
+    sources: &[TopologyGraph],
+    polygons: &[crate::geometry::Polygon],
+    lines: &[crate::geometry::CoordSeq],
+    op: OverlayOp,
+) -> Vec<Point> {
+    let mut candidates: Vec<Point> = graph
+        .source_points
+        .iter()
+        .filter(|source| !source.collapsed_line)
+        .map(|source| source.point.xy().point())
+        .collect();
+    if op == OverlayOp::Intersection {
+        candidates.extend(graph.nodes.iter().map(|node| node.point.point()));
+    }
+    candidates.retain(|point| {
+        let membership: Vec<bool> = sources
+            .iter()
+            .enumerate()
+            .map(|(source_row, source)| {
+                source.locate_point_for_overlay(point.xy()) != TopologyLocation::Exterior
+                    || (op == OverlayOp::Intersection
+                        && graph.has_line_source_at_node(point.xy(), source_row as u32))
+            })
+            .collect();
+        let keep = match op {
+            OverlayOp::Union => membership.iter().any(|&present| present),
+            OverlayOp::Intersection => {
+                !membership.is_empty() && membership.iter().all(|&present| present)
+            },
+            OverlayOp::Difference => {
+                membership.first().copied().unwrap_or(false)
+                    && membership[1..].iter().all(|&present| !present)
+            },
+            OverlayOp::SymmetricDifference => {
+                membership.iter().filter(|&&present| present).count() % 2 == 1
+            },
+        };
+        keep && !polygons.iter().any(|polygon| polygon.covers_point(*point))
+            && !lines.iter().any(|line| {
+                line.segment_pairs()
+                    .any(|[start, end]| point_on_segment(*point, start, end))
+            })
     });
-    let known_dimensions =
-        DimensionalParts::POINT_BIT | DimensionalParts::LINE_BIT | DimensionalParts::POLYGON_BIT;
-    (dimensions & known_dimensions).count_ones() > 1
-}
-
-#[derive(Clone)]
-pub(crate) struct OverlayWorkItem {
-    pub(crate) shape: Shape,
-    key: OverlayReductionKey,
-    serial: usize,
-    /// Cached once at construction — `shape.bounds()` is a full vertex scan
-    /// and must never re-run inside sort comparators or cluster walks
-    /// (sibling precedent: `areal.rs` dissolve median split).
-    bounds: Option<Bounds>,
-}
-
-impl OverlayWorkItem {
-    pub(crate) fn new(shape: Shape, serial: usize) -> Self {
-        let bounds = shape.bounds();
-        let key = OverlayReductionKey::of_with_bounds(&shape, bounds);
-        Self {
-            shape,
-            key,
-            serial,
-            bounds,
-        }
-    }
-}
-
-impl Eq for OverlayWorkItem {}
-
-impl PartialEq for OverlayWorkItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.serial == other.serial
-    }
-}
-
-impl Ord for OverlayWorkItem {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other
-            .key
-            .cmp(&self.key)
-            .then_with(|| other.serial.cmp(&self.serial))
-    }
-}
-
-impl PartialOrd for OverlayWorkItem {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct OverlayReductionKey {
-    dimension: Dimension,
-    bbox_area: f64,
-    bbox_span: f64,
-    coord_count: usize,
-}
-
-impl OverlayReductionKey {
-    fn of_with_bounds(shape: &Shape, bounds: Option<Bounds>) -> Self {
-        let (bbox_area, bbox_span) = bounds.map_or((f64::INFINITY, f64::INFINITY), |bounds| {
-            let width = bounds.maxx() - bounds.minx();
-            let height = bounds.maxy() - bounds.miny();
-            (width * height, width + height)
-        });
-        Self {
-            dimension: shape.topological_dimension(),
-            bbox_area,
-            bbox_span,
-            coord_count: shape.coord_count(),
-        }
-    }
-}
-
-impl Eq for OverlayReductionKey {}
-
-impl PartialEq for OverlayReductionKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.dimension == other.dimension
-            && self.bbox_area.to_bits() == other.bbox_area.to_bits()
-            && self.bbox_span.to_bits() == other.bbox_span.to_bits()
-            && self.coord_count == other.coord_count
-    }
-}
-
-impl Ord for OverlayReductionKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.dimension
-            .cmp(&other.dimension)
-            .then_with(|| self.bbox_area.total_cmp(&other.bbox_area))
-            .then_with(|| self.bbox_span.total_cmp(&other.bbox_span))
-            .then_with(|| self.coord_count.cmp(&other.coord_count))
-    }
-}
-
-impl PartialOrd for OverlayReductionKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
+    dedup_points(&mut candidates);
+    candidates
 }
 
 pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shape {
@@ -130,10 +391,6 @@ pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shap
     empty_shape_for_dimension_with_axes(dimension, overlay_declared_axes(inputs, op))
 }
 
-pub(crate) fn empty_shape_for_dimension(dimension: Dimension) -> Shape {
-    empty_shape_for_dimension_with_axes(dimension, CoordinateAxes::XY)
-}
-
 pub(crate) fn empty_shape_for_dimension_with_axes(
     dimension: Dimension,
     axes: CoordinateAxes,
@@ -143,104 +400,4 @@ pub(crate) fn empty_shape_for_dimension_with_axes(
         Dimension::Curve => Shape::typed_empty(GeometryKind::LineString, axes),
         Dimension::Surface => Shape::typed_empty(GeometryKind::Polygon, axes),
     }
-}
-
-pub(crate) fn overlay_work_clusters(work: Vec<OverlayWorkItem>) -> Vec<Vec<OverlayWorkItem>> {
-    if work.len() <= 1 {
-        return vec![work];
-    }
-    let bounds: Vec<_> = work.iter().map(|item| item.bounds).collect();
-    let Some(roots) = bbox_overlap_clusters_for_bounds(&bounds) else {
-        return vec![work];
-    };
-    let mut slot_of: crate::collections::HashMap<usize, usize> = crate::collections::HashMap::new();
-    let mut groups: Vec<Vec<OverlayWorkItem>> = Vec::new();
-    for (item, root) in work.into_iter().zip(roots) {
-        let slot = *slot_of.entry(root).or_insert_with(|| {
-            groups.push(Vec::new());
-            groups.len() - 1
-        });
-        groups[slot].push(item);
-    }
-    groups
-}
-
-pub(crate) fn symmetric_difference_cluster_balanced(
-    mut work: Vec<OverlayWorkItem>,
-) -> Result<Shape> {
-    debug_assert!(!work.is_empty());
-    if work.len() == 1 {
-        return Ok(work.pop().expect("one work item").shape);
-    }
-    let right = split_overlay_work(&mut work);
-    let left = symmetric_difference_cluster_balanced(work)?;
-    let right = symmetric_difference_cluster_balanced(right)?;
-    // Intermediate cluster reductions stay XY-only; Z/M is carried once at the
-    // end from the ORIGINAL inputs by the caller.
-    left.overlay(&right, OverlayOp::SymmetricDifference, Strictness::Lenient)
-}
-
-pub(crate) fn symmetric_difference_cluster_ordered(
-    mut work: Vec<OverlayWorkItem>,
-) -> Result<Shape> {
-    debug_assert!(!work.is_empty());
-    work.sort_unstable_by_key(|item| item.serial);
-    let mut iter = work.into_iter();
-    let mut accumulated = iter.next().expect("non-empty work").shape;
-    for item in iter {
-        accumulated = accumulated.overlay(
-            &item.shape,
-            OverlayOp::SymmetricDifference,
-            Strictness::Lenient,
-        )?;
-    }
-    Ok(accumulated)
-}
-
-pub(crate) fn split_overlay_work(work: &mut Vec<OverlayWorkItem>) -> Vec<OverlayWorkItem> {
-    let axis = wider_bounds_axis(work);
-    work.sort_unstable_by(|a, b| {
-        bounds_center(a.bounds, axis)
-            .total_cmp(&bounds_center(b.bounds, axis))
-            .then_with(|| a.key.cmp(&b.key))
-            .then_with(|| a.serial.cmp(&b.serial))
-    });
-    let total_weight: usize = work.iter().map(overlay_work_weight).sum();
-    let mut prefix = 0_usize;
-    let mut split = 1_usize;
-    let mut best_delta = usize::MAX;
-    for (index, item) in work.iter().enumerate().take(work.len() - 1) {
-        prefix += overlay_work_weight(item);
-        let delta = prefix.abs_diff(total_weight.saturating_sub(prefix));
-        if delta <= best_delta {
-            best_delta = delta;
-            split = index + 1;
-        }
-    }
-    work.split_off(split)
-}
-
-pub(crate) fn overlay_work_weight(item: &OverlayWorkItem) -> usize {
-    item.key.coord_count.max(1)
-}
-
-pub(crate) fn wider_bounds_axis(work: &[OverlayWorkItem]) -> usize {
-    let mut bounds = work.iter().filter_map(|item| item.bounds);
-    let Some(mut total) = bounds.next() else {
-        return 0;
-    };
-    for bounds in bounds {
-        total.include_bounds(bounds);
-    }
-    usize::from((total.maxy() - total.miny()) > (total.maxx() - total.minx()))
-}
-
-pub(crate) fn bounds_center(bounds: Option<Bounds>, axis: usize) -> f64 {
-    bounds.map_or(0.0, |bounds| {
-        if axis == 0 {
-            f64::midpoint(bounds.minx(), bounds.maxx())
-        } else {
-            f64::midpoint(bounds.miny(), bounds.maxy())
-        }
-    })
 }

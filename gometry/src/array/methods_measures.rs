@@ -311,7 +311,7 @@ impl PyGeometryArray {
     /// >>> panes.intersection_all().to_wkt()
     /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
     pub fn intersection_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.reduce_overlay_all(py, Shape::intersection_all_topo)
+        self.apply_overlay_all(py, Shape::intersection_all_topo)
     }
 
     /// Symmetric difference of all present geometries.
@@ -339,7 +339,7 @@ impl PyGeometryArray {
     /// >>> panes.symmetric_difference_all().to_wkt()  # the duplicate cancels
     /// 'POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))'
     pub fn symmetric_difference_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.reduce_overlay_all(py, Shape::symmetric_difference_all_topo)
+        self.apply_overlay_all(py, Shape::symmetric_difference_all_topo)
     }
 
     /// Union all present geometries into one geometry.
@@ -406,7 +406,7 @@ impl PyGeometryArray {
     /// >>> arr = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
     /// >>> geoms, keys = arr.dissolve(by=[0, 0])
     /// >>> geoms.to_wkt()
-    /// ['POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))']
+    /// ['POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))']
     pub fn dissolve(&self, py: Python<'_>, by: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         // Fixed-count alignment via keystone: fallible exact reserve + stop after
         // expected+1 so unbounded `itertools.repeat` cannot grow forever.
@@ -1022,10 +1022,10 @@ impl PyGeometryArray {
 }
 
 impl PyGeometryArray {
-    /// Shared n-ary overlay reduction over the PRESENT rows: the kernel
+    /// Shared all-input overlay over the PRESENT rows: the kernel
     /// receives owned shapes (aggregates skip missing rows), detached from
     /// the GIL like `dissolve`.
-    fn reduce_overlay_all(
+    fn apply_overlay_all(
         &self,
         py: Python<'_>,
         kernel: impl FnOnce(&[Shape], bool, crate::geometry::Strictness) -> crate::error::Result<Shape>

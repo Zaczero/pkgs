@@ -57,7 +57,7 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
     }
 }
 
-/// Overlay set-ops use the disjoint-shortcut path in [`super::binary::geometry_kernel_over_array`].
+/// Overlay set-ops use the shared geometry kernel over array rows.
 pub(crate) struct OverlayFastPath;
 
 impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
@@ -101,7 +101,7 @@ pub(crate) fn dispatch_predicate(
     )
 }
 
-/// Geometry overlay through the spine (disjoint shortcut in ``geometry_kernel_over_array``).
+/// Geometry overlay through the shared geometry kernel.
 pub(crate) fn dispatch_overlay(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
@@ -116,7 +116,6 @@ pub(crate) fn dispatch_overlay(
         right,
         operation.name(),
         &OverlayFastPath,
-        Some(op),
         move |left, right, ctx| kernels::binary_overlay(left, right, ctx, op, strictness),
     )
 }

@@ -3,9 +3,9 @@ use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::{
-    Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, Polygon,
-    PolygonizeFull, Ring, Segment, Shape, TopologyGraph, XY, compare_point_slices, line_segments,
-    open_xy_cycle_winding, orient_ring, point_on_segment, ring_contains_interior,
+    Arrangement, Bounds, BulkRTree, CoordSeq, HashMap, HashMapExt as _, HashSet, LineSeq, PointKey,
+    Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, XY, compare_point_slices,
+    line_segments, open_xy_cycle_winding, orient_ring, point_on_segment, ring_contains_interior,
     ring_decision_area, segment_projection,
 };
 
@@ -221,8 +221,12 @@ pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) ->
     let mut invalid_rings = vec![Vec::new(); source_row_count];
     let mut degree = HashMap::with_capacity(graph.nodes.len());
     for edge in &graph.edges {
-        *degree.entry(edge.start).or_insert(0_usize) += 1;
-        *degree.entry(edge.end).or_insert(0_usize) += 1;
+        *degree
+            .entry(PointKey::new(edge.segment.start))
+            .or_insert(0_usize) += 1;
+        *degree
+            .entry(PointKey::new(edge.segment.end))
+            .or_insert(0_usize) += 1;
     }
 
     // Each noded edge keeps every source owner. Emit one diagnostic per source
@@ -248,8 +252,16 @@ pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) ->
             if used_segments.contains(&key) {
                 continue;
             }
-            if degree.get(&edge.start).copied().unwrap_or(0) <= 1
-                || degree.get(&edge.end).copied().unwrap_or(0) <= 1
+            if degree
+                .get(&PointKey::new(edge.segment.start))
+                .copied()
+                .unwrap_or(0)
+                <= 1
+                || degree
+                    .get(&PointKey::new(edge.segment.end))
+                    .copied()
+                    .unwrap_or(0)
+                    <= 1
             {
                 dangles[row].push(diagnostic_line(edge.segment, false));
             } else {

@@ -9,11 +9,10 @@
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage,
-    GeometryKind, PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder,
-    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
-    column_window, line_crosses_antimeridian, packed_centroid_xy, packed_surface_point,
-    row_bounds_values,
+    Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
+    PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
+    line_crosses_antimeridian, packed_centroid_xy, packed_surface_point, row_bounds_values,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 

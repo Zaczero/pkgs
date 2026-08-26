@@ -476,8 +476,8 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     construct, O(1) next) rather than an eager materialization of every vertex.
 
     For `GeometryArray.coords`, missing rows contribute no vertices. The view is
-    a flattened vertex stream, not a row-aligned container; use
-    `.row_index` when you need source-row indexes,
+    a flattened vertex stream, not a row-aligned container; use `.row_index`
+    when you need source-row indexes,
     or call `drop_missing()` first for an explicit dense-only path.
     """
 
@@ -963,10 +963,9 @@ class Geometry:
     @property
     def num_geometries(self) -> int:
         """Number of top-level parts: ``1`` for a single point/line/polygon,
-        including a typed empty; the member count for a multi/collection, and
-        ``0`` for an empty multipart or collection. Explicit empty multipart
-        members still count; this is the ``O(1)`` counterpart to ``len(geoms)``
-        without materializing parts.
+        the member count for a multi/collection, and ``0`` for a typed
+        top-level empty. Explicit empty members still count in their
+        multipart's member count.
 
         Returns
         -------
@@ -2041,7 +2040,9 @@ class Geometry:
             M values are stored route measures. A scalar applies to every array row.
 
         basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate.
+            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+            synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+            planar otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
@@ -2338,7 +2339,9 @@ class Geometry:
             A geometry to project, or one geometry per line row.
 
         basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate.
+            Return a CRS-aware distance, or the line's monotonic M ordinate. For
+            ``basis='m'``, nearest-point projection follows the CRS metric: geodesic on a
+            geographic CRS, planar otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
@@ -2530,7 +2533,9 @@ class Geometry:
             exclusive with ``at`` and unavailable with ``basis='m'``.
 
         basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate.
+            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+            synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+            planar otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
@@ -3548,7 +3553,7 @@ class Geometry:
         >>> import gometry as gm
         >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
         >>> lines.node().to_wkt()
-        'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 -1, 1 0), (1 0, 1 1))'
+        'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1), (1 -1, 1 0))'
         """
 
     def set_m(self, m: float | None) -> Self:
@@ -5529,8 +5534,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
 
         Simple geometries form one-element groups, multipart and collection
         geometries expose their immediate members, and empty or missing rows
-        form empty groups. Use free function ``parts`` for a flattened materialized
-        `GeometryArray` instead.
+        form empty groups. The free function ``parts`` uses the same grouped
+        result for `GeometryArray` input and keeps scalar/raw-iterable output flat.
 
         Returns
         -------
@@ -5542,9 +5547,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """Per-geometry top-level part count (see `Geometry.num_geometries`):
         ``1`` for a single point/line/polygon, including a typed empty; the
         member count for a multi/collection, and ``0`` for an empty multipart
-        or collection. Explicit empty multipart members still count. Missing rows use Shapely's
-        ``None``-geometry sentinel ``0``; use `.is_missing` to distinguish
-        them from present empty geometries.
+        or collection. Explicit empty members still count in their multipart's
+        member count. Missing rows use Shapely's ``None``-geometry sentinel
+        ``0``; use `.is_missing` to distinguish them from present empty
+        geometries.
 
         Returns
         -------
@@ -5779,9 +5785,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         -------
         Coordinates
             Flattened coordinates from present rows; missing rows contribute
-            no coordinates. This is a vertex stream, not a row-aligned view; use
-            `.row_index` to recover source-row alignment, or call `drop_missing()`
-            first for an explicit dense path.
+            no coordinates. This is a vertex stream, not a row-aligned view;
+            use `.row_index` to recover source-row alignment, or call
+            `drop_missing()` first for an explicit dense path.
         """
     def __iter__(self) -> Iterator[_GeometryT_co | None]:
         """Iterate geometries in row order (including missing rows as ``None``).
@@ -6150,7 +6156,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         --------
         >>> import gometry as gm
         >>> arr = gm.GeometryArray([gm.Point(1, 2, crs=4326)])
-        >>> round(float(gm.get_coordinates(arr.to_crs(3857))[0][0]), 2)
+        >>> round(float(gm.get_coordinates(arr.to_crs(3857))[0][0][0]), 2)
         111319.49
         """
     def sort_by_spatial_key(
@@ -6300,7 +6306,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         >>> arr = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
         >>> geoms, keys = arr.dissolve(by=[0, 0])
         >>> geoms.to_wkt()
-        ['POLYGON ((0 0, 1 0, 2 0, 2 1, 1 1, 0 1, 0 0))']
+        ['POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))']
         """
     @property
     def is_valid(self) -> npt.NDArray[np.bool_]:
@@ -6958,7 +6964,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             M values are stored route measures. A scalar applies to every array row.
 
         basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate.
+            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+            synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+            planar otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions in [0, 1]. Invalid with
@@ -7430,7 +7438,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             A geometry to project, or one geometry per line row.
 
         basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate.
+            Return a CRS-aware distance, or the line's monotonic M ordinate. For
+            ``basis='m'``, nearest-point projection follows the CRS metric: geodesic on a
+            geographic CRS, planar otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
@@ -7615,7 +7625,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
             ``at`` and unavailable with ``basis='m'``.
 
         basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate.
+            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+            synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+            planar otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
@@ -8596,8 +8608,8 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     def polygonize(self) -> Groups[GeometryArray[Polygon]]:
         """Build polygons from a geometry's own linework, automatically noding
         crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
-        polygons from a pile of edges pooled
-        across many geometries, use free function ``polygonize`` on an iterable of
+        polygons from a pile of edges pooled across many geometries, use free function
+        ``polygonize`` on an iterable of
         values. Input ordinates are carried where possible; unsourceable noding seams
         yield XY.
 
@@ -8693,7 +8705,7 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         >>> import gometry as gm
         >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
         >>> lines.node().to_wkt()
-        'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 -1, 1 0), (1 0, 1 1))'
+        'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1), (1 -1, 1 0))'
         """
 
     def set_m(self, m: float | None) -> Self:
@@ -8945,7 +8957,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """Not constructed directly — the error points at the producers."""
     @property
     def values(self) -> _GroupValuesT_co:
-        """The flat backing column (int64 ndarray, coordinate matrix, or `GeometryArray`)."""
+        """The flat backing column (int64 ndarray, coordinate matrix, or
+        `GeometryArray`).
+        """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
@@ -11112,7 +11126,9 @@ class CellArray(Sequence[_CellT_co | None]):
         7
         """
     def compact(self, depth: int | None = None, /) -> CellArray[_CellT_co]:
-        """Compact this cell set to the coarsest exact covering.
+        """Compact this cell set to the coarsest exact covering, returned in the
+        grid's public identity order. Duplicates and descendants are absorbed;
+        complete sibling groups merge recursively, stopping at ``depth``.
         Missing rows are skipped; this is a set operation over present cells.
 
         Parameters
@@ -11137,7 +11153,9 @@ class CellArray(Sequence[_CellT_co | None]):
         2
         """
     def uncompact(self, depth: int, /) -> CellArray[_CellT_co]:
-        """Expand this cell set to a uniform depth.
+        """Expand this cell set to a uniform depth, returned in the grid's public
+        identity order. Expansion is bounded only by checked size arithmetic
+        and allocator capacity; it has no fixed cell-count limit.
         Missing rows are skipped; this is a set operation over present cells.
 
         Parameters
@@ -12373,7 +12391,7 @@ class GeohashCell(_Cell):
         Returns
         -------
         CellArray of GeohashCell
-            The descendant cells.
+            The descendant cells in the grid's public identity order.
 
         Raises
         ------
@@ -12580,7 +12598,7 @@ class H3Cell(_NumericCell):
         Returns
         -------
         CellArray of H3Cell
-            The descendant cells.
+            The descendant cells in the grid's public identity order.
 
         Raises
         ------
@@ -13059,7 +13077,7 @@ class S2Cell(_NumericCell):
         Returns
         -------
         CellArray of S2Cell
-            The descendant cells.
+            The descendant cells in the grid's public identity order.
 
         Raises
         ------
@@ -13216,7 +13234,7 @@ class Tile(_NumericCell):
         Returns
         -------
         CellArray of Tile
-            The descendant cells.
+            The descendant cells in the grid's public identity order.
 
         Raises
         ------
@@ -14455,8 +14473,8 @@ def contains(
 
     Returns ``True`` if no points of ``right`` lie outside ``left`` and at least
     one interior point of ``right`` lies in the interior of ``left``.
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14508,7 +14526,8 @@ def contains_properly(
 
     Like ``contains``, but ``right`` must lie entirely in the interior of
     ``left`` — touching the boundary of ``left`` anywhere fails (DE-9IM
-    ``T**FF*FF*``). Evaluated in the coordinate plane; geographic inputs crossing the antimeridian are split-normalized first.
+    ``T**FF*FF*``). Evaluated from the exact DE-9IM relation matrix; geographic
+    inputs use the longitude and pole quotient.
 
     Parameters
     ----------
@@ -14552,8 +14571,8 @@ def within(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14598,8 +14617,8 @@ def covers(
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14646,8 +14665,8 @@ def covered_by(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14800,8 +14819,8 @@ def intersects(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share any point.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14847,8 +14866,8 @@ def disjoint(
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14891,8 +14910,8 @@ def touches(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14932,8 +14951,8 @@ def crosses(
     """Test whether ``left`` and ``right`` cross (interiors meet with lower
     dimension).
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -14977,8 +14996,8 @@ def overlaps(
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -15018,8 +15037,8 @@ def relate(
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -15068,8 +15087,8 @@ def relate_pattern(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -15112,8 +15131,8 @@ def equals(
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
-    Evaluated in the coordinate plane; geographic inputs crossing the
-    antimeridian are split-normalized first.
+    Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+    longitude and pole quotient.
 
     Parameters
     ----------
@@ -16160,7 +16179,7 @@ def union(
     --------
     >>> import gometry as gm
     >>> gm.union(gm.box(0, 0, 1, 2), gm.box(1, 0, 2, 2)).to_wkt()
-    'POLYGON ((0 0, 1 0, 2 0, 2 2, 1 2, 0 2, 0 0))'
+    'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))'
     """
 
 @overload
@@ -16672,8 +16691,7 @@ def intersection_all(
 ) -> Geometry:
     """Common intersection of many geometries (planar overlay).
 
-    The region inside EVERY input — `g0 ∩ g1 ∩ … ∩ gn`. Reduces the sequence
-    with the pairwise ``intersection``, so mixed
+    The region inside every input, assembled from one joint arrangement. Mixed
     dimensions narrow to the lowest shared dimension and an empty result keeps
     that dimension's typed empty.
 
@@ -16707,10 +16725,9 @@ def symmetric_difference_all(
 ) -> Geometry:
     """Symmetric difference of many geometries (planar overlay).
 
-    The region covered by an ODD number of inputs — `g0 ▵ g1 ▵ … ▵ gn`. Reduces
-    the sequence with the pairwise
-    ``symmetric_difference``; the fold is
-    order-independent (`▵` is associative and commutative).
+    The region covered by an odd number of inputs, assembled from one joint
+    arrangement. The result is order-independent (`▵` is associative and
+    commutative).
 
     Parameters
     ----------
@@ -16765,39 +16782,7 @@ def get_coordinates(
     axes: CoordinateAxes | None = None,
     return_index: bool = False,
 ) -> Groups[npt.NDArray[np.float64]]:
-    """Extract scalar coordinates or row-preserving coordinate groups.
-
-    Parameters
-    ----------
-    values : Geometry, GeometryArray, or iterable of Geometry/None
-        Scalar geometry coordinates are dense. `GeometryArray` inputs return
-        one dense coordinate matrix per source row; raw iterables retain the
-        dense bulk path.
-    axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
-        Output coordinate columns. ``None`` means ``'XY'``.
-    return_index : bool, default False
-        For scalar geometry and raw iterables, also return the per-coordinate
-        source index. For `GeometryArray` inputs, ``Groups.offsets`` carries
-        the source-row map and this flag does not change the grouped result.
-
-    Returns
-    -------
-    numpy.ndarray, tuple of numpy.ndarray, or Groups
-        A scalar matrix, a scalar ``(matrix, index)`` pair, or one matrix per
-        array source row. Empty and missing rows remain empty groups; raw
-        iterables use the dense bulk path.
-
-    Raises
-    ------
-    TypeError
-        If ``values`` is not geometry-like.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.get_coordinates(gm.Point(1, 2)).tolist()
-    [[1.0, 2.0]]
-    """
+    ...
 
 @overload
 def get_coordinates(
@@ -16819,7 +16804,38 @@ def get_coordinates(
     *,
     axes: CoordinateAxes | None = None,
     return_index: bool = False,
-) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
+) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+    """Extract scalar coordinates as a dense matrix, or array coordinates as
+    row-preserving `Groups` of matrices.
+
+    Parameters
+    ----------
+    values : Geometry, GeometryArray, or iterable of Geometry/None
+        Scalar values are flattened depth-first; a `GeometryArray` keeps one
+        matrix per source row.
+    axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
+        Output coordinate columns. ``None`` means ``'XY'``.
+    return_index : bool, default False
+        Return a scalar source-row index alongside the matrix. For arrays,
+        `Groups.offsets` already carries the row map and this flag is ignored.
+
+    Returns
+    -------
+    numpy.ndarray, tuple of numpy.ndarray, or Groups
+        Scalar dense output, scalar `(matrix, index)` output, or one dense
+        matrix per array row. Empty and missing rows remain empty groups.
+
+    Raises
+    ------
+    TypeError
+        If ``values`` is not geometry-like.
+
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> gm.get_coordinates(gm.Point(1, 2)).tolist()
+    [[1.0, 2.0]]
+    """
 
 @overload
 def parts(
@@ -16853,6 +16869,12 @@ def parts(
 def parts(
     geom: GeometryArray,
 ) -> Groups[GeometryArray[Geometry]]:
+    ...
+
+@overload
+def parts(
+    geom: Iterable[_GeometryLike],
+) -> GeometryArray[Geometry]:
     """Component geometries of a multipart geometry.
 
     Parameters
@@ -16863,8 +16885,8 @@ def parts(
     Returns
     -------
     GeometryArray or Groups
-        Scalar and raw iterable inputs are flat component arrays; a
-        `GeometryArray` input is grouped by source row.
+        A scalar or raw iterable returns a flat `GeometryArray`; a
+        `GeometryArray` input returns one geometry group per source row.
 
     Examples
     --------
@@ -16878,11 +16900,6 @@ def parts(
     """
 
 @overload
-def parts(
-    geom: Iterable[_GeometryLike],
-) -> GeometryArray[Geometry]: ...
-
-@overload
 def rings(
     geom: Geometry,
 ) -> GeometryArray[LineString]: ...
@@ -16890,6 +16907,12 @@ def rings(
 def rings(
     geom: GeometryArray,
 ) -> Groups[GeometryArray[LineString]]:
+    ...
+
+@overload
+def rings(
+    geom: Iterable[_GeometryLike],
+) -> GeometryArray[LineString]:
     """Return the rings (exterior + interiors) of a polygonal geometry.
 
     Parameters
@@ -16900,8 +16923,8 @@ def rings(
     Returns
     -------
     GeometryArray or Groups
-        Scalar and raw iterable inputs are flat ring arrays; a
-        `GeometryArray` input is grouped by source row.
+        A scalar or raw iterable returns a flat `GeometryArray`; a
+        `GeometryArray` input returns one ring group per source row.
 
     Examples
     --------
@@ -16912,11 +16935,6 @@ def rings(
     >>> len(gm.rings(donut))
     2
     """
-
-@overload
-def rings(
-    geom: Iterable[_GeometryLike],
-) -> GeometryArray[LineString]: ...
 
 @overload
 def from_wkt(
@@ -18690,9 +18708,10 @@ def geohash_bounding_cell(
 ) -> GeohashCell:
     """Return the deepest single geohash cell containing a geometry or lon/lat bounds.
 
-    Walks the corner cells up to their common prefix. There is no global
-    geohash root, so bounds that straddle the precision-1 grid have no
-    containing cell and raise.
+    Descends the cell containing the lower corner and accepts it only after its
+    complete rectangle contains both axes of the query. There is no global
+    wrapped geohash cell, so an antimeridian-spanning region has no single-cell
+    result and raises.
 
     Parameters
     ----------
@@ -18727,8 +18746,9 @@ def geohash_union(
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware union of two geohash cell sets.
 
-    Returns the normalized cell union: sorted, with contained cells absorbed
-    by their ancestors and complete sibling groups merged into parents.
+    Returns the normalized cell union in the grid's public identity
+    order: contained cells are absorbed by their ancestors and complete
+    sibling groups are merged into parents.
 
 
     Parameters
@@ -18797,7 +18817,8 @@ def geohash_difference(
     """Hierarchy-aware difference of two geohash cell sets.
 
     Cells of ``left`` partially covered by ``right`` split into children
-    until the remainder is exact; the result is normalized.
+    until the remainder is exact; the result is normalized in the grid's
+    public identity order.
 
 
     Parameters
@@ -18948,10 +18969,10 @@ def tile_cells(
 def tile_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> Tile:
     """Return the deepest single tile containing a geometry or lon/lat bounds.
 
-    The mercantile ``bounding_tile``: walks corner tiles up to their common
-    ancestor. Bounds spanning hemispheres bottom out at the ``z0`` root.
-    Latitudes outside the Web Mercator domain raise
-    ``InvalidGeometryError`` (no silent clamp).
+    The mercantile ``bounding_tile``: descends the lower-corner tile and accepts
+    a candidate only after its complete lon/lat rectangle contains the query.
+    An antimeridian-spanning region is contained by the wrapped z0 world tile;
+    narrower tiles cannot represent both sides of the seam.
 
     Parameters
     ----------
@@ -18986,8 +19007,9 @@ def tile_union(
 ) -> CellArray[Tile]:
     """Hierarchy-aware union of two tile cell sets.
 
-    Returns the normalized cell union: sorted, with contained cells absorbed
-    by their ancestors and complete sibling groups merged into parents.
+    Returns the normalized cell union in the grid's public identity
+    order: contained cells are absorbed by their ancestors and complete
+    sibling groups are merged into parents.
 
 
     Parameters
@@ -19056,7 +19078,8 @@ def tile_difference(
     """Hierarchy-aware difference of two tile cell sets.
 
     Cells of ``left`` partially covered by ``right`` split into children
-    until the remainder is exact; the result is normalized.
+    until the remainder is exact; the result is normalized in the grid's
+    public identity order.
 
 
     Parameters
@@ -19483,8 +19506,10 @@ def h3_cells(
 def h3_bounding_cell(value: Geometry | GeometryArray | Iterable[float]) -> H3Cell:
     """Return the deepest single H3 cell containing a geometry or lon/lat bounds.
 
-    Walks all four corner cells up to a common ancestor, then verifies the
-    candidate's actual H3 boundary covers the whole bounds.
+    Walks a necessary ancestor path, then proves the complete region against
+    every ordered native H3 edge. Vertex ownership is not a containment proof;
+    when the finest candidate cannot be proved, a coarser proven ancestor is
+    returned.
 
     Parameters
     ----------
@@ -19519,8 +19544,9 @@ def h3_union(
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware union of two H3 cell sets.
 
-    Returns the normalized cell union: sorted, with contained cells absorbed
-    by their ancestors and complete sibling groups merged into parents.
+    Returns the normalized cell union in the grid's public identity
+    order: contained cells are absorbed by their ancestors and complete
+    sibling groups are merged into parents.
     This is cell-ID algebra (the ``compact`` contract): an H3 child's *geometry* does not nest exactly inside its parent, but its id does.
 
     Parameters
@@ -19601,7 +19627,8 @@ def h3_difference(
     """Hierarchy-aware difference of two H3 cell sets.
 
     Cells of ``left`` partially covered by ``right`` split into children
-    until the remainder is exact; the result is normalized.
+    until the remainder is exact; the result is normalized in the grid's
+    public identity order.
     This is cell-ID algebra (the ``compact`` contract): an H3 child's *geometry* does not nest exactly inside its parent, but its id does.
 
     Parameters
@@ -19862,8 +19889,9 @@ def s2_union(
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware union of two S2 cell sets.
 
-    Returns the normalized cell union: sorted, with contained cells absorbed
-    by their ancestors and complete sibling groups merged into parents.
+    Returns the normalized cell union in the grid's public identity
+    order: contained cells are absorbed by their ancestors and complete
+    sibling groups are merged into parents.
 
 
     Parameters
@@ -19932,7 +19960,8 @@ def s2_difference(
     """Hierarchy-aware difference of two S2 cell sets.
 
     Cells of ``left`` partially covered by ``right`` split into children
-    until the remainder is exact; the result is normalized.
+    until the remainder is exact; the result is normalized in the grid's
+    public identity order.
 
 
     Parameters

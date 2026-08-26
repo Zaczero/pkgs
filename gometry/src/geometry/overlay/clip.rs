@@ -143,70 +143,7 @@ pub(crate) fn clip_multipoint_columns(points: &CoordSeq, rect: Bounds) -> CoordS
     points.select(kept.into_iter())
 }
 
-/// Linear window clip for the overlay's `OverlayNG`-style optimization: each
-/// polygon ring runs Sutherland–Hodgman against the window's four
-/// half-planes (untouched vertices stay bit-exact; crossings interpolate on
-/// the held axis), lines take the piecewise clipper, points filter. Output
-/// quality is ENGINE-grade, not contract-grade: zero-width bridges along the
-/// window are legal here because the overlay self-nodes every input — the
-/// public `clip_by_rect` keeps its validity contract through the winding
-/// engine. Intermediate vertices are X/Y-only; the overlay's final
-/// `carry_ordinates` resolves Z/M from the ORIGINAL operands, and
-/// window-boundary vertices can never survive into a result (the window
-/// strictly contains the other operand's envelope).
-pub(in crate::geometry) fn window_clip_shape(shape: &Shape, rect: Bounds) -> Shape {
-    match shape {
-        Shape::Point(point) => {
-            if rect.contains_point(*point) {
-                shape.clone()
-            } else {
-                Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
-            }
-        },
-        Shape::MultiPoint(points) => {
-            let clipped = clip_multipoint_columns(points, rect);
-            if clipped.is_empty() {
-                Shape::typed_empty(GeometryKind::MultiPoint, points.axes())
-            } else {
-                Shape::MultiPoint(clipped.into())
-            }
-        },
-        Shape::LineString(line) => line_parts_to_shape(clipped_line_parts(line, rect)),
-        Shape::MultiLineString(lines) => line_parts_to_shape(
-            lines
-                .iter()
-                .flat_map(|line| clipped_line_parts(line, rect))
-                .collect(),
-        ),
-        Shape::Polygon(polygon) => window_clip_polygons(std::slice::from_ref(polygon), rect),
-        Shape::MultiPolygon(polygons) => window_clip_polygons(polygons, rect),
-        Shape::GeometryCollection(parts) => Shape::GeometryCollection(
-            parts
-                .iter()
-                .map(|part| window_clip_shape(part, rect))
-                .collect(),
-        ),
-        Shape::Empty(..) => shape.clone(),
-    }
-}
-
-pub(crate) fn window_clip_polygons(polygons: &[Polygon], rect: Bounds) -> Shape {
-    let Some(mut clipped) = window_clipped_parts(polygons, rect) else {
-        return polygon_parts_to_shape(binary_areal_overlay(
-            polygons,
-            std::slice::from_ref(&rect_polygon(rect)),
-            OverlayOp::Intersection,
-        ));
-    };
-    match clipped.len() {
-        0 => Shape::empty_polygon(),
-        1 => Shape::Polygon(clipped.pop().expect("one polygon")),
-        _ => Shape::MultiPolygon(clipped.into()),
-    }
-}
-
-/// The raw per-ring Sutherland–Hodgman pass behind [`window_clip_polygons`]
-/// and the public clip's direct lane.
+/// The raw per-ring Sutherland–Hodgman pass behind the public clip's direct lane.
 pub(crate) fn window_clipped_parts<P: AsRef<Polygon>>(
     polygons: &[P],
     rect: Bounds,

@@ -103,6 +103,10 @@ mod binary_areal_overlay_tests {
         );
     }
 
+    fn wkb(shape: &Shape) -> Vec<u8> {
+        crate::io::to_wkb(shape, None, false).expect("overlay WKB")
+    }
+
     /// The overlay engine preserves INPUT VERTICES bit-exactly — the wart
     /// the `i_overlay` path had (it snapped every coordinate to its grid,
     /// perturbing untouched vertices in the 8th decimal).
@@ -170,9 +174,13 @@ mod binary_areal_overlay_tests {
     fn intersection_all_typed_empty_uses_global_min_dimension() {
         let area = square(0.0, 0.0, 2.0, 2.0);
         let later_disjoint_point = point(10.0, 10.0);
-        let result =
-            Shape::intersection_all_ordered(&[&area, &later_disjoint_point], Strictness::Strict)
-                .unwrap();
+        let result = overlay_all(
+            &[&area, &later_disjoint_point],
+            false,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
         assert!(
             matches!(result, Shape::Empty(GeometryKind::Point, _)),
             "{result:?}"
@@ -180,7 +188,7 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn small_intersection_containment_shortcut_keeps_exact_refinement() {
+    fn intersection_refines_contained_and_disjoint_inputs() {
         let outer = square(0.0, 0.0, 10.0, 10.0);
         let inner = square(2.0, 2.0, 4.0, 4.0);
         let contained = outer
@@ -226,9 +234,10 @@ mod binary_areal_overlay_tests {
                 .iter()
                 .map(|&index| &shapes[index])
                 .collect::<Vec<_>>();
-            let reduced = Shape::intersection_all_ordered(&inputs, Strictness::Strict).unwrap();
+            let canonical =
+                overlay_all(&inputs, false, OverlayOp::Intersection, Strictness::Strict).unwrap();
             let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
-            assert_topologically_equal(&reduced, &folded);
+            assert_topologically_equal(&canonical, &folded);
         }
     }
 
@@ -238,10 +247,11 @@ mod binary_areal_overlay_tests {
         let crossing = line(&[(-1.0, 2.0), (5.0, 2.0)]);
         let marker = point(2.0, 2.0);
         let inputs = [&area, &crossing, &marker];
-        let reduced = Shape::intersection_all_ordered(&inputs, Strictness::Strict).unwrap();
+        let canonical =
+            overlay_all(&inputs, false, OverlayOp::Intersection, Strictness::Strict).unwrap();
         let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
-        assert!(matches!(reduced, Shape::Point(_)), "{reduced:?}");
-        assert_topologically_equal(&reduced, &folded);
+        assert!(matches!(canonical, Shape::Point(_)), "{canonical:?}");
+        assert_topologically_equal(&canonical, &folded);
     }
 
     #[test]
@@ -260,7 +270,7 @@ mod binary_areal_overlay_tests {
         // A single operand intersects to itself — faithful, so both policies
         // keep Z/M (force_2d is the way to flatten).
         for strictness in [Strictness::Lenient, Strictness::Strict] {
-            let kept = Shape::intersection_all_ordered(&[&input], strictness).unwrap();
+            let kept = overlay_all(&[&input], false, OverlayOp::Intersection, strictness).unwrap();
             assert_eq!(kept, input);
             assert!(kept.has_z() && kept.has_m(), "{kept:?}");
         }
@@ -271,9 +281,13 @@ mod binary_areal_overlay_tests {
         let first = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
         let second = z_square(1.0, -1.0, 5.0, 3.0, 10.0);
         let third = z_square(2.0, 1.0, 6.0, 5.0, 10.0);
-        let result =
-            Shape::intersection_all_ordered(&[&first, &second, &third], Strictness::Lenient)
-                .unwrap();
+        let result = overlay_all(
+            &[&first, &second, &third],
+            false,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
         assert!(result.has_z(), "{result:?}");
         assert_all_points_have_z(&result);
     }
@@ -284,12 +298,22 @@ mod binary_areal_overlay_tests {
         let interior = square(2.0, 2.0, 4.0, 4.0);
         // 'auto' (strict=false): an interior survivor vertex cannot source Z, so
         // the result degrades to 2D rather than raising.
-        let auto =
-            Shape::intersection_all_ordered(&[&source, &interior], Strictness::Lenient).unwrap();
+        let auto = overlay_all(
+            &[&source, &interior],
+            false,
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .unwrap();
         assert_topologically_equal(&auto, &interior);
         assert!(!auto.has_z() && !auto.has_m(), "{auto:?}");
         // 'error' (strict=true) raises on the unsourceable survivor.
-        let error = Shape::intersection_all_ordered(&[&source, &interior], Strictness::Strict);
+        let error = overlay_all(
+            &[&source, &interior],
+            false,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        );
         assert!(error.is_err(), "{error:?}");
     }
 
@@ -300,8 +324,10 @@ mod binary_areal_overlay_tests {
             square(1.0, 1.0, 4.0, 4.0),
             square(2.0, -1.0, 5.0, 2.0),
         ];
-        let baseline = Shape::symmetric_difference_all_balanced(
+        let baseline = overlay_all(
             &[&shapes[0], &shapes[1], &shapes[2]],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -310,11 +336,16 @@ mod binary_areal_overlay_tests {
                 .iter()
                 .map(|&index| &shapes[index])
                 .collect::<Vec<_>>();
-            let reduced =
-                Shape::symmetric_difference_all_balanced(&inputs, Strictness::Strict).unwrap();
+            let canonical = overlay_all(
+                &inputs,
+                false,
+                OverlayOp::SymmetricDifference,
+                Strictness::Strict,
+            )
+            .unwrap();
             let folded = manual_left_fold(&inputs, OverlayOp::SymmetricDifference);
-            assert_topologically_equal(&reduced, &baseline);
-            assert_topologically_equal(&reduced, &folded);
+            assert_topologically_equal(&canonical, &baseline);
+            assert_topologically_equal(&canonical, &folded);
         }
     }
 
@@ -322,8 +353,10 @@ mod binary_areal_overlay_tests {
     fn symmetric_difference_all_mixed_polygon_duplicates_leave_contained_line() {
         let polygon = square(0.0, 0.0, 4.0, 4.0);
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
-        let result = Shape::symmetric_difference_all_balanced(
+        let result = overlay_all(
             &[&polygon, &polygon, &contained_line],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -336,14 +369,10 @@ mod binary_areal_overlay_tests {
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
         let collection =
             Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()].into());
-        assert!(has_mixed_non_empty_topological_dimensions(&[
-            &polygon,
-            &polygon,
-            &collection
-        ]));
-
-        let result = Shape::symmetric_difference_all_balanced(
+        let result = overlay_all(
             &[&polygon, &polygon, &collection],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -354,8 +383,10 @@ mod binary_areal_overlay_tests {
     fn symmetric_difference_all_mixed_line_duplicates_leave_point() {
         let line = line(&[(-1.0, 0.0), (1.0, 0.0)]);
         let point_on_line = point(0.0, 0.0);
-        let result = Shape::symmetric_difference_all_balanced(
+        let result = overlay_all(
             &[&line, &line, &point_on_line],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -363,7 +394,7 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn symmetric_difference_all_same_dimension_polygons_match_left_fold_fast_path() {
+    fn symmetric_difference_all_same_dimension_polygons_match_left_fold() {
         let shapes = [
             square(0.0, 0.0, 2.0, 2.0),
             square(0.0, 0.0, 2.0, 2.0),
@@ -371,7 +402,13 @@ mod binary_areal_overlay_tests {
             square(3.0, 3.0, 5.0, 5.0),
         ];
         let inputs = [&shapes[0], &shapes[1], &shapes[2], &shapes[3]];
-        let result = Shape::symmetric_difference_all_balanced(&inputs, Strictness::Strict).unwrap();
+        let result = overlay_all(
+            &inputs,
+            false,
+            OverlayOp::SymmetricDifference,
+            Strictness::Strict,
+        )
+        .unwrap();
         let folded = manual_left_fold(&inputs, OverlayOp::SymmetricDifference);
         assert_topologically_equal(&result, &folded);
         assert!(
@@ -381,19 +418,17 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn symmetric_difference_all_same_dimension_collections_stay_balanced() {
+    fn symmetric_difference_all_same_dimension_collections_are_canonical() {
         let duplicate = Shape::GeometryCollection(
             vec![square(0.0, 0.0, 2.0, 2.0), Shape::empty_polygon()].into(),
         );
         let survivor = Shape::GeometryCollection(
             vec![square(3.0, 3.0, 5.0, 5.0), Shape::empty_polygon()].into(),
         );
-        assert!(!has_mixed_non_empty_topological_dimensions(&[
-            &duplicate, &duplicate, &survivor
-        ]));
-
-        let result = Shape::symmetric_difference_all_balanced(
+        let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -403,9 +438,13 @@ mod binary_areal_overlay_tests {
     #[test]
     fn symmetric_difference_all_duplicate_polygons_cancel_to_polygon_empty() {
         let polygon = square(0.0, 0.0, 2.0, 2.0);
-        let result =
-            Shape::symmetric_difference_all_balanced(&[&polygon, &polygon], Strictness::Strict)
-                .unwrap();
+        let result = overlay_all(
+            &[&polygon, &polygon],
+            false,
+            OverlayOp::SymmetricDifference,
+            Strictness::Strict,
+        )
+        .unwrap();
         assert!(
             matches!(result, Shape::Empty(GeometryKind::Polygon, _)),
             "{result:?}"
@@ -416,8 +455,10 @@ mod binary_areal_overlay_tests {
     fn symmetric_difference_all_duplicate_pair_cancels_before_survivor() {
         let duplicate = square(0.0, 0.0, 2.0, 2.0);
         let survivor = square(1.0, 1.0, 3.0, 3.0);
-        let result = Shape::symmetric_difference_all_balanced(
+        let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
+            false,
+            OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
@@ -427,11 +468,15 @@ mod binary_areal_overlay_tests {
     #[test]
     fn symmetric_difference_all_disjoint_inputs_match_union() {
         let shapes = [square(0.0, 0.0, 1.0, 1.0), square(3.0, 3.0, 4.0, 4.0)];
-        let reduced =
-            Shape::symmetric_difference_all_balanced(&[&shapes[0], &shapes[1]], Strictness::Strict)
-                .unwrap();
+        let canonical = overlay_all(
+            &[&shapes[0], &shapes[1]],
+            false,
+            OverlayOp::SymmetricDifference,
+            Strictness::Strict,
+        )
+        .unwrap();
         let union = Shape::union_all(&shapes, Strictness::Strict).unwrap();
-        assert_topologically_equal(&reduced, &union);
+        assert_topologically_equal(&canonical, &union);
     }
 
     #[test]
@@ -440,16 +485,25 @@ mod binary_areal_overlay_tests {
         let second = zm_square(3.0, 3.0, 4.0, 4.0, 20.0);
         // Disjoint symdiff is faithful — both policies carry Z/M.
         for strictness in [Strictness::Lenient, Strictness::Strict] {
-            let kept =
-                Shape::symmetric_difference_all_balanced(&[&first, &second], strictness).unwrap();
+            let kept = overlay_all(
+                &[&first, &second],
+                false,
+                OverlayOp::SymmetricDifference,
+                strictness,
+            )
+            .unwrap();
             assert!(kept.has_z() && kept.has_m(), "{kept:?}");
         }
         // Overlapping symdiff: seam crossings lie on the uniform-Z/M edges, so
         // they resolve and Z/M carries through under 'auto'.
         let overlap = zm_square(0.5, 0.5, 1.5, 1.5, 10.0);
-        let carried =
-            Shape::symmetric_difference_all_balanced(&[&first, &overlap], Strictness::Lenient)
-                .unwrap();
+        let carried = overlay_all(
+            &[&first, &overlap],
+            false,
+            OverlayOp::SymmetricDifference,
+            Strictness::Lenient,
+        )
+        .unwrap();
         assert!(carried.has_z() && carried.has_m(), "{carried:?}");
     }
 
@@ -563,76 +617,67 @@ mod binary_areal_overlay_tests {
         merged.for_each_point(|point| assert!(point.z().is_none()));
         merged.for_each_point(|point| assert!(point.m().is_some()));
     }
-}
 
-fn grid_polygons(count: usize) -> Vec<Polygon> {
-    let side = count.isqrt().max(1);
-    let spacing = 10.0;
-    let mut polygons = Vec::with_capacity(count);
-    'grid: for row in 0..side {
-        for col in 0..side {
-            if polygons.len() >= count {
-                break 'grid;
+    #[test]
+    fn aggregate_overlay_wkb_is_permutation_invariant() {
+        let shapes = [
+            square(0.0, 0.0, 3.0, 3.0),
+            square(1.0, 1.0, 4.0, 4.0),
+            square(2.0, -1.0, 5.0, 2.0),
+        ];
+        for op in [
+            OverlayOp::Union,
+            OverlayOp::Intersection,
+            OverlayOp::SymmetricDifference,
+        ] {
+            let baseline = wkb(&overlay_all(
+                &[&shapes[0], &shapes[1], &shapes[2]],
+                false,
+                op,
+                Strictness::Strict,
+            )
+            .unwrap());
+            for order in [[2, 1, 0], [1, 0, 2], [0, 2, 1]] {
+                let inputs = order
+                    .iter()
+                    .map(|&index| &shapes[index])
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    wkb(&overlay_all(&inputs, false, op, Strictness::Strict).unwrap()),
+                    baseline,
+                    "{} order={order:?}",
+                    op.name()
+                );
             }
-            let minx = col as f64 * spacing;
-            let miny = row as f64 * spacing;
-            polygons.push(Polygon::new(
-                Ring::from_trusted_closed(vec![
-                    Point::new(minx, miny).unwrap(),
-                    Point::new(minx + 4.0, miny).unwrap(),
-                    Point::new(minx + 4.0, miny + 4.0).unwrap(),
-                    Point::new(minx, miny + 4.0).unwrap(),
-                    Point::new(minx, miny).unwrap(),
-                ]),
-                Vec::new(),
-            ));
         }
     }
-    polygons
-}
 
-fn grid_line_segments(polygon_count: usize) -> Vec<CoordSeq> {
-    let side = polygon_count.isqrt().max(1);
-    let spacing = 10.0;
-    let mut lines = Vec::with_capacity(polygon_count * 2);
-    for row in 0..side {
-        for col in 0..side {
-            let x = col as f64 * spacing + 2.0;
-            let y = row as f64 * spacing + 2.0;
-            lines.push(CoordSeq::from(vec![
-                Point::new(x - 1.5, y).unwrap(),
-                Point::new(x + 1.5, y).unwrap(),
-            ]));
-            lines.push(CoordSeq::from(vec![
-                Point::new(x, y - 1.5).unwrap(),
-                Point::new(x, y + 1.5).unwrap(),
-            ]));
-        }
+    #[test]
+    fn mixed_symmetric_difference_is_associative() {
+        let point = point(10.0, 10.0);
+        let line = line(&[(1.0, 1.0), (3.0, 3.0)]);
+        let area = square(0.0, 0.0, 4.0, 4.0);
+        let direct = overlay_all(
+            &[&point, &line, &area],
+            false,
+            OverlayOp::SymmetricDifference,
+            Strictness::Strict,
+        )
+        .unwrap();
+        let left = point
+            .symmetric_difference(&line, Strictness::Strict)
+            .unwrap()
+            .symmetric_difference(&area, Strictness::Strict)
+            .unwrap();
+        let right = point
+            .symmetric_difference(
+                &line
+                    .symmetric_difference(&area, Strictness::Strict)
+                    .unwrap(),
+                Strictness::Strict,
+            )
+            .unwrap();
+        assert_eq!(wkb(&direct), wkb(&left));
+        assert_eq!(wkb(&direct), wkb(&right));
     }
-    lines
-}
-
-#[test]
-fn union_lines_polygon_covers_performance_cliff() {
-    use super::test_counters;
-
-    let mut counts = Vec::new();
-    for polygon_count in [4, 8, 16, 32] {
-        let polygons = grid_polygons(polygon_count);
-        let lines = grid_line_segments(polygon_count);
-        test_counters::reset();
-        test_counters::enable();
-        for _ in 0..5 {
-            let _ = union_lines(&lines, &polygons);
-        }
-        test_counters::disable();
-        let count = test_counters::count() / 5;
-        eprintln!("union_lines polygons={polygon_count}: {count} candidate pairs");
-        counts.push((polygon_count, count));
-    }
-    let ratio = counts[3].1 as f64 / counts[2].1 as f64;
-    assert!(
-        ratio < 3.5,
-        "union_lines polygon covers grew too fast (32/16 pair ratio {ratio:.2}, expected sub-quadratic)"
-    );
 }

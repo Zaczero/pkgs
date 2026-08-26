@@ -63,6 +63,7 @@ pub(crate) struct SourceEdge {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SourcePoint {
     pub(crate) point: Point,
+    pub(crate) collapsed_line: bool,
 }
 
 /// Source support attached to a quotient node. These flags intentionally keep
@@ -161,7 +162,7 @@ impl TopologyGraph {
             })
     }
 
-    pub(super) fn contains_area_interior(&self, point: XY) -> bool {
+    pub(crate) fn contains_area_interior(&self, point: XY) -> bool {
         area_support_contains(self.space, &self.area_support, point)
     }
 
@@ -181,6 +182,56 @@ impl TopologyGraph {
         !self.source_points.is_empty()
     }
 
+    pub(crate) fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
+        edge.sources.iter().any(|&source| {
+            matches!(
+                self.source_edges[source as usize].kind,
+                SourceEdgeKind::Line
+            )
+        })
+    }
+
+    pub(crate) fn edge_has_line_source_for_row(
+        &self,
+        edge: &TopologyEdge,
+        source_row: u32,
+    ) -> bool {
+        edge.sources.iter().any(|&source| {
+            let source = self.source_edges[source as usize];
+            source.source_row == source_row && matches!(source.kind, SourceEdgeKind::Line)
+        })
+    }
+
+    pub(crate) fn has_line_source_at_node(&self, point: XY, source_row: u32) -> bool {
+        self.edges.iter().any(|edge| {
+            (self.equivalent(edge.segment.start, point) || self.equivalent(edge.segment.end, point))
+                && self.edge_has_line_source_for_row(edge, source_row)
+        })
+    }
+
+    pub(crate) fn edge_has_area_source(&self, edge: &TopologyEdge) -> bool {
+        edge.sources.iter().any(|&source| {
+            matches!(
+                self.source_edges[source as usize].kind,
+                SourceEdgeKind::Area
+            )
+        })
+    }
+
+    pub(crate) fn area_source_side_for_row(
+        &self,
+        edge: &TopologyEdge,
+        start: XY,
+        end: XY,
+        source_row: u32,
+    ) -> Option<bool> {
+        edge.sources.iter().find_map(|&source| {
+            let source = self.source_edges[source as usize];
+            (source.source_row == source_row && matches!(source.kind, SourceEdgeKind::Area))
+                .then(|| segment_direction_matches(Segment { start, end }, source.segment))
+        })
+    }
+
     pub(crate) fn has_interior_support_other_than(&self, point: XY) -> bool {
         self.source_points
             .iter()
@@ -194,7 +245,7 @@ impl TopologyGraph {
         })
     }
 
-    pub(super) fn has_line_support(&self, point: XY) -> bool {
+    pub(crate) fn has_line_support(&self, point: XY) -> bool {
         self.edges.iter().any(|edge| {
             edge.sources.iter().any(|&source| {
                 matches!(
@@ -206,6 +257,18 @@ impl TopologyGraph {
     }
 
     pub(crate) fn locate_point(&self, point: XY) -> TopologyLocation {
+        self.locate_point_impl(point, true)
+    }
+
+    pub(crate) fn locate_point_for_overlay(&self, point: XY) -> TopologyLocation {
+        self.locate_point_impl(point, false)
+    }
+
+    fn locate_point_impl(
+        &self,
+        point: XY,
+        include_collapsed_line_points: bool,
+    ) -> TopologyLocation {
         if self.contains_area_interior(point) {
             return TopologyLocation::Interior;
         }
@@ -218,7 +281,14 @@ impl TopologyGraph {
         if self.has_line_boundary(point) {
             return TopologyLocation::Boundary;
         }
-        if self.has_line_support(point) || self.has_point_support(point) {
+        let point_support = if include_collapsed_line_points {
+            self.has_point_support(point)
+        } else {
+            self.source_points
+                .iter()
+                .any(|source| !source.collapsed_line && self.equivalent(source.point.xy(), point))
+        };
+        if self.has_line_support(point) || point_support {
             return TopologyLocation::Interior;
         }
         TopologyLocation::Exterior
@@ -304,6 +374,16 @@ fn point_on_graph_segment(space: TopologySpace, point: XY, segment: Segment) -> 
     } else {
         point_on_segment(point, segment.start, segment.end)
     }
+}
+
+fn segment_direction_matches(left: Segment, right: Segment) -> bool {
+    let use_x = (right.end.x - right.start.x).abs() >= (right.end.y - right.start.y).abs();
+    let (left_start, left_end, right_start, right_end) = if use_x {
+        (left.start.x, left.end.x, right.start.x, right.end.x)
+    } else {
+        (left.start.y, left.end.y, right.start.y, right.end.y)
+    };
+    left_end.total_cmp(&left_start) == right_end.total_cmp(&right_start)
 }
 
 struct ChartEdge {
@@ -424,13 +504,7 @@ impl GraphBuilder {
                 first = Some(self.key(start.xy()));
             }
             last = Some(self.key(end.xy()));
-            self.push_source_edge(
-                SourceEdgeKind::Line,
-                component,
-                source_row,
-                start,
-                end,
-            );
+            self.push_source_edge(SourceEdgeKind::Line, component, source_row, start, end);
         }
         if has_edge {
             // OGC line boundaries are the mod-2 endpoints of the complete
@@ -442,7 +516,7 @@ impl GraphBuilder {
             // A collapsed line has point interior support, not a line
             // boundary. Keep every source coordinate and its axes.
             for point in line.iter_coords() {
-                self.push_source_point(point);
+                self.push_collapsed_line_point(point);
             }
         }
     }
@@ -468,19 +542,24 @@ impl GraphBuilder {
                 if same_point(start, end) {
                     continue;
                 }
-                self.push_source_edge(
-                    SourceEdgeKind::Area,
-                    component,
-                    source_row,
-                    start,
-                    end,
-                );
+                self.push_source_edge(SourceEdgeKind::Area, component, source_row, start, end);
             }
         }
     }
 
     fn push_source_point(&mut self, point: Point) {
-        self.source_points.push(SourcePoint { point });
+        self.push_source_point_kind(point, false);
+    }
+
+    fn push_collapsed_line_point(&mut self, point: Point) {
+        self.push_source_point_kind(point, true);
+    }
+
+    fn push_source_point_kind(&mut self, point: Point, collapsed_line: bool) {
+        self.source_points.push(SourcePoint {
+            point,
+            collapsed_line,
+        });
         self.ensure_node(point.xy(), |support| support.point = true);
     }
 
@@ -603,6 +682,8 @@ impl GraphBuilder {
         self.finish_dimensions(
             dimension(shape, DimMode::Declared),
             dimension(shape, DimMode::Effective),
+            matches!(shape, Shape::GeometryCollection(_)),
+            shape_has_polygonal_members(shape),
         )
     }
 
@@ -615,13 +696,22 @@ impl GraphBuilder {
             .iter()
             .filter_map(|shape| dimension(shape, DimMode::Effective))
             .max();
-        self.finish_dimensions(declared_dimension, effective_dimension)
+        self.finish_dimensions(
+            declared_dimension,
+            effective_dimension,
+            true,
+            shapes
+                .iter()
+                .any(|shape| shape_has_polygonal_members(shape)),
+        )
     }
 
     fn finish_dimensions(
         mut self,
         declared_dimension: Option<Dimension>,
         effective_dimension: Option<Dimension>,
+        is_collection: bool,
+        has_polygonal_members: bool,
     ) -> TopologyGraph {
         let (atomic, provenance) = crate::geometry::overlay::self_node_segments_sourced(
             &self
@@ -688,11 +778,9 @@ impl GraphBuilder {
         for &id in &line_boundary {
             self.nodes[id.index()].support.line_boundary = true;
         }
-        let lineal_overlap_collection = matches!(shape, Shape::GeometryCollection(_))
-            && !shape_has_polygonal_members(shape)
+        let lineal_overlap_collection = is_collection
+            && !has_polygonal_members
             && has_cross_component_line_overlap(&self.source_edges);
-        let declared_dimension = dimension(shape, DimMode::Declared);
-        let effective_dimension = dimension(shape, DimMode::Effective);
         let boundary_dimension = if edges.iter().any(|edge| edge.is_boundary) {
             Some(Dimension::Curve)
         } else if !line_boundary.is_empty()
@@ -725,7 +813,7 @@ impl GraphBuilder {
             source_points: self.source_points.into_boxed_slice(),
             area_support: self.area_support.into_boxed_slice(),
             line_boundary,
-            is_collection: matches!(shape, Shape::GeometryCollection(_)),
+            is_collection,
             lineal_overlap_collection,
             node_lookup: self.node_lookup,
         }

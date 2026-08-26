@@ -1,6 +1,6 @@
-//! Binary set-overlay (intersection/union/difference/symmetric-difference,
-//! `union_all`) and linework set-ops (`line_merge`/`shared_paths`) on `Shape`,
-//! plus the noding/assembly kernel behind them.
+//! Set-overlay (intersection/union/difference/symmetric-difference and
+//! all-input variants) and linework set-ops (`line_merge`/`shared_paths`) on
+//! `Shape`, plus the shared noding/assembly kernel behind them.
 
 use crate::geometry::{CoordinateAxes, Shape};
 
@@ -78,53 +78,27 @@ pub(crate) fn overlay_declared_axes(inputs: &[&Shape], op: OverlayOp) -> Coordin
 mod areal;
 mod assembly;
 mod clip;
-mod mixed;
 mod nary;
 mod noding;
-mod parts;
 mod rect;
 mod shape;
 
-pub(crate) use areal::bbox_overlap_clusters_for_bounds;
 pub(in crate::geometry) use areal::{
-    binary_areal_overlay, build_areal_arrangement, dissolve_polygons, outside_winding_seeds,
+    binary_areal_overlay, build_areal_arrangement, outside_winding_seeds,
 };
-pub(crate) use assembly::{
-    build_overlay_shape, disjoint_overlay_combine, empty_overlay_shape, line_line_cross_points,
-    merge_chains,
-};
+pub(crate) use assembly::{build_overlay_shape, dedup_points, empty_overlay_shape, merge_chains};
 pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use clip::{
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     line_parts_to_shape,
 };
-pub(in crate::geometry) use clip::{clip_polygonal_parts, window_clip_shape};
-pub(crate) use mixed::{
-    collect_line_segments, dedup_points, for_each_overlapping_pair, overlay_lines_general,
-    overlay_points, polygon_line_touch_points, rect_boundary_contact, union_lines,
-};
-pub(crate) use nary::{
-    OverlayWorkItem, empty_nary_overlay_shape, empty_shape_for_dimension,
-    empty_shape_for_dimension_with_axes, has_mixed_non_empty_topological_dimensions,
-    overlay_work_clusters, symmetric_difference_cluster_balanced,
-    symmetric_difference_cluster_ordered,
-};
+pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use noding::full_noding_events;
-pub(crate) use noding::{
-    dedup_segments_to_coordseqs, for_each_segment_overlap_point, node_segments, self_node_segments,
-    self_node_segments_sourced,
-};
-pub(crate) use parts::{
-    DimensionalParts, contained_shortcut_cached, contained_shortcut_impl,
-    window_clip_large_operands,
-};
-pub(crate) use rect::{RectSide, axis_rectangle, proper_rect_intersection, rect_polygon};
+pub(crate) use noding::{self_node_segments, self_node_segments_sourced};
+pub(crate) use rect::rect_polygon;
 impl OverlayOp {
     /// The pure shape kernel shared by the array and free broadcast paths
     /// (frame resolution lives in the broadcast engine, once per pair-set).
-    /// The CONTAINED gate runs on the prepared handles first: a
-    /// broadcast's fixed operand builds its cached engines once for every
-    /// pair.
     pub(crate) fn kernel(
         self,
         strictness: Strictness,
@@ -132,48 +106,7 @@ impl OverlayOp {
     + Copy
     + Send
     + Sync {
-        move |left, right| {
-            if let Some(shape) = contained_shortcut_cached(left, right, self) {
-                // Faithful re-presentation of an input operand — Z/M is correct
-                // as-is under both policies (see `Shape::overlay_inner`).
-                return Ok(shape);
-            }
-            self.apply(left.shape(), right.shape(), strictness)
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod test_counters {
-    use std::cell::Cell;
-
-    thread_local! {
-        static ENABLED: Cell<bool> = const { Cell::new(false) };
-        static COUNT: Cell<u64> = const { Cell::new(0) };
-    }
-
-    pub(crate) fn enable() {
-        ENABLED.with(|enabled| enabled.set(true));
-    }
-
-    pub(crate) fn disable() {
-        ENABLED.with(|enabled| enabled.set(false));
-    }
-
-    pub(crate) fn reset() {
-        COUNT.with(|count| count.set(0));
-    }
-
-    pub(crate) fn count() -> u64 {
-        COUNT.with(std::cell::Cell::get)
-    }
-
-    pub(crate) fn bump_candidate_pair() {
-        ENABLED.with(|enabled| {
-            if enabled.get() {
-                COUNT.with(|count| count.set(count.get().saturating_add(1)));
-            }
-        });
+        move |left, right| self.apply(left.shape(), right.shape(), strictness)
     }
 }
 

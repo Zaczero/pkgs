@@ -48,14 +48,13 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
     Ok((frame, shapes))
 }
 
-/// The shared tail of the n-ary reductions (`union_all` general path,
-/// `intersection_all`, `symmetric_difference_all`): collect the input shapes
-/// under one shared frame and fold them with `kernel` (GIL released). The four
-/// reductions differ only in that kernel. Aggregates are always lenient
+/// The shared tail of the all-input overlays (`union_all`, `intersection_all`,
+/// `symmetric_difference_all`): collect the input shapes under one shared frame
+/// and assemble them with `kernel` (GIL released). Aggregates are always lenient
 /// (missing rows skipped; SQL/pandas semantics). Geographic frames pass
 /// `geographic=true` so antimeridian-crossing operands are split first —
 /// the same gate binary overlay uses.
-fn reduce_all(
+fn apply_overlay_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     kernel: impl FnOnce(&[Shape], bool, crate::geometry::Strictness) -> crate::error::Result<Shape>
@@ -157,7 +156,7 @@ pub(crate) fn intersection(
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.union(gm.box(0, 0, 1, 2), gm.box(1, 0, 2, 2)).to_wkt()
-/// 'POLYGON ((0 0, 1 0, 2 0, 2 2, 1 2, 0 2, 0 0))'
+/// 'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))'
 #[pyfunction]
 pub(crate) fn union(
     py: Python<'_>,
@@ -276,7 +275,7 @@ pub(crate) fn symmetric_difference(
 /// 'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
 #[pyfunction]
 pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::union_all_topo)
+    apply_overlay_all(py, values, Shape::union_all_topo)
 }
 
 /// Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -323,7 +322,7 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
     let (shapes, metadata, _) = coverage_values(values)?;
     if shapes.is_empty() {
-        // Reductions require an operand, consistent with `union_all`.
+        // A coverage union requires an operand, consistent with `union_all`.
         return Err(
             crate::error::Error::from(GeometryErrorKind::EmptyGeometrySequence {
                 operation: "coverage_union",
@@ -434,8 +433,7 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 
 /// Common intersection of many geometries (planar overlay).
 ///
-/// The region inside EVERY input — `g0 ∩ g1 ∩ … ∩ gn`. Reduces the sequence
-/// with the pairwise ``intersection``, so mixed
+/// The region inside every input, assembled from one joint arrangement. Mixed
 /// dimensions narrow to the lowest shared dimension and an empty result keeps
 /// that dimension's typed empty.
 ///
@@ -464,15 +462,14 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
 #[pyfunction]
 pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::intersection_all_topo)
+    apply_overlay_all(py, values, Shape::intersection_all_topo)
 }
 
 /// Symmetric difference of many geometries (planar overlay).
 ///
-/// The region covered by an ODD number of inputs — `g0 ▵ g1 ▵ … ▵ gn`. Reduces
-/// the sequence with the pairwise
-/// ``symmetric_difference``; the fold is
-/// order-independent (`▵` is associative and commutative).
+/// The region covered by an odd number of inputs, assembled from one joint
+/// arrangement. The result is order-independent (`▵` is associative and
+/// commutative).
 ///
 /// Parameters
 /// ----------
@@ -502,7 +499,7 @@ pub(crate) fn symmetric_difference_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
 ) -> PyResult<Typed> {
-    reduce_all(py, values, Shape::symmetric_difference_all_topo)
+    apply_overlay_all(py, values, Shape::symmetric_difference_all_topo)
 }
 
 /// Test whether geometries form a valid polygonal coverage.

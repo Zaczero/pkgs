@@ -485,16 +485,6 @@ impl<W: WindingWeight> Arrangement<W> {
         self.component_of[vertex as usize]
     }
 
-    /// Undirected edge count at `point` — the CSR row width (one slot per
-    /// incident half-edge). Matches the polygonize segment-graph degree on
-    /// noded linework.
-    pub(crate) fn vertex_degree(&self, point: XY) -> usize {
-        self.ids.get(&PointKey::new(point)).map_or(0, |&vertex| {
-            let vertex = vertex as usize;
-            (self.starts[vertex + 1] - self.starts[vertex]) as usize
-        })
-    }
-
     /// Boundary rings of the region whose faces pass `keep`, walked
     /// directly on the half-edges: every boundary half-edge (kept face on
     /// the LEFT, twin's face not) lies on exactly one ring; the successor
@@ -601,19 +591,15 @@ impl<W: WindingWeight> Arrangement<W> {
             .expect("twin half-edge exists")
     }
 
+    #[cfg(test)]
     pub(crate) const fn vertex_count(&self) -> usize {
         self.points.len()
-    }
-
-    /// The noded coordinate of vertex `vertex` — touch-point extraction's
-    /// id-to-point map.
-    pub(crate) fn vertex_point(&self, vertex: u32) -> XY {
-        self.points[vertex as usize]
     }
 
     /// Visit every undirected edge piece once (its lower-id half-edge):
     /// the directed multiplicity, both endpoint vertex ids, and the faces
     /// on its two sides — the native relate's boundary-row currency.
+    #[cfg(test)]
     pub(crate) fn for_each_edge_piece(&self, mut visit: impl FnMut(W, u32, u32, u32, u32)) {
         for slot in 0..self.targets.len() {
             let from = self.owners[slot];

@@ -2,13 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use ahash::HashSetExt as _;
-
 use crate::geometry::{
-    CHAIN_MIN_SEGMENTS, CoordSeq, HashMap, HashMapExt as _, HashSet, Orientation, PointKey,
-    RUN_NODING_MIN, Segment, SegmentIndex, XY, dedup_consecutive_xy, for_each_candidate_pair,
-    orientation, point_on_segment, same_point, segment_cross_point, segment_envelopes_disjoint,
-    single_chain, undirected_segment_edge_key,
+    CHAIN_MIN_SEGMENTS, HashMap, HashMapExt as _, Orientation, PointKey, RUN_NODING_MIN, Segment,
+    XY, dedup_consecutive_xy, for_each_candidate_pair, orientation, point_on_segment, same_point,
+    segment_cross_point, segment_envelopes_disjoint, single_chain, undirected_segment_edge_key,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -402,36 +399,10 @@ pub(crate) fn split_by_events_sourced(
     (atomic, sources)
 }
 
-/// Split each segment of `segments` at every interior intersection point it has
-/// with any segment in `all`, yielding atomic sub-segments.
-pub(crate) fn node_segments(segments: &[Segment], all: &SegmentIndex) -> Vec<Segment> {
-    // Every input yields at least itself; cuts only add to that.
-    let mut atomic = Vec::with_capacity(segments.len());
-    // One cuts scratch for the whole batch (cleared per segment by
-    // `split_segment_at`'s consumer contract below).
-    let mut cuts: Vec<XY> = Vec::new();
-    for &segment in segments {
-        cuts.clear();
-        // Only envelope-overlapping candidates can produce a cut, so the
-        // index sweep nodes exactly the same points as the all-pairs scan.
-        for entry in all.intersecting_candidates(segment) {
-            #[cfg(test)]
-            crate::geometry::overlay::test_counters::bump_candidate_pair();
-            for_each_segment_overlap_point(segment, entry.segment, |point| {
-                if !same_point(point, segment.start) && !same_point(point, segment.end) {
-                    cuts.push(point);
-                }
-            });
-        }
-        split_segment_at(segment, &mut cuts, &mut atomic);
-    }
-    atomic
-}
-
 /// Visit the points at which `a` is split by `b`: a transversal crossing
 /// within both segments, or the interior endpoints of a collinear overlap.
 /// At most two points — visited, never allocated.
-pub(crate) fn for_each_segment_overlap_point(a: Segment, b: Segment, mut visit: impl FnMut(XY)) {
+fn for_each_segment_overlap_point(a: Segment, b: Segment, mut visit: impl FnMut(XY)) {
     let collinear = orientation(a.start, a.end, b.start) == Orientation::Collinear
         && orientation(a.start, a.end, b.end) == Orientation::Collinear;
     if collinear {
@@ -472,17 +443,4 @@ pub(crate) fn split_segment_at(segment: Segment, cuts: &mut Vec<XY>, out: &mut V
             end: segment.end,
         });
     }
-}
-
-/// Dedup coincident undirected atomic segments into 2-point coordinate
-/// sequences.
-pub(crate) fn dedup_segments_to_coordseqs(segments: Vec<Segment>) -> Vec<CoordSeq> {
-    let mut seen: HashSet<(PointKey, PointKey)> = HashSet::new();
-    let mut lines = Vec::new();
-    for segment in segments {
-        if seen.insert(undirected_segment_edge_key(segment)) {
-            lines.push(CoordSeq::from(vec![segment.start, segment.end]));
-        }
-    }
-    lines
 }

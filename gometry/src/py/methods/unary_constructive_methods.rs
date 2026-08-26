@@ -770,7 +770,7 @@ Examples
 >>> import gometry as gm
 >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
 >>> lines.node().to_wkt()
-'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 -1, 1 0), (1 0, 1 1))'"
+'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1), (1 -1, 1 0))'"
     };
 }
 

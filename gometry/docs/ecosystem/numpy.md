@@ -120,13 +120,15 @@ Pull a `float64` matrix with `get_coordinates`
 first when planar XY is wrong for geographic data:
 
 ```python exec="on" source="block" result="text"
+import numpy as np
 import gometry as gm
 from sklearn.cluster import KMeans          # not a gometry dependency
 
 lons = [13.35, 13.36, 13.37, 13.50, 13.51, 13.52]
 lats = [52.48, 52.49, 52.50, 52.51, 52.52, 52.53]
 pts = gm.points(lons, lats, crs=4326)
-xy = gm.get_coordinates(pts.to_crs(pts.estimate_local_crs()))   # planar meters
+xy_groups = gm.get_coordinates(pts.to_crs(pts.estimate_local_crs()))
+xy = np.concatenate([row for row in xy_groups], axis=0)          # planar meters
 labels = KMeans(n_clusters=2, n_init=10, random_state=0).fit_predict(xy)
 print("labels:", labels.tolist())
 ```
