@@ -48,7 +48,7 @@ pub(crate) use types::{
     PolygonizeFull, PolylabelCell, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeData,
     SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
     canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
-    reverse_column_arc, segment_midpoint, segment_midpoint_xy, witness_pair,
+    reverse_column_arc, segment_midpoint, witness_pair,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
@@ -88,8 +88,8 @@ mod predicates;
 mod provenance;
 pub(crate) use provenance::{VertexProvenance, emit_from_original};
 mod relate;
-mod relate_ng;
-pub(crate) use relate_ng::CompiledPattern;
+mod relate_pattern;
+pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
 pub(crate) use segment_index::uses_linear_plan_for_len;
 mod segments;
@@ -155,21 +155,19 @@ use overlay::{
 #[doc(hidden)]
 pub(crate) use packed_line_metrics::PackedLineColumnView;
 pub(crate) use packed_line_metrics::scale_metric_values;
-pub(crate) use point_location::{CellCertificate, PointBatchTester, PointProbeUse};
+pub(crate) use point_location::PointBatchTester;
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, face_interior_point,
-    has_collection_operand, isolated_point_contact, line_contains_point,
-    multi_polygon_members_issue, multiline_contains_point, polygon_rings_issue,
-    ring_classify_point, ring_contains_interior, ring_encloses_pole, ring_label, ring_probe_point,
-    segment_intersection_is_simple, segments_are_adjacent, settle_touches, shell_is_convex,
-    simplified_polygon_delta_is_simple, validate_ring, vertex_witness, visit_interacting_pairs,
+    multi_polygon_members_issue, polygon_rings_issue, ring_classify_point, ring_contains_interior,
+    ring_encloses_pole, ring_label, ring_probe_point, segment_intersection_is_simple,
+    segments_are_adjacent, settle_touches, shell_is_convex, simplified_polygon_delta_is_simple,
+    validate_ring, visit_interacting_pairs,
 };
 pub(crate) use predicates::{
-    PolePosition, RingClass, convex_box_strictly_inside, convex_halfplanes_cover,
-    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
-    point_is_geographic_pole, pole_position, polygon_is_valid, shape_encloses_pole,
-    shape_has_polar_ring, shape_reaches_geographic_pole, shape_spans_full_longitude,
-    vertex_witness_probe_count,
+    PolePosition, RingClass, line_crosses_antimeridian, line_is_ccw, line_is_closed,
+    line_is_simple, line_is_valid, point_is_geographic_pole, pole_position, polygon_is_valid,
+    shape_encloses_pole, shape_has_polar_ring, shape_reaches_geographic_pole,
+    shape_spans_full_longitude,
 };
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
@@ -186,14 +184,13 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
 ) -> bool {
     predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
 }
-use relate::{
-    De9im, Loc, effective_dimension, lineal_relate_shapes, mixed_relate_shapes, native_relate_data,
-    native_relate_data_for, native_relate_pattern_shapes, native_relate_shapes,
+pub(crate) use relate::{
+    De9im, graph_intersects_rectangle_data, graph_relate_data, graph_relate_data_geographic,
+    graph_relate_shapes, graph_relate_shapes_geographic,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,
-    for_each_bipartite_index_pair, for_each_candidate_pair, for_each_overlapping_bounds_pair,
-    linework_contact, segments_cross, sign_of, single_chain,
+    for_each_candidate_pair, for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;
@@ -201,12 +198,11 @@ pub(crate) use segments::clip_segment;
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::interpolate_f64;
 use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentContact, SegmentProjection, SharedSpan,
-    SquaredDistanceKey, interpolate_optional, interpolate_segment_point, nearest_points,
-    orientation_xy, point_pair_distance_key, point_segment_distance, point_segment_distance_key,
+    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
+    interpolate_optional, interpolate_segment_point, nearest_points, orientation_xy,
+    point_pair_distance_key, point_segment_distance, point_segment_distance_key,
     point_segment_distance_squared, point_segment_selection, ray_crossing_is_right,
-    segment_contact, segment_contact_exact, segment_contact_point,
-    segment_contact_with_orientations, segment_cross_point, segment_envelopes_disjoint,
+    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
     segment_projection, segments_intersect, shared_segment_part, try_point_distance_squared,
     try_point_segment_distance_squared, undirected_edge_key, undirected_segment_edge_key,
 };

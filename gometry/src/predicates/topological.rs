@@ -6,8 +6,8 @@ use crate::{Predicate, predicate_broadcast, xy_predicate};
 ///
 /// Returns ``True`` if no points of ``right`` lie outside ``left`` and at least
 /// one interior point of ``right`` lies in the interior of ``left``.
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -52,7 +52,8 @@ pub(crate) fn contains(
 ///
 /// Like ``contains``, but ``right`` must lie entirely in the interior of
 /// ``left`` — touching the boundary of ``left`` anywhere fails (DE-9IM
-/// ``T**FF*FF*``). Evaluated in the coordinate plane; geographic inputs crossing the antimeridian are split-normalized first.
+/// ``T**FF*FF*``). Evaluated from the exact DE-9IM relation matrix; geographic
+/// inputs use the longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -91,8 +92,8 @@ pub(crate) fn contains_properly(
 
 /// Test whether ``left`` lies within ``right``; inverse of ``contains``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -132,8 +133,8 @@ pub(crate) fn within(
 /// Test whether ``left`` covers ``right``: every point of ``right`` lies in
 /// ``left``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -173,8 +174,8 @@ pub(crate) fn covers(
 
 /// Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -288,8 +289,8 @@ pub(crate) fn intersects_xy(
 
 /// Test whether ``left`` and ``right`` share any point.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -328,8 +329,8 @@ pub(crate) fn intersects(
 /// Test whether ``left`` and ``right`` share no point; negation of
 /// ``intersects``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -367,8 +368,8 @@ pub(crate) fn disjoint(
 
 /// Test whether ``left`` and ``right`` touch only at boundaries.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -403,8 +404,8 @@ pub(crate) fn touches(
 /// Test whether ``left`` and ``right`` cross (interiors meet with lower
 /// dimension).
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -441,8 +442,8 @@ pub(crate) fn crosses(
 /// Test whether ``left`` and ``right`` overlap (same dimension, partial
 /// interior overlap).
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------

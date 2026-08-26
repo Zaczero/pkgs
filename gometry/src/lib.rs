@@ -114,7 +114,7 @@ pub(crate) use predicates::{
     _unpickle_prepared, IndexEnvelope, Predicate, PyPreparedGeometry, contains, contains_properly,
     contains_xy, covered_by, covers, crosses, disjoint, distance, distance_3d, dwithin, equals,
     equals_exact, equals_identical, frechet_distance, hausdorff_distance, intersects,
-    intersects_xy, nearest_points, overlaps, point_batch, relate, relate_pattern, scalar_vs_shapes,
+    intersects_xy, nearest_points, overlaps, relate, relate_pattern, scalar_vs_shapes,
     shortest_line, topology_scalar_pair, touches, within,
 };
 mod py;

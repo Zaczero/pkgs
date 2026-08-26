@@ -18,12 +18,12 @@ use std::sync::Arc;
 use geodesic::{GeodesicPruner, GeodesicRowCaps};
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
-use rstar::{AABB, ParentNode, PointDistance, RTree, RTreeNode, RTreeObject};
+use rstar::{AABB, PointDistance, RTree, RTreeNode, RTreeObject};
 use str_tree::StaticStrTree;
 
 use crate::array::BoundsSeed;
 use crate::collections::sort_row_ids;
-use crate::geometry::{Bounds, Point, Shape, ShapeData, XY, convex_box_strictly_inside};
+use crate::geometry::{Bounds, Point, Shape, ShapeData};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -32,7 +32,7 @@ use crate::{
     PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs, crs_label,
     epoch_label, exact_geometry, exact_geometry_array, geometry_items,
     global_geographic_candidate_envelope, index_bounds, index_envelope, pair_distance_resolved,
-    pair_dwithin_resolved, point_batch, point_from_bounds, point_index_envelope, resolve_metric,
+    pair_dwithin_resolved, point_from_bounds, point_index_envelope, resolve_metric,
     scalar_vs_shapes, topology_scalar_pair, validate_distance_arg, validate_nearest_k,
 };
 
@@ -48,8 +48,8 @@ pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_inde
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
     CapBound, Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2,
-    collect_subtree_ids, format_nearest, format_nearest_rows, nearest_candidates_from_heap,
-    parse_max_distance, push_nearest_candidate, retain_row,
+    format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
+    push_nearest_candidate, retain_row,
 };
 pub(crate) use pymethods::{_unpickle_spatial_index, PySpatialIndexIter};
 /// metric `dwithin`.

@@ -13,8 +13,8 @@ use crate::{
 /// Compute the DE-9IM intersection matrix string for ``left`` and
 /// ``right``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -48,8 +48,8 @@ pub(crate) fn relate(
 
 /// Test whether two geometries' DE-9IM matrix matches a pattern.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
@@ -88,8 +88,8 @@ pub(crate) fn relate_pattern(
 
 /// Test whether ``left`` and ``right`` are spatially equal.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
+/// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------

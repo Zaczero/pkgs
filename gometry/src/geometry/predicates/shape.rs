@@ -1,23 +1,13 @@
 use crate::error::Result;
-use crate::geometry::predicates::{
-    bounds_cover, bounds_equal_topological, convex_covers_all_vertices, disjoint_de9im,
-    exterior_part_uniform, has_collection_operand, interior_part_uniform, interiors_meet_uniform,
-    intersection_contact, isolated_point_contact, line_contains_point, multiline_contains_point,
-    option_bounds_disjoint, point_is_geographic_pole, pole_position, strict_interior_witness,
-    vertex_witness,
-};
+use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    Bounds, Coordinates as _, DimMode, Dimension, GeometryErrorKind, Point, SegmentContact, Shape,
-    dimension, lineal_relate_shapes, linework_contact, mixed_relate_shapes,
-    native_relate_pattern_shapes, native_relate_shapes, point_equals_exact, point_on_segment,
-    points_equal_exact, relate_ng, same_point, topology_split,
+    Bounds, Coordinates as _, GeometryErrorKind, Point, Shape, graph_relate_shapes,
+    point_equals_exact, point_on_segment, points_equal_exact, relate_pattern, same_point,
 };
 
 impl Shape {
-    /// Strict OGC ``contains`` for a point candidate: boundary points are
-    /// excluded (a line's mod-2 endpoints, a polygon's rings). This is the
-    /// single point kernel behind the scalar predicate, the vectorized fast
-    /// path, ``contains_xy``, and coverage membership — they cannot diverge.
+    /// Strict point membership used by coordinate operations and geometry
+    /// algorithms. Topological predicates use the complete relation matrix.
     pub fn contains_point(&self, point: Point) -> bool {
         self.point_membership::<false>(point)
     }
@@ -69,7 +59,7 @@ impl Shape {
                 }
             }),
             Self::GeometryCollection(_) => {
-                let matrix = native_relate_shapes(self, &Self::Point(point.to_xy()));
+                let matrix = graph_relate_shapes(self, &Self::Point(point.to_xy()));
                 if BOUNDARY {
                     matrix.is_covers()
                 } else {
@@ -81,208 +71,29 @@ impl Shape {
     }
 
     pub fn contains(&self, other: &Self) -> bool {
-        self.contains_with_bounds::<true>(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    /// [`contains`](Self::contains) with caller-supplied bounds — the
-    /// prepared-handle lanes pass their CACHED boxes (see
-    /// `ShapeData::contains_cached`).
-    /// `WITNESS = false` callers MUST have already run the
-    /// uncovered-vertex refutation themselves (the cached shadows probe
-    /// through the handle's hierarchical `PointBatchTester` — same budget,
-    /// cheaper membership probes).
-    pub(crate) fn contains_with_bounds<const WITNESS: bool>(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_contains();
-        }
-        // Point candidates use the strict point kernel: it implements the
-        // OGC mod-2 boundary rule for multilines (matching `relate` and
-        // Shapely), which the geo backend's contains does not.
-        if let Self::Point(point) = other {
-            return self.contains_point(*point);
-        }
-        // Containment of bounds is NECESSARY (a candidate poking out of
-        // the container's box is never contained), and a candidate vertex
-        // strictly outside the container settles near-misses — both
-        // answer before the intersection matrix.
-        match (own, theirs) {
-            (Some(outer), Some(inner)) if !bounds_cover(outer, inner) => return false,
-            (None, _) | (_, None) => return false,
-            _ => {},
-        }
-        if WITNESS && vertex_witness(other, |point| !self.covers_point(point)) {
-            return false;
-        }
-        // Convex hole-free container with every candidate vertex covered
-        // (the witness just scanned them all): the candidate's hull —
-        // hence the whole candidate — lies within the container, and a
-        // positive-AREA candidate cannot hide inside the boundary curve,
-        // so containment is settled without any scan (the index-refine
-        // hot case: box queries over small candidates).
-        if other.has_area_parts() && convex_covers_all_vertices(self, other) {
-            return true;
-        }
-        if self.topology_dimension() == Some(Dimension::Surface) {
-            match contact() {
-                // The candidate's boundary properly crossing the
-                // container's puts candidate interior strictly outside
-                // (see `linework_contact`).
-                SegmentContact::Cross => return false,
-                // No boundary contact: containment is exactly `interiors
-                // meet, and no candidate part in the exterior` — decided
-                // by representatives.
-                SegmentContact::None => {
-                    return interior_part_uniform(other, self)
-                        && !exterior_part_uniform(other, self);
-                },
-                SegmentContact::Touch => {},
-            }
-        }
-        native_relate_shapes(self, other).is_contains()
+        graph_relate_shapes(self, other).is_contains()
     }
 
     /// `contains` with no boundary contact: *other* lies in the interior of
     /// *self* and never touches its boundary (DE-9IM `T**FF*FF*`).
     pub fn contains_properly(&self, other: &Self) -> bool {
-        self.contains_properly_with_bounds(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    pub(crate) fn contains_properly_with_bounds(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_contains_properly();
-        }
-        // For a point candidate this coincides with strict containment (a
-        // point in the interior cannot touch the boundary), so reuse the
-        // mod-2-correct point kernel.
-        if let Self::Point(point) = other {
-            return self.contains_point(*point);
-        }
-        // Proper containment implies containment, so the `contains` gates
-        // refute it the same way: bounds containment is NECESSARY, a
-        // candidate vertex outside the container settles near-misses, and
-        // empty operands (`None` bounds) never participate — the relate
-        // graph is not built for them.
-        match (own, theirs) {
-            (Some(outer), Some(inner)) if !bounds_cover(outer, inner) => return false,
-            (None, _) | (_, None) => return false,
-            _ => {},
-        }
-        if vertex_witness(other, |point| !self.covers_point(point)) {
-            return false;
-        }
-        if self.topology_dimension() == Some(Dimension::Surface) {
-            match contact() {
-                SegmentContact::Cross => return false,
-                // No boundary contact: proper containment is exactly
-                // `every candidate part strictly inside` — a bare point
-                // part resting ON the container's boundary (the one
-                // contact the linework scan cannot see) fails the strict
-                // kernel, and a nonempty candidate fully interior makes
-                // the interiors meet.
-                SegmentContact::None => {
-                    return !other
-                        .any_component_representative(&mut |point| !self.contains_point(point));
-                },
-                SegmentContact::Touch => {},
-            }
-        }
-        native_relate_shapes(self, other).is_contains_properly()
+        graph_relate_shapes(self, other).is_contains_properly()
     }
 
     pub fn within(&self, other: &Self) -> bool {
-        other.contains(self)
+        graph_relate_shapes(self, other).transpose().is_contains()
     }
 
     pub fn covers(&self, other: &Self) -> bool {
-        self.covers_with_bounds::<true>(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    /// [`covers`](Self::covers) with caller-supplied bounds (see
-    /// [`contains_with_bounds`](Self::contains_with_bounds)).
-    /// See [`contains_with_bounds`](Self::contains_with_bounds) for the
-    /// `WITNESS` contract.
-    pub(crate) fn covers_with_bounds<const WITNESS: bool>(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_covers();
-        }
-        // Point candidates ARE the point kernel (covers is the
-        // boundary-inclusive membership).
-        if let Self::Point(point) = other {
-            return self.covers_point(*point);
-        }
-        // The same necessary conditions as `contains` (covers only relaxes
-        // the boundary-contact rule, which neither gate depends on).
-        match (own, theirs) {
-            (Some(outer), Some(inner)) if !bounds_cover(outer, inner) => return false,
-            (None, _) | (_, None) => return false,
-            _ => {},
-        }
-        if WITNESS && vertex_witness(other, |point| !self.covers_point(point)) {
-            return false;
-        }
-        // Convex hole-free container + every candidate vertex covered ⇒
-        // the candidate's hull lies within the container — covers needs
-        // no interior-meet, so ANY candidate dimension settles here.
-        if convex_covers_all_vertices(self, other) {
-            return true;
-        }
-        if self.topology_dimension() == Some(Dimension::Surface) {
-            match contact() {
-                SegmentContact::Cross => return false,
-                // No boundary contact: covers is exactly `no candidate
-                // part in the exterior` (no interior-meet requirement).
-                SegmentContact::None => return !exterior_part_uniform(other, self),
-                SegmentContact::Touch => {},
-            }
-        }
-        native_relate_shapes(self, other).is_covers()
+        graph_relate_shapes(self, other).is_covers()
     }
 
     pub fn covered_by(&self, other: &Self) -> bool {
-        other.covers(self)
+        graph_relate_shapes(self, other).transpose().is_covers()
     }
 
     pub fn intersects(&self, other: &Self) -> bool {
-        let Some(left) = self.bounds() else {
-            return false;
-        };
-        let Some(right) = other.bounds() else {
-            return false;
-        };
-        if !left.intersects(right) {
-            return false;
-        }
-        // Two axis-aligned rectangles each equal their bounding box, so
-        // overlapping bounds is already the exact (boundary-inclusive) answer —
-        // the common box / tile / envelope case, which GEOS special-cases too.
-        if self.is_axis_aligned_rectangle(left) && other.is_axis_aligned_rectangle(right) {
-            return true;
-        }
-        intersection_contact(self, other)
+        graph_relate_shapes(self, other).is_intersects()
     }
 
     /// Whether this shape is an axis-aligned rectangle: a hole-free polygon
@@ -392,330 +203,31 @@ impl Shape {
     }
 
     pub fn disjoint(&self, other: &Self) -> bool {
-        !self.intersects(other)
+        graph_relate_shapes(self, other).is_disjoint()
     }
 
     pub fn touches(&self, other: &Self) -> bool {
-        self.touches_with_bounds(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    pub(crate) fn touches_with_bounds(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_touches();
-        }
-        // Boundary contact WITHOUT interior overlap — ONE contact-
-        // classified lane for every dimension pair.
-        if option_bounds_disjoint(own, theirs) {
-            return false;
-        }
-        // Interiors overlapping (a vertex STRICTLY inside the other) ⟹ NOT
-        // touches. A cheap raycast refutes the common overlap case BEFORE
-        // `contact()` pays to build the prepared linework (facet BVH). Strict
-        // interior only, so a boundary-touch vertex never trips it.
-        if strict_interior_witness(self, other) {
-            return false;
-        }
-        match contact() {
-            // A transversal crossing forces the interiors to meet (see
-            // `linework_contact`; per part for collections — a collection
-            // interior is the union of its part interiors).
-            SegmentContact::Cross => false,
-            // No linework contact: interiors meeting excludes touching,
-            // and the only contact left is a bare point part resting ON
-            // the other's boundary — covered but not contained, which IS
-            // the OGC touch. Exact for every dimension; the matrix never
-            // runs.
-            SegmentContact::None => {
-                !interiors_meet_uniform(self, other)
-                    && (isolated_point_contact(self, other) || isolated_point_contact(other, self))
-            },
-            // Tangential contact: a vertex strictly inside the other's
-            // area still refutes cheaply; then the native matrix grades
-            // the tangency (geo only for collections).
-            SegmentContact::Touch => {
-                if strict_interior_witness(self, other) {
-                    return false;
-                }
-                native_relate_shapes(self, other).is_touches()
-            },
-        }
+        graph_relate_shapes(self, other).is_touches()
     }
 
     pub fn crosses(&self, other: &Self) -> bool {
-        self.crosses_with_bounds(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    pub(crate) fn crosses_with_bounds(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_crosses_by_dimension();
-        }
-        // A single Point never crosses anything (OGC; MultiPoint can). Kind
-        // gate — not topological dimension — so MultiPoint×Area stays real.
-        if matches!(self, Self::Point(_)) || matches!(other, Self::Point(_)) {
-            return false;
-        }
-        // OGC crosses exists only where the intersection can sit BELOW
-        // both operands' dimensions: point/line, point/area, line/line,
-        // line/area. Puntal x puntal and areal x areal are false by
-        // DEFINITION — no geometry inspected (GEOS answers these the same
-        // way) — and disjoint bounds cannot cross anything.
-        let (Some(left), Some(right)) = (self.topology_dimension(), other.topology_dimension())
-        else {
-            return false;
-        };
-        if left == right && left != Dimension::Curve {
-            return false;
-        }
-        if option_bounds_disjoint(own, theirs) {
-            return false;
-        }
-        if left.min(right) == Dimension::Curve && left.max(right) == Dimension::Surface {
-            // Line/area crosses is `II ∧ int(line)∩ext(area)` (JTS grades
-            // both operand orders symmetrically). A transversal crossing
-            // through the area's boundary witnesses BOTH entries at once;
-            // with no boundary contact each line component sits uniformly
-            // on one side, so representatives decide both entries exactly.
-            let (line, area) = if left == Dimension::Curve {
-                (self, other)
-            } else {
-                (other, self)
-            };
-            match contact() {
-                SegmentContact::Cross => return true,
-                SegmentContact::None => {
-                    return interior_part_uniform(line, area) && exterior_part_uniform(line, area);
-                },
-                SegmentContact::Touch => {
-                    if let Some(matrix) = mixed_relate_shapes(self, other) {
-                        return matrix.is_crosses_mixed(left == Dimension::Curve);
-                    }
-                },
-            }
-        } else if !intersection_contact(self, other) {
-            return false;
-        } else if let Some(matrix) = lineal_relate_shapes(self, other) {
-            return matrix.is_crosses_lineal();
-        }
-        native_relate_shapes(self, other).is_crosses_by_dimension()
+        graph_relate_shapes(self, other).is_crosses_by_dimension()
     }
 
     pub fn overlaps(&self, other: &Self) -> bool {
-        self.overlaps_with_bounds(other, self.bounds(), other.bounds(), || {
-            linework_contact(self, other)
-        })
-    }
-
-    pub(crate) fn overlaps_with_bounds(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-        contact: impl FnOnce() -> SegmentContact,
-    ) -> bool {
-        if has_collection_operand(self, other) {
-            return native_relate_shapes(self, other).is_overlaps_by_dimension();
-        }
-        // A single Point never overlaps anything (OGC; MultiPoint can).
-        if matches!(self, Self::Point(_)) || matches!(other, Self::Point(_)) {
-            return false;
-        }
-        // OGC overlaps requires EQUAL dimensions (mixed pairs are false by
-        // definition) and disjoint bounds cannot overlap. Areal pairs ride
-        // the contact classifier: only tangential contact ever reaches the
-        // matrix.
-        let (Some(left), Some(right)) = (self.topology_dimension(), other.topology_dimension())
-        else {
-            return false;
-        };
-        if left != right || option_bounds_disjoint(own, theirs) {
-            return false;
-        }
-        if left == Dimension::Surface {
-            match contact() {
-                // A transversal boundary crossing makes the interiors meet
-                // AND gives each one a quadrant outside the other — the
-                // whole `T*T***T**` pattern at once (see
-                // `linework_contact`).
-                SegmentContact::Cross => return true,
-                // No boundary contact: representatives decide the three
-                // pattern entries (II, IE, EI) exactly.
-                SegmentContact::None => {
-                    return interiors_meet_uniform(self, other)
-                        && exterior_part_uniform(self, other)
-                        && exterior_part_uniform(other, self);
-                },
-                // Tangential contact: the four strict-side witnesses — a
-                // vertex of each operand strictly inside AND strictly
-                // outside the other — still prove a true overlap before
-                // the matrix grades the tangency.
-                SegmentContact::Touch => {
-                    if vertex_witness(self, |point| other.contains_point(point))
-                        && vertex_witness(self, |point| !other.covers_point(point))
-                        && vertex_witness(other, |point| self.contains_point(point))
-                        && vertex_witness(other, |point| !self.covers_point(point))
-                    {
-                        return true;
-                    }
-                },
-            }
-        } else if !intersection_contact(self, other) {
-            return false;
-        } else if let Some(matrix) = lineal_relate_shapes(self, other) {
-            return matrix.is_overlaps_lineal();
-        }
-        native_relate_shapes(self, other).is_overlaps_by_dimension()
-    }
-
-    /// Topological dimension of the geometry's CONTENT (0 puntal, 1
-    /// lineal, 2 areal; collections take the maximum of their parts);
-    /// `None` when empty.
-    pub(crate) fn topology_dimension(&self) -> Option<Dimension> {
-        dimension(self, DimMode::Topology)
+        graph_relate_shapes(self, other).is_overlaps_by_dimension()
     }
 
     pub fn relate(&self, other: &Self) -> String {
-        // Geographic pole/±180 seam: grade from the unsplit container (same
-        // tri-state as `try_geographic_point_membership`). Split-only relate
-        // mislabels seam interiors as fabricated-boundary contact.
-        if let Some(matrix) = geographic_point_relate_matrix(self, other) {
-            return matrix;
-        }
-        // Bbox-disjoint, both non-empty, non-collection: the DE-9IM is fully
-        // determined by each operand's interior + boundary dimensions — no
-        // noding/arrangement engine. (Empties and collections keep the general
-        // path, where their matrices are special.)
-        if let (Some(left), Some(right)) = (self.bounds(), other.bounds())
-            && !left.intersects(right)
-            && let Some(matrix) = disjoint_de9im(self, other)
-        {
-            return matrix.text();
-        }
-        native_relate_shapes(self, other).text()
+        graph_relate_shapes(self, other).text()
     }
-}
-
-/// Point×container DE-9IM for pole / ±180 seam membership on the unsplit
-/// container. Returns `None` when the pair is not a geographic pole/seam
-/// probe (caller falls through to planar relate).
-pub(crate) fn geographic_point_relate_matrix(left: &Shape, right: &Shape) -> Option<String> {
-    use crate::geometry::PolePosition::{Boundary, Exterior, Interior};
-
-    let (container, point, point_is_right) = match (left, right) {
-        (container, Shape::Point(point)) => (container, *point, true),
-        (Shape::Point(point), container) => (container, *point, false),
-        _ => return None,
-    };
-    if !container.has_area_parts() {
-        return None;
-    }
-    let position = if let Some(north) = point_is_geographic_pole(point) {
-        pole_position(container, north)
-    } else if point.x.to_bits() == (-180.0_f64).to_bits()
-        || point.x.to_bits() == 180.0_f64.to_bits()
-    {
-        // Exact ±180 seam longitudes (bit identity — not a fuzzy compare).
-        // Seam probe: works on both the original crossing shape and the
-        // already-split multipolygon that `geo_split_pair` hands to relate.
-        // (After split, `crosses_antimeridian` is false, so a gate that
-        // required it would miss and native relate would grade fabricated
-        // seam edges as boundary.)
-        let probe = if container.crosses_antimeridian() {
-            topology_split(container)
-        } else {
-            container.clone()
-        };
-        let west = point.with_xy((-180.0_f64).next_up(), point.y).ok()?;
-        let east = point.with_xy(180.0_f64.next_down(), point.y).ok()?;
-        let west_seam = point.with_xy(-180.0, point.y).ok()?;
-        let east_seam = point.with_xy(180.0, point.y).ok()?;
-        let seam_covered = probe.covers_point(west_seam) || probe.covers_point(east_seam);
-        // Interior iff both sides of the meridian are in the areal interior
-        // (or the point itself is strictly contained — covers-but-not-on-
-        // fabricated-boundary after split still counts).
-        let area_interior = (probe.contains_point(west) && probe.contains_point(east))
-            || (seam_covered && probe.contains_point(point));
-        if !seam_covered && !probe.covers_point(point) {
-            // Not a seam-relevant container for this longitude — fall through.
-            return None;
-        }
-        if !seam_covered {
-            Exterior
-        } else if area_interior {
-            Interior
-        } else {
-            Boundary
-        }
-    } else {
-        return None;
-    };
-    // Point-in-polygon DE-9IM (shapely/JTS): interior 0F2FF1FF2, boundary
-    // FF20F1FF2, exterior FF2FF10F2.
-    let matrix = match position {
-        Interior => "0F2FF1FF2",
-        Boundary => "FF20F1FF2",
-        Exterior => "FF2FF10F2",
-    };
-    Some(if point_is_right {
-        matrix.to_owned()
-    } else {
-        let b = matrix.as_bytes();
-        String::from_utf8_lossy(&[b[0], b[3], b[6], b[1], b[4], b[7], b[2], b[5], b[8]])
-            .into_owned()
-    })
 }
 
 impl Shape {
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
-        // Canonical single-pattern predicates dispatch to the fast kernels
-        // (GEOS's RelateNG does the same): each listed pattern IS the
-        // exact OGC definition of the predicate it routes to, so the
-        // verdicts are identical to evaluating the full matrix.
-        match pattern {
-            "FF*FF****" => return Ok(!self.intersects(other)),
-            "T*****FF*" => return Ok(self.contains(other)),
-            "T*F**F***" => return Ok(self.within(other)),
-            "T*F**FFF*" => return Ok(self.equals(other)),
-            _ => {},
-        }
-        let compiled = relate_ng::CompiledPattern::new(pattern)
+        let compiled = relate_pattern::CompiledPattern::new(pattern)
             .ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
-        Ok(self.relate_pattern_compiled(other, compiled))
-    }
-
-    pub(crate) fn relate_pattern_compiled(
-        &self,
-        other: &Self,
-        compiled: relate_ng::CompiledPattern<'_>,
-    ) -> bool {
-        // Bbox-disjoint short-circuit (mirrors `relate`): the DE-9IM is fully
-        // determined by each operand's dimensions, so match the pattern against
-        // it directly — no noding/arrangement engine. Without this, every
-        // non-canonical pattern (e.g. the OGC `intersects` pattern `T********`)
-        // paid the full relate, costing more than `relate` itself on
-        // disjoint-heavy data.
-        if let (Some(left), Some(right)) = (self.bounds(), other.bounds())
-            && !left.intersects(right)
-            && let Some(matrix) = disjoint_de9im(self, other)
-        {
-            return compiled.matches(matrix);
-        }
-        native_relate_pattern_shapes(self, other, compiled)
+        Ok(compiled.matches(crate::geometry::relate::graph_relate_shapes(self, other)))
     }
 
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {
@@ -726,37 +238,7 @@ impl Shape {
     }
 
     pub fn equals(&self, other: &Self) -> bool {
-        self.equals_with_bounds(other, self.bounds(), other.bounds())
-    }
-
-    pub(crate) fn equals_with_bounds(
-        &self,
-        other: &Self,
-        own: Option<Bounds>,
-        theirs: Option<Bounds>,
-    ) -> bool {
-        // Topological equality treats every empty geometry as equal to every
-        // other empty one regardless of kind (`POINT EMPTY equals POLYGON EMPTY`),
-        // matching GEOS/Shapely. Handle it explicitly: the geo-rs relate graph is
-        // not built for empty inputs.
-        match (self.is_empty(), other.is_empty()) {
-            (true, true) => return true,
-            (true, false) | (false, true) => return false,
-            (false, false) => {},
-        }
-        match (own, theirs) {
-            (Some(left), Some(right)) if !bounds_equal_topological(left, right) => return false,
-            (Some(_), None) | (None, Some(_)) => return false,
-            _ => {},
-        }
-        // Bit-identical XY linework is topologically equal — one
-        // early-exit columnar compare answers the duplicate/self
-        // comparisons that otherwise pay the full intersection matrix
-        // (Z/M are topology-irrelevant, so they stay out of the test).
-        if self.equals_exact(other, 0.0, false, false) {
-            return true;
-        }
-        native_relate_shapes(self, other).is_equal_topo()
+        graph_relate_shapes(self, other).is_equal_topo()
     }
 
     /// Coordinate equality within `tolerance` (per-ordinate `|Δ| ≤ tolerance`,

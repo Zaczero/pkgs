@@ -6,8 +6,8 @@ use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
 use crate::py::index::{
-    AABB, BinaryHeap, IndexEntry, Ordering, ParentNode, PointDistance, Py, PyAny, PyErr, PyResult,
-    Python, RTreeNode, RTreeObject, float64_array, int64_array,
+    AABB, BinaryHeap, IndexEntry, Ordering, PointDistance, Py, PyAny, PyErr, PyResult, Python,
+    RTreeNode, RTreeObject, float64_array, int64_array,
 };
 use crate::py::vectors::Groups;
 /// A frontier node of the best-first nearest traversal — a bulk STR node
@@ -250,20 +250,6 @@ pub(crate) fn format_nearest(
         return (ids, distances).into_py_any(py);
     }
     ids.into_py_any(py)
-}
-
-/// Every leaf id beneath `parent`, in tree order.
-pub(crate) fn collect_subtree_ids(
-    parent: &ParentNode<IndexEntry>,
-    out: &mut Vec<usize>,
-) -> crate::error::Result<()> {
-    for child in parent.children() {
-        match child {
-            RTreeNode::Parent(parent) => collect_subtree_ids(parent, out)?,
-            RTreeNode::Leaf(entry) => crate::try_push_vec(out, entry.idx)?,
-        }
-    }
-    Ok(())
 }
 
 impl RTreeObject for IndexEntry {

@@ -11,7 +11,6 @@ mod linref;
 mod metric;
 mod operation;
 mod packed;
-mod simple;
 mod unary;
 
 pub(crate) use binary::{
@@ -29,7 +28,6 @@ pub(crate) use linref::{
 pub(crate) use metric::{MetricResolver, MetricScratch, UnaryMeasureKernel};
 pub(crate) use operation::Operation;
 pub(crate) use packed::PackedUnary;
-pub(crate) use simple::dispatch_unary_simple_same;
 pub(crate) use unary::{
     dispatch_unary, unary_array, unary_array_shapes, unary_array_shapes_budgeted, unary_scalar,
     unary_scalar_shape,

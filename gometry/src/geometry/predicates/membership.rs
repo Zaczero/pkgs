@@ -3,12 +3,11 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates, Dimension, HashMap, HashMapExt as _, IndexedSegment,
-    LineworkChains, Orientation, Point, PointKey, Polygon, Ring, Shape, ValidationIssue, XY,
-    classify_ring_pair, face_interior_point, for_each_overlapping_bounds_pair,
-    isolated_point_contact, orient_ring, orientation_xy, point_on_segment, ray_crossing_is_right,
-    ring_probe_point, same_point, settle_touches, topology, vertex_witness,
-    visit_interacting_pairs,
+    Bounds, CoordSeq, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
+    Orientation, Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair,
+    face_interior_point, for_each_overlapping_bounds_pair, orient_ring, orientation_xy,
+    point_on_segment, ray_crossing_is_right, ring_probe_point, same_point, settle_touches,
+    topology, visit_interacting_pairs,
 };
 pub(crate) fn line_contains_point<C: Coordinates + ?Sized>(points: &C, point: Point) -> bool {
     if !points
@@ -56,20 +55,6 @@ pub(crate) fn multiline_contains_point<L: AsRef<CoordSeq>>(lines: &[L], point: P
         boundary_count += usize::from(at_start) + usize::from(at_end);
     }
     on_linework && boundary_count % 2 == 0
-}
-
-pub(crate) const fn bounds_equal_topological(left: Bounds, right: Bounds) -> bool {
-    f64_topological_bits(left.minx()) == f64_topological_bits(right.minx())
-        && f64_topological_bits(left.miny()) == f64_topological_bits(right.miny())
-        && f64_topological_bits(left.maxx()) == f64_topological_bits(right.maxx())
-        && f64_topological_bits(left.maxy()) == f64_topological_bits(right.maxy())
-}
-
-pub(crate) const fn f64_topological_bits(value: f64) -> u64 {
-    match value.to_bits() {
-        0x8000_0000_0000_0000 => 0,
-        bits => bits,
-    }
 }
 
 /// Where a probe point sits relative to one ring.
@@ -449,42 +434,4 @@ pub(crate) fn member_probe_point(member: &Polygon, other: &Polygon) -> Point {
             .collect::<Vec<_>>(),
     )
     .point()
-}
-
-/// `int(probe) ∩ int(target) ≠ ∅`, EXACT under no linework contact: every
-/// 1D/2D component of `probe` then lies uniformly inside or outside
-/// `target` (it cannot touch the boundary without segment contact), so one
-/// strictly-contained representative vertex decides the whole component —
-/// and bare point parts are their own representatives, classified exactly
-/// by the strict kernel (a point ON the boundary counts for neither side).
-/// Against a PUNTAL target the uniformity lemma fails (a 1D/2D component
-/// cannot lie inside a point — a coinciding vertex is mere boundary
-/// contact), so only the probe's bare point parts count there.
-pub(crate) fn interior_part_uniform(probe: &Shape, target: &Shape) -> bool {
-    if target.topology_dimension() >= Some(Dimension::Curve) {
-        probe.any_component_representative(&mut |point| target.contains_point(point))
-    } else {
-        isolated_point_contact(probe, target)
-    }
-}
-
-/// `int(probe) ∩ ext(target) ≠ ∅` under no linework contact: an uncovered
-/// representative proves its component strictly outside (holes included —
-/// a hole IS the exterior), see [`interior_part_uniform`].
-pub(crate) fn exterior_part_uniform(probe: &Shape, target: &Shape) -> bool {
-    probe.any_component_representative(&mut |point| !target.covers_point(point))
-}
-
-/// The symmetric interior-interior entry under no linework contact.
-pub(crate) fn interiors_meet_uniform(left: &Shape, right: &Shape) -> bool {
-    interior_part_uniform(left, right) || interior_part_uniform(right, left)
-}
-
-/// A vertex of one operand STRICTLY inside the other's area proves the
-/// interiors intersect — every vertex neighborhood carries its
-/// geometry's interior, so a strictly-interior vertex is a one-raycast
-/// witness (the touches short-circuit).
-pub(crate) fn strict_interior_witness(left: &Shape, right: &Shape) -> bool {
-    (right.has_area_parts() && vertex_witness(left, |point| right.contains_point(point)))
-        || (left.has_area_parts() && vertex_witness(right, |point| left.contains_point(point)))
 }

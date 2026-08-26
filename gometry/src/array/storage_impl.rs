@@ -31,17 +31,6 @@ impl GeometryArrayStorage {
         }
     }
 
-    /// Declared kind for homogeneous packed storage (`Point` / `LineString` /
-    /// `Polygon`). `Mixed` (and Multi* rows that live there) returns `None`.
-    pub(crate) const fn homogeneous_kind(&self) -> Option<crate::GeometryKind> {
-        match self {
-            Self::Points { .. } => Some(crate::GeometryKind::Point),
-            Self::Lines { .. } => Some(crate::GeometryKind::LineString),
-            Self::Polygons { .. } => Some(crate::GeometryKind::Polygon),
-            Self::Mixed(_) => None,
-        }
-    }
-
     pub(crate) fn const_or_shape_bool(
         &self,
         constant: bool,

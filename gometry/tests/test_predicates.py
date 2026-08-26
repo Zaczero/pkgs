@@ -638,6 +638,172 @@ def test_dispatch_strategy_seams_cannot_change_results() -> None:
         )
 
 
+def test_named_predicates_project_literal_matrices_on_every_surface() -> None:
+    cases = [
+        (
+            gm.box(0, 0, 10, 10),
+            gm.Point(5, 5),
+            '0F2FF1FF2',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': True,
+                'contains_properly': True,
+                'within': False,
+                'covers': True,
+                'covered_by': False,
+                'touches': False,
+                'crosses': False,
+                'overlaps': False,
+                'equals': False,
+            },
+        ),
+        (
+            gm.box(0, 0, 10, 10),
+            gm.Point(0, 5),
+            'FF20F1FF2',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': False,
+                'contains_properly': False,
+                'within': False,
+                'covers': True,
+                'covered_by': False,
+                'touches': True,
+                'crosses': False,
+                'overlaps': False,
+                'equals': False,
+            },
+        ),
+        (
+            gm.box(0, 0, 2, 2),
+            gm.box(1, 1, 3, 3),
+            '212101212',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': False,
+                'contains_properly': False,
+                'within': False,
+                'covers': False,
+                'covered_by': False,
+                'touches': False,
+                'crosses': False,
+                'overlaps': True,
+                'equals': False,
+            },
+        ),
+        (
+            gm.box(0, 0, 2, 2),
+            gm.box(2, 0, 4, 2),
+            'FF2F11212',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': False,
+                'contains_properly': False,
+                'within': False,
+                'covers': False,
+                'covered_by': False,
+                'touches': True,
+                'crosses': False,
+                'overlaps': False,
+                'equals': False,
+            },
+        ),
+        (
+            gm.LineString([(-1, 0), (1, 0)]),
+            gm.LineString([(0, -1), (0, 1)]),
+            '0F1FF0102',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': False,
+                'contains_properly': False,
+                'within': False,
+                'covers': False,
+                'covered_by': False,
+                'touches': False,
+                'crosses': True,
+                'overlaps': False,
+                'equals': False,
+            },
+        ),
+        (
+            gm.box(0, 0, 2, 2),
+            gm.box(0, 0, 2, 2),
+            '2FFF1FFF2',
+            {
+                'intersects': True,
+                'disjoint': False,
+                'contains': True,
+                'contains_properly': False,
+                'within': True,
+                'covers': True,
+                'covered_by': True,
+                'touches': False,
+                'crosses': False,
+                'overlaps': False,
+                'equals': True,
+            },
+        ),
+        (
+            gm.box(0, 0, 1, 1),
+            gm.box(3, 3, 4, 4),
+            'FF2FF1212',
+            {
+                'intersects': False,
+                'disjoint': True,
+                'contains': False,
+                'contains_properly': False,
+                'within': False,
+                'covers': False,
+                'covered_by': False,
+                'touches': False,
+                'crosses': False,
+                'overlaps': False,
+                'equals': False,
+            },
+        ),
+    ]
+    names = (
+        'intersects',
+        'disjoint',
+        'contains',
+        'contains_properly',
+        'within',
+        'covers',
+        'covered_by',
+        'touches',
+        'crosses',
+        'overlaps',
+        'equals',
+    )
+    for left, right, matrix, expected in cases:
+        assert gm.relate(left, right) == matrix
+        assert gm.relate_pattern(left, right, matrix)
+        changed = matrix[:4] + ('0' if matrix[4] == 'F' else 'F') + matrix[5:]
+        assert not gm.relate_pattern(left, right, changed)
+        for name in names:
+            predicate = getattr(gm, name)
+            value = expected[name]
+            assert predicate(left, right) is value, name
+            assert predicate(left.prepare(), right) is value, name
+            np.testing.assert_array_equal(
+                predicate(gm.GeometryArray([left]), gm.GeometryArray([right])),
+                [value],
+                err_msg=name,
+            )
+            if name != 'disjoint':
+                assert ids(gm.SpatialIndex([right]).query(left, predicate=name)) == (
+                    [0] if value else []
+                )
+                assert pair_rows(gm.join([left], [right], predicate=name)) == (
+                    [(0, 0)] if value else []
+                )
+
+
 def test_geometry_collections_flow_through_every_strategy() -> None:
     gc = gm.from_wkt('GEOMETRYCOLLECTION (POINT (5 5), LINESTRING (0 0, 1 1))')
     square = gm.box(0, 0, 10, 10)
@@ -804,7 +970,7 @@ def test_xy_predicates_accept_empty_iterables() -> None:
         gm.contains_xy(poly, 0.0, [])
 
 
-def test_relate_class_predicates_decide_natively_without_the_matrix() -> None:
+def test_relate_class_predicates_project_the_relation_matrix() -> None:
     square = gm.box(0, 0, 4, 4)
     assert gm.overlaps(square, gm.box(2, 2, 6, 6))
     assert not gm.touches(square, gm.box(2, 2, 6, 6))
@@ -826,7 +992,7 @@ def test_relate_class_predicates_decide_natively_without_the_matrix() -> None:
     assert not gm.crosses(gm.LineString([(3.5, 5), (5, 3.5)]), square)
 
 
-def test_native_areal_relate_grades_every_tangential_contact() -> None:
+def test_graph_relate_grades_every_tangential_contact() -> None:
     a = gm.box(0, 0, 2, 2)
     assert gm.relate(a, gm.box(2, 0, 4, 2)) == 'FF2F11212'
     assert gm.relate(a, gm.box(2, 2, 4, 4)) == 'FF2F01212'
@@ -849,7 +1015,7 @@ def test_native_areal_relate_grades_every_tangential_contact() -> None:
     assert gm.relate_pattern(a, lateral, 'T*F**F***')
 
 
-def test_native_lineal_relate_grades_every_contact_class() -> None:
+def test_graph_relate_grades_every_contact_class() -> None:
     line = gm.LineString
     assert gm.relate(line([(0, 0), (1, 0)]), line([(1, 0), (2, 1)])) == 'FF1F00102'
     assert gm.relate(line([(0, 0), (2, 2)]), line([(0, 2), (2, 0)])) == '0F1FF0102'
@@ -869,7 +1035,7 @@ def test_native_lineal_relate_grades_every_contact_class() -> None:
     assert not gm.crosses(line([(0, 0), (2, 0)]), line([(1, 0), (3, 0)]))
 
 
-def test_native_mixed_relate_grades_every_line_area_contact_class() -> None:
+def test_graph_relate_grades_every_line_area_contact_class() -> None:
     square = gm.box(0, 0, 4, 4)
     line = gm.LineString
     cases = [

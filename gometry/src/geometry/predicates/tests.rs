@@ -169,8 +169,8 @@ mod convex_tests {
         };
         let bounds = |shape: &Shape| shape.bounds().expect("bounded");
 
-        // A box from any corner order is detected; degenerate / holed / non-quad
-        // / non-axis polygons are not.
+        // A box from any corner order is detected; degenerate / holed / non-axis
+        // polygons are not.
         let r = rect(0.0, 0.0, 10.0, 10.0);
         assert!(r.is_axis_aligned_rectangle(bounds(&r)));
         let line_box = rect(0.0, 0.0, 10.0, 0.0); // zero height → not a rectangle

@@ -196,29 +196,6 @@ impl StaticStrTree {
         &self.entries[node.children.start as usize..node.children.end as usize]
     }
 
-    /// Every live handle beneath `node` (the convex descent's whole-subtree
-    /// accept).
-    pub(super) fn collect_subtree(
-        &self,
-        level: usize,
-        node: &StrNode,
-        out: &mut Vec<usize>,
-    ) -> crate::error::Result<()> {
-        if level == 0 {
-            for entry in self.leaf_entries(node) {
-                if self.removed[entry.idx] == 0 {
-                    crate::try_push_vec(out, entry.idx)?;
-                }
-            }
-            return Ok(());
-        }
-        let range = node.children.start as usize..node.children.end as usize;
-        for child in &self.levels[level - 1][range] {
-            self.collect_subtree(level - 1, child, out)?;
-        }
-        Ok(())
-    }
-
     /// Live handles whose envelope intersects `query`.
     pub(super) fn each_intersecting(
         &self,

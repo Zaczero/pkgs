@@ -3,12 +3,12 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    CoordSeq, Coordinates, De9im, Dimension, HashMap, HashMapExt as _, Ordering, Point, PointKey,
-    PointSetIndex, Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment,
-    SegmentIndex, Shape, VertexProvenance, XY, effective_dimension, point_distance,
-    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
-    same_point, segment_projection, simd_mask_any, squared_norm_is_trustworthy,
-    try_point_distance_squared, try_point_segment_distance_squared, wrap_index,
+    CoordSeq, Coordinates, HashMap, HashMapExt as _, Ordering, Point, PointKey, PointSetIndex,
+    Polygon, REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape,
+    VertexProvenance, XY, point_distance, point_distance_squared, point_in_ccw_triangle,
+    point_segment_distance, ring_winding, same_point, segment_projection, simd_mask_any,
+    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
+    wrap_index,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles): the
@@ -385,62 +385,6 @@ fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
     let mut cursor = 0;
     walk(shape, &mut cursor, &mut out);
     out
-}
-
-/// The DE-9IM matrix for two BBOX-DISJOINT operands, from interior + boundary
-/// dimensions alone: `II IB IE / BI BB BE / EI EB EE = F F iA / F F bA / iB bB
-/// 2`. Each operand's interior lies wholly in the other's exterior (dim = its
-/// content dim) and likewise its boundary (dim = its boundary dim, `F` when the
-/// boundary is empty — points, closed lines). `None` for an empty operand or a
-/// `GeometryCollection` (whose boundary is undefined) — those keep the general
-/// relate path. Verified bit-exact against the engine across dimension combos.
-pub(in crate::geometry) fn disjoint_de9im(left: &Shape, right: &Shape) -> Option<De9im> {
-    let interior = |shape: &Shape| -> Option<u8> {
-        Some(match effective_dimension(shape)? {
-            Dimension::Point => b'0',
-            Dimension::Curve => b'1',
-            Dimension::Surface => b'2',
-        })
-    };
-    let boundary = |shape: &Shape| -> Option<u8> {
-        if effective_dimension(shape) == Some(Dimension::Point) {
-            return Some(b'F');
-        }
-        Some(match shape {
-            Shape::Point(_) | Shape::MultiPoint(_) => b'F',
-            Shape::Polygon(_) | Shape::MultiPolygon(_) => b'1',
-            // A line's boundary is its mod-2 endpoints — empty when closed.
-            Shape::LineString(_) | Shape::MultiLineString(_) => {
-                if shape.boundary().is_empty() {
-                    b'F'
-                } else {
-                    b'0'
-                }
-            },
-            Shape::GeometryCollection(_) | Shape::Empty(..) => return None,
-        })
-    };
-    Some(De9im([
-        b'F',
-        b'F',
-        interior(left)?,
-        b'F',
-        b'F',
-        boundary(left)?,
-        interior(right)?,
-        boundary(right)?,
-        b'2',
-    ]))
-}
-
-pub(crate) const fn has_collection_operand(left: &Shape, right: &Shape) -> bool {
-    matches!(
-        left,
-        Shape::GeometryCollection(_) | Shape::MultiPolygon(_) | Shape::MultiLineString(_)
-    ) || matches!(
-        right,
-        Shape::GeometryCollection(_) | Shape::MultiPolygon(_) | Shape::MultiLineString(_)
-    )
 }
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {

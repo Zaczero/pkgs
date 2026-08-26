@@ -18,7 +18,7 @@ use crate::{
     Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, Crs, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
     Point, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Shape,
-    ShapeData, ShapeRow, broadcast_coordinate_input, coerce_geojson_geometry_value,
+    ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
     coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
     geometry_type_err, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
     point_distance, scalar_vs_shapes, validate_lonlat_shape,
@@ -28,7 +28,7 @@ pub(crate) use element::BulkElement;
 
 use crate::error::Result;
 use crate::geometry::LineSeq;
-use crate::predicates::{PredicateSpec, point_batch};
+use crate::predicates::PredicateSpec;
 use crate::py::numpy::bool_array;
 
 mod input;

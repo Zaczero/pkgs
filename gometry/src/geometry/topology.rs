@@ -8,7 +8,7 @@ use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
 use crate::geometry::{
-    Arc, CCW_ERRBOUND_A, CoordSeq, PointKey, Polygon, REDUCE_LANES, ReduceSimd, Segment, XY,
+    CCW_ERRBOUND_A, CoordSeq, PointKey, Polygon, REDUCE_LANES, ReduceSimd, Segment, XY,
     ray_crossing_is_right, simd_reduce_f64, wrap_index,
 };
 
@@ -17,13 +17,11 @@ mod sections;
 mod staging;
 pub(crate) use graph::TopologyGraph;
 pub(super) use graph::{
-    AreaSupport, ChartRing, NodeSupport, SourceEdge, SourceEdgeKind, SourcePoint, TopologyEdge,
-    TopologyNode, TopologyNodeId, TopologySpace,
+    TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace,
 };
 pub(super) use sections::{
     compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,
 };
-pub(super) use staging::StagedRings;
 use staging::oriented_open_ring;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,9 +68,6 @@ pub(super) struct OrientedRing {
     pub is_hole: bool,
     pub points: std::sync::Arc<[XY]>,
     pub segments: Range<usize>,
-    /// Cached representative interior point of the owning polygon (shell rings
-    /// only; `None` on holes and on the uncached raw-`Shape` path).
-    pub probe: Option<XY>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,10 +80,8 @@ pub(super) struct OperandPool {
 }
 
 thread_local! {
-    // One relate builds one pool of the same ~N shape every call; reuse the
-    // column buffers per-thread (taken cleared on build, returned on drop) so
-    // the ~N-segment Vecs are allocated ONCE, not once per relate — mirrors
-    // the `BoundaryContacts` and `SECTIONS_SCRATCH` scratch in `relate_ng`.
+    // Reuse the column buffers per-thread so overlay staging does not allocate
+    // a fresh set of parallel provenance vectors for every operation.
     static POOL_SEGMENTS: std::cell::Cell<Vec<Segment>> = const { std::cell::Cell::new(Vec::new()) };
     static POOL_OPERANDS: std::cell::Cell<Vec<Operand>> = const { std::cell::Cell::new(Vec::new()) };
     static POOL_RING_OF: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
@@ -443,40 +436,6 @@ pub(super) fn build_operand_pool<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     pool
 }
 
-/// Merge two pre-oriented operands ([`StagedRings::build`]) into a pool.
-///
-/// Identical layout and provenance to [`build_operand_pool`], but the costly
-/// ring orientation is already done — this only re-materializes the thin
-/// segment sweep pool and its parallel provenance from the cached points.
-pub(super) fn build_operand_pool_staged(left: &StagedRings, right: &StagedRings) -> OperandPool {
-    let capacity = left.edge_count + right.edge_count;
-    let mut pool = OperandPool::with_scratch(capacity, left.rings.len() + right.rings.len());
-    push_staged_operand(Operand::Left, left, &mut pool);
-    pool.split = pool.segments.len();
-    push_staged_operand(Operand::Right, right, &mut pool);
-    pool
-}
-
-fn push_staged_operand(operand: Operand, staged: &StagedRings, pool: &mut OperandPool) {
-    for ring in &staged.rings {
-        let ring_id = pool.rings.len() as u32;
-        let start = pool.segments.len();
-        push_ring_edges(&ring.points, &mut pool.segments);
-        let end = pool.segments.len();
-        pool.operands.resize(end, operand);
-        pool.ring_of.resize(end, ring_id);
-        pool.rings.push(OrientedRing {
-            operand,
-            polygon: ring.polygon,
-            ring: ring.ring,
-            is_hole: ring.is_hole,
-            points: Arc::clone(&ring.points),
-            segments: start..end,
-            probe: ring.probe,
-        });
-    }
-}
-
 fn push_operand<P: AsRef<Polygon>>(operand: Operand, polygons: &[P], pool: &mut OperandPool) {
     for (polygon_index, polygon) in polygons.iter().enumerate() {
         let polygon = polygon.as_ref();
@@ -525,9 +484,6 @@ fn push_ring(
         is_hole,
         points: points.into(),
         segments: start..end,
-        // The uncached raw-`Shape` path: the relate probe falls back to its
-        // own scanline.
-        probe: None,
     });
 }
 

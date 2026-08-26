@@ -36,11 +36,6 @@ impl De9im {
         self.0[row as usize * 3 + col as usize] = b'F';
     }
 
-    /// Whether one cell holds exactly `dim`.
-    pub(crate) const fn is_dimension(self, row: Loc, col: Loc, dim: Dimension) -> bool {
-        self.0[row as usize * 3 + col as usize] == b'0' + dim.code()
-    }
-
     pub(crate) fn left_dimension(self) -> Option<Dimension> {
         [self.0[0], self.0[1], self.0[2]]
             .into_iter()
@@ -86,20 +81,12 @@ impl De9im {
         self.0[0] == b'F' && (self.0[1] != b'F' || self.0[3] != b'F' || self.0[4] != b'F')
     }
 
-    pub(crate) const fn is_overlaps_lineal(self) -> bool {
-        // `1*T***T**` — equal-dim lineal overlaps needs a 1-D shared part.
-        self.0[0] == b'1' && self.0[2] != b'F' && self.0[6] != b'F'
+    pub(crate) const fn is_intersects(self) -> bool {
+        self.0[0] != b'F' || self.0[1] != b'F' || self.0[3] != b'F' || self.0[4] != b'F'
     }
 
-    pub(crate) const fn is_crosses_lineal(self) -> bool {
-        // Line/line crosses is exactly `dim(II) == 0` (JTS's reading).
-        self.0[0] == b'0'
-    }
-
-    pub(crate) const fn is_crosses_mixed(self, line_is_left: bool) -> bool {
-        // JTS grades mixed dims symmetrically: the LINE side must reach
-        // both the other's interior and its own exterior part.
-        self.0[0] != b'F' && self.0[if line_is_left { 2 } else { 6 }] != b'F'
+    pub(crate) const fn is_disjoint(self) -> bool {
+        !self.is_intersects()
     }
 
     pub(crate) fn is_crosses_by_dimension(self) -> bool {

@@ -1,17 +1,14 @@
 #[cfg(test)]
 use std::cell::Cell;
 
-use rstar::Envelope as _;
-
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
     GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate, NearestCandidate,
     NonNegative, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry, PyGeometryArray,
-    PyResult, PySpatialIndex, RTreeNode, RowMatches, Shape, ShapeData, ShapeRow, XY,
-    bounds_envelope, collect_subtree_ids, convex_box_strictly_inside, crs, crs_label, epoch_label,
-    global_geographic_candidate_envelope, index_envelope, nearest_candidates_from_heap,
-    pair_distance_resolved, pair_dwithin_resolved, point_batch, point_from_bounds,
+    PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow, bounds_envelope, crs,
+    crs_label, epoch_label, global_geographic_candidate_envelope, index_envelope,
+    nearest_candidates_from_heap, pair_distance_resolved, pair_dwithin_resolved, point_from_bounds,
     point_index_envelope, push_nearest_candidate, retain_row, scalar_vs_shapes, sort_row_ids,
     topology_scalar_pair,
 };
@@ -258,7 +255,7 @@ impl PySpatialIndex {
         self.geodesic_row_caps_at(metric, state)
     }
 
-     fn geodesic_row_caps_at(
+    fn geodesic_row_caps_at(
         &self,
         metric: &crs::MetricModel,
         runtime_state: &crs::RuntimeState,
@@ -645,9 +642,8 @@ impl PySpatialIndex {
     }
 
     /// Refine packed point topological queries by indexed row. Candidate
-    /// traversal remains point-driven, but each indexed shape sees its actual
-    /// candidate points in one packed point kernel call. Geographic seam/pole
-    /// rows use the scalar keystone because the packed kernel is planar there.
+    /// traversal remains point-driven, while every candidate is refined by
+    /// the shared exact relation matrix.
     fn point_rows_join_matches(
         &self,
         points: &PointRows<'_>,
@@ -693,24 +689,6 @@ impl PySpatialIndex {
                 continue;
             }
             let data = self.rows.prepared_row(idx);
-            let batch_safe = !geographic
-                || (!data.shape().crosses_antimeridian()
-                    && group.iter().all(|&(row, _)| {
-                        crate::geometry::point_is_geographic_pole(points.get(row)).is_none()
-                    }));
-            if batch_safe {
-                let grouped_points = PointRows::Gathered(try_collect_results(
-                    group
-                        .iter()
-                        .map(|&(row, _)| Ok::<_, pyo3::PyErr>(points.get(row))),
-                )?);
-                if let Some(mask) = point_batch(&spec, &data, &grouped_points, false, false) {
-                    for (&(_, position), accepted) in group.iter().zip(mask) {
-                        keep[position] = accepted;
-                    }
-                    continue;
-                }
-            }
             for &(row, position) in group {
                 let query = ShapeData::new(Shape::Point(points.get(row)));
                 keep[position] = topology_scalar_pair(&spec, &query, &data, geographic);
@@ -740,10 +718,9 @@ impl PySpatialIndex {
         })
     }
 
-    /// Whether this index's shared frame is a geographic CRS — the single
-    /// source of truth that drives antimeridian split-normalization in every
-    /// topological refine path (never hardcoded). All rows and the query share
-    /// this frame (`ensure_query_compatible`), so it is an index-level property.
+    /// Whether this index's shared frame is geographic. All rows and the query
+    /// share this frame (`ensure_query_compatible`), so it is an index-level
+    /// property used by the quotient-aware relation path.
     pub(crate) fn geographic(&self) -> bool {
         self.metadata
             .as_ref()
@@ -855,21 +832,6 @@ impl PySpatialIndex {
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
         let row_start = out.len();
-        if matches!(
-            predicate,
-            Predicate::Contains
-                | Predicate::Covers
-                | Predicate::ContainsProperly
-                | Predicate::Intersects
-        ) && let Some(matches) =
-            self.convex_containment_matches(shape, predicate, self.geographic())?
-        {
-            for value in matches {
-                try_push_vec(out, value)?;
-            }
-            sort_row_ids(&mut out[row_start..], self.rows.len());
-            return Ok(());
-        }
         let Some(query_bounds) = shape.bounds() else {
             return Ok(());
         };
@@ -885,7 +847,7 @@ impl PySpatialIndex {
             .map(|&idx| (idx, self.rows.row(idx)));
         // Collect the mask first: `scalar_vs_shapes` may re-enter row handles
         // that would conflict with a simultaneous mutable retain over `out`.
-        let mask = scalar_vs_shapes(&spec, shape, rows, true, false, None, self.geographic());
+        let mask = scalar_vs_shapes(&spec, shape, rows, true, None, self.geographic());
         let mut mask = mask.into_iter();
         retain_row(out, row_start, |_| Ok(mask.next().unwrap_or(false)))
             .expect("topological refinement is infallible");
@@ -893,146 +855,9 @@ impl PySpatialIndex {
         Ok(())
     }
 
-    /// Ground-up convex-query descent for a small CONVEX hole-free query
-    /// polygon: ONE tree pass in place of candidates + per-pair
-    /// refinement. A node whose MBR corners all sit STRICTLY inside the
-    /// query accepts its WHOLE subtree (everything beneath is strictly
-    /// interior — settling `contains`, `covers`, `contains_properly`, and
-    /// `intersects` at once, with no boundary or dimension subtleties);
-    /// nodes missing the query envelope prune; only boundary-straddling
-    /// leaves pay the exact per-pair lane (whose `spec` decides the
-    /// predicate). `None` when the query does not qualify.
-    pub(crate) fn convex_containment_matches(
-        &self,
-        scalar: &ShapeData,
-        predicate: Predicate,
-        geographic: bool,
-    ) -> PyResult<Option<Vec<usize>>> {
-        // The MBR-descent accepts whole subtrees via planar corner tests, which
-        // are unsound for an antimeridian-crossing query (its planar interior
-        // spans the false middle). Fall back to candidates + gated refine.
-        if geographic && scalar.shape().crosses_antimeridian() {
-            return Ok(None);
-        }
-        if let Shape::Polygon(polygon) = scalar.shape()
-            && !crate::geometry::uses_linear_plan_for_len(
-                polygon.shell.coords().len().saturating_sub(1),
-            )
-        {
-            return Ok(None);
-        }
-        let Some(ccw) = scalar.convex_shell() else {
-            return Ok(None);
-        };
-        let Shape::Polygon(container) = scalar.shape() else {
-            return Ok(None);
-        };
-        let Some(query_bounds) = scalar.bounds() else {
-            return Ok(Some(Vec::new()));
-        };
-        // Hoist the shell into a flat slice once; axis-aligned rectangular
-        // queries (window/tile lookups — the overwhelmingly common case)
-        // degrade the corner test to four strict float comparisons.
-        let coords = container.shell.coords();
-        let shell = try_collect_results(
-            coords
-                .xs()
-                .iter()
-                .zip(coords.ys())
-                .map(|(&x, &y)| Ok::<_, pyo3::PyErr>(XY::new(x, y))),
-        )?;
-        // Bit equality is the intent: rectangle edges replicate exact
-        // coordinates (boxes are built from their bounds).
-        let rectangular = shell.array_windows::<2>().all(|[start, end]| {
-            start.x.to_bits() == end.x.to_bits() || start.y.to_bits() == end.y.to_bits()
-        });
-        let query_envelope = bounds_envelope(query_bounds);
-        let inside = |envelope: &AABB<[f64; 2]>| {
-            let (lower, upper) = (envelope.lower(), envelope.upper());
-            if rectangular {
-                lower[0] > query_bounds.minx()
-                    && lower[1] > query_bounds.miny()
-                    && upper[0] < query_bounds.maxx()
-                    && upper[1] < query_bounds.maxy()
-            } else {
-                convex_box_strictly_inside(shell.as_slice(), ccw, [
-                    lower[0], lower[1], upper[0], upper[1],
-                ])
-            }
-        };
-        let spec = predicate.spec();
-        let mut matches = Vec::new();
-        let accept_entry = |entry: &IndexEntry, matches: &mut Vec<usize>| -> PyResult<()> {
-            if !entry.envelope.intersects(&query_envelope) {
-                return Ok(());
-            }
-            if inside(&entry.envelope) || {
-                let element = self.rows.prepared_row(entry.idx);
-                topology_scalar_pair(&spec, scalar, &element, geographic)
-            } {
-                try_push_vec(matches, entry.idx)?;
-            }
-            Ok(())
-        };
-        // Bulk STR descent.
-        let root_level = self.bulk.root_level();
-        let mut stack = Vec::new();
-        crate::try_reserve_vec(&mut stack, self.bulk.roots().len())?;
-        for node in 0..self.bulk.roots().len() as u32 {
-            try_push_vec(&mut stack, (root_level, node))?;
-        }
-        while let Some((level, index)) = stack.pop() {
-            let node = self.bulk.node(level, index);
-            if !node.envelope.intersects(&query_envelope) {
-                continue;
-            }
-            if inside(&node.envelope) {
-                self.bulk.collect_subtree(level, node, &mut matches)?;
-                continue;
-            }
-            if level == 0 {
-                for entry in self.bulk.leaf_entries(node) {
-                    if self.bulk.is_live(entry.idx) {
-                        accept_entry(entry, &mut matches)?;
-                    }
-                }
-            } else {
-                for child in node.children.clone() {
-                    try_push_vec(&mut stack, (level - 1, child))?;
-                }
-            }
-        }
-        // Overflow R-tree descent (usually empty).
-        let children = self.overflow.root().children();
-        let mut overflow = Vec::new();
-        crate::try_reserve_vec(&mut overflow, children.len())?;
-        for node in children {
-            try_push_vec(&mut overflow, node)?;
-        }
-        while let Some(node) = overflow.pop() {
-            match node {
-                RTreeNode::Parent(parent) => {
-                    let envelope = parent.envelope();
-                    if !envelope.intersects(&query_envelope) {
-                        continue;
-                    }
-                    if inside(&envelope) {
-                        collect_subtree_ids(parent, &mut matches)?;
-                    } else {
-                        for child in parent.children() {
-                            try_push_vec(&mut overflow, child)?;
-                        }
-                    }
-                },
-                RTreeNode::Leaf(entry) => accept_entry(entry, &mut matches)?,
-            }
-        }
-        Ok(Some(matches))
-    }
-
     /// Column-direct engine for packed point query arrays: one frame check and
     /// one metric/spec resolution for the whole column, then per-point
-    /// envelope lookups refined with the predicate's pair kernel — no per-row
+    /// envelope lookups refined with the shared relation matrix — no per-row
     /// `PyGeometry` materialization. `predicate=None` returns candidates only.
     pub(crate) fn point_rows_matches(
         &self,
@@ -1075,8 +900,8 @@ impl PySpatialIndex {
         // place) — no per-point `Vec`.
         let mut builder =
             CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
-        // Point queries never cross, but index rows can: split-normalize a
-        // crossing item before the predicate (resolved once for the array).
+        // Point queries never cross; geographic rows are refined by the
+        // quotient-aware matrix path below.
         let geographic = self.geographic();
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask[row]) {

@@ -161,19 +161,9 @@ pub(crate) fn contained_shortcut_cached(
         right.bounds(),
         |left_is_outer| {
             if left_is_outer {
-                left.contains_properly_cached_for(
-                    right,
-                    crate::geometry::PointProbeUse::OneShot(
-                        crate::geometry::vertex_witness_probe_count(right.shape()),
-                    ),
-                )
+                crate::geometry::graph_relate_data(left, right).is_contains_properly()
             } else {
-                right.contains_properly_cached_for(
-                    left,
-                    crate::geometry::PointProbeUse::OneShot(
-                        crate::geometry::vertex_witness_probe_count(left.shape()),
-                    ),
-                )
+                crate::geometry::graph_relate_data(right, left).is_contains_properly()
             }
         },
     )

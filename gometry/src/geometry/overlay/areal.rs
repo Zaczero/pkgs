@@ -60,8 +60,6 @@ impl ArealArrangement {
 pub(in crate::geometry) struct ArealArrangement {
     pub arrangement: Arrangement<[i32; 2]>,
     pub windings: Vec<[i32; 2]>,
-    /// Whether each operand contributed at least one non-degenerate ring.
-    pub operand_present: [bool; 2],
 }
 
 impl ArealArrangement {
@@ -123,7 +121,6 @@ fn stage_areal_operand<P: AsRef<Polygon>>(
     tags: &mut Vec<u32>,
     segment_loop: &mut Vec<u32>,
     loop_anchor: &mut Vec<XY>,
-    operand_present: &mut [bool; 2],
 ) {
     for polygon in polygons {
         for (ring_index, ring) in polygon.as_ref().rings().enumerate() {
@@ -160,7 +157,6 @@ fn stage_areal_operand<P: AsRef<Polygon>>(
             }
             if segments.len() > before {
                 loop_anchor.push(XY::new(xs[0], ys[0]));
-                operand_present[operand] = true;
             }
         }
     }
@@ -182,7 +178,6 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     // One anchor vertex per loop — locates the loop's component after
     // noding.
     let mut loop_anchor: Vec<XY> = Vec::with_capacity(left_rings.saturating_add(right_rings));
-    let mut operand_present = [false, false];
     stage_areal_operand(
         0,
         left,
@@ -190,7 +185,6 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         &mut tags,
         &mut segment_loop,
         &mut loop_anchor,
-        &mut operand_present,
     );
     stage_areal_operand(
         1,
@@ -199,7 +193,6 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         &mut tags,
         &mut segment_loop,
         &mut loop_anchor,
-        &mut operand_present,
     );
     // Per-loop contiguous ranges + operand (segment_loop is non-decreasing
     // by construction) for the positional fast path.
@@ -269,7 +262,6 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     ArealArrangement {
         arrangement,
         windings,
-        operand_present,
     }
 }
 

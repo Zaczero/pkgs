@@ -1,9 +1,8 @@
 use crate::geometry::relate::{line_has_nonzero_segment, multiline_has_nonzero_segment};
-use crate::geometry::{Coordinates as _, GeometryKind, Shape};
+use crate::geometry::{GeometryKind, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DimMode {
-    Topology,
     Effective,
     Declared,
 }
@@ -45,16 +44,14 @@ pub(crate) fn dimension(shape: &Shape, mode: DimMode) -> Option<Dimension> {
                 // Matches the empty container form: `max` over no members.
                 GeometryKind::GeometryCollection => None,
             },
-            DimMode::Topology | DimMode::Effective => None,
+            DimMode::Effective => None,
         },
         Shape::Point(_) => Some(Dimension::Point),
         Shape::MultiPoint(points) => match mode {
-            DimMode::Topology => (points.coord_count() > 0).then_some(Dimension::Point),
             DimMode::Effective => (!points.is_empty()).then_some(Dimension::Point),
             DimMode::Declared => Some(Dimension::Point),
         },
         Shape::LineString(points) => match mode {
-            DimMode::Topology => (points.coord_count() > 0).then_some(Dimension::Curve),
             DimMode::Effective => {
                 if points.is_empty() {
                     None
@@ -67,10 +64,6 @@ pub(crate) fn dimension(shape: &Shape, mode: DimMode) -> Option<Dimension> {
             DimMode::Declared => Some(Dimension::Curve),
         },
         Shape::MultiLineString(lines) => match mode {
-            DimMode::Topology => lines
-                .iter()
-                .any(|line| line.coord_count() > 0)
-                .then_some(Dimension::Curve),
             DimMode::Effective => {
                 if multiline_has_nonzero_segment(lines) {
                     Some(Dimension::Curve)
@@ -86,9 +79,7 @@ pub(crate) fn dimension(shape: &Shape, mode: DimMode) -> Option<Dimension> {
         Shape::Polygon(_) => Some(Dimension::Surface),
         Shape::MultiPolygon(polygons) => match mode {
             DimMode::Declared => Some(Dimension::Surface),
-            DimMode::Topology | DimMode::Effective => {
-                (!polygons.is_empty()).then_some(Dimension::Surface)
-            },
+            DimMode::Effective => (!polygons.is_empty()).then_some(Dimension::Surface),
         },
         Shape::GeometryCollection(parts) => {
             parts.iter().filter_map(|part| dimension(part, mode)).max()

@@ -7,19 +7,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::types::{
-    Bounds, Coordinates as _, GeodesicSegment, Point, Segment, Shape, XY,
-};
+use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
-    PlanarMetric, PointBatchTester, PointProbeUse, SegmentMetric, bounds_to_shape, ring_winding,
-    shell_is_convex,
+    PlanarMetric, PointBatchTester, SegmentMetric, bounds_to_shape,
 };
 
 #[derive(Default)]
 struct ColdCaches {
-    staged_rings: OnceLock<Option<crate::geometry::topology::StagedRings>>,
-    relate_topology: OnceLock<crate::geometry::relate::RelateTopology>,
+    topology_graph: OnceLock<crate::geometry::topology::TopologyGraph>,
+    geographic_topology_graph: OnceLock<crate::geometry::topology::TopologyGraph>,
     distance_3d: OnceLock<crate::geometry::Distance3dParts>,
 }
 
@@ -105,9 +102,8 @@ impl HeapSize for FrameDependentEntry {
 /// storage per geometry. Hot scalar paths that never touch those products
 /// keep a small `ShapeData` header; first use allocates the product once.
 /// The caches are pure functions of `shape` (which is immutable), so
-/// identity, equality, and hashing delegate to the shape alone. The geo-rs
-/// prepared relation deliberately lives elsewhere (it is `!Send`; this
-/// handle crosses into detached work).
+/// identity, equality, and hashing delegate to the shape alone. Relation
+/// graphs are source-owned and are safe to share across detached work.
 pub struct ShapeData {
     shape: Shape,
     bounds: OnceLock<Option<Bounds>>,
@@ -117,20 +113,16 @@ pub struct ShapeData {
     validity: OnceLock<Box<Option<ValidationIssue>>>,
     /// OGC simplicity verdict, computed once (see `validity`).
     simplicity: OnceLock<bool>,
-    /// Antimeridian-crossing verdict, computed once — the geographic split
-    /// gate consults it on every topology op, often repeatedly per handle.
+    /// Antimeridian-crossing verdict, computed once for geographic bounds and
+    /// other frame-aware operations that consult it repeatedly per handle.
     antimeridian_crossing: OnceLock<bool>,
     /// Distance working set — boxed so cold `OnceLock` is pointer-sized.
     distance: OnceLock<Box<DistanceParts>>,
-    /// Prepared point-membership tester — boxed (large hierarchical index).
+    /// Point-membership tester — boxed (large hierarchical index).
     point_tester: OnceLock<Box<Option<PointBatchTester>>>,
-    /// `Some(shell_is_ccw)` when the shape is a hole-free CONVEX polygon
-    /// — such a region is exactly the intersection of its edge
-    /// halfplanes, so point membership is pure `orient2d` sign tests.
-    convex_shell: OnceLock<Option<bool>>,
     /// Planar LRS index — boxed (large prefix tables).
     line_index: OnceLock<Box<LineIndexSlot>>,
-    /// Rarely-used lazy caches (geodesic, areal relate) boxed behind one
+    /// Rarely-used lazy caches (geodesic and topology graph) boxed behind one
     /// `OnceLock` so transient and persistent handles stay small.
     cold: OnceLock<Box<ColdCaches>>,
 }
@@ -153,7 +145,6 @@ impl ShapeData {
             antimeridian_crossing: OnceLock::new(),
             distance: OnceLock::new(),
             point_tester: OnceLock::new(),
-            convex_shell: OnceLock::new(),
             line_index: OnceLock::new(),
             cold: OnceLock::new(),
         }
@@ -167,25 +158,18 @@ impl ShapeData {
         &self.shape
     }
 
-    /// Whole-operand topology for DE-9IM's mod-2 boundary semantics.
-    pub(in crate::geometry) fn relate_topology(&self) -> &crate::geometry::relate::RelateTopology {
+    pub(in crate::geometry) fn topology_graph(&self) -> &crate::geometry::topology::TopologyGraph {
         self.cold()
-            .relate_topology
-            .get_or_init(|| crate::geometry::relate::RelateTopology::build(&self.shape))
+            .topology_graph
+            .get_or_init(|| crate::geometry::topology::TopologyGraph::cartesian(&self.shape))
     }
 
-    /// The areal operand's rings, oriented once for the relate sweep. `None`
-    /// when the shape is not polygonal.
-    pub(in crate::geometry) fn staged_rings(
+    pub(in crate::geometry) fn geographic_topology_graph(
         &self,
-    ) -> Option<&crate::geometry::topology::StagedRings> {
+    ) -> &crate::geometry::topology::TopologyGraph {
         self.cold()
-            .staged_rings
-            .get_or_init(|| {
-                crate::geometry::relate::polygon_parts(&self.shape)
-                    .map(crate::geometry::topology::StagedRings::build)
-            })
-            .as_ref()
+            .geographic_topology_graph
+            .get_or_init(|| crate::geometry::topology::TopologyGraph::geographic(&self.shape))
     }
 
     /// The cached validity verdict (`None` = valid). Shapely re-validates
@@ -343,69 +327,15 @@ impl ShapeData {
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
-    /// `Some(shell_is_ccw)` for a hole-free CONVEX polygon, computed
-    /// once — such a region is exactly the intersection of its edge
-    /// halfplanes (see `convex_halfplanes_cover`).
-    pub(crate) fn convex_shell(&self) -> Option<bool> {
-        *self.convex_shell.get_or_init(|| match &self.shape {
-            Shape::Polygon(polygon)
-                if polygon.holes.is_empty()
-                    && polygon.shell.coords().coord_count() >= 4
-                    && shell_is_convex(polygon.shell.coords()) =>
-            {
-                Some(ring_winding(polygon.shell.coords()).is_ccw())
-            },
-            _ => None,
-        })
-    }
-
-    /// The DE-9IM matrix string over the PREPARED operands: the bbox-disjoint
-    /// shortcut (identical to [`Shape::relate`]), then the cached native path,
-    /// so repeated calls on the same handles reuse each side's prepared point
-    /// tester instead of rebuilding it. Caller has already gated CRS/epoch.
-    ///
-    /// `pub` for benches/integration over the prepared path; the Python binding
-    /// calls it directly. Use [`Shape::relate`] for a one-shot uncached relate.
+    /// The DE-9IM matrix over the prepared operands.
     pub fn relate(&self, other: &Self) -> String {
         self.relate_matrix(other).text()
     }
 
-    /// The DE-9IM matrix over the PREPARED operands: the bbox-disjoint shortcut
-    /// then the cached native path (reusing each side's staged rings + point
-    /// tester). Shared by [`Self::relate`] and [`Self::relate_pattern`].
+    /// The DE-9IM matrix over the prepared operands, shared by relation and
+    /// pattern queries.
     fn relate_matrix(&self, other: &Self) -> crate::geometry::relate::De9im {
-        if let Some(text) =
-            crate::geometry::predicates::geographic_point_relate_matrix(&self.shape, &other.shape)
-        {
-            let mut bytes = [b'F'; 9];
-            for (slot, byte) in bytes.iter_mut().zip(text.bytes()) {
-                *slot = byte;
-            }
-            return crate::geometry::relate::De9im(bytes);
-        }
-        if let (Some(left), Some(right)) = (self.bounds(), other.bounds())
-            && !left.intersects(right)
-            && let Some(matrix) =
-                crate::geometry::predicates::disjoint_de9im(&self.shape, &other.shape)
-        {
-            return matrix;
-        }
-        crate::geometry::relate::native_relate_data(self, other)
-    }
-
-    /// DE-9IM pattern test over the PREPARED operands — evaluated on the cached
-    /// matrix (see [`Self::relate_matrix`]), so it reuses the staged rings and
-    /// point testers instead of the one-shot uncached
-    /// [`Shape::relate_pattern`]. Each canonical predicate pattern IS its
-    /// exact OGC definition, so matching the full matrix is
-    /// verdict-identical to the specialized kernels.
-    /// Prepared DE-9IM pattern test with a pre-compiled pattern.
-    pub(crate) fn relate_pattern_compiled(
-        &self,
-        other: &Self,
-        compiled: crate::geometry::CompiledPattern<'_>,
-    ) -> bool {
-        compiled.matches(self.relate_matrix(other))
+        crate::geometry::relate::graph_relate_data(self, other)
     }
 
     /// The prepared point-membership tester (hierarchical
@@ -425,32 +355,13 @@ impl ShapeData {
             .as_ref()
             .as_ref()
     }
-
-    pub(crate) fn point_tester_for(&self, use_mode: PointProbeUse) -> Option<&PointBatchTester> {
-        if !PointBatchTester::should_use(&self.shape, use_mode) {
-            return None;
-        }
-        self.point_tester
-            .get_or_init(|| Box::new(Some(PointBatchTester::new(&self.shape))))
-            .as_ref()
-            .as_ref()
-    }
 }
 
 impl HeapSize for ColdCaches {
     fn heap_bytes(&self) -> usize {
-        self.staged_rings
+        self.distance_3d
             .get()
-            .and_then(Option::as_ref)
-            .map_or(0, crate::geometry::topology::StagedRings::heap_bytes)
-            + self
-                .relate_topology
-                .get()
-                .map_or(0, crate::geometry::relate::RelateTopology::heap_bytes)
-            + self
-                .distance_3d
-                .get()
-                .map_or(0, crate::geometry::Distance3dParts::heap_bytes)
+            .map_or(0, crate::geometry::Distance3dParts::heap_bytes)
     }
 }
 

@@ -167,7 +167,7 @@ pub(crate) fn join_indexed(
 /// Writes the final pair columns during the scan — no intermediate
 /// `Vec<(usize, usize)>` that would double peak memory on dense joins.
 /// Packed point arrays drive the join column-direct: one frame check, then
-/// per-point envelope lookups refined with the predicate's point kernel — no
+/// per-point envelope lookups refined with the shared relation matrix — no
 /// per-row `PyGeometry` materialization.
 pub(crate) fn join_pair_columns(
     left: &Bound<'_, PyAny>,

@@ -5,40 +5,9 @@ use ahash::HashSetExt as _;
 use crate::geometry::{
     CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation, Point,
     PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
-    point_on_segment, ring_winding, same_point, segment_cross_point, segments_cross,
-    segments_intersect, shared_segment_part,
+    point_on_segment, ring_winding, same_point, segment_cross_point, segments_intersect,
+    shared_segment_part,
 };
-pub(crate) fn intersection_contact(left: &Shape, right: &Shape) -> bool {
-    isolated_or_area_contact(left, right)
-        || isolated_or_area_contact(right, left)
-        || segments_cross(left, right)
-}
-
-/// The isolated-point and area-containment halves of the disjointness
-/// oracle: any isolated point of `probe` on/in `target` (full
-/// boundary-inclusive kernel), or — when `target` has area — any connected
-/// component of `probe` inside it (one representative vertex decides; see
-/// [`intersection_contact`] for why 1D targets need no representative
-/// phase).
-pub(crate) fn isolated_or_area_contact(probe: &Shape, target: &Shape) -> bool {
-    isolated_point_contact(probe, target)
-        || (target.has_area_parts()
-            && probe.any_component_representative(&mut |point| target.area_covers_point(point)))
-}
-
-/// The isolated-point half: any 0-dimensional part of `probe` on/in
-/// `target` (full boundary-inclusive kernel).
-pub(crate) fn isolated_point_contact(probe: &Shape, target: &Shape) -> bool {
-    match probe {
-        Shape::Point(point) => target.covers_point(*point),
-        Shape::MultiPoint(points) => points.iter().any(|point| target.covers_point(point)),
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .any(|geometry| isolated_point_contact(geometry, target)),
-        _ => false,
-    }
-}
-
 /// Whether a vertex-SUBSET simplification of a polygon kept its linework
 /// simple, checked on the DELTA only: removals replace vertex paths with
 /// chords, so for VALID input the only possible new violations involve
