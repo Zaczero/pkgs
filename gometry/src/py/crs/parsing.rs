@@ -1,7 +1,7 @@
 use crate::py::crs::{
     Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
     PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _,
-    PyTypeError, coordinate_input, crs, crs_arc, finite_f64_required,
+    PyTypeError, crs, crs_arc, finite_f64_required,
 };
 // ---- CRS/CF input parsing (relocated from the crate root; consumed here and
 // by the crate-central `parse_crs`) ----
@@ -219,8 +219,8 @@ pub(super) fn cf_standard_parallels(dict: &Bound<'_, PyDict>) -> PyResult<(f64, 
             "CF CRS dictionary requires standard_parallel",
         ));
     };
-    let values = coordinate_input(dict.py(), &value, "standard_parallel")?;
-    match values.values.as_slice() {
+    let values = cf_standard_parallel_values(&value, 2)?;
+    match values.as_slice() {
         [first] => Ok((*first, None)),
         [first, second] => Ok((*first, Some(*second))),
         [] => Err(CRSError::new_err(
@@ -432,8 +432,8 @@ pub(super) fn cf_optional_standard_parallel(dict: &Bound<'_, PyDict>) -> PyResul
     let Some(value) = dict.get_item("standard_parallel")? else {
         return Ok(None);
     };
-    let values = coordinate_input(dict.py(), &value, "standard_parallel")?;
-    match values.values.as_slice() {
+    let values = cf_standard_parallel_values(&value, 1)?;
+    match values.as_slice() {
         [first] => Ok(Some(*first)),
         [] => Err(CRSError::new_err(
             "CF CRS dictionary standard_parallel must not be empty",
@@ -442,6 +442,27 @@ pub(super) fn cf_optional_standard_parallel(dict: &Bound<'_, PyDict>) -> PyResul
             "CF CRS dictionary standard_parallel must have exactly 1 value for this projection",
         )),
     }
+}
+
+fn cf_standard_parallel_values(value: &Bound<'_, PyAny>, maximum: usize) -> PyResult<Vec<f64>> {
+    if let Some(value) = crate::f64_scalar_named("standard_parallel", value)? {
+        if value.is_finite() {
+            return Ok(vec![value]);
+        }
+        return Err(crate::py::errors::InvalidGeometryError::new_err(
+            "standard_parallel must be finite",
+        ));
+    }
+    crate::parameter_values_at_most(value.py(), value, "standard_parallel", maximum, |got| {
+        let expected = if maximum == 1 {
+            "exactly 1 value for this projection"
+        } else {
+            "1 or 2 values"
+        };
+        CRSError::new_err(format!(
+            "CF CRS dictionary standard_parallel must have {expected} (got {got})"
+        ))
+    })
 }
 
 /// Projected linear units from admitted CF metadata (`units` / `proj_units`).

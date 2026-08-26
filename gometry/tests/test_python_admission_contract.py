@@ -19,9 +19,41 @@ def test_float_like_coordinates_admit_finite_huge_integers(value: int) -> None:
     assert math.isfinite(point.x)
 
 
-def test_float_like_coordinates_reject_integer_outside_float_domain() -> None:
-    with pytest.raises(TypeError, match='finite float'):
-        gm.Point(2**1024, 0)
+@pytest.mark.parametrize('value', [2**1024, math.inf, math.nan])
+def test_float_like_coordinates_reject_nonfinite_values(value: float) -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=r'^x must be finite$'):
+        gm.Point(value, 0)
+
+
+@pytest.mark.parametrize('value', [2**1024, math.inf, math.nan])
+@pytest.mark.parametrize(
+    ('construct', 'message'),
+    [
+        pytest.param(lambda value: gm.points([value], [0]), 'x must be finite', id='points'),
+        pytest.param(lambda value: gm.box(value, 0, 1, 1), 'minx must be finite', id='box'),
+        pytest.param(
+            lambda value: gm.LineString([(value, 0), (1, 1)]),
+            'coordinate must be finite',
+            id='LineString',
+        ),
+        pytest.param(
+            lambda value: gm.Polygon([(value, 0), (1, 0), (0, 1)]),
+            'coordinate must be finite',
+            id='Polygon',
+        ),
+    ],
+)
+def test_constructor_coordinate_lanes_reject_nonfinite_values(
+    construct, message, value: float
+) -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=message):
+        construct(value)
+
+
+@pytest.mark.parametrize('value', [2**1024, math.inf, math.nan])
+def test_geodesic_coordinate_fast_path_rejects_nonfinite_values(value: float) -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=r'^lon1 must be finite$'):
+        gm.CRS(4326).geodesic_inverse(value, 0, 1, 1)
 
 
 def test_integer_domains_reject_bool_and_report_large_ids() -> None:
@@ -45,6 +77,33 @@ def test_scalar_float_providers_are_admitted_once_and_must_be_finite() -> None:
 
     with pytest.raises(RuntimeError, match='float provider boom'):
         gm.Point(0, 0).skew(x_angle=RaisingFloat())
+
+
+def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
+    class OnceFloat:
+        def __init__(self, value: float) -> None:
+            self.value = value
+            self.calls = 0
+
+        def __float__(self) -> float:
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError('float provider called twice')
+            return self.value
+
+    bounds_value = OnceFloat(0.0)
+    assert gm.crs_transform_bounds(
+        4326, 4326, [bounds_value, 0.0, 1.0, 1.0], densify=0
+    ) == (0.0, 0.0, 1.0, 1.0)
+    assert bounds_value.calls == 1
+
+    at = OnceFloat(1.0)
+    assert gm.LineString([(0, 0), (10, 0)]).line_interpolate(at).to_wkt() == 'POINT (1 0)'
+    assert at.calls == 1
+
+    lon1 = OnceFloat(0.0)
+    gm.CRS(4326).geodesic_inverse(lon1, 0.0, 1.0, 1.0)
+    assert lon1.calls == 1
 
 
 @pytest.mark.parametrize(
@@ -191,6 +250,8 @@ def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
         Once([(0, 0), (4, 0), (4, 4), (0, 4)]),
         holes=Once([Once([(1, 1), (2, 1), (2, 2), (1, 2)])]),
     )
+    multi_polygon = gm.MultiPolygon(Once([Once([Once([(0, 0), (4, 0), (4, 4), (0, 4)])])]))
+    assert len(multi_polygon.parts) == 1
     assert len(gm.rings(Once([polygon]))) == 2
     assert len(gm.parts(Once([polygon]))) == 1
 
@@ -198,6 +259,8 @@ def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
 def test_fixed_arity_sources_stop_after_one_excess_item() -> None:
     with pytest.raises(gm.GeometryError, match='too many'):
         gm.MultiPoint([itertools.repeat(1)])
+    with pytest.raises(gm.GeometryError, match='too many'):
+        gm.MultiPolygon([[itertools.repeat(1)]])
     with pytest.raises(gm.GeometryError, match='4-tuple or 6-tuple'):
         gm.crs_transform_bounds(4326, 3857, itertools.repeat(0))
 

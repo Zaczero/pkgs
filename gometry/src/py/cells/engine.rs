@@ -99,7 +99,7 @@ pub(super) fn bounding_query_bounds(value: &Bound<'_, PyAny>) -> PyResult<crate:
             InvalidGeometryError::new_err("bounding cell requires a non-empty geometry")
         });
     }
-    let values = match crate::coordinate_values_exact(value.py(), value, "bounds", 4, |got| {
+    let values = match crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
         GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
     }) {
         Ok(values) => values,

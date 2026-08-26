@@ -17,8 +17,9 @@ use crate::py::cells::{
     Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
 };
 use crate::{
-    I64Param, broadcast_coordinate_group, coordinate_input, coordinate_inputs_are_scalar,
-    exact_geometry, exact_geometry_array, finite_coordinate_required, lonlat_shape, point_xy,
+    I64Param, broadcast_coordinate_group, coordinate_input_with_expected,
+    coordinate_inputs_are_scalar, coordinate_sequence_len_hint, exact_geometry,
+    exact_geometry_array, finite_coordinate_required, lonlat_shape, point_xy,
 };
 
 pub(crate) trait CellArrayId {
@@ -314,8 +315,16 @@ where
     }
     let lat = lat
         .ok_or_else(|| PyTypeError::new_err("lat is required when values is a longitude column"))?;
-    let mut lon = coordinate_input(py, values, "lon")?;
-    let mut lat = coordinate_input(py, lat, "lat")?;
+    let mut expected = coordinate_sequence_len_hint(values, "lon")?;
+    if expected.is_none() {
+        expected = coordinate_sequence_len_hint(lat, "lat")?;
+    }
+    let mut lon = coordinate_input_with_expected(py, values, "lon", expected, &|| {
+        "lon must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!lon.scalar).then_some(lon.values.len()));
+    let mut lat =
+        coordinate_input_with_expected(py, lat, "lat", expected, &|| "lat must be finite".into())?;
     if coordinate_inputs_are_scalar(&lon, &lat, None, None) {
         return Err(GeometryError::new_err(format!(
             "cells expects coordinate columns; use {class_name}(lon, lat, {depth_kw}=...) for a single cell"

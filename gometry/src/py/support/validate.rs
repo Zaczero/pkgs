@@ -12,46 +12,9 @@ use crate::io::WktDimension;
 use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny, PyAnyMethods as _,
-    PyErr, PyResult, PyTypeError, Python, Shape, finite_f64_required, non_negative_int,
-    py_i64_bounded, py_i64_required,
+    PyErr, PyResult, Python, Shape, finite_f64_required, non_negative_int, py_i64_bounded,
+    py_i64_required,
 };
-
-/// Collect a typed scalar lane from any iterable (sequence, generator, ...),
-/// with one canonical error naming the lane and its element kind.
-///
-/// Element-by-element via the reservation keystone — never generic
-/// `Vec<T>: FromPyObject`, which allocates from a lying `__len__`.
-pub(crate) fn iterable_lane<'py, T>(
-    value: &Bound<'py, PyAny>,
-    name: &str,
-    kind: &str,
-) -> PyResult<Vec<T>>
-where
-    T: for<'a> pyo3::FromPyObject<'a, 'py>,
-    for<'a> <T as pyo3::FromPyObject<'a, 'py>>::Error: Into<PyErr>,
-{
-    let error = || PyTypeError::new_err(format!("{name} must be an iterable of {kind}"));
-    let mut out = Vec::new();
-    if let Some(hint) = crate::advisory_len(value)? {
-        crate::try_reserve_hint(&mut out, hint)?;
-    }
-    let iter = crate::py_iter_or_error(value, || error())?;
-    for (index, item) in iter.enumerate() {
-        crate::check_python_signals(value.py(), index)?;
-        let item = item?;
-        let parsed: T = item.extract::<T>().map_err(|conversion| {
-            let conversion: PyErr = conversion.into();
-            if conversion.is_instance_of::<PyTypeError>(value.py()) {
-                error()
-            } else {
-                conversion
-            }
-        })?;
-        crate::try_push(&mut out, parsed)?;
-    }
-    Ok(out)
-}
-
 
 pub(crate) fn parse_precision(value: &Bound<'_, PyAny>) -> PyResult<i32> {
     py_i64_bounded("precision", value, 0..=15, &|v| {
@@ -212,7 +175,7 @@ pub(crate) fn parse_curve_bounds(
     let Some(value) = value else {
         return Ok(None);
     };
-    let values = crate::coordinate_values_exact(value.py(), value, "bounds", 4, |got| {
+    let values = crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
         GeometryError::new_err(format!(
             "bounds must be finite (minx, miny, maxx, maxy) with min <= max; got {got} values"
         ))

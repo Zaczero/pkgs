@@ -6,9 +6,9 @@ use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
     broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array,
-    coordinate_arc_values_from_buffer, coordinate_epoch_option, coordinate_input,
-    coordinate_inputs_are_scalar, finite_coordinate_required, line_string_from_data_item,
-    multi_line_string_from_data_item, multi_point_from_data_item, multi_polygon_from_data_item,
+    coordinate_arc_values_from_buffer, coordinate_epoch_option, coordinate_inputs_are_scalar,
+    finite_coordinate_required, line_string_from_data_item, multi_line_string_from_data_item,
+    multi_point_from_data_item, multi_polygon_from_data_item,
     optional_coordinate_arc_values_from_buffer, parse_crs, parse_crs_epoch, polygon_from_data_item,
     pyfunction,
 };
@@ -310,10 +310,33 @@ pub(super) fn boxes(
     ccw: bool,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    let mut minx = coordinate_input(py, minx, "minx")?;
-    let mut miny = coordinate_input(py, miny, "miny")?;
-    let mut maxx = coordinate_input(py, maxx, "maxx")?;
-    let mut maxy = coordinate_input(py, maxy, "maxy")?;
+    // A known sibling length pins a bare iterator before any other column is
+    // drained, so paired infinite inputs stop at the first excess item.
+    let mut expected = crate::coordinate_sequence_len_hint(minx, "minx")?;
+    if expected.is_none() {
+        expected = crate::coordinate_sequence_len_hint(miny, "miny")?;
+    }
+    if expected.is_none() {
+        expected = crate::coordinate_sequence_len_hint(maxx, "maxx")?;
+    }
+    if expected.is_none() {
+        expected = crate::coordinate_sequence_len_hint(maxy, "maxy")?;
+    }
+    let mut minx = crate::coordinate_input_with_expected(py, minx, "minx", expected, &|| {
+        "minx must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!minx.scalar).then_some(minx.values.len()));
+    let mut miny = crate::coordinate_input_with_expected(py, miny, "miny", expected, &|| {
+        "miny must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!miny.scalar).then_some(miny.values.len()));
+    let mut maxx = crate::coordinate_input_with_expected(py, maxx, "maxx", expected, &|| {
+        "maxx must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!maxx.scalar).then_some(maxx.values.len()));
+    let mut maxy = crate::coordinate_input_with_expected(py, maxy, "maxy", expected, &|| {
+        "maxy must be finite".into()
+    })?;
     if coordinate_inputs_are_scalar(&minx, &miny, Some(&maxx), Some(&maxy)) {
         return Err(GeometryError::new_err(
             "boxes expects bound columns; use box(minx, miny, maxx, maxy) for a single rectangle",

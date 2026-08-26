@@ -563,7 +563,8 @@ pub(crate) fn crs_transform_bounds(
         ));
     };
     let first = first?;
-    let items = if crate::f64_scalar_named("bounds", &first)?.is_some() {
+    let first_scalar = crate::f64_scalar_named("bounds", &first)?;
+    let items = if first_scalar.is_some() {
         let rest = crate::collect_py_iter_at_most_from_iter(bounds, iter, 5, Ok, |_| {
             GeometryError::new_err("bounds must be a 4-tuple or 6-tuple of finite floats")
         })?;
@@ -595,7 +596,7 @@ pub(crate) fn crs_transform_bounds(
         force_over,
     }
     .parse()?;
-    let result = match classify_bounds_shape(py, &items)? {
+    let result = match classify_bounds_shape(py, &items, first_scalar)? {
         BoundsShape::One(values) => match values.as_slice() {
             [minx, miny, maxx, maxy] => Ok(crs::transform_bounds(
                 &source,
@@ -703,7 +704,11 @@ enum BoundsShape {
 /// A leading finite float means a scalar box (every element must be a finite
 /// float; length must be 4 or 6). Otherwise each item is a row box — a
 /// malformed scalar is never re-routed into the batch error lane.
-fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult<BoundsShape> {
+fn classify_bounds_shape(
+    py: Python<'_>,
+    items: &[Bound<'_, PyAny>],
+    first_scalar: Option<f64>,
+) -> PyResult<BoundsShape> {
     // Empty input is not a batch of zero rows — it fails the scalar contract
     // (same diagnostic as a wrong-length box).
     if items.is_empty() {
@@ -711,10 +716,15 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
             "bounds must be a 4-tuple or 6-tuple of finite floats",
         ));
     }
-    let is_scalar = crate::f64_scalar_named("bounds", &items[0])?.is_some();
-    if is_scalar {
+    if let Some(first) = first_scalar {
+        if !first.is_finite() {
+            return Err(crate::py::errors::GeometryError::new_err(
+                "bounds must be finite",
+            ));
+        }
         let mut values = crate::try_vec_with_capacity(items.len())?;
-        for item in items {
+        crate::try_push(&mut values, first)?;
+        for item in &items[1..] {
             // Match coordinate_values' element contract: f64-extractable only.
             let value = crate::finite_f64_required("bounds", item)?;
             crate::try_push(&mut values, value)?;
@@ -730,7 +740,7 @@ fn classify_bounds_shape(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> PyResult
     crate::try_reserve_hint(&mut rows, items.len())?;
     let mut width = None;
     for item in items {
-        let values = crate::coordinate_values_at_most(py, item, "bounds", 6, |got| {
+        let values = crate::parameter_values_at_most(py, item, "bounds", 6, |got| {
             GeometryError::new_err(format!(
                 "bounds rows must be 4-tuples or 6-tuples of finite floats; got {got} values"
             ))

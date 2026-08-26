@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::py::errors::{AccuracyWarning, CRSError, GeometryError};
 use crate::{
     CoordinateInput, Crs, CrsCoordinateArgs, accuracy_option, broadcast_coordinate_group,
-    coordinate_epoch_option, coordinate_input, coordinate_input_with_error, crs, crs_arc,
-    finite_coordinate_required, finite_f64_required, json_to_py, parse_area, parse_crs,
+    coordinate_epoch_option, crs, crs_arc, finite_coordinate_required, finite_f64_required,
+    json_to_py, parameter_input_with_expected, parse_area, parse_crs,
 };
 
 mod functions;

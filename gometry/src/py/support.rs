@@ -15,10 +15,10 @@ use crate::{
     PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError, PyTypeMethods,
     Python, RepairMethod, Result, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod, Typed,
     Value, VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option,
-    coordinate_values, coordinate_values_at_most, coordinate_values_exact, exact_geometry,
-    finite_f64_required, geometry_type_err, metric_nearest_points, non_negative_int,
-    push_ring_shapes, py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err,
-    wgs84_crs, with_one_byte_buffer,
+    coordinate_values_at_most, coordinate_values_exact, exact_geometry, finite_f64_required,
+    geometry_type_err, metric_nearest_points, non_negative_int, parameter_values, push_ring_shapes,
+    py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err, wgs84_crs,
+    with_one_byte_buffer,
 };
 
 pub(crate) type Crs = SmolStr;
@@ -84,9 +84,10 @@ pub(crate) use constructive::{
 };
 pub(crate) use extract::{
     CoercedCollectedGeometryItems, GeometryValues, coerce_collected_geometry_items,
-    ensure_homogeneous_axes, extract_coordinate, extract_lines, extract_points, extract_polygons,
-    geometry_items, missing_geometry_items_error, optional_coordinates, parse_wkb_payload,
-    parse_wkb_payload_batch, parse_wkb_payload_bytes, parts, rings,
+    ensure_homogeneous_axes, extract_coordinate, extract_coordinate_or_empty, extract_lines,
+    extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
+    optional_coordinates, parse_wkb_payload, parse_wkb_payload_batch, parse_wkb_payload_bytes,
+    parts, rings,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, common_crs_required, crs_label, deserialized_epoch, guard_epoch_frame,

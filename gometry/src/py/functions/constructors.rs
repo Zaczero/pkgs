@@ -7,12 +7,12 @@ use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::{
     CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind, PyGeometry, PyGeometryArray,
     ShapeData, Typed, box_polygon, broadcast_coordinate_group, broadcast_crs_coordinate_inputs,
-    coordinate_arc_values, coordinate_arc_values_from_buffer, coordinate_epoch_option,
-    coordinate_input, coordinate_inputs_are_scalar, crs, ensure_homogeneous_axes, exact_geometry,
-    extract_coordinate, extract_lines, extract_points, extract_polygons,
-    finite_coordinate_required, optional_coordinate_arc_values,
-    optional_coordinate_arc_values_from_buffer, optional_coordinates, parse_crs, parse_crs_epoch,
-    wrapped_box,
+    coordinate_arc_values, coordinate_arc_values_exact, coordinate_arc_values_from_buffer,
+    coordinate_epoch_option, coordinate_inputs_are_scalar, coordinate_sequence_len_hint, crs,
+    ensure_homogeneous_axes, exact_geometry, extract_coordinate, extract_coordinate_or_empty,
+    extract_lines, extract_points, extract_polygons, finite_coordinate_required,
+    optional_coordinate_arc_values, optional_coordinate_arc_values_from_buffer,
+    optional_coordinates, parse_crs, parse_crs_epoch, wrapped_box,
 };
 
 mod builders;

@@ -270,7 +270,7 @@ mod multipart_storage_tests {
         assert_eq!(sliced_shape.as_ref(), &multi);
         assert_eq!(sliced_shape.part_count(), 2);
         assert_eq!(
-            to_wkt(sliced_shape.as_ref()),
+            to_wkt(sliced_shape.as_ref()).unwrap(),
             "MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))"
         );
 
@@ -280,6 +280,6 @@ mod multipart_storage_tests {
         assert!(selected.is_row_missing(1));
         let selected_shape = selected.storage().iter_shapes().next().unwrap();
         assert_eq!(selected_shape.part_count(), 1);
-        assert_eq!(to_wkt(selected_shape.as_ref()), "POINT (5 5)");
+        assert_eq!(to_wkt(selected_shape.as_ref()).unwrap(), "POINT (5 5)");
     }
 }

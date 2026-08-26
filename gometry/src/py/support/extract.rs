@@ -417,7 +417,7 @@ pub(crate) fn extract_points(
         }
         crate::try_push(
             &mut points,
-            Point::new_axes(
+            Point::new_unchecked_axes(
                 coordinate[0],
                 coordinate[1],
                 ZOrdinate(
@@ -430,7 +430,7 @@ pub(crate) fn extract_points(
                         .map(|values| values[idx])
                         .or_else(|| coordinate.get(3).copied()),
                 ),
-            )?,
+            ),
         )?;
     }
     ensure_homogeneous_axes(&points)?;
@@ -438,9 +438,19 @@ pub(crate) fn extract_points(
 }
 
 pub(crate) fn extract_coordinate(value: &Bound<'_, PyAny>) -> PyResult<Point> {
+    extract_coordinate_or_empty(value)?
+        .ok_or_else(|| InvalidGeometryError::new_err("coordinate requires x and y"))
+}
+
+/// Admit one raw coordinate once, retaining an empty member for multipart
+/// constructors that use an explicit empty point.
+pub(crate) fn extract_coordinate_or_empty(value: &Bound<'_, PyAny>) -> PyResult<Option<Point>> {
     let coordinate = coordinate_values_at_most(value.py(), value, "coordinate", 4, |got| {
         InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
     })?;
+    if coordinate.is_empty() {
+        return Ok(None);
+    }
     if coordinate.len() < 2 {
         return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
     }
@@ -452,12 +462,12 @@ pub(crate) fn extract_coordinate(value: &Bound<'_, PyAny>) -> PyResult<Point> {
     if coordinate.iter().any(|value| !value.is_finite()) {
         return Err(InvalidGeometryError::new_err("coordinates must be finite"));
     }
-    Ok(Point::new_axes(
+    Ok(Some(Point::new_unchecked_axes(
         coordinate[0],
         coordinate[1],
         ZOrdinate(coordinate.get(2).copied()),
         MOrdinate(coordinate.get(3).copied()),
-    )?)
+    )))
 }
 
 /// Reject a vertex sequence whose points do not all share one coordinate-axis

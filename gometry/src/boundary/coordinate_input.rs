@@ -12,9 +12,10 @@
 
 use std::sync::Arc;
 
+use numpy::{PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
+use pyo3::types::{PyAny, PyFloat, PyInt};
 use pyo3::{Borrowed, FromPyObject};
 
 use crate::boundary::buffer_endian::{buffer_to_arc_f64, buffer_to_vec_f64};
@@ -31,8 +32,8 @@ pub(crate) struct CoordinateInput {
     pub scalar: bool,
 }
 
-fn coordinate_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    match finite_f64_required(name, value) {
+pub(crate) fn coordinate_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
+    match crate::finite_coordinate_required(name, value) {
         Ok(value) => Ok(value),
         Err(error)
             if error.is_instance_of::<PyTypeError>(value.py())
@@ -45,6 +46,28 @@ fn coordinate_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
             )))
         },
         Err(error) => Err(error),
+    }
+}
+
+fn coordinate_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
+    let scalar = match f64_scalar_named(name, value) {
+        Ok(scalar) => scalar,
+        Err(_error) if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() => {
+            return Err(InvalidGeometryError::new_err(format!(
+                "{name} must be finite"
+            )));
+        },
+        Err(error) => return Err(error),
+    };
+    let Some(value) = scalar else {
+        return Ok(None);
+    };
+    if value.is_finite() {
+        Ok(Some(value))
+    } else {
+        Err(InvalidGeometryError::new_err(format!(
+            "{name} must be finite"
+        )))
     }
 }
 
@@ -62,42 +85,6 @@ fn parameter_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
             )))
         },
         Err(error) => Err(error),
-    }
-}
-
-pub(crate) fn coordinate_input(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
-) -> PyResult<CoordinateInput> {
-    coordinate_input_with_error(py, value, name, &|| format!("{name} must be finite"))
-}
-
-/// [`coordinate_input`] with a caller-supplied non-finite message (the
-/// geodesic surfaces phrase the domain differently).
-pub(crate) fn coordinate_input_with_error(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
-    non_finite: &dyn Fn() -> String,
-) -> PyResult<CoordinateInput> {
-    if let Some(value) = f64_scalar_named(name, value)? {
-        if value.is_finite() {
-            return Ok(CoordinateInput {
-                values: vec![value],
-                scalar: true,
-            });
-        }
-        return Err(InvalidGeometryError::new_err(non_finite()));
-    }
-    let values = coordinate_values(py, value, name)?;
-    if column_all_finite(&values) {
-        Ok(CoordinateInput {
-            values,
-            scalar: false,
-        })
-    } else {
-        Err(InvalidGeometryError::new_err(non_finite()))
     }
 }
 
@@ -796,6 +783,22 @@ pub(crate) fn coordinate_values(
     collect_py_iter_from_iter(value, iter, |item| coordinate_float(name, &item))
 }
 
+pub(crate) fn parameter_values(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+) -> PyResult<Vec<f64>> {
+    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+        return buffer_to_vec_f64(py, &buffer);
+    }
+    let iter = py_iter_or_error(value, || {
+        PyTypeError::new_err(format!(
+            "{name} must be a float or an iterable of finite floats"
+        ))
+    })?;
+    collect_py_iter_from_iter(value, iter, |item| parameter_float(name, &item))
+}
+
 /// Collect a coordinate with a variable but finite arity. Reading only five
 /// items makes malformed or infinite coordinate providers terminate while
 /// retaining the normal 2/3/4-ordinate admission rules at the caller.
@@ -827,6 +830,34 @@ pub(crate) fn coordinate_values_at_most(
     )
 }
 
+pub(crate) fn parameter_values_at_most(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    maximum: usize,
+    on_excess: impl FnOnce(usize) -> PyErr,
+) -> PyResult<Vec<f64>> {
+    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+        let got = buffer.item_count();
+        if got > maximum {
+            return Err(on_excess(got));
+        }
+        return buffer_to_vec_f64(py, &buffer);
+    }
+    let iter = py_iter_or_error(value, || {
+        PyTypeError::new_err(format!(
+            "{name} must be a float or an iterable of finite floats"
+        ))
+    })?;
+    collect_py_iter_at_most_from_iter(
+        value,
+        iter,
+        maximum,
+        |item| parameter_float(name, &item),
+        on_excess,
+    )
+}
+
 /// Collect exactly `expected` finite-f64 coordinate values (D11).
 ///
 /// Buffer / ndarray fast paths stay zero-copy-friendly (length-checked then
@@ -842,6 +873,18 @@ pub(crate) fn coordinate_values_exact(
 ) -> PyResult<Vec<f64>> {
     coordinate_values_exact_with(py, value, name, expected, on_len, |item| {
         coordinate_float(name, item)
+    })
+}
+
+pub(crate) fn parameter_values_exact(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    expected: usize,
+    on_len: impl FnOnce(usize) -> PyErr,
+) -> PyResult<Vec<f64>> {
+    coordinate_values_exact_with(py, value, name, expected, on_len, |item| {
+        parameter_float(name, item)
     })
 }
 
@@ -876,25 +919,39 @@ fn coordinate_values_exact_with(
 /// (no `__len__`) return `None`.
 pub(crate) fn coordinate_sequence_len_hint(
     value: &Bound<'_, PyAny>,
-    name: &str,
+    _name: &str,
 ) -> PyResult<Option<usize>> {
-    // Python/NumPy scalars extract as f64 and are broadcast — not a column length.
-    if f64_scalar_named(name, value)?.is_some() {
-        // A multi-element f64 buffer does not extract as a single f64, so this
-        // arm is the true scalar case (or a 0-d array treated as scalar).
+    // Do not invoke a user `__float__` provider merely to discover the pair
+    // length. Numeric admission below owns that conversion and must call it
+    // once. Check f64 buffers first because their item count includes every
+    // dimension, matching the existing flattening behavior.
+    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+        return Ok((buffer.dimensions() != 0).then_some(buffer.item_count()));
+    }
+    // NumPy integer/object arrays do not export as f64 buffers, but their
+    // reported length still pins a paired bare iterator. A 0-D array is a
+    // scalar and deliberately has no sequence length.
+    if let Ok(array) = value.cast::<PyUntypedArray>() {
+        return if array.ndim() == 0 {
+            Ok(None)
+        } else {
+            crate::advisory_len(value)
+        };
+    }
+    if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() {
         return Ok(None);
     }
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        return Ok(Some(buffer.item_count()));
+    if let Some(length) = crate::advisory_len(value)? {
+        return Ok(Some(length));
     }
-    crate::advisory_len(value)
+    Ok(None)
 }
 
-/// Like [`coordinate_input_with_error`], but when `expected` is `Some` and
-/// `value` is a **bare** iterable (no reported length), the non-scalar path
-/// uses exact collection so a sibling list/buffer can pin an infinite
-/// `itertools.repeat` (D11). Values that already report `__len__`/buffer
-/// size drain normally so finite length-mismatch messages stay broadcast's.
+/// Parse a finite scalar or sequence. When `expected` is `Some` and `value` is
+/// a **bare** iterable (no reported length), exact collection lets a sibling
+/// list/buffer pin an infinite `itertools.repeat` (D11). Sources that report
+/// `__len__` retain the ordinary collector path so the final broadcast step
+/// owns finite mismatch messages.
 pub(crate) fn coordinate_input_with_expected(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -902,18 +959,15 @@ pub(crate) fn coordinate_input_with_expected(
     expected: Option<usize>,
     non_finite: &dyn Fn() -> String,
 ) -> PyResult<CoordinateInput> {
-    if let Some(value) = f64_scalar_named(name, value)? {
-        if value.is_finite() {
-            return Ok(CoordinateInput {
-                values: vec![value],
-                scalar: true,
-            });
-        }
-        return Err(InvalidGeometryError::new_err(non_finite()));
+    if let Some(value) = coordinate_scalar_named(name, value)? {
+        return Ok(CoordinateInput {
+            values: vec![value],
+            scalar: true,
+        });
     }
-    // Bare iterable (no `__len__` / buffer): bound by sibling when known.
-    // Length-reporting columns keep the drain-then-broadcast path so
-    // `points([1,2],[1,2,3])` still raises the historical message.
+    // A bare source has no length to report, so a sibling's count bounds it.
+    // Sources with their own length keep the ordinary drain path, preserving
+    // the shared broadcast error for finite mismatches.
     let values = if coordinate_sequence_len_hint(value, name)?.is_none()
         && let Some(expected) = expected
     {
@@ -932,6 +986,43 @@ pub(crate) fn coordinate_input_with_expected(
         })
     } else {
         Err(InvalidGeometryError::new_err(non_finite()))
+    }
+}
+
+pub(crate) fn parameter_input_with_expected(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    expected: Option<usize>,
+    non_finite: &dyn Fn() -> String,
+) -> PyResult<CoordinateInput> {
+    if let Some(value) = f64_scalar_named(name, value)? {
+        if value.is_finite() {
+            return Ok(CoordinateInput {
+                values: vec![value],
+                scalar: true,
+            });
+        }
+        return Err(crate::py::errors::GeometryError::new_err(non_finite()));
+    }
+    let values = if coordinate_sequence_len_hint(value, name)?.is_none()
+        && let Some(expected) = expected
+    {
+        parameter_values_exact(py, value, name, expected, |got| {
+            crate::py::errors::GeometryError::new_err(format!(
+                "{name} must have the same length, got {got} and {expected}"
+            ))
+        })?
+    } else {
+        parameter_values(py, value, name)?
+    };
+    if column_all_finite(&values) {
+        Ok(CoordinateInput {
+            values,
+            scalar: false,
+        })
+    } else {
+        Err(crate::py::errors::GeometryError::new_err(non_finite()))
     }
 }
 

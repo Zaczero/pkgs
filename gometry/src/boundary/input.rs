@@ -15,7 +15,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 
 use crate::py::errors::GeometryError;
-use crate::{Positive, Shape, coordinate_values_exact, crs};
+use crate::{Positive, Shape, crs, parameter_values_exact};
 
 pub(crate) fn py_i64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // A non-int where an int is required is a plain `TypeError` (like the
@@ -251,7 +251,7 @@ pub(crate) fn bounded_int(
 /// by the grid pair parameters; wrong type raises `TypeError`, wrong arity
 /// `GeometryError`.
 fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(f64, f64)> {
-    let values = match coordinate_values_exact(value.py(), value, name, 2, |got| {
+    let values = match parameter_values_exact(value.py(), value, name, 2, |got| {
         crate::py::errors::parameter_error(
             format!("snap_to_grid {name} must be {expected}, got {got} values"),
             name,
@@ -560,11 +560,22 @@ pub(crate) fn finite_f64_required(name: &str, value: &Bound<'_, PyAny>) -> PyRes
 /// is a structural geometry rule, so it raises `InvalidGeometryError` (matching the
 /// column lanes), not the generic parameter class.
 pub(crate) fn finite_coordinate_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    finite_f64_with(
-        name,
-        value,
-        crate::py::errors::InvalidGeometryError::new_err,
-    )
+    let value = match f64_required(name, value) {
+        Ok(value) => value,
+        Err(_error) if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() => {
+            return Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+                "{name} must be finite"
+            )));
+        },
+        Err(error) => return Err(error),
+    };
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+            "{name} must be finite"
+        )))
+    }
 }
 
 pub(crate) fn f64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
@@ -709,7 +720,7 @@ pub(crate) fn parse_area(
     if let Some(area) = area_from_object(value, name)? {
         return Ok(Some(area));
     }
-    let values = coordinate_values_exact(value.py(), value, name, 4, |got| {
+    let values = parameter_values_exact(value.py(), value, name, 4, |got| {
         GeometryError::new_err(format!(
             "{name} must be a (west, south, east, north) tuple, got {got} values"
         ))

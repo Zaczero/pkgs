@@ -333,12 +333,11 @@ impl PyGeometry {
         normalized: bool,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>> {
-        let at_is_scalar = at
+        let at_scalar = at
             .map(|value| crate::f64_scalar_named("at", value))
             .transpose()?
-            .flatten()
-            .is_some();
-        if count.is_some() || !at_is_scalar {
+            .flatten();
+        if count.is_some() || at_scalar.is_none() {
             if basis != LineReferenceBasis::Distance {
                 return Err(GeometryError::new_err(
                     "count and multiple at values require basis='distance'",
@@ -348,10 +347,10 @@ impl PyGeometry {
             return crate::dispatch::line_interpolate_points_scalar(self, &plan, unit)
                 .and_then(|value| value.into_pyobject(py).map(|value| value.unbind().into()));
         }
-        let at = at.expect("checked above");
+        let at = at_scalar.expect("checked above");
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
-            let m = F64Param::parse_raw(at, "at", unary_len!(scalar))?;
+            let m = F64Param::Scalar(at);
             m.ensure_finite("at")?;
             let value = unary_spine_shapes!(
                 scalar,
@@ -367,7 +366,7 @@ impl PyGeometry {
             return value.into_pyobject(py).map(Bound::unbind);
         }
         let op = crate::dispatch::Operation::LineInterpolate;
-        let distance = F64Param::parse_raw(at, "at", unary_len!(scalar))?;
+        let distance = F64Param::Scalar(at);
         distance.ensure_finite("distance")?;
         let model = op
             .resolver_with_line_unit(unit, normalized)

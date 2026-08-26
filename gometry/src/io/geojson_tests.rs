@@ -188,7 +188,11 @@ fn nested_empty_members_are_preserved_by_both_geojson_readers() {
     for (kind, value, expected_wkt) in cases {
         let direct = parse_geojson(&value).expect("value-tree GeoJSON parses");
         assert_eq!(direct.part_count(), 2, "kind={kind}");
-        assert_eq!(crate::io::to_wkt(&direct), expected_wkt, "kind={kind}");
+        assert_eq!(
+            crate::io::to_wkt(&direct).unwrap(),
+            expected_wkt,
+            "kind={kind}"
+        );
 
         let text = serde_json::to_string(&value).unwrap();
         let GeoJsonInput::Geometry(seeded) = parse_geojson_text(&text).unwrap().input else {

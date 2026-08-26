@@ -726,13 +726,21 @@ pub(crate) fn xy_predicate(
         return xy_predicate_geometry(py, &prepared.get().geometry, x, y, inclusive, true);
     }
     let input = classify_input(geometry).ok_or_else(|| expected_geometry_or_array_for(geometry))?;
-    // Streaming owner: pin bare one-shot iterators with the sibling length when
-    // known so each coordinate column is drained once (not twice via independent
-    // `coordinate_input` + broadcast).
+    let receiver_len = match input {
+        GeometryInput::One(_) => None,
+        GeometryInput::Many(array) => Some(array.storage().len()),
+    };
+    // Streaming owner: pin bare one-shot iterators with the sibling or receiver
+    // length when known so each coordinate column is drained once (not twice via
+    // independent `coordinate_input` + broadcast).
     let x_hint = coordinate_sequence_len_hint(x, "x")?;
     let y_hint = coordinate_sequence_len_hint(y, "y")?;
-    let mut x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
-    let mut y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
+    let mut x = coordinate_input_with_expected(py, x, "x", y_hint.or(receiver_len), &|| {
+        "x must be finite".into()
+    })?;
+    let mut y = coordinate_input_with_expected(py, y, "y", x_hint.or(receiver_len), &|| {
+        "y must be finite".into()
+    })?;
     if x.values.len() != y.values.len() && !x.scalar && !y.scalar {
         return Err(InvalidGeometryError::new_err(format!(
             "x and y must have the same length, got {} and {}",

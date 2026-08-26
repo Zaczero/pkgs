@@ -10,8 +10,9 @@ use crate::py::functions::constructors::{
     Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryError,
     GeometryKind, InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
     PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
-    coordinate_arc_values, coordinate_epoch_option, crs, ensure_homogeneous_axes, exact_geometry,
-    extract_coordinate, extract_lines, extract_points, extract_polygons,
+    coordinate_arc_values, coordinate_arc_values_exact, coordinate_epoch_option,
+    coordinate_sequence_len_hint, crs, ensure_homogeneous_axes, exact_geometry, extract_coordinate,
+    extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons,
     finite_coordinate_required, optional_coordinate_arc_values, optional_coordinates, parse_crs,
     parse_crs_epoch, wrapped_box,
 };
@@ -128,7 +129,7 @@ pub(crate) fn build_point(
             let y = finite_coordinate_required("y", y)?;
             let z = z.map(|z| finite_coordinate_required("z", z)).transpose()?;
             let m = m.map(|m| finite_coordinate_required("m", m)).transpose()?;
-            Shape::Point(Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))?)
+            Shape::Point(Point::new_unchecked_axes(x, y, ZOrdinate(z), MOrdinate(m)))
         },
         // No coordinates → `POINT EMPTY` (Shapely-compatible `Point()`); Z/M
         // are meaningless without X/Y.
@@ -216,8 +217,41 @@ pub(super) fn coordinate_vertices(
         // Column input is already SoA — build the `CoordSeq` straight from the
         // `x`/`y`/`z`/`m` columns, with no `Vec<Point>` bounce.
         (None, Some(x), Some(y)) => {
-            let xs = coordinate_arc_values(x.py(), x, "x")?;
-            let ys = coordinate_arc_values(y.py(), y, "y")?;
+            // Establish a sibling length before draining either bare column;
+            // exact admission then stops an infinite paired source at the
+            // first excess item.
+            let x_hint = coordinate_sequence_len_hint(x, "x")?;
+            let y_hint = coordinate_sequence_len_hint(y, "y")?;
+            let z_hint = z
+                .map(|value| coordinate_sequence_len_hint(value, "z"))
+                .transpose()?
+                .flatten();
+            let m_hint = m
+                .map(|value| coordinate_sequence_len_hint(value, "m"))
+                .transpose()?
+                .flatten();
+            let established = x_hint.or(y_hint).or(z_hint).or(m_hint);
+            let xs = if x_hint.is_none()
+                && let Some(expected) = established
+            {
+                coordinate_arc_values_exact(x.py(), x, "x", expected, |got| {
+                    InvalidGeometryError::new_err(format!(
+                        "x and y must have the same length, got {got} and {expected}"
+                    ))
+                })?
+            } else {
+                coordinate_arc_values(x.py(), x, "x")?
+            };
+            let ys = if y_hint.is_none() && established.is_some() {
+                let expected = xs.len();
+                coordinate_arc_values_exact(y.py(), y, "y", expected, |got| {
+                    InvalidGeometryError::new_err(format!(
+                        "x and y must have the same length, got {expected} and {got}"
+                    ))
+                })?
+            } else {
+                coordinate_arc_values(y.py(), y, "y")?
+            };
             if xs.len() != ys.len() {
                 return Err(InvalidGeometryError::new_err(format!(
                     "x and y must have the same length, got {} and {}",
@@ -225,8 +259,9 @@ pub(super) fn coordinate_vertices(
                     ys.len(),
                 )));
             }
-            let z = optional_coordinate_arc_values(x.py(), z, xs.len(), "z")?;
-            let m = optional_coordinate_arc_values(x.py(), m, xs.len(), "m")?;
+            let expected = xs.len();
+            let z = optional_coordinate_arc_values(x.py(), z, expected, "z")?;
+            let m = optional_coordinate_arc_values(x.py(), m, expected, "m")?;
             Ok(CoordSeq::from_arc_columns(xs, ys, z, m)?)
         },
         (None, None, None) => Err(InvalidGeometryError::new_err(
@@ -367,22 +402,21 @@ pub(crate) fn build_multi_point(
             _ => None,
         },
         |item| {
-            if item.len()? == 0 {
-                Ok(Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY))
-            } else {
-                Ok(Shape::Point(extract_coordinate(item)?))
-            }
+            Ok(match extract_coordinate_or_empty(item)? {
+                Some(point) => Shape::Point(point),
+                None => Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY),
+            })
         },
     )?;
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
-    let point_members = members
-        .into_iter()
-        .map(|shape| match shape {
+    let mut point_members = crate::try_vec_with_capacity(members.len())?;
+    for shape in members {
+        crate::try_push(&mut point_members, match shape {
             Shape::Point(point) => MultiMember::Value(point),
             Shape::Empty(GeometryKind::Point, _) => MultiMember::Empty,
             _ => unreachable!("multipart member type checked above"),
-        })
-        .collect::<Vec<_>>();
+        })?;
+    }
     if point_members.is_empty() {
         return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
     }
@@ -689,11 +723,7 @@ pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<
 }
 
 pub(super) fn polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
-    geometry_from_data_item(item, "Polygon", |item| {
-        let shape = polygon_from_coordinates_item(item)?;
-        crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        Ok(shape)
-    })
+    geometry_from_data_item(item, "Polygon", polygon_from_coordinates_item)
 }
 
 fn geometry_from_data_item(
@@ -714,7 +744,68 @@ fn polygon_from_coordinates_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     // parent would consume the first ring of a one-shot iterator and leave
     // only holes for the ring-list path (shell silently dropped).
     let members = crate::collect_py_iter(item, Ok)?;
-    polygon_from_coordinate_members(&members)
+    let shape = polygon_from_coordinate_members(&members)?;
+    crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
+    Ok(shape)
+}
+
+enum PolygonMember<'py> {
+    Coordinate(Point),
+    Nested(Vec<Bound<'py, PyAny>>),
+}
+
+fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<PolygonMember<'py>> {
+    let mut iter = crate::py_iter_or_error(member, || {
+        PyTypeError::new_err("polygon member must be a coordinate sequence")
+    })?;
+    let Some(first_item) = iter.next() else {
+        return Ok(PolygonMember::Nested(Vec::new()));
+    };
+    let first_item = first_item?;
+    let Some(first) = crate::f64_scalar_named("coordinate", &first_item)? else {
+        // Ring cardinality is variable; only the coordinate-member branch is
+        // bounded by the four-ordinate contract.
+        let mut values = crate::try_vec_with_capacity_hint(1)?;
+        crate::try_push(&mut values, first_item)?;
+        let rest = crate::collect_py_iter_from_iter(member, iter, Ok::<_, PyErr>)?;
+        for item in rest {
+            crate::try_push(&mut values, item)?;
+        }
+        return Ok(PolygonMember::Nested(values));
+    };
+    if !first.is_finite() {
+        return Err(InvalidGeometryError::new_err("x must be finite"));
+    }
+    let rest = crate::collect_py_iter_at_most_from_iter(
+        member,
+        iter,
+        3,
+        |item| crate::boundary::coordinate_float("coordinate", &item),
+        |got| {
+            InvalidGeometryError::new_err(format!(
+                "coordinate has too many ordinates (got {})",
+                got.saturating_add(1)
+            ))
+        },
+    )?;
+    let mut values = crate::try_vec_with_capacity(1 + rest.len())?;
+    crate::try_push(&mut values, first)?;
+    for value in rest {
+        crate::try_push(&mut values, value)?;
+    }
+    if values.len() < 2 {
+        return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
+    }
+    let x = values[0];
+    let y = values[1];
+    let z = values.get(2).copied();
+    let m = values.get(3).copied();
+    Ok(PolygonMember::Coordinate(Point::new_unchecked_axes(
+        x,
+        y,
+        ZOrdinate(z),
+        MOrdinate(m),
+    )))
 }
 
 /// Classify a materialized top-level polygon item as a bare shell or ring list.
@@ -722,21 +813,46 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
     if members.is_empty() {
         return Ok(Shape::empty_polygon());
     }
-    // Bare shell coordinate sequence `[(x, y), ...]` — each member is a point.
-    if let Ok(shell_points) = points_from_coordinate_members(members) {
-        return Ok(Shape::Polygon(Polygon::new(
-            Ring::closed(shell_points)?,
-            Vec::new(),
-        )));
+    let first = materialize_polygon_member(&members[0])?;
+    match first {
+        PolygonMember::Coordinate(first) => {
+            // Bare shell `[(x, y), ...]`: each top-level member is admitted
+            // once as one coordinate.
+            let mut points = crate::try_vec_with_capacity(members.len())?;
+            crate::try_push(&mut points, first)?;
+            for member in &members[1..] {
+                let PolygonMember::Coordinate(point) = materialize_polygon_member(member)? else {
+                    return Err(PyTypeError::new_err(
+                        "polygon shell must contain only coordinate values",
+                    ));
+                };
+                crate::try_push(&mut points, point)?;
+            }
+            ensure_homogeneous_axes(&points)?;
+            Ok(Shape::Polygon(Polygon::new(
+                Ring::closed(points)?,
+                Vec::new(),
+            )))
+        },
+        PolygonMember::Nested(first) => {
+            // Ring list: each ring source is materialized once before the
+            // shell/holes distinction, so one-shot ring iterators survive.
+            let shell = Ring::closed(points_from_coordinate_members(&first)?)?;
+            let mut holes = crate::try_vec_with_capacity(members.len().saturating_sub(1))?;
+            for member in &members[1..] {
+                let PolygonMember::Nested(ring) = materialize_polygon_member(member)? else {
+                    return Err(PyTypeError::new_err(
+                        "polygon holes must contain coordinate sequences",
+                    ));
+                };
+                crate::try_push(
+                    &mut holes,
+                    Ring::closed(points_from_coordinate_members(&ring)?)?,
+                )?;
+            }
+            Ok(Shape::Polygon(Polygon::new(shell, holes)))
+        },
     }
-    // Ring list: first member is the shell, the rest are holes.
-    Ok(Shape::Polygon(Polygon::new(
-        Ring::closed(extract_points(&members[0], None, None)?)?,
-        members[1..]
-            .iter()
-            .map(|ring| Ok(Ring::closed(extract_points(ring, None, None)?)?))
-            .collect::<PyResult<Vec<_>>>()?,
-    )))
 }
 
 /// Parse every top-level member as a coordinate (bare-shell form).
@@ -807,15 +923,12 @@ pub(crate) fn build_geometry_collection(
         },
         "GeometryCollection",
     )?;
-    let items = members
-        .into_iter()
-        .map(
-            |geometry| match std::sync::Arc::try_unwrap(geometry.shape) {
-                Ok(data) => data.into_shape(),
-                Err(shared) => shared.shape().clone(),
-            },
-        )
-        .collect::<Vec<_>>();
+    let items = crate::try_collect_results(members.into_iter().map(|geometry| {
+        Ok::<_, PyErr>(match std::sync::Arc::try_unwrap(geometry.shape) {
+            Ok(data) => data.into_shape(),
+            Err(shared) => shared.shape().clone(),
+        })
+    }))?;
     Ok(PyGeometry::with_epoch(
         Shape::geometry_collection(items),
         frame.crs_owned(),

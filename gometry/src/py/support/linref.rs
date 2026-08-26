@@ -4,7 +4,7 @@
 )]
 use crate::py::support::{
     Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
-    PyGeometry, PyResult, Result, Shape, ShapeData, coordinate_values, require_locate_point,
+    PyGeometry, PyResult, Result, Shape, ShapeData, parameter_values, require_locate_point,
     resolve_metric,
 };
 
@@ -68,7 +68,7 @@ pub(crate) fn parse_interpolate_plan(
             Ok(InterpolatePlan::Count(count))
         },
         (None, Some(distances)) => {
-            let values = coordinate_values(distances.py(), distances, "at")?;
+            let values = parameter_values(distances.py(), distances, "at")?;
             if !crate::geometry::column_all_finite(&values) {
                 return Err(GeometryError::new_err("at must be finite"));
             }

@@ -16,8 +16,9 @@ use crate::py::numpy::float64_array;
 use crate::{
     Bound, CoordinateInput, Crs, DistanceUnit, Frame, GeometryInput, IntoPyObject as _,
     NavigationPath, Point, PointRows, Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python,
-    Shape, broadcast_coordinate_group, classify_input, classify_required, coordinate_input, crs,
-    ensure_same_len, expected_geometry_or_array, pyfunction, require_point, resolve_metric,
+    Shape, broadcast_coordinate_group, classify_input, classify_required,
+    coordinate_sequence_len_hint, crs, ensure_same_len, expected_geometry_or_array,
+    parameter_input_with_expected, pyfunction, require_point, resolve_metric,
 };
 
 fn geometry_point(geometry: &PyGeometry) -> Option<Point> {
@@ -554,6 +555,29 @@ fn broadcast_destination_param(
             input.values.len()
         )))
     }
+}
+
+fn destination_parameters(
+    py: Python<'_>,
+    bearing: &Bound<'_, PyAny>,
+    distance: &Bound<'_, PyAny>,
+    receiver_len: Option<usize>,
+) -> PyResult<(CoordinateInput, CoordinateInput)> {
+    let mut expected = coordinate_sequence_len_hint(bearing, "bearing")?;
+    if expected.is_none() {
+        expected = coordinate_sequence_len_hint(distance, "distance")?;
+    }
+    if expected.is_none() {
+        expected = receiver_len;
+    }
+    let bearing = parameter_input_with_expected(py, bearing, "bearing", expected, &|| {
+        "bearing must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!bearing.scalar).then_some(bearing.values.len()));
+    let distance = parameter_input_with_expected(py, distance, "distance", expected, &|| {
+        "distance must be finite".into()
+    })?;
+    Ok((bearing, distance))
 }
 
 fn point_from_point_nav_shape(shape: &Shape) -> Point {
@@ -1592,13 +1616,12 @@ fn destination_point_array(
     use GeometryInput::{Many, One};
 
     let point_in = classify_required(point)?;
-    let mut bearing = coordinate_input(py, bearing, "bearing")?;
-    let mut distance = coordinate_input(py, distance, "distance")?;
+    let point_len = input_len(point_in);
+    let (mut bearing, mut distance) = destination_parameters(py, bearing, distance, point_len)?;
     let param_len = broadcast_coordinate_group(
         [(&mut bearing, "bearing"), (&mut distance, "distance")],
         "bearing and distance",
     )?;
-    let point_len = input_len(point_in);
     let len = point_len.unwrap_or(param_len);
     if let Some(point_len) = point_len
         && param_len != point_len
@@ -1666,8 +1689,7 @@ pub(crate) fn destination_point_receiver(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let mut bearing = coordinate_input(py, bearing, "bearing")?;
-    let mut distance = coordinate_input(py, distance, "distance")?;
+    let (mut bearing, mut distance) = destination_parameters(py, bearing, distance, None)?;
     let len = broadcast_coordinate_group(
         [(&mut bearing, "bearing"), (&mut distance, "distance")],
         "bearing and distance",
@@ -1715,8 +1737,7 @@ pub(crate) fn rhumb_destination_point_receiver(
     bearing: &Bound<'_, PyAny>,
     distance: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let mut bearing = coordinate_input(py, bearing, "bearing")?;
-    let mut distance = coordinate_input(py, distance, "distance")?;
+    let (mut bearing, mut distance) = destination_parameters(py, bearing, distance, None)?;
     let len = broadcast_coordinate_group(
         [(&mut bearing, "bearing"), (&mut distance, "distance")],
         "bearing and distance",
@@ -2436,8 +2457,15 @@ pub(crate) fn point_between(
     path: NavigationPath,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let mut distance = coordinate_input(py, distance, "distance")?;
     let mut plan = PointBinaryPlan::new(left, right, "point_between")?;
+    let receiver_len = match plan.execution {
+        PointBinaryExecution::Scalar { .. } => None,
+        PointBinaryExecution::Rows(len) => Some(len),
+    };
+    let mut distance =
+        parameter_input_with_expected(py, distance, "distance", receiver_len, &|| {
+            "distance must be finite".into()
+        })?;
     match plan.execution {
         PointBinaryExecution::Scalar { .. } if !distance.scalar => {
             plan.execution = PointBinaryExecution::Rows(distance.values.len());
@@ -2534,13 +2562,12 @@ fn rhumb_destination_point_array(
     distance: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let point_input = classify_required(point)?;
-    let mut bearing = coordinate_input(py, bearing, "bearing")?;
-    let mut distance = coordinate_input(py, distance, "distance")?;
+    let point_len = input_len(point_input);
+    let (mut bearing, mut distance) = destination_parameters(py, bearing, distance, point_len)?;
     let param_len = broadcast_coordinate_group(
         [(&mut bearing, "bearing"), (&mut distance, "distance")],
         "bearing and distance",
     )?;
-    let point_len = input_len(point_input);
     let len = point_len.unwrap_or(param_len);
     if let Some(point_len) = point_len
         && param_len != point_len

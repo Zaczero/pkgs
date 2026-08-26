@@ -452,7 +452,7 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
         gm.crs_roundtrip(4326, 3857, [-73.0, -72.0], [41.0])
     with pytest.raises(ValueError, match='lon must be finite'):
         gm.CRS(3857).factors(float('nan'), 41.0)
-    with pytest.raises(ValueError, match='geodesic coordinates must be finite'):
+    with pytest.raises(ValueError, match='lon1 must be finite'):
         gm.CRS(4326).geodesic_inverse(float('nan'), 41.0, -74.0, 42.0)
     with pytest.raises(ValueError, match='requires both z1 and z2'):
         gm.CRS(4326).geodesic_inverse(-73.0, 41.0, -74.0, 42.0, z1=10.0)

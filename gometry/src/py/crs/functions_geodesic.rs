@@ -4,8 +4,7 @@
 )]
 use crate::py::crs::{
     Bound, CoordinateInput, Py, PyAny, PyAnyMethods as _, PyDict, PyDictMethods as _, PyResult,
-    Python, broadcast_coordinate_group, coordinate_input, coordinate_input_with_error, crs,
-    crs_normalize,
+    Python, broadcast_coordinate_group, crs, crs_normalize,
 };
 /// Export a CRS to CF (Climate & Forecast) grid-mapping attributes.
 ///
@@ -56,8 +55,17 @@ pub(crate) fn crs_factors(
     radians: bool,
 ) -> PyResult<Py<PyDict>> {
     let target = crs_normalize(target)?;
-    let mut lon = coordinate_input(py, lon, "lon")?;
-    let mut lat = coordinate_input(py, lat, "lat")?;
+    let mut expected = crate::coordinate_sequence_len_hint(lon, "lon")?;
+    if expected.is_none() {
+        expected = crate::coordinate_sequence_len_hint(lat, "lat")?;
+    }
+    let mut lon = crate::coordinate_input_with_expected(py, lon, "lon", expected, &|| {
+        "lon must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!lon.scalar).then_some(lon.values.len()));
+    let mut lat = crate::coordinate_input_with_expected(py, lat, "lat", expected, &|| {
+        "lat must be finite".into()
+    })?;
     let scalar = lon.scalar && lat.scalar;
     broadcast_coordinate_group([(&mut lon, "lon"), (&mut lat, "lat")], "lon and lat")?;
     if scalar {
@@ -242,36 +250,38 @@ pub(crate) fn crs_geodesic_scalar_fast_path(
     z2: Option<&Bound<'_, PyAny>>,
     angle_unit: crs::AngleUnit,
 ) -> PyResult<Option<Py<PyDict>>> {
+    // Only probe built-in scalar values here. Calling `__float__` to decide
+    // whether to use the fast path would call a stateful provider again when
+    // the general broadcast path is selected.
+    let plain = |value: &Bound<'_, PyAny>| {
+        value.cast::<pyo3::types::PyInt>().is_ok() || value.cast::<pyo3::types::PyFloat>().is_ok()
+    };
+    if ![lon1, lat1, lon2, lat2].into_iter().all(plain)
+        || z1.is_some_and(|value| !value.is_none() && !plain(value))
+        || z2.is_some_and(|value| !value.is_none() && !plain(value))
+    {
+        return Ok(None);
+    }
     let z1_scalar = match z1 {
-        Some(value) if !value.is_none() => Some(crate::f64_scalar_named("z1", value)?),
+        Some(value) if !value.is_none() => Some(crate::finite_coordinate_required("z1", value)?),
         _ => None,
     };
     let z2_scalar = match z2 {
-        Some(value) if !value.is_none() => Some(crate::f64_scalar_named("z2", value)?),
+        Some(value) if !value.is_none() => Some(crate::finite_coordinate_required("z2", value)?),
         _ => None,
     };
     let z_pair = match (z1_scalar, z2_scalar) {
         (None, None) => Some((None, None)),
-        (Some(Some(a)), Some(Some(b))) if a.is_finite() && b.is_finite() => {
-            Some((Some(a), Some(b)))
-        },
+        (Some(a), Some(b)) => Some((Some(a), Some(b))),
         _ => None,
     };
-    let (Some((z1f, z2f)), Some(lon1f), Some(lat1f), Some(lon2f), Some(lat2f)) = (
-        z_pair,
-        crate::f64_scalar_named("lon1", lon1)?,
-        crate::f64_scalar_named("lat1", lat1)?,
-        crate::f64_scalar_named("lon2", lon2)?,
-        crate::f64_scalar_named("lat2", lat2)?,
-    ) else {
+    let Some((z1f, z2f)) = z_pair else {
         return Ok(None);
     };
-    if ![lon1f, lat1f, lon2f, lat2f]
-        .iter()
-        .all(|value| value.is_finite())
-    {
-        return Ok(None);
-    }
+    let lon1f = crate::finite_coordinate_required("lon1", lon1)?;
+    let lat1f = crate::finite_coordinate_required("lat1", lat1)?;
+    let lon2f = crate::finite_coordinate_required("lon2", lon2)?;
+    let lat2f = crate::finite_coordinate_required("lat2", lat2)?;
     let info =
         py.detach(|| crs::geodesic_inverse(crs, lon1f, lat1f, lon2f, lat2f, z1f, z2f, angle_unit))?;
     geodesic_rows_to_dict(
@@ -292,20 +302,16 @@ pub(crate) fn crs_geodesic_direct_scalar_fast_path(
     distance: &Bound<'_, PyAny>,
     angle_unit: crs::AngleUnit,
 ) -> PyResult<Option<Py<PyDict>>> {
-    let (Some(lon), Some(lat), Some(azimuth), Some(distance)) = (
-        crate::f64_scalar_named("lon", lon)?,
-        crate::f64_scalar_named("lat", lat)?,
-        crate::f64_scalar_named("azimuth", azimuth)?,
-        crate::f64_scalar_named("distance", distance)?,
-    ) else {
-        return Ok(None);
+    let plain = |value: &Bound<'_, PyAny>| {
+        value.cast::<pyo3::types::PyInt>().is_ok() || value.cast::<pyo3::types::PyFloat>().is_ok()
     };
-    if ![lon, lat, azimuth, distance]
-        .iter()
-        .all(|value| value.is_finite())
-    {
+    if ![lon, lat, azimuth, distance].into_iter().all(plain) {
         return Ok(None);
     }
+    let lon = crate::finite_coordinate_required("lon", lon)?;
+    let lat = crate::finite_coordinate_required("lat", lat)?;
+    let azimuth = crate::finite_f64_required("azimuth", azimuth)?;
+    let distance = crate::finite_f64_required("distance", distance)?;
     let info = py.detach(|| crs::geodesic_direct(crs, lon, lat, azimuth, distance, angle_unit))?;
     geodesic_rows_to_dict(
         py,
@@ -349,12 +355,40 @@ pub(crate) fn crs_geodesic(
     {
         return Ok(dict);
     }
-    let mut lon1 = geodesic_coordinate_input(py, lon1, "lon1")?;
-    let mut lat1 = geodesic_coordinate_input(py, lat1, "lat1")?;
-    let mut lon2 = geodesic_coordinate_input(py, lon2, "lon2")?;
-    let mut lat2 = geodesic_coordinate_input(py, lat2, "lat2")?;
-    let z1 = optional_geodesic_coordinate_input(py, z1, "z1")?;
-    let z2 = optional_geodesic_coordinate_input(py, z2, "z2")?;
+    let mut expected = None;
+    for (value, name) in [
+        (lon1, "lon1"),
+        (lat1, "lat1"),
+        (lon2, "lon2"),
+        (lat2, "lat2"),
+    ] {
+        if expected.is_none() {
+            expected = crate::coordinate_sequence_len_hint(value, name)?;
+        }
+    }
+    for (value, name) in [(z1, "z1"), (z2, "z2")] {
+        if expected.is_none()
+            && let Some(value) = value
+            && !value.is_none()
+        {
+            expected = crate::coordinate_sequence_len_hint(value, name)?;
+        }
+    }
+    let mut lon1 = geodesic_coordinate_input_with_expected(py, lon1, "lon1", expected)?;
+    let expected = expected.or_else(|| (!lon1.scalar).then_some(lon1.values.len()));
+    let mut lat1 = geodesic_coordinate_input_with_expected(py, lat1, "lat1", expected)?;
+    let expected = expected.or_else(|| (!lat1.scalar).then_some(lat1.values.len()));
+    let mut lon2 = geodesic_coordinate_input_with_expected(py, lon2, "lon2", expected)?;
+    let expected = expected.or_else(|| (!lon2.scalar).then_some(lon2.values.len()));
+    let mut lat2 = geodesic_coordinate_input_with_expected(py, lat2, "lat2", expected)?;
+    let expected = expected.or_else(|| (!lat2.scalar).then_some(lat2.values.len()));
+    let z1 = optional_geodesic_coordinate_input_with_expected(py, z1, "z1", expected)?;
+    let expected = expected.or_else(|| {
+        z1.as_ref()
+            .filter(|value| !value.scalar)
+            .map(|value| value.values.len())
+    });
+    let z2 = optional_geodesic_coordinate_input_with_expected(py, z2, "z2", expected)?;
     if z1.is_some() != z2.is_some() {
         return Err(crate::py::errors::InvalidGeometryError::new_err(
             "geodesic height distance requires both z1 and z2",
@@ -435,10 +469,30 @@ pub(crate) fn crs_geodesic_direct(
     {
         return Ok(dict);
     }
-    let mut lon = geodesic_coordinate_input(py, lon, "lon")?;
-    let mut lat = geodesic_coordinate_input(py, lat, "lat")?;
-    let mut azimuth = geodesic_coordinate_input(py, azimuth, "azimuth")?;
-    let mut distance = geodesic_coordinate_input(py, distance, "distance")?;
+    let mut expected = None;
+    for (value, name) in [
+        (lon, "lon"),
+        (lat, "lat"),
+        (azimuth, "azimuth"),
+        (distance, "distance"),
+    ] {
+        if expected.is_none() {
+            expected = crate::coordinate_sequence_len_hint(value, name)?;
+        }
+    }
+    let mut lon = geodesic_coordinate_input_with_expected(py, lon, "lon", expected)?;
+    let expected = expected.or_else(|| (!lon.scalar).then_some(lon.values.len()));
+    let mut lat = geodesic_coordinate_input_with_expected(py, lat, "lat", expected)?;
+    let expected = expected.or_else(|| (!lat.scalar).then_some(lat.values.len()));
+    let mut azimuth =
+        crate::py::crs::parameter_input_with_expected(py, azimuth, "azimuth", expected, &|| {
+            "azimuth must be finite".into()
+        })?;
+    let expected = expected.or_else(|| (!azimuth.scalar).then_some(azimuth.values.len()));
+    let mut distance =
+        crate::py::crs::parameter_input_with_expected(py, distance, "distance", expected, &|| {
+            "distance must be finite".into()
+        })?;
     let scalar = lon.scalar && lat.scalar && azimuth.scalar && distance.scalar;
     broadcast_coordinate_group(
         [
@@ -511,11 +565,30 @@ pub(crate) fn crs_geodesic_interpolate(
     angle_unit: crs::AngleUnit,
 ) -> PyResult<Py<PyDict>> {
     let crs = crs_normalize(crs)?;
-    let mut lon1 = geodesic_coordinate_input(py, lon1, "lon1")?;
-    let mut lat1 = geodesic_coordinate_input(py, lat1, "lat1")?;
-    let mut lon2 = geodesic_coordinate_input(py, lon2, "lon2")?;
-    let mut lat2 = geodesic_coordinate_input(py, lat2, "lat2")?;
-    let mut distance = geodesic_coordinate_input(py, distance, "distance")?;
+    let mut expected = None;
+    for (value, name) in [
+        (lon1, "lon1"),
+        (lat1, "lat1"),
+        (lon2, "lon2"),
+        (lat2, "lat2"),
+        (distance, "distance"),
+    ] {
+        if expected.is_none() {
+            expected = crate::coordinate_sequence_len_hint(value, name)?;
+        }
+    }
+    let mut lon1 = geodesic_coordinate_input_with_expected(py, lon1, "lon1", expected)?;
+    let expected = expected.or_else(|| (!lon1.scalar).then_some(lon1.values.len()));
+    let mut lat1 = geodesic_coordinate_input_with_expected(py, lat1, "lat1", expected)?;
+    let expected = expected.or_else(|| (!lat1.scalar).then_some(lat1.values.len()));
+    let mut lon2 = geodesic_coordinate_input_with_expected(py, lon2, "lon2", expected)?;
+    let expected = expected.or_else(|| (!lon2.scalar).then_some(lon2.values.len()));
+    let mut lat2 = geodesic_coordinate_input_with_expected(py, lat2, "lat2", expected)?;
+    let expected = expected.or_else(|| (!lat2.scalar).then_some(lat2.values.len()));
+    let mut distance =
+        crate::py::crs::parameter_input_with_expected(py, distance, "distance", expected, &|| {
+            "distance must be finite".into()
+        })?;
     let scalar = lon1.scalar && lat1.scalar && lon2.scalar && lat2.scalar && distance.scalar;
     broadcast_coordinate_group(
         [
@@ -542,20 +615,22 @@ pub(crate) fn crs_geodesic_interpolate(
     geodesic_rows_to_dict(py, &items, scalar, &GEODESIC_INTERPOLATE_FIELDS)
 }
 
-pub(crate) fn geodesic_coordinate_input(
+pub(crate) fn geodesic_coordinate_input_with_expected(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
+    expected: Option<usize>,
 ) -> PyResult<CoordinateInput> {
-    coordinate_input_with_error(py, value, name, &|| {
-        "geodesic coordinates must be finite".to_owned()
+    crate::coordinate_input_with_expected(py, value, name, expected, &|| {
+        format!("{name} must be finite")
     })
 }
 
-pub(crate) fn optional_geodesic_coordinate_input(
+pub(crate) fn optional_geodesic_coordinate_input_with_expected(
     py: Python<'_>,
     value: Option<&Bound<'_, PyAny>>,
     name: &str,
+    expected: Option<usize>,
 ) -> PyResult<Option<CoordinateInput>> {
     let Some(value) = value else {
         return Ok(None);
@@ -563,5 +638,5 @@ pub(crate) fn optional_geodesic_coordinate_input(
     if value.is_none() {
         return Ok(None);
     }
-    geodesic_coordinate_input(py, value, name).map(Some)
+    geodesic_coordinate_input_with_expected(py, value, name, expected).map(Some)
 }

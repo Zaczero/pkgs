@@ -13,8 +13,7 @@ use crate::py::functions::geocode::{
 };
 use crate::{
     F64Param, Frame, GeometryError, PyGeometry, PyGeometryArray, Shape, Typed,
-    broadcast_coordinate_group, coordinate_input, exact_geometry, exact_geometry_array,
-    finite_coordinate_required,
+    broadcast_coordinate_group, exact_geometry, exact_geometry_array, finite_coordinate_required,
 };
 
 fn geocode_array_codes(
@@ -111,8 +110,17 @@ fn geocode_encode_broadcast(
             "lat is required when the first argument is a longitude",
         )
     })?;
-    let mut lon = coordinate_input(py, value, "longitude")?;
-    let mut lat = coordinate_input(py, lat, "latitude")?;
+    let mut expected = crate::coordinate_sequence_len_hint(value, "longitude")?;
+    if expected.is_none() {
+        expected = crate::coordinate_sequence_len_hint(lat, "latitude")?;
+    }
+    let mut lon = crate::coordinate_input_with_expected(py, value, "longitude", expected, &|| {
+        "longitude must be finite".into()
+    })?;
+    let expected = expected.or_else(|| (!lon.scalar).then_some(lon.values.len()));
+    let mut lat = crate::coordinate_input_with_expected(py, lat, "latitude", expected, &|| {
+        "latitude must be finite".into()
+    })?;
     let scalar = lon.scalar && lat.scalar;
     broadcast_coordinate_group(
         [(&mut lon, "longitude"), (&mut lat, "latitude")],

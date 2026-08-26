@@ -79,7 +79,7 @@ mod tests {
                     Shape::typed_empty(kind, expected_axes),
                     "input={input}"
                 );
-                let wkt = to_wkt(&parsed);
+                let wkt = to_wkt(&parsed).expect("typed empty WKT writes");
                 assert_eq!(parse_wkt(&wkt).unwrap(), parsed, "wkt={wkt}");
                 let wkb = crate::io::to_wkb(&parsed, None, false).expect("typed empty WKB writes");
                 assert_eq!(
@@ -95,7 +95,7 @@ mod tests {
     fn explicit_empty_multipoint_member_survives_wkt_and_wkb() {
         let parsed = parse_wkt("MULTIPOINT (EMPTY, (1 2))").expect("mixed member WKT parses");
         assert_eq!(parsed.part_count(), 2);
-        assert_eq!(to_wkt(&parsed), "MULTIPOINT (EMPTY, (1 2))");
+        assert_eq!(to_wkt(&parsed).unwrap(), "MULTIPOINT (EMPTY, (1 2))");
 
         let wkb = crate::io::to_wkb(&parsed, None, false).expect("mixed member WKB writes");
         let reparsed = crate::io::parse_wkb(&wkb)

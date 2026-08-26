@@ -13,11 +13,12 @@ pub(crate) use coordinate_input::{
     CoordinateInput, CrsCoordinateArgs, DefaultedF64Input, DefaultedI64Input, F64Param, I64Param,
     Zt, ZtLaneRefs, ZtLanes, ZtValues, broadcast_coordinate_group, broadcast_coordinate_input,
     broadcast_crs_coordinate_inputs, coordinate_arc_values, coordinate_arc_values_exact,
-    coordinate_arc_values_from_buffer, coordinate_input, coordinate_input_with_error,
-    coordinate_input_with_expected, coordinate_inputs_are_scalar, coordinate_sequence_len_hint,
-    coordinate_values, coordinate_values_at_most, coordinate_values_exact,
-    optional_coordinate_arc_values, optional_coordinate_arc_values_from_buffer,
-    optional_coordinate_input_with_expected, try_coordseq_from_nd_buffer,
+    coordinate_arc_values_from_buffer, coordinate_float, coordinate_input_with_expected,
+    coordinate_inputs_are_scalar, coordinate_sequence_len_hint, coordinate_values_at_most,
+    coordinate_values_exact, optional_coordinate_arc_values,
+    optional_coordinate_arc_values_from_buffer, optional_coordinate_input_with_expected,
+    parameter_input_with_expected, parameter_values, parameter_values_at_most,
+    parameter_values_exact, try_coordseq_from_nd_buffer,
 };
 pub(crate) use geographic::{point_xy, validate_lonlat_shape};
 pub(crate) use input::{
