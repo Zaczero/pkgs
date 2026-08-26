@@ -54,9 +54,9 @@ xs = line.coords.x                 # read-only float64 view
 print("x column:", repr(xs), "| shares storage:", np.asarray(xs).base is not None)
 
 arr = gm.GeometryArray([gm.Point(1, 2), gm.LineString([(0, 0), (1, 1)])])
-coords, index = gm.get_coordinates(arr, return_index=True)
-print("coords:\n", repr(coords))
-print("source row per vertex:", repr(index))
+coords = gm.get_coordinates(arr)
+print("coords by row:\n", [row.tolist() for row in coords])
+print("source-row offsets:", coords.offsets.tolist())
 ```
 
 `coords.x` shares storage; `np.asarray(coords)` materializes a dense
@@ -64,8 +64,9 @@ print("source row per vertex:", repr(index))
 for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns read-only ndarray columns such as
 `{'x': ndarray, 'y': ndarray}` for direct pandas/Polars construction (forced
 Z/M columns use `NaN` where absent). [`get_coordinates`][gometry.get_coordinates] takes
-`axes=` / `return_index=` for bulk extraction across a geometry
-or array.
+`axes=` for scalar extraction and returns [`Groups`][gometry.Groups] for a
+`GeometryArray`; its offsets are the source-row map, including empty and
+missing rows. Raw iterables retain the dense bulk extraction path.
 
 ## The geometry ↔ object-array bridge
 

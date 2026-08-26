@@ -465,7 +465,7 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
 
     For `GeometryArray.coords`, missing rows contribute no vertices. The view is
     a flattened vertex stream, not a row-aligned container; use
-    `get_coordinates(..., return_index=True)` when you need source-row indexes,
+    `.row_index` when you need source-row indexes,
     or call `drop_missing()` first for an explicit dense-only path.
     """
 
@@ -5766,9 +5766,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         -------
         Coordinates
             Flattened coordinates from present rows; missing rows contribute
-            no coordinates. This is a vertex stream, not a row-aligned view;
-            use `get_coordinates(..., return_index=True)` to recover source-row
-            alignment, or call `drop_missing()` first for an explicit dense path.
+            no coordinates. This is a vertex stream, not a row-aligned view; use
+            `.row_index` to recover source-row alignment, or call `drop_missing()`
+            first for an explicit dense path.
         """
     def __iter__(self) -> Iterator[_GeometryT_co | None]:
         """Iterate geometries in row order (including missing rows as ``None``).
@@ -8931,7 +8931,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """Not constructed directly — the error points at the producers."""
     @property
     def values(self) -> _GroupValuesT_co:
-        """The flat backing column (int64 ndarray or `GeometryArray`)."""
+        """The flat backing column (int64 ndarray, coordinate matrix, or `GeometryArray`)."""
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
@@ -9010,6 +9010,10 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """
     @overload
     def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
+    @overload
+    def to_list(
+        self: Groups[npt.NDArray[np.float64]],
+    ) -> list[npt.NDArray[np.float64]]: ...
     @overload
     def to_list(
         self: Groups[GeometryArray[_GeometryT_co]],
@@ -16702,46 +16706,53 @@ def symmetric_difference_all(
 
 @overload
 def get_coordinates(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry,
     *,
     axes: CoordinateAxes | None = None,
     return_index: Literal[False] = False,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def get_coordinates(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry,
     *,
     axes: CoordinateAxes | None = None,
     return_index: Literal[True],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
 @overload
 def get_coordinates(
-    values: Geometry | GeometryArray | Iterable[_GeometryLike | None],
+    values: Geometry,
     *,
     axes: CoordinateAxes | None = None,
     return_index: bool = False,
-) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
-    """Extract coordinates as a dense ``(N, k)`` ``float64`` matrix (Shapely
-    ``get_coordinates`` parity).
+) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
+@overload
+def get_coordinates(
+    values: GeometryArray,
+    *,
+    axes: CoordinateAxes | None = None,
+    return_index: bool = False,
+) -> Groups[npt.NDArray[np.float64]]:
+    """Extract scalar coordinates or row-preserving coordinate groups.
 
     Parameters
     ----------
     values : Geometry, GeometryArray, or iterable of Geometry/None
-        The geometry values whose coordinates are flattened depth-first.
+        Scalar geometry coordinates are dense. `GeometryArray` inputs return
+        one dense coordinate matrix per source row; raw iterables retain the
+        dense bulk path.
     axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
         Output coordinate columns. ``None`` means ``'XY'``.
     return_index : bool, default False
-        Also return the per-coordinate source-geometry row index.
+        For scalar geometry and raw iterables, also return the per-coordinate
+        source index. For `GeometryArray` inputs, ``Groups.offsets`` carries
+        the source-row map and this flag does not change the grouped result.
 
     Returns
     -------
-    numpy.ndarray or tuple of numpy.ndarray
-        The ``(N, k)`` coordinate matrix, or ``(matrix, index)`` when
-        ``return_index=True``. Missing
-        `GeometryArray` rows contribute no coordinates; the matrix is a
-        flattened vertex stream, not row-aligned. Use ``return_index=True`` to
-        recover source-row alignment, or call ``drop_missing()`` before
-        extraction for an explicit dense path.
+    numpy.ndarray, tuple of numpy.ndarray, or Groups
+        A scalar matrix, a scalar ``(matrix, index)`` pair, or one matrix per
+        array source row. Empty and missing rows remain empty groups; raw
+        iterables use the dense bulk path.
 
     Raises
     ------
@@ -16756,21 +16767,59 @@ def get_coordinates(
     """
 
 @overload
+def get_coordinates(
+    values: Iterable[_GeometryLike | None],
+    *,
+    axes: CoordinateAxes | None = None,
+    return_index: Literal[False] = False,
+) -> npt.NDArray[np.float64]: ...
+@overload
+def get_coordinates(
+    values: Iterable[_GeometryLike | None],
+    *,
+    axes: CoordinateAxes | None = None,
+    return_index: Literal[True],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
+@overload
+def get_coordinates(
+    values: Iterable[_GeometryLike | None],
+    *,
+    axes: CoordinateAxes | None = None,
+    return_index: bool = False,
+) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
+
+@overload
 def parts(
-    geom: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+    geom: Point | MultiPoint,
 ) -> GeometryArray[Point]: ...
 @overload
 def parts(
-    geom: LineString | MultiLineString | GeometryArray[LineString | MultiLineString],
+    geom: GeometryArray[Point | MultiPoint],
+) -> Groups[GeometryArray[Point]]: ...
+@overload
+def parts(
+    geom: LineString | MultiLineString,
 ) -> GeometryArray[LineString]: ...
 @overload
 def parts(
-    geom: Polygon | MultiPolygon | GeometryArray[Polygon | MultiPolygon],
+    geom: GeometryArray[LineString | MultiLineString],
+) -> Groups[GeometryArray[LineString]]: ...
+@overload
+def parts(
+    geom: Polygon | MultiPolygon,
 ) -> GeometryArray[Polygon]: ...
 @overload
 def parts(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
-) -> GeometryArray[Geometry]:
+    geom: GeometryArray[Polygon | MultiPolygon],
+) -> Groups[GeometryArray[Polygon]]: ...
+@overload
+def parts(
+    geom: Geometry,
+) -> GeometryArray[Geometry]: ...
+@overload
+def parts(
+    geom: GeometryArray,
+) -> Groups[GeometryArray[Geometry]]:
     """Component geometries of a multipart geometry.
 
     Parameters
@@ -16780,8 +16829,9 @@ def parts(
 
     Returns
     -------
-    GeometryArray
-        The flattened component geometries, carrying the input CRS/epoch.
+    GeometryArray or Groups
+        Scalar and raw iterable inputs are flat component arrays; a
+        `GeometryArray` input is grouped by source row.
 
     Examples
     --------
@@ -16794,9 +16844,19 @@ def parts(
     POINT (1 1)
     """
 
+@overload
+def parts(
+    geom: Iterable[_GeometryLike],
+) -> GeometryArray[Geometry]: ...
+
+@overload
 def rings(
-    geom: Geometry | GeometryArray | Iterable[_GeometryLike],
-) -> GeometryArray[LineString]:
+    geom: Geometry,
+) -> GeometryArray[LineString]: ...
+@overload
+def rings(
+    geom: GeometryArray,
+) -> Groups[GeometryArray[LineString]]:
     """Return the rings (exterior + interiors) of a polygonal geometry.
 
     Parameters
@@ -16806,9 +16866,9 @@ def rings(
 
     Returns
     -------
-    GeometryArray
-        The flattened rings as `LineString` geometries, carrying the input
-        CRS/epoch.
+    GeometryArray or Groups
+        Scalar and raw iterable inputs are flat ring arrays; a
+        `GeometryArray` input is grouped by source row.
 
     Examples
     --------
@@ -16819,6 +16879,11 @@ def rings(
     >>> len(gm.rings(donut))
     2
     """
+
+@overload
+def rings(
+    geom: Iterable[_GeometryLike],
+) -> GeometryArray[LineString]: ...
 
 @overload
 def from_wkt(

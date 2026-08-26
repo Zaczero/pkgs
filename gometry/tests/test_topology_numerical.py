@@ -39,12 +39,13 @@ def test_empty_linestring_parts_scalar_array_agree() -> None:
     arr = gm.GeometryArray([empty])
     assert len(arr[0].parts) == 1
     assert len(gm.parts(empty)) == 1
+    assert isinstance(gm.parts(arr), gm.Groups)
     assert len(gm.parts(arr)) == 1
     point_array = gm.GeometryArray([gm.Point()])
     assert len(gm.parts(point_array)) == 1
     explicit = gm.from_wkt('MULTIPOINT (EMPTY, (0 0))')
     assert gm.parts(explicit).to_wkt() == ['POINT EMPTY', 'POINT (0 0)']
-    assert gm.parts(gm.GeometryArray([explicit])).to_wkt() == [
+    assert gm.parts(gm.GeometryArray([explicit]))[0].to_wkt() == [
         'POINT EMPTY',
         'POINT (0 0)',
     ]
@@ -59,7 +60,7 @@ def test_empty_linestring_parts_scalar_array_agree() -> None:
         ),
     ]:
         geometry = gm.from_wkt(text)
-        assert gm.parts(gm.GeometryArray([geometry])).to_wkt() == expected
+        assert gm.parts(gm.GeometryArray([geometry]))[0].to_wkt() == expected
 
 
 def test_relate_antimeridian_seam_matches_contains() -> None:

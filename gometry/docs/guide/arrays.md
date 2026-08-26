@@ -348,7 +348,11 @@ print("offsets:", groups.offsets.tolist())
 
 `Groups` is generic over the value type: index hits store `int64` rows (read-only
 `.values` / `.offsets` ndarray views over CSR storage); geometry-valued ragged
-results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
+results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices; coordinate
+extraction stores read-only `(N, dimensions)` NumPy matrices per row.
+`GeometryArray.parts`, [`parts`][gometry.parts], [`rings`][gometry.rings], and
+[`get_coordinates`][gometry.get_coordinates] keep empty and missing source rows
+as empty groups, so `offsets` remains a source-row map.
 
 !!! tip "Scalar vs array index query"
     A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an

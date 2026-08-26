@@ -708,7 +708,7 @@ impl PyGeometryArray {
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
         let frame = self.frame.clone();
-        let (shapes, offsets) = py
+        let builder = py
             .detach(move || {
                 let mut builder = crate::CsrBuilder::<Shape>::new();
                 for (row, shape) in storage.iter_shapes().enumerate() {
@@ -719,10 +719,10 @@ impl PyGeometryArray {
                     };
                     builder.push_row(values).map_err(|error| (row, error))?;
                 }
-                Ok::<_, (usize, crate::error::Error)>(builder.finish())
+                Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
+        crate::py::vectors::Groups::from_geometry_builder(frame, builder)
     }
 
     /// Budgeted group flattening for operations that synthesize a variable
@@ -743,7 +743,7 @@ impl PyGeometryArray {
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
         let frame = self.frame.clone();
-        let (shapes, offsets) = py
+        let builder = py
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Shape>::new();
@@ -755,10 +755,10 @@ impl PyGeometryArray {
                     };
                     builder.push_row(values).map_err(|error| (row, error))?;
                 }
-                Ok::<_, (usize, crate::error::Error)>(builder.finish())
+                Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        crate::py::vectors::Groups::from_geometry_flat(Self::from_shapes(shapes, frame), offsets)
+        crate::py::vectors::Groups::from_geometry_builder(frame, builder)
     }
 
     /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`].  The
@@ -779,7 +779,7 @@ impl PyGeometryArray {
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
         let frame = self.frame.clone();
-        let (vertices, offsets) = py
+        let builder = py
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Point>::new();
@@ -804,15 +804,10 @@ impl PyGeometryArray {
                     let end = builder.len() / 4;
                     builder.push_end(end).map_err(|error| (row, error))?;
                 }
-                Ok::<_, (usize, crate::error::Error)>(builder.finish())
+                Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        let values = if vertices.is_empty() {
-            Self::from_shapes(Vec::new(), frame)
-        } else {
-            Self::packed_triangles(&vertices, frame)?
-        };
-        crate::py::vectors::Groups::from_geometry_flat(values, offsets)
+        crate::py::vectors::Groups::from_point_builder(frame, builder)
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> Self {

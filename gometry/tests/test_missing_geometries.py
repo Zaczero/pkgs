@@ -726,7 +726,11 @@ def test_masked_flatten_exports_do_not_leak_placeholder(
     masked: gm.GeometryArray,
 ) -> None:
     parts = gm.parts(masked)
-    assert parts.to_wkt() == ['POINT (0 0)', 'POINT (2 2)']
+    assert isinstance(parts, gm.Groups)
+    assert parts.offsets.tolist() == [0, 1, 1, 2]
+    assert parts[0].to_wkt() == ['POINT (0 0)']
+    assert len(parts[1]) == 0
+    assert parts[2].to_wkt() == ['POINT (2 2)']
     obj = np.asarray(masked)
     assert obj.tolist()[1] is None
     interface = masked.__geo_interface__
@@ -862,9 +866,12 @@ def test_masked_voronoi_skips_missing_placeholder() -> None:
 
 def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     assert len(masked.coords) == 2
-    coords, index = gm.get_coordinates(masked, return_index=True)
-    assert coords.tolist() == [[0.0, 0.0], [2.0, 2.0]]
-    assert index.tolist() == [0, 2]
+    coords = gm.get_coordinates(masked, return_index=True)
+    assert isinstance(coords, gm.Groups)
+    assert coords.offsets.tolist() == [0, 1, 1, 2]
+    assert coords[0].tolist() == [[0.0, 0.0]]
+    assert coords[1].shape == (0, 2)
+    assert coords[2].tolist() == [[2.0, 2.0]]
     assert masked.coords.x.tolist() == [0.0, 2.0]
     assert masked.coords.to_nested() == [[0.0, 0.0], [2.0, 2.0]]
 

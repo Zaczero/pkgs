@@ -713,11 +713,7 @@ impl PyGeometryArray {
                     .map_err(|error| note_array_row(error.into(), row))?;
             }
         }
-        let (shapes, offsets) = builder.finish();
-        crate::py::vectors::Groups::from_geometry_flat(
-            Self::from_shapes(shapes, self.frame.clone()),
-            offsets,
-        )
+        crate::py::vectors::Groups::from_geometry_builder(self.frame.clone(), builder)
     }
 
     pub(crate) fn voronoi_polygons_impl(

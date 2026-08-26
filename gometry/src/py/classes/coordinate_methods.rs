@@ -25,8 +25,8 @@ use crate::{
 /// construct, O(1) next) rather than an eager materialization of every vertex.
 ///
 /// For `GeometryArray.coords`, missing rows contribute no vertices. The view is
-/// a flattened vertex stream, not a row-aligned container; use
-/// `get_coordinates(..., return_index=True)` when you need source-row indexes,
+/// a flattened vertex stream, not a row-aligned container; use `.row_index`
+/// when you need source-row indexes,
 /// or call `drop_missing()` first for an explicit dense-only path.
 #[pyclass(
     name = "Coordinates",

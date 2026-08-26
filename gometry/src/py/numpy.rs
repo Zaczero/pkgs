@@ -8,8 +8,8 @@
 //! objects. Keep the conversions here so call sites state their domain result
 //! shape rather than each spelling out rust-numpy mechanics.
 
-use numpy::ndarray::{Array2, ArrayView1};
-use numpy::{IntoPyArray as _, PyArray1, PyArrayMethods as _, ToPyArray as _};
+use numpy::ndarray::{Array2, ArrayView1, ArrayView2};
+use numpy::{IntoPyArray as _, PyArray1, PyArray2, PyArrayMethods as _, ToPyArray as _};
 use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -109,6 +109,22 @@ pub(crate) fn float64_matrix(
     let array = Array2::from_shape_vec((rows, columns), values)
         .map_err(|_| PyValueError::new_err("matrix values do not match shape"))?
         .into_pyarray(py);
+    freeze(&array)?;
+    Ok(array.into_any().unbind())
+}
+
+/// Read-only NumPy view over a row-major f64 matrix owned by `owner`.
+pub(crate) fn float64_matrix_slice_array(
+    _py: Python<'_>,
+    owner: Bound<'_, PyAny>,
+    values: &[f64],
+    rows: usize,
+    columns: usize,
+) -> PyResult<Py<PyAny>> {
+    let view = ArrayView2::from_shape((rows, columns), values)
+        .map_err(|_| PyValueError::new_err("matrix values do not match shape"))?;
+    // SAFETY: `owner` pins the immutable storage for the lifetime of the view.
+    let array = unsafe { PyArray2::borrow_from_array(&view, owner) };
     freeze(&array)?;
     Ok(array.into_any().unbind())
 }

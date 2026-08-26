@@ -357,8 +357,8 @@ impl PyGeometryArray {
     /// Coordinates
     ///     Flattened coordinates from present rows; missing rows contribute
     ///     no coordinates. This is a vertex stream, not a row-aligned view;
-    ///     use `get_coordinates(..., return_index=True)` to recover source-row
-    ///     alignment, or call `drop_missing()` first for an explicit dense path.
+    ///     use `.row_index` to recover source-row alignment, or call
+    ///     `drop_missing()` first for an explicit dense path.
     #[getter]
     pub fn coords(&self) -> PyCoordinates {
         PyCoordinates::new(self.coordinate_view())

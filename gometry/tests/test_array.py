@@ -197,7 +197,10 @@ def test_array_parts_preserve_source_row_grouping() -> None:
     assert groups[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
     assert groups[1].to_wkt() == ['POINT (2 2)']
     assert len(groups[2]) == len(groups[3]) == 0
-    assert gm.parts(rows).to_wkt() == ['POINT (0 0)', 'POINT (1 1)', 'POINT (2 2)']
+    free = gm.parts(rows)
+    assert isinstance(free, gm.Groups)
+    assert free.offsets.tolist() == [0, 2, 3, 3, 3]
+    assert free[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
 
 
 def test_groups_counts_dtype_values_and_readonly() -> None:

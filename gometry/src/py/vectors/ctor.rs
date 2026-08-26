@@ -54,19 +54,77 @@ impl Groups {
         })
     }
 
-    /// Adopt a pre-built flat geometry column plus per-row `offsets` (one
-    /// group per input row) — the shared hand-off from the per-row tessellation
-    /// kernels (`delaunay_triangles`/`voronoi_polygons`/`polygonize`/…) that
-    /// build the flat values and offsets in one detached pass.
-    pub(crate) fn from_geometry_flat(values: PyGeometryArray, offsets: Vec<i64>) -> PyResult<Self> {
-        // Validate CSR before computing the row range — empty offsets must not
-        // underflow on `len() - 1`.
+    /// Adopt a fallible geometry CSR builder after its detached row walk.
+    pub(crate) fn from_geometry_builder(
+        frame: crate::Frame,
+        builder: CsrBuilder<Shape>,
+    ) -> PyResult<Self> {
+        let (shapes, offsets) = builder.finish();
+        let values = PyGeometryArray::from_shapes(shapes, frame);
         validate_csr_offsets(&offsets, values.storage().len())?;
         let n = offsets
             .len()
             .checked_sub(1)
             .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
         Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
+    }
+
+    /// Adopt a point CSR builder whose logical rows contain groups of four
+    /// vertices per triangle, materializing the packed triangle geometry
+    /// column only after CSR construction completes.
+    pub(crate) fn from_point_builder(
+        frame: crate::Frame,
+        builder: CsrBuilder<crate::Point>,
+    ) -> PyResult<Self> {
+        let (vertices, offsets) = builder.finish();
+        let values = if vertices.is_empty() {
+            PyGeometryArray::from_shapes(Vec::new(), frame)
+        } else {
+            PyGeometryArray::packed_triangles(&vertices, frame)?
+        };
+        validate_csr_offsets(&offsets, values.storage().len())?;
+        let n = offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
+        Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
+    }
+
+    /// Build coordinate-valued Groups from one fixed-width coordinate chunk per
+    /// value. CSR offsets count coordinate rows, while the backing payload is
+    /// flattened row-major for NumPy's two-dimensional row views.
+    pub(crate) fn from_coordinate_chunks(
+        dimensions: usize,
+        builder: CsrBuilder<[f64; 4]>,
+    ) -> PyResult<Self> {
+        if !(2..=4).contains(&dimensions) {
+            return Err(GeometryError::new_err(
+                "coordinate dimensions must be positive",
+            ));
+        }
+        let (chunks, offsets) = builder.finish();
+        let mut values =
+            crate::try_vec_with_capacity(chunks.len().checked_mul(dimensions).ok_or_else(
+                || PyOverflowError::new_err("coordinate matrix size overflows usize"),
+            )?)?;
+        for chunk in chunks {
+            for value in &chunk[..dimensions] {
+                crate::try_push(&mut values, *value)?;
+            }
+        }
+        validate_csr_offsets(&offsets, values.len() / dimensions)?;
+        let rows = offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
+        Ok(Self {
+            values: GroupsValues::Coordinates {
+                values: values.into(),
+                dimensions,
+            },
+            offsets: offsets.into(),
+            rows: 0..rows,
+        })
     }
 
     /// Element-wise self-intersection rows as one flat geometry column.

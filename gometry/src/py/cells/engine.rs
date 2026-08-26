@@ -356,11 +356,14 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     }
     let polygons = crate::try_collect_results(
         Shape::build_area_all(
-            &[&Shape::MultiLineString(crate::try_collect_results(
-                outline
-                    .into_iter()
-                    .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
-            )?)],
+            &[&Shape::MultiLineString(
+                crate::try_collect_results(
+                    outline
+                        .into_iter()
+                        .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
+                )?
+                .into(),
+            )],
             true,
         )?
         .into_iter()

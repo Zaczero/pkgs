@@ -209,9 +209,11 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     ]
     assert coordinates[:3] == [(9.0, 9.0), (0.0, 0.0), (4.0, 0.0)]
     np.testing.assert_array_equal(indexes, [0] + [1] * 10)
-    assert [part.to_wkt() for part in gm.parts(values)] == [
-        item.to_wkt() for item in list(values)
-    ]
+    parts = gm.parts(values)
+    assert isinstance(parts, gm.Groups)
+    assert parts.offsets.tolist() == [0, 1, 2]
+    assert [row.to_wkt() for row in parts[0]] == ['POINT (9 9)']
+    assert [row.to_wkt() for row in parts[1]] == [values[1].to_wkt()]
     assert rings.crs == 'EPSG:4326'
     assert [ring.to_wkt() for ring in list(rings)] == [
         'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
@@ -220,6 +222,47 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     assert next(iter(polygon.coords.select('XYZ'))) == (0.0, 0.0, None)
     with pytest.raises(TypeError):
         gm.rings(gm.Point(0, 0))
+
+
+def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
+    polygons = gm.GeometryArray([
+        gm.Polygon([(0, 0), (1, 0), (0, 1), (0, 0)]),
+        gm.from_wkt('POLYGON EMPTY'),
+        None,
+        gm.Polygon(
+            [(2, 0), (3, 0), (2, 1), (2, 0)],
+            holes=[[(2.2, 0.2), (2.4, 0.2), (2.2, 0.4), (2.2, 0.2)]],
+        ),
+    ])
+    rings = gm.rings(polygons)
+    assert isinstance(rings, gm.Groups)
+    assert rings.offsets.tolist() == [0, 1, 1, 1, 3]
+
+    coords = gm.get_coordinates(polygons, axes='XYZ')
+    assert isinstance(coords, gm.Groups)
+    assert coords.offsets.tolist() == [0, 4, 4, 4, 12]
+    assert coords[1].shape == (0, 3)
+    assert coords[2].shape == (0, 3)
+
+    selected = polygons[[3, 1, 2]]
+    selected_rings = gm.rings(selected)
+    assert selected_rings.offsets.tolist() == [0, 2, 2, 2]
+    selected_coords = gm.get_coordinates(selected)
+    assert selected_coords.offsets.tolist() == [0, 8, 8, 8]
+
+
+def test_coordinate_groups_are_readonly_and_pickle_round_trip() -> None:
+    groups = gm.get_coordinates(gm.GeometryArray([gm.Point(1, 2), None]))
+
+    assert groups.values.flags.writeable is False
+    assert groups[0].flags.writeable is False
+    with pytest.raises(ValueError):
+        groups[0][0, 0] = 9.0
+
+    import pickle
+
+    restored = pickle.loads(pickle.dumps(groups))
+    assert restored == groups
 
 
 def test_coordinate_columns_are_readonly_ndarrays() -> None:
@@ -254,12 +297,14 @@ def test_get_coordinates() -> None:
     assert coords.tolist() == [[0.0, 0.0], [1.0, 2.0], [3.0, 4.0]]
     arr = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])])
     with_z = gm.get_coordinates(arr, axes='XYZ')
-    assert with_z.shape == (3, 3)
-    assert np.isnan(with_z).sum() == 3
-    matrix, index = gm.get_coordinates(arr, return_index=True)
-    assert matrix.shape == (3, 2)
-    assert index.dtype == np.int64
-    np.testing.assert_array_equal(index, [0, 1, 1])
+    assert isinstance(with_z, gm.Groups)
+    assert with_z.offsets.tolist() == [0, 1, 3]
+    assert with_z[0].shape == (1, 3)
+    assert np.isnan(with_z[0][:, 2]).all()
+    np.testing.assert_array_equal(with_z[1], [[1, 1, np.nan], [2, 2, np.nan]])
+    grouped = gm.get_coordinates(arr, return_index=True)
+    assert isinstance(grouped, gm.Groups)
+    assert grouped.offsets.tolist() == [0, 1, 3]
     iterable = gm.get_coordinates([gm.Point(5, 6), None, gm.Point(7, 8)])
     np.testing.assert_array_equal(iterable, [[5.0, 6.0], [7.0, 8.0]])
 
@@ -271,18 +316,13 @@ def test_get_coordinates_return_index_packed_lines() -> None:
         gm.LineString([(2, 0), (3, 0), (4, 0)]),
         gm.LineString([(5, 0), (6, 0)]),
     ])
-    matrix, index = gm.get_coordinates(lines, return_index=True)
-    assert matrix.shape == (7, 2)
-    assert matrix.dtype == np.float64
-    assert matrix.flags.writeable is False
-    assert index.dtype == np.int64
-    assert index.flags.writeable is False
-    np.testing.assert_array_equal(
-        matrix,
-        [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]],
-    )
-    np.testing.assert_array_equal(index, [0, 0, 1, 1, 1, 2, 2])
-    np.testing.assert_array_equal(lines.coords.row_index, index)
+    groups = gm.get_coordinates(lines, return_index=True)
+    assert isinstance(groups, gm.Groups)
+    assert groups.offsets.tolist() == [0, 2, 5, 7]
+    assert all(not row.flags.writeable for row in groups)
+    np.testing.assert_array_equal(groups[0], [[0, 0], [1, 0]])
+    np.testing.assert_array_equal(groups[1], [[2, 0], [3, 0], [4, 0]])
+    np.testing.assert_array_equal(groups[2], [[5, 0], [6, 0]])
 
 
 def test_get_coordinates_return_index_polygons_with_holes() -> None:
@@ -293,14 +333,12 @@ def test_get_coordinates_return_index_polygons_with_holes() -> None:
     )
     other = gm.Polygon([(10, 10), (11, 10), (11, 11), (10, 10)])
     arr = gm.GeometryArray([poly, other])
-    matrix, index = gm.get_coordinates(arr, return_index=True)
-    assert matrix.shape == (5 + 5 + 4, 2)
-    np.testing.assert_array_equal(index, [0] * 10 + [1] * 4)
-    np.testing.assert_array_equal(arr.coords.row_index, index)
+    groups = gm.get_coordinates(arr, return_index=True)
+    assert groups.offsets.tolist() == [0, 10, 14]
     # Shell first vertex, then hole first vertex, then second polygon.
-    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
-    np.testing.assert_array_equal(matrix[5], [1.0, 1.0])
-    np.testing.assert_array_equal(matrix[10], [10.0, 10.0])
+    np.testing.assert_array_equal(groups[0][0], [0.0, 0.0])
+    np.testing.assert_array_equal(groups[0][5], [1.0, 1.0])
+    np.testing.assert_array_equal(groups[1][0], [10.0, 10.0])
 
 
 def test_get_coordinates_return_index_mixed_array() -> None:
@@ -309,12 +347,11 @@ def test_get_coordinates_return_index_mixed_array() -> None:
         gm.LineString([(1, 1), (2, 2)]),
         gm.Polygon([(3, 3), (4, 3), (4, 4), (3, 3)]),
     ])
-    matrix, index = gm.get_coordinates(mixed, return_index=True)
-    assert matrix.shape == (1 + 2 + 4, 2)
-    np.testing.assert_array_equal(index, [0, 1, 1, 2, 2, 2, 2])
-    np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
-    np.testing.assert_array_equal(matrix[1], [1.0, 1.0])
-    np.testing.assert_array_equal(matrix[3], [3.0, 3.0])
+    groups = gm.get_coordinates(mixed, return_index=True)
+    assert groups.offsets.tolist() == [0, 1, 3, 7]
+    np.testing.assert_array_equal(groups[0], [[0.0, 0.0]])
+    np.testing.assert_array_equal(groups[1], [[1.0, 1.0], [2.0, 2.0]])
+    np.testing.assert_array_equal(groups[2][0], [3.0, 3.0])
 
 
 def test_get_coordinates_return_index_gathered_selection() -> None:
@@ -325,15 +362,13 @@ def test_get_coordinates_return_index_gathered_selection() -> None:
         gm.LineString([(5, 0), (6, 0)]),
     ])
     gathered = base[[2, 0]]
-    matrix, index = gm.get_coordinates(gathered, return_index=True)
-    assert matrix.tolist() == [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]]
-    # Logical rows of the gathered view are 0 then 1 — not physical 2, 0.
-    np.testing.assert_array_equal(index, [0, 0, 1, 1])
-    np.testing.assert_array_equal(gathered.coords.row_index, index)
+    groups = gm.get_coordinates(gathered, return_index=True)
+    assert groups.offsets.tolist() == [0, 2, 4]
+    np.testing.assert_array_equal(groups[0], [[5.0, 0.0], [6.0, 0.0]])
     # Window slice also keeps logical ids starting at 0.
     window = base[1:]
-    _, win_index = gm.get_coordinates(window, return_index=True)
-    np.testing.assert_array_equal(win_index, [0, 0, 0, 1, 1])
+    win_groups = gm.get_coordinates(window, return_index=True)
+    assert win_groups.offsets.tolist() == [0, 3, 5]
 
 
 def _coordinate_roundtrip_geometries() -> list[gm.Geometry]:

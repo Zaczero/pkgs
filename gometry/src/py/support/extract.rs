@@ -2,10 +2,12 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::geometry::{LineSeq, MOrdinate, ShapePart, ZOrdinate};
+use pyo3::IntoPyObjectExt as _;
+
+use crate::geometry::{MOrdinate, ZOrdinate};
 use crate::py::support::{
-    Bound, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
-    PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, classify_input,
+    Bound, GeometryInput, InvalidGeometryError, Point, Polygon, Py, PyAny, PyAnyMethods as _,
+    PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, classify_input,
     coerce_geometry, coordinate_values_at_most, coordinate_values_exact, exact_geometry,
     is_mapping_like, is_py_bytes_or_bytearray, push_ring_shapes, pyfunction, with_one_byte_buffer,
 };
@@ -226,38 +228,6 @@ pub(crate) fn coerce_collected_geometry_items(
     ))
 }
 
-/// Run a bulk unary op over a `Geometry`, a `GeometryArray`, or any raw
-/// iterable of geometry-like values.
-///
-/// The raw-iterable lane is what earns `gm.parts`/`gm.rings` a place beside
-/// `geom.parts` and `GeometryArray.parts()` under Rule 4 — the constitution's
-/// own justification for these free functions is "a free function exists only
-/// for raw iterables", so refusing one was self-refuting. Every sibling bulk
-/// free function (`gm.area`, `gm.length`, `gm.bounds`) already accepts it.
-fn bulk_unary_over_values<T>(
-    geom: &Bound<'_, PyAny>,
-    scalar: impl FnOnce(&PyGeometry) -> PyResult<T>,
-    array: impl FnOnce(&PyGeometryArray) -> PyResult<T>,
-) -> PyResult<T> {
-    match crate::GeometryValues::parse(geom)? {
-        crate::GeometryValues::One(_) | crate::GeometryValues::Array(_) => {
-            crate::dispatch::dispatch_unary_simple_same(geom, scalar, array)
-        },
-        crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items()?;
-            let frame = crate::Frame::resolve_items(
-                &mut items,
-                crate::FrameAdoption {
-                    crs: None,
-                    epoch: None,
-                },
-                "GeometryArray",
-            )?;
-            array(&PyGeometryArray::pack_or_mixed(items, frame)?)
-        },
-    }
-}
-
 /// Component geometries of a multipart geometry.
 ///
 /// Parameters
@@ -267,8 +237,9 @@ fn bulk_unary_over_values<T>(
 ///
 /// Returns
 /// -------
-/// GeometryArray
-///     The flattened component geometries, carrying the input CRS/epoch.
+/// GeometryArray or Groups
+///     A scalar or raw iterable returns a flat `GeometryArray`; a
+///     `GeometryArray` input returns one geometry group per source row.
 ///
 /// Examples
 /// --------
@@ -280,54 +251,44 @@ fn bulk_unary_over_values<T>(
 /// POINT (0 0)
 /// POINT (1 1)
 #[pyfunction]
-pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
-    bulk_unary_over_values(
-        geom,
-        |geometry| {
-            Ok(PyGeometryArray::from_shapes(
-                crate::try_collect_results(
-                    geometry
-                        .shape
-                        .parts()
-                        .map(|part| Ok::<_, pyo3::PyErr>(part)),
-                )?,
-                geometry.frame.clone(),
-            ))
-        },
-        |array| {
+pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    match crate::GeometryValues::parse(geom)? {
+        crate::GeometryValues::One(geometry) => PyGeometryArray::from_shapes(
+            part_shapes(geometry.shape.shape()).map_err(pyo3::PyErr::from)?,
+            geometry.frame.clone(),
+        )
+        .into_py_any(py),
+        crate::GeometryValues::Array(array) => array
+            .flat_map_shapes_groups(py, part_shapes)
+            .and_then(|groups| groups.into_py_any(py)),
+        crate::GeometryValues::Collected(items) => {
+            let mut items = items.into_items()?;
+            let frame = crate::Frame::resolve_items(
+                &mut items,
+                crate::FrameAdoption {
+                    crs: None,
+                    epoch: None,
+                },
+                "GeometryArray",
+            )?;
+            let array = PyGeometryArray::pack_or_mixed(items, frame)?;
             let mut parts = Vec::new();
-            let frame = array.frame.clone();
             for (_, shape) in array.present_shape_rows() {
-                let mut failure = None;
-                shape.any_part(|part| {
-                    if failure.is_some() {
-                        return true;
-                    }
-                    let part = match part {
-                        ShapePart::Point(point) => Shape::Point(point),
-                        ShapePart::LineString(line) => Shape::LineString(
-                            LineSeq::try_new(line.clone())
-                                .expect("shape part line is empty or >=2 vertices"),
-                        ),
-                        ShapePart::Polygon(polygon) => Shape::Polygon(polygon.clone()),
-                        ShapePart::Empty(kind, axes) => Shape::typed_empty(kind, axes),
-                        ShapePart::Nested(nested) => nested.clone(),
-                    };
-                    match crate::try_push_vec(&mut parts, part) {
-                        Ok(()) => false,
-                        Err(error) => {
-                            failure = Some(error);
-                            true
-                        },
-                    }
-                });
-                if let Some(error) = failure {
-                    return Err(pyo3::PyErr::from(error));
+                for part in part_shapes(&shape).map_err(pyo3::PyErr::from)? {
+                    crate::try_push_vec(&mut parts, part).map_err(pyo3::PyErr::from)?;
                 }
             }
-            Ok(PyGeometryArray::from_shapes(parts, frame))
+            PyGeometryArray::from_shapes(parts, array.frame.clone()).into_py_any(py)
         },
-    )
+    }
+}
+
+fn part_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
+    let mut parts = Vec::new();
+    for part in shape.parts() {
+        crate::try_push_vec(&mut parts, part)?;
+    }
+    Ok(parts)
 }
 
 /// Return the rings (exterior + interiors) of a polygonal geometry.
@@ -339,9 +300,9 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
 ///
 /// Returns
 /// -------
-/// GeometryArray
-///     The flattened rings as `LineString` geometries, carrying the input
-///     CRS/epoch.
+/// GeometryArray or Groups
+///     A scalar or raw iterable returns a flat `GeometryArray`; a
+///     `GeometryArray` input returns one ring group per source row.
 ///
 /// Examples
 /// --------
@@ -352,22 +313,76 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
 /// >>> len(gm.rings(donut))
 /// 2
 #[pyfunction]
-pub(crate) fn rings(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
-    bulk_unary_over_values(
-        geom,
-        |geometry| {
+pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    match crate::GeometryValues::parse(geom)? {
+        crate::GeometryValues::One(geometry) => {
             let mut rings = Vec::new();
             push_ring_shapes(geometry.shape.shape(), &mut rings)?;
-            Ok(PyGeometryArray::from_shapes(rings, geometry.frame.clone()))
+            PyGeometryArray::from_shapes(rings, geometry.frame.clone()).into_py_any(py)
         },
-        |array| {
+        crate::GeometryValues::Array(array) => {
+            validate_ring_shapes(array)?;
+            array
+                .flat_map_shapes_groups(py, ring_shapes)
+                .and_then(|groups| groups.into_py_any(py))
+        },
+        crate::GeometryValues::Collected(items) => {
+            let mut items = items.into_items()?;
+            let frame = crate::Frame::resolve_items(
+                &mut items,
+                crate::FrameAdoption {
+                    crs: None,
+                    epoch: None,
+                },
+                "GeometryArray",
+            )?;
+            let array = PyGeometryArray::pack_or_mixed(items, frame)?;
             let mut rings = Vec::new();
             for (_, shape) in array.present_shape_rows() {
                 push_ring_shapes(&shape, &mut rings)?;
             }
-            Ok(PyGeometryArray::from_shapes(rings, array.frame.clone()))
+            PyGeometryArray::from_shapes(rings, array.frame.clone()).into_py_any(py)
         },
-    )
+    }
+}
+
+fn validate_ring_shapes(array: &PyGeometryArray) -> PyResult<()> {
+    for (_, shape) in array.present_shape_rows() {
+        if !matches!(
+            *shape,
+            Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::Empty(
+                    crate::geometry::GeometryKind::Polygon
+                        | crate::geometry::GeometryKind::MultiPolygon,
+                    _,
+                )
+        ) {
+            return Err(crate::py::errors::geometry_type_err(
+                "rings requires Polygon or MultiPolygon geometries",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
+    let mut rings = Vec::new();
+    let mut failure = None;
+    shape.for_each_ring(|ring| {
+        if failure.is_none() {
+            if let Err(error) = crate::try_push_vec(
+                &mut rings,
+                Shape::LineString(crate::geometry::LineSeq::from_trusted(ring.clone())),
+            ) {
+                failure = Some(error);
+            }
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(rings)
 }
 
 pub(crate) fn extract_points(

@@ -150,7 +150,7 @@ pub(crate) fn line_interpolate_points_rows(
         let missing = array.missing().cloned();
         let logical_len = array.storage().len();
         let frame = array.frame.clone();
-        let (shapes, group_offsets) = py.detach(move || -> PyResult<_> {
+        let builder = py.detach(move || -> PyResult<_> {
             let map = row_map.as_deref();
             let mut builder = crate::CsrBuilder::<Shape>::new();
             for row in 0..logical_len {
@@ -170,12 +170,9 @@ pub(crate) fn line_interpolate_points_rows(
                     .push_row(values)
                     .map_err(|error| note_array_row(error.into(), row))?;
             }
-            Ok(builder.finish())
+            Ok(builder)
         })?;
-        return crate::py::vectors::Groups::from_geometry_flat(
-            PyGeometryArray::from_shapes(shapes, frame),
-            group_offsets,
-        );
+        return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
     }
     let mut builder = crate::CsrBuilder::<Shape>::new();
     for (row, handle) in array.storage().iter_rows().enumerate() {
@@ -192,9 +189,5 @@ pub(crate) fn line_interpolate_points_rows(
             .push_row(values)
             .map_err(|error| note_array_row(error.into(), row))?;
     }
-    let (shapes, offsets) = builder.finish();
-    crate::py::vectors::Groups::from_geometry_flat(
-        PyGeometryArray::from_shapes(shapes, array.frame.clone()),
-        offsets,
-    )
+    crate::py::vectors::Groups::from_geometry_builder(array.frame.clone(), builder)
 }

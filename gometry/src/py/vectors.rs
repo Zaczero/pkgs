@@ -84,6 +84,14 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> boo
                 }))
 }
 
+fn coordinate_values_equal(left: &[f64], right: &[f64]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left == right || (left.is_nan() && right.is_nan()))
+}
+
 fn slice_rows(
     start: isize,
     step: isize,
@@ -101,6 +109,12 @@ enum GroupsValues {
     Int64(Arc<[i64]>),
     Geometry(Arc<PyGeometryArray>),
     Cells(Arc<PyCellArray>),
+    /// Coordinate rows stored as one flat f64 payload. Offsets count
+    /// coordinate rows; each row has the same number of dimensions.
+    Coordinates {
+        values: Arc<[f64]>,
+        dimensions: usize,
+    },
 }
 
 /// Shared CSR ragged container: one flat `values` payload plus row `offsets`.
@@ -166,6 +180,31 @@ impl Groups {
         values.logical_row_range(self.int64_window(row))
     }
 
+    fn coordinate_values_window(&self, row: usize) -> Range<usize> {
+        let rows = self.int64_window(row);
+        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
+            unreachable!("coordinate_values_window requires Coordinates backing");
+        };
+        rows.start * dimensions..rows.end * dimensions
+    }
+
+    fn coordinate_row_array(
+        &self,
+        py: Python<'_>,
+        slf: Bound<'_, Self>,
+        row: usize,
+    ) -> PyResult<Py<PyAny>> {
+        let GroupsValues::Coordinates { dimensions, .. } = &self.values else {
+            unreachable!("coordinate_row_array requires Coordinates backing");
+        };
+        let rows = self.int64_window(row).len();
+        let values = match &self.values {
+            GroupsValues::Coordinates { values, .. } => &values[self.coordinate_values_window(row)],
+            _ => unreachable!(),
+        };
+        crate::py::numpy::float64_matrix_slice_array(py, slf.into_any(), values, rows, *dimensions)
+    }
+
     fn slice_rows(&self, rows: Range<usize>) -> Self {
         Self {
             values: self.values.clone(),
@@ -196,6 +235,11 @@ impl Groups {
                 values.logical_coordinate_bytes_range(self.values_window())
             },
             GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
+            GroupsValues::Coordinates { dimensions, .. } => self
+                .values_window()
+                .len()
+                .saturating_mul(*dimensions)
+                .saturating_mul(std::mem::size_of::<f64>()),
         };
         values_bytes + self.logical_offsets_bytes()
     }
@@ -205,6 +249,11 @@ impl Groups {
             GroupsValues::Int64(_) => self.values_window().len() * std::mem::size_of::<i64>(),
             GroupsValues::Geometry(values) => values.logical_heap_bytes_range(self.values_window()),
             GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
+            GroupsValues::Coordinates { dimensions, .. } => self
+                .values_window()
+                .len()
+                .saturating_mul(*dimensions)
+                .saturating_mul(std::mem::size_of::<f64>()),
         };
         values_bytes + self.logical_offsets_bytes()
     }
@@ -219,6 +268,7 @@ impl Groups {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row).into_py_any(py),
             GroupsValues::Cells(_) => self.cell_row_view(row).into_py_any(py),
+            GroupsValues::Coordinates { .. } => self.coordinate_row_array(py, slf, row),
         }
     }
 
@@ -239,6 +289,26 @@ impl Groups {
             (GroupsValues::Cells(left), GroupsValues::Cells(right)) => left
                 .logical_row_range(self.values_window())
                 .logical_eq(&right.logical_row_range(other.values_window())),
+            (
+                GroupsValues::Coordinates {
+                    values: left,
+                    dimensions: left_dimensions,
+                },
+                GroupsValues::Coordinates {
+                    values: right,
+                    dimensions: right_dimensions,
+                },
+            ) => {
+                if left_dimensions != right_dimensions {
+                    return false;
+                }
+                let left_rows = self.values_window();
+                let right_rows = other.values_window();
+                coordinate_values_equal(
+                    &left[left_rows.start * left_dimensions..left_rows.end * left_dimensions],
+                    &right[right_rows.start * right_dimensions..right_rows.end * right_dimensions],
+                )
+            },
             _ => false,
         }
     }
@@ -307,6 +377,19 @@ impl Groups {
             GroupsValues::Cells(_) => Ok(item
                 .cast::<PyCellArray>()
                 .is_ok_and(|other| self.cell_row_view(row).logical_eq(other.get()))),
+            GroupsValues::Coordinates { values, dimensions } => {
+                let Ok(expected) = item.extract::<Vec<Vec<f64>>>() else {
+                    return Ok(false);
+                };
+                if expected.iter().any(|values| values.len() != *dimensions) {
+                    return Ok(false);
+                }
+                let actual = &values[self.coordinate_values_window(row)];
+                Ok(coordinate_values_equal(
+                    actual,
+                    &expected.into_iter().flatten().collect::<Vec<_>>(),
+                ))
+            },
         }
     }
 }
@@ -383,7 +466,8 @@ impl Groups {
         std::mem::size_of::<Self>() + self.logical_heap_bytes()
     }
 
-    /// The flat backing column (int64 ndarray or `GeometryArray`).
+    /// The flat backing column (int64 ndarray, coordinate matrix, or
+    /// `GeometryArray`).
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
@@ -420,6 +504,23 @@ impl Groups {
                 } else {
                     values.logical_row_range(start..end).into_py_any(py)
                 }
+            },
+            GroupsValues::Coordinates { values, dimensions } => {
+                let this = slf.borrow();
+                let rows = this.values_window();
+                let start = rows.start * *dimensions;
+                let end = rows.end * *dimensions;
+                let row_count = rows.len();
+                let dimensions = *dimensions;
+                let values = &values[start..end];
+                drop(this);
+                crate::py::numpy::float64_matrix_slice_array(
+                    slf.py(),
+                    slf.into_any(),
+                    values,
+                    row_count,
+                    dimensions,
+                )
             },
         }
     }
@@ -643,6 +744,31 @@ impl Groups {
                             let (ids, offsets) = builder.finish();
                             Self::from_cell_flat(kind, ids, offsets)?
                         },
+                        GroupsValues::Coordinates { values, dimensions } => {
+                            let value_count = rows.clone().try_fold(0_usize, |total, row| {
+                                total
+                                    .checked_add(this.int64_window(row).len())
+                                    .ok_or_else(|| {
+                                        PyOverflowError::new_err(
+                                            "Groups values size overflows usize",
+                                        )
+                                    })
+                            })?;
+                            let mut builder =
+                                CsrBuilder::<[f64; 4]>::with_capacity(value_count, count)
+                                    .map_err(PyErr::from)?;
+                            for row in rows {
+                                let values = &values[this.coordinate_values_window(row)];
+                                for chunk in values.chunks(*dimensions) {
+                                    let mut value = [0.0; 4];
+                                    value[..*dimensions].copy_from_slice(chunk);
+                                    builder.push(value).map_err(PyErr::from)?;
+                                }
+                                let end = builder.len();
+                                builder.push_end(end).map_err(PyErr::from)?;
+                            }
+                            Self::from_coordinate_chunks(*dimensions, builder)?
+                        },
                     }
                 };
                 groups.into_py_any(slf.py())
@@ -811,6 +937,17 @@ impl Groups {
                 self.rows.len(),
                 "Groups",
             ),
+            GroupsValues::Coordinates { values, dimensions } => preview(
+                (0..self.rows.len()).map(|row| {
+                    let values = values[self.coordinate_values_window(row)]
+                        .chunks(*dimensions)
+                        .map(|chunk| chunk.to_vec())
+                        .collect::<Vec<_>>();
+                    format!("{values:?}")
+                }),
+                self.rows.len(),
+                "Groups",
+            ),
         }
     }
 
@@ -846,6 +983,15 @@ impl Groups {
                 GroupsValues::Cells(_) => {
                     let items = self.cell_row_view(row).to_cell_list(py)?;
                     PyList::new(py, items)?.into_py_any(py)?
+                },
+                GroupsValues::Coordinates { values, dimensions } => {
+                    let source = &values[self.coordinate_values_window(row)];
+                    crate::py::numpy::float64_matrix(
+                        py,
+                        source.to_vec(),
+                        source.len() / *dimensions,
+                        *dimensions,
+                    )?
                 },
             };
             crate::try_push(&mut rows, value)?;
@@ -912,6 +1058,21 @@ impl Groups {
                     args,
                 ))
             },
+            GroupsValues::Coordinates { values, dimensions } => {
+                let start = start * *dimensions;
+                let end = end * *dimensions;
+                let mut copied = crate::try_vec_with_capacity(end - start)?;
+                for &value in &values[start..end] {
+                    crate::try_push(&mut copied, value)?;
+                }
+                let args = (copied, rebased, *dimensions).into_py_any(py)?;
+                Ok((
+                    module
+                        .getattr(pyo3::intern!(py, "_unpickle_coordinate_groups"))?
+                        .unbind(),
+                    args,
+                ))
+            },
         }
     }
 }
@@ -961,6 +1122,29 @@ pub(crate) fn _unpickle_cell_groups(
         let offsets: Arc<[i64]> = offsets.into();
         let rows = 0..offsets.len() - 1;
         Groups::from_cell_csr(Arc::new(array), offsets, rows)
+    })
+}
+
+#[pyfunction]
+pub(crate) fn _unpickle_coordinate_groups(
+    values: &Bound<'_, PyAny>,
+    offsets: &Bound<'_, PyAny>,
+    dimensions: usize,
+) -> PyResult<Groups> {
+    let values = crate::collect_py_iter(values, |value| value.extract::<f64>())?;
+    let offsets = crate::collect_i64_sequence(offsets, "coordinate Groups pickle offsets")?;
+    if !(2..=4).contains(&dimensions) || values.len() % dimensions != 0 {
+        return Err(PyValueError::new_err("invalid coordinate group shape"));
+    }
+    validate_csr_offsets(&offsets, values.len() / dimensions)?;
+    let rows = offsets.len() - 1;
+    Ok(Groups {
+        values: GroupsValues::Coordinates {
+            values: values.into(),
+            dimensions,
+        },
+        offsets: offsets.into(),
+        rows: 0..rows,
     })
 }
 
@@ -1086,5 +1270,6 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_unpickle_int64_groups, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_geometry_groups, module)?)?;
     module.add_function(wrap_pyfunction!(_unpickle_cell_groups, module)?)?;
+    module.add_function(wrap_pyfunction!(_unpickle_coordinate_groups, module)?)?;
     Ok(())
 }

@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
@@ -10,7 +11,7 @@ use crate::py::classes::coordinate_methods::{
     Arc, CoordSeq, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray,
     coordinates, point_tuple,
 };
-use crate::py::errors::parameter_error;
+use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{
     float64_array, float64_matrix, float64_slice_array, optional_float64_array,
 };
@@ -177,27 +178,81 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
     }
 }
 
-/// Extract coordinates as a dense ``(N, k)`` ``float64`` matrix (Shapely
-/// ``get_coordinates`` parity).
+fn coordinate_groups(
+    array: &PyGeometryArray,
+    view: &coordinates::CoordinateView,
+    order: &[CoordinateAxis],
+) -> PyResult<crate::py::vectors::Groups> {
+    let mut builder = crate::CsrBuilder::<[f64; 4]>::new();
+    let mut active_row = None;
+    let mut next_row = 0_usize;
+    let result = view.try_for_each_point(&mut |coord| {
+        let Some(row) = coord.path.geometry else {
+            return std::ops::ControlFlow::Break(GeometryError::new_err(
+                "array coordinate group lost its source row",
+            ));
+        };
+        if active_row != Some(row) {
+            if active_row.is_some() {
+                let end = builder.len();
+                if let Err(error) = builder.push_end(end) {
+                    return std::ops::ControlFlow::Break(error.into());
+                }
+                next_row += 1;
+            }
+            while next_row < row {
+                let end = builder.len();
+                if let Err(error) = builder.push_end(end) {
+                    return std::ops::ControlFlow::Break(error.into());
+                }
+                next_row += 1;
+            }
+            active_row = Some(row);
+        }
+        let mut values = [0.0; 4];
+        for (index, &axis) in order.iter().enumerate() {
+            values[index] = coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN);
+        }
+        match builder.push(values) {
+            Ok(()) => std::ops::ControlFlow::Continue(()),
+            Err(error) => std::ops::ControlFlow::Break(error.into()),
+        }
+    });
+    if let std::ops::ControlFlow::Break(error) = result {
+        return Err(error);
+    }
+    if active_row.is_some() {
+        let end = builder.len();
+        builder.push_end(end).map_err(pyo3::PyErr::from)?;
+        next_row += 1;
+    }
+    while next_row < array.storage().len() {
+        let end = builder.len();
+        builder.push_end(end).map_err(pyo3::PyErr::from)?;
+        next_row += 1;
+    }
+    crate::py::vectors::Groups::from_coordinate_chunks(order.len(), builder)
+}
+
+/// Extract scalar coordinates as a dense matrix, or array coordinates as
+/// row-preserving `Groups` of matrices.
 ///
 /// Parameters
 /// ----------
 /// values : Geometry, GeometryArray, or iterable of Geometry/None
-///     The geometry values whose coordinates are flattened depth-first.
+///     Scalar values are flattened depth-first; a `GeometryArray` keeps one
+///     matrix per source row.
 /// axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
 ///     Output coordinate columns. ``None`` means ``'XY'``.
 /// return_index : bool, default False
-///     Also return the per-coordinate source-geometry row index.
+///     Return a scalar source-row index alongside the matrix. For arrays,
+///     `Groups.offsets` already carries the row map and this flag is ignored.
 ///
 /// Returns
 /// -------
-/// numpy.ndarray or tuple of numpy.ndarray
-///     The ``(N, k)`` coordinate matrix, or ``(matrix, index)`` when
-///     ``return_index=True``. Missing
-///     `GeometryArray` rows contribute no coordinates; the matrix is a
-///     flattened vertex stream, not row-aligned. Use ``return_index=True`` to
-///     recover source-row alignment, or call ``drop_missing()`` before
-///     extraction for an explicit dense path.
+/// numpy.ndarray, tuple of numpy.ndarray, or Groups
+///     Scalar dense output, scalar `(matrix, index)` output, or one dense
+///     matrix per array row. Empty and missing rows remain empty groups.
 ///
 /// Raises
 /// ------
@@ -218,16 +273,20 @@ pub(crate) fn get_coordinates(
     return_index: bool,
 ) -> PyResult<Py<PyAny>> {
     let array;
-    let input = if let Ok(input) = classify_required(values) {
-        input
-    } else {
-        array = PyGeometryArray::new(values, None, None)?;
-        GeometryInput::Many(&array)
+    let (input, grouped) = match classify_required(values) {
+        Ok(input) => (input, matches!(input, GeometryInput::Many(_))),
+        Err(_) => {
+            array = PyGeometryArray::new(values, None, None)?;
+            (GeometryInput::Many(&array), false)
+        },
     };
     let view = coordinate_view_for_input(input);
     let axes = axes.unwrap_or(CoordinateAxes::XY);
     let (order, dims) = coordinate_axis_order(axes);
     let order = &order[..dims];
+    if grouped && let GeometryInput::Many(array) = input {
+        return coordinate_groups(array, &view, order)?.into_py_any(py);
+    }
     let rows = view.len();
     // Coordinate matrix: always ride the SoA interleave when the view is one
     // contiguous packed column, independent of `return_index`. The index
