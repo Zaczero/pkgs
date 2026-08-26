@@ -966,6 +966,92 @@ def test_require_validates_arrays_and_general_iterables_atomically() -> None:
     assert source[0].crs is None
 
 
+def test_require_streams_validation_before_reading_the_next_row() -> None:
+    class InvalidThenExplodes:
+        def __init__(self) -> None:
+            self.read_rows = 0
+
+        def __iter__(self):
+            self.read_rows += 1
+            yield gm.Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
+            self.read_rows += 1
+            raise AssertionError('require read past the first invalid row')
+
+    source = InvalidThenExplodes()
+    with pytest.raises(gm.InvalidGeometryError) as raised:
+        gm.require(source)
+
+    assert source.read_rows == 1
+    error = raised.value
+    assert error.row == 0
+    assert error.path == '$'
+    assert error.code == 'self_intersection'
+    assert error.detail in str(error)
+
+
+def test_require_validation_issue_is_structured_on_scalar_array_and_protocol() -> None:
+    invalid = gm.Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
+
+    with pytest.raises(gm.InvalidGeometryError) as scalar:
+        gm.require(invalid)
+    assert (scalar.value.row, scalar.value.code, scalar.value.path) == (
+        None,
+        'self_intersection',
+        '$',
+    )
+    report = invalid.validate()
+    assert (report.code, report.detail, report.path) == (
+        'self_intersection',
+        scalar.value.detail,
+        '$',
+    )
+
+    with pytest.raises(gm.InvalidGeometryError) as array:
+        gm.require(gm.GeometryArray([gm.Point(0, 0), invalid]))
+    assert (array.value.row, array.value.code, array.value.path) == (
+        1,
+        'self_intersection',
+        '$',
+    )
+    assert (array.value.detail, array.value.location) == (
+        scalar.value.detail,
+        scalar.value.location,
+    )
+
+    class ForeignGeometry:
+        @property
+        def __geo_interface__(self):
+            return {
+                'type': 'Polygon',
+                'coordinates': [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]],
+            }
+
+    with pytest.raises(gm.InvalidGeometryError) as protocol:
+        gm.require(ForeignGeometry())
+    assert (protocol.value.row, protocol.value.code, protocol.value.path) == (
+        None,
+        'self_intersection',
+        '$',
+    )
+    assert (protocol.value.detail, protocol.value.location) == (
+        scalar.value.detail,
+        scalar.value.location,
+    )
+
+    grouped = gm.GeometryArray([gm.Point(0, 0), invalid]).parts
+    with pytest.raises(gm.InvalidGeometryError) as groups:
+        gm.require(grouped)
+    assert (groups.value.row, groups.value.code, groups.value.path) == (
+        1,
+        'self_intersection',
+        '$',
+    )
+    assert (groups.value.detail, groups.value.location) == (
+        scalar.value.detail,
+        scalar.value.location,
+    )
+
+
 def test_validate_boundary_helper_parses_and_enforces_storage_contracts() -> None:
     feature = {
         'type': 'Feature',

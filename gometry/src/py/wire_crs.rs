@@ -28,16 +28,25 @@ impl SharedRowCrs {
     ) -> PyResult<()> {
         match self {
             Self::Unseen => *self = Self::Shared(row_crs),
-            Self::Shared(existing) if fallback.is_none() && *existing != row_crs => {
-                return Err(crate::error::Error::from(
-                    crate::boundary::metadata::FrameError::SharedCrs {
-                        context: context.into(),
-                        index: row,
-                        first: existing.clone(),
-                        other: row_crs,
+            Self::Shared(existing) if fallback.is_none() => {
+                let agrees = match (existing.as_ref(), row_crs.as_ref()) {
+                    (None, None) => true,
+                    (Some(left), Some(right)) => {
+                        crate::boundary::metadata::crs_operationally_equal(left, right)?
                     },
-                )
-                .into());
+                    _ => false,
+                };
+                if !agrees {
+                    return Err(crate::error::Error::from(
+                        crate::boundary::metadata::FrameError::SharedCrs {
+                            context: context.into(),
+                            index: row,
+                            first: existing.clone(),
+                            other: row_crs,
+                        },
+                    )
+                    .into());
+                }
             },
             Self::Shared(_) => {},
         }

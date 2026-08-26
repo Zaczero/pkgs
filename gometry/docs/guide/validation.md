@@ -76,9 +76,11 @@ print("valid box →", report.valid)
 The returned `ValidationReport` exposes [`.valid`][gometry.ValidationReport.valid],
 [`.reason`][gometry.ValidationReport.reason] (a human-readable message that names the actual fault — e.g. a
 self-intersection in the exterior ring), [`.location`][gometry.ValidationReport.location] (the `(x, y)` coordinate of
-the first problem), and [`.path`][gometry.ValidationReport.path] (a structural path to it, e.g. `'$.shell'`). For
-an OGC-valid geometry `.reason`, `.location`, and `.path` are all `None`; they
-carry detail when topology validation finds a problem.
+the first problem), [`.path`][gometry.ValidationReport.path] (a structural path to it, e.g. `'$.shell'`),
+and the stable [`.code`][gometry.ValidationReport.code] and human-readable
+[`.detail`][gometry.ValidationReport.detail] fields. For
+an OGC-valid geometry `.reason`, `.location`, `.path`, `.code`, and `.detail`
+are all `None`; they carry detail when topology validation finds a problem.
 
 Geographic validity follows the same frame-aware topology as predicates. When
 a geometry has a geographic CRS and crosses the antimeridian, gometry validates

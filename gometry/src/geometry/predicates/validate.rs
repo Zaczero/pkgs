@@ -6,8 +6,14 @@ use crate::geometry::{
 
 const SMALL_RING_FUSED_LIMIT: usize = 16;
 pub(crate) fn validate_point(point: Point, path: &str) -> Option<ValidationIssue> {
-    (!point.x.is_finite() || !point.y.is_finite())
-        .then(|| ValidationIssue::new("point coordinates must be finite", Some(point), path))
+    (!point.x.is_finite() || !point.y.is_finite()).then(|| {
+        ValidationIssue::new(
+            "non_finite_coordinate",
+            "point coordinates must be finite",
+            Some(point),
+            path,
+        )
+    })
 }
 
 pub(crate) fn validate_points<C: Coordinates + ?Sized>(
@@ -28,6 +34,7 @@ pub(crate) fn validate_points<C: Coordinates + ?Sized>(
         .find(|(_, point)| !point.x.is_finite() || !point.y.is_finite())
         .map(|(idx, point)| {
             ValidationIssue::new(
+                "non_finite_coordinate",
                 "point coordinates must be finite",
                 Some(point),
                 format!("{path}[{idx}]"),
@@ -41,6 +48,7 @@ pub(crate) fn validate_line<C: Coordinates + ?Sized>(
 ) -> Option<ValidationIssue> {
     if points.coord_count() == 1 {
         Some(ValidationIssue::new(
+            "ring_too_short",
             format!("{name} requires at least two coordinates"),
             points.first_coord(),
             "$",
@@ -60,6 +68,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
     if len < 4 {
         let (name, path) = label();
         return Some(ValidationIssue::new(
+            "ring_too_short",
             format!("{name} requires at least four coordinates"),
             points.first_coord(),
             path,
@@ -81,6 +90,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
                 let (_, path) = label();
                 return Some(
                     ValidationIssue::new(
+                        "non_finite_coordinate",
                         "point coordinates must be finite",
                         Some(points.nth_coord(index)),
                         format!("$[{index}]"),
@@ -102,6 +112,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
         if !same_point(first, last) {
             let (name, path) = label();
             return Some(ValidationIssue::new(
+                "ring_not_closed",
                 format!("{name} must be closed"),
                 Some(last),
                 path,
@@ -110,6 +121,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
         return (corners - 1 < 3).then(|| {
             let (name, path) = label();
             ValidationIssue::new(
+                "ring_collapsed",
                 format!("{name} collapses to fewer than three distinct vertices"),
                 Some(first),
                 path,
@@ -125,6 +137,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
     if !same_point(first, last) {
         let (name, path) = label();
         return Some(ValidationIssue::new(
+            "ring_not_closed",
             format!("{name} must be closed"),
             Some(last),
             path,
@@ -148,6 +161,7 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
     (corners - 1 < 3).then(|| {
         let (name, path) = label();
         ValidationIssue::new(
+            "ring_collapsed",
             format!("{name} collapses to fewer than three distinct vertices"),
             Some(first),
             path,

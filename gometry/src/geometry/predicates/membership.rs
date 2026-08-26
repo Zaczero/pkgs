@@ -281,6 +281,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
         let probe = ring_probe_point(hole.coords(), polygon.shell.coords());
         if ring_classify_point(polygon.shell.coords(), probe) != RingClass::Interior {
             return Some(ValidationIssue::new(
+                "hole_outside_shell",
                 format!(
                     "interior ring at index {index} is not contained within the polygon's exterior"
                 ),
@@ -307,6 +308,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
         if ring_classify_point(other.coords(), probes[index]) == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
+                "hole_overlap",
                 format!(
                     "interior ring at index {a} and interior ring at index {b} intersect on an area"
                 ),
@@ -319,6 +321,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
         if ring_classify_point(hole.coords(), probes[other_index]) == RingClass::Interior {
             let (a, b) = (index.min(other_index), index.max(other_index));
             nest_issue = Some(ValidationIssue::new(
+                "hole_overlap",
                 format!(
                     "interior ring at index {a} and interior ring at index {b} intersect on an area"
                 ),
@@ -406,6 +409,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         let probe = member_probe_point(polygon, other);
         if other.contains_point(probe) {
             nest_issue = Some(ValidationIssue::new(
+                "polygon_overlap",
                 overlap(index, other_index),
                 Some(probe),
                 path,
@@ -415,6 +419,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         let probe = member_probe_point(other, polygon);
         if polygon.contains_point(probe) {
             nest_issue = Some(ValidationIssue::new(
+                "polygon_overlap",
                 overlap(other_index, index),
                 Some(probe),
                 path,

@@ -74,6 +74,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
             Ok(container) => container,
             Err(error) => {
                 return Some(ValidationIssue::new(
+                    "topology_normalization_failed",
                     format!("geographic topology normalization failed: {error}"),
                     None,
                     path,
@@ -94,6 +95,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
                     })
             {
                 return Some(ValidationIssue::new(
+                    "shared_linework",
                     format!("interior ring at index {index} intersects another ring on a line"),
                     witness,
                     path,
@@ -104,6 +106,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
                 Ok(hole) => hole,
                 Err(error) => {
                     return Some(ValidationIssue::new(
+                        "topology_normalization_failed",
                         format!("geographic topology normalization failed: {error}"),
                         witness,
                         format!("{path}.holes[{index}]"),
@@ -112,6 +115,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
             };
             if !container.contains(&hole) {
                 return Some(ValidationIssue::new(
+                    "hole_outside_shell",
                     format!(
                         "interior ring at index {index} is not contained within the polygon's exterior"
                     ),
@@ -123,6 +127,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
                 let relation = other.relate(&hole);
                 if relation.as_bytes()[0] != b'F' {
                     return Some(ValidationIssue::new(
+                        "hole_overlap",
                         format!(
                             "interior ring at index {} and interior ring at index {} intersect on an area",
                             index.min(*other_index),
@@ -164,6 +169,7 @@ pub(crate) fn validate_shape_in_frame(shape: &Shape, geographic: bool) -> Option
         try_topology_split(shape).map_or_else(
             |error| {
                 Some(ValidationIssue::new(
+                    "topology_normalization_failed",
                     format!("geographic topology normalization failed: {error}"),
                     None,
                     "$",
@@ -235,7 +241,7 @@ fn repair_invalid_shape(shape: &Shape, geographic: bool, method: RepairMethod) -
     if let Some(issue) = validate_shape_in_frame(&repaired, geographic) {
         return Err(GeometryErrorKind::repair_failed(format!(
             "repair did not produce valid geometry: {}",
-            issue.reason,
+            issue.detail,
         )));
     }
     Ok(repaired)

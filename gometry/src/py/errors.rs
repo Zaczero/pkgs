@@ -20,8 +20,8 @@ use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyDict, PyType};
 
-use crate::Crs;
 use crate::error::{Error, ErrorKind};
+use crate::{Crs, ValidationIssue};
 
 create_exception!(
     gometry,
@@ -197,6 +197,35 @@ pub(crate) fn parse_error(message: impl Into<String>, format: ParseFormat) -> Py
         "format",
         Attr::Str(format.label()),
     )])
+}
+
+/// Own the Python projection of a geometry validity issue.  Callers pass the
+/// issue itself rather than recovering fields from its display text, so row
+/// context and structural diagnostics survive every ingress path unchanged.
+pub(crate) fn invalid_geometry_issue(issue: &ValidationIssue, row: Option<usize>) -> PyErr {
+    let message = row
+        .filter(|_| issue.code != "coordinate_axes_mismatch")
+        .map_or_else(
+            || issue.detail.clone(),
+            |row| format!("geometry {row} is invalid: {}", issue.detail),
+        );
+    let error = with_attrs(InvalidGeometryError::new_err(message), &[
+        (
+            "row",
+            Attr::OptionalInt(row.and_then(|value| i64::try_from(value).ok())),
+        ),
+        ("path", Attr::OptionalStr(issue.path.as_deref())),
+        ("code", Attr::Str(issue.code)),
+        ("detail", Attr::Str(&issue.detail)),
+    ]);
+    Python::attach(|py| {
+        if let Some(point) = issue.location {
+            let _ = error.value(py).setattr("location", (point.x, point.y));
+        } else {
+            let _ = error.value(py).setattr("location", py.None());
+        }
+    });
+    error
 }
 
 /// Tag a `ParseError`'s `.format` after the fact (for `map_err` over a
@@ -438,6 +467,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py.get_type::<CRSError>().setattr("crs", py.None())?;
     py.get_type::<InvalidGeometryError>()
         .setattr("operation", py.None())?;
+    for name in ["row", "path", "code", "detail", "location"] {
+        py.get_type::<InvalidGeometryError>()
+            .setattr(name, py.None())?;
+    }
     py.get_type::<InvalidGeometryError>()
         .setattr("parameter", py.None())?;
     py.get_type::<InvalidGeometryError>()

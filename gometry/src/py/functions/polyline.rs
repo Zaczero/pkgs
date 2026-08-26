@@ -394,7 +394,10 @@ pub(crate) fn from_polyline(
             .map_err(|_| error())?
             .to_cow()?;
         rows.try_push(decode_tagged(text.as_ref())?)?;
-        Ok(StreamedRow::Present(None))
+        Ok(StreamedRow::Present {
+            crs: None,
+            epoch: None,
+        })
     })?;
     Ok(array.into_pyobject(py)?.unbind().into())
 }

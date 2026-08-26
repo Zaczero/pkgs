@@ -221,11 +221,11 @@ impl Groups {
         (self.rows.len() + 1) * std::mem::size_of::<i64>()
     }
 
-    fn geometry_values_view(&self) -> PyGeometryArray {
+    pub(crate) fn geometry_values_view(&self) -> Option<PyGeometryArray> {
         let GroupsValues::Geometry(values) = &self.values else {
-            unreachable!("geometry_values_view requires Geometry backing");
+            return None;
         };
-        values.gather_logical_row_range(self.values_window())
+        Some(values.gather_logical_row_range(self.values_window()))
     }
 
     fn logical_payload_bytes(&self) -> usize {
@@ -283,9 +283,14 @@ impl Groups {
             (GroupsValues::Int64(left), GroupsValues::Int64(right)) => {
                 left[self.values_window()] == right[other.values_window()]
             },
-            (GroupsValues::Geometry(_), GroupsValues::Geometry(_)) => {
-                geometry_arrays_equal(&self.geometry_values_view(), &other.geometry_values_view())
-            },
+            (GroupsValues::Geometry(_), GroupsValues::Geometry(_)) => geometry_arrays_equal(
+                &self
+                    .geometry_values_view()
+                    .expect("geometry backing is known from the match"),
+                &other
+                    .geometry_values_view()
+                    .expect("geometry backing is known from the match"),
+            ),
             (GroupsValues::Cells(left), GroupsValues::Cells(right)) => left
                 .logical_row_range(self.values_window())
                 .logical_eq(&right.logical_row_range(other.values_window())),

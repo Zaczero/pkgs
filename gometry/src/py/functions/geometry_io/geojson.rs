@@ -121,11 +121,12 @@ pub(crate) fn from_geojson(
         let crs_for_rows = crs.clone();
         let array = stream_bulk(iter, crs, parsed_epoch, None, move |data, rows, row| {
             let path = format!("$[{row}]");
-            if let Some(shape) =
-                parse_geojson_shape_input(data, crs_for_rows.as_ref(), &path)?
-            {
+            if let Some(shape) = parse_geojson_shape_input(data, crs_for_rows.as_ref(), &path)? {
                 rows.try_push(shape)?;
-                Ok(StreamedRow::Present(None))
+                Ok(StreamedRow::Present {
+                    crs: None,
+                    epoch: None,
+                })
             } else {
                 Ok(StreamedRow::Missing)
             }

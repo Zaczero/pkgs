@@ -294,12 +294,14 @@ impl ValidationIssue {
         reason = "the input shapes are borrowed through their common trait contract, without a meaningful generic identity"
     )]
     pub fn new(
-        reason: impl Into<String>,
+        code: &'static str,
+        detail: impl Into<String>,
         location: Option<Point>,
         path: impl Into<String>,
     ) -> Self {
         Self {
-            reason: reason.into(),
+            code,
+            detail: detail.into(),
             location,
             path: Some(path.into()),
         }

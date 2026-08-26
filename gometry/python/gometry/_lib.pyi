@@ -394,6 +394,16 @@ class InvalidGeometryError(GeometryError):
 
     operation: str | None
     """The operation that failed, for overlay errors (else ``None``)."""
+    row: int | None
+    """The failing array row, for row-wise validation (else ``None``)."""
+    path: str | None
+    """Structural path to the first validity issue (else ``None``)."""
+    code: str | None
+    """Stable machine-readable validity code (else ``None``)."""
+    detail: str | None
+    """Human-readable detail for the validity issue (else ``None``)."""
+    location: tuple[float, float] | None
+    """Coordinate witness for the validity issue (else ``None``)."""
 
 class GeometryTypeError(GeometryError, TypeError):
     """An operation received a geometry of the wrong kind."""
@@ -13280,7 +13290,9 @@ class ValidationReport:
 
     Returned by ``geom.validate()``: truthy when the geometry is valid;
     otherwise ``report.reason`` names the OGC violation, ``report.location``
-    pinpoints it, and ``report.path`` addresses the offending part.
+    pinpoints it, ``report.path`` addresses the offending part, and
+    ``report.code``/``report.detail`` provide stable machine-readable and
+    human-readable issue data.
     Validation reports describe invalid geometries and their reasons.
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self:
@@ -13307,7 +13319,7 @@ class ValidationReport:
         """Pickle support: serialize the geometry only; the verdict is recomputed
         on unpickle (never trusts derived state in the payload).
         """
-    __match_args__: Final = ('valid', 'reason', 'location', 'path')
+    __match_args__: Final = ('valid', 'reason', 'location', 'path', 'code', 'detail')
     def __bool__(self) -> bool:
         """True if self else False"""
     @property
@@ -13321,6 +13333,22 @@ class ValidationReport:
     @property
     def reason(self) -> str | None:
         """Human-readable reason for the first validity problem, or ``None``.
+
+        Returns
+        -------
+        str or None
+        """
+    @property
+    def code(self) -> str | None:
+        """Stable machine-readable validity code, or ``None`` for a valid report.
+
+        Returns
+        -------
+        str or None
+        """
+    @property
+    def detail(self) -> str | None:
+        """Detail for the first validity issue, or ``None`` for a valid report.
 
         Returns
         -------
@@ -17434,6 +17462,13 @@ def require(
 ) -> GeometryArray[_GeometryT]: ...
 @overload
 def require(
+    value: Groups[GeometryArray[_GeometryT]],
+    *,
+    crs: CrsInput | None = None,
+    axes: CoordinateAxes | None = None,
+) -> GeometryArray[_GeometryT]: ...
+@overload
+def require(
     value: str | Buffer | Mapping[str, Any] | SupportsGeoInterface,
     *,
     crs: CrsInput | None = None,
@@ -17460,8 +17495,10 @@ def require(
     Parameters
     ----------
     value : geometry-like or iterable of geometry-like
-        One geometry, a `GeometryArray`, or an iterable. Foreign scalar inputs
-        may be WKT, WKB, GeoJSON mappings/text, or ``__geo_interface__`` objects.
+        One geometry, a `GeometryArray`, a geometry-valued `Groups`, or an
+        iterable. Foreign scalar inputs may be WKT, WKB, GeoJSON mappings/text,
+        or ``__geo_interface__`` objects. Geometry-valued groups are flattened
+        in group order and return a `GeometryArray`.
     crs : str or int, optional
         CRS as an EPSG code or authority/WKT string to attach.
     axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional

@@ -234,6 +234,7 @@ pub(crate) fn classify_ring_pair(
             return None;
         }
         return Some(ValidationIssue::new(
+            "self_intersection",
             format!("{} has a self-intersection", ring_label(left.line)),
             pair_contact_point(left.segment, right.segment).map(XY::point),
             "$",
@@ -242,6 +243,7 @@ pub(crate) fn classify_ring_pair(
     if let Some((_, part)) = shared_segment_part(left.segment, right.segment) {
         if part.len() >= 2 && !same_point(part[0], part[1]) {
             return Some(ValidationIssue::new(
+                "shared_linework",
                 format!("{} on a line", describe(left.line, right.line)),
                 Some(part[0].point()),
                 "$",
@@ -257,6 +259,7 @@ pub(crate) fn classify_ring_pair(
         !same_point(point, right.segment.start) && !same_point(point, right.segment.end);
     if left_interior && right_interior {
         return Some(ValidationIssue::new(
+            "ring_intersection",
             describe(left.line, right.line),
             Some(point.point()),
             "$",
@@ -332,6 +335,7 @@ pub(crate) fn settle_touches(
             let point = XY::new(f64::from_bits(key.x), f64::from_bits(key.y));
             if wedges_interleave(&directions[0], &directions[1], point) {
                 return Some(ValidationIssue::new(
+                    "ring_intersection",
                     describe(ring_a, ring_b),
                     Some(point.point()),
                     "$",
@@ -349,6 +353,7 @@ pub(crate) fn settle_touches(
             for ring in [ring_a, ring_b] {
                 if edges.insert((ring, node)) && graph.union(ring, node) {
                     return Some(ValidationIssue::new(
+                        "interior_disconnected",
                         "interior is disconnected",
                         Some(point.point()),
                         "$",

@@ -819,7 +819,8 @@ pub(crate) fn canonical_f64_bits(value: f64) -> u64 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ValidationIssue {
-    pub reason: String,
+    pub code: &'static str,
+    pub detail: String,
     pub location: Option<Point>,
     pub path: Option<String>,
 }
