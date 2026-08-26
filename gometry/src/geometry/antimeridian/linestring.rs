@@ -81,7 +81,7 @@ pub(super) fn dedup_near(coords: Vec<Point>) -> Vec<Point> {
 /// Returns the seam-separated pieces, or empty when nothing crosses. A
 /// closed input ring re-joins its trailing piece onto the leading one so
 /// every returned piece starts and ends on the seam.
-pub(super) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
+pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
     let mut coords = points.to_vec();
     normalize(&mut coords);
     let coords = dedup_near(coords);

@@ -12,8 +12,13 @@ use crate::geometry::{
     ray_crossing_is_right, simd_reduce_f64, wrap_index,
 };
 
+mod graph;
 mod sections;
 mod staging;
+pub(super) use graph::{
+    AreaSupport, ChartRing, NodeSupport, SourceEdge, SourceEdgeKind, SourcePoint, TopologyEdge,
+    TopologyGraph, TopologyNode, TopologyNodeId, TopologySpace,
+};
 pub(super) use sections::{
     compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,
 };

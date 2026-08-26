@@ -25,7 +25,8 @@ mod normalize;
 mod polygon;
 
 pub(crate) use crs::{geographic_crossing, is_geographic_frame};
-use linestring::{collect_points, dedup_near, normalize, segment_coords};
+pub(crate) use linestring::segment_coords;
+use linestring::{collect_points, dedup_near, normalize};
 pub(crate) use normalize::{
     DerivedPointStrategy, geographic_crossing_bounds, geographic_crossing_bounds_for_shapes,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
