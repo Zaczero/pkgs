@@ -8,6 +8,60 @@ use crate::py::support::{
     resolve_metric,
 };
 
+pub(crate) fn line_interpolate_shape_m(
+    model: &crate::crs::MetricModel,
+    line: &ShapeData,
+    m: f64,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { .. } => line.shape().line_interpolate_point_m(m),
+        crate::crs::MetricModel::Geodesic { crs, state } => {
+            crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
+                line.shape().line_interpolate_point_m_with(m, metric)
+            })
+        },
+    }
+}
+
+pub(crate) fn line_locate_shape_m(
+    model: &crate::crs::MetricModel,
+    line: &ShapeData,
+    query: Point,
+) -> Result<f64> {
+    line_locate_shape_m_value(model, line.shape(), query)
+}
+
+pub(crate) fn line_locate_shape_m_value(
+    model: &crate::crs::MetricModel,
+    line: &Shape,
+    query: Point,
+) -> Result<f64> {
+    match model {
+        crate::crs::MetricModel::Planar { .. } => line.line_locate_point_m(query),
+        crate::crs::MetricModel::Geodesic { crs, state } => {
+            crate::crs::ensure_geographic_lonlat(query.x, query.y)?;
+            crate::crs::with_ellipsoid_metric_at(crs, &[line], state, |metric| {
+                line.line_locate_point_m_with(query, metric)
+            })
+        },
+    }
+}
+
+pub(crate) fn line_substring_shape_m(
+    model: &crate::crs::MetricModel,
+    line: &ShapeData,
+    range: crate::geometry::MeasureRange,
+) -> Result<Shape> {
+    match model {
+        crate::crs::MetricModel::Planar { .. } => line.shape().line_substring_m(range),
+        crate::crs::MetricModel::Geodesic { crs, state } => {
+            crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
+                line.shape().line_substring_m_with(range, metric)
+            })
+        },
+    }
+}
+
 /// Resolve the metric for a line-LRS op. `normalized` distances are fractions
 /// of total length, so they are unit-independent — pairing `unit=` with
 /// `normalized=True` is a contradiction and is rejected.

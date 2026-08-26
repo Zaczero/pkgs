@@ -499,6 +499,22 @@ def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> No
         )
 
 
+def test_geodesic_and_rhumb_between_have_distinct_known_witnesses() -> None:
+    start = gm.Point(-73.8, 40.6, crs=4326)
+    end = gm.Point(-0.5, 51.6, crs=4326)
+
+    geodesic = gm.point_between(start, end, 0.5, normalized=True)
+    rhumb = gm.point_between(start, end, 0.5, normalized=True, path='rhumb')
+
+    assert (geodesic.x, geodesic.y) == pytest.approx(
+        (-41.39507594238808, 52.27369979507356), abs=1e-12
+    )
+    assert (rhumb.x, rhumb.y) == pytest.approx(
+        (-38.97943298625387, 46.10264990687271), abs=1e-12
+    )
+    assert (geodesic.x, geodesic.y) != pytest.approx((rhumb.x, rhumb.y), abs=1e-6)
+
+
 def test_point_between_and_rhumb_destination_path_broadcast_float_lanes() -> None:
     left = gm.Point(0, 0)
     right = gm.Point(10, 0)

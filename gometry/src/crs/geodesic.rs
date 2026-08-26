@@ -186,7 +186,7 @@ pub(crate) use bulk::{
     geodesic_direct, geodesic_direct_columns, geodesic_interpolates, geodesic_inverse,
     geodesic_inverses, geodesic_length_at,
 };
-use cache::{with_geodesic, with_geodesic_at, with_geodesic_cache_at};
+pub(crate) use cache::{with_geodesic, with_geodesic_at, with_geodesic_cache_at};
 pub(crate) use distance::{
     geodesic_frechet_at, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distances, geodesic_point_pair_dwithin,

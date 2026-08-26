@@ -14,7 +14,8 @@ use crate::dispatch::operation::Operation;
 use crate::{
     DistanceUnit, GeometryArrayStorage, InterpolatePlan, PyGeometry, PyGeometryArray,
     crs_line_locate_point, geometry_array_line_locate_point_geometry,
-    line_interpolate_points_shape, line_locate_shape, require_locate_point, require_locate_points,
+    line_interpolate_points_shape, line_locate_shape, line_locate_shape_m,
+    line_locate_shape_m_value, require_locate_point, require_locate_points,
 };
 
 fn line_locate_geometry_points(
@@ -156,9 +157,8 @@ pub(crate) fn line_locate_point_m_input(
                 op_name,
             )?;
             let query = require_locate_point(point_geometry, op_name)?;
-            return Ok(geometry
-                .shape
-                .line_locate_point_m(query)?
+            let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
+            return Ok(line_locate_shape_m(&model, &geometry.shape, query)?
                 .into_pyobject(py)?
                 .unbind()
                 .into());
@@ -172,6 +172,7 @@ pub(crate) fn line_locate_point_m_input(
                 op_name,
             )?;
             let queries = require_locate_points(points, op_name)?;
+            let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
             let line = Arc::clone(&geometry.shape);
             let missing = points.missing().cloned();
             detach_collect_f64(py, move || {
@@ -182,7 +183,7 @@ pub(crate) fn line_locate_point_m_input(
                         if is_missing_row(missing.as_ref(), row) {
                             return Ok(f64::NAN);
                         }
-                        line.line_locate_point_m(query)
+                        line_locate_shape_m(&model, &line, query)
                     })
                     .collect_rows()
             })
@@ -196,6 +197,7 @@ pub(crate) fn line_locate_point_m_input(
                 op_name,
             )?;
             let query = require_locate_point(point_geometry, op_name)?;
+            let model = crate::resolve_line_metric(array.crs_str(), None, false, op_name)?;
             let storage = Arc::clone(array.storage_arc());
             let missing = array.missing().cloned();
             detach_collect_f64(py, move || {
@@ -206,7 +208,7 @@ pub(crate) fn line_locate_point_m_input(
                         if is_missing_row(missing.as_ref(), row) {
                             return Ok(f64::NAN);
                         }
-                        degrade_linref_float(line.line_locate_point_m(query))
+                        degrade_linref_float(line_locate_shape_m_value(&model, &line, query))
                     })
                     .collect_rows()
             })
@@ -214,6 +216,7 @@ pub(crate) fn line_locate_point_m_input(
         (GeometryInput::Many(array), GeometryInput::Many(points)) => {
             paired_arrays(array, points, op_name)?;
             let queries = require_locate_points(points, op_name)?;
+            let model = crate::resolve_line_metric(array.crs_str(), None, false, op_name)?;
             let storage = Arc::clone(array.storage_arc());
             let missing = union_pair(array.missing(), points.missing());
             detach_collect_f64(py, move || {
@@ -225,7 +228,7 @@ pub(crate) fn line_locate_point_m_input(
                         if is_missing_row(missing.as_ref(), row) {
                             return Ok(f64::NAN);
                         }
-                        degrade_linref_float(line.line_locate_point_m(query))
+                        degrade_linref_float(line_locate_shape_m_value(&model, &line, query))
                     })
                     .collect_rows()
             })

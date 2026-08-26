@@ -289,7 +289,7 @@ pub(crate) fn segmentize_points_budgeted(
     // count and the geometry disagree: a geodesic placement measured planarly
     // would emit pieces longer than requested near the poles.
     let length_of = |segment: Segment| match placement {
-        SegmentPlacement::Planar => point_distance(segment.start, segment.end),
+        SegmentPlacement::Planar => Ok(point_distance(segment.start, segment.end)),
         SegmentPlacement::Geodesic(geodesic) => crate::crs::geodesic_line_solution_const::<false>(
             geodesic,
             segment.start.x,
@@ -297,16 +297,13 @@ pub(crate) fn segmentize_points_budgeted(
             segment.end.x,
             segment.end.y,
         )
-        .map_or_else(
-            |_| point_distance(segment.start, segment.end),
-            |(_, _, _, total)| total,
-        ),
+        .map(|(_, _, _, total)| total),
     };
     subdivide_columns(
         points,
         placement,
         "segmentize",
-        |segment| segmentize_steps(length_of(segment), max_segment_length),
+        |segment| length_of(segment).map(|length| segmentize_steps(length, max_segment_length)),
         budget,
     )
 }
@@ -332,17 +329,27 @@ fn segmentize_steps(length: f64, max_segment_length: f64) -> usize {
 /// longer than `fraction` of its own length, re-segmenting continuous
 /// Hausdorff and refining the vertex sequence for discrete Fréchet. `fraction` is in
 /// `(0, 1]`; `1` keeps the vertices unchanged.
+#[cfg(test)]
 pub(crate) fn densify_points_budgeted(
     points: &CoordSeq,
     fraction: f64,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
+    densify_points_budgeted_with_placement(points, fraction, SegmentPlacement::Planar, budget)
+}
+
+pub(crate) fn densify_points_budgeted_with_placement(
+    points: &CoordSeq,
+    fraction: f64,
+    placement: SegmentPlacement<'_>,
+    budget: &mut ExpansionBudget,
+) -> Result<CoordSeq> {
     let steps = (1.0 / fraction).ceil() as usize;
     subdivide_columns(
         points,
-        SegmentPlacement::Planar,
+        placement,
         "densify",
-        |segment| densify_steps(segment, steps),
+        |segment| Ok(densify_steps(segment, steps)),
         budget,
     )
 }
@@ -476,40 +483,45 @@ impl SubdivisionColumns<'_> {
     /// the segment. One inverse solve per segment, then one direct solve per
     /// inserted vertex.
     ///
-    /// A degenerate or unsolvable segment falls back to the planar lerp rather
-    /// than failing the whole geometry — the same spirit as
-    /// [`Self::push_interpolated`]'s non-finite rescue, and it keeps the vertex
-    /// COUNT identical to what the counting sink already charged.
+    /// A degenerate segment is handled by the shared geodesic solver. A solver
+    /// failure is reported rather than replaced with a planar lon/lat point:
+    /// the latter would change the metric curve while preserving its vertex
+    /// count.
     fn push_geodesic(
         &mut self,
         geodesic: &geographiclib_rs::Geodesic,
         segment_index: usize,
         steps: usize,
-    ) {
+    ) -> Result<()> {
         let (xs, ys) = (self.points.xs(), self.points.ys());
         let (x0, y0) = (xs[segment_index], ys[segment_index]);
         let (x1, y1) = (xs[segment_index + 1], ys[segment_index + 1]);
-        let solution = crate::crs::geodesic_line_solution_const::<false>(geodesic, x0, y0, x1, y1);
-        let Ok(solution) = solution else {
-            Self::push_interpolated(&mut self.xs, xs, segment_index, steps);
-            Self::push_interpolated(&mut self.ys, ys, segment_index, steps);
-            return;
-        };
+        let solution = crate::crs::geodesic_line_solution_const::<false>(geodesic, x0, y0, x1, y1)?;
         for step in 1..steps {
             let fraction = step as f64 / steps as f64;
-            match crate::crs::geodesic_interpolate_on_line_const::<false, true>(
-                geodesic, solution, fraction,
-            ) {
-                Ok(info) if info.longitude.is_finite() && info.latitude.is_finite() => {
-                    self.xs.push(info.longitude);
-                    self.ys.push(info.latitude);
-                },
-                _ => {
-                    self.xs.push(if step * 2 <= steps { x0 } else { x1 });
-                    self.ys.push(if step * 2 <= steps { y0 } else { y1 });
-                },
+            #[expect(
+                clippy::float_cmp,
+                reason = "the equator is the literal zero-latitude geodesic"
+            )]
+            let equatorial = y0 == 0.0 && y1 == 0.0 && (x1 - x0).abs() < 180.0;
+            let (longitude, latitude) = if equatorial {
+                (interpolate_f64(x0, x1, fraction), 0.0)
+            } else {
+                let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
+                    geodesic, solution, fraction,
+                )?;
+                (info.longitude, info.latitude)
+            };
+            if !(longitude.is_finite() && latitude.is_finite()) {
+                return Err(GeometryErrorKind::message(
+                    "geodesic subdivision calculation produced a non-finite coordinate",
+                )
+                .into());
             }
+            self.xs.push(longitude);
+            self.ys.push(latitude);
         }
+        Ok(())
     }
 }
 
@@ -533,7 +545,7 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
                 Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
             },
             SegmentPlacement::Geodesic(geodesic) => {
-                self.push_geodesic(geodesic, segment_index, steps);
+                self.push_geodesic(geodesic, segment_index, steps)?;
             },
         }
         if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
@@ -549,13 +561,13 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
 /// Split every segment of a chain into `steps_for(segment)` equal pieces,
 /// keeping every original vertex — the shared engine behind `segmentize`
 /// (length-driven) and `densify` (fraction-driven). Columnar: every
-/// ordinate interpolates straight from its column into the output column —
-/// no 40-byte `Point` staging, no transpose.
+/// Z/M ordinate interpolates straight from its column into the output column;
+/// XY follows `placement` — no 40-byte `Point` staging, no transpose.
 pub(crate) fn subdivide_columns(
     points: &CoordSeq,
     placement: SegmentPlacement<'_>,
     operation: &'static str,
-    steps_for: impl Fn(Segment) -> usize,
+    steps_for: impl Fn(Segment) -> Result<usize>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
     let count = points.len();
@@ -564,7 +576,9 @@ pub(crate) fn subdivide_columns(
     }
     // `steps_for` runs once per segment (not per output vertex); the exact
     // output size keeps every column a single allocation.
-    let steps: Vec<usize> = line_segments(points).map(steps_for).collect();
+    let steps: Vec<usize> = line_segments(points)
+        .map(steps_for)
+        .collect::<Result<_>>()?;
     let mut count_sink = SubdivisionCount { emitted: 0 };
     emit_subdivision(&steps, &mut count_sink)?;
     let total = count_sink.emitted;

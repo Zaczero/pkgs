@@ -70,10 +70,38 @@ fn metric_densified(
 ) -> crate::error::Result<f64> {
     densify.map_or_else(
         || kernel(model, a, b),
-        |fraction| {
-            let a = a.densified(fraction)?;
-            let b = b.densified(fraction)?;
-            kernel(model, &a, &b)
+        |fraction| match model {
+            crs::MetricModel::Planar { .. } => {
+                let a = a.densified(fraction)?;
+                let b = b.densified(fraction)?;
+                kernel(model, &a, &b)
+            },
+            crs::MetricModel::Geodesic { crs, state } => {
+                crs::ensure_geographic_domain(a)?;
+                crs::ensure_geographic_domain(b)?;
+                // Copy the cached ellipsoid out before running the kernel: the
+                // geodesic metric kernel may acquire the same thread-local
+                // cache, and holding its RefCell borrow across that call would
+                // panic on the similarity path.
+                let geodesic = crs::with_geodesic_cache_at(
+                    crs,
+                    state,
+                    |error| error,
+                    |geodesic| Ok(*geodesic),
+                )?;
+                let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
+                let a = a.densified_budgeted_with_placement(
+                    fraction,
+                    crate::geometry::SegmentPlacement::Geodesic(&geodesic),
+                    &mut budget,
+                )?;
+                let b = b.densified_budgeted_with_placement(
+                    fraction,
+                    crate::geometry::SegmentPlacement::Geodesic(&geodesic),
+                    &mut budget,
+                )?;
+                kernel(model, &a, &b)
+            },
         },
     )
 }
@@ -480,8 +508,8 @@ pub(crate) fn metric_frechet(
 }
 
 /// [`metric_hausdorff`] over `densify`-refined operands: each segment gains
-/// evenly spaced vertices (in the source coordinates — lon/lat segments
-/// densify linearly, like GEOS) before the continuous Hausdorff kernel.
+/// evenly spaced vertices along the active metric curve before the continuous
+/// Hausdorff kernel.
 /// `None` preserves the operands' original segmentization; there is no
 /// discrete Hausdorff lane.
 pub(crate) fn metric_hausdorff_densified(

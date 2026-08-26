@@ -68,7 +68,9 @@ at : float or sequence of float, optional
     (@post) => {
         r"
 basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate.
+    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+    synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+    planar otherwise.
 
 normalized : bool, default False
     Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
@@ -136,7 +138,9 @@ start, end : float or sequence of float
     M values are stored route measures. A scalar applies to every array row.
 
 basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate.
+    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
+    synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
+    planar otherwise.
 
 normalized : bool, default False
     Interpret distance-basis positions as fractions in [0, 1]. Invalid with
@@ -278,7 +282,9 @@ geom : Geometry or GeometryArray
     A geometry to project, or one geometry per line row.
 
 basis : {'distance', 'm'}, default 'distance'
-    Return a CRS-aware distance, or the line's monotonic M ordinate.
+    Return a CRS-aware distance, or the line's monotonic M ordinate. For
+    ``basis='m'``, nearest-point projection follows the CRS metric: geodesic on a
+    geographic CRS, planar otherwise.
 
 normalized : bool, default False
     Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.

@@ -14,8 +14,8 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, Coordinates as _, GeodesicMetric, GeometryErrorKind, LineSeq, MeasureRange, Ordering,
-    Point, Segment, Shape, lerp_point, linework_first_point, normalize_line_distance,
-    point_distance, push_distinct_point, segment_projection,
+    Point, Segment, SegmentProjection, Shape, interpolate_f64, lerp_point, linework_first_point,
+    normalize_line_distance, point_distance, push_distinct_point, segment_projection,
 };
 
 /// Per-segment measurement for the linear-referencing engine.
@@ -42,6 +42,29 @@ pub trait SegmentMetric {
     /// golden-section) may return any distance `>= best` once a cheap bound
     /// proves the segment cannot improve on it.
     fn locate(&self, probe: Point, start: Point, end: Point, length: f64, best: f64) -> (f64, f64);
+
+    /// Locate a probe and return the interpolated M value at its foot. Planar
+    /// metrics override this to retain certified projection ratios that may be
+    /// too small to survive conversion through an along-distance.
+    fn locate_with_measure(
+        &self,
+        probe: Point,
+        start: Point,
+        end: Point,
+        length: f64,
+        best: f64,
+    ) -> (f64, f64) {
+        let (distance, along) = self.locate(probe, start, end, length, best);
+        let fraction = if length == 0.0 {
+            0.0
+        } else {
+            (along / length).clamp(0.0, 1.0)
+        };
+        (
+            distance,
+            interpolate_f64(start.m().unwrap_or(0.0), end.m().unwrap_or(0.0), fraction),
+        )
+    }
 }
 
 /// Planar (coordinate-unit) metric.
@@ -67,36 +90,58 @@ impl SegmentMetric for PlanarMetric {
         length: f64,
         _best: f64,
     ) -> (f64, f64) {
-        // Projection classification, witness placement, and along-segment
-        // reconstruction share the segment kernel's certified owner. The
-        // exact fallback retains its ratio until `interpolate_xy` / `scale`,
-        // so an interior parameter that rounds to an endpoint cannot erase
-        // either the residual distance or the locate offset.
-        let segment = Segment {
-            start: start.into(),
-            end: end.into(),
-        };
-        let projection = segment_projection(probe, segment);
-        let foot = projection.interpolate_xy(segment);
-        let ex = probe.x - foot.x;
-        let ey = probe.y - foot.y;
-        let squared = ex * ex + ey * ey;
-        let distance =
-            if crate::geometry::squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0) {
-                squared.sqrt()
-            } else {
-                ex.hypot(ey)
-            };
-        // No outer finite-rescue on `distance`: it can only go non-finite
-        // when a DELTA itself overflows (segment span or probe offset past
-        // ~1.8e308) — and a segment that long has an infinite metric length,
-        // which already poisons the prefix table (old path included), making
-        // every LRS result on such inputs degenerate. The ~1e150-class
-        // extremes the suite covers resolve correctly through the scaled
-        // projection + `hypot` rescues above; guarding the last class was
-        // measured at +14% on every real locate.
+        let (distance, projection) = planar_projection(probe, start, end);
         (distance, projection.scale(length))
     }
+
+    fn locate_with_measure(
+        &self,
+        probe: Point,
+        start: Point,
+        end: Point,
+        _length: f64,
+        _best: f64,
+    ) -> (f64, f64) {
+        let (distance, projection) = planar_projection(probe, start, end);
+        // Keep the certified projection ratio until measure interpolation;
+        // converting a subnormal ratio to along-distance and back loses it.
+        (
+            distance,
+            projection.interpolate_point(start, end).m().unwrap_or(0.0),
+        )
+    }
+}
+
+fn planar_projection(probe: Point, start: Point, end: Point) -> (f64, SegmentProjection) {
+    // Projection classification, witness placement, and along-segment
+    // reconstruction share the segment kernel's certified owner. The
+    // exact fallback retains its ratio until `interpolate_xy` / `scale`,
+    // so an interior parameter that rounds to an endpoint cannot erase
+    // either the residual distance or the locate offset.
+    let segment = Segment {
+        start: start.into(),
+        end: end.into(),
+    };
+    let projection = segment_projection(probe, segment);
+    let foot = projection.interpolate_xy(segment);
+    let ex = probe.x - foot.x;
+    let ey = probe.y - foot.y;
+    let squared = ex * ex + ey * ey;
+    let distance = if crate::geometry::squared_norm_is_trustworthy(squared, ex == 0.0 && ey == 0.0)
+    {
+        squared.sqrt()
+    } else {
+        ex.hypot(ey)
+    };
+    // No outer finite-rescue on `distance`: it can only go non-finite
+    // when a DELTA itself overflows (segment span or probe offset past
+    // ~1.8e308) — and a segment that long has an infinite metric length,
+    // which already poisons the prefix table (old path included), making
+    // every LRS result on such inputs degenerate. The ~1e150-class
+    // extremes the suite covers resolve correctly through the scaled
+    // projection + `hypot` rescues above; guarding the last class was
+    // measured at +14% on every real locate.
+    (distance, projection)
 }
 
 /// Any [`GeodesicMetric`] is a [`SegmentMetric`] (lengths in meters).

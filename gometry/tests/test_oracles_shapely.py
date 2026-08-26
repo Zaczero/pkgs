@@ -390,7 +390,11 @@ def test_geographic_densified_hausdorff_uses_geodesic_path() -> None:
     d01 = gm.hausdorff_distance(equator_a, equator_b, densify=0.1)
     d001 = gm.hausdorff_distance(equator_a, equator_b, densify=0.01)
     assert d1 == pytest.approx(gm.hausdorff_distance(equator_a, equator_b))
-    assert d1 >= d05 >= d01 >= d001
+    # Subdivision follows the geodesic segments now. On a parallel away from
+    # the equator, the inserted geodesic midpoint exposes its interior bow
+    # toward the pole, so the discrete estimate refines upward toward the
+    # segment-aware value rather than following planar densification's order.
+    assert d1 <= d05 <= d01 <= d001
     assert gm.hausdorff_distance(
         equator_a, equator_b, densify=0.5, unit='planar'
     ) == pytest.approx(0.5)

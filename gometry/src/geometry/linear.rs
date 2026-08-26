@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
     HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, Segment,
-    SegmentProjection, Shape, ShapeData, distance_3d_with_parts, lerp_point, point_distance,
+    SegmentMetric, SegmentProjection, Shape, ShapeData, distance_3d_with_parts, point_distance,
     same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 
@@ -542,6 +542,14 @@ impl Shape {
     /// Point at measure `m` along this geometry's M ordinate. `m` is clamped to
     /// the `[m_first, m_last]` range.
     pub fn line_interpolate_point_m(&self, m: f64) -> Result<Self> {
+        self.line_interpolate_point_m_with(m, &PlanarMetric)
+    }
+
+    pub(crate) fn line_interpolate_point_m_with<M: SegmentMetric>(
+        &self,
+        m: f64,
+        metric: &M,
+    ) -> Result<Self> {
         let m = Finite::try_new("m", m)?.get();
         let vertices = self.measured_vertices()?;
         let target = m.clamp(
@@ -565,7 +573,7 @@ impl Shape {
                 } else {
                     (target - start_m) / span
                 };
-                return Ok(Self::Point(lerp_point(*start, *end, fraction)));
+                return Ok(Self::Point(metric.interpolate(*start, *end, fraction)));
             }
         }
         Ok(Self::Point(vertices[vertices.len() - 1]))
@@ -574,20 +582,24 @@ impl Shape {
     /// Interpolated M ordinate at the location on this geometry nearest
     /// `point`.
     pub fn line_locate_point_m(&self, point: Point) -> Result<f64> {
+        self.line_locate_point_m_with(point, &PlanarMetric)
+    }
+
+    pub(crate) fn line_locate_point_m_with<M: SegmentMetric>(
+        &self,
+        point: Point,
+        metric: &M,
+    ) -> Result<f64> {
         let vertices = self.measured_vertices()?;
         let mut best_distance = f64::INFINITY;
         let mut best_measure = vertices[0].m().unwrap_or(0.0);
         for [start, end] in vertices.array_windows::<2>() {
-            let segment = Segment {
-                start: (*start).into(),
-                end: (*end).into(),
-            };
-            let projection = segment_projection(point, segment);
-            let projected = projection.interpolate_point(*start, *end);
-            let distance = point_distance(point, projected);
+            let length = metric.length(*start, *end);
+            let (distance, measure) =
+                metric.locate_with_measure(point, *start, *end, length, best_distance);
             if distance < best_distance {
                 best_distance = distance;
-                best_measure = projected.m().unwrap_or(0.0);
+                best_measure = measure;
             }
         }
         Ok(best_measure)
@@ -596,6 +608,14 @@ impl Shape {
     /// Sub-line between measures `m0` and `m1` along this geometry's M
     /// ordinate.
     pub(crate) fn line_substring_m(&self, range: MeasureRange) -> Result<Self> {
+        self.line_substring_m_with(range, &PlanarMetric)
+    }
+
+    pub(crate) fn line_substring_m_with<M: SegmentMetric>(
+        &self,
+        range: MeasureRange,
+        metric: &M,
+    ) -> Result<Self> {
         let (m0, m1) = (range.start(), range.end());
         let vertices = self.measured_vertices()?;
         let (lo, hi) = (
@@ -605,7 +625,7 @@ impl Shape {
         let start = m0.clamp(lo, hi);
         let end = m1.clamp(lo, hi);
         if start.total_cmp(&end) == Ordering::Equal {
-            return self.line_interpolate_point_m(start);
+            return self.line_interpolate_point_m_with(start, metric);
         }
         let mut result = Vec::new();
         for [segment_start, segment_end] in vertices.array_windows::<2>() {
@@ -631,14 +651,14 @@ impl Shape {
                 } else if measure == end_m {
                     *segment_end
                 } else {
-                    lerp_point(*segment_start, *segment_end, fraction(measure))
+                    metric.interpolate(*segment_start, *segment_end, fraction(measure))
                 }
             };
             push_distinct_point(&mut result, at(start.max(start_m)));
             push_distinct_point(&mut result, at(end.min(end_m)));
         }
         Ok(match result.len() {
-            0 => self.line_interpolate_point_m(start)?,
+            0 => self.line_interpolate_point_m_with(start, metric)?,
             1 => Self::Point(result[0]),
             _ => Self::LineString(
                 LineSeq::try_new(CoordSeq::from(result)).expect("M substring is lineal"),

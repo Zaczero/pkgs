@@ -114,8 +114,8 @@ use constructive::{
     decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference, winding_region,
 };
 pub(crate) use constructive::{
-    DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about, densify_points_budgeted, rdp_keep,
-    segmentize_points_budgeted,
+    DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about, densify_points_budgeted_with_placement,
+    rdp_keep, segmentize_points_budgeted,
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, RTreeObject, coverage_clean, coverage_invalid_edges,
@@ -652,8 +652,15 @@ impl Polygon {
         })
     }
 
-    fn densified_budgeted(&self, fraction: f64, budget: &mut ExpansionBudget) -> Result<Self> {
-        self.try_map_ring_seqs(|ring| densify_points_budgeted(ring, fraction, budget))
+    fn densified_budgeted_with_placement(
+        &self,
+        fraction: f64,
+        placement: SegmentPlacement<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
+        self.try_map_ring_seqs(|ring| {
+            densify_points_budgeted_with_placement(ring, fraction, placement, budget)
+        })
     }
 
     fn reverse(&self) -> Self {

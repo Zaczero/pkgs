@@ -91,8 +91,9 @@ pub(crate) use geodesic::{
     geodesic_line_substring_coordseq, geodesic_point_between, geodesic_point_distances,
     geodesic_point_pair_distances, geodesic_point_pair_dwithin, geodesic_ring_measure_columns,
     geodesic_shape_area, geodesic_shape_length, interpolate_optional_ordinate, metric_model,
-    metric_model_meters, with_ellipsoid_metric_at, with_geodesic_coordseq_collect_rows_at,
-    with_geodesic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
+    metric_model_meters, with_ellipsoid_metric_at, with_geodesic_cache_at,
+    with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
+    with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use grids::grid_info;
 use in_core::{

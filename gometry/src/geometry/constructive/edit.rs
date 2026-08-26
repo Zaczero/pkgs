@@ -6,9 +6,9 @@ use std::convert::Infallible;
 
 use crate::NonNegative;
 use crate::geometry::constructive::{
-    Result, SegmentPlacement, decimal_scale, densify_points_budgeted, normalized_line,
-    quantize_column_simd, remove_repeated_line_points, remove_repeated_points,
-    segmentize_points_budgeted, snap_column_simd, split,
+    Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
+    remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
+    snap_column_simd, split,
 };
 use crate::geometry::{
     AxisFrame, Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
@@ -1030,28 +1030,45 @@ impl Shape {
         fraction: f64,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
+        self.densified_budgeted_with_placement(fraction, SegmentPlacement::Planar, budget)
+    }
+
+    pub(crate) fn densified_budgeted_with_placement(
+        &self,
+        fraction: f64,
+        placement: SegmentPlacement<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
             Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                densify_points_budgeted(points, fraction, budget)?,
+                crate::geometry::densify_points_budgeted_with_placement(
+                    points, fraction, placement, budget,
+                )?,
             )),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(densify_points_budgeted(
-                        line, fraction, budget,
-                    )?))
+                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(
+                        crate::geometry::densify_points_budgeted_with_placement(
+                            line, fraction, placement, budget,
+                        )?,
+                    ))
                 })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.densified_budgeted(fraction, budget)?),
+            Self::Polygon(polygon) => Self::Polygon(
+                polygon.densified_budgeted_with_placement(fraction, placement, budget)?,
+            ),
             Self::MultiPolygon(polygons) => {
                 Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.densified_budgeted(fraction, budget)
+                    polygon.densified_budgeted_with_placement(fraction, placement, budget)
                 })?)
             },
             Self::GeometryCollection(geometries) => {
                 let parts = geometries
                     .iter()
-                    .map(|geometry| geometry.densified_budgeted(fraction, budget))
+                    .map(|geometry| {
+                        geometry.densified_budgeted_with_placement(fraction, placement, budget)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Self::geometry_collection(parts)
             },

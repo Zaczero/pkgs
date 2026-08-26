@@ -13,12 +13,13 @@ use crate::geometry::{
 };
 use crate::numeric::Positive;
 use crate::{
-    F64Param, I64Param, line_interpolate_shape, line_substring_shape, metric_concave_hull,
-    metric_constructive_shape, metric_constructive_shape_budgeted, metric_frechet_densified,
-    metric_hausdorff_densified, metric_interpolate_m, metric_maximum_inscribed_radius,
-    metric_minimum_bounding_circle, metric_minimum_bounding_radius, metric_minimum_clearance,
-    metric_minimum_clearance_line, metric_optional_constructive_shape,
-    pair_distance_resolved_result, pair_dwithin_resolved_result,
+    F64Param, I64Param, line_interpolate_shape, line_interpolate_shape_m, line_substring_shape,
+    line_substring_shape_m, metric_concave_hull, metric_constructive_shape,
+    metric_constructive_shape_budgeted, metric_frechet_densified, metric_hausdorff_densified,
+    metric_interpolate_m, metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
+    metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
+    metric_optional_constructive_shape, pair_distance_resolved_result,
+    pair_dwithin_resolved_result,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -473,11 +474,14 @@ pub(crate) fn unary_segmentize(
         // distance the caller named is a real-world one, exactly as it is for
         // `length`. `segmentize` only INSERTS vertices, so every original
         // survives bit-exactly under either placement.
-        ResolvedMetric::Geodesic { geodesic, .. } => data.shape().segmentize_budgeted(
-            length,
-            crate::geometry::SegmentPlacement::Geodesic(geodesic),
-            &mut budget,
-        ),
+        ResolvedMetric::Geodesic { geodesic, .. } => {
+            crate::crs::ensure_geographic_domain(data.shape())?;
+            data.shape().segmentize_budgeted(
+                length,
+                crate::geometry::SegmentPlacement::Geodesic(geodesic),
+                &mut budget,
+            )
+        },
         // Projected: `to_metre` is 1.0 for the CRS's own units and the axis
         // factor under `unit='meters'`, so a metre input divides into
         // coordinate units the same way `buffer`'s distance does.
@@ -495,7 +499,19 @@ pub(crate) fn unary_densify(
     ctx: &OpCtx<'_>,
     fraction: &F64Param,
 ) -> Result<Shape> {
-    data.shape().densified(fraction.get(ctx.lane.row()))
+    let fraction = fraction.get(ctx.lane.row());
+    match ctx.metric.require_resolved("segmentize")? {
+        ResolvedMetric::Geodesic { geodesic, .. } => {
+            crate::crs::ensure_geographic_domain(data.shape())?;
+            let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
+            data.shape().densified_budgeted_with_placement(
+                fraction,
+                crate::geometry::SegmentPlacement::Geodesic(geodesic),
+                &mut budget,
+            )
+        },
+        ResolvedMetric::Planar { .. } => data.shape().densified(fraction),
+    }
 }
 
 /// Area kernel shared by the spine-routed free function.
@@ -890,7 +906,11 @@ pub(crate) fn unary_line_interpolate_point_m(
     m: &F64Param,
 ) -> Result<Shape> {
     linref_point_lane(
-        data.shape().line_interpolate_point_m(m.get(ctx.lane.row())),
+        line_interpolate_shape_m(
+            ctx.metric.require_model("line_interpolate")?,
+            data,
+            m.get(ctx.lane.row()),
+        ),
         ctx.lane.is_array(),
     )
 }
@@ -904,7 +924,10 @@ pub(crate) fn unary_line_substring_m(
 ) -> Result<Shape> {
     let range =
         MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
-    linref_linestring_lane(data.shape().line_substring_m(range), ctx.lane.is_array())
+    linref_linestring_lane(
+        line_substring_shape_m(ctx.metric.require_model("line_substring")?, data, range),
+        ctx.lane.is_array(),
+    )
 }
 
 /// ``interpolate_m`` kernel shared by the spine-routed free function.

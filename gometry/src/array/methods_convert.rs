@@ -68,6 +68,9 @@ impl PyGeometryArray {
             max_segment_length,
             |value| validate_max_segment_length(value).map(|_| ()),
             move |points, length, budget| {
+                if for_columns.is_some() {
+                    crate::crs::ensure_geographic_columns(points.xs(), points.ys())?;
+                }
                 crate::geometry::segmentize_points_budgeted(
                     points,
                     length / to_metre,
@@ -79,6 +82,9 @@ impl PyGeometryArray {
                 )
             },
             move |shape, length, budget| {
+                if for_shapes.is_some() {
+                    crate::crs::ensure_geographic_domain(shape)?;
+                }
                 shape.segmentize_budgeted(
                     length / to_metre,
                     for_shapes.as_ref().map_or(
@@ -91,14 +97,49 @@ impl PyGeometryArray {
         )
     }
 
-    pub(crate) fn densify_unary_packed(&self, fraction: &F64Param) -> PyResult<Self> {
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the packed kernels are detached, so the resolved ellipsoid is owned once per call"
+    )]
+    pub(crate) fn densify_unary_packed(
+        &self,
+        fraction: &F64Param,
+        geodesic: Option<geographiclib_rs::Geodesic>,
+    ) -> PyResult<Self> {
+        let for_columns = geodesic;
+        let for_shapes = geodesic;
         self.subdivide_unary_packed(
             "densify",
             "fraction",
             fraction,
             |value| validate_densify_fraction(value).map(|_| ()),
-            crate::geometry::densify_points_budgeted,
-            Shape::densified_budgeted,
+            move |points, fraction, budget| {
+                if for_columns.is_some() {
+                    crate::crs::ensure_geographic_columns(points.xs(), points.ys())?;
+                }
+                crate::geometry::densify_points_budgeted_with_placement(
+                    points,
+                    fraction,
+                    for_columns.as_ref().map_or(
+                        crate::geometry::SegmentPlacement::Planar,
+                        crate::geometry::SegmentPlacement::Geodesic,
+                    ),
+                    budget,
+                )
+            },
+            move |shape, fraction, budget| {
+                if for_shapes.is_some() {
+                    crate::crs::ensure_geographic_domain(shape)?;
+                }
+                shape.densified_budgeted_with_placement(
+                    fraction,
+                    for_shapes.as_ref().map_or(
+                        crate::geometry::SegmentPlacement::Planar,
+                        crate::geometry::SegmentPlacement::Geodesic,
+                    ),
+                    budget,
+                )
+            },
         )
     }
 

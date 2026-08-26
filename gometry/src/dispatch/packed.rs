@@ -282,7 +282,10 @@ pub(crate) fn try_unary_packed_array(
             }
         },
         (Operation::Segmentize, PackedUnary::Densify { fraction }) => {
-            Some(array.densify_unary_packed(fraction))
+            match segmentize_metric(array, resolver) {
+                Ok((geodesic, _)) => Some(array.densify_unary_packed(fraction, geodesic)),
+                Err(error) => Some(Err(error)),
+            }
         },
         (
             Operation::Simplify,

@@ -89,3 +89,83 @@ def test_array_multi_line_string_lrs_matches_scalar() -> None:
     scalar_point = (multi).line_interpolate(100000.0)
     array_points = (arr).line_interpolate([100000.0, 100000.0])
     assert canon(array_points) == canon(gm.GeometryArray([scalar_point, scalar_point]))
+
+
+def test_geographic_fraction_densify_matches_geodesic_sampling_scalar_and_bulk() -> (
+    None
+):
+    line = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
+    expected = line.line_interpolate(0.5, normalized=True)
+    scalar = line.segmentize(fraction=0.5)
+    bulk = gm.GeometryArray([line]).segmentize(fraction=0.5)[0]
+    length_scalar = line.segmentize(1_000_000.0)
+    length_bulk = gm.GeometryArray([line]).segmentize(1_000_000.0)[0]
+
+    assert tuple(scalar.coords[1]) == pytest.approx(
+        (4.961882922527124, 5.01950880089445), abs=1e-12
+    )
+    assert tuple(scalar.coords[1]) == pytest.approx((expected.x, expected.y))
+    assert tuple(bulk.coords[1]) == pytest.approx((expected.x, expected.y))
+    assert scalar.coords[1][1] != pytest.approx(5.0)
+    assert tuple(length_scalar.coords[1]) == pytest.approx((expected.x, expected.y))
+    assert tuple(length_bulk.coords[1]) == pytest.approx((expected.x, expected.y))
+
+
+def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() -> None:
+    invalid = gm.LineString([(0.0, 95.0), (1.0, 95.0)], crs=4326)
+    for refine in (
+        lambda: invalid.segmentize(1_000.0),
+        lambda: invalid.segmentize(fraction=0.5),
+        lambda: gm.GeometryArray([invalid]).segmentize(1_000.0),
+        lambda: gm.GeometryArray([invalid]).segmentize(fraction=0.5),
+    ):
+        with pytest.raises(ValueError, match='invalid longitude/latitude'):
+            refine()
+
+    valid = gm.LineString([(0.0, 0.0), (10.0, 10.0)], crs=4326)
+    refined = gm.GeometryArray([valid, None], crs=4326).segmentize(fraction=0.5)
+    assert refined.is_missing.tolist() == [False, True]
+
+
+@pytest.mark.parametrize(
+    ('coordinates', 'expected_xy', 'expected_substring_xy'),
+    [
+        (
+            [(179.0, 10.0), (-179.0, 10.0)],
+            (180.0, 10.001502283693659),
+            [
+                (179.49999885157385, 10.001126705155835),
+                (-179.49999885157385, 10.001126705155837),
+            ],
+        ),
+        (
+            [(0.0, 80.0), (180.0, 80.0)],
+            (0.0, 90.0),
+            [(0.0, 85.00038196538807), (180.0, 85.00038196538809)],
+        ),
+    ],
+)
+def test_geographic_lrs_scalar_and_bulk_keep_the_same_seam_or_pole_path(
+    coordinates: list[tuple[float, float]],
+    expected_xy: tuple[float, float],
+    expected_substring_xy: list[tuple[float, float]],
+) -> None:
+    line = gm.LineString(coordinates, crs=4326, m=[0.0, 100.0])
+    expected = gm.Point(*expected_xy, crs=4326)
+    array = gm.GeometryArray([line])
+
+    scalar = line.line_interpolate(50.0, basis='m')
+    bulk = array.line_interpolate([50.0], basis='m')[0]
+    assert (scalar.x, scalar.y) == pytest.approx(expected_xy, abs=1e-12)
+    assert (bulk.x, bulk.y) == pytest.approx(expected_xy, abs=1e-12)
+    for substring in (
+        line.line_substring(25.0, 75.0, basis='m'),
+        array.line_substring(25.0, 75.0, basis='m')[0],
+    ):
+        assert [tuple(point[:2]) for point in substring.coords] == pytest.approx(
+            expected_substring_xy, abs=1e-12
+        )
+    assert line.line_locate(expected, basis='m') == pytest.approx(50.0, abs=1e-7)
+    assert array.line_locate(gm.GeometryArray([expected]), basis='m')[
+        0
+    ] == pytest.approx(50.0, abs=1e-7)

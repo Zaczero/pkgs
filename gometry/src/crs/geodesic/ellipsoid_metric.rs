@@ -134,7 +134,18 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point {
         let (length, azimuth, _) = geo_distance_azimuths(self.geodesic, a, b);
         // Lat/lon-only direct — final azimuth is unused.
-        let (lat, lon): (f64, f64) = geo_direct(self.geodesic, a, azimuth, length * fraction);
+        // The equator is itself a geodesic. Keep its exact Cartesian longitude
+        // ramp when the endpoints do not take the antimeridian shortcut; this
+        // preserves exact legacy coordinates without changing the curve model.
+        #[expect(
+            clippy::float_cmp,
+            reason = "the equator is the literal zero-latitude geodesic"
+        )]
+        let (lat, lon): (f64, f64) = if a.y == 0.0 && b.y == 0.0 && (b.x - a.x).abs() < 180.0 {
+            (0.0, crate::geometry::interpolate_f64(a.x, b.x, fraction))
+        } else {
+            geo_direct(self.geodesic, a, azimuth, length * fraction)
+        };
         Point::new_axes(
             lon,
             lat,
