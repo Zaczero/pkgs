@@ -419,20 +419,23 @@ mod winding_buffer_tests {
             assert!(annihilated.is_empty(), "{annihilated:?}");
         }
 
-        let collection = Shape::GeometryCollection(vec![
-            Shape::Point(Point::new(12.0, 3.0).unwrap()),
-            Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(0.0, 0.0).unwrap(),
-                    Point::new(4.0, 0.0).unwrap(),
-                ]))
-                .expect("test line is valid"),
-            ),
-            Shape::Polygon(Polygon::new(
-                ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
-                Vec::new(),
-            )),
-        ]);
+        let collection = Shape::GeometryCollection(
+            vec![
+                Shape::Point(Point::new(12.0, 3.0).unwrap()),
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new(0.0, 0.0).unwrap(),
+                        Point::new(4.0, 0.0).unwrap(),
+                    ]))
+                    .expect("test line is valid"),
+                ),
+                Shape::Polygon(Polygon::new(
+                    ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
+                    Vec::new(),
+                )),
+            ]
+            .into(),
+        );
         let buffered = collection.buffer(0.5).unwrap();
         assert!(buffered.validate().is_none(), "{:?}", buffered.validate());
         for part in match &collection {
@@ -543,6 +546,7 @@ mod consecutive_dedup_tests {
     use super::*;
     use crate::geometry::constructive::offset::{offset_line, offset_source};
     use crate::geometry::constructive::strict_cycle;
+    use crate::geometry::{CoordinateAxes, GeometryKind};
 
     fn point(x: f64, y: f64) -> Point {
         Point::new(x, y).unwrap()
@@ -603,6 +607,37 @@ mod consecutive_dedup_tests {
         let last = shell.last().expect("closure");
         assert_eq!(first.x, last.x);
         assert_eq!(first.y, last.y);
+    }
+
+    #[test]
+    fn empty_results_keep_source_axes() {
+        use std::sync::Arc;
+
+        let collapsed_ring = Ring::from_trusted_closed(CoordSeq::from_columns(
+            Arc::from([0.0, 0.0, 0.0, 0.0]),
+            Arc::from([0.0, 0.0, 0.0, 0.0]),
+            Some(Arc::from([1.0, 1.0, 1.0, 1.0])),
+            None,
+        ));
+        let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()));
+
+        assert_eq!(polygon.unique_points().axes(), CoordinateAxes::XYZ);
+        assert_eq!(
+            polygon.snap_to_grid((1.0, 1.0), (0.0, 0.0)).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
+        );
+        assert_eq!(
+            polygon.simplify_vw(1.0, false).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
+        );
+        assert_eq!(
+            polygon.simplify_dp_raw(1.0).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
+        );
+        assert_eq!(
+            polygon.remove_repeated_points(1.0).unwrap(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZ)
+        );
     }
 }
 
@@ -704,7 +739,8 @@ mod expansion_budget_threading_tests {
     fn buffer_and_offset_collection_children_use_the_callers_budget() {
         let style = Positive::try_new("miter_limit", 5.0).unwrap();
         let mut buffer_budget = exhausted("buffer", "quadrant_segments");
-        let buffer = Shape::GeometryCollection(vec![Shape::Point(Point::new(0.0, 0.0).unwrap())]);
+        let buffer =
+            Shape::GeometryCollection(vec![Shape::Point(Point::new(0.0, 0.0).unwrap())].into());
         buffer
             .buffer_with_style_budgeted(
                 1.0,
@@ -717,7 +753,7 @@ mod expansion_budget_threading_tests {
             .unwrap_err();
 
         let mut offset_budget = exhausted("offset_curve", "quadrant_segments");
-        Shape::GeometryCollection(vec![bent_line()])
+        Shape::GeometryCollection(vec![bent_line()].into())
             .offset_curve_budgeted(
                 1.0,
                 BufferJoinStyle::Round,
@@ -731,7 +767,7 @@ mod expansion_budget_threading_tests {
     #[test]
     fn smooth_children_and_triangle_emission_use_the_callers_budget() {
         let mut smooth_budget = exhausted("smooth", "iterations");
-        Shape::GeometryCollection(vec![bent_line()])
+        Shape::GeometryCollection(vec![bent_line()].into())
             .smooth_budgeted(1, SmoothMethod::CatmullRom, true, &mut smooth_budget)
             .unwrap_err();
 
@@ -754,7 +790,7 @@ mod expansion_budget_threading_tests {
         // on the cap and the second must observe that same exhausted owner.
         let mut parts_budget = ExpansionBudget::new("segmentize", "max_segment_length");
         parts_budget.add(GENERATED_ITEM_LIMIT - 1).unwrap();
-        Shape::MultiLineString(vec![straight_line(), straight_line()])
+        Shape::MultiLineString(vec![straight_line(), straight_line()].into())
             .segmentize_budgeted(
                 0.5,
                 crate::geometry::SegmentPlacement::Planar,

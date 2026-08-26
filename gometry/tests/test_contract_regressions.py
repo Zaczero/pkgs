@@ -2066,14 +2066,14 @@ def test_wkb_empty_multipoint_member_matches_wkt() -> None:
     )
     wkb_geom = gm.from_wkb(wkb)
     wkt_geom = gm.from_wkt('MULTIPOINT (EMPTY, (1 2))')
-    assert wkb_geom.to_wkt() == wkt_geom.to_wkt() == 'MULTIPOINT ((1 2))'
+    assert wkb_geom.to_wkt() == wkt_geom.to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
     assert len(wkb_geom.coords) == 1
     # bulk / Arrow-WKB / pickle
     bulk = gm.from_wkb([wkb])
-    assert bulk[0].to_wkt() == 'MULTIPOINT ((1 2))'
+    assert bulk[0].to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
     arrow = gm.from_arrow(pa.array([wkb], type=pa.binary()))
-    assert arrow[0].to_wkt() == 'MULTIPOINT ((1 2))'
-    assert pickle.loads(pickle.dumps(wkb_geom)).to_wkt() == 'MULTIPOINT ((1 2))'
+    assert arrow[0].to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
+    assert pickle.loads(pickle.dumps(wkb_geom)).to_wkt() == 'MULTIPOINT (EMPTY, (1 2))'
 
 
 def test_wkb_empty_multipolygon_member_matches_wkt() -> None:
@@ -2089,7 +2089,7 @@ def test_wkb_empty_multipolygon_member_matches_wkt() -> None:
     wkb_geom = gm.from_wkb(wkb)
     wkt_geom = gm.from_wkt('MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))')
     assert wkb_geom.to_wkt() == wkt_geom.to_wkt()
-    assert len(wkb_geom.parts) == 1
+    assert len(wkb_geom.parts) == 2
     assert pickle.loads(pickle.dumps(wkb_geom)).to_wkt() == wkb_geom.to_wkt()
 
 

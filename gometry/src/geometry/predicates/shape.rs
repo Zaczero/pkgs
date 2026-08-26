@@ -7,8 +7,8 @@ use crate::geometry::predicates::{
     vertex_witness,
 };
 use crate::geometry::{
-    Bounds, Coordinates as _, DimMode, Dimension, EmptyKind, GeometryErrorKind, Point,
-    SegmentContact, Shape, dimension, lineal_relate_shapes, linework_contact, mixed_relate_shapes,
+    Bounds, Coordinates as _, DimMode, Dimension, GeometryErrorKind, Point, SegmentContact, Shape,
+    dimension, lineal_relate_shapes, linework_contact, mixed_relate_shapes,
     native_relate_pattern_shapes, native_relate_shapes, point_equals_exact, point_on_segment,
     points_equal_exact, relate_ng, same_point, topology_split,
 };
@@ -787,27 +787,89 @@ impl Shape {
             (Self::Point(left), Self::Point(right)) => {
                 point_equals_exact::<Z, M>(*left, *right, tolerance)
             },
-            (Self::MultiPoint(left), Self::MultiPoint(right)) => {
-                points_equal_exact::<Z, M, _, _>(left, right, tolerance)
+            (Self::MultiPoint(multipoint_left), Self::MultiPoint(multipoint_right)) => {
+                (!Z || multipoint_left.axes().has_z() == multipoint_right.axes().has_z())
+                    && (!M || multipoint_left.axes().has_m() == multipoint_right.axes().has_m())
+                    && multipoint_left.len() == multipoint_right.len()
+                    && multipoint_left
+                        .members()
+                        .iter()
+                        .zip(multipoint_right.members())
+                        .all(
+                            |(left_member, right_member)| match (left_member, right_member) {
+                                (
+                                    crate::geometry::MultiMember::Empty,
+                                    crate::geometry::MultiMember::Empty,
+                                ) => true,
+                                (
+                                    crate::geometry::MultiMember::Value(left_index),
+                                    crate::geometry::MultiMember::Value(right_index),
+                                ) => point_equals_exact::<Z, M>(
+                                    multipoint_left.point_at(*left_index),
+                                    multipoint_right.point_at(*right_index),
+                                    tolerance,
+                                ),
+                                _ => false,
+                            },
+                        )
             },
             (Self::LineString(left), Self::LineString(right)) => {
                 points_equal_exact::<Z, M, _, _>(left, right, tolerance)
             },
-            (Self::MultiLineString(left), Self::MultiLineString(right)) => {
-                left.len() == right.len()
-                    && left.iter().zip(right).all(|(left, right)| {
-                        points_equal_exact::<Z, M, _, _>(left, right, tolerance)
-                    })
+            (Self::MultiLineString(multiline_left), Self::MultiLineString(multiline_right)) => {
+                (!Z || multiline_left.axes().has_z() == multiline_right.axes().has_z())
+                    && (!M || multiline_left.axes().has_m() == multiline_right.axes().has_m())
+                    && multiline_left.len() == multiline_right.len()
+                    && multiline_left
+                        .members()
+                        .iter()
+                        .zip(multiline_right.members())
+                        .all(
+                            |(left_member, right_member)| match (left_member, right_member) {
+                                (
+                                    crate::geometry::MultiMember::Empty,
+                                    crate::geometry::MultiMember::Empty,
+                                ) => true,
+                                (
+                                    crate::geometry::MultiMember::Value(left_index),
+                                    crate::geometry::MultiMember::Value(right_index),
+                                ) => points_equal_exact::<Z, M, _, _>(
+                                    &multiline_left.as_slice()[*left_index],
+                                    &multiline_right.as_slice()[*right_index],
+                                    tolerance,
+                                ),
+                                _ => false,
+                            },
+                        )
             },
             (Self::Polygon(left), Self::Polygon(right)) => {
                 left.equals_exact_impl::<Z, M>(right, tolerance)
             },
-            (Self::MultiPolygon(left), Self::MultiPolygon(right)) => {
-                left.len() == right.len()
-                    && left
+            (Self::MultiPolygon(multipolygon_left), Self::MultiPolygon(multipolygon_right)) => {
+                (!Z || multipolygon_left.axes().has_z() == multipolygon_right.axes().has_z())
+                    && (!M || multipolygon_left.axes().has_m() == multipolygon_right.axes().has_m())
+                    && multipolygon_left.len() == multipolygon_right.len()
+                    && multipolygon_left
+                        .members()
                         .iter()
-                        .zip(right)
-                        .all(|(left, right)| left.equals_exact_impl::<Z, M>(right, tolerance))
+                        .zip(multipolygon_right.members())
+                        .all(
+                            |(left_member, right_member)| match (left_member, right_member) {
+                                (
+                                    crate::geometry::MultiMember::Empty,
+                                    crate::geometry::MultiMember::Empty,
+                                ) => true,
+                                (
+                                    crate::geometry::MultiMember::Value(left_index),
+                                    crate::geometry::MultiMember::Value(right_index),
+                                ) => multipolygon_left.as_slice()[*left_index]
+                                    .equals_exact_impl::<Z, M>(
+                                        &multipolygon_right.as_slice()[*right_index],
+                                        tolerance,
+                                    ),
+                                _ => false,
+                            },
+                        )
             },
             (Self::GeometryCollection(left), Self::GeometryCollection(right)) => {
                 left.len() == right.len()
@@ -825,21 +887,6 @@ impl Shape {
                 left == right
                     && (!Z || left_axes.has_z() == right_axes.has_z())
                     && (!M || left_axes.has_m() == right_axes.has_m())
-            },
-            // Cross-representation: an axes-tagged container empty against the
-            // same kind's canonical XY empty-`Vec` form. The container form is
-            // always XY (`typed_empty` normalization), so the tagged side must
-            // have no INCLUDED extra axes to match.
-            (Self::Empty(kind, axes), other) | (other, Self::Empty(kind, axes)) => {
-                let container_empty = match (kind, other) {
-                    (EmptyKind::MultiLineString, Self::MultiLineString(lines)) => lines.is_empty(),
-                    (EmptyKind::MultiPolygon, Self::MultiPolygon(polygons)) => polygons.is_empty(),
-                    (EmptyKind::GeometryCollection, Self::GeometryCollection(geometries)) => {
-                        geometries.is_empty()
-                    },
-                    _ => false,
-                };
-                container_empty && (!Z || !axes.has_z()) && (!M || !axes.has_m())
             },
             _ => false,
         }

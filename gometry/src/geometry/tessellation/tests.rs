@@ -132,11 +132,9 @@ fn exact_snap_does_not_use_a_rounded_axis_rejection() {
 
 #[test]
 fn public_delaunay_keeps_collinear_empty_contract() {
-    let source = Shape::MultiPoint(crate::geometry::CoordSeq::from(vec![
-        xy(0.0, 0.0),
-        xy(1.0, 0.0),
-        xy(2.0, 0.0),
-    ]));
+    let source = Shape::MultiPoint(
+        crate::geometry::CoordSeq::from(vec![xy(0.0, 0.0), xy(1.0, 0.0), xy(2.0, 0.0)]).into(),
+    );
     assert!(source.delaunay_triangles().unwrap().is_empty());
 }
 
@@ -201,12 +199,15 @@ fn triangulation_budgets_reject_before_reserving_generated_vertices() {
 
 #[test]
 fn delaunay_triangles_accept_mixed_axis_collection_without_panicking() {
-    let shape = Shape::GeometryCollection(vec![
-        Shape::Point(xy(0.0, 0.0)),
-        Shape::Point(xyz(1.0, 0.0, 1.0)),
-        Shape::Point(xy(0.0, 1.0)),
-        Shape::Point(xyz(1.0, 1.0, 2.0)),
-    ]);
+    let shape = Shape::GeometryCollection(
+        vec![
+            Shape::Point(xy(0.0, 0.0)),
+            Shape::Point(xyz(1.0, 0.0, 1.0)),
+            Shape::Point(xy(0.0, 1.0)),
+            Shape::Point(xyz(1.0, 1.0, 2.0)),
+        ]
+        .into(),
+    );
     let triangles = shape
         .delaunay_triangles()
         .expect("mixed-axis collection triangulates row-wise");

@@ -47,7 +47,14 @@ pub(crate) fn append_arrow_multipoints(
     missing_rows: &mut Vec<usize>,
 ) -> PyResult<()> {
     append_arrow_coordseq_rows(py, storage, crs, geometries, row, missing_rows, |coords| {
-        Ok(Shape::MultiPoint(coords))
+        if coords.is_empty() {
+            Ok(Shape::typed_empty(
+                crate::geometry::GeometryKind::MultiPoint,
+                coords.axes(),
+            ))
+        } else {
+            Ok(Shape::MultiPoint(coords.into()))
+        }
     })
 }
 
@@ -60,9 +67,16 @@ pub(crate) fn append_arrow_linestrings(
     missing_rows: &mut Vec<usize>,
 ) -> PyResult<()> {
     append_arrow_coordseq_rows(py, storage, crs, geometries, row, missing_rows, |coords| {
-        Ok(Shape::LineString(
-            LineSeq::try_new(coords).map_err(PyErr::from)?,
-        ))
+        if coords.is_empty() {
+            Ok(Shape::typed_empty(
+                crate::geometry::GeometryKind::LineString,
+                coords.axes(),
+            ))
+        } else {
+            Ok(Shape::LineString(
+                LineSeq::try_new(coords).map_err(PyErr::from)?,
+            ))
+        }
     })
 }
 pub(crate) fn append_arrow_storage(

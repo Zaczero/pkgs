@@ -105,7 +105,7 @@ struct CoverContext<'a> {
     windows: SourceWindows,
     tester: Arc<PointBatchTester>,
     rects: NativeRectClassifier,
-    /// For a point carrier (including zero-length linework), every leaf cell
+    /// For a point carrier (including collapsed linework), every leaf cell
     /// containing a source point under closed spherical-cell semantics.  This
     /// is the exact point fast path; unlike the historical version it uses the
     /// pole/seam-normalized owner representation rather than rounded trig XYZ.
@@ -461,7 +461,7 @@ impl<'a> CoverContext<'a> {
 /// Leaf owners of a point-only source under S2's closed-cell relation.
 ///
 /// The source factory has already performed the shared geographic pole
-/// normalization.  A zero-length LineString represents the same point set as
+/// normalization. Empty linework represents the same point set as
 /// `Point`, so it deliberately enters this exact owner path too; a nonzero
 /// segment stays on the general certificate traversal.
 fn closed_point_leaves(source: &Shape) -> Option<Vec<CellId>> {

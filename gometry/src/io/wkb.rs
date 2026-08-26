@@ -1,10 +1,10 @@
 use crate::geometry::{HasM, HasZ};
 use crate::io::{
-    CoordSeq, CoordinateAxes, Coordinates, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, EmptyKind,
-    GeometryErrorKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH, ParseFormat, Point,
-    Polygon, Result, Ring, Shape, WKB_GEOMETRYCOLLECTION, WKB_M_OFFSET, WKB_MULTILINESTRING,
-    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_Z_OFFSET, WKB_ZM_OFFSET, WkbAxes, WkbGeometry,
-    extended_srid_code, parse_content, require_serializable_axes,
+    CoordSeq, CoordinateAxes, Coordinates, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG,
+    GeometryErrorKind, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
+    ParseFormat, Point, Polygon, Result, Ring, Shape, WKB_GEOMETRYCOLLECTION, WKB_M_OFFSET,
+    WKB_MULTILINESTRING, WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_Z_OFFSET, WKB_ZM_OFFSET, WkbAxes,
+    WkbGeometry, extended_srid_code, parse_content, require_serializable_axes,
 };
 
 const WKB_POINT: u32 = 1;

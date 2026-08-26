@@ -234,9 +234,8 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
         2.0,
         3.0,
     ]
-    assert gm.from_geojson(
-        xyz.to_geojson(include_z=False), crs=4326
-    ).coords.to_nested() == [1.0, 2.0]
+    with pytest.raises(gm.InvalidGeometryError, match='cannot represent'):
+        xyz.to_geojson(include_z=False)
     with pytest.raises(ValueError, match='XY or XYZ only'):
         gm.from_geojson({'type': 'Point', 'coordinates': [1, 2, 3, 4]})
     with pytest.raises(ValueError, match='expected axes'):

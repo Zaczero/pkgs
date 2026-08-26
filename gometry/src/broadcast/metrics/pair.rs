@@ -6,9 +6,9 @@ use pyo3::types::PyAny;
 
 use crate::NonNegative;
 use crate::broadcast::metrics::{
-    Bound, CoordinateAxes, Crs, DistanceUnit, EmptyKind, GeometryArrayStorage, GeometryError,
-    GeometryInput, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData,
-    classify_input, crs, geometry_type_err, validate_lonlat_shape,
+    Bound, CoordinateAxes, Crs, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryInput,
+    GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
+    crs, geometry_type_err, validate_lonlat_shape,
 };
 use crate::geometry::{FrameDependentCaches, LineSeq, witness_pair};
 use crate::py::errors::InvalidGeometryError;
@@ -211,7 +211,7 @@ pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
 pub(crate) fn require_point(geometry: &PyGeometry, operation: &str) -> PyResult<Point> {
     match geometry.shape.shape() {
         Shape::Point(point) => Ok(*point),
-        Shape::Empty(EmptyKind::Point, _) => Err(InvalidGeometryError::new_err(format!(
+        Shape::Empty(GeometryKind::Point, _) => Err(InvalidGeometryError::new_err(format!(
             "{operation} requires a non-empty Point"
         ))),
         _ => Err(geometry_type_err(format!("{operation} requires a Point"))),
@@ -661,7 +661,7 @@ pub(crate) fn metric_minimum_clearance_line(
                 },
                 |points| {
                     Ok(if points.is_empty() {
-                        Shape::LineString(LineSeq::empty(CoordinateAxes::XY))
+                        Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY)
                     } else {
                         let [a, b] = points.as_slice() else {
                             unreachable!("minimum_clearance witness plan has two vertices");

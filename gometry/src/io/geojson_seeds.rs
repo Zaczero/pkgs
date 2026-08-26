@@ -4,8 +4,9 @@
 
 use crate::io::geojson::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, CoordinateNumberSeed, DeserializeSeed, Deserializer,
-    IgnoredAny, IoGeometryKind, LineSeq, MOrdinate, Point, Polygon, Ring, SeqAccess, Shape,
-    Visitor, ZOrdinate, de, fmt, geojson_domain_violation, geojson_mixed_axes_message,
+    GeometryKind, IgnoredAny, IoGeometryKind, LineSeq, MOrdinate, MultiLineString, MultiMember,
+    MultiPoint, MultiPolygon, Point, Polygon, Ring, SeqAccess, Shape, Visitor, ZOrdinate, de, fmt,
+    geojson_domain_violation, geojson_mixed_axes_message,
 };
 
 pub(super) fn read_position<'de, A>(
@@ -149,50 +150,146 @@ impl<'de> Visitor<'de> for PointsVisitor {
     }
 }
 
-pub(super) struct LineSeed;
+struct MultiPointMemberSeed;
 
-impl<'de> DeserializeSeed<'de> for LineSeed {
-    type Value = LineSeq;
-
-    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        LineSeq::try_new(PointsSeed.deserialize(deserializer)?).map_err(de::Error::custom)
-    }
-}
-
-pub(super) struct LinesSeed;
-
-impl<'de> DeserializeSeed<'de> for LinesSeed {
-    type Value = Vec<LineSeq>;
+impl<'de> DeserializeSeed<'de> for MultiPointMemberSeed {
+    type Value = MultiMember<Point>;
 
     fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_seq(LinesVisitor)
+        deserializer.deserialize_seq(MultiPointMemberVisitor)
     }
 }
 
-pub(super) struct LinesVisitor;
+struct MultiPointMemberVisitor;
 
-impl<'de> Visitor<'de> for LinesVisitor {
-    type Value = Vec<LineSeq>;
+impl<'de> Visitor<'de> for MultiPointMemberVisitor {
+    type Value = MultiMember<Point>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("coordinates must be an array")
+        formatter.write_str("MultiPoint coordinate must be an array")
     }
 
     fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
     where
         A: SeqAccess<'de>,
     {
-        let mut lines = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(line) = seq.next_element_seed(LineSeed)? {
-            lines.push(line);
+        read_position(&mut seq, true)
+            .map(|point| point.map_or(MultiMember::Empty, MultiMember::Value))
+    }
+}
+
+struct MultiPointsSeed;
+
+impl<'de> DeserializeSeed<'de> for MultiPointsSeed {
+    type Value = Vec<MultiMember<Point>>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(MultiPointsVisitor)
+    }
+}
+
+struct MultiPointsVisitor;
+
+impl<'de> Visitor<'de> for MultiPointsVisitor {
+    type Value = Vec<MultiMember<Point>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MultiPoint coordinates must be an array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut members = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(member) = seq.next_element_seed(MultiPointMemberSeed)? {
+            members.push(member);
         }
-        Ok(lines)
+        Ok(members)
+    }
+}
+
+struct MultiLineMemberSeed;
+
+impl<'de> DeserializeSeed<'de> for MultiLineMemberSeed {
+    type Value = MultiMember<LineSeq>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(MultiLineMemberVisitor)
+    }
+}
+
+struct MultiLineMemberVisitor;
+
+impl<'de> Visitor<'de> for MultiLineMemberVisitor {
+    type Value = MultiMember<LineSeq>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MultiLineString member must be an array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let Some(first) = seq.next_element_seed(PositionSeed)? else {
+            return Ok(MultiMember::Empty);
+        };
+        let axes = CoordinateAxes::from_point(first);
+        let mut points = CoordSeqBuilder::with_capacity(axes, seq.size_hint().unwrap_or(0) + 1);
+        points.push(first);
+        while let Some(point) = seq.next_element_seed(PositionSeed)? {
+            if CoordinateAxes::from_point(point) != axes {
+                return Err(de::Error::custom(geojson_mixed_axes_message()));
+            }
+            points.push(point);
+        }
+        LineSeq::try_new(points.finish().map_err(de::Error::custom)?)
+            .map(MultiMember::Value)
+            .map_err(de::Error::custom)
+    }
+}
+
+struct MultiLinesSeed;
+
+impl<'de> DeserializeSeed<'de> for MultiLinesSeed {
+    type Value = Vec<MultiMember<LineSeq>>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(MultiLinesVisitor)
+    }
+}
+
+struct MultiLinesVisitor;
+
+impl<'de> Visitor<'de> for MultiLinesVisitor {
+    type Value = Vec<MultiMember<LineSeq>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MultiLineString coordinates must be an array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut members = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(member) = seq.next_element_seed(MultiLineMemberSeed)? {
+            members.push(member);
+        }
+        Ok(members)
     }
 }
 
@@ -270,23 +367,66 @@ impl<'de> Visitor<'de> for PolygonVisitor {
     }
 }
 
-pub(super) struct PolygonsSeed;
+struct MultiPolygonMemberSeed;
 
-impl<'de> DeserializeSeed<'de> for PolygonsSeed {
-    type Value = Vec<Polygon>;
+impl<'de> DeserializeSeed<'de> for MultiPolygonMemberSeed {
+    type Value = MultiMember<Polygon>;
 
     fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_seq(PolygonsVisitor)
+        deserializer.deserialize_seq(MultiPolygonMemberVisitor { allow_empty: true })
     }
 }
 
-pub(super) struct PolygonsVisitor;
+struct MultiPolygonMemberVisitor {
+    allow_empty: bool,
+}
 
-impl<'de> Visitor<'de> for PolygonsVisitor {
-    type Value = Vec<Polygon>;
+impl<'de> Visitor<'de> for MultiPolygonMemberVisitor {
+    type Value = MultiMember<Polygon>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MultiPolygon member must be an array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let Some(shell) = seq.next_element_seed(RingSeed)? else {
+            return if self.allow_empty {
+                Ok(MultiMember::Empty)
+            } else {
+                Err(de::Error::custom("Polygon requires a shell"))
+            };
+        };
+        let mut holes = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(hole) = seq.next_element_seed(RingSeed)? {
+            holes.push(hole);
+        }
+        Ok(MultiMember::Value(Polygon::new(shell, holes)))
+    }
+}
+
+struct MultiPolygonsSeed;
+
+impl<'de> DeserializeSeed<'de> for MultiPolygonsSeed {
+    type Value = Vec<MultiMember<Polygon>>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(MultiPolygonsVisitor)
+    }
+}
+
+struct MultiPolygonsVisitor;
+
+impl<'de> Visitor<'de> for MultiPolygonsVisitor {
+    type Value = Vec<MultiMember<Polygon>>;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("MultiPolygon coordinates must be an array")
@@ -296,11 +436,11 @@ impl<'de> Visitor<'de> for PolygonsVisitor {
     where
         A: SeqAccess<'de>,
     {
-        let mut polygons = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(polygon) = seq.next_element_seed(PolygonSeed { allow_empty: false })? {
-            polygons.push(polygon.expect("non-empty polygon seed always returns a polygon"));
+        let mut members = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(member) = seq.next_element_seed(MultiPolygonMemberSeed)? {
+            members.push(member);
         }
-        Ok(polygons)
+        Ok(members)
     }
 }
 
@@ -318,18 +458,103 @@ impl<'de> DeserializeSeed<'de> for ShapeCoordinatesSeed {
                 .deserialize(deserializer)
                 .map(|point| point.map_or_else(Shape::empty_point, Shape::Point)),
             IoGeometryKind::MultiPoint => {
-                PointsSeed.deserialize(deserializer).map(Shape::MultiPoint)
+                MultiPointsSeed
+                    .deserialize(deserializer)
+                    .and_then(|members| {
+                        if members.is_empty() {
+                            return Ok(Shape::typed_empty(
+                                GeometryKind::MultiPoint,
+                                CoordinateAxes::XY,
+                            ));
+                        }
+                        let axes = members
+                            .iter()
+                            .find_map(|member| match member {
+                                MultiMember::Value(point) => {
+                                    Some(CoordinateAxes::from_point(*point))
+                                },
+                                MultiMember::Empty => None,
+                            })
+                            .unwrap_or(CoordinateAxes::XY);
+                        if members.iter().any(|member| match member {
+                            MultiMember::Value(point) => CoordinateAxes::from_point(*point) != axes,
+                            MultiMember::Empty => false,
+                        }) {
+                            return Err(de::Error::custom(geojson_mixed_axes_message()));
+                        }
+                        MultiPoint::try_new(axes, members)
+                            .map(Shape::MultiPoint)
+                            .map_err(de::Error::custom)
+                    })
             },
-            IoGeometryKind::LineString => LineSeed.deserialize(deserializer).map(Shape::LineString),
-            IoGeometryKind::MultiLineString => LinesSeed
-                .deserialize(deserializer)
-                .map(Shape::MultiLineString),
+            IoGeometryKind::LineString => PointsSeed.deserialize(deserializer).and_then(|points| {
+                if points.is_empty() {
+                    Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
+                } else {
+                    LineSeq::try_new(points)
+                        .map(Shape::LineString)
+                        .map_err(de::Error::custom)
+                }
+            }),
+            IoGeometryKind::MultiLineString => {
+                MultiLinesSeed
+                    .deserialize(deserializer)
+                    .and_then(|members| {
+                        if members.is_empty() {
+                            return Ok(Shape::typed_empty(
+                                GeometryKind::MultiLineString,
+                                CoordinateAxes::XY,
+                            ));
+                        }
+                        let axes = members
+                            .iter()
+                            .find_map(|member| match member {
+                                MultiMember::Value(line) => Some(line.axes()),
+                                MultiMember::Empty => None,
+                            })
+                            .unwrap_or(CoordinateAxes::XY);
+                        if members.iter().any(|member| match member {
+                            MultiMember::Value(line) => line.axes() != axes,
+                            MultiMember::Empty => false,
+                        }) {
+                            return Err(de::Error::custom(geojson_mixed_axes_message()));
+                        }
+                        MultiLineString::try_new(axes, members)
+                            .map(Shape::MultiLineString)
+                            .map_err(de::Error::custom)
+                    })
+            },
             IoGeometryKind::Polygon => PolygonSeed { allow_empty: true }
                 .deserialize(deserializer)
                 .map(|polygon| polygon.map_or_else(Shape::empty_polygon, Shape::Polygon)),
-            IoGeometryKind::MultiPolygon => PolygonsSeed
-                .deserialize(deserializer)
-                .map(Shape::MultiPolygon),
+            IoGeometryKind::MultiPolygon => {
+                MultiPolygonsSeed
+                    .deserialize(deserializer)
+                    .and_then(|members| {
+                        if members.is_empty() {
+                            return Ok(Shape::typed_empty(
+                                GeometryKind::MultiPolygon,
+                                CoordinateAxes::XY,
+                            ));
+                        }
+                        let axes = members
+                            .iter()
+                            .find_map(|member| match member {
+                                MultiMember::Value(polygon) => Some(polygon.shell.coords().axes()),
+                                MultiMember::Empty => None,
+                            })
+                            .unwrap_or(CoordinateAxes::XY);
+                        if members.iter().any(|member| match member {
+                            MultiMember::Value(polygon) => polygon.shell.coords().axes() != axes,
+                            MultiMember::Empty => false,
+                        }) {
+                            return Err(de::Error::custom(geojson_mixed_axes_message()));
+                        }
+                        MultiPolygon::try_new(axes, members)
+                            .map(Shape::MultiPolygon)
+                            .map_err(de::Error::custom)
+                    })
+            },
             IoGeometryKind::GeometryCollection => {
                 unreachable!("geometry collections do not carry coordinates")
             },

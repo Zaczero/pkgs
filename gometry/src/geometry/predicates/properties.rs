@@ -10,10 +10,10 @@ use crate::geometry::predicates::{
     validate_line, validate_point, validate_points,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, EmptyKind, GeometryErrorKind, HashSet, LineSeq,
-    Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates, emit_from_original,
-    finish_planar_squared_min, point_distance, ring_winding, same_point, unique_xy_points,
-    witness_pair,
+    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
+    MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
+    emit_from_original, finish_planar_squared_min, point_distance, ring_winding, same_point,
+    unique_xy_points, witness_pair,
 };
 
 impl Shape {
@@ -42,9 +42,9 @@ impl Shape {
         match self {
             // Collections are never simple by convention, including the typed
             // empty (matching the empty container form below).
-            Self::Empty(EmptyKind::GeometryCollection, _) | Self::GeometryCollection(_) => false,
+            Self::Empty(GeometryKind::GeometryCollection, _) | Self::GeometryCollection(_) => false,
             Self::Point(_) | Self::Empty(..) => true,
-            Self::MultiPoint(points) => unique_xy_points(points).len() == points.len(),
+            Self::MultiPoint(points) => unique_xy_points(points).len() == points.coord_count(),
             Self::LineString(points) => line_is_simple(points),
             Self::MultiLineString(lines) => multiline_is_simple(lines),
             Self::Polygon(_) | Self::MultiPolygon(_) => self.validate().is_none(),
@@ -159,7 +159,7 @@ impl Shape {
     /// is infinite (fewer than two distinct vertices).
     pub fn minimum_clearance_line(&self) -> Self {
         minimum_clearance_witness(self).map_or_else(
-            || Self::LineString(LineSeq::empty(CoordinateAxes::XY)),
+            || Self::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
             |witness| {
                 let points = self.points_vec();
                 let emitted = emit_from_original(&points, &witness.plan);
@@ -215,7 +215,7 @@ impl Shape {
                 }
                 Ok(shell_is_convex(&polygon.shell))
             },
-            Self::Empty(EmptyKind::Polygon, _) => Ok(true),
+            Self::Empty(GeometryKind::Polygon, _) => Ok(true),
             _ => Err(GeometryErrorKind::SinglePolygonRequired.into()),
         }
     }
@@ -235,14 +235,27 @@ impl Shape {
             Self::LineString(_) => Err(GeometryErrorKind::UnrepairableLineString.into()),
             Self::MultiLineString(lines) => {
                 let repaired = lines
+                    .members()
                     .iter()
-                    .filter(|line| validate_line(line, "multi line string member").is_none())
-                    .cloned()
+                    .filter_map(|member| match member {
+                        crate::geometry::MultiMember::Empty => {
+                            Some(crate::geometry::MultiMember::Empty)
+                        },
+                        crate::geometry::MultiMember::Value(index) => {
+                            let line = &lines.as_slice()[*index];
+                            validate_line(line, "multi line string member")
+                                .is_none()
+                                .then(|| crate::geometry::MultiMember::Value(line.clone()))
+                        },
+                    })
                     .collect::<Vec<_>>();
                 if repaired.is_empty() && !lines.is_empty() {
                     Err(GeometryErrorKind::UnrepairableMultiLineString.into())
                 } else {
-                    Ok(Self::MultiLineString(repaired))
+                    Ok(Self::MultiLineString(MultiLineString::from_values(
+                        lines.axes(),
+                        repaired,
+                    )))
                 }
             },
             Self::Polygon(polygon) => {
@@ -264,7 +277,7 @@ impl Shape {
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(Self::GeometryCollection),
+                .map(|items| Self::GeometryCollection(items.into())),
         }
     }
 

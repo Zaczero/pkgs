@@ -3,8 +3,8 @@ use crate::geometry::overlay::{
     for_each_overlapping_pair, for_each_segment_overlap_point,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, LineSeq, Point, PointKey,
-    Polygon, Segment, Shape, XY, point_on_segment,
+    Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
+    LineSeq, Point, PointKey, Polygon, Segment, Shape, XY, point_on_segment,
 };
 pub(crate) fn line_line_cross_points(left: &[Segment], right: &[Segment]) -> Vec<Point> {
     let mut candidates: Vec<XY> = Vec::new();
@@ -51,7 +51,8 @@ pub(crate) fn empty_overlay_shape(a: &Shape, b: &Shape, op: OverlayOp) -> Shape 
 pub(crate) fn merge_chains(edges: Vec<CoordSeq>) -> Vec<CoordSeq> {
     // Drop degenerate edges with no extent (fewer than two DISTINCT vertices) —
     // a zero-length stroke is not linework and must not leak out as an awkward
-    // zero-length `LineString`; it simply vanishes from the result.
+    // Empty linework is not emitted as an invalid `LineString`; it simply
+    // vanishes from the result.
     let edges: Vec<CoordSeq> = edges
         .into_iter()
         .filter(|edge| {
@@ -247,7 +248,7 @@ pub(crate) fn build_overlay_shape(
         1 => Some(Shape::Polygon(
             polygons.into_iter().next().expect("len checked == 1"),
         )),
-        _ => Some(Shape::MultiPolygon(polygons)),
+        _ => Some(Shape::MultiPolygon(polygons.into())),
     };
 
     let parts: Vec<Shape> = [point_part, line_part, polygon_part]
@@ -256,6 +257,9 @@ pub(crate) fn build_overlay_shape(
         .collect();
     match <[Shape; 1]>::try_from(parts) {
         Ok([single]) => single,
-        Err(parts) => Shape::GeometryCollection(parts),
+        Err(parts) if parts.is_empty() => {
+            Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+        },
+        Err(parts) => Shape::GeometryCollection(parts.into()),
     }
 }

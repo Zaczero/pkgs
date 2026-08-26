@@ -239,8 +239,10 @@ joins at degree-2 nodes and splits at genuine Y/T/X junctions.
 ## The Arrow / GeoArrow boundary
 
 The public columnar geometry format is [GeoArrow](https://geoarrow.org/)-compatible:
-homogeneous arrays export separated `x`/`y`/`z`/`m` children, while mixed types,
-mixed axes, and collections use GeoArrow WKB fallback. Scalar callers do not need
+homogeneous arrays without explicit empty multipart members export separated
+`x`/`y`/`z`/`m` children, while mixed types, mixed axes, collections, and adapter
+paths that cannot represent explicit member slots use GeoArrow WKB fallback.
+Scalar callers do not need
 the columnar boundary. Gometry owns geometry kernels and the Arrow/WKB boundary;
 optional Python adapters own focused GeoParquet conversions. Dataframe, SQL, and
 database engines remain outside the core. The portable database boundary is ISO

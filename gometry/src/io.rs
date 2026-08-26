@@ -5,8 +5,8 @@ use thiserror::Error;
 use crate::crs;
 use crate::error::{Error as CrateError, ParseFormat, Result};
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates, EmptyKind, GeometryErrorKind, LineSeq, Point, Polygon,
-    Ring, Shape,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, LineSeq, Point,
+    Polygon, Ring, Shape,
 };
 
 const WKB_MULTIPOINT: u32 = 4;
@@ -175,12 +175,6 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
 /// header when writing WKT/WKB.
 pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
     match shape {
-        Shape::MultiLineString(lines) => {
-            multi_linestring_output_axes(lines)?;
-        },
-        Shape::MultiPolygon(polygons) => {
-            multi_polygon_output_axes(polygons)?;
-        },
         Shape::Polygon(polygon) => {
             polygon_output_axes(polygon)?;
         },
@@ -192,32 +186,6 @@ pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
         _ => {},
     }
     Ok(())
-}
-
-/// Axes of every line member of a MultiLineString, **including typed empties**.
-///
-/// Empty `LineSeq` values still carry declared axes (`LINESTRING Z EMPTY` is a
-/// zero-length XYZ sequence). Skipping them let `XY` + `LINESTRING Z EMPTY`
-/// admit under a Z union header and then invent `z=0` on write — empty members
-/// participate in axis homogeneity exactly like non-empty ones.
-pub(crate) fn multi_linestring_output_axes(lines: &[LineSeq]) -> Result<CoordinateAxes> {
-    let mut axes: Option<CoordinateAxes> = None;
-    for line in lines {
-        let member = line.axes();
-        match axes {
-            None => axes = Some(member),
-            Some(prev) if prev == member => {},
-            Some(prev) => {
-                return Err(GeometryErrorKind::message(format!(
-                    "MultiLineString members must share one coordinate axes layout for serialization; \
-                     got {} and {} — promote with force_3d/set_m or split the members",
-                    prev.as_str(),
-                    member.as_str(),
-                )));
-            },
-        }
-    }
-    Ok(axes.unwrap_or(CoordinateAxes::XY))
 }
 
 /// Axes of a single polygon's rings (must be homogeneous).
@@ -232,28 +200,6 @@ pub(crate) fn polygon_output_axes(polygon: &Polygon) -> Result<CoordinateAxes> {
                 return Err(GeometryErrorKind::message(format!(
                     "Polygon rings must share one coordinate axes layout for serialization; \
                      got {} and {} — promote with force_3d/set_m first",
-                    prev.as_str(),
-                    member.as_str(),
-                )));
-            },
-        }
-    }
-    Ok(axes.unwrap_or(CoordinateAxes::XY))
-}
-
-/// Axes of every polygon member of a MultiPolygon (per-polygon ring union;
-/// members must still agree with each other so writers never invent Z/M).
-pub(crate) fn multi_polygon_output_axes(polygons: &[Polygon]) -> Result<CoordinateAxes> {
-    let mut axes: Option<CoordinateAxes> = None;
-    for polygon in polygons {
-        let member = polygon_output_axes(polygon)?;
-        match axes {
-            None => axes = Some(member),
-            Some(prev) if prev == member => {},
-            Some(prev) => {
-                return Err(GeometryErrorKind::message(format!(
-                    "MultiPolygon members must share one coordinate axes layout for serialization; \
-                     got {} and {} — promote with force_3d/set_m or split the members",
                     prev.as_str(),
                     member.as_str(),
                 )));
@@ -386,6 +332,7 @@ pub(crate) use geojson::{
     DefiningMembers, LegacyGeoJsonCrsPolicy, collect_geojson_legacy_crs, geojson_output_shape,
     parse_geojson, parse_geojson_text, reconcile_legacy_geojson_crs,
     reject_rfc7946_cross_type_members, reject_rfc7946_value_object, to_geojson_string,
+    validate_geojson_value,
 };
 pub(crate) use wkb::{
     WkbCoordArena, parse_wkb, parse_wkb_batch, to_wkb, to_wkb_len, wkb_len, write_wkb_into,

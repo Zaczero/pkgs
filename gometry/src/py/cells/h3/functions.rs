@@ -185,7 +185,7 @@ fn bounding_cell_region_samples(value: &Bound<'_, PyAny>) -> PyResult<Vec<(f64, 
         let collection = if parts.len() == 1 {
             parts.pop().expect("one part")
         } else {
-            Shape::GeometryCollection(parts)
+            Shape::GeometryCollection(parts.into())
         };
         return region_samples_for_shape(&collection);
     }

@@ -250,7 +250,7 @@ fn area_shape(polygons: Vec<Polygon>) -> Option<Shape> {
     match polygons.len() {
         0 => None,
         1 => polygons.into_iter().next().map(Shape::Polygon),
-        _ => Some(Shape::MultiPolygon(polygons)),
+        _ => Some(Shape::MultiPolygon(polygons.into())),
     }
 }
 

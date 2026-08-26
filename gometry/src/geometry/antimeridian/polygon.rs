@@ -1,9 +1,10 @@
 use crate::error::Result;
 use crate::geometry::antimeridian::{collect_points, dedup_near, normalize, segment_coords};
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, EmptyKind, GeometryErrorKind, LineSeq, MOrdinate,
-    Point, Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_winding, polygon_is_valid,
-    ring_encloses_pole, ring_winding, same_point,
+    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, LineSeq,
+    MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness,
+    ZOrdinate, open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding,
+    same_point,
 };
 
 impl Shape {
@@ -34,34 +35,59 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut split = Vec::with_capacity(lines.len());
-                let mut any = false;
-                for line in lines {
-                    let pieces = segment_coords(&collect_points(line));
-                    if pieces.is_empty() {
-                        split.push(line.clone());
-                    } else {
-                        any = true;
-                        split.extend(pieces.into_iter().map(CoordSeq::from).map(|piece| {
-                            LineSeq::try_new(piece).expect("antimeridian split pieces are lineal")
-                        }));
+                for member in lines.members() {
+                    match member {
+                        MultiMember::Empty => split.push(MultiMember::Empty),
+                        MultiMember::Value(index) => {
+                            let line = &lines.as_slice()[*index];
+                            let pieces = segment_coords(&collect_points(line));
+                            if pieces.is_empty() {
+                                split.push(MultiMember::Value(line.clone()));
+                            } else {
+                                split.extend(pieces.into_iter().map(CoordSeq::from).map(|piece| {
+                                    MultiMember::Value(
+                                        LineSeq::try_new(piece)
+                                            .expect("antimeridian split pieces are lineal"),
+                                    )
+                                }));
+                            }
+                        },
                     }
                 }
-                let _ = any;
-                Ok(Self::MultiLineString(split))
+                Ok(Self::MultiLineString(MultiLineString::try_new(
+                    lines.axes(),
+                    split,
+                )?))
             },
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
                 Ok(match <[Polygon; 1]>::try_from(polygons) {
                     Ok([polygon]) => Self::Polygon(polygon),
-                    Err(polygons) => Self::MultiPolygon(polygons),
+                    Err(polygons) => Self::MultiPolygon(polygons.into()),
                 })
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
-                for polygon in polygons {
-                    split.extend(split_polygon(self, polygon, PoleClosure::Auto)?);
+                for member in polygons.members() {
+                    match member {
+                        MultiMember::Empty => split.push(MultiMember::Empty),
+                        MultiMember::Value(index) => {
+                            split.extend(
+                                split_polygon(
+                                    self,
+                                    &polygons.as_slice()[*index],
+                                    PoleClosure::Auto,
+                                )?
+                                .into_iter()
+                                .map(MultiMember::Value),
+                            );
+                        },
+                    }
                 }
-                Ok(Self::MultiPolygon(split))
+                Ok(Self::MultiPolygon(MultiPolygon::try_new(
+                    polygons.axes(),
+                    split,
+                )?))
             },
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                 geometries
@@ -96,15 +122,27 @@ impl Shape {
                 let polygons = split_polygon(self, polygon, closure)?;
                 Ok(match <[Polygon; 1]>::try_from(polygons) {
                     Ok([polygon]) => Self::Polygon(polygon),
-                    Err(polygons) => Self::MultiPolygon(polygons),
+                    Err(polygons) => Self::MultiPolygon(polygons.into()),
                 })
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
-                for polygon in polygons {
-                    split.extend(split_polygon(self, polygon, closure)?);
+                for member in polygons.members() {
+                    match member {
+                        MultiMember::Empty => split.push(MultiMember::Empty),
+                        MultiMember::Value(index) => {
+                            split.extend(
+                                split_polygon(self, &polygons.as_slice()[*index], closure)?
+                                    .into_iter()
+                                    .map(MultiMember::Value),
+                            );
+                        },
+                    }
                 }
-                Ok(Self::MultiPolygon(split))
+                Ok(Self::MultiPolygon(MultiPolygon::try_new(
+                    polygons.axes(),
+                    split,
+                )?))
             },
             _ => self.split_antimeridian(),
         }
@@ -287,16 +325,16 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
 
 fn shape_from_polygons(mut polygons: Vec<Polygon>, axes: CoordinateAxes) -> Shape {
     match polygons.len() {
-        0 => Shape::typed_empty(EmptyKind::Polygon, axes),
+        0 => Shape::typed_empty(GeometryKind::Polygon, axes),
         1 => Shape::Polygon(polygons.pop().expect("one polygon")),
-        _ => Shape::MultiPolygon(polygons),
+        _ => Shape::MultiPolygon(polygons.into()),
     }
 }
 
 fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
     match shape {
         Shape::Polygon(polygon) => Ok(vec![polygon]),
-        Shape::MultiPolygon(polygons) => Ok(polygons),
+        Shape::MultiPolygon(polygons) => Ok(polygons.iter().cloned().collect()),
         Shape::Empty(..) => Ok(Vec::new()),
         _ => Err(GeometryErrorKind::antimeridian_split_failed(
             "subtracting crossing holes produced non-areal output",

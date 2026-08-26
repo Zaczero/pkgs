@@ -149,8 +149,8 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
             let vertical = line(vec![xy(0.0, -height), xy(0.0, height)]);
             let lower = line(vec![xy(0.0, -height), xy(0.0, -height / 2.0)]);
             let upper = line(vec![xy(0.0, height / 2.0), xy(0.0, height)]);
-            let source = Shape::GeometryCollection(vec![horizontal.clone(), vertical]);
-            let target = Shape::GeometryCollection(vec![horizontal, lower, upper]);
+            let source = Shape::GeometryCollection(vec![horizontal.clone(), vertical].into());
+            let target = Shape::GeometryCollection(vec![horizontal, lower, upper].into());
             let expected = height / 2.0;
             assert!(
                 source
@@ -406,10 +406,7 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
         (
             "point_line",
             Shape::Point(p(0.0, 0.0)),
-            line(vec![
-                pzm(1.0, -1.0, 10.0, 100.0),
-                pzm(1.0, 1.0, 20.0, 200.0),
-            ]),
+            line(vec![pzm(1.0, -1.0, 10.0, 100.0), pzm(1.0, 1.0, 20.0, 200.0)].into()),
         ),
         (
             "line_line",
@@ -428,14 +425,20 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
         ),
         (
             "geometry_collection",
-            Shape::GeometryCollection(vec![
-                Shape::Point(p(-6.0, 1.0)),
-                line(vec![p(-5.0, -1.0), p(-5.0, 1.0)]),
-            ]),
-            Shape::GeometryCollection(vec![
-                multipoint(vec![p(6.0, 2.0), p(7.0, 3.0)]),
-                line(vec![p(3.0, -1.0), p(3.0, 1.0)]),
-            ]),
+            Shape::GeometryCollection(
+                vec![
+                    Shape::Point(p(-6.0, 1.0)),
+                    line(vec![p(-5.0, -1.0), p(-5.0, 1.0)]),
+                ]
+                .into(),
+            ),
+            Shape::GeometryCollection(
+                vec![
+                    multipoint(vec![p(6.0, 2.0), p(7.0, 3.0)]),
+                    line(vec![p(3.0, -1.0), p(3.0, 1.0)]),
+                ]
+                .into(),
+            ),
         ),
         (
             "degenerate_segment",
@@ -965,10 +968,13 @@ fn distance_3d_with_parts_matches_brute_oracle() {
 
 #[test]
 fn distance_3d_rejects_mixed_z_collection() {
-    let mixed = Shape::GeometryCollection(vec![
-        Shape::Point(p(0.0, 0.0)),
-        with_z(line(vec![p(0.0, 0.0), p(1.0, 1.0)]), 0.0),
-    ]);
+    let mixed = Shape::GeometryCollection(
+        vec![
+            Shape::Point(p(0.0, 0.0)),
+            with_z(line(vec![p(0.0, 0.0), p(1.0, 1.0)]), 0.0),
+        ]
+        .into(),
+    );
     let target = with_z(Shape::Point(p(1.0, 1.0)), 1.0);
     mixed.distance_3d(&target).unwrap_err();
 }

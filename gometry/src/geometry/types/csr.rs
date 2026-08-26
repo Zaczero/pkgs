@@ -2,13 +2,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::error::Result;
-use crate::geometry::types::{EmptyKind, GeometryErrorKind, Shape};
+use crate::geometry::types::{GeometryErrorKind, Shape};
 
 /// The seven geometry kinds, as a `Copy` discriminant of [`Shape`]. Used to
 /// pick the typed Python subclass for a returned geometry without cloning the
 /// shape.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum GeometryKind {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum GeometryKind {
     Point,
     MultiPoint,
     LineString,
@@ -19,19 +19,41 @@ pub(crate) enum GeometryKind {
 }
 
 impl GeometryKind {
-    pub(crate) const fn of(shape: &Shape) -> Self {
+    pub const fn of(shape: &Shape) -> Self {
         match shape {
-            Shape::Point(_) | Shape::Empty(EmptyKind::Point, _) => Self::Point,
-            Shape::MultiPoint(_) => Self::MultiPoint,
-            Shape::LineString(_) => Self::LineString,
-            Shape::MultiLineString(_) | Shape::Empty(EmptyKind::MultiLineString, _) => {
+            Shape::Point(_) | Shape::Empty(Self::Point, _) => Self::Point,
+            Shape::MultiPoint(_) | Shape::Empty(Self::MultiPoint, _) => Self::MultiPoint,
+            Shape::LineString(_) | Shape::Empty(Self::LineString, _) => Self::LineString,
+            Shape::MultiLineString(_) | Shape::Empty(Self::MultiLineString, _) => {
                 Self::MultiLineString
             },
-            Shape::Polygon(_) | Shape::Empty(EmptyKind::Polygon, _) => Self::Polygon,
-            Shape::MultiPolygon(_) | Shape::Empty(EmptyKind::MultiPolygon, _) => Self::MultiPolygon,
-            Shape::GeometryCollection(_) | Shape::Empty(EmptyKind::GeometryCollection, _) => {
+            Shape::Polygon(_) | Shape::Empty(Self::Polygon, _) => Self::Polygon,
+            Shape::MultiPolygon(_) | Shape::Empty(Self::MultiPolygon, _) => Self::MultiPolygon,
+            Shape::GeometryCollection(_) | Shape::Empty(Self::GeometryCollection, _) => {
                 Self::GeometryCollection
             },
+        }
+    }
+
+    pub const fn geometry_type(self) -> &'static str {
+        match self {
+            Self::Point => "Point",
+            Self::MultiPoint => "MultiPoint",
+            Self::LineString => "LineString",
+            Self::MultiLineString => "MultiLineString",
+            Self::Polygon => "Polygon",
+            Self::MultiPolygon => "MultiPolygon",
+            Self::GeometryCollection => "GeometryCollection",
+        }
+    }
+
+    pub const fn topological_dimension(self) -> crate::geometry::Dimension {
+        match self {
+            Self::Point | Self::MultiPoint | Self::GeometryCollection => {
+                crate::geometry::Dimension::Point
+            },
+            Self::LineString | Self::MultiLineString => crate::geometry::Dimension::Curve,
+            Self::Polygon | Self::MultiPolygon => crate::geometry::Dimension::Surface,
         }
     }
 }

@@ -29,7 +29,7 @@ pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Poly
     {
         return match shape {
             Shape::Polygon(polygon) => vec![polygon],
-            Shape::MultiPolygon(polygons) => polygons,
+            Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
             _ => Vec::new(),
         };
     }

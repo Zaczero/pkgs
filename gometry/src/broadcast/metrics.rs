@@ -2,8 +2,8 @@
 //! point operations (bearing/destination/interpolate) that depend on the CRS.
 
 use crate::broadcast::{
-    Arc, Bound, Bounds, CollectRows, CoordinateAxes, Crs, EmptyKind, F64Param, Frame,
-    GeometryArrayStorage, GeometryError, GeometryInput, Point, Py, PyAnyMethods, PyGeometry,
+    Arc, Bound, Bounds, CollectRows, CoordinateAxes, Crs, F64Param, Frame, GeometryArrayStorage,
+    GeometryError, GeometryInput, GeometryKind, Point, Py, PyAnyMethods, PyGeometry,
     PyGeometryArray, PyResult, Python, Result, Shape, ShapeData, bool_array, broadcast2_geometry,
     classify_input, classify_required, crs, float64_array, geometry_type_err, mask_missing,
     paired_arrays, point_distance, rows_err, validate_lonlat_shape,

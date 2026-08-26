@@ -1,7 +1,9 @@
 use crate::geometry::overlay::{
     DimensionalParts, OverlayOp, Strictness, bbox_overlap_clusters_for_bounds,
 };
-use crate::geometry::{Bounds, CoordinateAxes, Dimension, HashMapExt as _, LineSeq, Result, Shape};
+use crate::geometry::{
+    Bounds, CoordinateAxes, Dimension, GeometryKind, HashMapExt as _, Result, Shape,
+};
 pub(crate) fn has_mixed_non_empty_topological_dimensions(inputs: &[&Shape]) -> bool {
     let dimensions = inputs.iter().fold(0_u8, |mask, input| {
         mask | DimensionalParts::non_empty_dimension_mask(input)
@@ -130,7 +132,7 @@ pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shap
 pub(crate) fn empty_shape_for_dimension(dimension: Dimension) -> Shape {
     match dimension {
         Dimension::Point => Shape::empty_point(),
-        Dimension::Curve => Shape::LineString(LineSeq::empty(CoordinateAxes::XY)),
+        Dimension::Curve => Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
         Dimension::Surface => Shape::empty_polygon(),
     }
 }

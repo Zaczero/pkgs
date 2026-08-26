@@ -12,16 +12,16 @@ use pyo3::types::PyList;
 
 use crate::array::{
     Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq, CoordinateReplacement,
-    CsrOffsetColumn, EmptyKind, Frame, FrameAdoption, GeometryArrayStorage, InvalidGeometryError,
-    MissingMask, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _,
-    PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError,
-    PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array,
-    coerce_collected_geometry_items, coordinate_epoch_option, crs, crs_arc, exact_geometry,
-    geometry, geometry_array_svg_grid_html_masked, line_crosses_antimeridian, line_is_ccw,
-    line_is_closed, line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
-    parse_coordinate_replacement, parse_crs, physical_row, point_logical_len, polygon_is_valid,
-    polygon_logical_len, polygon_rings_range, pymethods, replace_shape_coordinates,
-    slice_replacement_for_shape, total_bounds_from_columns,
+    CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage, GeometryKind,
+    InvalidGeometryError, MissingMask, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
+    PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
+    PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
+    bool_array, coerce_collected_geometry_items, coordinate_epoch_option, crs, crs_arc,
+    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_crosses_antimeridian,
+    line_is_ccw, line_is_closed, line_is_simple, line_is_valid, line_logical_len,
+    map_coordinates_callback, parse_coordinate_replacement, parse_crs, physical_row,
+    point_logical_len, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
+    replace_shape_coordinates, slice_replacement_for_shape, total_bounds_from_columns,
 };
 
 fn type_module(value: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -206,7 +206,7 @@ impl PyGeometryArray {
                 "estimate_local_crs requires at least one present, non-empty geometry",
             ));
         }
-        let collection = Shape::GeometryCollection(shapes);
+        let collection = Shape::GeometryCollection(shapes.into());
         Ok(PyCrs::from_canonical(crs_arc(crs::estimate_local_crs(
             &collection,
             source,
@@ -598,10 +598,12 @@ impl PyGeometryArray {
         self.flat_map_shapes_groups(py, |shape| Ok(shape.parts().collect()))
     }
     /// Per-geometry top-level part count (see `Geometry.num_geometries`):
-    /// ``1`` for a single point/line/polygon, the member count for a
-    /// multi/collection, ``0`` for empty. Missing rows use Shapely's
-    /// ``None``-geometry sentinel ``0``; use `.is_missing` to distinguish
-    /// them from present empty geometries.
+    /// ``1`` for a single point/line/polygon, including a typed empty; the
+    /// member count for a multi/collection, and ``0`` for an empty multipart
+    /// or collection. Explicit empty members still count in their multipart's
+    /// member count. Missing rows use Shapely's ``None``-geometry sentinel
+    /// ``0``; use `.is_missing` to distinguish them from present empty
+    /// geometries.
     ///
     /// Returns
     /// -------
@@ -1014,7 +1016,7 @@ impl PyGeometryArray {
                 .storage()
                 .iter_shapes()
                 .map(|shape| match shape.as_ref() {
-                    Shape::Polygon(_) | Shape::Empty(EmptyKind::Polygon, _) => {
+                    Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _) => {
                         shape.is_convex().unwrap_or(false)
                     },
                     _ => false,

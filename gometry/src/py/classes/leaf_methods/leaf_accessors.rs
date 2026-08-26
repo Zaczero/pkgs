@@ -1,7 +1,8 @@
 use pyo3::exceptions::PyAttributeError;
 
 use crate::py::classes::leaf_methods::{
-    EmptyKind, PyLineString, PyPoint, PyPolygon, PyRef, PyResult, Python, Shape, Typed, pymethods,
+    GeometryKind, PyLineString, PyPoint, PyPolygon, PyRef, PyResult, Python, Shape, Typed,
+    pymethods,
 };
 use crate::py::errors::geometry_type_err;
 use crate::{Bound, DistanceUnit, NavigationPath, Py, PyAny};
@@ -26,7 +27,7 @@ impl PyPoint {
                     .m()
                     .ok_or_else(|| geometry_type_err("Point geometry has no M coordinate")),
             },
-            Shape::Empty(EmptyKind::Point, _) => match axis {
+            Shape::Empty(GeometryKind::Point, _) => match axis {
                 PointAxis::X => Err(PyAttributeError::new_err("empty point has no x coordinate")),
                 PointAxis::Y => Err(PyAttributeError::new_err("empty point has no y coordinate")),
                 PointAxis::Z => Err(PyAttributeError::new_err("empty point has no z coordinate")),

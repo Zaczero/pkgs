@@ -298,7 +298,7 @@ impl Shape {
         let shape = if strips.len() == 1 {
             Self::Polygon(strips.into_iter().next().expect("one strip"))
         } else {
-            Self::MultiPolygon(strips)
+            Self::MultiPolygon(strips.into())
         };
         let shape = shape.force_2d();
         if shape.validate().is_none() {

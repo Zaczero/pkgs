@@ -3,12 +3,13 @@ use std::sync::Arc;
 use crate::geometry::{CoordWindow, MOrdinate, ZOrdinate, column_all_finite};
 use crate::py::arrow::{
     ArrowCoordinateValues, ArrowOrdinateValues, ArrowValidity, Bound, CoordSeq, CoordinateAxes,
-    EmptyKind, HasM, HasZ, Point, Polygon, PyAny, PyAnyMethods as _, PyResult, PyTypeMethods as _,
-    Python, Shape, arrow_array_offset, arrow_content_error, arrow_f64_values_span,
-    arrow_i32_offsets_window, arrow_i64_offsets_window, arrow_null_error, arrow_validity_window,
-    coordinate_span, ensure_arrow_range, ensure_offset_terminal_within_child,
-    ensure_usize_offsets_monotonic, geoarrow_parse_error, i32_offset_to_usize, i64_offset_to_usize,
-    reject_inner_nulls_in_range, same_active_position, usize_offset_at,
+    GeometryKind, HasM, HasZ, Point, Polygon, PyAny, PyAnyMethods as _, PyResult,
+    PyTypeMethods as _, Python, Shape, arrow_array_offset, arrow_content_error,
+    arrow_f64_values_span, arrow_i32_offsets_window, arrow_i64_offsets_window, arrow_null_error,
+    arrow_validity_window, coordinate_span, ensure_arrow_range,
+    ensure_offset_terminal_within_child, ensure_usize_offsets_monotonic, geoarrow_parse_error,
+    i32_offset_to_usize, i64_offset_to_usize, reject_inner_nulls_in_range, same_active_position,
+    usize_offset_at,
 };
 
 /// Decode the coordinate columns for the visible coordinate run
@@ -204,7 +205,7 @@ impl ArrowCoordinateValues {
             return Err(arrow_null_error(row));
         }
         if self.is_empty_point_sentinel(index) {
-            return Ok(Shape::typed_empty(EmptyKind::Point, self.axes()));
+            return Ok(Shape::typed_empty(GeometryKind::Point, self.axes()));
         }
         Ok(Shape::Point(
             Point::new_axes(
@@ -621,7 +622,10 @@ pub(crate) fn arrow_polygon_from_ring_range(
     // Outer list empty (`[[]]` / zero rings) is the GeoArrow POLYGON EMPTY form;
     // axes come from the coordinate struct schema, not from vertices.
     if range.is_empty() {
-        return Ok(Shape::typed_empty(EmptyKind::Polygon, coordinates.axes()));
+        return Ok(Shape::typed_empty(
+            GeometryKind::Polygon,
+            coordinates.axes(),
+        ));
     }
     let mut shell_and_holes = crate::try_vec_with_capacity(range.len())?;
     for ring_index in range {

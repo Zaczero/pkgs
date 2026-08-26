@@ -336,41 +336,56 @@ fn assert_relate_oracle_parity(name: &str, source: &Shape, levels: &[u8]) {
 }
 
 fn adjacent_areal_collection() -> Shape {
-    Shape::GeometryCollection(vec![
-        box_shape(-1.0, -1.0, 0.03, 1.0),
-        box_shape(0.03, -1.0, 1.0, 1.0),
-    ])
+    Shape::GeometryCollection(
+        vec![
+            box_shape(-1.0, -1.0, 0.03, 1.0),
+            box_shape(0.03, -1.0, 1.0, 1.0),
+        ]
+        .into(),
+    )
 }
 
 fn overlapping_areal_collection() -> Shape {
-    Shape::GeometryCollection(vec![
-        box_shape(-1.0, -1.0, 0.25, 1.0),
-        box_shape(-0.25, -1.0, 1.0, 1.0),
-    ])
+    Shape::GeometryCollection(
+        vec![
+            box_shape(-1.0, -1.0, 0.25, 1.0),
+            box_shape(-0.25, -1.0, 1.0, 1.0),
+        ]
+        .into(),
+    )
 }
 
 fn nested_areal_collection() -> Shape {
-    Shape::GeometryCollection(vec![
-        box_shape(2.0, 2.0, 3.0, 3.0),
-        box_shape(2.51, 2.45, 2.55, 2.56),
-    ])
+    Shape::GeometryCollection(
+        vec![
+            box_shape(2.0, 2.0, 3.0, 3.0),
+            box_shape(2.51, 2.45, 2.55, 2.56),
+        ]
+        .into(),
+    )
 }
 
 fn mixed_dimension_collection() -> Shape {
-    Shape::GeometryCollection(vec![
-        box_shape(-2.0, -2.0, 2.0, 2.0),
-        Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_unchecked_xy(3.0, -1.0),
-                Point::new_unchecked_xy(6.0, 1.0),
-            ]))
-            .expect("test line is valid"),
-        ),
-        Shape::MultiPoint(CoordSeq::from(vec![
-            Point::new_unchecked_xy(-4.0, 0.0),
-            Point::new_unchecked_xy(0.0, 4.0),
-        ])),
-    ])
+    Shape::GeometryCollection(
+        vec![
+            box_shape(-2.0, -2.0, 2.0, 2.0),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_unchecked_xy(3.0, -1.0),
+                    Point::new_unchecked_xy(6.0, 1.0),
+                ]))
+                .expect("test line is valid"),
+            ),
+            Shape::MultiPoint(
+                CoordSeq::from(vec![
+                    Point::new_unchecked_xy(-4.0, 0.0),
+                    Point::new_unchecked_xy(0.0, 4.0),
+                ])
+                .into(),
+            ),
+        ]
+        .into(),
+    )
 }
 
 fn antimeridian_seam_source() -> Shape {
@@ -378,7 +393,7 @@ fn antimeridian_seam_source() -> Shape {
         box_shape(179.5, -1.0, 180.0, 1.0),
         box_shape(-180.0, -1.0, -179.5, 1.0),
     ) {
-        (Shape::Polygon(a), Shape::Polygon(b)) => Shape::MultiPolygon(vec![a, b]),
+        (Shape::Polygon(a), Shape::Polygon(b)) => Shape::MultiPolygon(vec![a, b].into()),
         _ => unreachable!(),
     }
 }
@@ -441,10 +456,13 @@ fn native_coverer_matches_relate_oracle_across_the_antimeridian() {
 
 #[test]
 fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
-    let adjacent = Shape::GeometryCollection(vec![
-        box_shape(-1.0, -1.0, 0.03, 1.0),
-        box_shape(0.03, -1.0, 1.0, 1.0),
-    ]);
+    let adjacent = Shape::GeometryCollection(
+        vec![
+            box_shape(-1.0, -1.0, 0.03, 1.0),
+            box_shape(0.03, -1.0, 1.0, 1.0),
+        ]
+        .into(),
+    );
     let seam_cell = CellId::from_lonlat(0.03, 0.0).parent(12).expect("level 12");
     assert_eq!(
         classify_with_native(&adjacent, seam_cell),
@@ -453,10 +471,13 @@ fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
         seam_cell.token()
     );
 
-    let nested = Shape::GeometryCollection(vec![
-        box_shape(2.0, 2.0, 3.0, 3.0),
-        box_shape(2.51, 2.45, 2.55, 2.56),
-    ]);
+    let nested = Shape::GeometryCollection(
+        vec![
+            box_shape(2.0, 2.0, 3.0, 3.0),
+            box_shape(2.51, 2.45, 2.55, 2.56),
+        ]
+        .into(),
+    );
     let nested_cell = CellId::from_token("1010011").expect("reviewer repro token");
     assert_eq!(nested_cell.level(), 12);
     assert_eq!(
@@ -826,7 +847,7 @@ fn seam_source_stays_narrow() {
     let east = box_shape(179.5, -1.0, 180.0, 1.0);
     let west = box_shape(-180.0, -1.0, -179.5, 1.0);
     let source = match (east, west) {
-        (Shape::Polygon(a), Shape::Polygon(b)) => Shape::MultiPolygon(vec![a, b]),
+        (Shape::Polygon(a), Shape::Polygon(b)) => Shape::MultiPolygon(vec![a, b].into()),
         _ => unreachable!(),
     };
     let covering = fixed(8)

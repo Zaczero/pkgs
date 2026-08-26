@@ -9,17 +9,18 @@
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Arc, Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, EmptyKind, Frame, GeometryArrayStorage,
-    PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel,
-    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
-    line_crosses_antimeridian, packed_centroid_xy, packed_surface_point, row_bounds_values,
+    Arc, Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, Frame, GeometryArrayStorage,
+    GeometryKind, PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder,
+    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
+    column_window, line_crosses_antimeridian, packed_centroid_xy, packed_surface_point,
+    row_bounds_values,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
 fn point_from_unary_shape(shape: Shape) -> Point {
     match shape {
         Shape::Point(point) => point,
-        Shape::Empty(EmptyKind::Point, _) => Point::new_unchecked_xy(f64::NAN, f64::NAN),
+        Shape::Empty(GeometryKind::Point, _) => Point::new_unchecked_xy(f64::NAN, f64::NAN),
         _ => unreachable!("centroid/point_on_surface yield Point or POINT EMPTY"),
     }
 }

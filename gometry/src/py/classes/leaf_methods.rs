@@ -7,7 +7,7 @@
 use pyo3::prelude::*;
 
 use crate::{
-    EmptyKind, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
+    GeometryKind, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
     PyMultiPolygon, PyPoint, PyPolygon, Shape, ShapeData, Typed,
 };
 

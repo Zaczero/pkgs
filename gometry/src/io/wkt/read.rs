@@ -2,9 +2,12 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::geometry::{CoordSeqBuilder, HasM, HasZ, MOrdinate, ZOrdinate};
+use crate::geometry::{
+    CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
+    ZOrdinate,
+};
 use crate::io::wkt::{
-    CoordSeq, CoordinateAxes, EmptyKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
+    CoordSeq, CoordinateAxes, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
     ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, parse_content,
 };
 
@@ -48,7 +51,7 @@ fn parse_wkt_inner(
         IoGeometryKind::GeometryCollection => {
             let Some(body) = header.body else {
                 return Ok(Shape::typed_empty(
-                    EmptyKind::GeometryCollection,
+                    GeometryKind::GeometryCollection,
                     header.axes,
                 ));
             };
@@ -59,16 +62,15 @@ fn parse_wkt_inner(
             } else {
                 inherited_axes
             };
-            Ok(Shape::GeometryCollection(
-                split_wkt_collection_members(body)?
-                    .into_iter()
-                    .map(|value| parse_wkt_inner(value, depth + 1, child_axes))
-                    .collect::<Result<_>>()?,
-            ))
+            let members = split_wkt_collection_members(body)?
+                .into_iter()
+                .map(|value| parse_wkt_inner(value, depth + 1, child_axes))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Shape::geometry_collection(members))
         },
         IoGeometryKind::MultiPoint => {
             let Some(body) = header.body else {
-                return Ok(Shape::MultiPoint(CoordSeq::empty(header.axes)));
+                return Ok(Shape::typed_empty(GeometryKind::MultiPoint, header.axes));
             };
             let axes = if axes_fixed {
                 header.axes
@@ -79,31 +81,39 @@ fn parse_wkt_inner(
         },
         IoGeometryKind::MultiLineString => {
             let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(EmptyKind::MultiLineString, header.axes));
+                return Ok(Shape::typed_empty(
+                    GeometryKind::MultiLineString,
+                    header.axes,
+                ));
             };
             let members = split_wkt_members(body)?;
-            // All-empty (or empty body) → typed empty so declared axes survive.
-            if members.is_empty() || members.iter().all(|member| member.is_empty()) {
-                return Ok(Shape::typed_empty(EmptyKind::MultiLineString, header.axes));
+            if members.is_empty() {
+                return Ok(Shape::typed_empty(
+                    GeometryKind::MultiLineString,
+                    header.axes,
+                ));
             }
             let axes = if axes_fixed {
                 header.axes
             } else {
                 infer_wkt_axes_from_members(&members)?
             };
-            Ok(Shape::MultiLineString(
+            Ok(Shape::MultiLineString(MultiLineString::try_new(
+                axes,
                 members
                     .into_iter()
                     .map(|member| match member {
-                        WktMember::Empty => Ok(LineSeq::empty(axes)),
-                        WktMember::Group(line) => LineSeq::try_new(parse_wkt_points(line, axes)?),
+                        WktMember::Empty => Ok(MultiMember::Empty),
+                        WktMember::Group(line) => Ok(MultiMember::Value(LineSeq::try_new(
+                            parse_wkt_points(line, axes)?,
+                        )?)),
                     })
                     .collect::<Result<_>>()?,
-            ))
+            )?))
         },
         IoGeometryKind::MultiPolygon => {
             let Some(body) = header.body else {
-                return Ok(Shape::typed_empty(EmptyKind::MultiPolygon, header.axes));
+                return Ok(Shape::typed_empty(GeometryKind::MultiPolygon, header.axes));
             };
             let members = split_wkt_members(body)?;
             let axes = if axes_fixed {
@@ -116,20 +126,21 @@ fn parse_wkt_inner(
             } else {
                 header.axes
             };
-            let mut polygons = Vec::with_capacity(members.len());
-            for member in members {
-                match member {
-                    // Empty polygon members are accepted then dropped (WKB parity).
-                    WktMember::Empty => {},
-                    WktMember::Group(polygon) => {
-                        polygons.push(parse_wkt_polygon_body(polygon, axes)?);
-                    },
-                }
+            if members.is_empty() {
+                return Ok(Shape::typed_empty(GeometryKind::MultiPolygon, axes));
             }
-            if polygons.is_empty() {
-                return Ok(Shape::typed_empty(EmptyKind::MultiPolygon, axes));
-            }
-            Ok(Shape::MultiPolygon(polygons))
+            Ok(Shape::MultiPolygon(MultiPolygon::try_new(
+                axes,
+                members
+                    .into_iter()
+                    .map(|member| match member {
+                        WktMember::Empty => Ok(MultiMember::Empty),
+                        WktMember::Group(polygon) => {
+                            Ok(MultiMember::Value(parse_wkt_polygon_body(polygon, axes)?))
+                        },
+                    })
+                    .collect::<Result<_>>()?,
+            )?))
         },
         IoGeometryKind::Point => match header.body {
             Some(body) => {
@@ -140,11 +151,11 @@ fn parse_wkt_inner(
                 };
                 Ok(Shape::Point(parse_wkt_point(body, axes)?))
             },
-            None => Ok(Shape::typed_empty(EmptyKind::Point, header.axes)),
+            None => Ok(Shape::typed_empty(GeometryKind::Point, header.axes)),
         },
         IoGeometryKind::LineString => {
             let Some(body) = header.body else {
-                return Ok(Shape::LineString(LineSeq::empty(header.axes)));
+                return Ok(Shape::typed_empty(GeometryKind::LineString, header.axes));
             };
             let axes = if axes_fixed {
                 header.axes
@@ -163,7 +174,7 @@ fn parse_wkt_inner(
                 };
                 Ok(Shape::Polygon(parse_wkt_polygon_body(body, axes)?))
             },
-            None => Ok(Shape::typed_empty(EmptyKind::Polygon, header.axes)),
+            None => Ok(Shape::typed_empty(GeometryKind::Polygon, header.axes)),
         },
     }
 }
@@ -485,35 +496,28 @@ fn parse_wkt_ring(value: &str, axes: CoordinateAxes) -> Result<Ring> {
     crate::io::admit_closed_ring(parse_wkt_points(value, axes)?)
 }
 
-fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
+fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<MultiPoint> {
     // Parenthesized / EMPTY members vs bare "x y, x y" coordinate list.
     if is_wkt_member_list(value) {
         let members = split_wkt_members(value)?;
-        let capacity = members
-            .iter()
-            .filter(|member| matches!(member, WktMember::Group(_)))
-            .count();
-        if capacity == 0 {
-            // All EMPTY (or empty body) — keep declared axes.
-            return Ok(CoordSeq::empty(axes));
-        }
-        let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
-        for member in members {
-            match member {
-                // Empty point members are accepted then dropped (WKB parity).
-                WktMember::Empty => {},
-                WktMember::Group(point) => {
-                    builder.try_push(parse_wkt_point(point, axes))?;
-                },
-            }
-        }
-        return builder.finish();
+        return MultiPoint::try_new(
+            axes,
+            members
+                .into_iter()
+                .map(|member| match member {
+                    WktMember::Empty => Ok(MultiMember::Empty),
+                    WktMember::Group(point) => {
+                        Ok(MultiMember::Value(parse_wkt_point(point, axes)?))
+                    },
+                })
+                .collect::<Result<_>>()?,
+        );
     }
     match (axes.has_z(), axes.has_m()) {
-        (false, false) => parse_wkt_points_impl::<false, false>(value),
-        (true, false) => parse_wkt_points_impl::<true, false>(value),
-        (false, true) => parse_wkt_points_impl::<false, true>(value),
-        (true, true) => parse_wkt_points_impl::<true, true>(value),
+        (false, false) => parse_wkt_points_impl::<false, false>(value).map(MultiPoint::from),
+        (true, false) => parse_wkt_points_impl::<true, false>(value).map(MultiPoint::from),
+        (false, true) => parse_wkt_points_impl::<false, true>(value).map(MultiPoint::from),
+        (true, true) => parse_wkt_points_impl::<true, true>(value).map(MultiPoint::from),
     }
 }
 
@@ -538,12 +542,6 @@ fn is_wkt_member_list(value: &str) -> bool {
 enum WktMember<'a> {
     Empty,
     Group(&'a str),
-}
-
-impl WktMember<'_> {
-    const fn is_empty(self) -> bool {
-        matches!(self, Self::Empty)
-    }
 }
 
 /// Strict group-list scanner for multipart members and polygon rings.

@@ -27,7 +27,7 @@ pub(crate) use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError
 use crate::py::numpy::bool_array;
 use crate::{
     Arc, ArrowEncoding, Bounds, CoercedCollectedGeometryItems, CoordSeq, CoordinateAxes, Crs,
-    DefaultedF64Input, DistanceUnit, EmptyKind, F64Param, Frame, FrameAdoption, FrameEdit,
+    DefaultedF64Input, DistanceUnit, F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind,
     GeometryTransformFrame, HeapSize, I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point,
     Polygon, PyBytes, PyCoordinates, PyCrs, PyGeometry, PyTypeError, PyValidationReport,
     PyValueError, RepairMethod, Ring, SVG_ARRAY_PREVIEW, Shape, ShapeData, SimplifyMethod,

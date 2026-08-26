@@ -854,7 +854,7 @@ mod tests {
             Shape::Point(Point::new_unchecked_xy(0.0, 0.0)),
             Shape::Point(Point::new_unchecked_xy(1.0, 1.0)),
             Shape::typed_empty(
-                crate::geometry::EmptyKind::Point,
+                crate::geometry::GeometryKind::Point,
                 crate::geometry::CoordinateAxes::XY,
             ),
         ]);

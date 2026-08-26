@@ -671,32 +671,37 @@ fn rebuild_point_columns(point: &Point, cursor: &mut TransformCursor<'_>) -> Poi
 fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor<'_>) -> Shape {
     match shape {
         Shape::Point(point) => Shape::Point(rebuild_point_columns(point, cursor)),
-        Shape::MultiPoint(points) => Shape::MultiPoint(rebuild_seq_columns(points, cursor)),
+        Shape::MultiPoint(points) => {
+            Shape::MultiPoint(points.with_coords(rebuild_seq_columns(points, cursor)))
+        },
         Shape::LineString(points) => Shape::LineString(
             LineSeq::try_new(rebuild_seq_columns(points, cursor))
                 .expect("transformed line remains empty or >=2 vertices"),
         ),
         Shape::MultiLineString(lines) => Shape::MultiLineString(
             lines
-                .iter()
-                .map(|line| {
-                    LineSeq::try_new(rebuild_seq_columns(line, cursor))
-                        .expect("transformed line remains empty or >=2 vertices")
+                .try_map_values(lines.axes(), |line| {
+                    Ok::<_, std::convert::Infallible>(
+                        LineSeq::try_new(rebuild_seq_columns(line, cursor))
+                            .expect("transformed line remains at least two vertices"),
+                    )
                 })
-                .collect(),
+                .expect("transformed multipart preserves members"),
         ),
         Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon_columns(polygon, cursor)),
         Shape::MultiPolygon(polygons) => Shape::MultiPolygon(
             polygons
-                .iter()
-                .map(|polygon| rebuild_polygon_columns(polygon, cursor))
-                .collect(),
+                .try_map_values(polygons.axes(), |polygon| {
+                    Ok::<_, std::convert::Infallible>(rebuild_polygon_columns(polygon, cursor))
+                })
+                .expect("transformed multipart preserves members"),
         ),
         Shape::GeometryCollection(geometries) => Shape::GeometryCollection(
             geometries
                 .iter()
                 .map(|geometry| rebuild_shape_columns(geometry, cursor))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
         ),
         Shape::Empty(..) => shape.clone(),
     }

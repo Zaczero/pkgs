@@ -7,9 +7,9 @@ use crate::geometry::constructive::{
     emit_cap, extend_cleaned, raw_offset_loop, strict_cycle, winding_region,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, LineSeq, Orientation, Point,
-    Polygon, Ring, Shape, column_all_finite, dedup_consecutive_points, line_is_simple, orientation,
-    polygon_parts_to_shape, ring_winding, shell_is_convex,
+    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq,
+    Orientation, Point, Polygon, Ring, Shape, column_all_finite, dedup_consecutive_points,
+    line_is_simple, orientation, polygon_parts_to_shape, ring_winding, shell_is_convex,
 };
 
 /// A polygon encloses no interior when every ring has zero signed area — it
@@ -59,12 +59,28 @@ fn ring_as_open_linework(ring: &CoordSeq) -> Option<LineSeq> {
 pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
     match shape {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
-            Shape::MultiLineString(polygon.rings().filter_map(ring_as_open_linework).collect())
+            let lines = polygon
+                .rings()
+                .filter_map(ring_as_open_linework)
+                .collect::<Vec<_>>();
+            if lines.is_empty() {
+                Shape::typed_empty(GeometryKind::MultiLineString, polygon.shell.coords().axes())
+            } else {
+                Shape::MultiLineString(lines.into())
+            }
         },
-        Shape::MultiPolygon(polygons) => Shape::GeometryCollection(
+        Shape::MultiPolygon(polygons) => Shape::geometry_collection(
             polygons
+                .members()
                 .iter()
-                .map(|polygon| degenerate_polygonal_as_linework(&Shape::Polygon(polygon.clone())))
+                .map(|member| match member {
+                    crate::geometry::MultiMember::Empty => {
+                        Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
+                    },
+                    crate::geometry::MultiMember::Value(index) => degenerate_polygonal_as_linework(
+                        &Shape::Polygon(polygons.as_slice()[*index].clone()),
+                    ),
+                })
                 .collect(),
         ),
         Shape::GeometryCollection(parts) => {

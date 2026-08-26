@@ -92,8 +92,8 @@ fn areal_relate_ng_matches_arrangement_oracle_on_curated_cases() {
         // byte-identical matrix as the raw per-ring scan path — this locks
         // the hierarchical `PointBatchTester` fast lane against the
         // arrangement oracle.
-        let left_tester = PointBatchTester::new(&Shape::MultiPolygon(left.clone()));
-        let right_tester = PointBatchTester::new(&Shape::MultiPolygon(right.clone()));
+        let left_tester = PointBatchTester::new(&Shape::MultiPolygon(left.clone().into()));
+        let right_tester = PointBatchTester::new(&Shape::MultiPolygon(right.clone().into()));
         let prepared = AreaTesters {
             left: Some(&left_tester),
             right: Some(&right_tester),
@@ -306,8 +306,8 @@ fn areal_relate_one_shot_uses_section_plan_occupancy() {
             })
             .collect::<Vec<_>>()
     };
-    let left = ShapeData::from(Shape::MultiPolygon(parts(0.0, 0.0)));
-    let right = ShapeData::from(Shape::MultiPolygon(parts(1.0, 1.0)));
+    let left = ShapeData::from(Shape::MultiPolygon(parts(0.0, 0.0).into()));
+    let right = ShapeData::from(Shape::MultiPolygon(parts(1.0, 1.0).into()));
     let _ = left.staged_rings();
     let _ = right.staged_rings();
     let _ = left.is_simple_cached();

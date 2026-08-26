@@ -58,7 +58,13 @@ fn schema_only_export_releases_without_array_export() {
     let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)), None);
     release_schema_twice(schema_from_geometries([&point], None, None).unwrap());
 
-    let collection = PyGeometry::from_shape_crs(Shape::GeometryCollection(Vec::new()), None);
+    let collection = PyGeometry::from_shape_crs(
+        Shape::typed_empty(
+            crate::geometry::GeometryKind::GeometryCollection,
+            crate::geometry::CoordinateAxes::XY,
+        ),
+        None,
+    );
     release_schema_twice(schema_from_geometries([&collection], None, None).unwrap());
 }
 

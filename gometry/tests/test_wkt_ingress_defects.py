@@ -52,7 +52,7 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
     assert gm.from_wkt('POINTM(1 2 3)').to_wkt() == 'POINT M (1 2 3)'
     assert gm.from_wkt('POINT(1 2 3 4)').to_wkt() == 'POINT ZM (1 2 3 4)'
     assert (
-        gm.from_wkt('MULTILINESTRING Z (EMPTY)').to_wkt() == 'MULTILINESTRING Z EMPTY'
+        gm.from_wkt('MULTILINESTRING Z (EMPTY)').to_wkt() == 'MULTILINESTRING Z (EMPTY)'
     )
 
 
@@ -61,10 +61,10 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
     [
         ('MULTIPOINT EMPTY', 'MultiPoint', 'XY', 'MULTIPOINT EMPTY'),
         ('MULTIPOINT M EMPTY', 'MultiPoint', 'XYM', 'MULTIPOINT M EMPTY'),
-        ('MULTIPOINT (EMPTY)', 'MultiPoint', 'XY', 'MULTIPOINT EMPTY'),
-        ('MULTIPOINT M (EMPTY, EMPTY)', 'MultiPoint', 'XYM', 'MULTIPOINT M EMPTY'),
+        ('MULTIPOINT (EMPTY)', 'MultiPoint', 'XY', 'MULTIPOINT (EMPTY)'),
+        ('MULTIPOINT M (EMPTY, EMPTY)', 'MultiPoint', 'XYM', 'MULTIPOINT M (EMPTY, EMPTY)'),
         # EXACT D16 repros: empty-member form keeps declared axes + kind.
-        ('MULTIPOINT Z (EMPTY)', 'MultiPoint', 'XYZ', 'MULTIPOINT Z EMPTY'),
+        ('MULTIPOINT Z (EMPTY)', 'MultiPoint', 'XYZ', 'MULTIPOINT Z (EMPTY)'),
         ('MULTILINESTRING EMPTY', 'MultiLineString', 'XY', 'MULTILINESTRING EMPTY'),
         (
             'MULTILINESTRING M EMPTY',
@@ -76,18 +76,18 @@ def test_r17_empty_parenthesis_multipart_rejected() -> None:
             'MULTILINESTRING Z (EMPTY)',
             'MultiLineString',
             'XYZ',
-            'MULTILINESTRING Z EMPTY',
+            'MULTILINESTRING Z (EMPTY)',
         ),
         (
             'MULTILINESTRING ZM (EMPTY, EMPTY)',
             'MultiLineString',
             'XYZM',
-            'MULTILINESTRING ZM EMPTY',
+            'MULTILINESTRING ZM (EMPTY, EMPTY)',
         ),
         ('MULTIPOLYGON EMPTY', 'MultiPolygon', 'XY', 'MULTIPOLYGON EMPTY'),
         ('MULTIPOLYGON Z EMPTY', 'MultiPolygon', 'XYZ', 'MULTIPOLYGON Z EMPTY'),
-        ('MULTIPOLYGON M (EMPTY)', 'MultiPolygon', 'XYM', 'MULTIPOLYGON M EMPTY'),
-        ('MULTIPOLYGON ZM (EMPTY)', 'MultiPolygon', 'XYZM', 'MULTIPOLYGON ZM EMPTY'),
+        ('MULTIPOLYGON M (EMPTY)', 'MultiPolygon', 'XYM', 'MULTIPOLYGON M (EMPTY)'),
+        ('MULTIPOLYGON ZM (EMPTY)', 'MultiPolygon', 'XYZM', 'MULTIPOLYGON ZM (EMPTY)'),
     ],
 )
 def test_d16_all_empty_multipart_axes_matrix(
@@ -101,17 +101,19 @@ def test_d16_all_empty_multipart_axes_matrix(
     assert g.to_wkt() == expected
 
 
-def test_d16_multipoint_empty_member_mixed_drops_empty() -> None:
-    """EMPTY MultiPoint members are accepted then dropped (WKB parity)."""
+def test_d16_multipoint_empty_member_mixed_is_preserved() -> None:
+    """EMPTY MultiPoint members retain their position and declared axes."""
     g = gm.from_wkt('MULTIPOINT Z ((1 2 3), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3))'
+    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3), EMPTY)'
+    assert len(g) == 2
     assert g.coordinate_axes == 'XYZ'
 
 
-def test_d16_multipolygon_empty_member_mixed_drops_empty() -> None:
-    """EMPTY MultiPolygon members are accepted then dropped (WKB parity)."""
+def test_d16_multipolygon_empty_member_mixed_is_preserved() -> None:
+    """EMPTY MultiPolygon members retain their position and count."""
     g = gm.from_wkt('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)))'
+    assert g.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
+    assert len(g) == 2
     assert not g.is_empty
 
 

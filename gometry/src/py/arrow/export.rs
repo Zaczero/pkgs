@@ -225,6 +225,23 @@ fn shapes_to_packed_arrow(
         Shape::MultiPolygon(_) => PackedKind::MultiPolygon,
         Shape::GeometryCollection(_) | Shape::Empty(..) => return Ok(None),
     };
+    if shapes.iter().any(|shape| match shape {
+        Shape::MultiPoint(points) => points
+            .members()
+            .iter()
+            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
+        Shape::MultiLineString(lines) => lines
+            .members()
+            .iter()
+            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
+        Shape::MultiPolygon(polygons) => polygons
+            .members()
+            .iter()
+            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
+        _ => false,
+    }) {
+        return Ok(None);
+    }
     let mut axes = None;
     for shape in shapes {
         let same_kind = matches!(

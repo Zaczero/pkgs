@@ -15,7 +15,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, LineSeq, Point};
+use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point};
 use crate::py::errors::ParseError;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::{
@@ -103,6 +103,9 @@ fn encode_shape(shape: &Shape, factor: f64) -> PyResult<String> {
     match shape {
         Shape::LineString(points) => encode_line(points, factor),
         Shape::Point(point) => encode_point(*point, factor),
+        Shape::Empty(GeometryKind::LineString, axes) if *axes == CoordinateAxes::XY => {
+            Ok(String::new())
+        },
         _ => Err(geometry_type_err(
             "to_polyline requires a LineString or Point",
         )),
@@ -153,7 +156,7 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
 
 fn shape_from_decoded_polyline(coords: CoordSeq) -> Shape {
     match coords.len() {
-        0 => Shape::LineString(LineSeq::empty(CoordinateAxes::XY)),
+        0 => Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
         1 => Shape::Point(coords.point_at(0)),
         _ => {
             Shape::LineString(LineSeq::try_new(coords).expect("polyline has two or more vertices"))

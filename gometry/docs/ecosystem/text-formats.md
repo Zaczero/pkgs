@@ -281,7 +281,7 @@ print(restored == point, restored.crs, restored.epoch)
 | EWKT | `to_wkt(include_srid=True, output_dimension=, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes (default) | yes |
 | GeoJSON | [`to_geojson(include_z=, drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | declares WGS84 on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes (when `include_z=True`) | no — always raises on M; clear it explicitly first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
-| GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes; WKB fallback for mixed axes) |
+| GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |
 | GeoPandas | [`to_geopandas`][gometry.GeometryArray.to_geopandas] | GeoSeries | yes | no (requires `drop_epoch=True` when present) | yes | yes where the peer stores them |
 | polars | [`to_polars`][gometry.GeometryArray.to_polars] | [`from_polars`][gometry.from_polars] | optional (`drop_crs`) | no (requires `drop_epoch=True` when present) | yes (EWKB) | yes (EWKB) |
@@ -289,8 +289,10 @@ print(restored == point, restored.crs, restored.epoch)
 
 !!! note "Dimensional empties"
     WKT and WKB preserve empty axes (`POINT Z EMPTY` stays XYZ). GeoJSON has no
-    dimensional-empty encoding — `to_geojson()` emits a coordinate-less empty and
-    flattens Z/M identity. Prefer WKT/WKB/[`equals_identical`][gometry.equals_identical] when axes matter.
+    dimensional-empty or explicit empty-multipart encoding — `to_geojson()` emits
+    a coordinate-less top-level empty, and raises rather than dropping a member
+    or flattening Z/M identity. Prefer WKT/WKB/[`equals_identical`][gometry.equals_identical]
+    when axes or multipart member positions matter.
 
 Coming from Shapely? See [Migrating](../migrating/index.md#coming-from-shapely).
 

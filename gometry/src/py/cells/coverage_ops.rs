@@ -153,12 +153,15 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
     let shape = if polygons.len() == 1 {
         Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
     } else {
-        Shape::MultiPolygon(polygons)
+        Shape::MultiPolygon(polygons.into())
     };
     Ok(PyGeometry::typed_wgs84(shape))
 }
 
 fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
+    if outline.is_empty() {
+        return Ok(None);
+    }
     let polygons: Vec<Polygon> = Shape::build_area_all(
         &[&Shape::MultiLineString(
             outline.into_iter().map(LineSeq::from_trusted).collect(),
@@ -177,7 +180,7 @@ fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
     let shape = if polygons.len() == 1 {
         Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
     } else {
-        Shape::MultiPolygon(polygons)
+        Shape::MultiPolygon(polygons.into())
     };
     Ok(Some(PyGeometry::typed_wgs84(shape)))
 }

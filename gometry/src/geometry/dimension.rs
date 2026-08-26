@@ -1,5 +1,5 @@
 use crate::geometry::relate::{line_has_nonzero_segment, multiline_has_nonzero_segment};
-use crate::geometry::{Coordinates as _, EmptyKind, Shape};
+use crate::geometry::{Coordinates as _, GeometryKind, Shape};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DimMode {
@@ -38,11 +38,12 @@ pub(crate) fn dimension(shape: &Shape, mode: DimMode) -> Option<Dimension> {
     match shape {
         Shape::Empty(kind, _) => match mode {
             DimMode::Declared => match kind {
-                EmptyKind::Point => Some(Dimension::Point),
-                EmptyKind::MultiLineString => Some(Dimension::Curve),
-                EmptyKind::Polygon | EmptyKind::MultiPolygon => Some(Dimension::Surface),
+                GeometryKind::Point | GeometryKind::MultiPoint => Some(Dimension::Point),
+                GeometryKind::LineString => Some(Dimension::Curve),
+                GeometryKind::MultiLineString => Some(Dimension::Curve),
+                GeometryKind::Polygon | GeometryKind::MultiPolygon => Some(Dimension::Surface),
                 // Matches the empty container form: `max` over no members.
-                EmptyKind::GeometryCollection => None,
+                GeometryKind::GeometryCollection => None,
             },
             DimMode::Topology | DimMode::Effective => None,
         },

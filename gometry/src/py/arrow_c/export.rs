@@ -222,6 +222,15 @@ pub(crate) fn native_storage_schema_shapes(
         return Some((GeometryEncoding::Point, coordinate_schema(axes)));
     }
     if shapes.iter().all(|s| matches!(s, Shape::MultiPoint(_))) {
+        if shapes.iter().any(|shape| {
+            matches!(
+                shape,
+                Shape::MultiPoint(points)
+                    if points.members().iter().any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+            )
+        }) {
+            return None;
+        }
         return Some((
             GeometryEncoding::MultiPoint,
             list_schema(coordinate_schema(axes)),
@@ -314,6 +323,15 @@ fn export_native_shapes_slice(
         )?));
     }
     if shapes.iter().all(|s| matches!(s, Shape::MultiPoint(_))) {
+        if shapes.iter().any(|shape| {
+            matches!(
+                shape,
+                Shape::MultiPoint(points)
+                    if points.members().iter().any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+            )
+        }) {
+            return Ok(None);
+        }
         return export_single_list_shapes(
             shapes.iter().copied(),
             axes,
@@ -454,12 +472,18 @@ pub(crate) fn export_multilines_shapes(
             .checked_add(i32::try_from(items.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
         geometry_offsets.push(line_count);
-        for line in items {
-            point_count = point_count
-                .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
-                .ok_or_else(offset_error)?;
-            line_offsets.push(point_count);
-            lines.push(line);
+        for member in items.members() {
+            match member {
+                crate::geometry::MultiMember::Empty => line_offsets.push(point_count),
+                crate::geometry::MultiMember::Value(index) => {
+                    let line = &items.as_slice()[*index];
+                    point_count = point_count
+                        .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
+                        .ok_or_else(offset_error)?;
+                    line_offsets.push(point_count);
+                    lines.push(line);
+                },
+            }
         }
     }
     let coords = gather_coordseqs(
@@ -548,12 +572,20 @@ pub(crate) fn export_multipolygons_shapes(
             .checked_add(i32::try_from(polygons.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
         multipolygon_offsets.push(polygon_count);
-        for polygon in polygons {
-            ring_count = ring_count
-                .checked_add(i32::try_from(1 + polygon.holes.len()).map_err(|_| offset_error())?)
-                .ok_or_else(offset_error)?;
-            polygon_offsets.push(ring_count);
-            push_polygon(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
+        for member in polygons.members() {
+            match member {
+                crate::geometry::MultiMember::Empty => polygon_offsets.push(ring_count),
+                crate::geometry::MultiMember::Value(index) => {
+                    let polygon = &polygons.as_slice()[*index];
+                    ring_count = ring_count
+                        .checked_add(
+                            i32::try_from(1 + polygon.holes.len()).map_err(|_| offset_error())?,
+                        )
+                        .ok_or_else(offset_error)?;
+                    polygon_offsets.push(ring_count);
+                    push_polygon(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
+                },
+            }
         }
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;

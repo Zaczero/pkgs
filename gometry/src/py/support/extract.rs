@@ -303,6 +303,7 @@ pub(crate) fn parts(geom: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
                                 .expect("shape part line is empty or >=2 vertices"),
                         ),
                         ShapePart::Polygon(polygon) => Shape::Polygon(polygon.clone()),
+                        ShapePart::Empty(kind, axes) => Shape::typed_empty(kind, axes),
                         ShapePart::Nested(nested) => nested.clone(),
                     };
                     parts.push(part);

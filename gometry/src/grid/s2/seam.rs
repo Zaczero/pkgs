@@ -55,6 +55,7 @@ fn collect_windows(source: &Shape, windows: &mut Vec<(f64, f64, f64, f64)>) {
             collect_windows(shape, windows);
             false
         },
+        ShapePart::Empty(..) => false,
         primitive => {
             if let Some(bounds) = primitive.bounds() {
                 windows.push((bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy()));
@@ -159,7 +160,8 @@ mod tests {
         // Antimeridian normalization can place the split MultiPolygon below
         // a collection member; windows must retain its primitive parts rather
         // than use that nested member's aggregate full-world bounds.
-        let nested = Shape::GeometryCollection(vec![Shape::GeometryCollection(vec![split])]);
+        let nested =
+            Shape::GeometryCollection(vec![Shape::GeometryCollection(vec![split].into())].into());
         let windows = SourceWindows::new(&nested);
         assert!(windows.may_overlap(rect(179.5, 0.0, 8)));
         assert!(!windows.may_overlap(rect(179.5, 45.0, 8)));

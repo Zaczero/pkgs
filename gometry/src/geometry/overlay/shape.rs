@@ -17,9 +17,9 @@ use crate::geometry::overlay::{
     symmetric_difference_cluster_ordered, union_lines, window_clip_large_operands,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, GeometryErrorKind, HashSet, LineSeq, Point, PointKey, Polygon, Segment,
-    Shape, XY, carry_ordinates, line_segments, shared_segment_part, topology_split,
-    undirected_segment_edge_key,
+    Bounds, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
+    PointKey, Polygon, Segment, Shape, XY, carry_ordinates, line_segments, shared_segment_part,
+    topology_split, undirected_segment_edge_key,
 };
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
@@ -566,13 +566,13 @@ impl Shape {
         let noded = dedup_segments_to_coordseqs(self_node_segments(&self.segments()))
             .into_iter()
             .map(|line| LineSeq::try_new(line).expect("noded segment has two vertices"))
-            .collect();
-        carry_ordinates(
-            Self::MultiLineString(noded),
-            &[self],
-            "node",
-            strictness.is_strict(),
-        )
+            .collect::<Vec<_>>();
+        let noded = if noded.is_empty() {
+            Self::typed_empty(GeometryKind::MultiLineString, self.axes())
+        } else {
+            Self::MultiLineString(noded.into())
+        };
+        carry_ordinates(noded, &[self], "node", strictness.is_strict())
     }
 
     pub fn line_merge(&self) -> Result<Self> {
@@ -586,7 +586,7 @@ impl Shape {
                 let mut chains =
                     merge_chains(lines.iter().map(|line| line.as_coords().clone()).collect());
                 Ok(match chains.len() {
-                    0 => Self::MultiLineString(Vec::new()),
+                    0 => Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
                     1 => Self::LineString(
                         LineSeq::try_new(chains.pop().expect("len == 1"))
                             .expect("merged chain is lineal"),
@@ -658,20 +658,30 @@ impl Shape {
                     end: line[line.len() - 1].xy(),
                 }))
         });
-        Ok(Self::GeometryCollection(vec![
-            Self::MultiLineString(
-                same.into_iter()
-                    .map(CoordSeq::from)
-                    .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
-                    .collect(),
-            ),
-            Self::MultiLineString(
-                opposite
-                    .into_iter()
-                    .map(CoordSeq::from)
-                    .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
-                    .collect(),
-            ),
-        ]))
+        let same = same
+            .into_iter()
+            .map(CoordSeq::from)
+            .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
+            .collect::<Vec<_>>();
+        let opposite = opposite
+            .into_iter()
+            .map(CoordSeq::from)
+            .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
+            .collect::<Vec<_>>();
+        Ok(Self::GeometryCollection(
+            vec![
+                if same.is_empty() {
+                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+                } else {
+                    Self::MultiLineString(same.into())
+                },
+                if opposite.is_empty() {
+                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+                } else {
+                    Self::MultiLineString(opposite.into())
+                },
+            ]
+            .into(),
+        ))
     }
 }

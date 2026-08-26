@@ -404,19 +404,13 @@ def test_r15i_polygon_mixed_ring_axes_message_matches_writer() -> None:
         gm.Polygon(shell, holes=[hole_z])
 
 
-def test_r15i_multipolygon_empty_members_dropped_documented() -> None:
-    """STOP-AND-REPORT pin: MultiPolygon EMPTY members are dropped at ingress.
-
-    ``Shape::MultiPolygon`` is ``Vec<Polygon>`` with no empty-slot representation
-    (typed empties are ``Shape::Empty(EmptyKind::Polygon, axes)``). Preserving
-    empty members would require a model change; keep the drop + axes on the
-    remaining members, and pin that WKT drops them rather than inventing.
-    """
+def test_r15i_multipolygon_empty_members_are_preserved() -> None:
+    """MultiPolygon EMPTY members retain their position and count."""
     g = gm.from_wkt('MULTIPOLYGON (((0 0,1 0,1 1,0 0)), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)))'
-    # Constructor rejects empty polygon objects as members (not Polygon-shaped).
-    with pytest.raises(TypeError, match='MultiPolygon expected Polygon'):
-        gm.MultiPolygon([
-            gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
-            gm.from_wkt('POLYGON EMPTY'),
-        ])
+    assert g.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
+    assert len(g) == 2
+    constructed = gm.MultiPolygon([
+        gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+        gm.from_wkt('POLYGON EMPTY'),
+    ])
+    assert constructed.to_wkt() == g.to_wkt()

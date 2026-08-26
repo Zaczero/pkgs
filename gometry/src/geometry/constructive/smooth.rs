@@ -405,20 +405,17 @@ impl Shape {
             Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
                 smooth_coord_seq::<false>(points, iterations, method, keep_endpoints, budget)?,
             )),
-            Self::MultiLineString(lines) => Self::MultiLineString(
-                lines
-                    .iter()
-                    .map(|line| {
-                        Ok(LineSeq::from_trusted(smooth_coord_seq::<false>(
-                            line,
-                            iterations,
-                            method,
-                            keep_endpoints,
-                            budget,
-                        )?))
-                    })
-                    .collect::<Result<_>>()?,
-            ),
+            Self::MultiLineString(lines) => {
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
+                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(smooth_coord_seq::<false>(
+                        line,
+                        iterations,
+                        method,
+                        keep_endpoints,
+                        budget,
+                    )?))
+                })?)
+            },
             Self::Polygon(polygon) => Self::Polygon(smooth_polygon_rings(
                 polygon,
                 iterations,
@@ -426,22 +423,20 @@ impl Shape {
                 keep_endpoints,
                 budget,
             )?),
-            Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons
-                    .iter()
-                    .map(|polygon| {
-                        smooth_polygon_rings(polygon, iterations, method, keep_endpoints, budget)
-                    })
-                    .collect::<Result<_>>()?,
-            ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries
+            Self::MultiPolygon(polygons) => {
+                Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
+                    smooth_polygon_rings(polygon, iterations, method, keep_endpoints, budget)
+                })?)
+            },
+            Self::GeometryCollection(geometries) => {
+                let parts = geometries
                     .iter()
                     .map(|geometry| {
                         geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
                     })
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::geometry_collection(parts)
+            },
             Self::Empty(..) => self.clone(),
         })
     }

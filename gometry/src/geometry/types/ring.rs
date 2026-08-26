@@ -76,7 +76,12 @@ impl Ring {
     /// `Vec<Point>` or a `CoordSeq`. Skips validation (mirrors
     /// [`Point::new_unchecked_xy`]).
     pub(crate) fn from_trusted_closed(coords: impl Into<CoordSeq>) -> Self {
-        Self(coords.into())
+        let coords = coords.into();
+        assert!(
+            coords.len() >= Self::MIN_VERTICES_CLOSED,
+            "trusted Ring construction received an empty or too-short coordinate sequence"
+        );
+        Self(coords)
     }
 
     /// The ring's coordinate columns.

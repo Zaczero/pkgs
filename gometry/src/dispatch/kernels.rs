@@ -8,7 +8,7 @@ use crate::dispatch::metric::{MetricCtx, OpCtx};
 use crate::error::Result;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
-    EmptyKind, MeasureRange, Shape, ShapeData, SimplifyMethod, SmoothMethod, Strictness,
+    GeometryKind, MeasureRange, Shape, ShapeData, SimplifyMethod, SmoothMethod, Strictness,
     same_topological_coordinate,
 };
 use crate::numeric::Positive;
@@ -400,7 +400,7 @@ pub(crate) fn unary_is_valid(data: &ShapeData, ctx: &OpCtx<'_>) -> Result<bool> 
 /// ``is_convex`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_is_convex(data: &ShapeData, _ctx: &OpCtx<'_>) -> Result<bool> {
     Ok(match data.shape() {
-        Shape::Polygon(_) | Shape::Empty(EmptyKind::Polygon, _) => data.shape().is_convex()?,
+        Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _) => data.shape().is_convex()?,
         _ => false,
     })
 }

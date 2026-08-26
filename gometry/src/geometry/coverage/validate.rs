@@ -2,7 +2,7 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::coverage::{AABB, HashMap, HashMapExt as _, HashSet, RTreeObject, Result};
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, CoordinateAxes, EmptyKind, GeometryErrorKind, LineSeq, Point,
+    Bounds, BulkRTree, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point,
     PointKey, Polygon, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, line_segments,
     same_point, segment_cross_point, undirected_segment_edge_key,
 };
@@ -60,7 +60,7 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
                         collect_polygon_segments(polygon, &mut segments);
                     }
                 },
-                Shape::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => {},
+                Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
                 _ => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
             }
             // The grown envelope makes the broad-phase see gap_width-near
@@ -374,7 +374,10 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
         .into_iter()
         .map(|segments| {
             if segments.is_empty() {
-                return Ok(Shape::LineString(LineSeq::empty(CoordinateAxes::XY)));
+                return Ok(Shape::typed_empty(
+                    GeometryKind::LineString,
+                    CoordinateAxes::XY,
+                ));
             }
             let lines: Vec<LineSeq> = segments
                 .into_iter()
@@ -383,7 +386,7 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
                         .expect("coverage invalid segment has two vertices")
                 })
                 .collect();
-            Shape::MultiLineString(lines).line_merge()
+            Shape::MultiLineString(lines.into()).line_merge()
         })
         .collect()
 }

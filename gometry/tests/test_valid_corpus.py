@@ -195,11 +195,18 @@ def _roundtrip_self_output(label: str, g: gm.Geometry) -> None:
             assert from_ewkb.crs == g.crs, f'{label}/ewkb crs'
 
     # GeoJSON: RFC 7946 WGS84 domain; skip ineligible sources rather than force it.
-    # Accept self-output: decoder may attach default WGS84 CRS, reverse hole
-    # winding (RFC 7946), or flatten dimensional empties — topological equals
-    # with CRS cleared is the right identity check here.
+    # Accept self-output: decoder may attach default WGS84 CRS or reverse hole
+    # winding (RFC 7946). Shapes that GeoJSON cannot represent without losing
+    # axes or explicit empty members are rejected by the writer and are not a
+    # GeoJSON round-trip case.
     if _geojson_roundtrip_eligible(g):
-        gj = gm.from_geojson(g.to_geojson(drop_epoch=True))
+        try:
+            geojson = g.to_geojson(drop_epoch=True)
+        except gm.InvalidGeometryError:
+            geojson = None
+        if geojson is None:
+            return
+        gj = gm.from_geojson(geojson)
         left = g if g.crs is None else g.set_crs(None, overwrite=True)
         right = gj if gj.crs is None else gj.set_crs(None, overwrite=True)
         assert gm.equals(left, right), f'{label}/geojson'

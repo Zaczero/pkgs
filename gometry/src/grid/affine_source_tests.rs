@@ -223,7 +223,7 @@ fn grid_affine_source_canonicalizes_accepted_pole_rounding_before_wrapping() {
         Point::new(180.0_f64.next_up(), 0.0).unwrap(),
     ]);
     let source = GridAffineSource::new(
-        &Shape::MultiPoint(input),
+        &Shape::MultiPoint(input.into()),
         SphericalGridTarget::H3(Resolution::Zero),
     )
     .unwrap();

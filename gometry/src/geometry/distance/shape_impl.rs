@@ -1062,12 +1062,13 @@ fn maximum_distance_to_point(shape: &Shape, target: XY) -> f64 {
 /// switches at the midpoint of each adjacent stored point pair. The maximum
 /// is consequently one of the two endpoint gaps or half an interior gap.
 fn hausdorff_axis_segment_parallel_points(left: &Shape, right: &Shape) -> Option<f64> {
-    const fn support(shape: &Shape) -> &Shape {
+    fn support(shape: &Shape) -> &Shape {
         let mut shape = shape;
-        while let Shape::GeometryCollection(members) = shape
-            && let [member] = members.as_slice()
-        {
-            shape = member;
+        while let Shape::GeometryCollection(members) = shape {
+            if members.len() != 1 {
+                break;
+            }
+            shape = &members[0];
         }
         shape
     }

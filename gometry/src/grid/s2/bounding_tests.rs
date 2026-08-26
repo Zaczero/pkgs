@@ -102,10 +102,13 @@ fn point_is_exact_l30_leaf() {
 
 #[test]
 fn multipoint_uses_bbox_path_same_as_box() {
-    let shape = Shape::MultiPoint(CoordSeq::from(vec![
-        Point::new_unchecked_xy(0.1, 0.1),
-        Point::new_unchecked_xy(0.2, 0.2),
-    ]));
+    let shape = Shape::MultiPoint(
+        CoordSeq::from(vec![
+            Point::new_unchecked_xy(0.1, 0.1),
+            Point::new_unchecked_xy(0.2, 0.2),
+        ])
+        .into(),
+    );
     let cell = bounding_cell(&shape).expect("same face");
     let bbox = bounding_cell_bbox(Bounds::new_unchecked(0.1, 0.1, 0.2, 0.2)).expect("bbox");
     assert_eq!(cell, bbox);
@@ -115,10 +118,13 @@ fn multipoint_uses_bbox_path_same_as_box() {
 #[test]
 fn multipoint_oracle_repros_match_bbox() {
     // Leaf-LCA returned non-containing L7 'a8eb4'; bbox path is L6 'a8eb'.
-    let a = Shape::MultiPoint(CoordSeq::from(vec![
-        Point::new_unchecked_xy(170.0, -60.0),
-        Point::new_unchecked_xy(170.2, -59.8),
-    ]));
+    let a = Shape::MultiPoint(
+        CoordSeq::from(vec![
+            Point::new_unchecked_xy(170.0, -60.0),
+            Point::new_unchecked_xy(170.2, -59.8),
+        ])
+        .into(),
+    );
     let cell_a = bounding_cell(&a).expect("a");
     assert_eq!(cell_a.token(), "a8eb");
     assert_eq!(cell_a.level(), 6);
@@ -127,10 +133,13 @@ fn multipoint_oracle_repros_match_bbox() {
         bounding_cell_bbox(Bounds::new_unchecked(170.0, -60.0, 170.2, -59.8)).expect("box a")
     );
     // Leaf-LCA multi-face raise; face root '3' closed-contains the bbox.
-    let b = Shape::MultiPoint(CoordSeq::from(vec![
-        Point::new_unchecked_xy(45.0, -20.0),
-        Point::new_unchecked_xy(45.2, -19.8),
-    ]));
+    let b = Shape::MultiPoint(
+        CoordSeq::from(vec![
+            Point::new_unchecked_xy(45.0, -20.0),
+            Point::new_unchecked_xy(45.2, -19.8),
+        ])
+        .into(),
+    );
     let cell_b = bounding_cell(&b).expect("b");
     assert_eq!(cell_b.token(), "3");
     assert_eq!(cell_b.level(), 0);
@@ -142,19 +151,25 @@ fn multipoint_oracle_repros_match_bbox() {
 
 #[test]
 fn multipoint_multi_face_is_none() {
-    let shape = Shape::MultiPoint(CoordSeq::from(vec![
-        Point::new_unchecked_xy(-100.0, 0.0),
-        Point::new_unchecked_xy(100.0, 0.0),
-    ]));
+    let shape = Shape::MultiPoint(
+        CoordSeq::from(vec![
+            Point::new_unchecked_xy(-100.0, 0.0),
+            Point::new_unchecked_xy(100.0, 0.0),
+        ])
+        .into(),
+    );
     assert!(bounding_cell(&shape).is_none());
 }
 
 #[test]
 fn multipoint_seam_straddle_matches_bbox() {
-    let shape = Shape::MultiPoint(CoordSeq::from(vec![
-        Point::new_unchecked_xy(45.0, 0.5),
-        Point::new_unchecked_xy(46.0, 0.5),
-    ]));
+    let shape = Shape::MultiPoint(
+        CoordSeq::from(vec![
+            Point::new_unchecked_xy(45.0, 0.5),
+            Point::new_unchecked_xy(46.0, 0.5),
+        ])
+        .into(),
+    );
     assert_eq!(
         bounding_cell(&shape),
         bounding_cell_bbox(Bounds::new_unchecked(45.0, 0.5, 46.0, 0.5))

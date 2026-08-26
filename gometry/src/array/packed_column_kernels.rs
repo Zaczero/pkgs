@@ -172,14 +172,12 @@ pub(crate) fn clip_lines_packed_xy(
         let window = start..end;
         let row_bounds = row_bounds_values(xs, ys, window.clone());
         if row_bounds[0].is_nan() {
-            builder.close_row().map_err(batch_err)?;
-            continue;
+            return Ok(None);
         }
         let bounds =
             Bounds::new_unchecked(row_bounds[0], row_bounds[1], row_bounds[2], row_bounds[3]);
         if !bounds.intersects(rect) {
-            builder.close_row().map_err(batch_err)?;
-            continue;
+            return Ok(None);
         }
         if rect.contains(bounds) {
             builder.push_window(coords, window).map_err(batch_err)?;
@@ -210,6 +208,9 @@ pub(crate) fn clip_lines_packed_xy(
                 builder.push_xy(clipped_end.x, clipped_end.y);
             }
             last_end = Some(clipped_end);
+        }
+        if part_count == 0 {
+            return Ok(None);
         }
         builder.close_row().map_err(batch_err)?;
     }

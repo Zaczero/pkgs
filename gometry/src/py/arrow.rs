@@ -18,8 +18,8 @@ use serde_json::Value;
 
 use crate::boundary::metadata::Frame;
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates, EmptyKind, HasM, HasZ, LineSeq, Point, Polygon, Shape,
-    same_active_position,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HasM, HasZ, LineSeq, Point, Polygon,
+    Shape, same_active_position,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError, ParseFormat, parse_error};
 use crate::py::geoarrow::GeometryEncoding;

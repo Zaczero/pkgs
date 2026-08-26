@@ -14,7 +14,7 @@ use pyo3::types::{PyAny, PyDict};
 use serde_json::Value;
 
 use crate::py::errors::parse_error;
-use crate::{Coordinates, EmptyKind, Point, Polygon, PyList, Shape, geometry, py_bool};
+use crate::{Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool};
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
     let value = match shape {
@@ -97,12 +97,14 @@ pub(crate) fn geojson_dict_prepared<'py>(
     geographic: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let prepared = crate::io::geojson_output_shape(shape, geographic)?;
+    crate::io::validate_geojson_value::<true>(prepared.as_ref())?;
     geojson_dict_raw(py, prepared.as_ref())
 }
 
 /// Raw Shape → GeoJSON dict (no domain / antimeridian preparation). Prefer
 /// [`geojson_dict_prepared`] for RFC 7946 Feature / `to_geojson` surfaces.
 pub(crate) fn geojson_dict<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
+    crate::io::validate_geojson_value::<true>(shape)?;
     geojson_dict_raw(py, shape)
 }
 
@@ -154,7 +156,7 @@ fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, 
         Shape::Empty(kind, _) => {
             dict.set_item("type", kind.geometry_type())?;
             let member = match kind {
-                EmptyKind::GeometryCollection => "geometries",
+                GeometryKind::GeometryCollection => "geometries",
                 _ => "coordinates",
             };
             dict.set_item(member, PyList::empty(py))?;

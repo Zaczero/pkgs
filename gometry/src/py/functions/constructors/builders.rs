@@ -2,12 +2,14 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::geometry::{HasM, HasZ, MOrdinate, ZOrdinate};
+use crate::geometry::{
+    HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ZOrdinate,
+};
 use crate::py::errors::parameter_error;
 use crate::py::functions::constructors::{
-    Bound, CRSError, CoordSeq, CoordinateAxes, Crs, EmptyKind, Frame, FrameAdoption, GeometryError,
-    InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
-    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
+    Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryError,
+    GeometryKind, InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
     coordinate_arc_values, coordinate_epoch_option, crs, ensure_homogeneous_axes, exact_geometry,
     extract_coordinate, extract_lines, extract_points, extract_polygons,
     finite_coordinate_required, optional_coordinate_arc_values, optional_coordinates, parse_crs,
@@ -72,29 +74,42 @@ fn multipart_members(
     ))
 }
 
-/// The canonical `LINESTRING EMPTY` — an `XY` line with no vertices.
+fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<CoordinateAxes> {
+    let axes = members
+        .first()
+        .map(Shape::axes)
+        .unwrap_or(CoordinateAxes::XY);
+    if members.iter().any(|member| member.axes() != axes) {
+        return Err(InvalidGeometryError::new_err(format!(
+            "{kind} members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)"
+        )));
+    }
+    Ok(axes)
+}
+
+/// The canonical `LINESTRING EMPTY`.
 pub(super) fn empty_line_string() -> Shape {
-    Shape::LineString(LineSeq::empty(CoordinateAxes::XY))
+    Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY)
 }
 
 /// The canonical `MULTIPOINT EMPTY` — an `XY` multipoint with no members.
 pub(super) fn empty_multi_point() -> Shape {
-    Shape::MultiPoint(CoordSeq::empty(CoordinateAxes::XY))
+    Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
 }
 
 /// The canonical `MULTILINESTRING EMPTY` — a multilinestring with no members.
 pub(super) const fn empty_multi_line_string() -> Shape {
-    Shape::MultiLineString(Vec::new())
+    Shape::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
 }
 
 /// The canonical `MULTIPOLYGON EMPTY` — a multipolygon with no members.
 pub(super) const fn empty_multi_polygon() -> Shape {
-    Shape::MultiPolygon(Vec::new())
+    Shape::typed_empty(GeometryKind::MultiPolygon, CoordinateAxes::XY)
 }
 
 /// The canonical `GEOMETRYCOLLECTION EMPTY` — a collection with no members.
 pub(super) const fn empty_geometry_collection() -> Shape {
-    Shape::GeometryCollection(Vec::new())
+    Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
 }
 
 /// Build a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
@@ -146,6 +161,13 @@ pub(crate) fn build_line_string(
         return geometry_with_crs_epoch(empty_line_string(), crs, epoch);
     }
     let vertices = coordinate_vertices(coordinates, x, y, z, m)?;
+    if vertices.is_empty() {
+        return geometry_with_crs_epoch(
+            Shape::typed_empty(GeometryKind::LineString, vertices.axes()),
+            crs,
+            epoch,
+        );
+    }
     geometry_with_crs_epoch(
         Shape::LineString(LineSeq::try_new(vertices).map_err(PyErr::from)?),
         crs,
@@ -268,7 +290,7 @@ pub(crate) fn build_polygon(
             }
         }
         return geometry_with_crs_epoch(
-            Shape::typed_empty(EmptyKind::Polygon, shell_coords.axes()),
+            Shape::typed_empty(GeometryKind::Polygon, shell_coords.axes()),
             crs,
             epoch,
         );
@@ -310,16 +332,27 @@ pub(crate) fn build_multi_point(
         return geometry_with_crs_epoch(empty_multi_point(), crs, epoch);
     }
     if x.is_some() || y.is_some() || z.is_some() || m.is_some() {
-        return geometry_with_crs_epoch(
-            Shape::MultiPoint(coordinate_vertices(coordinates, x, y, z, m)?),
-            crs,
-            epoch,
-        );
+        let points = coordinate_vertices(coordinates, x, y, z, m)?;
+        if points.is_empty() {
+            return geometry_with_crs_epoch(
+                Shape::typed_empty(GeometryKind::MultiPoint, points.axes()),
+                crs,
+                epoch,
+            );
+        }
+        return geometry_with_crs_epoch(Shape::MultiPoint(points.into()), crs, epoch);
     }
     let coordinates = coordinates.expect("non-empty multipart input checked above");
     // N×D buffer is a flat multipoint, not a sequence of Point members.
     if let Some(seq) = crate::try_coordseq_from_nd_buffer(coordinates, None, None)? {
-        return geometry_with_crs_epoch(Shape::MultiPoint(seq), crs, epoch);
+        if seq.is_empty() {
+            return geometry_with_crs_epoch(
+                Shape::typed_empty(GeometryKind::MultiPoint, seq.axes()),
+                crs,
+                epoch,
+            );
+        }
+        return geometry_with_crs_epoch(Shape::MultiPoint(seq.into()), crs, epoch);
     }
     let (members, frame) = multipart_members(
         coordinates,
@@ -329,20 +362,31 @@ pub(crate) fn build_multi_point(
         "Point or coordinate",
         |shape| match shape {
             Shape::Point(point) => Some(Shape::Point(*point)),
+            Shape::Empty(GeometryKind::Point, _) => Some(shape.clone()),
             _ => None,
         },
-        |item| Ok(Shape::Point(extract_coordinate(item)?)),
+        |item| {
+            if item.len()? == 0 {
+                Ok(Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY))
+            } else {
+                Ok(Shape::Point(extract_coordinate(item)?))
+            }
+        },
     )?;
-    let points = members
+    let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
+    let point_members = members
         .into_iter()
         .map(|shape| match shape {
-            Shape::Point(point) => point,
+            Shape::Point(point) => MultiMember::Value(point),
+            Shape::Empty(GeometryKind::Point, _) => MultiMember::Empty,
             _ => unreachable!("multipart member type checked above"),
         })
         .collect::<Vec<_>>();
-    ensure_homogeneous_axes(&points)?;
+    if point_members.is_empty() {
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
+    }
     Ok(PyGeometry::with_frame(
-        Shape::MultiPoint(CoordSeq::from_points(&points)),
+        Shape::MultiPoint(MultiPoint::try_new(axes, point_members).map_err(PyErr::from)?),
         frame,
     ))
 }
@@ -365,6 +409,7 @@ pub(crate) fn build_multi_line_string(
         "LineString or coordinate sequence",
         |shape| match shape {
             Shape::LineString(line) => Some(Shape::LineString(line.clone())),
+            Shape::Empty(GeometryKind::LineString, _) => Some(shape.clone()),
             _ => None,
         },
         |item| {
@@ -373,20 +418,29 @@ pub(crate) fn build_multi_line_string(
             } else {
                 CoordSeq::from(extract_points(item, None, None)?)
             };
-            Ok(Shape::LineString(
-                LineSeq::try_new(seq).map_err(PyErr::from)?,
-            ))
+            if seq.is_empty() {
+                Ok(Shape::typed_empty(GeometryKind::LineString, seq.axes()))
+            } else {
+                Ok(Shape::LineString(
+                    LineSeq::try_new(seq).map_err(PyErr::from)?,
+                ))
+            }
         },
     )?;
-    let shape = Shape::MultiLineString(
-        members
-            .into_iter()
-            .map(|shape| match shape {
-                Shape::LineString(line) => line,
-                _ => unreachable!("multipart member type checked above"),
-            })
-            .collect(),
-    );
+    if members.is_empty() {
+        return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame));
+    }
+    let axes = homogeneous_multipart_axes(&members, "MultiLineString")?;
+    let line_members = members
+        .into_iter()
+        .map(|shape| match shape {
+            Shape::LineString(line) => MultiMember::Value(line),
+            Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
+            _ => unreachable!("multipart member type checked above"),
+        })
+        .collect::<Vec<_>>();
+    let shape =
+        Shape::MultiLineString(MultiLineString::try_new(axes, line_members).map_err(PyErr::from)?);
     // Match writers (`require_serializable_axes`): reject heterogeneous XY/XYZ
     // members at construction rather than admit a shape that cannot serialize
     // without inventing Z/M.
@@ -412,19 +466,25 @@ pub(crate) fn build_multi_polygon(
         "Polygon or polygon coordinates",
         |shape| match shape {
             Shape::Polygon(polygon) => Some(Shape::Polygon(polygon.clone())),
+            Shape::Empty(GeometryKind::Polygon, _) => Some(shape.clone()),
             _ => None,
         },
-        polygon_from_coordinates_item,
+        |item| polygon_from_coordinates_item(item),
     )?;
-    let shape = Shape::MultiPolygon(
-        members
-            .into_iter()
-            .map(|shape| match shape {
-                Shape::Polygon(polygon) => polygon,
-                _ => unreachable!("multipart member type checked above"),
-            })
-            .collect(),
-    );
+    if members.is_empty() {
+        return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame));
+    }
+    let axes = homogeneous_multipart_axes(&members, "MultiPolygon")?;
+    let polygon_members = members
+        .into_iter()
+        .map(|shape| match shape {
+            Shape::Polygon(polygon) => MultiMember::Value(polygon),
+            Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
+            _ => unreachable!("multipart member type checked above"),
+        })
+        .collect::<Vec<_>>();
+    let shape =
+        Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
     Ok(PyGeometry::with_frame(shape, frame))
 }
@@ -528,36 +588,65 @@ fn geographic_box_polygon(
 pub(super) fn line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "LineString", |item| {
         let vertices = coordinate_vertices(Some(item), None, None, None, None)?;
-        Ok(Shape::LineString(
-            LineSeq::try_new(vertices).map_err(PyErr::from)?,
-        ))
+        if vertices.is_empty() {
+            Ok(Shape::typed_empty(
+                GeometryKind::LineString,
+                vertices.axes(),
+            ))
+        } else {
+            Ok(Shape::LineString(
+                LineSeq::try_new(vertices).map_err(PyErr::from)?,
+            ))
+        }
     })
 }
 
 /// A `MultiPoint` array member from raw coordinates.
 pub(super) fn multi_point_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPoint", |item| {
-        Ok(Shape::MultiPoint(coordinate_vertices(
-            Some(item),
-            None,
-            None,
-            None,
-            None,
-        )?))
+        let points = coordinate_vertices(Some(item), None, None, None, None)?;
+        Ok(if points.is_empty() {
+            Shape::typed_empty(GeometryKind::MultiPoint, points.axes())
+        } else {
+            Shape::MultiPoint(points.into())
+        })
     })
 }
 
 /// A `MultiLineString` array member from raw line coordinate sequences.
 pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiLineString", |item| {
+        let lines = extract_lines(item)?;
+        if lines.is_empty() {
+            return Ok(Shape::typed_empty(
+                GeometryKind::MultiLineString,
+                CoordinateAxes::XY,
+            ));
+        }
+        let mut axes = None;
+        let members = lines
+            .into_iter()
+            .map(|line| {
+                let line = CoordSeq::from(line);
+                if line.is_empty() {
+                    Ok(MultiMember::Empty)
+                } else {
+                    let line_axes = line.axes();
+                    if axes.is_some_and(|expected| expected != line_axes) {
+                        return Err(InvalidGeometryError::new_err(
+                            "MultiLineString members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)",
+                        ));
+                    }
+                    axes = Some(line_axes);
+                    Ok(MultiMember::Value(
+                        LineSeq::try_new(line).map_err(PyErr::from)?,
+                    ))
+                }
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         let shape = Shape::MultiLineString(
-            extract_lines(item)?
-                .into_iter()
-                .map(|line| {
-                    let line = CoordSeq::from(line);
-                    LineSeq::try_new(line).map_err(PyErr::from)
-                })
-                .collect::<PyResult<_>>()?,
+            MultiLineString::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
+                .map_err(PyErr::from)?,
         );
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)
@@ -567,7 +656,14 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
 /// A `MultiPolygon` array member from raw polygon coordinate sequences.
 pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPolygon", |item| {
-        let shape = Shape::MultiPolygon(extract_polygons(item)?);
+        let polygons = extract_polygons(item)?;
+        if polygons.is_empty() {
+            return Ok(Shape::typed_empty(
+                GeometryKind::MultiPolygon,
+                CoordinateAxes::XY,
+            ));
+        }
+        let shape = Shape::MultiPolygon(polygons.into());
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)
     })
@@ -702,7 +798,7 @@ pub(crate) fn build_geometry_collection(
         )
         .collect::<Vec<_>>();
     Ok(PyGeometry::with_epoch(
-        Shape::GeometryCollection(items),
+        Shape::geometry_collection(items),
         frame.crs_owned(),
         frame.epoch(),
     ))

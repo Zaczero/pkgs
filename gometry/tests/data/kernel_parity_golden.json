@@ -37660,7 +37660,9 @@
     },
     "parts:empty_point": {
       "kind": "geometry_list",
-      "wkt": []
+      "wkt": [
+        "POINT EMPTY"
+      ]
     },
     "parts:geo_polygon": {
       "kind": "geometry_list",

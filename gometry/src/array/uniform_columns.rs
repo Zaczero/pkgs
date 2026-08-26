@@ -28,6 +28,9 @@ impl PyGeometryArray {
             let Shape::LineString(seq) = shape else {
                 return None;
             };
+            if seq.len() < 2 {
+                return None;
+            }
             let row_axes = seq.axes();
             match axes {
                 None => axes = Some(row_axes),

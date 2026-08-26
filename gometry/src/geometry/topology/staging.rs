@@ -283,7 +283,7 @@ mod tests {
         assert_staging_matches_relate(&left, XY::new(1.0, 5.0));
         assert_staging_matches_relate(&right, XY::new(8.0, 5.0));
         assert_eq!(
-            surface_point(&Shape::MultiPolygon(vec![left, right])),
+            surface_point(&Shape::MultiPolygon(vec![left, right].into())),
             XY::new(8.0, 5.0),
         );
     }

@@ -91,11 +91,12 @@ fn holes_serialize_clockwise() {
 #[test]
 fn multipolygon_and_collection_rings_are_right_handed() {
     let cw = ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]);
-    let multi = Shape::MultiPolygon(vec![Polygon::new(cw.clone(), vec![])]);
+    let multi = Shape::MultiPolygon(vec![Polygon::new(cw.clone(), vec![])].into());
     let out = written(&multi, false);
     assert!(ring_signed_area(&out["coordinates"][0][0]) > 0.0);
 
-    let collection = Shape::GeometryCollection(vec![Shape::Polygon(Polygon::new(cw, vec![]))]);
+    let collection =
+        Shape::GeometryCollection(vec![Shape::Polygon(Polygon::new(cw, vec![]))].into());
     let out = written(&collection, false);
     assert!(ring_signed_area(&out["geometries"][0]["coordinates"][0]) > 0.0);
 }
@@ -107,6 +108,94 @@ fn write_rejects_out_of_domain_geographic_positions() {
     to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), true).unwrap_err();
     to_geojson_string::<false>(&Shape::Point(point(181.0, 0.0)), true).unwrap_err();
     to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), false).unwrap();
+}
+
+#[test]
+fn write_rejects_geojson_unrepresentable_axes_and_members() {
+    let xyz_empty = Shape::typed_empty(
+        crate::geometry::GeometryKind::Point,
+        crate::geometry::CoordinateAxes::XYZ,
+    );
+    assert!(to_geojson_string::<true>(&xyz_empty, false).is_err());
+
+    let measured = Shape::Point(
+        Point::new_axes(
+            1.0,
+            2.0,
+            crate::geometry::ZOrdinate(None),
+            crate::geometry::MOrdinate(Some(3.0)),
+        )
+        .unwrap(),
+    );
+    assert!(to_geojson_string::<true>(&measured, false).is_err());
+
+    let explicit_empty = parse_wkt("MULTIPOINT (EMPTY, (1 2))").unwrap();
+    assert!(to_geojson_string::<true>(&explicit_empty, false).is_err());
+}
+
+#[test]
+fn empty_geojson_coordinate_arrays_become_typed_empty_shapes() {
+    let cases = [
+        ("MultiPoint", crate::geometry::GeometryKind::MultiPoint),
+        ("LineString", crate::geometry::GeometryKind::LineString),
+        (
+            "MultiLineString",
+            crate::geometry::GeometryKind::MultiLineString,
+        ),
+        ("MultiPolygon", crate::geometry::GeometryKind::MultiPolygon),
+    ];
+    for (kind, expected) in cases {
+        let value = json!({"type": kind, "coordinates": []});
+        assert_eq!(
+            parse_geojson(&value).unwrap(),
+            Shape::typed_empty(expected, CoordinateAxes::XY)
+        );
+        let text = serde_json::to_string(&value).unwrap();
+        let parsed = parse_geojson_text(&text).unwrap().input;
+        assert!(matches!(
+            parsed,
+            GeoJsonInput::Geometry(shape)
+                if shape == Shape::typed_empty(expected, CoordinateAxes::XY)
+        ));
+    }
+}
+
+#[test]
+fn nested_empty_members_are_preserved_by_both_geojson_readers() {
+    let cases = [
+        (
+            "MultiPoint",
+            serde_json::json!({"type": "MultiPoint", "coordinates": [[], [1.0, 2.0]]}),
+            "MULTIPOINT (EMPTY, (1 2))",
+        ),
+        (
+            "MultiLineString",
+            serde_json::json!({
+                "type": "MultiLineString",
+                "coordinates": [[], [[0.0, 0.0], [1.0, 1.0]]]
+            }),
+            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
+        ),
+        (
+            "MultiPolygon",
+            serde_json::json!({
+                "type": "MultiPolygon",
+                "coordinates": [[], [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]]]
+            }),
+            "MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))",
+        ),
+    ];
+    for (kind, value, expected_wkt) in cases {
+        let direct = parse_geojson(&value).expect("value-tree GeoJSON parses");
+        assert_eq!(direct.part_count(), 2, "kind={kind}");
+        assert_eq!(crate::io::to_wkt(&direct), expected_wkt, "kind={kind}");
+
+        let text = serde_json::to_string(&value).unwrap();
+        let GeoJsonInput::Geometry(seeded) = parse_geojson_text(&text).unwrap().input else {
+            panic!("direct geometry expected");
+        };
+        assert_eq!(seeded, direct, "kind={kind}");
+    }
 }
 
 #[test]

@@ -10,8 +10,8 @@ use crate::geometry::tessellation::{
     snap_sites, triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, Dimension, EmptyKind, ExpansionBudget, GeometryErrorKind, HashSet, Point,
-    PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, VoronoiBoundary, carry_each,
+    AxisFrame, CoordSeq, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
+    Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, VoronoiBoundary, carry_each,
     empty_geometry, line_segments,
 };
 
@@ -236,7 +236,7 @@ impl Shape {
                 refinement,
                 budget,
             ),
-            Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => Ok(Vec::new()),
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(Vec::new()),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }
     }
@@ -261,7 +261,7 @@ impl Shape {
                 }
                 Ok(())
             },
-            Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => Ok(()),
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(()),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }?;
         let shapes = carry_each(sink.into_shapes(), &[self], "polygon_triangles", false)?;
@@ -438,14 +438,20 @@ impl Shape {
             // Dimensional empties keep their declared axes on the boundary
             // sentinel, matching `exterior` (a Z empty polygon's boundary is
             // MULTILINESTRING Z EMPTY, not an XY collapse).
-            Self::Empty(EmptyKind::Point | EmptyKind::GeometryCollection, axes) => {
-                Self::typed_empty(EmptyKind::GeometryCollection, *axes)
+            Self::Empty(GeometryKind::Point | GeometryKind::GeometryCollection, axes) => {
+                Self::typed_empty(GeometryKind::GeometryCollection, *axes)
             },
-            Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, axes) => {
-                Self::typed_empty(EmptyKind::MultiLineString, *axes)
+            Self::Empty(GeometryKind::MultiPoint, axes) => {
+                Self::typed_empty(GeometryKind::GeometryCollection, *axes)
             },
-            Self::Empty(EmptyKind::MultiLineString, axes) => {
-                Self::MultiPoint(CoordSeq::empty(*axes))
+            Self::Empty(GeometryKind::LineString, axes) => {
+                Self::typed_empty(GeometryKind::MultiPoint, *axes)
+            },
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, axes) => {
+                Self::typed_empty(GeometryKind::MultiLineString, *axes)
+            },
+            Self::Empty(GeometryKind::MultiLineString, axes) => {
+                Self::typed_empty(GeometryKind::MultiPoint, *axes)
             },
             Self::LineString(points) => line_boundary(points),
             Self::MultiLineString(lines) => multiline_boundary(lines),
@@ -458,12 +464,16 @@ impl Shape {
                 rings_to_boundary(polygons.iter().flat_map(Polygon::rings).cloned().collect())
             },
             Self::GeometryCollection(geometries) => {
-                let boundaries = geometries
+                let boundaries: Vec<_> = geometries
                     .iter()
                     .map(Self::boundary)
                     .filter(|boundary| !boundary.is_empty())
                     .collect();
-                Self::GeometryCollection(boundaries)
+                if boundaries.is_empty() {
+                    Self::typed_empty(GeometryKind::GeometryCollection, self.axes())
+                } else {
+                    Self::GeometryCollection(boundaries.into())
+                }
             },
         }
     }
@@ -522,7 +532,7 @@ impl Shape {
         Ok(match polygons.len() {
             0 => Self::empty_polygon(),
             1 => Self::Polygon(polygons.into_iter().next().expect("one polygon")),
-            _ => Self::MultiPolygon(polygons),
+            _ => Self::MultiPolygon(polygons.into()),
         })
     }
 

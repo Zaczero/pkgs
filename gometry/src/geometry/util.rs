@@ -10,12 +10,12 @@ use std::simd::num::SimdFloat as _;
 use ahash::HashSetExt as _;
 
 use crate::geometry::{
-    Borrow, Bounds, CoordSeq, Coordinates, HashSet, LineSeq, Point, PointKey, REDUCE_LANES,
-    ReduceSimd, Shape, XY, rect_polygon,
+    Borrow, Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HashSet, LineSeq, Point,
+    PointKey, REDUCE_LANES, ReduceSimd, Shape, XY, rect_polygon,
 };
 
 pub(crate) const fn empty_geometry() -> Shape {
-    Shape::GeometryCollection(Vec::new())
+    Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
 }
 
 pub(crate) fn bounds_to_shape(bounds: Bounds) -> Shape {

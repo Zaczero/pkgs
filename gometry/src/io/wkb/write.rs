@@ -1,6 +1,7 @@
+use crate::geometry::{MultiLineString, MultiMember, MultiPoint, MultiPolygon};
 use crate::io::wkb::{
-    CoordSeq, Coordinates, EWKB_SRID_FLAG, EmptyKind, IoError, IoGeometryKind, LineSeq, Point,
-    Polygon, Result, Shape, WKB_COUNT, WKB_HEADER_BASE, WkbAxes, extended_srid_code,
+    Coordinates, EWKB_SRID_FLAG, GeometryKind, IoError, IoGeometryKind, LineSeq, Point, Polygon,
+    Result, Shape, WKB_COUNT, WKB_HEADER_BASE, WkbAxes, extended_srid_code,
     require_serializable_axes, wkb_coords_len, wkb_dimension, wkb_type,
 };
 
@@ -277,13 +278,17 @@ struct WkbShape<'a> {
 #[derive(Clone, Copy)]
 enum WkbBody<'a> {
     Point(Point),
-    MultiPoint(&'a CoordSeq),
+    MultiPoint(&'a MultiPoint),
     LineString(&'a LineSeq),
-    MultiLineString(&'a [LineSeq]),
+    MultiLineString(&'a MultiLineString),
     Polygon(&'a Polygon),
-    MultiPolygon(&'a [Polygon]),
+    MultiPolygon(&'a MultiPolygon),
     GeometryCollection(&'a [Shape]),
     EmptyPoint,
+    EmptyMultiPoint,
+    EmptyLineString,
+    EmptyMultiLineString,
+    EmptyMultiPolygon,
     EmptyPolygon,
 }
 
@@ -320,27 +325,37 @@ impl<'a> WkbShape<'a> {
             Shape::Empty(kind, axes) => {
                 let axes = WkbAxes::from_coordinate_axes(*axes);
                 match kind {
-                    EmptyKind::Point => Self {
+                    GeometryKind::Point => Self {
                         kind: IoGeometryKind::Point,
                         axes,
                         body: WkbBody::EmptyPoint,
                     },
-                    EmptyKind::Polygon => Self {
+                    GeometryKind::MultiPoint => Self {
+                        kind: IoGeometryKind::MultiPoint,
+                        axes,
+                        body: WkbBody::EmptyMultiPoint,
+                    },
+                    GeometryKind::LineString => Self {
+                        kind: IoGeometryKind::LineString,
+                        axes,
+                        body: WkbBody::EmptyLineString,
+                    },
+                    GeometryKind::Polygon => Self {
                         kind: IoGeometryKind::Polygon,
                         axes,
                         body: WkbBody::EmptyPolygon,
                     },
-                    EmptyKind::MultiLineString => Self {
+                    GeometryKind::MultiLineString => Self {
                         kind: IoGeometryKind::MultiLineString,
                         axes,
-                        body: WkbBody::MultiLineString(&[]),
+                        body: WkbBody::EmptyMultiLineString,
                     },
-                    EmptyKind::MultiPolygon => Self {
+                    GeometryKind::MultiPolygon => Self {
                         kind: IoGeometryKind::MultiPolygon,
                         axes,
-                        body: WkbBody::MultiPolygon(&[]),
+                        body: WkbBody::EmptyMultiPolygon,
                     },
-                    EmptyKind::GeometryCollection => Self {
+                    GeometryKind::GeometryCollection => Self {
                         kind: IoGeometryKind::GeometryCollection,
                         axes,
                         body: WkbBody::GeometryCollection(&[]),
@@ -399,16 +414,35 @@ impl WkbBody<'_> {
             Self::MultiLineString(lines) => {
                 WKB_COUNT
                     + lines
+                        .members()
                         .iter()
-                        .map(|line| WKB_HEADER_BASE + WKB_COUNT + wkb_coords_len(line.len(), axes))
+                        .map(|member| {
+                            WKB_HEADER_BASE
+                                + WKB_COUNT
+                                + match member {
+                                    MultiMember::Empty => 0,
+                                    MultiMember::Value(index) => {
+                                        wkb_coords_len(lines.as_slice()[*index].len(), axes)
+                                    },
+                                }
+                        })
                         .sum::<usize>()
             },
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => {
                 WKB_COUNT
                     + polygons
+                        .members()
                         .iter()
-                        .map(|polygon| WKB_HEADER_BASE + wkb_polygon_body_len(polygon, axes))
+                        .map(|member| {
+                            WKB_HEADER_BASE
+                                + match member {
+                                    MultiMember::Empty => WKB_COUNT,
+                                    MultiMember::Value(index) => {
+                                        wkb_polygon_body_len(&polygons.as_slice()[*index], axes)
+                                    },
+                                }
+                        })
                         .sum::<usize>()
             },
             Self::GeometryCollection(geometries) => {
@@ -418,7 +452,11 @@ impl WkbBody<'_> {
                         .map(|geometry| WkbShape::classify(geometry).encoded_len(false))
                         .sum::<usize>()
             },
-            Self::EmptyPolygon => WKB_COUNT,
+            Self::EmptyMultiPoint
+            | Self::EmptyLineString
+            | Self::EmptyMultiLineString
+            | Self::EmptyMultiPolygon
+            | Self::EmptyPolygon => WKB_COUNT,
         }
     }
 
@@ -429,34 +467,49 @@ impl WkbBody<'_> {
                 Ok(())
             },
             // Every homogeneous-multipart member is written with the parent's
-            // union `axes` (its header carries the same Z/M flags, its body
-            // fills any absent ordinate with 0.0). A member's own narrower axes
-            // never reach the wire — that is what produced standards-invalid
-            // outer-Z / child-XY WKB before.
+            // axes, and explicit empty members retain their count and position.
             Self::MultiPoint(points) => {
                 write_u32(out, checked_len(points.len())?);
-                for point in points {
-                    // Nested members never re-embed SRID (PostGIS top-level only).
+                for member in points.members() {
                     write_wkb_header(out, IoGeometryKind::Point, axes, None);
-                    write_point(out, point, axes);
+                    match member {
+                        MultiMember::Empty => {
+                            for _ in 0..wkb_dimension(axes) {
+                                out.extend_bytes(&f64::NAN.to_le_bytes());
+                            }
+                        },
+                        MultiMember::Value(index) => {
+                            write_point(out, points.point_at(*index), axes);
+                        },
+                    }
                 }
                 Ok(())
             },
             Self::LineString(line) => write_wkb_sequence(out, line, axes),
             Self::MultiLineString(lines) => {
                 write_u32(out, checked_len(lines.len())?);
-                for line in lines {
+                for member in lines.members() {
                     write_wkb_header(out, IoGeometryKind::LineString, axes, None);
-                    write_wkb_sequence(out, line, axes)?;
+                    match member {
+                        MultiMember::Empty => write_u32(out, 0),
+                        MultiMember::Value(index) => {
+                            write_wkb_sequence(out, &lines.as_slice()[*index], axes)?;
+                        },
+                    }
                 }
                 Ok(())
             },
             Self::Polygon(polygon) => write_wkb_polygon(out, polygon, axes),
             Self::MultiPolygon(polygons) => {
                 write_u32(out, checked_len(polygons.len())?);
-                for polygon in polygons {
+                for member in polygons.members() {
                     write_wkb_header(out, IoGeometryKind::Polygon, axes, None);
-                    write_wkb_polygon(out, polygon, axes)?;
+                    match member {
+                        MultiMember::Empty => write_u32(out, 0),
+                        MultiMember::Value(index) => {
+                            write_wkb_polygon(out, &polygons.as_slice()[*index], axes)?;
+                        },
+                    }
                 }
                 Ok(())
             },
@@ -474,6 +527,13 @@ impl WkbBody<'_> {
                 for _ in 0..wkb_dimension(axes) {
                     out.extend_bytes(&f64::NAN.to_le_bytes());
                 }
+                Ok(())
+            },
+            Self::EmptyMultiPoint
+            | Self::EmptyLineString
+            | Self::EmptyMultiLineString
+            | Self::EmptyMultiPolygon => {
+                write_u32(out, 0);
                 Ok(())
             },
             Self::EmptyPolygon => {
@@ -579,9 +639,9 @@ fn checked_len(value: usize) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Ring;
     use crate::geometry::{MOrdinate, ZOrdinate};
     use crate::io::parse_wkb;
+    use crate::{CoordSeq, Ring};
 
     fn xy(x: f64, y: f64) -> Point {
         Point::new_unchecked_xy(x, y)
@@ -606,35 +666,32 @@ mod tests {
         )
     }
 
-    /// Mixed-axis multiparts must not invent missing Z/M as 0.0 on write.
-    fn assert_rejects_mixed_axes(mixed: &Shape) {
-        let err = to_wkb(mixed, None, false).expect_err("mixed axes must reject");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("share one coordinate axes") || msg.contains("promote"),
-            "unexpected error: {msg}"
-        );
+    #[test]
+    fn mixed_axes_multiline_is_unrepresentable() {
+        let result = MultiLineString::try_new(crate::geometry::CoordinateAxes::XY, vec![
+            MultiMember::Value(line(&[xy(0.0, 0.0), xy(1.0, 1.0)])),
+            MultiMember::Value(line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)])),
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn mixed_axes_multiline_rejects_on_write() {
-        assert_rejects_mixed_axes(&Shape::MultiLineString(vec![
-            line(&[xy(0.0, 0.0), xy(1.0, 1.0)]),
-            line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)]),
-        ]));
-    }
-
-    #[test]
-    fn mixed_axes_multipolygon_rejects_on_write() {
-        assert_rejects_mixed_axes(&Shape::MultiPolygon(vec![
-            polygon(&[xy(0.0, 0.0), xy(1.0, 0.0), xy(1.0, 1.0), xy(0.0, 0.0)]),
-            polygon(&[
+    fn mixed_axes_multipolygon_is_unrepresentable() {
+        let result = MultiPolygon::try_new(crate::geometry::CoordinateAxes::XY, vec![
+            MultiMember::Value(polygon(&[
+                xy(0.0, 0.0),
+                xy(1.0, 0.0),
+                xy(1.0, 1.0),
+                xy(0.0, 0.0),
+            ])),
+            MultiMember::Value(polygon(&[
                 xyz(2.0, 2.0, 1.0),
                 xyz(3.0, 2.0, 2.0),
                 xyz(3.0, 3.0, 3.0),
                 xyz(2.0, 2.0, 1.0),
-            ]),
-        ]));
+            ])),
+        ]);
+        assert!(result.is_err());
     }
 
     /// Collections keep genuinely heterogeneous members (no axis promotion),
@@ -648,12 +705,15 @@ mod tests {
 
     #[test]
     fn mixed_axes_collection_classifies_every_nested_header_once() {
-        assert_exact_mixed_nested_round_trip(&Shape::GeometryCollection(vec![
-            Shape::Point(xy(0.0, 0.0)),
-            Shape::Point(xym(1.0, 1.0, 7.0)),
-            Shape::LineString(line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)])),
-            Shape::empty_polygon(),
-        ]));
+        assert_exact_mixed_nested_round_trip(&Shape::GeometryCollection(
+            vec![
+                Shape::Point(xy(0.0, 0.0)),
+                Shape::Point(xym(1.0, 1.0, 7.0)),
+                Shape::LineString(line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)])),
+                Shape::empty_polygon(),
+            ]
+            .into(),
+        ));
     }
 
     #[test]

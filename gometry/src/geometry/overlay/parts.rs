@@ -227,7 +227,7 @@ pub(crate) fn contained_shortcut_impl(
 pub(crate) fn punch_holes(minuend: &Shape, subtrahend: &Shape) -> Shape {
     let mut parts: Vec<Polygon> = match minuend {
         Shape::Polygon(polygon) => vec![polygon.clone()],
-        Shape::MultiPolygon(polygons) => polygons.clone(),
+        Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
         _ => unreachable!("gated areal"),
     };
     let mut islands: Vec<Polygon> = Vec::new();
@@ -264,9 +264,9 @@ pub(crate) fn punch_holes(minuend: &Shape, subtrahend: &Shape) -> Shape {
         _ => unreachable!("gated areal"),
     }
     parts.extend(islands);
-    if parts.len() == 1 {
-        Shape::Polygon(parts.pop().expect("one part"))
-    } else {
-        Shape::MultiPolygon(parts)
+    match parts.len() {
+        0 => Shape::empty_polygon(),
+        1 => Shape::Polygon(parts.pop().expect("one part")),
+        _ => Shape::MultiPolygon(parts.into()),
     }
 }

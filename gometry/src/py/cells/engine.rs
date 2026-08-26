@@ -287,7 +287,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
     }
     let dissolved = Shape::union_all(shapes, crate::geometry::Strictness::Lenient)?;
     let shape = match dissolved {
-        Shape::MultiPolygon(mut polygons) if polygons.len() == 1 => {
+        Shape::MultiPolygon(mut polygons) if polygons.len() == 1 && !polygons.is_empty() => {
             Shape::Polygon(polygons.pop().expect("one polygon"))
         },
         shape => shape,
@@ -339,6 +339,9 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
             }
         }
     }
+    if outline.is_empty() {
+        return Ok(None);
+    }
     let polygons: Vec<crate::geometry::Polygon> = Shape::build_area_all(
         &[&Shape::MultiLineString(
             outline.into_iter().map(LineSeq::from_trusted).collect(),
@@ -357,7 +360,7 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     let shape = if polygons.len() == 1 {
         Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
     } else {
-        Shape::MultiPolygon(polygons)
+        Shape::MultiPolygon(polygons.into())
     };
     Ok(Some(PyGeometry::typed_wgs84(shape)))
 }

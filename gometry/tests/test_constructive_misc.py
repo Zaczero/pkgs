@@ -447,7 +447,7 @@ def test_snap_to_grid_snaps_dedups_and_collapses() -> None:
     assert gm.LineString([(0.1, 0.1), (0.2, 0.2)]).snap_to_grid(1).is_empty
     assert gm.box(0.1, 0.1, 0.4, 0.4).snap_to_grid(1).to_wkt() == 'POLYGON EMPTY'
     multi = gm.from_wkt('MULTILINESTRING ((0.1 0.1, 0.2 0.2), (0 0, 3.4 0.1))')
-    assert multi.snap_to_grid(1).to_wkt() == 'MULTILINESTRING ((0 0, 3 0))'
+    assert multi.snap_to_grid(1).to_wkt() == 'MULTILINESTRING (EMPTY, (0 0, 3 0))'
     collection = gm.from_wkt(
         'GEOMETRYCOLLECTION (POINT (1.2 1.2), LINESTRING (0.1 0.1, 0.2 0.2))'
     )

@@ -353,7 +353,7 @@ fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
     fn walk(shape: &Shape, cursor: &mut usize, out: &mut Vec<IndexedSegment>) {
         match shape {
             Shape::Point(_) => *cursor += 1,
-            Shape::MultiPoint(points) => *cursor += points.len(),
+            Shape::MultiPoint(points) => *cursor += points.coord_count(),
             Shape::LineString(points) => line_segments_with_indices(points, cursor, out),
             Shape::MultiLineString(lines) => {
                 for line in lines {

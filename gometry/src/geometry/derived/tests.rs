@@ -40,7 +40,7 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
         point(1.0, 2.0),
         point(4.0, 1.0),
     ];
-    let multipoint = Shape::MultiPoint(CoordSeq::from_points(&points));
+    let multipoint = Shape::MultiPoint(CoordSeq::from_points(&points).into());
     let rectangle = multipoint
         .minimum_rotated_rectangle()
         .expect("minimum rotated rectangle");
@@ -68,7 +68,7 @@ fn hull_points() -> Vec<Point> {
 }
 
 fn multipoint(points: &[Point]) -> Shape {
-    Shape::MultiPoint(CoordSeq::from_points(points))
+    Shape::MultiPoint(CoordSeq::from_points(points).into())
 }
 
 #[test]
@@ -145,17 +145,23 @@ fn lineal_centroid_keeps_world_metric_weights_in_an_axis_frame() {
         ))
         .expect("two-point test line")
     };
-    let unequal = Shape::MultiLineString(vec![
-        line(&[(-1e308, 0.0), (1e308, 0.0)]),
-        line(&[(-9e307, 10.0), (9e307, 10.0)]),
-    ]);
+    let unequal = Shape::MultiLineString(
+        vec![
+            line(&[(-1e308, 0.0), (1e308, 0.0)]),
+            line(&[(-9e307, 10.0), (9e307, 10.0)]),
+        ]
+        .into(),
+    );
     let (_, y) = super::lineal_centroid(&unequal).expect("lineal centroid");
     assert!((y - 4.736_842_105_263_158).abs() <= 1e-14);
 
-    let opposite = Shape::MultiLineString(vec![
-        line(&[(1e308, -1e308), (1e308, 1e308)]),
-        line(&[(-1e308, -1e308), (-1e308, 1e308)]),
-    ]);
+    let opposite = Shape::MultiLineString(
+        vec![
+            line(&[(1e308, -1e308), (1e308, 1e308)]),
+            line(&[(-1e308, -1e308), (-1e308, 1e308)]),
+        ]
+        .into(),
+    );
     let (x, y) = super::lineal_centroid(&opposite).expect("lineal centroid");
     assert_eq!(x.to_bits(), 0.0_f64.to_bits());
     assert_eq!(y.to_bits(), 0.0_f64.to_bits());

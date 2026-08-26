@@ -2,7 +2,7 @@ use pyo3::types::PyDict;
 
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::py::arrow::{
-    AdmittedBuffer, ArrowListLevel, ArrowStorage, ArrowValidity, Bound, Crs, EmptyKind, Frame,
+    AdmittedBuffer, ArrowListLevel, ArrowStorage, ArrowValidity, Bound, Crs, Frame, GeometryKind,
     LineSeq, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr, PyGeometry, PyGeometryArray,
     PyResult, Python, Shape, WkbOffsetWidth, arrow_array_offset, arrow_binary_data_buffer_len,
     arrow_binary_data_span_admitted, arrow_buffer_span_admitted, arrow_coordinate_values,
@@ -64,17 +64,27 @@ pub(crate) fn append_arrow_multilinestrings(
                 .ok_or_else(|| geoarrow_parse_error("Arrow offsets must be ordered"))?,
             range.len(),
         )?;
-        let mut linework = crate::try_vec_with_capacity(range.len())?;
+        let mut members = crate::try_vec_with_capacity(range.len())?;
         for line_index in range {
             let line = line_level.range(line_index)?;
-            let line = coordinates.coordseq(line.start, line.end, *row)?;
-            linework.push(LineSeq::try_new(line).map_err(PyErr::from)?);
+            if line.start == line.end {
+                members.push(crate::geometry::MultiMember::Empty);
+            } else {
+                let line = coordinates.coordseq(line.start, line.end, *row)?;
+                members.push(crate::geometry::MultiMember::Value(
+                    LineSeq::try_new(line).map_err(PyErr::from)?,
+                ));
+            }
         }
-        // Empty multiparts keep SCHEMA axes (Z/M/ZM); bare `Vec::new()` is XY-only.
-        let shape = if linework.is_empty() {
-            Shape::typed_empty(EmptyKind::MultiLineString, coordinates.axes())
+        // An empty outer list is a typed empty; equal inner offsets are explicit
+        // empty line members and remain in the multipart value.
+        let shape = if members.is_empty() {
+            Shape::typed_empty(GeometryKind::MultiLineString, coordinates.axes())
         } else {
-            Shape::MultiLineString(linework)
+            Shape::MultiLineString(
+                crate::geometry::MultiLineString::try_new(coordinates.axes(), members)
+                    .map_err(PyErr::from)?,
+            )
         };
         geometries.push(PyGeometry::from_shape_crs(shape, crs.clone()));
         *row += 1;
@@ -167,9 +177,8 @@ pub(crate) fn append_arrow_multipolygons(
     };
     let (base, span) = coordinate_span(coordinate_endpoint(0)?, coordinate_endpoint(len)?)?;
     let coordinates = arrow_coordinate_values(py, &rings.getattr("values")?, base, span)?;
-    // Rings are structurally validated by `Ring::closed` (min vertices); empty
-    // multipolygon members drop. Protection is fallible `try_reserve`, not a
-    // magic input-relative structure ratio.
+    // Rings are structurally validated by `Ring::closed` (min vertices).
+    // Equal polygon offsets are explicit empty polygon members.
     let crs = crs.map(crs_arc_str);
     for index in 0..len {
         if !validity.is_valid(index) {
@@ -199,11 +208,15 @@ pub(crate) fn append_arrow_multipolygons(
                     .ok_or_else(|| geoarrow_parse_error("Arrow offsets must be ordered"))?,
                 ring_range.len(),
             )?;
+            if ring_range.is_empty() {
+                items.push(crate::geometry::MultiMember::Empty);
+                continue;
+            }
             match arrow_polygon_from_ring_range(&coordinates, &ring_level, ring_range, *row)? {
-                Shape::Polygon(polygon) => items.push(polygon),
-                // Nested empty polygon members drop (WKB/WKT normalization);
-                // axes still come from the multipolygon schema when all drop.
-                Shape::Empty(EmptyKind::Polygon, _) => {},
+                Shape::Polygon(polygon) => items.push(crate::geometry::MultiMember::Value(polygon)),
+                Shape::Empty(GeometryKind::Polygon, _) => {
+                    items.push(crate::geometry::MultiMember::Empty)
+                },
                 other => {
                     return Err(geoarrow_parse_error(format!(
                         "Arrow multipolygon member decoded as unexpected shape {other:?}"
@@ -212,9 +225,12 @@ pub(crate) fn append_arrow_multipolygons(
             }
         }
         let shape = if items.is_empty() {
-            Shape::typed_empty(EmptyKind::MultiPolygon, coordinates.axes())
+            Shape::typed_empty(GeometryKind::MultiPolygon, coordinates.axes())
         } else {
-            Shape::MultiPolygon(items)
+            Shape::MultiPolygon(
+                crate::geometry::MultiPolygon::try_new(coordinates.axes(), items)
+                    .map_err(PyErr::from)?,
+            )
         };
         geometries.push(PyGeometry::from_shape_crs(shape, crs.clone()));
         *row += 1;

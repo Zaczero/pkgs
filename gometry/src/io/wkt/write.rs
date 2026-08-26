@@ -1,5 +1,5 @@
 use crate::io::wkt::{
-    CoordinateAxes, Coordinates, EmptyKind, IoError, Point, Polygon, Result, Shape,
+    CoordinateAxes, Coordinates, GeometryKind, IoError, Point, Polygon, Result, Shape,
     extended_srid_code, require_serializable_axes,
 };
 
@@ -152,35 +152,35 @@ fn write_wkt(
             write_wkt_point(out, *point, axes, format);
             out.push(')');
         },
-        Shape::MultiPoint(points) if points.is_empty() => {
-            write_wkt_empty(out, "MULTIPOINT", points.axes(), output_dimension);
-        },
         Shape::MultiPoint(points) => {
             let _ = write!(
                 out,
                 "MULTIPOINT{} (",
                 wkt_output_axes(shape.axes(), output_dimension).wkt_tag()
             );
-            for (index, point) in points.iter().enumerate() {
+            for (index, member) in points.members().iter().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
                 if index > 0 {
                     out.push_str(", ");
                 }
-                out.push('(');
-                write_wkt_point(
-                    out,
-                    point,
-                    wkt_output_axes(CoordinateAxes::from_point(point), output_dimension),
-                    format,
-                );
-                out.push(')');
+                match member {
+                    crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
+                    crate::geometry::MultiMember::Value(point_index) => {
+                        let point = points.point_at(*point_index);
+                        out.push('(');
+                        write_wkt_point(
+                            out,
+                            point,
+                            wkt_output_axes(CoordinateAxes::from_point(point), output_dimension),
+                            format,
+                        );
+                        out.push(')');
+                    },
+                }
             }
             out.push(')');
-        },
-        Shape::LineString(points) if points.is_empty() => {
-            write_wkt_empty(out, "LINESTRING", points.axes(), output_dimension);
         },
         Shape::LineString(points) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
@@ -188,27 +188,24 @@ fn write_wkt(
             write_wkt_ring(out, points, axes, format, limit);
             out.push(')');
         },
-        Shape::MultiLineString(lines) if lines.is_empty() => {
-            write_wkt_empty(out, "MULTILINESTRING", CoordinateAxes::XY, output_dimension);
-        },
         Shape::MultiLineString(lines) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "MULTILINESTRING{} (", axes.wkt_tag());
-            for (index, line) in lines.iter().enumerate() {
+            for (index, member) in lines.members().iter().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
                 if index > 0 {
                     out.push_str(", ");
                 }
-                // Zero-length members are valid structurally (WKB keeps them);
-                // emit EMPTY so the text round-trips through from_wkt.
-                if line.is_empty() {
-                    out.push_str("EMPTY");
-                } else {
-                    out.push('(');
-                    write_wkt_ring(out, line, axes, format, limit);
-                    out.push(')');
+                match member {
+                    crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
+                    crate::geometry::MultiMember::Value(line_index) => {
+                        let line = &lines.as_slice()[*line_index];
+                        out.push('(');
+                        write_wkt_ring(out, line, axes, format, limit);
+                        out.push(')');
+                    },
                 }
             }
             out.push(')');
@@ -219,49 +216,55 @@ fn write_wkt(
             write_wkt_polygon(out, polygon, axes, format, limit);
             out.push(')');
         },
-        Shape::MultiPolygon(polygons) if polygons.is_empty() => {
-            out.push_str("MULTIPOLYGON EMPTY");
-        },
         Shape::MultiPolygon(polygons) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "MULTIPOLYGON{} (", axes.wkt_tag());
-            for (index, polygon) in polygons.iter().enumerate() {
+            for (index, member) in polygons.members().iter().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
                 if index > 0 {
                     out.push_str(", ");
                 }
-                out.push('(');
-                write_wkt_polygon(out, polygon, axes, format, limit);
-                out.push(')');
+                match member {
+                    crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
+                    crate::geometry::MultiMember::Value(polygon_index) => {
+                        out.push('(');
+                        write_wkt_polygon(
+                            out,
+                            &polygons.as_slice()[*polygon_index],
+                            axes,
+                            format,
+                            limit,
+                        );
+                        out.push(')');
+                    },
+                }
             }
             out.push(')');
         },
         Shape::GeometryCollection(geometries) => {
-            if geometries.is_empty() {
-                out.push_str("GEOMETRYCOLLECTION EMPTY");
-            } else {
-                out.push_str("GEOMETRYCOLLECTION (");
-                for (index, geometry) in geometries.iter().enumerate() {
-                    if out.len() >= limit {
-                        break;
-                    }
-                    if index > 0 {
-                        out.push_str(", ");
-                    }
-                    write_wkt(out, geometry, output_dimension, format, limit);
+            out.push_str("GEOMETRYCOLLECTION (");
+            for (index, geometry) in geometries.iter().enumerate() {
+                if out.len() >= limit {
+                    break;
                 }
-                out.push(')');
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_wkt(out, geometry, output_dimension, format, limit);
             }
+            out.push(')');
         },
         Shape::Empty(kind, axes) => {
             let keyword = match kind {
-                EmptyKind::Point => "POINT",
-                EmptyKind::Polygon => "POLYGON",
-                EmptyKind::MultiLineString => "MULTILINESTRING",
-                EmptyKind::MultiPolygon => "MULTIPOLYGON",
-                EmptyKind::GeometryCollection => "GEOMETRYCOLLECTION",
+                GeometryKind::Point => "POINT",
+                GeometryKind::MultiPoint => "MULTIPOINT",
+                GeometryKind::LineString => "LINESTRING",
+                GeometryKind::Polygon => "POLYGON",
+                GeometryKind::MultiLineString => "MULTILINESTRING",
+                GeometryKind::MultiPolygon => "MULTIPOLYGON",
+                GeometryKind::GeometryCollection => "GEOMETRYCOLLECTION",
             };
             write_wkt_empty(out, keyword, *axes, output_dimension);
         },

@@ -821,13 +821,13 @@ impl PyGeometryArray {
             return None;
         }
         Some(if row_map.is_identity() {
-            Shape::MultiPoint((**coords).clone())
+            Shape::MultiPoint((**coords).clone().into())
         } else {
             let map = row_map.as_deref();
             let points: Vec<_> = (0..crate::array::point_logical_len(coords, map))
                 .map(|logical| coords.point_at(crate::array::physical_row(map, logical)))
                 .collect();
-            Shape::MultiPoint(CoordSeq::from_points(&points))
+            Shape::MultiPoint(CoordSeq::from_points(&points).into())
         })
     }
 

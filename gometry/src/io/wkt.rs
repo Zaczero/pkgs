@@ -1,5 +1,5 @@
 use crate::io::{
-    CoordSeq, CoordinateAxes, Coordinates, EmptyKind, IoError, IoGeometryKind, LineSeq,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, IoError, IoGeometryKind, LineSeq,
     MAX_PARSE_DEPTH, ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader,
     extended_srid_code, parse_content, require_serializable_axes,
 };
@@ -50,6 +50,73 @@ mod tests {
             };
             assert_eq!(parsed.x.to_bits(), std_value.to_bits(), "token={token}");
             assert_eq!(parsed.y.to_bits(), std_value.to_bits(), "token={token}");
+        }
+    }
+
+    #[test]
+    fn all_typed_empty_kinds_round_trip_through_wkt_and_wkb() {
+        let cases = [
+            ("POINT", GeometryKind::Point),
+            ("MULTIPOINT", GeometryKind::MultiPoint),
+            ("LINESTRING", GeometryKind::LineString),
+            ("MULTILINESTRING", GeometryKind::MultiLineString),
+            ("POLYGON", GeometryKind::Polygon),
+            ("MULTIPOLYGON", GeometryKind::MultiPolygon),
+            ("GEOMETRYCOLLECTION", GeometryKind::GeometryCollection),
+        ];
+        let axes = [
+            ("", CoordinateAxes::XY),
+            (" Z", CoordinateAxes::XYZ),
+            (" M", CoordinateAxes::XYM),
+            (" ZM", CoordinateAxes::XYZM),
+        ];
+        for (keyword, kind) in cases {
+            for (tag, expected_axes) in axes {
+                let input = format!("{keyword}{tag} EMPTY");
+                let parsed = parse_wkt(&input).expect("typed empty WKT parses");
+                assert_eq!(
+                    parsed,
+                    Shape::typed_empty(kind, expected_axes),
+                    "input={input}"
+                );
+                let wkt = to_wkt(&parsed);
+                assert_eq!(parse_wkt(&wkt).unwrap(), parsed, "wkt={wkt}");
+                let wkb = crate::io::to_wkb(&parsed, None, false).expect("typed empty WKB writes");
+                assert_eq!(
+                    crate::io::parse_wkb(&wkb).unwrap().shape,
+                    parsed,
+                    "input={input}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_empty_multipoint_member_survives_wkt_and_wkb() {
+        let parsed = parse_wkt("MULTIPOINT (EMPTY, (1 2))").expect("mixed member WKT parses");
+        assert_eq!(parsed.part_count(), 2);
+        assert_eq!(to_wkt(&parsed), "MULTIPOINT (EMPTY, (1 2))");
+
+        let wkb = crate::io::to_wkb(&parsed, None, false).expect("mixed member WKB writes");
+        let reparsed = crate::io::parse_wkb(&wkb)
+            .expect("mixed member WKB parses")
+            .shape;
+        assert_eq!(reparsed.part_count(), 2);
+        assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn explicit_empty_line_and_polygon_members_survive_wkb() {
+        let cases = [
+            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
+            "MULTIPOLYGON (EMPTY, ((0 0, 1 0, 0 1, 0 0)))",
+        ];
+        for input in cases {
+            let shape = parse_wkt(input).expect("explicit empty multipart WKT parses");
+            assert_eq!(shape.part_count(), 2, "input={input}");
+            let bytes = crate::io::to_wkb(&shape, None, false).expect("WKB writes");
+            let reparsed = crate::io::parse_wkb(&bytes).expect("WKB parses").shape;
+            assert_eq!(reparsed, shape, "input={input}");
         }
     }
 
@@ -121,28 +188,46 @@ mod tests {
             Shape::LineString(
                 LineSeq::try_new(CoordSeq::from(vec![z0, z1])).expect("test line has two vertices"),
             ),
-            Shape::MultiLineString(vec![
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(0.0, 0.0).unwrap(),
-                    Point::new(1.0, 1.0).unwrap(),
-                ]))
-                .expect("test line has two vertices"),
-                LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new(2.0, 2.0).unwrap(),
-                    Point::new(3.0, 3.0).unwrap(),
-                ]))
-                .expect("test line has two vertices"),
-            ]),
+            Shape::MultiLineString(
+                vec![
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new(0.0, 0.0).unwrap(),
+                        Point::new(1.0, 1.0).unwrap(),
+                    ]))
+                    .expect("test line has two vertices"),
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new(2.0, 2.0).unwrap(),
+                        Point::new(3.0, 3.0).unwrap(),
+                    ]))
+                    .expect("test line has two vertices"),
+                ]
+                .into(),
+            ),
             Shape::Polygon(polygon.clone()),
-            Shape::MultiPolygon(vec![polygon.clone()]),
-            Shape::GeometryCollection(vec![
-                Shape::Point(Point::new(1.0, 2.0).unwrap()),
-                Shape::Polygon(polygon),
-            ]),
+            Shape::MultiPolygon(vec![polygon.clone()].into()),
+            Shape::GeometryCollection(
+                vec![
+                    Shape::Point(Point::new(1.0, 2.0).unwrap()),
+                    Shape::Polygon(polygon),
+                ]
+                .into(),
+            ),
         ];
 
         for shape in cases {
             for include_z in [false, true] {
+                if shape.has_m()
+                    || (!include_z && shape.has_z())
+                    || matches!(shape, Shape::Empty(_, axes) if axes != CoordinateAxes::XY)
+                {
+                    let result = if include_z {
+                        crate::io::geojson::to_geojson_string::<true>(&shape, false)
+                    } else {
+                        crate::io::geojson::to_geojson_string::<false>(&shape, false)
+                    };
+                    assert!(result.is_err(), "unrepresentable GeoJSON axes must reject");
+                    continue;
+                }
                 let direct = to_geojson_string_with_z(&shape, include_z);
                 // Compare CONTENT, not byte order: the direct writer emits `type`
                 // first (the convention) while the serde value-tree reference sorts
@@ -257,7 +342,7 @@ mod tests {
                 "type": "GeometryCollection",
                 "geometries": geometries.iter().map(|geometry| reference_geojson_value(geometry, include_z)).collect::<Vec<_>>(),
             }),
-            Shape::Empty(EmptyKind::GeometryCollection, _) => {
+            Shape::Empty(GeometryKind::GeometryCollection, _) => {
                 json!({"type": "GeometryCollection", "geometries": []})
             },
             Shape::Empty(kind, _) => json!({"type": kind.geometry_type(), "coordinates": []}),

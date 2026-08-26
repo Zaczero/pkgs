@@ -2,7 +2,8 @@ use std::collections::hash_map::Entry;
 
 use crate::collections::HashMap;
 use crate::geometry::{
-    CoordSeq, Coordinates, HashMapExt as _, LineSeq, Point, PointKey, Shape, XY, same_point,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HashMapExt as _, LineSeq, Point, PointKey,
+    Shape, XY, same_point,
 };
 
 /// Every linear chain (lines, rings) of every shape as XY rows, read
@@ -31,7 +32,7 @@ pub(crate) fn rings_to_boundary(mut rings: Vec<CoordSeq>) -> Shape {
         // An (empty) polygon's boundary is still linework: `MULTILINESTRING
         // EMPTY`, keeping the type contract stable instead of collapsing to an
         // untyped collection.
-        0 => Shape::MultiLineString(Vec::new()),
+        0 => Shape::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
         1 => Shape::LineString(LineSeq::from_trusted(rings.remove(0))),
         _ => Shape::MultiLineString(rings.into_iter().map(LineSeq::from_trusted).collect()),
     }
@@ -45,7 +46,7 @@ pub(crate) fn line_boundary<C: Coordinates + ?Sized>(points: &C) -> Shape {
         (Some(start), Some(end)) if points.coord_count() > 1 && !same_point(start, end) => {
             Shape::MultiPoint(vec![start, end].into())
         },
-        _ => Shape::MultiPoint(Vec::<Point>::new().into()),
+        _ => Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY),
     }
 }
 
@@ -78,5 +79,9 @@ pub(crate) fn multiline_boundary<L: AsRef<CoordSeq>>(lines: &[L]) -> Shape {
         .into_iter()
         .filter_map(|(point, odd)| odd.then_some(point))
         .collect::<Vec<_>>();
-    Shape::MultiPoint(points.into())
+    if points.is_empty() {
+        Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
+    } else {
+        Shape::MultiPoint(points.into())
+    }
 }

@@ -174,7 +174,7 @@ mod binary_areal_overlay_tests {
             Shape::intersection_all_ordered(&[&area, &later_disjoint_point], Strictness::Strict)
                 .unwrap();
         assert!(
-            matches!(result, Shape::Empty(EmptyKind::Point, _)),
+            matches!(result, Shape::Empty(GeometryKind::Point, _)),
             "{result:?}"
         );
     }
@@ -246,10 +246,17 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn intersection_all_singleton_is_faithful_and_keeps_ordinates() {
-        let input = Shape::GeometryCollection(vec![
-            Shape::Point(Point::new_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap()),
-            Shape::Point(Point::new_axes(4.0, 5.0, ZOrdinate(None), MOrdinate(Some(6.0))).unwrap()),
-        ]);
+        let input = Shape::GeometryCollection(
+            vec![
+                Shape::Point(
+                    Point::new_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap(),
+                ),
+                Shape::Point(
+                    Point::new_axes(4.0, 5.0, ZOrdinate(None), MOrdinate(Some(6.0))).unwrap(),
+                ),
+            ]
+            .into(),
+        );
         // A single operand intersects to itself — faithful, so both policies
         // keep Z/M (force_2d is the way to flatten).
         for strictness in [Strictness::Lenient, Strictness::Strict] {
@@ -328,7 +335,7 @@ mod binary_areal_overlay_tests {
         let polygon = square(0.0, 0.0, 4.0, 4.0);
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
         let collection =
-            Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()]);
+            Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()].into());
         assert!(has_mixed_non_empty_topological_dimensions(&[
             &polygon,
             &polygon,
@@ -368,17 +375,19 @@ mod binary_areal_overlay_tests {
         let folded = manual_left_fold(&inputs, OverlayOp::SymmetricDifference);
         assert_topologically_equal(&result, &folded);
         assert!(
-            matches!(result, Shape::Empty(EmptyKind::Polygon, _)),
+            matches!(result, Shape::Empty(GeometryKind::Polygon, _)),
             "{result:?}"
         );
     }
 
     #[test]
     fn symmetric_difference_all_same_dimension_collections_stay_balanced() {
-        let duplicate =
-            Shape::GeometryCollection(vec![square(0.0, 0.0, 2.0, 2.0), Shape::empty_polygon()]);
-        let survivor =
-            Shape::GeometryCollection(vec![square(3.0, 3.0, 5.0, 5.0), Shape::empty_polygon()]);
+        let duplicate = Shape::GeometryCollection(
+            vec![square(0.0, 0.0, 2.0, 2.0), Shape::empty_polygon()].into(),
+        );
+        let survivor = Shape::GeometryCollection(
+            vec![square(3.0, 3.0, 5.0, 5.0), Shape::empty_polygon()].into(),
+        );
         assert!(!has_mixed_non_empty_topological_dimensions(&[
             &duplicate, &duplicate, &survivor
         ]));
@@ -398,7 +407,7 @@ mod binary_areal_overlay_tests {
             Shape::symmetric_difference_all_balanced(&[&polygon, &polygon], Strictness::Strict)
                 .unwrap();
         assert!(
-            matches!(result, Shape::Empty(EmptyKind::Polygon, _)),
+            matches!(result, Shape::Empty(GeometryKind::Polygon, _)),
             "{result:?}"
         );
     }

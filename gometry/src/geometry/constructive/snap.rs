@@ -2,11 +2,11 @@ use crate::NonNegative;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    LineSeq, Point, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, XY,
-    bounds_distance_squared, dedup_consecutive_points, interpolate_f64, line_segments,
-    point_distance, point_segment_distance, points_dwithin, push_distinct_point,
-    repair_shape_in_frame, same_point, same_topological_coordinate, segment_projection,
-    validate_shape_in_frame,
+    GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
+    RepairMethod, Ring, Segment, SegmentProjection, Shape, XY, bounds_distance_squared,
+    dedup_consecutive_points, interpolate_f64, line_segments, point_distance,
+    point_segment_distance, points_dwithin, push_distinct_point, repair_shape_in_frame, same_point,
+    same_topological_coordinate, segment_projection, validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -604,33 +604,40 @@ impl Shape {
         let engine = SnapReference::build(&reference_points, tolerance);
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
-            Self::MultiPoint(points) => {
-                Self::MultiPoint(snap_points_to_reference(points, &engine).into())
-            },
+            Self::MultiPoint(points) => Self::MultiPoint(
+                points
+                    .try_map_values(|point| {
+                        Ok::<_, std::convert::Infallible>(engine.snap_point(point))
+                    })
+                    .expect("snap preserves multipart members"),
+            ),
             Self::LineString(points) => Self::LineString(LineSeq::from_trusted(CoordSeq::from(
                 snap_line_to_reference(points, &engine),
             ))),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
-                    .iter()
-                    .map(|line| {
-                        LineSeq::from_trusted(CoordSeq::from(snap_line_to_reference(line, &engine)))
+                    .try_map_values(lines.axes(), |line| {
+                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(CoordSeq::from(
+                            snap_line_to_reference(line, &engine),
+                        )))
                     })
-                    .collect(),
+                    .expect("snap preserves multipart members"),
             ),
             Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons
-                    .iter()
-                    .map(|polygon| polygon.snap_to_reference(&engine))
-                    .collect(),
+                    .try_map_values(polygons.axes(), |polygon| {
+                        Ok::<_, std::convert::Infallible>(polygon.snap_to_reference(&engine))
+                    })
+                    .expect("snap preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries
+            Self::GeometryCollection(geometries) => {
+                let parts = geometries
                     .iter()
                     .map(|geometry| geometry.snap(reference, tolerance))
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::geometry_collection(parts)
+            },
             Self::Empty(..) => self.clone(),
         })
     }
@@ -668,27 +675,56 @@ impl Shape {
     ) -> Result<Self, E> {
         Ok(match self {
             Self::Point(point) => Self::Point(point_fn(point)?),
-            Self::MultiPoint(points) => Self::MultiPoint(seq_fn(points)?),
+            Self::MultiPoint(points) => Self::MultiPoint(points.with_coords(seq_fn(points)?)),
             Self::LineString(points) => Self::LineString(LineSeq::from_trusted(seq_fn(points)?)),
-            Self::MultiLineString(lines) => Self::MultiLineString(
-                lines
+            Self::MultiLineString(lines) => {
+                let members = lines
+                    .members()
                     .iter()
-                    .map(|line| seq_fn(line).map(LineSeq::from_trusted))
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .map(|member| match member {
+                        MultiMember::Empty => Ok(MultiMember::Empty),
+                        MultiMember::Value(index) => seq_fn(&lines.as_slice()[*index])
+                            .map(LineSeq::from_trusted)
+                            .map(MultiMember::Value),
+                    })
+                    .collect::<Result<Vec<_>, E>>()?;
+                let axes = members
+                    .iter()
+                    .find_map(|member| match member {
+                        MultiMember::Value(line) => Some(line.axes()),
+                        MultiMember::Empty => None,
+                    })
+                    .unwrap_or(lines.axes());
+                Self::MultiLineString(MultiLineString::from_values(axes, members))
+            },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
-            Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons
+            Self::MultiPolygon(polygons) => {
+                let members = polygons
+                    .members()
                     .iter()
-                    .map(|polygon| polygon.try_map_ring_seqs(seq_fn))
-                    .collect::<Result<_, _>>()?,
-            ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries
+                    .map(|member| match member {
+                        MultiMember::Empty => Ok(MultiMember::Empty),
+                        MultiMember::Value(index) => polygons.as_slice()[*index]
+                            .try_map_ring_seqs(seq_fn)
+                            .map(MultiMember::Value),
+                    })
+                    .collect::<Result<Vec<_>, E>>()?;
+                let axes = members
+                    .iter()
+                    .find_map(|member| match member {
+                        MultiMember::Value(polygon) => Some(polygon.axes()),
+                        MultiMember::Empty => None,
+                    })
+                    .unwrap_or(polygons.axes());
+                Self::MultiPolygon(MultiPolygon::from_values(axes, members))
+            },
+            Self::GeometryCollection(geometries) => {
+                let parts = geometries
                     .iter()
                     .map(|geometry| geometry.try_map_coordseqs(seq_fn, point_fn))
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::geometry_collection(parts)
+            },
             Self::Empty(..) => self.clone(),
         })
     }
@@ -796,39 +832,56 @@ impl Shape {
                             .expect("deduplicated line keeps at least two vertices"),
                     )
                 } else {
-                    Self::LineString(LineSeq::empty(points.axes()))
+                    Self::typed_empty(GeometryKind::LineString, points.axes())
                 }
             },
-            Self::MultiLineString(lines) => Self::MultiLineString(
-                lines
+            Self::MultiLineString(lines) => {
+                let members = lines
+                    .members()
                     .iter()
-                    .map(dedup_line::<LineSeq>)
-                    .filter(|vertices| vertices.len() >= 2)
-                    .map(CoordSeq::from)
-                    .map(LineSeq::from_trusted)
-                    .collect(),
-            ),
+                    .map(|member| match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => {
+                            let vertices = dedup_line(&lines.as_slice()[*index]);
+                            if vertices.len() >= 2 {
+                                MultiMember::Value(LineSeq::from_trusted(CoordSeq::from(vertices)))
+                            } else {
+                                MultiMember::Empty
+                            }
+                        },
+                    })
+                    .collect();
+                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members))
+            },
             Self::Polygon(polygon) => match dedup_ring(&polygon.shell) {
                 Some(shell) => Self::Polygon(Polygon::new(
                     shell,
                     polygon.holes.iter().filter_map(dedup_ring).collect(),
                 )),
-                None => Self::empty_polygon(),
+                None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
             },
-            Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons
+            Self::MultiPolygon(polygons) => {
+                let members = polygons
+                    .members()
                     .iter()
-                    .filter_map(|polygon| {
-                        dedup_ring(&polygon.shell).map(|shell| {
-                            Polygon::new(
-                                shell,
-                                polygon.holes.iter().filter_map(dedup_ring).collect(),
-                            )
-                        })
+                    .map(|member| match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => {
+                            let polygon = &polygons.as_slice()[*index];
+                            dedup_ring(&polygon.shell)
+                                .map(|shell| {
+                                    MultiMember::Value(Polygon::new(
+                                        shell,
+                                        polygon.holes.iter().filter_map(dedup_ring).collect(),
+                                    ))
+                                })
+                                .unwrap_or(MultiMember::Empty)
+                        },
                     })
-                    .collect(),
-            ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                    .collect();
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+            },
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
                 geometries
                     .into_iter()
                     .map(Self::collapse_snapped)

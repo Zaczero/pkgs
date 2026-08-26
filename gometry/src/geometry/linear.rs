@@ -9,10 +9,10 @@
 use crate::Finite;
 use crate::error::Result;
 use crate::geometry::{
-    CoordSeq, Coordinates, Distance3dParts, GeometryErrorKind, LineIndex, LineSeq, Ordering,
-    PlanarMetric, Point, Segment, SegmentProjection, Shape, ShapeData, distance_3d_with_parts,
-    lerp_point, point_distance, same_point, segment_projection, shape_axes_all_z,
-    squared_norm_is_trustworthy,
+    CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
+    HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, Segment,
+    SegmentProjection, Shape, ShapeData, distance_3d_with_parts, lerp_point, point_distance,
+    same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -494,9 +494,29 @@ impl Shape {
                 Some(measures.into()),
             )));
         }
+        if measured.is_empty() {
+            return Ok(Shape::typed_empty(GeometryKind::of(self), self.axes()));
+        }
+        let output_axes = CoordinateAxes::new(HasZ(self.axes().has_z()), HasM(true));
         Ok(match self {
             Self::LineString(_) => Self::LineString(measured.into_iter().next().expect("one part")),
-            _ => Self::MultiLineString(measured),
+            Self::MultiLineString(lines) => {
+                let mut measured = measured.into_iter();
+                let members = lines
+                    .members()
+                    .iter()
+                    .filter_map(|member| match member {
+                        crate::geometry::MultiMember::Empty => {
+                            Some(crate::geometry::MultiMember::Empty)
+                        },
+                        crate::geometry::MultiMember::Value(_) => {
+                            measured.next().map(crate::geometry::MultiMember::Value)
+                        },
+                    })
+                    .collect();
+                Self::MultiLineString(MultiLineString::from_values(output_axes, members))
+            },
+            _ => unreachable!("linework returns only line strings"),
         })
     }
 

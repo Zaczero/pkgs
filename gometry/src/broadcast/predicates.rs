@@ -15,9 +15,9 @@ use pyo3::{IntoPyObject as _, IntoPyObjectExt as _};
 use crate::array::MissingMask;
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    Arc, Bound, Bounds, CollectRows as _, CoordSeq, CoordinateInput, EmptyKind,
-    GeometryArrayStorage, GeometryErrorKind, GeometryInput, Point, PredicateSpec, Py, PyErr,
-    PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData, ShapeRow,
+    Arc, Bound, Bounds, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput,
+    GeometryArrayStorage, GeometryErrorKind, GeometryInput, GeometryKind, Point, PredicateSpec, Py,
+    PyErr, PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData, ShapeRow,
     broadcast_coordinate_input, broadcast2, classify_input, coordinate_input_with_expected,
     coordinate_sequence_len_hint, expected_geometry_or_array_for, mask_missing, paired_arrays,
     point_batch, py_bool, scalar_vs_shapes,
@@ -563,14 +563,21 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
     // `CoordSeq::from_points`.
     if let GeometryArrayStorage::Points { coords, row_map } = splitters.storage() {
         if row_map.is_identity() && !splitters.has_missing() {
-            return Ok(Shape::MultiPoint(coords.as_ref().clone()));
+            if coords.is_empty() {
+                return Ok(Shape::typed_empty(GeometryKind::MultiPoint, coords.axes()));
+            }
+            return Ok(Shape::MultiPoint(coords.as_ref().clone().into()));
         }
         let map = row_map.as_deref();
         let points: Vec<_> = (0..crate::array::point_logical_len(coords, map))
             .filter(|&logical| !splitters.is_row_missing(logical))
             .map(|logical| coords.point_at(crate::array::physical_row(map, logical)))
             .collect();
-        return Ok(Shape::MultiPoint(CoordSeq::from_points(&points)));
+        return Ok(if points.is_empty() {
+            Shape::typed_empty(GeometryKind::MultiPoint, coords.axes())
+        } else {
+            Shape::MultiPoint(CoordSeq::from_points(&points).into())
+        });
     }
     let mut points = Vec::new();
     for (missing, shape) in splitters.masked_shape_rows() {
@@ -581,11 +588,15 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
             Shape::Point(point) => points.push(point.to_xy()),
             Shape::MultiPoint(items) => points.extend(items.iter().map(Point::to_xy)),
             // `POINT EMPTY` is point-like but contributes no split locations.
-            Shape::Empty(EmptyKind::Point, _) => {},
+            Shape::Empty(GeometryKind::Point, _) => {},
             _ => return Err(GeometryErrorKind::PointSplitterRequired.into()),
         }
     }
-    Ok(Shape::MultiPoint(points.into()))
+    Ok(if points.is_empty() {
+        Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
+    } else {
+        Shape::MultiPoint(points.into())
+    })
 }
 
 pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {

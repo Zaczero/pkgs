@@ -5,10 +5,12 @@ use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-use crate::geometry::{CoordSeqBuilder, MOrdinate, ZOrdinate};
+use crate::geometry::{
+    CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ZOrdinate,
+};
 use crate::io::{
-    CoordSeq, CoordinateAxes, Coordinates, EmptyKind, GeoJsonInput, GeoJsonTextParse,
-    GeometryErrorKind, IoError, IoGeometryKind, LineSeq, ParseFormat, Point, Polygon, Result, Ring,
+    CoordSeq, CoordinateAxes, Coordinates, GeoJsonInput, GeoJsonTextParse, GeometryErrorKind,
+    GeometryKind, IoError, IoGeometryKind, LineSeq, ParseFormat, Point, Polygon, Result, Ring,
     Shape, crs, parse_content,
 };
 
@@ -39,10 +41,68 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     shape: &Shape,
     geographic: bool,
 ) -> Result<String> {
+    validate_geojson_value::<INCLUDE_Z>(shape)?;
     let prepared = geojson_output_shape(shape, geographic)?;
     let mut out = String::with_capacity(32 + prepared.coord_count() * 24);
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)
+}
+
+pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Result<()> {
+    match shape {
+        Shape::Empty(_, axes) if *axes != CoordinateAxes::XY => {
+            Err(GeometryErrorKind::OrdinateDropped("GeoJSON empty geometry".into()).into())
+        },
+        shape if shape.has_m() => {
+            Err(GeometryErrorKind::OrdinateDropped("GeoJSON M ordinate".into()).into())
+        },
+        shape if !INCLUDE_Z && shape.has_z() => {
+            Err(GeometryErrorKind::OrdinateDropped("GeoJSON Z ordinate".into()).into())
+        },
+        Shape::MultiPoint(points) => {
+            if points
+                .members()
+                .iter()
+                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+            {
+                return Err(GeometryErrorKind::OrdinateDropped(
+                    "GeoJSON empty MultiPoint member".into(),
+                )
+                .into());
+            }
+            Ok(())
+        },
+        Shape::MultiLineString(lines) => {
+            if lines
+                .members()
+                .iter()
+                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+            {
+                return Err(GeometryErrorKind::OrdinateDropped(
+                    "GeoJSON empty MultiLineString member".into(),
+                )
+                .into());
+            }
+            Ok(())
+        },
+        Shape::MultiPolygon(polygons) => {
+            if polygons
+                .members()
+                .iter()
+                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+            {
+                return Err(GeometryErrorKind::OrdinateDropped(
+                    "GeoJSON empty MultiPolygon member".into(),
+                )
+                .into());
+            }
+            Ok(())
+        },
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .try_for_each(validate_geojson_value::<INCLUDE_Z>),
+        _ => Ok(()),
+    }
 }
 
 /// The serialization-only view of `shape` normalized for RFC 7946 output.
@@ -152,7 +212,7 @@ fn write_geojson_to_impl<const INCLUDE_Z: bool>(out: &mut String, shape: &Shape)
         },
         // GeoJSON has no dimensional-empty form; every typed empty flattens
         // to its kind with an empty coordinates/geometries member.
-        Shape::Empty(EmptyKind::GeometryCollection, _) => {
+        Shape::Empty(GeometryKind::GeometryCollection, _) => {
             out.push_str(r#"{"type":"GeometryCollection","geometries":[]}"#);
         },
         Shape::Empty(kind, _) => {
@@ -760,7 +820,7 @@ fn geojson_object_to_shape(object: GeoJsonObject) -> Result<Shape> {
             "GeoJSON FeatureCollection is a feature set, not one geometry; \
              use from_geojson (returns a GeometryArray) or from_features",
         )),
-        "GeometryCollection" => Ok(Shape::GeometryCollection(
+        "GeometryCollection" => Ok(Shape::geometry_collection(
             object
                 .geometries
                 .ok_or_else(|| IoError::geojson("GeometryCollection requires geometries"))?
@@ -776,17 +836,38 @@ fn geojson_object_to_shape(object: GeoJsonObject) -> Result<Shape> {
                 Ok(Shape::Point(geojson_point(coords)?))
             }
         },
-        "MultiPoint" => Ok(Shape::MultiPoint(geojson_points(coordinates()?)?)),
+        "MultiPoint" => {
+            let coords = coordinates()?;
+            if coords.is_empty_array() {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiPoint,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiPoint(parse_geojson_multipoint(coords)?))
+            }
+        },
         "LineString" => {
             let points = geojson_points(coordinates()?)?;
-            Ok(Shape::LineString(LineSeq::try_new(points)?))
+            if points.is_empty() {
+                Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
+            } else {
+                Ok(Shape::LineString(LineSeq::try_new(points)?))
+            }
         },
-        "MultiLineString" => Ok(Shape::MultiLineString(
-            geojson_lines(coordinates()?)?
-                .into_iter()
-                .map(LineSeq::try_new)
-                .collect::<Result<_>>()?,
-        )),
+        "MultiLineString" => {
+            let coords = coordinates()?;
+            if coords.is_empty_array() {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiLineString,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiLineString(parse_geojson_multilinestring(
+                    coords,
+                )?))
+            }
+        },
         "Polygon" => {
             let coords = coordinates()?;
             if coords.is_empty_array() {
@@ -795,7 +876,17 @@ fn geojson_object_to_shape(object: GeoJsonObject) -> Result<Shape> {
                 Ok(Shape::Polygon(geojson_polygon(coords)?))
             }
         },
-        "MultiPolygon" => Ok(Shape::MultiPolygon(geojson_polygons(coordinates()?)?)),
+        "MultiPolygon" => {
+            let coords = coordinates()?;
+            if coords.is_empty_array() {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiPolygon,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiPolygon(parse_geojson_multipolygon(coords)?))
+            }
+        },
         value => Err(IoError::geojson(format!(
             "unsupported GeoJSON geometry type {value:?}"
         ))),
@@ -915,14 +1006,6 @@ fn parse_points<C: GeoJsonCoords>(value: &C) -> Result<CoordSeq> {
     points.finish()
 }
 
-fn parse_lines<C: GeoJsonCoords>(value: &C) -> Result<Vec<CoordSeq>> {
-    value
-        .as_array("coordinates must be an array")?
-        .iter()
-        .map(parse_points)
-        .collect()
-}
-
 fn parse_polygon<C: GeoJsonCoords>(value: &C) -> Result<Polygon> {
     let rings = value.as_array("Polygon coordinates must be an array")?;
     let Some(shell) = rings.first() else {
@@ -955,12 +1038,73 @@ fn parse_geojson_ring<C: GeoJsonCoords>(value: &C) -> Result<Ring> {
     Ok(Ring::from_trusted_closed(points))
 }
 
-fn parse_polygons<C: GeoJsonCoords>(value: &C) -> Result<Vec<Polygon>> {
-    value
-        .as_array("MultiPolygon coordinates must be an array")?
-        .iter()
-        .map(parse_polygon)
-        .collect()
+fn parse_geojson_multipoint<C: GeoJsonCoords>(value: &C) -> Result<MultiPoint> {
+    let positions = value.as_array("MultiPoint coordinates must be an array")?;
+    let mut axes = None;
+    let mut members = Vec::with_capacity(positions.len());
+    for position in positions {
+        if position.is_empty_array() {
+            members.push(MultiMember::Empty);
+            continue;
+        }
+        let point = parse_point(position)?;
+        let point_axes = CoordinateAxes::from_point(point);
+        match axes {
+            None => axes = Some(point_axes),
+            Some(expected) if expected != point_axes => {
+                return Err(IoError::geojson(geojson_mixed_axes_message()));
+            },
+            Some(_) => {},
+        }
+        members.push(MultiMember::Value(point));
+    }
+    MultiPoint::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
+}
+
+fn parse_geojson_multilinestring<C: GeoJsonCoords>(value: &C) -> Result<MultiLineString> {
+    let lines = value.as_array("MultiLineString coordinates must be an array")?;
+    let mut axes = None;
+    let mut members = Vec::with_capacity(lines.len());
+    for line in lines {
+        let points = parse_points(line)?;
+        if points.is_empty() {
+            members.push(MultiMember::Empty);
+            continue;
+        }
+        let line_axes = points.axes();
+        match axes {
+            None => axes = Some(line_axes),
+            Some(expected) if expected != line_axes => {
+                return Err(IoError::geojson(geojson_mixed_axes_message()));
+            },
+            Some(_) => {},
+        }
+        members.push(MultiMember::Value(LineSeq::try_new(points)?));
+    }
+    MultiLineString::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
+}
+
+fn parse_geojson_multipolygon<C: GeoJsonCoords>(value: &C) -> Result<MultiPolygon> {
+    let polygons = value.as_array("MultiPolygon coordinates must be an array")?;
+    let mut axes = None;
+    let mut members = Vec::with_capacity(polygons.len());
+    for polygon in polygons {
+        if polygon.is_empty_array() {
+            members.push(MultiMember::Empty);
+            continue;
+        }
+        let polygon = parse_polygon(polygon)?;
+        let polygon_axes = polygon.shell.coords().axes();
+        match axes {
+            None => axes = Some(polygon_axes),
+            Some(expected) if expected != polygon_axes => {
+                return Err(IoError::geojson(geojson_mixed_axes_message()));
+            },
+            Some(_) => {},
+        }
+        members.push(MultiMember::Value(polygon));
+    }
+    MultiPolygon::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
 
 fn geojson_point(value: &JsonCoordinates) -> Result<Point> {
@@ -971,16 +1115,8 @@ fn geojson_points(value: &JsonCoordinates) -> Result<CoordSeq> {
     parse_points(value)
 }
 
-fn geojson_lines(value: &JsonCoordinates) -> Result<Vec<CoordSeq>> {
-    parse_lines(value)
-}
-
 fn geojson_polygon(value: &JsonCoordinates) -> Result<Polygon> {
     parse_polygon(value)
-}
-
-fn geojson_polygons(value: &JsonCoordinates) -> Result<Vec<Polygon>> {
-    parse_polygons(value)
 }
 
 /// Top-level legacy ``crs`` member on a `GeoJSON` object, if present.
@@ -1198,7 +1334,7 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
             .ok_or_else(|| IoError::geojson("GeoJSON geometry requires coordinates"))
     };
     match geometry_type {
-        "GeometryCollection" => Ok(Shape::GeometryCollection(
+        "GeometryCollection" => Ok(Shape::geometry_collection(
             object
                 .get("geometries")
                 .and_then(Value::as_array)
@@ -1215,17 +1351,38 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
                 Ok(Shape::Point(json_point(coords)?))
             }
         },
-        "MultiPoint" => Ok(Shape::MultiPoint(json_points(coordinates()?)?)),
+        "MultiPoint" => {
+            let coords = coordinates()?;
+            if coords.as_array().is_some_and(Vec::is_empty) {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiPoint,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiPoint(parse_geojson_multipoint(coords)?))
+            }
+        },
         "LineString" => {
             let points = json_points(coordinates()?)?;
-            Ok(Shape::LineString(LineSeq::try_new(points)?))
+            if points.is_empty() {
+                Ok(Shape::typed_empty(GeometryKind::LineString, points.axes()))
+            } else {
+                Ok(Shape::LineString(LineSeq::try_new(points)?))
+            }
         },
-        "MultiLineString" => Ok(Shape::MultiLineString(
-            json_lines(coordinates()?)?
-                .into_iter()
-                .map(LineSeq::try_new)
-                .collect::<Result<_>>()?,
-        )),
+        "MultiLineString" => {
+            let coords = coordinates()?;
+            if coords.as_array().is_some_and(Vec::is_empty) {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiLineString,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiLineString(parse_geojson_multilinestring(
+                    coords,
+                )?))
+            }
+        },
         "Polygon" => {
             let coords = coordinates()?;
             if coords.as_array().is_some_and(Vec::is_empty) {
@@ -1234,7 +1391,17 @@ fn parse_geojson_inner(value: &Value) -> Result<Shape> {
                 Ok(Shape::Polygon(json_polygon(coords)?))
             }
         },
-        "MultiPolygon" => Ok(Shape::MultiPolygon(json_polygons(coordinates()?)?)),
+        "MultiPolygon" => {
+            let coords = coordinates()?;
+            if coords.as_array().is_some_and(Vec::is_empty) {
+                Ok(Shape::typed_empty(
+                    GeometryKind::MultiPolygon,
+                    CoordinateAxes::XY,
+                ))
+            } else {
+                Ok(Shape::MultiPolygon(parse_geojson_multipolygon(coords)?))
+            }
+        },
         value => Err(IoError::geojson(format!(
             "unsupported GeoJSON geometry type {value:?}"
         ))),
@@ -1249,16 +1416,8 @@ fn json_points(value: &Value) -> Result<CoordSeq> {
     parse_points(value)
 }
 
-fn json_lines(value: &Value) -> Result<Vec<CoordSeq>> {
-    parse_lines(value)
-}
-
 fn json_polygon(value: &Value) -> Result<Polygon> {
     parse_polygon(value)
-}
-
-fn json_polygons(value: &Value) -> Result<Vec<Polygon>> {
-    parse_polygons(value)
 }
 
 #[cfg(test)]

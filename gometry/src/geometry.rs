@@ -40,15 +40,15 @@ pub(crate) use area::{
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod types;
 pub(crate) use types::{
-    Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordIter, CoordSeq,
-    CoordSeqBuilder, CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn,
-    DistanceParts, EmptyKind, FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegment,
-    GeodesicSegmentWitness, GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq,
-    MOrdinate, Point, PointKey, Polygon, PolygonLevel, PolygonizeFull, PolylabelCell, RepairMethod,
-    Ring, RingLevel, Segment, Shape, ShapeData, SimplifyMethod, SmoothMethod, ValidationIssue,
-    VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
-    concat_coord_columns, ordered_edge, reverse_column_arc, segment_midpoint, segment_midpoint_xy,
-    witness_pair,
+    Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
+    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq, MOrdinate,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon, PolygonLevel,
+    PolygonizeFull, PolylabelCell, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeData,
+    SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
+    canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
+    reverse_column_arc, segment_midpoint, segment_midpoint_xy, witness_pair,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
@@ -111,8 +111,7 @@ pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::vw_keep;
 use constructive::{
     Arc, SnapReference, assemble_region_polygons, canonical_ring, canonical_ring_seq,
-    decimal_scale, orient_ring, quantize_to_scale, remove_repeated_points, snap_ring_to_reference,
-    winding_region,
+    decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference, winding_region,
 };
 pub(crate) use constructive::{
     DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about, densify_points_budgeted, rdp_keep,
@@ -254,7 +253,7 @@ pub(crate) fn nearest_line(pair: Option<(Point, Point)>, common: CoordinateAxes)
             LineSeq::try_new(witness_pair(start, end))
                 .expect("nearest-line witness has two vertices"),
         ),
-        None => Shape::LineString(LineSeq::empty(common)),
+        None => Shape::typed_empty(GeometryKind::LineString, common),
     }
 }
 
@@ -275,8 +274,8 @@ pub(crate) fn nearest_point_pair(
             (Shape::Point(left), Shape::Point(right))
         },
         None => (
-            Shape::typed_empty(EmptyKind::Point, common),
-            Shape::typed_empty(EmptyKind::Point, common),
+            Shape::typed_empty(GeometryKind::Point, common),
+            Shape::typed_empty(GeometryKind::Point, common),
         ),
     }
 }
@@ -284,29 +283,27 @@ pub(crate) fn nearest_point_pair(
 impl Shape {
     /// The canonical `POINT EMPTY` (XY).
     pub const fn empty_point() -> Self {
-        Self::Empty(EmptyKind::Point, CoordinateAxes::XY)
+        Self::Empty(GeometryKind::Point, CoordinateAxes::XY)
     }
 
     /// The canonical `POLYGON EMPTY` (XY).
     pub const fn empty_polygon() -> Self {
-        Self::Empty(EmptyKind::Polygon, CoordinateAxes::XY)
+        Self::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
     }
 
-    /// The canonical typed empty of `kind` carrying `axes` — THE constructor
-    /// for axes-tagged empties. The container kinds normalize their XY empty
-    /// to the empty-`Vec` data form (`MULTIPOLYGON EMPTY` stays
-    /// `Shape::MultiPolygon(vec![])`), so an XY container empty has exactly
-    /// one representation and value equality cannot split on it.
-    pub(crate) fn typed_empty(kind: EmptyKind, axes: CoordinateAxes) -> Self {
-        if axes == CoordinateAxes::XY {
-            match kind {
-                EmptyKind::MultiLineString => return Self::MultiLineString(Vec::new()),
-                EmptyKind::MultiPolygon => return Self::MultiPolygon(Vec::new()),
-                EmptyKind::GeometryCollection => return Self::GeometryCollection(Vec::new()),
-                EmptyKind::Point | EmptyKind::Polygon => {},
-            }
-        }
+    /// The canonical typed empty of `kind` carrying `axes`. Multipart members
+    /// are stored inside their owning wrapper; an empty top-level multipart is
+    /// always this representation.
+    pub(crate) const fn typed_empty(kind: GeometryKind, axes: CoordinateAxes) -> Self {
         Self::Empty(kind, axes)
+    }
+
+    pub(crate) fn geometry_collection(parts: Vec<Self>) -> Self {
+        if parts.is_empty() {
+            Self::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+        } else {
+            Self::GeometryCollection(parts.into())
+        }
     }
 
     /// Visit every line segment — linework edges of (multi)linestrings, ring
@@ -440,6 +437,9 @@ impl Shape {
         match self {
             Self::LineString(points) => Ok(vec![points]),
             Self::MultiLineString(lines) => Ok(lines.iter().map(LineSeq::as_coords).collect()),
+            Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
+                Ok(Vec::new())
+            },
             _ => Err(GeometryErrorKind::LineStringRequired.into()),
         }
     }
@@ -447,8 +447,10 @@ impl Shape {
     pub(crate) fn single_linework(&self) -> Result<&CoordSeq> {
         match self {
             Self::LineString(points) if !points.is_empty() => Ok(points),
-            Self::MultiLineString(lines) if lines.len() == 1 && !lines[0].is_empty() => {
-                Ok(&lines[0])
+            Self::MultiLineString(lines)
+                if lines.len() == 1 && !lines.first().is_some_and(|line| line.is_empty()) =>
+            {
+                Ok(lines.first().expect("one line"))
             },
             // The right kind with no content is a structural error, not a
             // kind error.
@@ -465,7 +467,7 @@ impl Shape {
             Self::Point(point) => Ok(vec![*point]),
             Self::MultiPoint(points) => Ok(points.to_vec()),
             // `POINT EMPTY` is point-like but contributes no split locations.
-            Self::Empty(EmptyKind::Point, _) => Ok(Vec::new()),
+            Self::Empty(GeometryKind::Point, _) => Ok(Vec::new()),
             _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
         }
     }
@@ -637,10 +639,6 @@ impl Polygon {
                 .map(|hole| Ok(Ring::from_trusted_closed(transform(hole.coords())?)))
                 .collect::<Result<_, E>>()?,
         })
-    }
-
-    fn remove_repeated_points(&self, tolerance: f64) -> Self {
-        self.map_ring_seqs(|ring| remove_repeated_points(ring, tolerance))
     }
 
     fn segmentize_budgeted(

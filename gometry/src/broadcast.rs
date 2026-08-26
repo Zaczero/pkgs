@@ -15,10 +15,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, Crs, EmptyKind, F64Param, Frame,
-    GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, Point, Py,
-    PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Shape, ShapeData,
-    ShapeRow, broadcast_coordinate_input, coerce_geojson_geometry_value,
+    Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, Crs, F64Param, Frame,
+    GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
+    Point, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Shape,
+    ShapeData, ShapeRow, broadcast_coordinate_input, coerce_geojson_geometry_value,
     coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
     geometry_type_err, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
     point_distance, scalar_vs_shapes, validate_lonlat_shape,
@@ -190,8 +190,9 @@ pub(crate) fn degrade_linref_linestring(
 ) -> Result<crate::geometry::Shape> {
     result.or_else(|error| {
         if is_degradable_line_row(&error) {
-            Ok(crate::geometry::Shape::LineString(
-                crate::geometry::LineSeq::empty(crate::geometry::CoordinateAxes::XY),
+            Ok(crate::geometry::Shape::typed_empty(
+                crate::geometry::GeometryKind::LineString,
+                crate::geometry::CoordinateAxes::XY,
             ))
         } else {
             Err(error)
@@ -280,7 +281,7 @@ pub(crate) fn push_ring_shapes(shape: &Shape, rings: &mut Vec<Shape>) -> PyResul
         *shape,
         Shape::Polygon(_)
             | Shape::MultiPolygon(_)
-            | Shape::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _)
+            | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
     ) {
         return Err(crate::py::errors::geometry_type_err(
             "rings requires Polygon or MultiPolygon geometries",

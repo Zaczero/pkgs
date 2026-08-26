@@ -11,7 +11,7 @@ use pyo3::types::PyDict;
 use pyo3::{Bound, PyAny};
 
 use crate::boundary::metadata::FrameEdit;
-use crate::geometry::{EmptyKind, MOrdinate, Point, Shape, ZOrdinate};
+use crate::geometry::{GeometryKind, MOrdinate, Point, Shape, ZOrdinate};
 use crate::py::classes::leaf_methods::{
     PyErr, PyGeometry, PyGeometryCollection, PyLineString, PyMultiLineString, PyMultiPoint,
     PyMultiPolygon, PyPoint, PyPolygon, PyRef, ShapeData, Typed, pymethods,
@@ -137,10 +137,10 @@ impl PyPoint {
         let m_edit = replace_optional_f64(kwargs, "m", "m")?;
 
         let shape = match base.shape.shape() {
-            Shape::Empty(EmptyKind::Point, axes) => {
+            Shape::Empty(GeometryKind::Point, axes) => {
                 // Stay empty unless X/Y materialize; preserve declared axes on
                 // no-op and route Z/M through axis-aware empty retags.
-                let mut empty = Shape::typed_empty(EmptyKind::Point, *axes);
+                let mut empty = Shape::typed_empty(GeometryKind::Point, *axes);
                 if let ReplacePresence::Set(value) = z_edit {
                     empty = empty.set_z(value, true)?;
                 }

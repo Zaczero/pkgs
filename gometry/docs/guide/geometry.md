@@ -166,6 +166,11 @@ print(mp.to_wkt())
 
 ```
 
+Explicit empty members are retained in their original order and count. For
+example, `gm.MultiLineString([gm.LineString(), [(0, 0), (1, 1)]])` renders as
+`MULTILINESTRING (EMPTY, (0 0, 1 1))`; use `.parts` to inspect those typed
+empty members. Multipart members must share one coordinate-axis layout.
+
 ### GeometryCollections
 
 When parts have **mixed** types, use a [`GeometryCollection`][gometry.GeometryCollection]:

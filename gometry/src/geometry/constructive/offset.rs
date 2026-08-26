@@ -6,10 +6,11 @@ use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{Arc, Result, WalkJoinRule, WalkPlan, materialize_walk};
 use crate::geometry::{
-    BufferJoinStyle, CoordSeq, CoordinateAxes, Coordinates, ExpansionBudget, GeometryErrorKind,
-    LineSeq, MOrdinate, Point, Polygon, RepairMethod, Ring, Segment, Shape, Strictness, XY,
-    ZOrdinate, column_all_finite, dedup_consecutive_points, interpolate_segment_point,
-    push_distinct_point, same_point, same_topological_coordinate, wrap_index,
+    BufferJoinStyle, CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, GeometryKind,
+    LineSeq, MOrdinate, MultiLineString, Point, Polygon, RepairMethod, Ring, Segment, Shape,
+    Strictness, XY, ZOrdinate, column_all_finite, dedup_consecutive_points,
+    interpolate_segment_point, push_distinct_point, same_point, same_topological_coordinate,
+    wrap_index,
 };
 use crate::{Finite, Positive};
 
@@ -34,7 +35,7 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     let quads = sided_strip_quads(points, signed)?;
     Ok(match Shape::union_all(&quads, Strictness::Lenient)? {
         Shape::Polygon(polygon) => vec![polygon],
-        Shape::MultiPolygon(polygons) => polygons,
+        Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
         _ => Vec::new(),
     })
 }
@@ -519,8 +520,8 @@ impl Shape {
         if same_topological_coordinate(distance, 0.0) {
             return match self {
                 Self::LineString(_) | Self::MultiLineString(_) => Ok(self.clone()),
-                Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
-                    geometries
+                Self::GeometryCollection(geometries) => {
+                    let parts = geometries
                         .iter()
                         .map(|geometry| {
                             geometry.offset_curve_budgeted(
@@ -531,8 +532,9 @@ impl Shape {
                                 budget,
                             )
                         })
-                        .collect::<Result<_, _>>()?,
-                )),
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(Self::geometry_collection(parts))
+                },
                 _ => Err(GeometryErrorKind::LinealRequired.into()),
             };
         }
@@ -549,7 +551,7 @@ impl Shape {
         };
         Ok(match self {
             Self::LineString(points) => offset(points)?.map_or_else(
-                || Self::LineString(LineSeq::empty(CoordinateAxes::XY)),
+                || Self::typed_empty(GeometryKind::LineString, points.axes()),
                 |line| {
                     Self::LineString(
                         LineSeq::try_new(CoordSeq::from(line))
@@ -558,21 +560,29 @@ impl Shape {
                 },
             ),
             Self::MultiLineString(lines) => {
-                let offsets = lines
+                let members = lines
+                    .members()
                     .iter()
-                    .map(|line| offset(line.as_coords()))
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .map(CoordSeq::from)
-                    .map(|line| {
-                        LineSeq::try_new(line).expect("offset curve has at least two vertices")
+                    .map(|member| match member {
+                        crate::geometry::MultiMember::Empty => {
+                            Ok(crate::geometry::MultiMember::Empty)
+                        },
+                        crate::geometry::MultiMember::Value(index) => {
+                            offset(lines.as_slice()[*index].as_coords()).map(|line| {
+                                line.map_or(crate::geometry::MultiMember::Empty, |line| {
+                                    crate::geometry::MultiMember::Value(
+                                        LineSeq::try_new(CoordSeq::from(line))
+                                            .expect("offset curve has at least two vertices"),
+                                    )
+                                })
+                            })
+                        },
                     })
-                    .collect::<Vec<_>>();
-                Self::MultiLineString(offsets)
+                    .collect::<Result<Vec<_>>>()?;
+                Self::MultiLineString(MultiLineString::try_new(lines.axes(), members)?)
             },
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries
+            Self::GeometryCollection(geometries) => {
+                let parts = geometries
                     .iter()
                     .map(|geometry| {
                         geometry.offset_curve_budgeted(
@@ -583,8 +593,9 @@ impl Shape {
                             budget,
                         )
                     })
-                    .collect::<Result<_, _>>()?,
-            ),
+                    .collect::<Result<Vec<_>, _>>()?;
+                Self::geometry_collection(parts)
+            },
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
         })
     }

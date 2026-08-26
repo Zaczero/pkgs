@@ -202,6 +202,41 @@ def test_every_class_no_args_builds_its_typed_empty(
     assert gm.equals(geom, gm.from_wkt(wkt))
 
 
+def test_multipart_constructors_preserve_explicit_empty_members() -> None:
+    cases = [
+        (gm.MultiPoint([gm.Point(), gm.Point(1, 2)]), 'MULTIPOINT (EMPTY, (1 2))'),
+        (gm.MultiLineString([gm.LineString(), [(0, 0), (1, 1)]]),
+         'MULTILINESTRING (EMPTY, (0 0, 1 1))'),
+        (gm.MultiPolygon([gm.Polygon(), gm.box(0, 0, 1, 1)]),
+         'MULTIPOLYGON (EMPTY, ((0 0, 1 0, 1 1, 0 1, 0 0)))'),
+    ]
+    for geometry, expected in cases:
+        assert len(geometry) == 2
+        assert geometry.to_wkt() == expected
+        assert [part.is_empty for part in geometry] == [True, False]
+
+
+def test_single_explicit_empty_member_does_not_enter_value_only_kernels() -> None:
+    geometry = gm.MultiPolygon([gm.Polygon()])
+    assert geometry.num_geometries == 1
+    assert geometry.centroid().is_empty
+    assert geometry.is_simple
+    assert not gm.contains(geometry, gm.Point(0, 0))
+
+
+def test_geojson_protocol_rejects_explicit_empty_multipart_members() -> None:
+    geometry = gm.MultiLineString([gm.LineString(), [(0, 0), (1, 1)]])
+    with pytest.raises(gm.GeometryError, match='empty MultiLineString member'):
+        _ = geometry.__geo_interface__
+
+
+def test_explicit_empty_linestring_input_is_typed() -> None:
+    geometry = gm.LineString([])
+    assert geometry.is_empty
+    assert geometry.coordinate_axes == 'XY'
+    assert geometry.to_wkt() == 'LINESTRING EMPTY'
+
+
 @pytest.mark.parametrize(('ctor', 'gtype', 'wkt'), _EMPTY_CTORS)
 def test_empty_constructors_carry_crs_and_epoch(
     ctor: type, gtype: str, wkt: str

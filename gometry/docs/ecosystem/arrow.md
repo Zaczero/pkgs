@@ -68,8 +68,9 @@ print("crs preserved:", restored.crs.to_authority())
 ## Native packed layouts vs WKB fallback
 
 Homogeneous **XY / XYZ / XYM / XYZM** point, multipoint, linestring,
-multilinestring, polygon, and multipolygon arrays use the native GeoArrow
-coordinate layout with separated `x`/`y`/`z`/`m` children. Gometry exports may
+multilinestring, polygon, and multipolygon arrays without explicit empty
+multipart members use the native GeoArrow coordinate layout with separated
+`x`/`y`/`z`/`m` children. Gometry exports may
 share immutable gometry-owned buffers with a consumer. Import does not retain
 shared views of foreign memory. PyArrow arrays, chunked arrays, tables, and
 record batches are imported through PyArrow’s buffer-copy APIs. Other
@@ -79,7 +80,10 @@ plus visible validity, offset, view, referenced variadic-size, coordinate, and W
 invokes the producer release callback, and validates and decodes only the owned
 snapshot. Unrelated table columns, BinaryView size entries, and payload ranges
 are not retained. Mixed geometry types, mixed coordinate axes, and geometry
-collections fall back to GeoArrow **WKB** encoding so nothing is lost.
+collections fall back to GeoArrow **WKB** encoding so nothing is lost. The
+PyArrow export path also uses WKB when explicit multipart member slots cannot
+be represented by its selected native layout; the Arrow-C nested layout
+retains explicit empty line and polygon slots.
 
 `from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
 batches through the PyArrow path. Other objects implementing

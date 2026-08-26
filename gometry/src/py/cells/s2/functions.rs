@@ -172,7 +172,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
         let collection = if parts.len() == 1 {
             parts.pop().expect("one part")
         } else {
-            Shape::GeometryCollection(parts)
+            Shape::GeometryCollection(parts.into())
         };
         return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&collection));
     }

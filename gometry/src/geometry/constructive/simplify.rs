@@ -9,12 +9,12 @@ use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, LineSeq, Orientation, Point, Polygon,
-    REDUCE_LANES, ReduceSimd, Ring, Segment, Shape, TopologyGuard, XY, carry_ordinates,
-    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
-    point_segment_distance, point_segment_distance_squared, same_point,
-    simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area, unique_xy_points,
-    vw_area_tolerance, wrap_index,
+    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiMember,
+    MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Segment, Shape,
+    TopologyGuard, XY, carry_ordinates, dedup_consecutive_points, line_segments,
+    open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
+    same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
+    unique_xy_points, vw_area_tolerance, wrap_index,
 };
 /// One chain through iterative Douglas-Peucker as a keep-mask over the
 /// original points: surviving vertices are the INPUT vertices (bit-exact,
@@ -469,15 +469,29 @@ impl Shape {
             ))
         }
         match self {
-            Self::Polygon(polygon) => {
-                clean(&polygon).map_or_else(Self::empty_polygon, Self::Polygon)
-            },
+            Self::Polygon(polygon) => clean(&polygon).map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
+            ),
             Self::MultiPolygon(polygons) => {
-                let kept: Vec<Polygon> = polygons.iter().filter_map(clean).collect();
-                if kept.is_empty() {
+                let members = polygons
+                    .members()
+                    .iter()
+                    .filter_map(|member| match member {
+                        crate::geometry::MultiMember::Empty => {
+                            Some(crate::geometry::MultiMember::Empty)
+                        },
+                        crate::geometry::MultiMember::Value(index) => {
+                            clean(&polygons.as_slice()[*index])
+                                .map(crate::geometry::MultiMember::Value)
+                                .or(Some(crate::geometry::MultiMember::Empty))
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                if members.is_empty() {
                     Self::empty_polygon()
                 } else {
-                    Self::MultiPolygon(kept)
+                    Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
                 }
             },
             Self::GeometryCollection(parts) => Self::GeometryCollection(
@@ -560,7 +574,46 @@ impl Shape {
         // Z/M survive verbatim with no geo round-trip, no libm `hypot`
         // distances (the scalar-libcall trap geo's kernel pays per
         // candidate), and no post-hoc ordinate resolution pass.
-        Ok(self.map_chains(&|points: &CoordSeq| rdp_chain(points, tolerance)))
+        let simplify_ring = |ring: &Ring| -> Option<Ring> {
+            let coords = rdp_chain(ring.coords(), tolerance)
+                .map_or_else(|| ring.coords().clone(), CoordSeq::from);
+            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_trusted_closed(coords))
+        };
+        let simplify_polygon = |polygon: &Polygon| -> Option<Polygon> {
+            Some(Polygon::new(
+                simplify_ring(&polygon.shell)?,
+                polygon.holes.iter().filter_map(&simplify_ring).collect(),
+            ))
+        };
+        Ok(match self {
+            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
+            Self::LineString(_) | Self::MultiLineString(_) => {
+                self.map_chains(&|points: &CoordSeq| rdp_chain(points, tolerance))
+            },
+            Self::Polygon(polygon) => simplify_polygon(polygon).map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
+            ),
+            Self::MultiPolygon(polygons) => {
+                let members = polygons
+                    .members()
+                    .iter()
+                    .map(|member| match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => simplify_polygon(&polygons.as_slice()[*index])
+                            .map(MultiMember::Value)
+                            .unwrap_or(MultiMember::Empty),
+                    })
+                    .collect();
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
+            },
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
+                geometries
+                    .iter()
+                    .map(|geometry| geometry.simplify_dp_raw(tolerance))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        })
     }
 
     /// Visvalingam-Whyatt simplification with the same topology contract
@@ -591,33 +644,46 @@ impl Shape {
         // surviving vertices KEEP their Z/M (matching the DP route). Area
         // threshold is derived inside `vw_keep` after any scale frame.
         let vw_line = |points: &CoordSeq| -> CoordSeq { vw_filter(points, tolerance) };
-        let vw_ring = |ring: &Ring| -> Ring {
-            Ring::from_trusted_closed(vw_filter(ring.coords(), tolerance))
+        let vw_ring = |ring: &Ring| -> Option<Ring> {
+            let coords = vw_filter(ring.coords(), tolerance);
+            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_trusted_closed(coords))
         };
-        let vw_polygon = |polygon: &Polygon| -> Polygon {
-            Polygon::new(
-                vw_ring(&polygon.shell),
-                polygon.holes.iter().map(&vw_ring).collect(),
-            )
+        let vw_polygon = |polygon: &Polygon| -> Option<Polygon> {
+            Some(Polygon::new(
+                vw_ring(&polygon.shell)?,
+                polygon.holes.iter().filter_map(&vw_ring).collect(),
+            ))
         };
         let simplified = match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => return Ok(self.clone()),
             Self::LineString(points) => Self::LineString(
                 LineSeq::try_new(vw_line(points))
-                    .expect("line simplification keeps empty or at least two vertices"),
+                    .expect("line simplification keeps at least two vertices"),
             ),
-            Self::MultiLineString(lines) => Self::MultiLineString(
-                lines
-                    .iter()
-                    .map(|line| {
+            Self::MultiLineString(lines) => {
+                Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
+                    Ok::<_, crate::error::Error>(
                         LineSeq::try_new(vw_line(line))
-                            .expect("line simplification keeps empty or at least two vertices")
-                    })
-                    .collect(),
+                            .expect("line simplification keeps at least two vertices"),
+                    )
+                })?)
+            },
+            Self::Polygon(polygon) => vw_polygon(polygon).map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
             ),
-            Self::Polygon(polygon) => Self::Polygon(vw_polygon(polygon)),
             Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.iter().map(vw_polygon).collect())
+                let members = polygons
+                    .members()
+                    .iter()
+                    .map(|member| match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => vw_polygon(&polygons.as_slice()[*index])
+                            .map(MultiMember::Value)
+                            .unwrap_or(MultiMember::Empty),
+                    })
+                    .collect();
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
             Self::GeometryCollection(geometries) => {
                 return Ok(Self::GeometryCollection(

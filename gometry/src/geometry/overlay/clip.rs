@@ -8,9 +8,9 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::overlay::{OverlayOp, binary_areal_overlay, rect_polygon};
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Coordinates, LineSeq, Point, PointKey, Polygon, REDUCE_LANES,
-    REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, XY, clip_segment, held_axis_interpolate,
-    line_segments, same_point, simd_select_indices,
+    Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, PointKey, Polygon,
+    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring, Shape, XY, clip_segment,
+    held_axis_interpolate, line_segments, same_point, simd_select_indices,
 };
 pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> Shape {
     polygon_parts_to_shape(clip_polygonal_parts(polygons, rect))
@@ -82,7 +82,7 @@ pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
 pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {
     parts.retain(|part| part.len() != 1);
     match parts.len() {
-        0 => Shape::GeometryCollection(Vec::new()),
+        0 => Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
         1 => Shape::LineString(
             LineSeq::try_new(CoordSeq::from(parts.remove(0))).expect("line part is lineal"),
         ),
@@ -102,7 +102,7 @@ pub(crate) fn polygon_parts_to_shape(mut parts: Vec<Polygon>) -> Shape {
     match parts.len() {
         0 => Shape::empty_polygon(),
         1 => Shape::Polygon(parts.remove(0)),
-        _ => Shape::MultiPolygon(parts),
+        _ => Shape::MultiPolygon(parts.into()),
     }
 }
 
@@ -160,23 +160,22 @@ pub(in crate::geometry) fn window_clip_shape(shape: &Shape, rect: Bounds) -> Sha
             if rect.contains_point(*point) {
                 shape.clone()
             } else {
-                Shape::GeometryCollection(Vec::new())
+                Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
             }
         },
-        Shape::MultiPoint(points) => Shape::MultiPoint(clip_multipoint_columns(points, rect)),
-        Shape::LineString(line) => Shape::MultiLineString(
-            clipped_line_parts(line, rect)
-                .into_iter()
-                .map(CoordSeq::from)
-                .filter_map(|part| LineSeq::try_new(part).ok())
-                .collect(),
-        ),
-        Shape::MultiLineString(lines) => Shape::MultiLineString(
+        Shape::MultiPoint(points) => {
+            let clipped = clip_multipoint_columns(points, rect);
+            if clipped.is_empty() {
+                Shape::typed_empty(GeometryKind::MultiPoint, points.axes())
+            } else {
+                Shape::MultiPoint(clipped.into())
+            }
+        },
+        Shape::LineString(line) => line_parts_to_shape(clipped_line_parts(line, rect)),
+        Shape::MultiLineString(lines) => line_parts_to_shape(
             lines
                 .iter()
                 .flat_map(|line| clipped_line_parts(line, rect))
-                .map(CoordSeq::from)
-                .filter_map(|part| LineSeq::try_new(part).ok())
                 .collect(),
         ),
         Shape::Polygon(polygon) => window_clip_polygons(std::slice::from_ref(polygon), rect),
@@ -202,7 +201,7 @@ pub(crate) fn window_clip_polygons(polygons: &[Polygon], rect: Bounds) -> Shape 
     match clipped.len() {
         0 => Shape::empty_polygon(),
         1 => Shape::Polygon(clipped.pop().expect("one polygon")),
-        _ => Shape::MultiPolygon(clipped),
+        _ => Shape::MultiPolygon(clipped.into()),
     }
 }
 

@@ -28,7 +28,7 @@ mod linref_array_degrade_tests {
     use crate::crs::MetricModel;
     use crate::error::ErrorKind;
     use crate::geometry::{
-        CoordSeq, CoordinateAxes, EmptyKind, GeometryErrorKind, LineSeq, MeasureRange, Point,
+        CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, MeasureRange, Point,
         Polygon, Ring, Shape,
     };
     use crate::{line_interpolate_coordseq, line_locate_coordseq, line_substring_coordseq};
@@ -69,7 +69,10 @@ mod linref_array_degrade_tests {
     }
 
     fn empty_line() -> Shape {
-        Shape::LineString(LineSeq::empty(CoordinateAxes::XY))
+        Shape::typed_empty(
+            crate::geometry::GeometryKind::LineString,
+            CoordinateAxes::XY,
+        )
     }
 
     fn planar_model() -> MetricModel {
@@ -150,7 +153,7 @@ mod linref_array_degrade_tests {
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!(matches!(results[0], Shape::Point(p) if (p.x - 4.0).abs() < 1e-12));
-        assert!(matches!(results[1], Shape::Empty(EmptyKind::Point, _)));
+        assert!(matches!(results[1], Shape::Empty(GeometryKind::Point, _)));
     }
 
     #[test]
@@ -168,7 +171,7 @@ mod linref_array_degrade_tests {
             .expect("degradable rows must not abort");
         assert!(matches!(results[0], Shape::Point(p) if (p.x - 5.0).abs() < 1e-12));
         for bad in &results[1..] {
-            assert!(matches!(bad, Shape::Empty(EmptyKind::Point, _)));
+            assert!(matches!(bad, Shape::Empty(GeometryKind::Point, _)));
         }
     }
 
@@ -188,7 +191,10 @@ mod linref_array_degrade_tests {
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!(matches!(&results[0], Shape::LineString(seq) if !seq.is_empty()));
-        assert!(matches!(&results[1], Shape::LineString(seq) if seq.is_empty()));
+        assert!(matches!(
+            &results[1],
+            Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY)
+        ));
     }
 
     #[test]
@@ -206,7 +212,10 @@ mod linref_array_degrade_tests {
             .expect("degradable rows must not abort");
         assert!(matches!(&results[0], Shape::LineString(seq) if !seq.is_empty()));
         for bad in &results[1..] {
-            assert!(matches!(bad, Shape::LineString(seq) if seq.is_empty()));
+            assert!(matches!(
+                bad,
+                Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY)
+            ));
         }
     }
 
@@ -240,5 +249,37 @@ mod linref_array_degrade_tests {
             .map(|line| degrade_linref_float(line.line_locate_point(query, false)))
             .collect_rows();
         assert!(batch.is_err(), "wrong-kind rows must abort the batch");
+    }
+}
+
+#[cfg(test)]
+mod multipart_storage_tests {
+    use super::super::{Frame, GeometryArrayStorage, MissingMask, PyGeometryArray};
+    use crate::io::{parse_wkt, to_wkt};
+
+    #[test]
+    fn mixed_slice_and_mask_keep_explicit_multipart_members() {
+        let multi =
+            parse_wkt("MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))").expect("multipart WKT parses");
+        let other = parse_wkt("POINT (5 5)").expect("point WKT parses");
+        let array = PyGeometryArray::from_shapes(vec![multi.clone(), other], Frame::None);
+        assert!(matches!(array.storage(), GeometryArrayStorage::Mixed(_)));
+
+        let sliced = array.gather_logical_row_range(0..1);
+        let sliced_shape = sliced.storage().iter_shapes().next().unwrap();
+        assert_eq!(sliced_shape.as_ref(), &multi);
+        assert_eq!(sliced_shape.part_count(), 2);
+        assert_eq!(
+            to_wkt(sliced_shape.as_ref()),
+            "MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))"
+        );
+
+        let masked = array.with_missing_mask(MissingMask::from_vec(2, vec![true, false]));
+        let selected = masked.gather_logical_rows(&[1, 0]);
+        assert!(!selected.is_row_missing(0));
+        assert!(selected.is_row_missing(1));
+        let selected_shape = selected.storage().iter_shapes().next().unwrap();
+        assert_eq!(selected_shape.part_count(), 1);
+        assert_eq!(to_wkt(selected_shape.as_ref()), "POINT (5 5)");
     }
 }

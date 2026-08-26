@@ -1,4 +1,4 @@
-use crate::geometry::{Bounds, Coordinates, EmptyKind, Ordering, Point, Polygon, Shape};
+use crate::geometry::{Bounds, Coordinates, GeometryKind, Ordering, Point, Polygon, Shape};
 pub(crate) fn compare_shapes(left: &Shape, right: &Shape) -> Ordering {
     shape_sort_rank(left)
         .cmp(&shape_sort_rank(right))
@@ -36,11 +36,13 @@ pub(crate) const fn shape_sort_rank(shape: &Shape) -> u8 {
         Shape::Polygon(_) => 4,
         Shape::MultiPolygon(_) => 5,
         Shape::GeometryCollection(_) => 6,
-        Shape::Empty(EmptyKind::Point, _) => 7,
-        Shape::Empty(EmptyKind::Polygon, _) => 8,
-        Shape::Empty(EmptyKind::MultiLineString, _) => 9,
-        Shape::Empty(EmptyKind::MultiPolygon, _) => 10,
-        Shape::Empty(EmptyKind::GeometryCollection, _) => 11,
+        Shape::Empty(GeometryKind::Point, _) => 7,
+        Shape::Empty(GeometryKind::Polygon, _) => 8,
+        Shape::Empty(GeometryKind::MultiLineString, _) => 9,
+        Shape::Empty(GeometryKind::MultiPolygon, _) => 10,
+        Shape::Empty(GeometryKind::GeometryCollection, _) => 11,
+        Shape::Empty(GeometryKind::MultiPoint, _) => 12,
+        Shape::Empty(GeometryKind::LineString, _) => 13,
     }
 }
 

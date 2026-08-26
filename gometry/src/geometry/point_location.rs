@@ -657,6 +657,9 @@ fn point_plan_summary(shape: &Shape) -> Option<PointPlanSummary> {
 }
 
 const fn one_shot_crossover(edges: usize) -> usize {
+    if edges == 0 {
+        return usize::MAX;
+    }
     let e = edges as u128;
     ((38 * e + 4_500).div_ceil(10 * e)) as usize
 }
@@ -695,15 +698,17 @@ impl PointBatchTester {
                         .sum::<usize>(),
                 cell_preclass: OnceLock::new(),
             },
-            Shape::MultiPolygon(polygons) if polygons.len() == 1 => Self::Polygon {
-                index: PolygonPointIndex::build(&polygons[0]),
-                total_edges: polygons[0].shell.coords().len().saturating_sub(1)
-                    + polygons[0]
-                        .holes
-                        .iter()
-                        .map(|h| h.coords().len().saturating_sub(1))
-                        .sum::<usize>(),
-                cell_preclass: OnceLock::new(),
+            Shape::MultiPolygon(polygons) if polygons.len() == 1 && !polygons.is_empty() => {
+                Self::Polygon {
+                    index: PolygonPointIndex::build(&polygons[0]),
+                    total_edges: polygons[0].shell.coords().len().saturating_sub(1)
+                        + polygons[0]
+                            .holes
+                            .iter()
+                            .map(|h| h.coords().len().saturating_sub(1))
+                            .sum::<usize>(),
+                    cell_preclass: OnceLock::new(),
+                }
             },
             Shape::MultiPolygon(polygons) => {
                 let built: Vec<PolygonPointIndex> =
@@ -1014,7 +1019,7 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        let tester = PointBatchTester::new(&Shape::MultiPolygon(parts));
+        let tester = PointBatchTester::new(&Shape::MultiPolygon(parts.into()));
         assert!(tester.uses_indexed_plan());
     }
 
@@ -1103,7 +1108,7 @@ mod tests {
             shell: closed_ring(&[(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5), (0.5, 0.5)]),
             holes: Arc::from([]),
         };
-        let shape = Shape::MultiPolygon(vec![a, b]);
+        let shape = Shape::MultiPolygon(vec![a, b].into());
         let tester = PointBatchTester::new(&shape);
         let overlap = Point::new_unchecked_xy(0.75, 0.75);
         assert!(tester.contains_point(overlap));
@@ -1465,7 +1470,7 @@ mod tests {
     #[test]
     fn degenerate_and_zero_length_edges_fail_open_without_grid() {
         let shape = Shape::Polygon(Polygon {
-            shell: closed_ring(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
+            shell: closed_ring(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
             holes: Arc::from([]),
         });
         let tester = PointBatchTester::new(&shape);

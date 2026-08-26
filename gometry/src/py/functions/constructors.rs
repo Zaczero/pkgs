@@ -5,8 +5,8 @@ use pyo3::types::{PyAny, PyModule};
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
 use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::{
-    CoordinateAxes, Crs, EmptyKind, Frame, FrameAdoption, PyGeometry, PyGeometryArray, ShapeData,
-    Typed, box_polygon, broadcast_coordinate_group, broadcast_crs_coordinate_inputs,
+    CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind, PyGeometry, PyGeometryArray,
+    ShapeData, Typed, box_polygon, broadcast_coordinate_group, broadcast_crs_coordinate_inputs,
     coordinate_arc_values, coordinate_arc_values_from_buffer, coordinate_epoch_option,
     coordinate_input, coordinate_inputs_are_scalar, crs, ensure_homogeneous_axes, exact_geometry,
     extract_coordinate, extract_lines, extract_points, extract_polygons,

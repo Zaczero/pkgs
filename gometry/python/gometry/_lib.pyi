@@ -951,8 +951,10 @@ class Geometry:
     @property
     def num_geometries(self) -> int:
         """Number of top-level parts: ``1`` for a single point/line/polygon,
-        the member count for a multi/collection, ``0`` for empty — the
-        ``O(1)`` counterpart to ``len(geoms)`` without materializing parts.
+        including a typed empty; the member count for a multi/collection, and
+        ``0`` for an empty multipart or collection. Explicit empty multipart
+        members still count; this is the ``O(1)`` counterpart to ``len(geoms)``
+        without materializing parts.
 
         Returns
         -------
@@ -5525,8 +5527,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     @property
     def num_geometries(self) -> npt.NDArray[np.int64]:
         """Per-geometry top-level part count (see `Geometry.num_geometries`):
-        ``1`` for a single point/line/polygon, the member count for a
-        multi/collection, ``0`` for empty. Missing rows use Shapely's
+        ``1`` for a single point/line/polygon, including a typed empty; the
+        member count for a multi/collection, and ``0`` for an empty multipart
+        or collection. Explicit empty multipart members still count. Missing rows use Shapely's
         ``None``-geometry sentinel ``0``; use `.is_missing` to distinguish
         them from present empty geometries.
 

@@ -50,6 +50,22 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     original: &Shape,
     simplified: &Shape,
 ) -> bool {
+    let same_ring_structure = match (original, simplified) {
+        (Shape::Polygon(before), Shape::Polygon(after)) => {
+            before.rings().count() == after.rings().count()
+        },
+        (Shape::MultiPolygon(before), Shape::MultiPolygon(after)) => {
+            before.len() == after.len()
+                && before
+                    .iter()
+                    .zip(after.iter())
+                    .all(|(before, after)| before.rings().count() == after.rings().count())
+        },
+        _ => false,
+    };
+    if !same_ring_structure {
+        return false;
+    }
     let ring_pairs: Vec<(&CoordSeq, &CoordSeq)> = match (original, simplified) {
         (Shape::Polygon(before), Shape::Polygon(after)) => {
             before.rings().zip(after.rings()).collect()

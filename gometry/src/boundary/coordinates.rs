@@ -1470,7 +1470,7 @@ mod tests {
 
     #[test]
     fn packed_polygon_view_walks_csr_rows_and_rings_in_order() {
-        let coords = CoordSeq::from(vec![
+        let coords = CoordSeq::from(Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(4.0, 0.0),
             pt(4.0, 4.0),
@@ -1486,7 +1486,7 @@ mod tests {
             pt(11.0, 11.0),
             pt(10.0, 11.0),
             pt(10.0, 10.0),
-        ]);
+        ]));
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap();
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).unwrap();
         let array = PyGeometryArray::packed_polygons(
@@ -1554,7 +1554,7 @@ mod tests {
 
     #[test]
     fn identity_packed_polygons_row_index_spans_all_rings() {
-        let coords = CoordSeq::from(vec![
+        let coords = CoordSeq::from(Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(4.0, 0.0),
             pt(4.0, 4.0),
@@ -1570,7 +1570,7 @@ mod tests {
             pt(11.0, 11.0),
             pt(10.0, 11.0),
             pt(10.0, 10.0),
-        ]);
+        ]));
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5, 10, 15], 15).unwrap();
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 2, 3], 3).unwrap();
         let array = PyGeometryArray::packed_polygons(
@@ -1588,14 +1588,14 @@ mod tests {
 
     #[test]
     fn gathered_packed_lines_row_index_uses_logical_rows() {
-        let coords = CoordSeq::from(vec![
+        let coords = CoordSeq::from(Vec::<Point>::from([
             pt(0.0, 0.0),
             pt(1.0, 0.0),
             pt(2.0, 0.0),
             pt(3.0, 0.0),
             pt(4.0, 0.0),
             pt(5.0, 0.0),
-        ]);
+        ]));
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap();
         let gathered = PyGeometryArray::packed_lines_mapped(
             coords,
@@ -1613,13 +1613,16 @@ mod tests {
 
     #[test]
     fn collection_flattens_in_declaration_order() {
-        let collection = Shape::GeometryCollection(vec![
-            Shape::Point(pt(9.0, 9.0)),
-            Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
-                    .expect("test line is valid"),
-            ),
-        ]);
+        let collection = Shape::GeometryCollection(
+            vec![
+                Shape::Point(pt(9.0, 9.0)),
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
+                        .expect("test line is valid"),
+                ),
+            ]
+            .into(),
+        );
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
         assert_eq!(view.len(), 3);
         let points = view.collect_points();
@@ -1635,19 +1638,22 @@ mod tests {
         // Some(NaN) for a measured NaN — the list path needs the distinction,
         // while NumPy maps both to NaN at the boundary.
         use crate::geometry::{MOrdinate, ZOrdinate};
-        let collection = Shape::GeometryCollection(vec![
-            Shape::Point(pt(0.0, 0.0)),
-            Shape::Point(Point::new_unchecked_axes(
-                1.0,
-                1.0,
-                ZOrdinate(Some(f64::NAN)),
-                MOrdinate(None),
-            )),
-            Shape::Point(
-                Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None))
-                    .expect("finite test Z"),
-            ),
-        ]);
+        let collection = Shape::GeometryCollection(
+            vec![
+                Shape::Point(pt(0.0, 0.0)),
+                Shape::Point(Point::new_unchecked_axes(
+                    1.0,
+                    1.0,
+                    ZOrdinate(Some(f64::NAN)),
+                    MOrdinate(None),
+                )),
+                Shape::Point(
+                    Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None))
+                        .expect("finite test Z"),
+                ),
+            ]
+            .into(),
+        );
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
         match view.column(CoordinateAxis::Z) {
             CoordinateColumnRef::Nullable(values) => {

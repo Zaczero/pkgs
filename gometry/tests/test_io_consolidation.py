@@ -315,23 +315,19 @@ def test_g3_interleaved_size3_rejects_noncanonical_field_name() -> None:
 
 
 # ---------------------------------------------------------------------------
-# G4 — EMPTY members: model documents drop-at-ingress (not a construction bug)
+# G4 — EMPTY members: explicit multipart slots survive every representation
 # ---------------------------------------------------------------------------
 
 
-def test_g4_wkt_empty_members_drop_not_model_restructure() -> None:
-    """EMPTY MultiPoint/MultiPolygon members normalize by dropping (WKB parity).
-
-    Shape::MultiPoint is a CoordSeq (no Shape::Empty slots); preserving empty
-    members would require a geometry-model change. Bounded behavior is drop.
-    """
+def test_g4_wkt_empty_members_are_preserved() -> None:
+    """EMPTY multipart members retain their declared positions."""
     g = gm.from_wkt('MULTIPOINT Z ((1 2 3), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3))'
+    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3), EMPTY)'
     g2 = gm.from_wkt('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)')
-    assert g2.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)))'
-    # Construction does not accept an empty Point as a multipoint member.
-    with pytest.raises(TypeError):
-        gm.MultiPoint([gm.Point(1, 2), gm.Point()])
+    assert g2.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
+    assert gm.MultiPoint([gm.Point(1, 2), gm.Point()]).to_wkt() == (
+        'MULTIPOINT ((1 2), EMPTY)'
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ use crate::geometry::derived::{
     shape_from_open_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
-    BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, EmptyKind, GeometryErrorKind, LineSeq,
+    BufferCapStyle, BufferJoinStyle, DEFAULT_MITER_LIMIT, GeometryErrorKind, GeometryKind, LineSeq,
     Point, Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, empty_geometry,
 };
 use crate::{NonNegative, Positive};
@@ -172,7 +172,7 @@ impl Shape {
             // empty point, matching Shapely's
             // `point_on_surface(POLYGON EMPTY) == POINT EMPTY`.
             Self::MultiPolygon(_)
-            | Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => {
+            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Ok(Self::empty_point())
             },
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
@@ -256,7 +256,7 @@ impl Shape {
                 )
             },
             Self::MultiPolygon(_)
-            | Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => {
+            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Ok(Self::empty_polygon())
             },
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
@@ -276,7 +276,7 @@ impl Shape {
                 Ok((center.x - witness.x).hypot(center.y - witness.y))
             },
             Self::MultiPolygon(_)
-            | Self::Empty(EmptyKind::Polygon | EmptyKind::MultiPolygon, _) => Ok(f64::NAN),
+            | Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }
     }

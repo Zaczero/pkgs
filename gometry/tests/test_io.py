@@ -346,7 +346,9 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     assert isinstance(parsed, gm.GeometryArray)
     assert parsed.crs == 'EPSG:4979'
     assert parsed.to_wkt(output_dimension=2) == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
-    geojson_texts = parsed.to_geojson(include_z=False)
+    with pytest.raises(gm.InvalidGeometryError, match='cannot represent Z/M'):
+        parsed.to_geojson(include_z=False)
+    geojson_texts = parsed.force_2d().to_geojson()
     geojson_recovered = gm.from_geojson(geojson_texts, crs=4326)
     assert isinstance(geojson_recovered, gm.GeometryArray)
     assert geojson_recovered.crs == 'EPSG:4326'

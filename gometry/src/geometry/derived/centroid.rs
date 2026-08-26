@@ -819,7 +819,7 @@ pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
     match shape {
         Shape::Polygon(polygon) => areal_centroid_polygon(polygon),
         Shape::MultiPolygon(polygons) => {
-            if polygons.len() == 1 {
+            if polygons.len() == 1 && !polygons.is_empty() {
                 return areal_centroid_polygon(&polygons[0]);
             }
             if areal_has_unrepresentable_component(shape) {

@@ -128,15 +128,13 @@ fn area_mixed_and_lower_dimensional_witnesses_obey_leaf_ordering() {
     assert_eq!(classify(&line), H3LeafClass::Boundary);
     assert_eq!(classify(&point), H3LeafClass::Boundary);
     assert_eq!(
-        classify(&Shape::MultiPolygon(vec![big.clone(), small])),
+        classify(&Shape::MultiPolygon(vec![big.clone(), small].into())),
         H3LeafClass::Boundary
     );
     assert_eq!(
-        classify(&Shape::GeometryCollection(vec![
-            Shape::Polygon(big),
-            line,
-            point
-        ])),
+        classify(&Shape::GeometryCollection(
+            vec![Shape::Polygon(big), line, point].into()
+        )),
         H3LeafClass::Interior
     );
 }
@@ -235,7 +233,10 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
 fn uncertified_fan_cannot_reach_an_empty_source_negative() {
     let cell = CellIndex::try_from(CELL).unwrap();
     let source = GridAffineSource::new(
-        &Shape::GeometryCollection(Vec::new()),
+        &Shape::typed_empty(
+            crate::geometry::GeometryKind::GeometryCollection,
+            crate::geometry::CoordinateAxes::XY,
+        ),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -440,7 +441,7 @@ fn globally_fail_open_multipart_recovers_independent_cap_certificates() {
     const TARGET: Resolution = Resolution::Zero;
     let polar = polygon(-180.0, 80.0, 180.0, 90.0);
     let middle = polygon(10.0, 0.0, 20.0, 10.0);
-    let shape = Shape::MultiPolygon(vec![polar.clone(), middle.clone()]);
+    let shape = Shape::MultiPolygon(vec![polar.clone(), middle.clone()].into());
     let plan = H3CoverPlan::new(TARGET);
     let aggregate = GridAffineSource::new(&shape, SphericalGridTarget::H3(TARGET)).unwrap();
     assert!(
@@ -528,7 +529,8 @@ fn globally_fail_open_components_merge_duplicate_ids_before_budgeting() {
         })
         .expect("partial and full caps share a boundary/interior cell");
 
-    let mixed = Shape::GeometryCollection(vec![Shape::Polygon(partial), Shape::Polygon(full)]);
+    let mixed =
+        Shape::GeometryCollection(vec![Shape::Polygon(partial), Shape::Polygon(full)].into());
     assert!(
         GridAffineSource::new(&mixed, SphericalGridTarget::H3(TARGET))
             .unwrap()
@@ -573,7 +575,7 @@ fn globally_fail_open_duplicate_components_merge_before_their_global_budget() {
     .unwrap();
 
     let duplicate =
-        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)]);
+        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)].into());
     assert!(
         GridAffineSource::new(&duplicate, SphericalGridTarget::H3(TARGET))
             .unwrap()
@@ -593,7 +595,7 @@ fn globally_fail_open_duplicate_budget_applies_after_the_merge() {
     let full = polygon(-180.0, 85.0, 180.0, 90.0);
     let plan = H3CoverPlan::new(TARGET);
     let duplicate =
-        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)]);
+        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)].into());
     let deduplicated = h3_cover_shape(&duplicate, &plan, H3TraversalRule::Overlap, None)
         .expect("duplicate components merge before their global budget");
     h3_cover_shape(
@@ -783,7 +785,7 @@ fn within_discards_non_areal_members_before_traversal() {
     .unwrap();
     let area_nodes = TEST_DIAGNOSTIC_NODES.get();
 
-    let mixed = Shape::GeometryCollection(vec![area, line]);
+    let mixed = Shape::GeometryCollection(vec![area, line].into());
     let mixed_cover = h3_cover_shape(
         &mixed,
         &H3CoverPlan::new(Resolution::Three),

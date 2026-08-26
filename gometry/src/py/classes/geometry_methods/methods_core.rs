@@ -232,8 +232,9 @@ impl PyGeometry {
             .expect("is_empty is infallible")
     }
     /// Number of top-level parts: ``1`` for a single point/line/polygon,
-    /// the member count for a multi/collection, ``0`` for empty — the
-    /// ``O(1)`` counterpart to ``len(geoms)`` without materializing parts.
+    /// the member count for a multi/collection, and ``0`` for a typed
+    /// top-level empty. Explicit empty members still count in their
+    /// multipart's member count.
     ///
     /// Returns
     /// -------

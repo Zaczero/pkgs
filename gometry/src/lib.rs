@@ -122,9 +122,9 @@ use boundary::coordinates::CoordinateAxis;
 use error::Result;
 use geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordinateAxes, Coordinates,
-    EmptyKind, GeometryErrorKind, GeometryKind, LineIndex, PlanarMetric, Point, Polygon,
-    PolygonizeFull, RepairMethod, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod,
-    ValidationIssue, VoronoiBoundary, point_distance, row_sample_seed,
+    GeometryErrorKind, GeometryKind, LineIndex, PlanarMetric, Point, Polygon, PolygonizeFull,
+    RepairMethod, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod, ValidationIssue,
+    VoronoiBoundary, point_distance, row_sample_seed,
 };
 use py::arrow::{ArrowEncoding, packed_points_to_arrow};
 use py::crs::PyCrs;
