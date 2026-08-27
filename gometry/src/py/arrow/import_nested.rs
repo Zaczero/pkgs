@@ -352,7 +352,7 @@ impl AdmittedWkbPlan {
     /// Walk adjacent admitted offsets: nulls → `missing_local`, present rows
     /// → parse WKB into `shapes`/`srids` (no `Option` wall, no ranges Vec).
     ///
-    /// Batch decode shares the exact final-Arc coordinate decoder (one grammar
+    /// WKB decoding uses the exact final-Arc coordinate decoder (one grammar
     /// path — no pre-scan).
     pub(crate) fn decode_present(self) -> crate::error::Result<WkbPresentDecode> {
         let Self {
@@ -368,7 +368,6 @@ impl AdmittedWkbPlan {
         crate::boundary::try_reserve_vec(&mut shapes, len)?;
         crate::boundary::try_reserve_vec(&mut srids, len)?;
         crate::boundary::try_reserve_vec(&mut missing_local, len)?;
-        let arena = io::WkbCoordArena::new();
         for index in 0..len {
             if !validity.is_valid(index) {
                 crate::boundary::try_push_vec(&mut missing_local, index)?;
@@ -382,7 +381,7 @@ impl AdmittedWkbPlan {
             if end > data_bytes.len() {
                 return Err(io::IoError::wkb("Arrow WKB offsets are out of bounds"));
             }
-            let parsed = io::parse_wkb_batch(&data_bytes[start..end], &arena)?;
+            let parsed = io::parse_wkb(&data_bytes[start..end])?;
             crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
             crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
         }
@@ -606,14 +605,13 @@ fn decode_binary_view_wkb_present(
         crate::boundary::try_reserve_vec(&mut shapes, len)?;
         crate::boundary::try_reserve_vec(&mut srids, len)?;
         crate::boundary::try_reserve_vec(&mut missing_local, len)?;
-        let arena = io::WkbCoordArena::new();
         for (idx, row) in rows.into_iter().enumerate() {
             match row {
                 WkbRowBytes::Missing => {
                     crate::boundary::try_push_vec(&mut missing_local, idx)?;
                 },
                 WkbRowBytes::Inline { bytes, len } => {
-                    let parsed = io::parse_wkb_batch(&bytes[..len], &arena)?;
+                    let parsed = io::parse_wkb(&bytes[..len])?;
                     crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
                     crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
                 },
@@ -623,10 +621,9 @@ fn decode_binary_view_wkb_present(
                     let data = resolved
                         .get(&index)
                         .expect("descriptor references a loaded binary-view buffer");
-                    let parsed = io::parse_wkb_batch(
+                    let parsed = io::parse_wkb(
                         data.get(start..end)
                             .expect("binary-view range validated before detach"),
-                        &arena,
                     )?;
                     crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
                     crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
@@ -852,7 +849,6 @@ fn append_arrow_wkb_binary_view(
         for (index, buf) in &data_buffers {
             resolved.insert(*index, buf.as_slice());
         }
-        let arena = io::WkbCoordArena::new();
         rows.into_iter()
             .map(|row| {
                 let bytes = match &row {
@@ -866,7 +862,7 @@ fn append_arrow_wkb_binary_view(
                         .get(*start..*end)
                         .expect("binary-view range validated before detach"),
                 };
-                io::parse_wkb_batch(bytes, &arena).map(Some)
+                io::parse_wkb(bytes).map(Some)
             })
             .collect::<Result<Vec<_>, _>>()
     })?;
@@ -913,7 +909,6 @@ fn decode_direct_pyarrow_binary_view_wkb_present(
         }
     }
     let parsed = py.detach(move || -> crate::error::Result<WkbPresentDecode> {
-        let arena = io::WkbCoordArena::new();
         let mut shapes = Vec::new();
         let mut srids = Vec::new();
         let mut missing_local = Vec::new();
@@ -925,7 +920,7 @@ fn decode_direct_pyarrow_binary_view_wkb_present(
                 crate::boundary::try_push_vec(&mut missing_local, index)?;
                 continue;
             };
-            let parsed = io::parse_wkb_batch(bytes, &arena)?;
+            let parsed = io::parse_wkb(bytes)?;
             crate::boundary::try_push_vec(&mut shapes, parsed.shape)?;
             crate::boundary::try_push_vec(&mut srids, parsed.srid)?;
         }

@@ -331,8 +331,7 @@ pub(crate) use geojson::{
     reject_rfc7946_value_object, to_geojson_string, validate_geojson_value,
 };
 pub(crate) use wkb::{
-    WkbCoordArena, parse_wkb, parse_wkb_batch, to_wkb, to_wkb_len, wkb_len, write_wkb_into,
-    write_wkb_to, write_wkb_to_srid,
+    parse_wkb, to_wkb, to_wkb_len, wkb_len, write_wkb_into, write_wkb_to, write_wkb_to_srid,
 };
 pub(crate) use wkt::{
     WktDimension, WktNumberFormat, parse_wkt, to_wkt, to_wkt_display, to_wkt_preview,

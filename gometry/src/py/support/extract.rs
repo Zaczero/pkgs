@@ -548,14 +548,6 @@ pub(crate) fn parse_wkb_payload(value: &Bound<'_, PyAny>) -> PyResult<crate::io:
     parse_wkb_payload_bytes(value, |wkb| Ok(crate::io::parse_wkb(wkb)?))
 }
 
-/// Bulk-lane WKB parse through the shared exact-Arc decoder (batch token).
-pub(crate) fn parse_wkb_payload_batch(
-    value: &Bound<'_, PyAny>,
-    arena: &crate::io::WkbCoordArena,
-) -> PyResult<crate::io::WkbGeometry> {
-    parse_wkb_payload_bytes(value, |wkb| Ok(crate::io::parse_wkb_batch(wkb, arena)?))
-}
-
 pub(crate) fn parse_wkb_payload_bytes<T>(
     value: &Bound<'_, PyAny>,
     parse: impl FnOnce(&[u8]) -> PyResult<T>,

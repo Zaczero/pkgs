@@ -10,7 +10,7 @@ use crate::py::functions::bulk_rows::{StreamedSridRow, stream_bulk_srid};
 use crate::py::wire_crs::{guard_embedded_crs_conflict, prefer_wire_alias_crs, split_ewkt_srid};
 use crate::{
     PyGeometry, Typed, coordinate_epoch_option, crs_arc, guard_epoch_frame, io, parse_crs,
-    parse_wkb_geometry, parse_wkb_payload_batch, parse_wkb_payload_bytes,
+    parse_wkb_geometry, parse_wkb_payload, parse_wkb_payload_bytes,
 };
 
 /// Parse a geometry (or array) from Well-Known Text.
@@ -188,7 +188,6 @@ pub(crate) fn from_wkb(
     let values = crate::py_iter_or_error(data, || {
         PyTypeError::new_err("expected WKB bytes or iterable of WKB bytes")
     })?;
-    let arena = io::WkbCoordArena::new();
     let array = stream_bulk_srid(
         values,
         fallback,
@@ -196,7 +195,7 @@ pub(crate) fn from_wkb(
         "WKB import",
         "EWKB SRID",
         move |data, rows| {
-            let parsed = parse_wkb_payload_batch(data, &arena)?;
+            let parsed = parse_wkb_payload(data)?;
             rows.try_push(parsed.shape)?;
             Ok(StreamedSridRow::Present(parsed.srid))
         },

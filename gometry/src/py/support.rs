@@ -86,8 +86,7 @@ pub(crate) use extract::{
     CoercedCollectedGeometryItems, GeometryValues, coerce_collected_geometry_items,
     ensure_homogeneous_axes, extract_coordinate, extract_coordinate_or_empty, extract_lines,
     extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
-    optional_coordinates, parse_wkb_payload, parse_wkb_payload_batch, parse_wkb_payload_bytes,
-    parts, rings,
+    optional_coordinates, parse_wkb_payload, parse_wkb_payload_bytes, parts, rings,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, common_crs_required, crs_label, deserialized_epoch, guard_epoch_frame,

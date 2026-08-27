@@ -17,18 +17,6 @@ pub(crate) fn parse_wkb(value: &[u8]) -> Result<WkbGeometry> {
         .map_err(|error| error.with_parse_position(value.len()))
 }
 
-/// Batch parse entry: same grammar/errors as [`parse_wkb`]. Coordinate runs
-/// allocate exact final `Arc<[f64]>` columns (shared decoder with the scalar
-/// path). `arena` is retained as a batch call-site token so Arrow/`from_wkb`
-/// batch loops keep one explicit handle across rows; decode does not stage
-/// through it (each run owns its own Arc set mid-parse).
-pub(crate) fn parse_wkb_batch(value: &[u8], arena: &WkbCoordArena) -> Result<WkbGeometry> {
-    let _ = arena;
-    parse_wkb_inner(value)
-        .map_err(|error| parse_content(ParseFormat::Wkb, error))
-        .map_err(|error| error.with_parse_position(value.len()))
-}
-
 fn parse_wkb_inner(value: &[u8]) -> Result<WkbGeometry> {
     let mut reader = WkbReader { value, offset: 0 };
     let (shape, srid) = reader
@@ -189,7 +177,7 @@ fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: WkbAxes) -> Result<
 ///
 /// Vertex **count is derived from the byte span length** (no external
 /// `size_hint` / trusted-count parameter). Each column is then an exact final
-/// `Arc<[f64]>` sized from that proven count. Scalar and batch paths share this
+/// `Arc<[f64]>` sized from that proven count. Every WKB caller shares this
 /// decoder (no staging Vec / re-Arc).
 fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     bytes: &[u8],
@@ -256,21 +244,6 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
         return Err(GeometryErrorKind::NonFiniteCoordinate.into());
     }
     CoordSeq::try_from_columns(xs, ys, zs, ms)
-}
-
-/// Batch WKB parse token. Coordinate runs allocate exact final `Arc<[f64]>`
-/// columns via the shared decoder; call sites keep one arena across a batch so
-/// nested multipolygon/collection mid-parse ownership stays explicit.
-///
-/// **CoordSeq ownership:** each run owns its own Arc columns (that run's
-/// vertices). Nested geometry needs a finished `CoordSeq` mid-parse, so true
-/// multi-run slab windows are not shipped.
-pub(crate) struct WkbCoordArena;
-
-impl WkbCoordArena {
-    pub(crate) const fn new() -> Self {
-        Self
-    }
 }
 
 /// A member's position inside a nested WKB container. Threaded only so a
