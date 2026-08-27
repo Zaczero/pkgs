@@ -385,7 +385,8 @@ pub(crate) fn line_locate_coordseq(
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
             let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-            let located = index.locate_point(query, distance_mode.is_normalized(), &PlanarMetric);
+            let located =
+                index.locate_point(query, distance_mode.is_normalized(), &PlanarMetric)?;
             Ok(if distance_mode.is_normalized() {
                 located
             } else {

@@ -1,20 +1,14 @@
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    DirectGeodesic, InverseGeodesic, LowerBoundKernel, cached_lower_bound_kernel,
-    geodesic_foot_on_segment, geodesic_locate_on_segment, geodesic_point_to_segment,
-    geodesic_segments_cross, interpolate_optional_ordinate,
+    DirectGeodesic, IntersectSolver, InverseGeodesic, LowerBoundKernel, cached_lower_bound_kernel,
+    checked_geodesic_segment, geodesic_foot_on_segment, geodesic_locate_on_segment,
+    geodesic_point_to_segment, geodesic_point_within_segment,
+    geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
 };
 use crate::geometry::{
     GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate,
 };
-
-pub(crate) fn geo_inverse<T>(g: &Geodesic, a: Point, b: Point) -> T
-where
-    Geodesic: InverseGeodesic<T>,
-{
-    g.inverse(a.y, a.x, b.y, b.x)
-}
 
 pub(crate) fn inverse_distance(
     geodesic: &Geodesic,
@@ -53,10 +47,6 @@ pub(crate) fn geo_distance(g: &Geodesic, a: Point, b: Point) -> f64 {
     inverse_distance(g, a.x, a.y, b.x, b.y)
 }
 
-pub(crate) fn geo_azimuths(g: &Geodesic, a: Point, b: Point) -> (f64, f64) {
-    inverse_azimuths(g, a.x, a.y, b.x, b.y)
-}
-
 pub(crate) fn geo_distance_azimuths(g: &Geodesic, a: Point, b: Point) -> (f64, f64, f64) {
     inverse_distance_azimuths(g, a.x, a.y, b.x, b.y)
 }
@@ -80,6 +70,7 @@ pub(crate) struct EllipsoidMetric<'a> {
     /// non-pruning paths never touch it; repeated foot-finding on one ellipsoid
     /// reuses the cached kernel (a cheap `Rc` clone) instead of rebuilding it.
     lower_bound: std::cell::OnceCell<std::rc::Rc<LowerBoundKernel>>,
+    intersection: std::cell::OnceCell<IntersectSolver>,
 }
 
 impl<'a> EllipsoidMetric<'a> {
@@ -93,6 +84,7 @@ impl<'a> EllipsoidMetric<'a> {
             geodesic,
             runtime_generation,
             lower_bound: std::cell::OnceCell::new(),
+            intersection: std::cell::OnceCell::new(),
         }
     }
 
@@ -106,23 +98,55 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         self.runtime_generation
     }
 
-    fn make_segment(&self, start: Point, end: Point) -> GeodesicSegment {
-        let (length, azimuth0, azimuth1) = geo_distance_azimuths(self.geodesic, start, end);
-        GeodesicSegment {
-            start,
-            end,
-            length,
-            azimuth0,
-            azimuth1,
-        }
+    fn make_segment(&self, start: Point, end: Point) -> crate::error::Result<GeodesicSegment> {
+        checked_geodesic_segment(self.geodesic, start, end)
     }
 
-    fn point_to_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> f64 {
+    fn point_to_segment(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        best: f64,
+    ) -> crate::error::Result<f64> {
         geodesic_point_to_segment(self.geodesic, point, segment, best)
     }
 
-    fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> bool {
-        geodesic_segments_cross(self.geodesic, a, b, c, d)
+    fn point_to_segment_within(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        limit: f64,
+    ) -> crate::error::Result<bool> {
+        geodesic_point_within_segment(self.geodesic, point, segment, limit)
+    }
+
+    fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> crate::error::Result<bool> {
+        Ok(self.segment_intersection(a, b, c, d)?.is_some())
+    }
+
+    fn segment_intersection(
+        &self,
+        a: Point,
+        b: Point,
+        c: Point,
+        d: Point,
+    ) -> crate::error::Result<Option<(Point, Point)>> {
+        if !(-0.25..=0.2).contains(&self.geodesic.f) {
+            return Err(crate::crs::CrsError::message(
+                "geodesic segment intersection is supported only for flattening in [-1/4, 1/5]",
+            ));
+        }
+        let first = crate::crs::geodesic::checked_geodesic_segment(self.geodesic, a, b)?;
+        let second = crate::crs::geodesic::checked_geodesic_segment(self.geodesic, c, d)?;
+        if self.intersection.get().is_none() {
+            let solver = IntersectSolver::new(self.geodesic)?;
+            let _ = self.intersection.set(solver);
+        }
+        let solver = self
+            .intersection
+            .get()
+            .expect("intersection solver is initialized");
+        geodesic_segment_intersection_with_solver(self.geodesic, solver, first, second)
     }
 
     fn segment_length(&self, a: Point, b: Point) -> f64 {
@@ -155,7 +179,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         .unwrap_or(a)
     }
 
-    fn locate_on_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> (f64, f64) {
+    fn locate_on_segment(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        best: f64,
+    ) -> crate::error::Result<(f64, f64)> {
         geodesic_locate_on_segment(self.geodesic, point, segment, best)
     }
 
@@ -164,7 +193,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         point: Point,
         segment: GeodesicSegment,
         best: f64,
-    ) -> GeodesicSegmentWitness {
+    ) -> crate::error::Result<GeodesicSegmentWitness> {
         geodesic_foot_on_segment(self.geodesic, point, segment, best)
     }
 

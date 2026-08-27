@@ -4,12 +4,13 @@
 //! Nodes carry one conservative auxiliary-sphere cap: an anchor point and a
 //! true-metric reach covering every descendant segment. Traversal lower-bounds
 //! a query point by `max(aux_bound(query, anchor) - reach, 0)`, then refines
-//! only surviving leaves with the existing exact Karney/golden-section segment
-//! kernel. The bound is purely pruning; exact distance and witness semantics
+//! only surviving leaves with the certified Karney segment kernel. The bound
+//! is purely pruning; exact distance and witness semantics
 //! stay owned by `GeodesicMetric`.
 
 use crate::HeapSize;
 use crate::collections::HashMap;
+use crate::error::Result;
 use crate::geometry::{
     BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, HashMapExt as _, Point,
 };
@@ -202,14 +203,14 @@ impl GeodesicFacetBvh {
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
         mut best: f64,
-    ) -> Option<f64> {
+    ) -> Result<Option<f64>> {
         let mut visits = 0;
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
             visits += 1;
             if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return None;
+                return Ok(None);
             }
             let node = node as usize;
             if self.bound(point, node, metric) > best {
@@ -224,7 +225,7 @@ impl GeodesicFacetBvh {
                         let bound = metric.point_distance_lower_bound(point, segment.start)
                             - segment.length;
                         if bound <= best {
-                            best = best.min(metric.point_to_segment(point, segment, best));
+                            best = best.min(metric.point_to_segment(point, segment, best)?);
                         }
                     }
                 },
@@ -238,7 +239,7 @@ impl GeodesicFacetBvh {
                 best = best.min(metric.segment_length(point, target));
             }
         }
-        Some(best)
+        Ok(Some(best))
     }
 
     pub(super) fn witness_point(
@@ -252,14 +253,14 @@ impl GeodesicFacetBvh {
         order_offset: usize,
         swapped: bool,
         width: usize,
-    ) -> WitnessPointOutcome {
+    ) -> Result<WitnessPointOutcome> {
         let mut visits = 0;
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
             visits += 1;
             if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return WitnessPointOutcome::LimitExceeded;
+                return Ok(WitnessPointOutcome::LimitExceeded);
             }
             let node = node as usize;
             let best_distance = best
@@ -281,7 +282,8 @@ impl GeodesicFacetBvh {
                         if bound > best_distance {
                             continue;
                         }
-                        let witness = metric.point_segment_witness(vertex, segment, best_distance);
+                        let witness =
+                            metric.point_segment_witness(vertex, segment, best_distance)?;
                         let candidate = GeodesicWitnessCandidate {
                             probe: vertex,
                             target: witness.foot,
@@ -322,7 +324,7 @@ impl GeodesicFacetBvh {
                 }
             }
         }
-        WitnessPointOutcome::Best(best)
+        Ok(WitnessPointOutcome::Best(best))
     }
 
     pub(super) fn dwithin_point(
@@ -332,14 +334,14 @@ impl GeodesicFacetBvh {
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
         limit: f64,
-    ) -> Option<bool> {
+    ) -> Result<Option<bool>> {
         let mut visits = 0;
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
             visits += 1;
             if visits > GEODESIC_BVH_MAX_POINT_VISITS {
-                return None;
+                return Ok(None);
             }
             let node = node as usize;
             if self.bound(point, node, metric) > limit {
@@ -353,9 +355,10 @@ impl GeodesicFacetBvh {
                         let segment = parts.segments[edge_index];
                         let bound = metric.point_distance_lower_bound(point, segment.start)
                             - segment.length;
-                        if bound <= limit && metric.point_to_segment(point, segment, limit) <= limit
+                        if bound <= limit
+                            && metric.point_to_segment_within(point, segment, limit)?
                         {
-                            return Some(true);
+                            return Ok(Some(true));
                         }
                     }
                 },
@@ -366,10 +369,10 @@ impl GeodesicFacetBvh {
                 },
             }
         }
-        Some(parts.point_only.iter().any(|&target| {
+        Ok(Some(parts.point_only.iter().any(|&target| {
             metric.point_distance_lower_bound(point, target) <= limit
                 && metric.segment_length(point, target) <= limit
-        }))
+        })))
     }
 
     fn push_nearer_last(

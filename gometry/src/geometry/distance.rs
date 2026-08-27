@@ -28,10 +28,10 @@ pub(crate) use geodesic_hausdorff_helpers::{
     geodesic_max_min_on_source_segment, geodesic_min_distance_to_target,
 };
 pub(crate) use geodesic_parts::{
-    geodesic_cap_streaming, geodesic_capped_sweep, geodesic_distance_with_parts,
-    geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
-    geodesic_pair_spans_antimeridian, geodesic_point_distance_with_parts,
-    geodesic_point_dwithin_with_parts, geodesic_segments_cross_streaming,
+    ensure_geodesic_linework, geodesic_cap_streaming, geodesic_capped_sweep,
+    geodesic_distance_with_parts, geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
+    geodesic_point_distance_with_parts, geodesic_point_dwithin_with_parts,
+    geodesic_segments_cross_streaming,
 };
 pub(crate) use geodesic_scratch::{
     GeodesicScratchGuard, collect_geodesic_segments_into, collect_point_only_into,

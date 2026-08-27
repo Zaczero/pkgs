@@ -122,7 +122,7 @@ pub(crate) fn geodesic_hausdorff_at(
     }
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         finite(
-            a.geodesic_hausdorff_distance(b, metric),
+            a.geodesic_hausdorff_distance(b, metric)?,
             "geodesic Hausdorff distance",
         )
     })

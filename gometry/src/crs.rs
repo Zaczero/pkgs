@@ -153,8 +153,6 @@ pub(crate) use types::{
     WktVersion,
 };
 
-const GOLDEN_RATIO: f64 = 0.618_033_988_749_894_9;
-const GOLDEN_SECTION_TOLERANCE_METRES: f64 = 1e-3;
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
 const WGS84_A: f64 = 6_378_137.0;
 const WGS84_F: f64 = 1.0 / 298.257_223_563;

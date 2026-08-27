@@ -2,11 +2,11 @@ use crate::geometry::distance::{
     GeodesicScratchGuard, GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result,
     any_parts_within, collect_geodesic_segments_into, collect_point_only_into,
     compact_hausdorff_params, directed_hausdorff_distance_squared_shapes,
-    discrete_frechet_distance, geodesic_cap_streaming, geodesic_capped_sweep,
-    geodesic_capped_witness_sweep, geodesic_max_min_on_source_segment,
-    geodesic_min_distance_to_target, geodesic_pair_spans_antimeridian,
-    geodesic_segments_cross_streaming, min_parts_to_parts, push_equidistant_roots_on_interval,
-    push_point_on_line_breakpoint, push_segment_projection_breakpoints, squared_space_safe,
+    discrete_frechet_distance, ensure_geodesic_linework, geodesic_cap_streaming,
+    geodesic_capped_sweep, geodesic_capped_witness_sweep, geodesic_max_min_on_source_segment,
+    geodesic_min_distance_to_target, geodesic_segments_cross_streaming, min_parts_to_parts,
+    push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
+    push_segment_projection_breakpoints, squared_space_safe,
 };
 use crate::geometry::frame::SimilarityFrame;
 use crate::geometry::{
@@ -34,32 +34,34 @@ impl Shape {
     /// Build this shape's geodesic working set for one ellipsoid. Domain
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
+        ensure_geodesic_linework(self)?;
         let mut points = Vec::with_capacity(self.coord_count());
-        self.try_for_each_point(|point| -> Result<()> {
-            crate::crs::ensure_geographic_lonlat(point.x, point.y)?;
-            points.push(point);
-            Ok(())
-        })?;
+        self.for_each_point(|point| points.push(point));
         let mut point_only = Vec::new();
         collect_point_only_into(self, &mut point_only);
         let segment_count = self.segment_count();
         let mut segments = Vec::with_capacity(segment_count);
-        let mut antimeridian_segments = Vec::new();
         let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
+        let mut error = None;
         self.for_each_vertex_pair(|start, end| {
-            let segment = metric.make_segment(start, end);
-            if geodesic_pair_spans_antimeridian(start, end) {
-                antimeridian_segments.push(segment);
-            }
+            let segment = match metric.make_segment(start, end) {
+                Ok(segment) => segment,
+                Err(value) => {
+                    error = Some(value);
+                    return;
+                },
+            };
             caps_accum.push_segment(segment, metric);
             segments.push(segment);
         });
+        if let Some(error) = error {
+            return Err(error);
+        }
         let caps = caps_accum.finish(&point_only, metric);
         Ok(GeodesicParts {
             points: points.into_boxed_slice(),
             segments: segments.into_boxed_slice(),
             point_only: point_only.into_boxed_slice(),
-            antimeridian_segments: antimeridian_segments.into_boxed_slice(),
             caps,
             facet_bvh: std::sync::OnceLock::new(),
         })
@@ -109,11 +111,8 @@ impl Shape {
     /// Minimum distance between two geometries whose edges are geodesics, in
     /// the meters returned by `metric`. Mirrors [`Self::distance`] but
     /// measures every vertex-to-edge pair ellipsoidally instead of in the
-    /// plane. Crossing and containment cases short-circuit to `0` via the
-    /// planar `intersects`/ `contains_point` tests (exact except for
-    /// antimeridian-spanning polygon interiors). For two disjoint
-    /// geometries the closest pair always lies at a vertex of one, so
-    /// vertex-to-segment from both sides is sufficient.
+    /// plane. Segment intersections are certified by the GeographicLib
+    /// intersection solver; filled polygon interiors are unsupported.
     /// The shape's auxiliary-sphere cap under `metric`: its first vertex
     /// (the anchor) and a PROVEN upper bound (meters) on any shape point's
     /// geodesic distance from it — `max(s(anchor, start) + length)` over
@@ -125,7 +124,7 @@ impl Shape {
         clippy::impl_trait_in_params,
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"
     )]
-    pub fn geodesic_cap(&self, metric: &impl GeodesicMetric) -> Option<(Point, f64)> {
+    pub fn geodesic_cap(&self, metric: &impl GeodesicMetric) -> Result<Option<(Point, f64)>> {
         geodesic_cap_streaming(self, metric)
     }
 
@@ -133,20 +132,16 @@ impl Shape {
         clippy::impl_trait_in_params,
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"
     )]
-    pub fn geodesic_distance(&self, other: &Self, metric: &impl GeodesicMetric) -> f64 {
+    pub fn geodesic_distance(&self, other: &Self, metric: &impl GeodesicMetric) -> Result<f64> {
+        ensure_geodesic_linework(self)?;
+        ensure_geodesic_linework(other)?;
         // Point pairs reduce to ONE Karney inverse (`segment_length` IS the
         // point distance; the degenerate-segment spelling would burn three).
         if let (Self::Point(a), Self::Point(b)) = (self, other) {
-            return metric.segment_length(*a, *b);
+            return Ok(metric.segment_length(*a, *b));
         }
-        if self.intersects(other) {
-            return 0.0;
-        }
-        // The planar `intersects` above is exact except where a segment's geodesic
-        // path diverges from its lon/lat path — i.e. across the antimeridian. Test
-        // those spanning pairs geodesically so a true crossing reads as distance 0.
-        if self.geodesic_segments_cross(other, metric) {
-            return 0.0;
+        if self.geodesic_segments_cross(other, metric)? {
+            return Ok(0.0);
         }
         let mut scratch_guard = GeodesicScratchGuard::take();
         let scratch = &mut scratch_guard.scratch;
@@ -156,8 +151,8 @@ impl Shape {
         scratch.right_points.clear();
         scratch.right_points.reserve(other.coord_count());
         other.collect_points_into(&mut scratch.right_points);
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges);
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges);
+        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
+        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
         collect_point_only_into(self, &mut scratch.left_point_only);
         collect_point_only_into(other, &mut scratch.right_point_only);
         // Cap-bounded best-first sweeps: ONE inverse per target segment
@@ -167,7 +162,6 @@ impl Shape {
         // sweep's whole remainder. Far pairs never pay a Karney call.
         let mut best = f64::INFINITY;
         best = geodesic_capped_sweep(
-            other,
             &scratch.left_points,
             &scratch.right_edges,
             &scratch.right_point_only,
@@ -176,9 +170,8 @@ impl Shape {
             &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
-        );
+        )?;
         best = geodesic_capped_sweep(
-            self,
             &scratch.right_points,
             &scratch.left_edges,
             &scratch.left_point_only,
@@ -187,47 +180,55 @@ impl Shape {
             &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
-        );
-        best
+        )?;
+        Ok(best)
     }
 
     /// Directed and symmetric geodesic Hausdorff distance (meters) — the
     /// segment-aware sibling of [`Shape::hausdorff_distance`]. Each directed
-    /// sweep takes the linework max-min over source vertices AND source
-    /// segment interiors (golden-section on along-track position), with
-    /// target pruning via auxiliary-sphere bounds and
-    /// [`GeodesicMetric::point_to_segment`].
+    /// sweep takes the linework max-min over source vertices and source
+    /// segment interiors, with a 1-Lipschitz branch-and-bound certificate and
+    /// target pruning via auxiliary-sphere bounds.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"
     )]
-    pub fn geodesic_hausdorff_distance(&self, other: &Self, metric: &impl GeodesicMetric) -> f64 {
+    pub fn geodesic_hausdorff_distance(
+        &self,
+        other: &Self,
+        metric: &impl GeodesicMetric,
+    ) -> Result<f64> {
+        ensure_geodesic_linework(self)?;
+        ensure_geodesic_linework(other)?;
         if self.is_empty() || other.is_empty() {
-            return f64::INFINITY;
+            return Ok(f64::INFINITY);
         }
         let mut scratch_guard = GeodesicScratchGuard::take();
         let scratch = &mut scratch_guard.scratch;
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges);
+        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
         other.collect_points_into(&mut scratch.right_points);
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges);
+        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
         self.collect_points_into(&mut scratch.left_points);
         let directed = |source: &Self,
                         source_edges: &[GeodesicSegment],
                         target_edges: &[GeodesicSegment],
-                        target_points: &[Point]| {
+                        target_points: &[Point]|
+         -> Result<f64> {
             let mut cmax = 0.0_f64;
-            source.for_each_point(|point| {
+            let mut source_points = Vec::new();
+            source.collect_points_into(&mut source_points);
+            for point in source_points {
                 let cmin = geodesic_min_distance_to_target(
                     point,
                     target_edges,
                     target_points,
                     metric,
                     cmax,
-                );
+                )?;
                 if cmin > cmax {
                     cmax = cmin;
                 }
-            });
+            }
             for &segment in source_edges {
                 let value = geodesic_max_min_on_source_segment(
                     segment,
@@ -235,34 +236,33 @@ impl Shape {
                     target_points,
                     metric,
                     cmax,
-                );
+                )?;
                 if value > cmax {
                     cmax = value;
                 }
             }
-            cmax
+            Ok(cmax)
         };
-        directed(
+        Ok(directed(
             self,
             &scratch.left_edges,
             &scratch.right_edges,
             &scratch.right_points,
-        )
+        )?
         .max(directed(
             other,
             &scratch.right_edges,
             &scratch.left_edges,
             &scratch.left_points,
-        ))
+        )?))
     }
 
     /// The closest pair of points (one on each geometry) under the geodesic
-    /// metric — the geodesic sibling of `Shape::nearest_points`. Touching
-    /// geometries return a shared contact point (the planar witness, which is
-    /// metric-independent at distance zero); otherwise both directed
-    /// vertex-to-segment witness sweeps run, carrying the running best so the
-    /// metric can prune segments that cannot improve it. `None` only when an
-    /// operand is empty.
+    /// metric — the geodesic sibling of `Shape::nearest_points`. Geodesic
+    /// segment intersections return one witness on each segment; otherwise
+    /// both directed vertex-to-segment witness sweeps run, carrying the
+    /// running best so the metric can prune segments that cannot improve it.
+    /// `None` only when an operand is empty.
     #[expect(
         clippy::impl_trait_in_params,
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"
@@ -271,7 +271,9 @@ impl Shape {
         &self,
         other: &Self,
         metric: &impl GeodesicMetric,
-    ) -> Option<(Point, Point)> {
+    ) -> Result<Option<(Point, Point)>> {
+        ensure_geodesic_linework(self)?;
+        ensure_geodesic_linework(other)?;
         let mut scratch_guard = GeodesicScratchGuard::take();
         let scratch = &mut scratch_guard.scratch;
         scratch.left_points.clear();
@@ -281,18 +283,22 @@ impl Shape {
         scratch.right_points.reserve(other.coord_count());
         other.collect_points_into(&mut scratch.right_points);
         if scratch.left_points.is_empty() || scratch.right_points.is_empty() {
-            return None;
+            return Ok(None);
         }
-        // A planar intersection is a true contact at distance zero, and the
-        // planar witness IS that shared point. Geodesic-only antimeridian
-        // crossings are deliberately NOT shortcut here: the planar witness would
-        // sit at the wrong location (the operands are planar-disjoint), so the
-        // directed witness sweeps below return the correct near-contact pair.
-        if self.intersects(other) {
-            return self.nearest_points(other);
+        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
+        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
+        for left_segment in &scratch.left_edges {
+            for right_segment in &scratch.right_edges {
+                if let Some(witness) = metric.segment_intersection(
+                    left_segment.start,
+                    left_segment.end,
+                    right_segment.start,
+                    right_segment.end,
+                )? {
+                    return Ok(Some(witness));
+                }
+            }
         }
-        collect_geodesic_segments_into(self, metric, &mut scratch.left_edges);
-        collect_geodesic_segments_into(other, metric, &mut scratch.right_edges);
         collect_point_only_into(self, &mut scratch.left_point_only);
         collect_point_only_into(other, &mut scratch.right_point_only);
         let reverse_order_offset = scratch.left_points.len()
@@ -308,7 +314,7 @@ impl Shape {
             &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
-        );
+        )?;
         let best = geodesic_capped_witness_sweep(
             &scratch.right_points,
             &scratch.left_edges,
@@ -320,21 +326,17 @@ impl Shape {
             &mut scratch.cap_lengths,
             &mut scratch.cap_groups,
             &mut scratch.rows,
-        );
-        best.map(|candidate| {
+        )?;
+        Ok(best.map(|candidate| {
             if candidate.swapped {
                 (candidate.target, candidate.probe)
             } else {
                 (candidate.probe, candidate.target)
             }
-        })
+        }))
     }
 
-    /// Whether any antimeridian-spanning segment of one geometry geodesically
-    /// crosses a segment of the other. Only spanning pairs (`|Δlon| > 180`) are
-    /// tested — every other crossing is already caught by the planar
-    /// `intersects` shortcut, so this stays cheap for ordinary geometries.
-    fn geodesic_segments_cross(&self, other: &Self, metric: &impl GeodesicMetric) -> bool {
+    fn geodesic_segments_cross(&self, other: &Self, metric: &impl GeodesicMetric) -> Result<bool> {
         geodesic_segments_cross_streaming(self, other, metric)
     }
 

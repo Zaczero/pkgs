@@ -394,7 +394,6 @@ impl HeapSize for GeodesicParts {
         self.points.heap_bytes()
             + self.segments.heap_bytes()
             + self.point_only.heap_bytes()
-            + self.antimeridian_segments.heap_bytes()
             + self.caps.heap_bytes()
             + self.facet_bvh.heap_bytes()
     }
@@ -612,7 +611,7 @@ pub trait GeodesicMetric {
 
     /// Precompute the ellipsoidal metadata shared by every exact probe of one
     /// segment.
-    fn make_segment(&self, start: Point, end: Point) -> GeodesicSegment;
+    fn make_segment(&self, start: Point, end: Point) -> Result<GeodesicSegment>;
 
     /// Geodesic distance (meters) from `point` to the geodesic segment `a`–`b`
     /// (or to `a` when degenerate). `best` is the smallest distance found so
@@ -623,13 +622,35 @@ pub trait GeodesicMetric {
         clippy::large_types_passed_by_value,
         reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
     )]
-    fn point_to_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> f64;
+    fn point_to_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> Result<f64>;
 
-    /// Whether the geodesic segments `a`–`b` and `c`–`d` properly cross on the
-    /// ellipsoid (used to detect a zero distance the planar test misses near
-    /// the antimeridian). Uses the orientation test on geodesic azimuth
-    /// sides.
-    fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> bool;
+    /// Whether the distance from `point` to `segment` is at most `limit`.
+    /// Implementations return `false` only after proving the whole segment is
+    /// outside the threshold.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    )]
+    fn point_to_segment_within(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        limit: f64,
+    ) -> Result<bool>;
+
+    /// Whether the selected shortest geodesic segments `a`–`b` and `c`–`d`
+    /// intersect on the ellipsoid.
+    fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> Result<bool>;
+
+    /// Certified intersection witness for two geodesic segments. `None` means
+    /// the documented segment solver found no intersection.
+    fn segment_intersection(
+        &self,
+        a: Point,
+        b: Point,
+        c: Point,
+        d: Point,
+    ) -> Result<Option<(Point, Point)>>;
 
     /// Geodesic length (meters) of segment `a`–`b`.
     fn segment_length(&self, a: Point, b: Point) -> f64;
@@ -649,7 +670,12 @@ pub trait GeodesicMetric {
         clippy::large_types_passed_by_value,
         reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
     )]
-    fn locate_on_segment(&self, point: Point, segment: GeodesicSegment, best: f64) -> (f64, f64);
+    fn locate_on_segment(
+        &self,
+        point: Point,
+        segment: GeodesicSegment,
+        best: f64,
+    ) -> Result<(f64, f64)>;
 
     /// The full nearest-point witness of `point` on segment `a`–`b`: distance,
     /// the foot point on the ellipsoid (carrying interpolated Z/M), and the
@@ -665,7 +691,7 @@ pub trait GeodesicMetric {
         point: Point,
         segment: GeodesicSegment,
         best: f64,
-    ) -> GeodesicSegmentWitness;
+    ) -> Result<GeodesicSegmentWitness>;
 
     /// A cheap (no-inverse) lower bound on the geodesic distance between two
     /// points — the auxiliary-sphere reduced-latitude bound. Drives the

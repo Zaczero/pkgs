@@ -83,7 +83,7 @@ impl Shape {
 
     pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
         let index = LineIndex::build(self, &PlanarMetric)?;
-        Ok(index.locate_point(point, normalized, &PlanarMetric))
+        index.locate_point(point, normalized, &PlanarMetric)
     }
 
     /// Split this lineal geometry at each splitter point that lies on it.
@@ -146,9 +146,8 @@ impl ShapeData {
     }
 
     pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
-        Ok(self
-            .line_index()?
-            .locate_point(point, normalized, &PlanarMetric))
+        self.line_index()?
+            .locate_point(point, normalized, &PlanarMetric)
     }
 }
 
@@ -596,7 +595,7 @@ impl Shape {
         for [start, end] in vertices.array_windows::<2>() {
             let length = metric.length(*start, *end);
             let (distance, measure) =
-                metric.locate_with_measure(point, *start, *end, length, best_distance);
+                metric.locate_with_measure(point, *start, *end, length, best_distance)?;
             if distance < best_distance {
                 best_distance = distance;
                 best_measure = measure;

@@ -26,7 +26,8 @@ pub trait SegmentMetric {
     fn interpolate(&self, start: Point, end: Point, fraction: f64) -> Point;
     /// Whether locate sweeps should refine segments in cheap-lower-bound
     /// order with early termination (worth it only when refinement is
-    /// expensive — the geodesic golden-section; planar projection is cheaper
+    /// expensive because it evaluates the certified geodesic segment kernel;
+    /// planar projection is cheaper
     /// than the ordering would be).
     const ORDERED_LOCATE: bool = false;
 
@@ -39,9 +40,16 @@ pub trait SegmentMetric {
     /// `(distance to probe, along-segment offset of the projection)`.
     /// `length` is the segment's cached metric length and `best` the running
     /// minimum distance: metrics with expensive refinement (geodesic
-    /// golden-section) may return any distance `>= best` once a cheap bound
+    /// may return any distance `>= best` once a cheap bound
     /// proves the segment cannot improve on it.
-    fn locate(&self, probe: Point, start: Point, end: Point, length: f64, best: f64) -> (f64, f64);
+    fn locate(
+        &self,
+        probe: Point,
+        start: Point,
+        end: Point,
+        length: f64,
+        best: f64,
+    ) -> Result<(f64, f64)>;
 
     /// Locate a probe and return the interpolated M value at its foot. Planar
     /// metrics override this to retain certified projection ratios that may be
@@ -53,17 +61,17 @@ pub trait SegmentMetric {
         end: Point,
         length: f64,
         best: f64,
-    ) -> (f64, f64) {
-        let (distance, along) = self.locate(probe, start, end, length, best);
+    ) -> Result<(f64, f64)> {
+        let (distance, along) = self.locate(probe, start, end, length, best)?;
         let fraction = if length == 0.0 {
             0.0
         } else {
             (along / length).clamp(0.0, 1.0)
         };
-        (
+        Ok((
             distance,
             interpolate_f64(start.m().unwrap_or(0.0), end.m().unwrap_or(0.0), fraction),
-        )
+        ))
     }
 }
 
@@ -89,9 +97,9 @@ impl SegmentMetric for PlanarMetric {
         end: Point,
         length: f64,
         _best: f64,
-    ) -> (f64, f64) {
+    ) -> Result<(f64, f64)> {
         let (distance, projection) = planar_projection(probe, start, end);
-        (distance, projection.scale(length))
+        Ok((distance, projection.scale(length)))
     }
 
     fn locate_with_measure(
@@ -101,14 +109,14 @@ impl SegmentMetric for PlanarMetric {
         end: Point,
         _length: f64,
         _best: f64,
-    ) -> (f64, f64) {
+    ) -> Result<(f64, f64)> {
         let (distance, projection) = planar_projection(probe, start, end);
         // Keep the certified projection ratio until measure interpolation;
         // converting a subnormal ratio to along-distance and back loses it.
-        (
+        Ok((
             distance,
             projection.interpolate_point(start, end).m().unwrap_or(0.0),
-        )
+        ))
     }
 }
 
@@ -173,8 +181,8 @@ impl<M: GeodesicMetric> SegmentMetric for M {
         end: Point,
         _length: f64,
         best: f64,
-    ) -> (f64, f64) {
-        self.locate_on_segment(probe, self.make_segment(start, end), best)
+    ) -> Result<(f64, f64)> {
+        self.locate_on_segment(probe, self.make_segment(start, end)?, best)
     }
 }
 
@@ -478,9 +486,9 @@ impl LineIndex {
         probe: Point,
         normalized: bool,
         metric: &M,
-    ) -> f64 {
+    ) -> Result<f64> {
         if self.total == 0.0 {
-            return 0.0;
+            return Ok(0.0);
         }
         let mut best_distance = f64::INFINITY;
         let mut best_offset = 0.0;
@@ -546,7 +554,7 @@ impl LineIndex {
                 let offset = self.prefix[index as usize];
                 let length = self.prefix[index as usize + 1] - offset;
                 let (distance, along) =
-                    metric.locate(probe, segment.start, segment.end, length, best_distance);
+                    metric.locate(probe, segment.start, segment.end, length, best_distance)?;
                 #[expect(clippy::float_cmp, reason = "tie-break preserves first-wins order")]
                 let tie = distance == best_distance && index < best_index;
                 if distance < best_distance || tie {
@@ -561,7 +569,7 @@ impl LineIndex {
             {
                 let length = self.prefix[index + 1] - offset;
                 let (distance, along) =
-                    metric.locate(probe, segment.start, segment.end, length, best_distance);
+                    metric.locate(probe, segment.start, segment.end, length, best_distance)?;
                 if distance < best_distance {
                     best_distance = distance;
                     best_offset = offset + along;
@@ -569,9 +577,9 @@ impl LineIndex {
             }
         }
         if normalized {
-            best_offset / self.total
+            Ok(best_offset / self.total)
         } else {
-            best_offset
+            Ok(best_offset)
         }
     }
 }

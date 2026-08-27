@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::geometry::distance::{CapGroup, RowProbe};
 use crate::geometry::{GeodesicMetric, GeodesicSegment, Point, Shape};
 #[derive(Default)]
@@ -72,10 +73,19 @@ pub(crate) fn collect_geodesic_segments_into(
     shape: &Shape,
     metric: &impl GeodesicMetric,
     out: &mut Vec<GeodesicSegment>,
-) {
+) -> Result<()> {
     out.clear();
     out.reserve(shape.segment_count());
-    shape.for_each_vertex_pair(|start, end| out.push(metric.make_segment(start, end)));
+    let mut error = None;
+    shape.for_each_vertex_pair(|start, end| {
+        if error.is_none() {
+            match metric.make_segment(start, end) {
+                Ok(segment) => out.push(segment),
+                Err(value) => error = Some(value),
+            }
+        }
+    });
+    error.map_or(Ok(()), Err)
 }
 
 pub(crate) fn collect_point_only_into(shape: &Shape, out: &mut Vec<Point>) {

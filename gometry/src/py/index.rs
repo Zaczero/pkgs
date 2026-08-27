@@ -335,7 +335,7 @@ impl PreparedIndexQuery {
             None if need_geodesic_cap => row.with_shape(|shape| {
                 geodesic_metric.and_then(|(crs, state)| {
                     crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
-                        Ok(shape.geodesic_cap(ellipsoid))
+                        shape.geodesic_cap(ellipsoid)
                     })
                     .ok()
                     .flatten()

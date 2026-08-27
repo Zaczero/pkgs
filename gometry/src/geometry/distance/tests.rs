@@ -219,46 +219,6 @@ pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape 
     )
 }
 
-pub(super) fn dense_polygon(cx: f64, cy: f64, radius: f64, vertices: usize) -> Shape {
-    let mut points = (0..vertices)
-        .map(|index| {
-            let angle = (index as f64 / vertices as f64) * std::f64::consts::TAU;
-            p(cx + radius * angle.cos(), cy + radius * angle.sin())
-        })
-        .collect::<Vec<_>>();
-    points.push(points[0]);
-    polygon(points)
-}
-
-pub(super) fn dense_antimeridian_polygon() -> Shape {
-    let mut points = Vec::new();
-    for index in 0..35 {
-        let t = f64::from(index) / 34.0;
-        points.push(p(179.0, -4.0 + t * 8.0));
-    }
-    for index in 0..35 {
-        let t = f64::from(index) / 34.0;
-        points.push(p(-179.0, 4.0 - t * 8.0));
-    }
-    points.push(points[0]);
-    polygon(points)
-}
-
-pub(super) fn dense_near_pole_polygon() -> Shape {
-    let mut points = (0..72)
-        .map(|index| {
-            let angle = (f64::from(index) / 72.0) * std::f64::consts::TAU;
-            p(angle.to_degrees() - 180.0, 87.0 + 1.5 * angle.sin())
-        })
-        .collect::<Vec<_>>();
-    points.push(points[0]);
-    polygon(points)
-}
-
-pub(super) fn dense_degenerate_line() -> Shape {
-    line(std::iter::repeat_with(|| p(12.0, 3.0)).take(80).collect())
-}
-
 pub(super) fn dense_tie_lines() -> Shape {
     let mut lines = vec![vec![p(1.0, -2.0), p(1.0, 2.0)], vec![
         p(-1.0, -2.0),
@@ -274,7 +234,13 @@ pub(super) fn dense_tie_lines() -> Shape {
 
 fn full_edges(shape: &Shape, metric: &impl GeodesicMetric) -> Vec<GeodesicSegment> {
     let mut edges = Vec::new();
-    shape.for_each_vertex_pair(|start, end| edges.push(metric.make_segment(start, end)));
+    shape.for_each_vertex_pair(|start, end| {
+        edges.push(
+            metric
+                .make_segment(start, end)
+                .expect("unique test segment"),
+        );
+    });
     edges
 }
 
@@ -294,9 +260,11 @@ pub(super) fn brute_geodesic_distance(
     let left_edges = full_edges(left, metric);
     let right_edges = full_edges(right, metric);
     if left_edges.iter().any(|left| {
-        right_edges
-            .iter()
-            .any(|right| metric.segments_cross(left.start, left.end, right.start, right.end))
+        right_edges.iter().any(|right| {
+            metric
+                .segments_cross(left.start, left.end, right.start, right.end)
+                .expect("intersection supported")
+        })
     }) {
         return 0.0;
     }
@@ -322,7 +290,11 @@ fn brute_directed_geodesic_distance(
 ) -> f64 {
     for &probe in probes {
         for &segment in target_edges {
-            best = best.min(metric.point_to_segment(probe, segment, f64::INFINITY));
+            best = best.min(
+                metric
+                    .point_to_segment(probe, segment, f64::INFINITY)
+                    .expect("point-to-segment proof should close"),
+            );
         }
         for &target in target_points {
             best = best.min(metric.segment_length(probe, target));
@@ -362,13 +334,30 @@ pub(super) fn brute_geodesic_nearest_points(
     }
     let left_edges = full_edges(left, metric);
     let right_edges = full_edges(right, metric);
+    for left_segment in &left_edges {
+        for right_segment in &right_edges {
+            if let Some(witness) = metric
+                .segment_intersection(
+                    left_segment.start,
+                    left_segment.end,
+                    right_segment.start,
+                    right_segment.end,
+                )
+                .expect("intersection supported")
+            {
+                return Some(witness);
+            }
+        }
+    }
     let left_point_only = left.point_only_points();
     let right_point_only = right.point_only_points();
     let mut best = f64::INFINITY;
     let mut pair: Option<(Point, Point)> = None;
     for &probe in &left_points {
         for &segment in &right_edges {
-            let witness = metric.point_segment_witness(probe, segment, best);
+            let witness = metric
+                .point_segment_witness(probe, segment, best)
+                .expect("point-to-segment proof should close");
             if witness.distance < best {
                 best = witness.distance;
                 pair = Some((probe, witness.foot));
@@ -384,7 +373,9 @@ pub(super) fn brute_geodesic_nearest_points(
     }
     for &probe in &right_points {
         for &segment in &left_edges {
-            let witness = metric.point_segment_witness(probe, segment, best);
+            let witness = metric
+                .point_segment_witness(probe, segment, best)
+                .expect("point-to-segment proof should close");
             if witness.distance < best {
                 best = witness.distance;
                 pair = Some((witness.foot, probe));
@@ -414,11 +405,6 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
             line(vec![pzm(-1.0, 1.0, 3.0, 30.0), pzm(1.0, 1.0, 4.0, 40.0)]),
         ),
         (
-            "polygon_boundary",
-            Shape::Point(p(4.0, 1.0)),
-            polygon(vec![p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 0.0)]),
-        ),
-        (
             "multipoint",
             multipoint(vec![p(-4.0, 0.0), p(4.0, 0.0), p(0.0, 3.0)]),
             line(vec![p(0.5, -1.0), p(0.5, 1.0)]),
@@ -439,11 +425,6 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
                 ]
                 .into(),
             ),
-        ),
-        (
-            "degenerate_segment",
-            line(vec![pzm(10.0, 0.0, 1.0, 2.0), pzm(10.0, 0.0, 1.0, 2.0)]),
-            Shape::Point(p(11.0, 0.0)),
         ),
         (
             "antimeridian_spanning_segment",
@@ -565,24 +546,6 @@ pub(super) fn assert_same_witness(
 pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bool)> {
     vec![
         (
-            "point_inside_polygon",
-            Shape::Point(p(0.0, 0.0)),
-            dense_polygon(0.0, 0.0, 2.0, 96),
-            true,
-        ),
-        (
-            "point_outside_polygon",
-            Shape::Point(p(5.0, 0.0)),
-            dense_polygon(0.0, 0.0, 2.0, 96),
-            true,
-        ),
-        (
-            "point_on_boundary_polygon",
-            Shape::Point(p(2.0, 0.0)),
-            dense_polygon(0.0, 0.0, 2.0, 96),
-            true,
-        ),
-        (
             "complex_line",
             multipoint(vec![p(-2.0, 1.0), p(2.0, -1.0), p(0.5, 1.5)]),
             dense_line(-2.0, 0.0, 96),
@@ -593,24 +556,6 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
             Shape::Point(p(0.0, 0.0)),
             multipoint(vec![p(1.0, 0.0), p(-1.0, 0.0), p(0.0, 1.0)]),
             false,
-        ),
-        (
-            "antimeridian_polygon",
-            Shape::Point(p(178.0, 0.0)),
-            dense_antimeridian_polygon(),
-            true,
-        ),
-        (
-            "near_pole_polygon",
-            Shape::Point(p(15.0, 85.0)),
-            dense_near_pole_polygon(),
-            true,
-        ),
-        (
-            "degenerate",
-            Shape::Point(p(12.5, 3.0)),
-            dense_degenerate_line(),
-            true,
         ),
         (
             "nearest_tie",

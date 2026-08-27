@@ -134,13 +134,13 @@ impl ShapeData {
         );
         let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
         let other_parts = other.geodesic_parts(other_cache, key, metric)?;
-        Ok(geodesic_distance_with_parts(
+        geodesic_distance_with_parts(
             self.shape(),
             &self_parts,
             other.shape(),
             &other_parts,
             metric,
-        ))
+        )
     }
 
     /// Threshold-aware geodesic `dwithin` with cached per-shape geodesic
@@ -169,14 +169,14 @@ impl ShapeData {
         );
         let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
         let other_parts = other.geodesic_parts(other_cache, key, metric)?;
-        Ok(geodesic_dwithin_with_parts(
+        geodesic_dwithin_with_parts(
             self.shape(),
             &self_parts,
             other.shape(),
             &other_parts,
             metric,
             distance,
-        ))
+        )
     }
 
     /// Boundary-inclusive `covers_point` on cached prepared state — the
@@ -354,12 +354,11 @@ impl ShapeData {
             .map(|(x, y)| {
                 crate::crs::ensure_geographic_lonlat(x, y)?;
                 Ok(geodesic_point_distance_with_parts(
-                    self.shape(),
                     Point::new_unchecked_xy(x, y),
                     &parts,
                     metric,
                     &mut stack,
-                ))
+                )?)
             })
             .collect()
     }
@@ -388,13 +387,12 @@ impl ShapeData {
             .map(|(x, y)| {
                 crate::crs::ensure_geographic_lonlat(x, y)?;
                 Ok(geodesic_point_dwithin_with_parts(
-                    self.shape(),
                     Point::new_unchecked_xy(x, y),
                     &parts,
                     metric,
                     distance,
                     &mut stack,
-                ))
+                )?)
             })
             .collect()
     }

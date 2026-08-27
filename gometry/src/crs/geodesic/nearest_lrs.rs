@@ -99,7 +99,7 @@ pub(crate) fn geodesic_line_locate(
             state.generation,
             &metric,
         )?;
-        Ok(index.locate_point(point, distance_mode.is_normalized(), &metric))
+        index.locate_point(point, distance_mode.is_normalized(), &metric)
     })
 }
 
@@ -176,5 +176,5 @@ pub(crate) fn geodesic_line_locate_coordseq(
     ensure_geographic_coordseq(line)?;
     ensure_geographic_lonlat(query.x, query.y)?;
     let index = LineIndex::build_coordseq(line, metric)?;
-    Ok(index.locate_point(query, distance_mode.is_normalized(), metric))
+    index.locate_point(query, distance_mode.is_normalized(), metric)
 }

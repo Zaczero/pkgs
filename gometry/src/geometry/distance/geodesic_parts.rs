@@ -1,41 +1,66 @@
+use crate::error::Result;
 use crate::geometry::distance::{
     CapGroup, GEODESIC_CAP_GROUP, GeodesicScratchGuard, RowProbe, collect_point_only_into,
     geodesic_ordered_rows_into, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicPartsKey, GeodesicSegment, Point,
-    Segment, Shape, ShapeData, XY, predicates,
+    Shape, ShapeData,
 };
-pub(crate) fn geodesic_pair_spans_antimeridian(start: Point, end: Point) -> bool {
-    predicates::spans_antimeridian(Segment {
-        start: XY::new(start.x, start.y),
-        end: XY::new(end.x, end.y),
-    })
-}
 
+/// Validate the geodesic linework domain and reject filled areal operands.
+/// Filled polygon interiors need a geodesic point-in-polygon certificate;
+/// using planar containment here would manufacture a false zero distance.
+pub(crate) fn ensure_geodesic_linework(shape: &Shape) -> Result<()> {
+    match shape {
+        Shape::Polygon(_) | Shape::MultiPolygon(_) => Err(crate::crs::CrsError::message(
+            "geodesic distance for polygon interiors is unsupported",
+        )),
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                ensure_geodesic_linework(geometry)?;
+            }
+            Ok(())
+        },
+        _ => crate::crs::ensure_geographic_domain(shape),
+    }
+}
 pub(crate) fn geodesic_cap_streaming(
     shape: &Shape,
     metric: &impl GeodesicMetric,
-) -> Option<(Point, f64)> {
+) -> Result<Option<(Point, f64)>> {
+    ensure_geodesic_linework(shape)?;
     let mut anchor = None;
     shape.for_each_point(|point| {
         if anchor.is_none() {
             anchor = Some(point);
         }
     });
-    let anchor = anchor?;
+    let Some(anchor) = anchor else {
+        return Ok(None);
+    };
     let mut reach = 0.0_f64;
+    let mut error = None;
     shape.for_each_vertex_pair(|start, end| {
-        let length = metric.segment_length(start, end);
+        let length = match metric.make_segment(start, end) {
+            Ok(segment) => segment.length,
+            Err(value) => {
+                error = Some(value);
+                return;
+            },
+        };
         let from_anchor = metric.segment_length(anchor, start);
         reach = reach.max(from_anchor + length);
     });
+    if let Some(error) = error {
+        return Err(error);
+    }
     let mut point_only = Vec::new();
     collect_point_only_into(shape, &mut point_only);
     for point in point_only {
         reach = reach.max(metric.segment_length(anchor, point));
     }
-    Some((anchor, reach))
+    Ok(Some((anchor, reach)))
 }
 
 pub(crate) fn geodesic_cap_from_parts(
@@ -66,11 +91,11 @@ impl ShapeData {
         flattening: f64,
         metric: &impl GeodesicMetric,
         state: &crate::crs::RuntimeState,
-    ) -> Option<(Point, f64)> {
+    ) -> Result<Option<(Point, f64)>> {
         let key =
             GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, state.generation);
         if let Some(parts) = self.cached_geodesic_parts(frame_cache, &key) {
-            return geodesic_cap_from_parts(&parts, metric);
+            return Ok(geodesic_cap_from_parts(&parts, metric));
         }
         self.shape().geodesic_cap(metric)
     }
@@ -80,61 +105,43 @@ pub(crate) fn geodesic_segments_cross_streaming(
     left: &Shape,
     right: &Shape,
     metric: &impl GeodesicMetric,
-) -> bool {
+) -> Result<bool> {
     let mut cross = false;
+    let mut error = None;
     left.for_each_vertex_pair(|l_start, l_end| {
-        if cross || !geodesic_pair_spans_antimeridian(l_start, l_end) {
+        if cross || error.is_some() {
             return;
         }
         right.for_each_vertex_pair(|r_start, r_end| {
-            if cross {
+            if cross || error.is_some() {
                 return;
             }
-            if metric.segments_cross(l_start, l_end, r_start, r_end) {
-                cross = true;
+            match metric.segments_cross(l_start, l_end, r_start, r_end) {
+                Ok(true) => cross = true,
+                Ok(false) => {},
+                Err(value) => error = Some(value),
             }
         });
     });
-    if cross {
-        return true;
+    if let Some(error) = error {
+        return Err(error);
     }
-    right.for_each_vertex_pair(|r_start, r_end| {
-        if cross || !geodesic_pair_spans_antimeridian(r_start, r_end) {
-            return;
-        }
-        left.for_each_vertex_pair(|l_start, l_end| {
-            if cross {
-                return;
-            }
-            if metric.segments_cross(l_start, l_end, r_start, r_end) {
-                cross = true;
-            }
-        });
-    });
-    cross
+    Ok(cross)
 }
 
 pub(crate) fn geodesic_segments_cross_parts(
     left: &GeodesicParts,
     right: &GeodesicParts,
     metric: &impl GeodesicMetric,
-) -> bool {
-    if left.antimeridian_segments.is_empty() && right.antimeridian_segments.is_empty() {
-        return false;
+) -> Result<bool> {
+    for segment in &left.segments {
+        for other in &right.segments {
+            if metric.segments_cross(segment.start, segment.end, other.start, other.end)? {
+                return Ok(true);
+            }
+        }
     }
-
-    // Preserve the shape-level predicate exactly: a candidate pair is tested
-    // when EITHER segment spans the antimeridian.
-    left.antimeridian_segments.iter().any(|segment| {
-        right
-            .segments
-            .iter()
-            .any(|other| metric.segments_cross(segment.start, segment.end, other.start, other.end))
-    }) || right.antimeridian_segments.iter().any(|segment| {
-        left.segments
-            .iter()
-            .any(|other| metric.segments_cross(other.start, other.end, segment.start, segment.end))
-    })
+    Ok(false)
 }
 
 pub(crate) fn geodesic_distance_with_parts(
@@ -143,16 +150,12 @@ pub(crate) fn geodesic_distance_with_parts(
     right: &Shape,
     right_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
-) -> f64 {
-    if left.intersects(right) {
-        return 0.0;
-    }
-    if geodesic_segments_cross_parts(left_parts, right_parts, metric) {
-        return 0.0;
+) -> Result<f64> {
+    if geodesic_segments_cross_parts(left_parts, right_parts, metric)? {
+        return Ok(0.0);
     }
     if matches!(left, Shape::Point(_)) {
         return geodesic_point_distance_with_parts(
-            right,
             left_parts.points[0],
             right_parts,
             metric,
@@ -161,7 +164,6 @@ pub(crate) fn geodesic_distance_with_parts(
     }
     if matches!(right, Shape::Point(_)) {
         return geodesic_point_distance_with_parts(
-            left,
             right_parts.points[0],
             left_parts,
             metric,
@@ -169,8 +171,13 @@ pub(crate) fn geodesic_distance_with_parts(
         );
     }
     let mut best = f64::INFINITY;
-    best = geodesic_sweep_with_parts(right, &left_parts.points, right_parts, metric, best);
-    geodesic_sweep_with_parts(left, &right_parts.points, left_parts, metric, best)
+    best = geodesic_sweep_with_parts(&left_parts.points, right_parts, metric, best)?;
+    Ok(geodesic_sweep_with_parts(
+        &right_parts.points,
+        left_parts,
+        metric,
+        best,
+    )?)
 }
 
 pub(crate) fn geodesic_dwithin_with_parts(
@@ -180,16 +187,12 @@ pub(crate) fn geodesic_dwithin_with_parts(
     right_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     distance: f64,
-) -> bool {
-    if left.intersects(right) {
-        return true;
-    }
-    if geodesic_segments_cross_parts(left_parts, right_parts, metric) {
-        return true;
+) -> Result<bool> {
+    if geodesic_segments_cross_parts(left_parts, right_parts, metric)? {
+        return Ok(true);
     }
     if matches!(left, Shape::Point(_)) {
         return geodesic_point_dwithin_with_parts(
-            right,
             left_parts.points[0],
             right_parts,
             metric,
@@ -199,7 +202,6 @@ pub(crate) fn geodesic_dwithin_with_parts(
     }
     if matches!(right, Shape::Point(_)) {
         return geodesic_point_dwithin_with_parts(
-            left,
             right_parts.points[0],
             left_parts,
             metric,
@@ -207,14 +209,15 @@ pub(crate) fn geodesic_dwithin_with_parts(
             &mut Vec::new(),
         );
     }
-    geodesic_dwithin_sweep_with_parts(right, &left_parts.points, right_parts, metric, distance)
-        || geodesic_dwithin_sweep_with_parts(
-            left,
-            &right_parts.points,
-            left_parts,
-            metric,
-            distance,
-        )
+    Ok(
+        geodesic_dwithin_sweep_with_parts(&left_parts.points, right_parts, metric, distance)?
+            || geodesic_dwithin_sweep_with_parts(
+                &right_parts.points,
+                left_parts,
+                metric,
+                distance,
+            )?,
+    )
 }
 
 pub(crate) fn geodesic_nearest_points_with_parts(
@@ -223,39 +226,45 @@ pub(crate) fn geodesic_nearest_points_with_parts(
     right: &Shape,
     right_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
-) -> Option<(Point, Point)> {
+) -> Result<Option<(Point, Point)>> {
     if left_parts.points.is_empty() || right_parts.points.is_empty() {
-        return None;
+        return Ok(None);
     }
-    if left.intersects(right) {
-        return left.nearest_points(right);
+    for segment in &left_parts.segments {
+        for other in &right_parts.segments {
+            if let Some(witness) =
+                metric.segment_intersection(segment.start, segment.end, other.start, other.end)?
+            {
+                return Ok(Some(witness));
+            }
+        }
     }
     if matches!(left, Shape::Point(_)) {
-        return geodesic_witness_sweep_with_parts(
+        return Ok(geodesic_witness_sweep_with_parts(
             &left_parts.points,
             right_parts,
             metric,
             None,
             0,
             false,
-        )
-        .map(|candidate| (candidate.probe, candidate.target));
+        )?
+        .map(|candidate| (candidate.probe, candidate.target)));
     }
     if matches!(right, Shape::Point(_)) {
-        return geodesic_witness_sweep_with_parts(
+        return Ok(geodesic_witness_sweep_with_parts(
             &right_parts.points,
             left_parts,
             metric,
             None,
             0,
             true,
-        )
-        .map(|candidate| (candidate.target, candidate.probe));
+        )?
+        .map(|candidate| (candidate.target, candidate.probe)));
     }
     let reverse_order_offset =
         left_parts.points.len() * (right_parts.segments.len() + right_parts.point_only.len());
     let best =
-        geodesic_witness_sweep_with_parts(&left_parts.points, right_parts, metric, None, 0, false);
+        geodesic_witness_sweep_with_parts(&left_parts.points, right_parts, metric, None, 0, false)?;
     let best = geodesic_witness_sweep_with_parts(
         &right_parts.points,
         left_parts,
@@ -263,14 +272,14 @@ pub(crate) fn geodesic_nearest_points_with_parts(
         best,
         reverse_order_offset,
         true,
-    );
-    best.map(|candidate| {
+    )?;
+    Ok(best.map(|candidate| {
         if candidate.swapped {
             (candidate.target, candidate.probe)
         } else {
             (candidate.probe, candidate.target)
         }
-    })
+    }))
 }
 
 /// One directed geodesic sweep `vertices -> (segments + isolated points)`
@@ -288,10 +297,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
 ///    with one trigonometric evaluation; surviving members gate individually
 ///    (`s(v, x) ≥ bound(v, start) − length`) before any exact Karney work.
 ///
-/// `target` keeps the historical per-vertex containment short-circuit
-/// (evaluated lazily — pruned vertices never pay it).
 pub(crate) fn geodesic_capped_sweep(
-    target: &Shape,
     vertices: &[Point],
     segments: &[GeodesicSegment],
     point_only: &[Point],
@@ -300,11 +306,11 @@ pub(crate) fn geodesic_capped_sweep(
     cap_lengths: &mut Vec<f64>,
     cap_groups: &mut Vec<CapGroup>,
     rows: &mut Vec<RowProbe>,
-) -> f64 {
+) -> Result<f64> {
     let Some(caps) =
         geodesic_sweep_caps_into(segments, point_only, metric, cap_lengths, cap_groups)
     else {
-        return best;
+        return Ok(best);
     };
     geodesic_ordered_rows_into(vertices, caps, metric, false, rows);
     for &RowProbe {
@@ -316,9 +322,6 @@ pub(crate) fn geodesic_capped_sweep(
             break;
         }
         let vertex = vertices[vertex_index as usize];
-        if target.contains_point(vertex) {
-            return 0.0;
-        }
         // Tier 3: group caps, then member caps, then exact.
         for (
             group_index,
@@ -339,7 +342,7 @@ pub(crate) fn geodesic_capped_sweep(
                 if bound > best {
                     continue;
                 }
-                best = best.min(metric.point_to_segment(vertex, *segment, best));
+                best = best.min(metric.point_to_segment(vertex, *segment, best)?);
             }
         }
         for &point in point_only {
@@ -349,19 +352,18 @@ pub(crate) fn geodesic_capped_sweep(
             best = best.min(metric.segment_length(vertex, point));
         }
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn geodesic_capped_sweep_with_parts(
-    target: &Shape,
     vertices: &[Point],
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     mut best: f64,
     rows: &mut Vec<RowProbe>,
-) -> f64 {
+) -> Result<f64> {
     let Some(caps) = target_parts.caps.as_ref() else {
-        return best;
+        return Ok(best);
     };
     geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
     for &RowProbe {
@@ -373,9 +375,6 @@ pub(crate) fn geodesic_capped_sweep_with_parts(
             break;
         }
         let vertex = vertices[vertex_index as usize];
-        if target.contains_point(vertex) {
-            return 0.0;
-        }
         for (
             group_index,
             &CapGroup {
@@ -396,7 +395,7 @@ pub(crate) fn geodesic_capped_sweep_with_parts(
                 if bound > best {
                     continue;
                 }
-                best = best.min(metric.point_to_segment(vertex, segment, best));
+                best = best.min(metric.point_to_segment(vertex, segment, best)?);
             }
         }
         if !target_parts.point_only.is_empty() {
@@ -408,76 +407,68 @@ pub(crate) fn geodesic_capped_sweep_with_parts(
             }
         }
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn geodesic_sweep_with_parts(
-    target: &Shape,
     vertices: &[Point],
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     mut best: f64,
-) -> f64 {
+) -> Result<f64> {
     let mut scratch_guard = GeodesicScratchGuard::take();
     let scratch = &mut scratch_guard.scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         for &vertex in vertices {
-            if target.contains_point(vertex) {
-                return 0.0;
-            }
             best = bvh
                 .min_point_distance(vertex, target_parts, metric, &mut scratch.stack, best)
-                .unwrap_or_else(|| {
-                    geodesic_capped_sweep_with_parts(
-                        target,
-                        std::slice::from_ref(&vertex),
-                        target_parts,
-                        metric,
-                        best,
-                        &mut scratch.rows,
+                .and_then(|value| {
+                    value.map_or_else(
+                        || {
+                            geodesic_capped_sweep_with_parts(
+                                std::slice::from_ref(&vertex),
+                                target_parts,
+                                metric,
+                                best,
+                                &mut scratch.rows,
+                            )
+                        },
+                        Ok,
                     )
-                });
+                })?;
         }
-        best
+        Ok(best)
     } else {
-        geodesic_capped_sweep_with_parts(
-            target,
-            vertices,
-            target_parts,
-            metric,
-            best,
-            &mut scratch.rows,
-        )
+        geodesic_capped_sweep_with_parts(vertices, target_parts, metric, best, &mut scratch.rows)
     }
 }
 
 pub(crate) fn geodesic_point_distance_with_parts(
-    target: &Shape,
     point: Point,
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     stack: &mut Vec<u32>,
-) -> f64 {
+) -> Result<f64> {
     let mut scratch_guard = GeodesicScratchGuard::take();
     let scratch = &mut scratch_guard.scratch;
-    if target.contains_point(point) || target.intersects(&Shape::Point(point)) {
-        return 0.0;
-    }
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         bvh.min_point_distance(point, target_parts, metric, stack, f64::INFINITY)
-            .unwrap_or_else(|| {
-                geodesic_capped_sweep_with_parts(
-                    target,
-                    std::slice::from_ref(&point),
-                    target_parts,
-                    metric,
-                    f64::INFINITY,
-                    &mut scratch.rows,
+            .and_then(|value| {
+                value.map_or_else(
+                    || {
+                        geodesic_capped_sweep_with_parts(
+                            std::slice::from_ref(&point),
+                            target_parts,
+                            metric,
+                            f64::INFINITY,
+                            &mut scratch.rows,
+                        )
+                    },
+                    Ok,
                 )
             })
     } else {
         geodesic_capped_sweep_with_parts(
-            target,
             std::slice::from_ref(&point),
             target_parts,
             metric,
@@ -488,15 +479,14 @@ pub(crate) fn geodesic_point_distance_with_parts(
 }
 
 pub(crate) fn geodesic_capped_dwithin_with_parts(
-    target: &Shape,
     vertices: &[Point],
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     distance: f64,
     rows: &mut Vec<RowProbe>,
-) -> bool {
+) -> Result<bool> {
     let Some(caps) = target_parts.caps.as_ref() else {
-        return false;
+        return Ok(false);
     };
     geodesic_ordered_rows_into(vertices, caps.view(), metric, false, rows);
     for &RowProbe {
@@ -508,9 +498,6 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
             break;
         }
         let vertex = vertices[vertex_index as usize];
-        if target.contains_point(vertex) {
-            return true;
-        }
         for (
             group_index,
             &CapGroup {
@@ -531,8 +518,8 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                 if bound > distance {
                     continue;
                 }
-                if metric.point_to_segment(vertex, segment, distance) <= distance {
-                    return true;
+                if metric.point_to_segment_within(vertex, segment, distance)? {
+                    return Ok(true);
                 }
             }
         }
@@ -542,42 +529,46 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                     continue;
                 }
                 if metric.segment_length(vertex, point) <= distance {
-                    return true;
+                    return Ok(true);
                 }
             }
         }
     }
-    false
+    Ok(false)
 }
 
 pub(crate) fn geodesic_dwithin_sweep_with_parts(
-    target: &Shape,
     vertices: &[Point],
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     distance: f64,
-) -> bool {
+) -> Result<bool> {
     let mut scratch_guard = GeodesicScratchGuard::take();
     let scratch = &mut scratch_guard.scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
-        vertices.iter().any(|&vertex| {
-            target.contains_point(vertex)
-                || bvh
-                    .dwithin_point(vertex, target_parts, metric, &mut scratch.stack, distance)
-                    .unwrap_or_else(|| {
-                        geodesic_capped_dwithin_with_parts(
-                            target,
-                            std::slice::from_ref(&vertex),
-                            target_parts,
-                            metric,
-                            distance,
-                            &mut scratch.rows,
-                        )
-                    })
+        vertices.iter().try_fold(false, |found, &vertex| {
+            if found {
+                return Ok(true);
+            }
+            Ok(bvh
+                .dwithin_point(vertex, target_parts, metric, &mut scratch.stack, distance)
+                .and_then(|value| {
+                    value.map_or_else(
+                        || {
+                            geodesic_capped_dwithin_with_parts(
+                                std::slice::from_ref(&vertex),
+                                target_parts,
+                                metric,
+                                distance,
+                                &mut scratch.rows,
+                            )
+                        },
+                        Ok,
+                    )
+                })?)
         })
     } else {
         geodesic_capped_dwithin_with_parts(
-            target,
             vertices,
             target_parts,
             metric,
@@ -588,33 +579,32 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
 }
 
 pub(crate) fn geodesic_point_dwithin_with_parts(
-    target: &Shape,
     point: Point,
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     distance: f64,
     stack: &mut Vec<u32>,
-) -> bool {
+) -> Result<bool> {
     let mut scratch_guard = GeodesicScratchGuard::take();
     let scratch = &mut scratch_guard.scratch;
-    if target.contains_point(point) || target.intersects(&Shape::Point(point)) {
-        return true;
-    }
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         bvh.dwithin_point(point, target_parts, metric, stack, distance)
-            .unwrap_or_else(|| {
-                geodesic_capped_dwithin_with_parts(
-                    target,
-                    std::slice::from_ref(&point),
-                    target_parts,
-                    metric,
-                    distance,
-                    &mut scratch.rows,
+            .and_then(|value| {
+                value.map_or_else(
+                    || {
+                        geodesic_capped_dwithin_with_parts(
+                            std::slice::from_ref(&point),
+                            target_parts,
+                            metric,
+                            distance,
+                            &mut scratch.rows,
+                        )
+                    },
+                    Ok,
                 )
             })
     } else {
         geodesic_capped_dwithin_with_parts(
-            target,
             std::slice::from_ref(&point),
             target_parts,
             metric,

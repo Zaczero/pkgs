@@ -1,12 +1,5 @@
 use crate::boundary::geographic::normalized_geographic_pole;
-use crate::geometry::{Coordinates, Point, Polygon, Segment, Shape};
-
-/// Whether the geodesic short path between a segment's endpoints crosses the
-/// antimeridian, i.e. the lon/lat (planar) representation takes the long way
-/// round and can disagree with the true geodesic about crossings.
-pub(crate) fn spans_antimeridian(segment: Segment) -> bool {
-    (segment.start.x - segment.end.x).abs() > 180.0
-}
+use crate::geometry::{Coordinates, Point, Polygon, Shape};
 
 /// Longitude delta wrapped to ``(-180, 180]`` for pole-winding accumulation.
 fn wrap_longitude_delta(delta: f64) -> f64 {

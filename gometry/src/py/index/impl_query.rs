@@ -302,6 +302,8 @@ impl PySpatialIndex {
                             ellipsoid,
                             &runtime_state,
                         )
+                        .ok()
+                        .flatten()
                     })
                 }),
             ))
@@ -353,14 +355,14 @@ impl PySpatialIndex {
         let Some((anchor, reach)) =
             crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
                 let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
-                Ok(query.geodesic_cap_cached(
+                query.geodesic_cap_cached(
                     query_cache,
                     crs,
                     semi_major,
                     flattening,
                     ellipsoid,
                     &runtime_state,
-                ))
+                )
             })
             .ok()
             .flatten()

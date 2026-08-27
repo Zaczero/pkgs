@@ -400,7 +400,6 @@ pub(crate) struct GeodesicParts {
     /// Full-ordinate segments, so nearest witnesses preserve Z/M exactly.
     pub(in crate::geometry) segments: Box<[GeodesicSegment]>,
     pub(in crate::geometry) point_only: Box<[Point]>,
-    pub(in crate::geometry) antimeridian_segments: Box<[GeodesicSegment]>,
     pub(in crate::geometry) caps: Option<GeodesicSweepCaps>,
     pub(in crate::geometry) facet_bvh: std::sync::OnceLock<Option<GeodesicFacetBvh>>,
 }
@@ -412,8 +411,6 @@ pub struct GeodesicSegment {
     pub(crate) length: f64,
     /// Forward azimuth at `start` (= `azi1` of inverse(start, end)).
     pub(crate) azimuth0: f64,
-    /// Forward azimuth at `end` (= `azi2` of inverse(start, end)).
-    pub(crate) azimuth1: f64,
 }
 
 crate::heapless!(Point, Bounds, XY, Segment, GeodesicSegment);

@@ -90,13 +90,13 @@ impl ShapeData {
         );
         let self_parts = self.geodesic_parts(self_cache, key.clone(), metric)?;
         let other_parts = other.geodesic_parts(other_cache, key, metric)?;
-        Ok(geodesic_nearest_points_with_parts(
+        geodesic_nearest_points_with_parts(
             self.shape(),
             &self_parts,
             other.shape(),
             &other_parts,
             metric,
-        ))
+        )
     }
 
     /// [`geodesic_nearest_points_cached`](Self::geodesic_nearest_points_cached)

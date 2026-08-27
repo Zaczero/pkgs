@@ -8,9 +8,8 @@ use crate::geometry::distance::geodesic_parts::{
 use crate::geometry::distance::geodesic_sweep::geodesic_capped_witness_sweep_with_parts;
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
-    brute_geodesic_nearest_points, dense_antimeridian_polygon, dense_polygon,
-    geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases, geodesic_nearest_oracle_cases, line,
-    multipoint, p, polygon,
+    brute_geodesic_nearest_points, geodesic_bvh_oracle_cases, geodesic_distance_oracle_cases,
+    geodesic_nearest_oracle_cases, line, multipoint, p, polygon,
 };
 use crate::geometry::distance::{
     GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
@@ -24,13 +23,15 @@ fn brute_geodesic_directed_hausdorff(
     metric: &impl GeodesicMetric,
 ) -> f64 {
     let mut target_edges = Vec::new();
-    collect_geodesic_segments_into(target, metric, &mut target_edges);
+    collect_geodesic_segments_into(target, metric, &mut target_edges)
+        .expect("unique test segments");
     let mut target_points = Vec::new();
     target.collect_points_into(&mut target_points);
     let mut cmax = 0.0_f64;
     source.for_each_point(|point| {
         let cmin =
-            geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax);
+            geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax)
+                .expect("point-to-segment proof should close");
         if cmin > cmax {
             cmax = cmin;
         }
@@ -40,7 +41,8 @@ fn brute_geodesic_directed_hausdorff(
         for step in 0..=steps {
             let point = metric.interpolate(start, end, step as f64 / steps as f64);
             let cmin =
-                geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax);
+                geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax)
+                    .expect("point-to-segment proof should close");
             if cmin > cmax {
                 cmax = cmin;
             }
@@ -58,7 +60,7 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
     let peak = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let far = line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]);
     with_ellipsoid_metric("EPSG:4326", &[&peak, &far], |metric| {
-        let actual = peak.geodesic_hausdorff_distance(&far, metric);
+        let actual = peak.geodesic_hausdorff_distance(&far, metric)?;
         let expected = brute_geodesic_directed_hausdorff(&peak, &far, metric)
             .max(brute_geodesic_directed_hausdorff(&far, &peak, metric));
         assert_geodesic_close("interior_peak", actual, expected);
@@ -85,15 +87,14 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
             let vertices = probes.points_vec();
             let mut rows = Vec::new();
             let expected_distance = geodesic_capped_sweep_with_parts(
-                &target,
                 &vertices,
                 &target_parts,
                 metric,
                 f64::INFINITY,
                 &mut rows,
-            );
+            )?;
             let actual_distance =
-                geodesic_sweep_with_parts(&target, &vertices, &target_parts, metric, f64::INFINITY);
+                geodesic_sweep_with_parts(&vertices, &target_parts, metric, f64::INFINITY)?;
             assert_geodesic_close(
                 &format!("{name} distance"),
                 actual_distance,
@@ -107,20 +108,14 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 f64::next_up(expected_distance),
             ] {
                 let expected = geodesic_capped_dwithin_with_parts(
-                    &target,
                     &vertices,
                     &target_parts,
                     metric,
                     limit,
                     &mut rows,
-                );
-                let actual = geodesic_dwithin_sweep_with_parts(
-                    &target,
-                    &vertices,
-                    &target_parts,
-                    metric,
-                    limit,
-                );
+                )?;
+                let actual =
+                    geodesic_dwithin_sweep_with_parts(&vertices, &target_parts, metric, limit)?;
                 assert_eq!(actual, expected, "{name} dwithin {limit}");
             }
 
@@ -132,9 +127,15 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 0,
                 false,
                 &mut rows,
-            );
-            let actual_witness =
-                geodesic_witness_sweep_with_parts(&vertices, &target_parts, metric, None, 0, false);
+            )?;
+            let actual_witness = geodesic_witness_sweep_with_parts(
+                &vertices,
+                &target_parts,
+                metric,
+                None,
+                0,
+                false,
+            )?;
             assert_same_witness(name, actual_witness, expected_witness);
             Ok(())
         })?;
@@ -147,7 +148,7 @@ fn geodesic_distance_matches_brute_scalar_oracle() -> Result<()> {
     for (name, left, right) in geodesic_distance_oracle_cases() {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let expected = brute_geodesic_distance(&left, &right, metric);
-            let actual = left.geodesic_distance(&right, metric);
+            let actual = left.geodesic_distance(&right, metric)?;
             assert_geodesic_close(name, actual, expected);
             Ok(())
         })?;
@@ -173,16 +174,6 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
             line(vec![p(-1.0, 0.0), p(1.0, 0.0)]),
             Shape::Point(p(0.0, 0.0)),
         ),
-        (
-            "near_pole_polygon_line",
-            polygon(vec![
-                p(-20.0, 86.0),
-                p(20.0, 86.0),
-                p(0.0, 89.0),
-                p(-20.0, 86.0),
-            ]),
-            line(vec![p(-40.0, 87.5), p(40.0, 87.5)]),
-        ),
     ]);
     for (name, left, right) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
@@ -191,7 +182,7 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
             let right_data = ShapeData::new(right.clone());
             let left_cache = FrameDependentCaches::default();
             let right_cache = FrameDependentCaches::default();
-            let expected_distance = left.geodesic_distance(&right, metric);
+            let expected_distance = left.geodesic_distance(&right, metric)?;
             let actual_distance = left_data.geodesic_distance_cached(
                 &left_cache,
                 &right_data,
@@ -230,7 +221,7 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
                 )?;
                 assert_eq!(actual, expected, "{name} dwithin {limit}");
             }
-            let expected_nearest = left.geodesic_nearest_points(&right, metric);
+            let expected_nearest = left.geodesic_nearest_points(&right, metric)?;
             let actual_nearest = left_data.geodesic_nearest_points_cached(
                 &left_cache,
                 &right_data,
@@ -256,11 +247,84 @@ fn geodesic_nearest_points_matches_brute_ordered_witnesses() -> Result<()> {
     for (name, left, right) in geodesic_nearest_oracle_cases() {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let expected = brute_geodesic_nearest_points(&left, &right, metric);
-            let actual = left.geodesic_nearest_points(&right, metric);
+            let actual = left.geodesic_nearest_points(&right, metric)?;
             assert_eq!(actual, expected, "{name}");
             Ok(())
         })?;
     }
+    Ok(())
+}
+
+#[test]
+fn geodesic_nearest_points_returns_crossing_witness_on_ellipsoid() -> Result<()> {
+    let left = line(vec![p(-20.0, -10.0), p(30.0, 20.0)]);
+    let right = line(vec![p(-15.0, 20.0), p(25.0, -10.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
+        let (left_point, right_point) = left
+            .geodesic_nearest_points(&right, metric)?
+            .expect("non-empty crossing lines");
+        let distance = metric.segment_length(left_point, right_point);
+        assert!(distance <= 1e-3, "crossing witness distance: {distance}");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn geodesic_filled_area_operations_are_explicitly_unsupported() -> Result<()> {
+    let area = polygon(vec![
+        p(-1.0, -1.0),
+        p(1.0, -1.0),
+        p(0.0, 1.0),
+        p(-1.0, -1.0),
+    ]);
+    let point = Shape::Point(p(0.0, 0.0));
+    with_ellipsoid_metric("EPSG:4326", &[&area, &point], |metric| {
+        assert!(area.geodesic_cap(metric).is_err());
+        assert!(area.geodesic_distance(&point, metric).is_err());
+        assert!(area.geodesic_hausdorff_distance(&point, metric).is_err());
+        assert!(area.geodesic_nearest_points(&point, metric).is_err());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn planar_contact_does_not_make_geodesic_distance_zero() -> Result<()> {
+    let upper = line(vec![p(-80.0, 80.0), p(80.0, 80.0)]);
+    let meridian = line(vec![p(0.0, 70.0), p(0.0, 80.0)]);
+    with_ellipsoid_metric("EPSG:4326", &[&upper, &meridian], |metric| {
+        let distance = upper.geodesic_distance(&meridian, metric)?;
+        assert!(distance > 1.0, "planar contact became geodesic zero");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn planar_false_zero_fixture_b_230_cases_are_positive() -> Result<()> {
+    let latitudes = [
+        89.50, 89.52, 89.54, 89.56, 89.58, 89.60, 89.62, 89.64, 89.66, 89.68, 89.70, 89.72, 89.74,
+        89.76, 89.78, 89.80, 89.82, 89.84, 89.86, 89.88, 89.90, 89.92, 89.94,
+    ];
+    let longitudes = [
+        0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006, 0.0007, 0.0008, 0.0009, 0.0010,
+    ];
+    assert_eq!(latitudes.len() * longitudes.len(), 230);
+    with_ellipsoid_metric("EPSG:4326", &[], |metric| {
+        for &latitude in &latitudes {
+            for &longitude in &longitudes {
+                let upper = line(vec![p(-longitude, latitude), p(longitude, latitude)]);
+                let meridian = line(vec![p(0.0, latitude - 10.0), p(0.0, latitude)]);
+                let distance = upper.geodesic_distance(&meridian, metric)?;
+                assert!(
+                    distance > 0.0,
+                    "planar false-zero corpus case lon={longitude} lat={latitude}: {distance}"
+                );
+            }
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -344,12 +408,10 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
     let cases = [
         ("line", line(vec![p(-1.0, 0.0), p(1.0, 0.0)])),
         ("multipoint", multipoint(vec![p(0.0, 0.0), p(1.0, 1.0)])),
-        ("polygon", dense_polygon(0.0, 0.0, 5.0, 12)),
-        ("antimeridian", dense_antimeridian_polygon()),
     ];
     for (name, shape) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&shape], |metric| {
-            let streamed = shape.geodesic_cap(metric);
+            let streamed = shape.geodesic_cap(metric)?;
             let parts = shape.geodesic_parts(metric)?;
             assert_eq!(
                 streamed,
@@ -399,7 +461,7 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                     flattening,
                     metric,
                     &runtime_state,
-                ),
+                )?,
                 "{name}: cached cap"
             );
             Ok(())

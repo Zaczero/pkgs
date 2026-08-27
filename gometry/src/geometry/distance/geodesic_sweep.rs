@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::geometry::distance::GeodesicScratchGuard;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
@@ -251,10 +252,10 @@ pub(crate) fn geodesic_capped_witness_sweep(
     cap_lengths: &mut Vec<f64>,
     cap_groups: &mut Vec<CapGroup>,
     rows: &mut Vec<RowProbe>,
-) -> Option<GeodesicWitnessCandidate> {
+) -> Result<Option<GeodesicWitnessCandidate>> {
     let Some(caps) = geodesic_sweep_caps_into(edges, point_only, metric, cap_lengths, cap_groups)
     else {
-        return best;
+        return Ok(best);
     };
     geodesic_ordered_rows_into(vertices, caps, metric, true, rows);
     let width = edges.len() + point_only.len();
@@ -296,7 +297,7 @@ pub(crate) fn geodesic_capped_witness_sweep(
                 if bound > best_distance {
                     continue;
                 }
-                let witness = metric.point_segment_witness(vertex, *edge, best_distance);
+                let witness = metric.point_segment_witness(vertex, *edge, best_distance)?;
                 let candidate = GeodesicWitnessCandidate {
                     probe: vertex,
                     target: witness.foot,
@@ -333,7 +334,7 @@ pub(crate) fn geodesic_capped_witness_sweep(
             }
         }
     }
-    best
+    Ok(best)
 }
 
 pub(crate) fn geodesic_capped_witness_sweep_with_parts(
@@ -344,9 +345,9 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     order_offset: usize,
     swapped: bool,
     rows: &mut Vec<RowProbe>,
-) -> Option<GeodesicWitnessCandidate> {
+) -> Result<Option<GeodesicWitnessCandidate>> {
     let Some(caps) = target_parts.caps.as_ref() else {
-        return best;
+        return Ok(best);
     };
     geodesic_ordered_rows_into(vertices, caps.view(), metric, true, rows);
     let width = target_parts.segments.len() + target_parts.point_only.len();
@@ -388,7 +389,7 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
                 if bound > best_distance {
                     continue;
                 }
-                let witness = metric.point_segment_witness(vertex, segment, best_distance);
+                let witness = metric.point_segment_witness(vertex, segment, best_distance)?;
                 let candidate = GeodesicWitnessCandidate {
                     probe: vertex,
                     target: witness.foot,
@@ -430,7 +431,7 @@ pub(crate) fn geodesic_capped_witness_sweep_with_parts(
             }
         }
     }
-    best
+    Ok(best)
 }
 
 fn geodesic_capped_witness_vertex_with_parts(
@@ -441,8 +442,10 @@ fn geodesic_capped_witness_vertex_with_parts(
     mut best: Option<GeodesicWitnessCandidate>,
     order_offset: usize,
     swapped: bool,
-) -> Option<GeodesicWitnessCandidate> {
-    let caps = target_parts.caps.as_ref()?;
+) -> Result<Option<GeodesicWitnessCandidate>> {
+    let Some(caps) = target_parts.caps.as_ref() else {
+        return Ok(None);
+    };
     let width = target_parts.segments.len() + target_parts.point_only.len();
     for (
         group_index,
@@ -470,7 +473,7 @@ fn geodesic_capped_witness_vertex_with_parts(
             if bound > best_distance {
                 continue;
             }
-            let witness = metric.point_segment_witness(vertex, segment, best_distance);
+            let witness = metric.point_segment_witness(vertex, segment, best_distance)?;
             let candidate = GeodesicWitnessCandidate {
                 probe: vertex,
                 target: witness.foot,
@@ -511,7 +514,7 @@ fn geodesic_capped_witness_vertex_with_parts(
             }
         }
     }
-    best
+    Ok(best)
 }
 
 #[expect(
@@ -525,7 +528,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
     best: Option<GeodesicWitnessCandidate>,
     order_offset: usize,
     swapped: bool,
-) -> Option<GeodesicWitnessCandidate> {
+) -> Result<Option<GeodesicWitnessCandidate>> {
     let mut scratch_guard = GeodesicScratchGuard::take();
     let scratch = &mut scratch_guard.scratch;
     let width = target_parts.segments.len() + target_parts.point_only.len();
@@ -542,7 +545,7 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
                 order_offset,
                 swapped,
                 width,
-            ) {
+            )? {
                 WitnessPointOutcome::Best(updated) => updated,
                 WitnessPointOutcome::LimitExceeded => geodesic_capped_witness_vertex_with_parts(
                     vertex,
@@ -552,10 +555,10 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
                     best,
                     order_offset,
                     swapped,
-                ),
+                )?,
             };
         }
-        best
+        Ok(best)
     } else {
         geodesic_capped_witness_sweep_with_parts(
             vertices,

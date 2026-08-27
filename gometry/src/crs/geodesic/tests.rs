@@ -1,12 +1,8 @@
 use geographiclib_rs::Geodesic;
 
-use super::super::GOLDEN_SECTION_TOLERANCE_METRES;
 use super::distance::geodesic_frechet_dp;
 use super::lower_bound::{LowerBoundKernel, exact_auxiliary_sphere_bound};
-use super::segment::{
-    GeodesicSegmentMinimum, endpoint_probe, geodesic_segment_minimum,
-    geodesic_segment_minimum_golden, nearer_endpoint,
-};
+use super::segment::geodesic_segment_minimum;
 use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
 use crate::error::Result;
 use crate::geometry::{
@@ -28,7 +24,13 @@ fn multipoint(points: Vec<Point>) -> Shape {
 
 fn full_edges(shape: &Shape, metric: &impl GeodesicMetric) -> Vec<GeodesicSegment> {
     let mut edges = Vec::new();
-    shape.for_each_vertex_pair(|start, end| edges.push(metric.make_segment(start, end)));
+    shape.for_each_vertex_pair(|start, end| {
+        edges.push(
+            metric
+                .make_segment(start, end)
+                .expect("unique test segment"),
+        );
+    });
     edges
 }
 
@@ -43,103 +45,21 @@ fn point_only_points(shape: &Shape) -> Vec<Point> {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn golden_oracle(
-    geodesic: &Geodesic,
-    point: Point,
-    segment: GeodesicSegment,
-) -> GeodesicSegmentMinimum {
-    let a = endpoint_probe(geodesic, point, segment.start, segment.azimuth0);
-    let b = endpoint_probe(geodesic, point, segment.end, segment.azimuth1);
-    if !segment.length.is_finite() || segment.length == 0.0 {
-        return nearer_endpoint(a.distance, b.distance, segment.length);
-    }
-    geodesic_segment_minimum_golden(
-        geodesic,
-        point,
-        segment,
-        nearer_endpoint(a.distance, b.distance, segment.length),
-    )
-}
-
 #[test]
-fn geodesic_newton_matches_golden_oracle() {
+fn geodesic_point_segment_is_globally_certified() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_geodesic(&geodesic);
-    let cases = [
-        ("interior_foot", p(0.0, 1.0), p(-1.0, 0.0), p(1.0, 0.0)),
-        ("foot_before_a", p(-1.0, 0.2), p(0.0, 0.0), p(1.0, 0.0)),
-        ("foot_after_b", p(2.0, 0.2), p(0.0, 0.0), p(1.0, 0.0)),
-        ("zero_length", p(2.0, 0.2), p(0.0, 0.0), p(0.0, 0.0)),
-        ("pole_adjacent", p(0.0, 89.5), p(-45.0, 89.0), p(45.0, 89.0)),
-        (
-            "antimeridian_crossing",
-            p(179.8, 0.5),
-            p(179.0, -1.0),
-            p(-179.0, 1.0),
-        ),
-        ("near_antipodal", p(179.8, 0.1), p(-1.0, 0.0), p(1.0, 0.0)),
-        (
-            "long_high_latitude",
-            p(170.0, 78.0),
-            p(-160.0, 75.0),
-            p(160.0, 75.0),
-        ),
-    ];
-    for (name, point, start, end) in cases {
-        let segment = metric.make_segment(start, end);
-        let actual = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY);
-        let expected = golden_oracle(&geodesic, point, segment);
-        assert!(
-            (actual.distance - expected.distance).abs() <= GOLDEN_SECTION_TOLERANCE_METRES,
-            "{name} distance: actual {} expected {}",
-            actual.distance,
-            expected.distance
-        );
-        assert!(
-            (actual.along - expected.along).abs() <= GOLDEN_SECTION_TOLERANCE_METRES,
-            "{name} along: actual {} expected {}",
-            actual.along,
-            expected.along
-        );
-    }
-}
-
-#[test]
-fn geodesic_newton_counter_typical_survivor_is_small() {
-    geodesic_counters::reset();
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
-    let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0));
-    let actual = geodesic_segment_minimum(&geodesic, p(0.0, 1.0), segment, f64::INFINITY);
-    let counts = geodesic_counters::snapshot();
-    assert!(!actual.used_golden_fallback);
-    assert_eq!(counts.endpoint_inverses, 2);
-    assert!(
-        counts.newton_inverses <= 6,
-        "newton survivor inverses: {}",
-        counts.newton_inverses
-    );
-    assert_eq!(counts.fallback_golden_probes, 0);
-}
-
-#[test]
-fn geodesic_newton_falls_back_near_conjugate() {
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
-    let segment = metric.make_segment(p(180.0, -0.001), p(180.0, 0.001));
-    let point = p(0.0, 0.0);
-    let actual = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY);
-    let expected = golden_oracle(&geodesic, point, segment);
-    assert!(
-        actual.used_golden_fallback,
-        "near-conjugate survivor should use golden fallback"
-    );
-    assert!((actual.distance - expected.distance).abs() <= GOLDEN_SECTION_TOLERANCE_METRES);
-    assert!((actual.along - expected.along).abs() <= GOLDEN_SECTION_TOLERANCE_METRES);
+    let point = p(-102.23029036638832, 77.32057101285838);
+    let segment = metric
+        .make_segment(
+            p(71.41068147617264, -75.94703615036191),
+            p(153.0781948467615, 71.12446952478808),
+        )
+        .expect("fixture segment is unique");
+    let actual = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY)
+        .expect("proof should close");
+    assert!((actual.distance - 2_809_179.208891459).abs() <= 1e-3);
+    assert_eq!(actual.along.to_bits(), segment.length.to_bits());
 }
 
 #[test]
@@ -148,12 +68,14 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
     geodesic_counters::reset();
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_geodesic(&geodesic);
-    let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0));
+    let segment = metric
+        .make_segment(p(-1.0, 0.0), p(1.0, 0.0))
+        .expect("unique test segment");
     let point = p(0.0, 1.0);
 
-    let first = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY);
+    let first = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY).unwrap();
     let after_first = geodesic_counters::snapshot();
-    let second = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY);
+    let second = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY).unwrap();
     let after_second = geodesic_counters::snapshot();
 
     assert_eq!(first.distance.to_bits(), second.distance.to_bits());
@@ -163,6 +85,124 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
     assert_eq!(after_second.line_cache_misses, 1);
     assert_eq!(after_second.line_cache_hits, 1);
     GEODESIC_LINE_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 1));
+}
+
+#[test]
+fn geodesic_point_to_segment_threshold_is_inclusive_and_certified() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let segment = metric
+        .make_segment(p(-10.0, 0.0), p(10.0, 0.0))
+        .expect("unique test segment");
+
+    let on_segment = p(0.0, 0.0);
+    let on_segment_distance = metric
+        .point_to_segment(on_segment, segment, f64::INFINITY)
+        .expect("point-to-segment proof should close");
+    assert!(
+        metric
+            .point_to_segment_within(on_segment, segment, 0.0)
+            .expect("threshold proof should close"),
+        "sampled on-segment distance: {on_segment_distance}"
+    );
+    assert!(
+        !metric
+            .point_to_segment_within(p(0.0, 1.0), segment, 0.0)
+            .expect("threshold proof should close")
+    );
+}
+
+#[test]
+fn geodesic_segment_intersection_uses_ellipsoidal_solver() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    assert!(
+        metric
+            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
+            .expect("supported intersection")
+    );
+    let disjoint = metric
+        .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(20.0, -1.0), p(20.0, 1.0))
+        .expect("supported intersection");
+    assert!(!disjoint);
+    assert!(
+        metric
+            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, 0.0), p(15.0, 0.0))
+            .expect("supported intersection")
+    );
+}
+
+#[test]
+fn geodesic_segment_intersection_returns_on_curve_witnesses() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let first = metric
+        .make_segment(p(-20.0, -10.0), p(30.0, 20.0))
+        .expect("unique test segment");
+    let second = metric
+        .make_segment(p(-15.0, 20.0), p(25.0, -10.0))
+        .expect("unique test segment");
+    let (on_first, on_second) = metric
+        .segment_intersection(first.start, first.end, second.start, second.end)
+        .expect("supported intersection")
+        .expect("segments cross");
+    assert!(metric.segment_length(on_first, on_second) <= 1e-3);
+    assert!(
+        metric
+            .point_segment_witness(on_first, first, f64::INFINITY)
+            .expect("point projection")
+            .distance
+            <= 1e-3
+    );
+    assert!(
+        metric
+            .point_segment_witness(on_second, second, f64::INFINITY)
+            .expect("point projection")
+            .distance
+            <= 1e-3
+    );
+}
+
+#[test]
+fn geodesic_segment_intersection_accepts_flattening_boundaries() {
+    for flattening in [-0.25, 0.2] {
+        let geodesic = Geodesic::new(6_378_137.0, flattening);
+        let metric = EllipsoidMetric::for_geodesic(&geodesic);
+        assert!(
+            metric
+                .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
+                .is_ok()
+        );
+    }
+    let outside = Geodesic::new(6_378_137.0, 0.200_000_000_1);
+    let metric = EllipsoidMetric::for_geodesic(&outside);
+    assert!(
+        metric
+            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
+            .is_err()
+    );
+}
+
+#[test]
+fn geodesic_segment_rejects_nonunique_shortest_endpoints() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    assert!(metric.make_segment(p(0.0, 10.0), p(180.0, -10.0)).is_err());
+    assert!(metric.make_segment(p(0.0, 90.0), p(180.0, -90.0)).is_err());
+    let sphere = Geodesic::new(6_378_137.0, 0.0);
+    let sphere_metric = EllipsoidMetric::for_geodesic(&sphere);
+    assert!(
+        sphere_metric
+            .make_segment(p(0.0, 0.0), p(180.0, 0.0))
+            .is_err()
+    );
+    let prolate = Geodesic::new(6_378_137.0, -0.01);
+    let prolate_metric = EllipsoidMetric::for_geodesic(&prolate);
+    assert!(
+        prolate_metric
+            .make_segment(p(0.0, 10.0), p(180.0, -10.0))
+            .is_err()
+    );
 }
 
 #[test]
@@ -251,7 +291,11 @@ fn brute_directed_geodesic_distance(
 ) -> f64 {
     for &probe in probes {
         for &segment in target_edges {
-            best = best.min(metric.point_to_segment(probe, segment, f64::INFINITY));
+            best = best.min(
+                metric
+                    .point_to_segment(probe, segment, f64::INFINITY)
+                    .expect("point-to-segment proof should close"),
+            );
         }
         for &target in target_points {
             best = best.min(metric.segment_length(probe, target));
@@ -272,9 +316,11 @@ fn brute_geodesic_distance(left: &Shape, right: &Shape, metric: &impl GeodesicMe
     let left_edges = full_edges(left, metric);
     let right_edges = full_edges(right, metric);
     if left_edges.iter().any(|left| {
-        right_edges
-            .iter()
-            .any(|right| metric.segments_cross(left.start, left.end, right.start, right.end))
+        right_edges.iter().any(|right| {
+            metric
+                .segments_cross(left.start, left.end, right.start, right.end)
+                .expect("intersection supported")
+        })
     }) {
         return 0.0;
     }
@@ -312,7 +358,9 @@ fn brute_geodesic_nearest_points(
     let mut pair = None;
     for &probe in &left_points {
         for &segment in &right_edges {
-            let witness = metric.point_segment_witness(probe, segment, best);
+            let witness = metric
+                .point_segment_witness(probe, segment, best)
+                .expect("point-to-segment proof should close");
             if witness.distance < best {
                 best = witness.distance;
                 pair = Some((probe, witness.foot));
@@ -328,7 +376,9 @@ fn brute_geodesic_nearest_points(
     }
     for &probe in &right_points {
         for &segment in &left_edges {
-            let witness = metric.point_segment_witness(probe, segment, best);
+            let witness = metric
+                .point_segment_witness(probe, segment, best)
+                .expect("point-to-segment proof should close");
             if witness.distance < best {
                 best = witness.distance;
                 pair = Some((witness.foot, probe));
