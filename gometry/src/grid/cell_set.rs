@@ -36,14 +36,9 @@ impl<C: HierarchicalCell> CanonicalCellSet<C> {
     }
 }
 
-fn try_vec_with_capacity<T>(capacity: usize) -> crate::error::Result<Vec<T>> {
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, capacity)?;
-    Ok(values)
-}
-
 fn try_copy<T: Copy>(values: &[T]) -> crate::error::Result<Vec<T>> {
-    let mut copied = try_vec_with_capacity(values.len())?;
+    let mut copied = Vec::new();
+    crate::boundary::try_reserve_vec(&mut copied, values.len())?;
     for &value in values {
         crate::boundary::try_push_vec(&mut copied, value)?;
     }
@@ -65,7 +60,8 @@ fn normalize_with_floor<C: HierarchicalCell>(
             .then(b.range_max().cmp(&a.range_max()))
     });
     cells.dedup();
-    let mut out: Vec<C> = try_vec_with_capacity(cells.len())?;
+    let mut out: Vec<C> = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, cells.len())?;
     for cell in cells {
         if out.last().is_some_and(|&last| last.contains(cell)) {
             continue;
@@ -130,8 +126,10 @@ fn uncompact_canonical<C: HierarchicalCell>(
     target: u8,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
     let estimated = checked_estimate(cells.as_slice(), target)?;
-    let mut out = try_vec_with_capacity(estimated)?;
-    let mut stack = try_vec_with_capacity(cells.as_slice().len())?;
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, estimated)?;
+    let mut stack = Vec::new();
+    crate::boundary::try_reserve_vec(&mut stack, cells.as_slice().len())?;
     for &cell in cells.as_slice().iter().rev() {
         crate::boundary::try_push_vec(&mut stack, cell)?;
     }
@@ -167,7 +165,8 @@ pub(crate) fn intersection<C: HierarchicalCell>(
     left: &CanonicalCellSet<C>,
     right: &CanonicalCellSet<C>,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
-    let mut out = try_vec_with_capacity(left.cells.len().min(right.cells.len()))?;
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, left.cells.len().min(right.cells.len()))?;
     let (mut i, mut j) = (0, 0);
     while i < left.cells.len() && j < right.cells.len() {
         let (a, b) = (left.cells[i], right.cells[j]);
@@ -212,7 +211,8 @@ pub(crate) fn difference<C: HierarchicalCell>(
         }
         Ok(())
     }
-    let mut out = try_vec_with_capacity(left.cells.len())?;
+    let mut out = Vec::new();
+    crate::boundary::try_reserve_vec(&mut out, left.cells.len())?;
     for &cell in &left.cells {
         subtract(cell, &right.cells, &mut out)?;
     }

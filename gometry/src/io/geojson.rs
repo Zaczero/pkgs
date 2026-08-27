@@ -448,9 +448,10 @@ fn parse_polygon(value: &Value, path: &JsonPath) -> Result<Polygon> {
         return Err(IoError::geojson("Polygon requires a shell").with_parse_path(path.as_str()));
     };
     let shell = parse_geojson_ring(shell, &path.index(0))?;
-    let mut holes = try_vec_with_capacity(rings.len().saturating_sub(1))?;
+    let mut holes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut holes, rings.len().saturating_sub(1))?;
     for (index, ring) in rings.iter().enumerate().skip(1) {
-        try_push_vec(&mut holes, parse_geojson_ring(ring, &path.index(index))?)?;
+        crate::boundary::try_push_vec(&mut holes, parse_geojson_ring(ring, &path.index(index))?)?;
     }
     Ok(Polygon::new(shell, holes))
 }
@@ -482,10 +483,11 @@ fn parse_geojson_multipoint(value: &Value, path: &JsonPath) -> Result<MultiPoint
         .ok_or_else(|| IoError::geojson("MultiPoint coordinates must be an array"))
         .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = try_vec_with_capacity(positions.len())?;
+    let mut members = Vec::new();
+    crate::boundary::try_reserve_vec(&mut members, positions.len())?;
     for (index, position) in positions.iter().enumerate() {
         if json_is_empty_array(position) {
-            try_push_vec(&mut members, MultiMember::Empty)?;
+            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
         let point = parse_point(position, &path.index(index))?;
@@ -498,7 +500,7 @@ fn parse_geojson_multipoint(value: &Value, path: &JsonPath) -> Result<MultiPoint
             },
             Some(_) => {},
         }
-        try_push_vec(&mut members, MultiMember::Value(point))?;
+        crate::boundary::try_push_vec(&mut members, MultiMember::Value(point))?;
     }
     MultiPoint::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
@@ -510,12 +512,13 @@ fn parse_geojson_multilinestring(value: &Value, path: &JsonPath) -> Result<Multi
         .ok_or_else(|| IoError::geojson("MultiLineString coordinates must be an array"))
         .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = try_vec_with_capacity(lines.len())?;
+    let mut members = Vec::new();
+    crate::boundary::try_reserve_vec(&mut members, lines.len())?;
     for (index, line) in lines.iter().enumerate() {
         let line_path = path.index(index);
         let points = parse_points(line, &line_path)?;
         if points.is_empty() {
-            try_push_vec(&mut members, MultiMember::Empty)?;
+            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
         let line_axes = points.axes();
@@ -527,7 +530,7 @@ fn parse_geojson_multilinestring(value: &Value, path: &JsonPath) -> Result<Multi
             },
             Some(_) => {},
         }
-        try_push_vec(
+        crate::boundary::try_push_vec(
             &mut members,
             MultiMember::Value(
                 LineSeq::try_new(points)
@@ -545,11 +548,12 @@ fn parse_geojson_multipolygon(value: &Value, path: &JsonPath) -> Result<MultiPol
         .ok_or_else(|| IoError::geojson("MultiPolygon coordinates must be an array"))
         .map_err(|error| error.with_parse_path(path.as_str()))?;
     let mut axes = None;
-    let mut members = try_vec_with_capacity(polygons.len())?;
+    let mut members = Vec::new();
+    crate::boundary::try_reserve_vec(&mut members, polygons.len())?;
     for (index, polygon) in polygons.iter().enumerate() {
         let polygon_path = path.index(index);
         if json_is_empty_array(polygon) {
-            try_push_vec(&mut members, MultiMember::Empty)?;
+            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
             continue;
         }
         let polygon = parse_polygon(polygon, &polygon_path)?;
@@ -562,7 +566,7 @@ fn parse_geojson_multipolygon(value: &Value, path: &JsonPath) -> Result<MultiPol
             },
             Some(_) => {},
         }
-        try_push_vec(&mut members, MultiMember::Value(polygon))?;
+        crate::boundary::try_push_vec(&mut members, MultiMember::Value(polygon))?;
     }
     MultiPolygon::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
@@ -755,16 +759,6 @@ pub(crate) fn reject_rfc7946_value_object(object: &serde_json::Map<String, Value
 #[derive(Clone)]
 struct JsonPath(String);
 
-fn try_vec_with_capacity<T>(capacity: usize) -> Result<Vec<T>> {
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, capacity)?;
-    Ok(output)
-}
-
-fn try_push_vec<T>(output: &mut Vec<T>, value: T) -> Result<()> {
-    crate::boundary::try_push_vec(output, value)
-}
-
 impl JsonPath {
     fn from(path: &str) -> Self {
         Self(path.to_owned())
@@ -830,9 +824,10 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
                     IoError::geojson("GeometryCollection requires geometries")
                         .with_parse_path(geometries_path.as_str())
                 })?;
-            let mut parsed = try_vec_with_capacity(geometries.len())?;
+            let mut parsed = Vec::new();
+            crate::boundary::try_reserve_vec(&mut parsed, geometries.len())?;
             for (index, geometry) in geometries.iter().enumerate() {
-                try_push_vec(
+                crate::boundary::try_push_vec(
                     &mut parsed,
                     parse_geojson_inner(geometry, &geometries_path.index(index))?,
                 )?;
