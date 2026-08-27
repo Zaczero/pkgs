@@ -1,5 +1,5 @@
 ---
-description: A geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
+description: A blazing-fast geospatial engine for Python, written in Rust. Geometry, geodesy, CRS, and H3/S2 grids with no GEOS, GDAL, or system PROJ to install.
 hide:
   - navigation
   - toc
@@ -11,7 +11,7 @@ hide:
 
 # One engine, one mental model
 
-A geospatial engine for Python, written in Rust. gometry replaces the
+A **blazing-fast** geospatial engine for Python, written in Rust. gometry replaces the
 day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coherent
 package — no GEOS, no GDAL, no system PROJ.
 
@@ -51,7 +51,7 @@ print("nearby neighborhood rows:", nearby.tolist())
 
     [:octicons-arrow-right-24: Measurement & the CRS](guide/crs.md)
 
--   :material-flash:{ .lg .middle } **Rust-backed, vectorized**
+-   :material-flash:{ .lg .middle } **Rust-fast, vectorized**
 
     ---
 
@@ -83,7 +83,7 @@ geodesically in meters, a projected CRS uses its native linear units (feet stay 
 meters stay meters), and a CRS-free geometry stays in coordinate units. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
 
-### Batch operations without awkwardness
+### Fast without awkwardness
 
 The hot paths are Rust. Predicates, overlay, buffering, geodesics, and coverage run as
 batched kernels over packed, GeoArrow-compatible buffers — so a million-point [`contains`][gometry.contains]
