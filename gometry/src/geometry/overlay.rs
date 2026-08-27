@@ -2,7 +2,7 @@
 //! all-input variants) and linework set-ops (`line_merge`/`shared_paths`) on
 //! `Shape`, plus the shared noding/assembly kernel behind them.
 
-use crate::geometry::{CoordinateAxes, Shape};
+use crate::geometry::{CoordinateAxes, PreparedPlan, Shape};
 
 /// Whether synthesized overlay output must source Z/M from inputs (`Strict`)
 /// or may degrade to plain XY (`Lenient`).
@@ -102,10 +102,8 @@ impl OverlayOp {
     pub(crate) fn kernel(
         self,
         strictness: Strictness,
-    ) -> impl Fn(&super::ShapeData, &super::ShapeData) -> crate::error::Result<super::Shape>
-    + Copy
-    + Send
-    + Sync {
+    ) -> impl Fn(&PreparedPlan, &PreparedPlan) -> crate::error::Result<super::Shape> + Copy + Send + Sync
+    {
         move |left, right| self.apply(left.shape(), right.shape(), strictness)
     }
 }

@@ -835,8 +835,8 @@ def test_nbytes_and_sizeof_report_real_payload() -> None:
     assert sys.getsizeof(line_zm) >= line_zm.nbytes
 
 
-def test_scalar_geometry_sizeof_counts_shapedata_without_forcing_caches() -> None:
-    """Honest retained-cost model: ShapeData Arc + initialized caches only.
+def test_scalar_geometry_sizeof_counts_retained_state_without_forcing_caches() -> None:
+    """Honest retained-cost model: shape payload + initialized caches only.
 
     Cold ``__sizeof__`` must not build lazy products (size stable across two
     cold reads). Warming bounds / prepare may grow the reported size; it must
@@ -1013,7 +1013,7 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     line = gm.LineString([(float(i), 0.0) for i in range(128)])
     prepared_line = line.prepare()
     line_cold_size = sys.getsizeof(prepared_line)
-    line.line_interpolate(12.5)
+    prepared_line.geometry.line_interpolate(12.5)
     assert sys.getsizeof(prepared_line) > line_cold_size
 
     area = gm.box(13.2, 52.4, 13.6, 52.6, crs=4326)

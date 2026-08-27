@@ -6,7 +6,7 @@ use crate::crs::geodesic::{
     with_geodesic_at, with_geodesic_cache_at,
 };
 use crate::geometry::{
-    CoordSeq, FrameDependentCaches, LineIndex, MeasureRange, Point, Shape, ShapeData,
+    CoordSeq, FrameDependentCaches, LineIndex, MeasureRange, Point, PreparedPlan, Shape,
 };
 
 /// Exact geodesic linear-referencing on `crs`'s ellipsoid: interpolate a point
@@ -14,7 +14,7 @@ use crate::geometry::{
 /// `shape`. Consistent with [`geodesic_length`].
 pub(crate) fn geodesic_line_interpolate(
     crs: &str,
-    shape: &ShapeData,
+    shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     distance: f64,
     distance_mode: impl Into<DistanceMode>,
@@ -48,7 +48,7 @@ pub(crate) fn geodesic_line_interpolate(
 /// (meters, or `[0, 1]` fractions when `normalized`).
 pub(crate) fn geodesic_line_substring(
     crs: &str,
-    shape: &ShapeData,
+    shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     range: MeasureRange,
     distance_mode: impl Into<DistanceMode>,
@@ -77,7 +77,7 @@ pub(crate) fn geodesic_line_substring(
 /// a `[0, 1]` fraction when `normalized`) to the projection of `point`.
 pub(crate) fn geodesic_line_locate(
     crs: &str,
-    shape: &ShapeData,
+    shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     point: Point,
     distance_mode: impl Into<DistanceMode>,

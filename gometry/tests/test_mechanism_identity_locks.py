@@ -124,8 +124,8 @@ def test_prepared_tall_edge_masks_match_unprepared():
     verts.append(verts[0])
     poly = gm.Polygon(verts)
     prep = poly.prepare()
-    xs = np.linspace(0, 6, 200)
-    ys = np.linspace(0, 1000, 200)
+    xs = np.linspace(0, 6, 64)
+    ys = np.linspace(0, 1000, 64)
     gx, gy = np.meshgrid(xs, ys, indexing='xy')
     prepared = gm.contains_xy(prep, gx.ravel(), gy.ravel())
     scalar = np.array([

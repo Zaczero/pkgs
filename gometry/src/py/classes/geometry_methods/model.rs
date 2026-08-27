@@ -4,7 +4,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
-use crate::geometry::FrameDependentCaches;
+use crate::geometry::{FrameDependentCaches, PreparedPlan};
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
@@ -37,13 +37,11 @@ use crate::{Point, Shape};
 )]
 #[derive(Clone, Debug)]
 pub struct PyGeometry {
-    // Frozen, immutable geometry + its lazily-built prepared state (bounds,
-    // distance working set, point tester) — shared behind one `Arc` so
-    // cloning a `PyGeometry` (array element access, broadcast operands,
-    // detached work) is a cheap refcount bump AND every clone shares the
-    // amortized indexes. Deref chains to `Shape` for method calls;
+    // Frozen, immutable geometry. Heavy prepared state is attached only when
+    // this internal value represents a persistent prepared/index row.
     // pattern-matches use `geometry.shape.shape()`.
     pub shape: Arc<ShapeData>,
+    pub(crate) prepared_plan: Option<Arc<PreparedPlan>>,
     /// Prepared products whose interpretation depends on `frame`. Clones of
     /// the same framed value share it; every retag creates a fresh sidecar.
     pub(crate) frame_cache: Arc<FrameDependentCaches>,
@@ -55,12 +53,16 @@ pub struct PyGeometry {
 
 impl HeapSize for PyGeometry {
     fn heap_bytes(&self) -> usize {
-        // Honest retained cost: the Arc-owned `ShapeData` block (shape + any
-        // demand-allocated prepared caches already built), plus the
-        // Arc-owned frame-cache sidecar and its initialized products.
+        // Honest retained cost: the shape block, any explicitly attached
+        // prepared plan, and the Arc-owned frame-cache sidecar and products.
         // Uninitialized lazy caches are not counted and never forced here.
-        std::mem::size_of_val(self.shape.as_ref())
-            + self.shape.retained_heap_bytes()
+        self.prepared_plan
+            .is_none()
+            .then(|| std::mem::size_of_val(self.shape.as_ref()) + self.shape.retained_heap_bytes())
+            .unwrap_or(0)
+            + self.prepared_plan.as_ref().map_or(0, |plan| {
+                std::mem::size_of_val(plan.as_ref()) + plan.heap_bytes()
+            })
             + std::mem::size_of_val(self.frame_cache.as_ref())
             + self.frame_cache.heap_bytes()
     }
@@ -552,6 +554,7 @@ impl PyGeometryPartsIter {
             source: PyGeometryParts {
                 geometry: PyGeometry {
                     shape: Arc::clone(&base.shape),
+                    prepared_plan: base.prepared_plan.clone(),
                     frame_cache: Arc::clone(&base.frame_cache),
                     frame: base.frame.clone(),
                 },
@@ -606,6 +609,7 @@ impl PyGeometry {
         PyGeometryParts {
             geometry: Self {
                 shape: Arc::clone(&self.shape),
+                prepared_plan: self.prepared_plan.clone(),
                 frame_cache: Arc::clone(&self.frame_cache),
                 frame: self.frame.clone(),
             },
@@ -654,6 +658,7 @@ macro_rules! geometry_parts_methods {
                 PyGeometryParts {
                     geometry: crate::PyGeometry {
                         shape: Arc::clone(&base.shape),
+                        prepared_plan: base.prepared_plan.clone(),
                         frame_cache: Arc::clone(&base.frame_cache),
                         frame: base.frame.clone(),
                     },
@@ -814,6 +819,7 @@ impl PyGeometry {
     ) -> Self {
         Self {
             shape: shape.into(),
+            prepared_plan: None,
             frame_cache: Arc::new(FrameDependentCaches::default()),
             frame: Frame::from_trusted_parts(crs, epoch),
         }
@@ -835,6 +841,7 @@ impl PyGeometry {
     pub(crate) fn with_frame(shape: impl Into<Arc<ShapeData>>, frame: Frame) -> Self {
         Self {
             shape: shape.into(),
+            prepared_plan: None,
             frame_cache: Arc::new(FrameDependentCaches::default()),
             frame,
         }
@@ -860,6 +867,30 @@ impl PyGeometry {
     )]
     pub fn with_shape(&self, shape: impl Into<Arc<ShapeData>>) -> Self {
         Self::with_epoch(shape, self.crs_ref().cloned(), self.epoch())
+    }
+
+    pub(crate) fn with_prepared_plan(&self, plan: Arc<PreparedPlan>) -> Self {
+        Self {
+            shape: Arc::clone(plan.shape_arc()),
+            prepared_plan: Some(plan),
+            frame_cache: Arc::clone(&self.frame_cache),
+            frame: self.frame.clone(),
+        }
+    }
+
+    pub(crate) fn from_prepared_plan(plan: Arc<PreparedPlan>, frame: Frame) -> Self {
+        Self {
+            shape: Arc::clone(plan.shape_arc()),
+            prepared_plan: Some(plan),
+            frame_cache: Arc::new(FrameDependentCaches::default()),
+            frame,
+        }
+    }
+
+    pub(crate) fn plan_or_transient(&self) -> Arc<PreparedPlan> {
+        self.prepared_plan
+            .clone()
+            .unwrap_or_else(|| Arc::new(PreparedPlan::new(Arc::clone(&self.shape))))
     }
 
     /// Like [`with_shape`](Self::with_shape) but wrapped as [`Typed`] for

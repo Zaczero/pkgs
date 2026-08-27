@@ -5,7 +5,9 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::{HeapSize, PyGeometry, Typed, exact_geometry, expected_geometry_or_array};
+use crate::{
+    HeapSize, PreparedPlan, PyGeometry, Typed, exact_geometry, expected_geometry_or_array,
+};
 // --- PreparedGeometry #[pymethods] (moved from crate root) ---
 
 /// Rebuild a pickled `PreparedGeometry` by re-preparing its geometry
@@ -15,7 +17,8 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
     let geometry = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
-    Ok(PyPreparedGeometry { geometry })
+    let plan = std::sync::Arc::new(PreparedPlan::new(std::sync::Arc::clone(&geometry.shape)));
+    Ok(PyPreparedGeometry { geometry, plan })
 }
 
 /// A geometry handle that opts repeated predicate tests into prepared kernels.
@@ -33,11 +36,12 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
 #[derive(Clone, Debug)]
 pub struct PyPreparedGeometry {
     pub geometry: PyGeometry,
+    pub(crate) plan: std::sync::Arc<PreparedPlan>,
 }
 
 // PreparedGeometry is shared across threads under free-threaded CPython: the
 // geometry is Arc-backed immutable state and lazy caches live in Sync
-// OnceLock/Mutex slots on ShapeData.
+// OnceLock/Mutex slots on PreparedPlan and its frame sidecar.
 const _: fn() = || {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<PyPreparedGeometry>();
@@ -45,6 +49,10 @@ const _: fn() = || {
 
 frozen_pymethods! {
 impl PyPreparedGeometry {
+    pub(crate) fn as_geometry(&self) -> PyGeometry {
+        self.geometry.with_prepared_plan(std::sync::Arc::clone(&self.plan))
+    }
+
     /// Source geometry retained by this prepared handle.
     ///
     /// Returns
@@ -53,12 +61,12 @@ impl PyPreparedGeometry {
     ///     The original typed geometry, sharing its immutable coordinate payload.
     #[getter]
     fn geometry(&self) -> Typed {
-        Typed(self.geometry.clone())
+        Typed(self.as_geometry())
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus the source geometry's
-    /// retained native cost (``ShapeData`` Arc, shape payload, and any
-    /// prepared/frame caches already built on that shared handle). Calling
+    /// retained native cost (the source ``ShapeData`` Arc, prepared-plan
+    /// products, and frame caches already built on this handle). Calling
     /// this does not build new caches.
     fn __sizeof__(&self) -> usize {
         self.total_size()
@@ -104,11 +112,11 @@ impl PyPreparedGeometry {
 
 impl HeapSize for PyPreparedGeometry {
     fn heap_bytes(&self) -> usize {
-        // Same retained model as `Geometry.__sizeof__`: the shared
-        // `ShapeData` Arc block + nested heap + frame-cache sidecar.
+        // The plan owns the shared source ShapeData block. Count it once,
+        // rather than charging both the wrapper's geometry Arc and the plan.
         // Does not force uninitialized lazy products.
-        std::mem::size_of_val(self.geometry.shape.as_ref())
-            + self.geometry.shape.retained_heap_bytes()
+        std::mem::size_of_val(self.plan.as_ref())
+            + self.plan.retained_heap_bytes()
             + std::mem::size_of_val(self.geometry.frame_cache.as_ref())
             + self.geometry.frame_cache.heap_bytes()
     }

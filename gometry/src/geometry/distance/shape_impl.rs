@@ -68,7 +68,9 @@ impl Shape {
     }
 
     pub fn distance(&self, other: &Self) -> f64 {
-        ShapeData::new(self.clone()).distance(&ShapeData::new(other.clone()))
+        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).distance(
+            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
+        )
     }
 
     /// Planar distance reusing a pre-built [`DistanceParts`] for each operand.
@@ -341,7 +343,10 @@ impl Shape {
     }
 
     pub fn dwithin(&self, other: &Self, distance: f64) -> bool {
-        ShapeData::new(self.clone()).dwithin(&ShapeData::new(other.clone()), distance)
+        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).dwithin(
+            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
+            distance,
+        )
     }
 
     /// `dwithin` reusing a pre-built [`DistanceParts`] per operand. Caller owns

@@ -16,6 +16,16 @@ def match_rows(matches: gm.Groups) -> list[list[int]]:
     return [row.tolist() for row in matches]
 
 
+def geodesic_box_boundary(
+    bounds: tuple[float, float, float, float],
+) -> gm.LineString:
+    minx, miny, maxx, maxy = bounds
+    return gm.LineString(
+        [(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)],
+        crs=4326,
+    )
+
+
 def test_index_and_prepared_geometry_reveal_held_geometry_frame() -> None:
     geometry = gm.box(0, 0, 1, 1, crs=4326, epoch=2020.0)
     index = gm.SpatialIndex([geometry])
@@ -29,13 +39,33 @@ def test_index_and_prepared_geometry_reveal_held_geometry_frame() -> None:
     assert prepared.geometry is not geometry
     assert prepared.geometry == geometry
 
+    indexed = index.get(0)
+    assert indexed is not None
+    cold_size = indexed.__sizeof__()
+    assert gm.contains(indexed, gm.Point(0.5, 0.5, crs=4326, epoch=2020.0))
+    assert indexed.__sizeof__() > cold_size
+
+
+def test_index_get_preserves_warmed_row_frame_cache() -> None:
+    line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    index = gm.SpatialIndex([line])
+    extracted = index.get(0)
+    assert extracted is not None
+    # Warm only the shared shape-derived plan before the index builds its
+    # frame-dependent geodesic product.
+    assert gm.intersects(extracted, gm.Point(0.5, 0, crs=4326))
+    before = index.get(0).__sizeof__()
+    index.nearest(gm.Point(0.5, 1, crs=4326))
+    assert index.get(0).__sizeof__() > before
+
 
 def test_mutable_index_clones_own_geodesic_caps_cache() -> None:
     """Equal row counts/generations do not identify independently mutable clones."""
     left = gm.SpatialIndex()
     right = copy.copy(left)
 
-    # Frozen 100-box repro (seed 42); full size required for shared-cache bug.
+    # Frozen 100-box-boundary repro (seed 42); full size required for the
+    # shared-cache bug. Geodesic polygon interiors are intentionally unsupported.
     _LEFT_BOXES = [
         (47.405111475680485, -66.49849426882663, 49.67784309079653, -64.63512943745093),
         (80.4002128157642, 24.737928239207577, 87.54843140063248, 25.524745016979963),
@@ -400,8 +430,8 @@ def test_mutable_index_clones_own_geodesic_caps_cache() -> None:
             14.971276070346882,
         ),
     ]
-    left_rows = [gm.box(*b, crs=4326) for b in _LEFT_BOXES]
-    right_rows = [gm.box(*b, crs=4326) for b in _RIGHT_BOXES]
+    left_rows = [geodesic_box_boundary(b) for b in _LEFT_BOXES]
+    right_rows = [geodesic_box_boundary(b) for b in _RIGHT_BOXES]
     left.insert(left_rows)
     right.insert(right_rows)
 
@@ -713,12 +743,12 @@ def test_geometry_array_prepared_contains_and_index() -> None:
             assert getattr(gm, predicate)(prepared, probe) == getattr(gm, predicate)(
                 polygon, probe
             ), (predicate, (probe).to_wkt())
-    assert gm.dwithin(prepared, gm.Point(2, 0, crs=4326), 1.5) == gm.dwithin(
-        polygon, gm.Point(2, 0, crs=4326), 1.5
+    assert gm.dwithin(prepared, gm.Point(2, 0, crs=4326), 1.5, unit='planar') == gm.dwithin(
+        polygon, gm.Point(2, 0, crs=4326), 1.5, unit='planar'
     )
     np.testing.assert_array_equal(
-        gm.dwithin(prepared, values, 0.0),
-        [gm.dwithin(polygon, item, 0.0) for item in list(values)],
+        gm.dwithin(prepared, values, 0.0, unit='planar'),
+        [gm.dwithin(polygon, item, 0.0, unit='planar') for item in list(values)],
     )
     assert repr(prepared) == '<PreparedGeometry geometry_type=Polygon>'
     assert ids(gm.SpatialIndex(values).query(polygon, predicate='contains')) == [0, 2]
@@ -873,7 +903,9 @@ def test_nearest_can_use_geodesic_meter_units_for_points() -> None:
     assert ids(gm.nearest(values, queries, unit='meters')) == [[1], [0]]
     assert ids(gm.nearest(values, query)) == [1]
     assert ids(gm.SpatialIndex(values).nearest(query)) == [1]
-    assert ids(gm.nearest([gm.box(0, 0, 1, 1, crs=4326)], query, unit='meters')) == [0]
+    assert ids(
+        gm.nearest([geodesic_box_boundary((0, 0, 1, 1))], query, unit='meters')
+    ) == [0]
     with pytest.raises(ValueError, match="expected 'planar' or 'meters'"):
         gm.nearest(values, query, unit=cast('Any', 'km'))
 
@@ -1409,13 +1441,13 @@ def test_nearest_edge_parameters() -> None:
     assert ids(idx.nearest(probe, max_distance=0.5)) == []
 
 
-def test_insert_of_a_polygon_disables_geodesic_pruning_without_changing_results() -> (
+def test_insert_of_linework_disables_geodesic_pruning_without_changing_results() -> (
     None
 ):
     idx = gm.SpatialIndex(gm.points([0.0, 10.0], [0.0, 0.0], crs=4326))
     probe = gm.Point(1.0, 0.0, crs=4326)
     before = idx.nearest(probe, k=2, return_distance=True)
-    idx.insert(gm.box(50, 50, 51, 51, crs=4326))
+    idx.insert(geodesic_box_boundary((50, 50, 51, 51)))
     after = idx.nearest(probe, k=2, return_distance=True)
     assert ids(before[0]) == ids(after[0])
     assert floats(before[1]) == floats(after[1])
@@ -1494,7 +1526,7 @@ def test_geodesic_full_scan_arm_matches_brute_force_for_shapes() -> None:
     items = gm.GeometryArray(
         [
             gm.LineString([(179.0, 10.0), (-179.0, 10.0)], crs=4326),
-            gm.box(179.5, 9.5, 180.0, 10.5, crs=4326),
+            geodesic_box_boundary((179.5, 9.5, 180.0, 10.5)),
             gm.Point(0.0, 0.0, crs=4326),
         ],
         crs=4326,

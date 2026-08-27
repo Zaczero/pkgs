@@ -13,7 +13,7 @@ use crate::dispatch::packed::{
     try_unary_packed_f64,
 };
 use crate::error::Result;
-use crate::geometry::{Shape, is_geographic_frame};
+use crate::geometry::{PreparedPlan, Shape, is_geographic_frame};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
 
 /// Scalar geometry lane: resolve metric once, run one kernel, return the bulk element.
@@ -22,7 +22,7 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&crate::ShapeData, &OpCtx<'_>) -> Result<R> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
     let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
@@ -38,15 +38,15 @@ pub(crate) fn unary_scalar<R: BulkElement>(
         left_frame_cache: Some(&geometry.frame_cache),
         right_frame_cache: None,
     };
-    py.detach(move || kernel(geometry.shape.as_ref(), &ctx))
-        .map_err(PyErr::from)
+    let plan = geometry.plan_or_transient();
+    py.detach(move || kernel(&plan, &ctx)).map_err(PyErr::from)
 }
 
-/// How the per-row unary fallback materializes a [`ShapeData`] handle.
+/// How the per-row unary fallback materializes a [`PreparedPlan`] handle.
 ///
 /// Pure topology transforms only need the bare shape; persisting prepared
 /// state (or frame caches) on every row is a memory leak against the
-/// caller's intent. Validity/simplicity and other genuine `ShapeData`
+/// caller's intent. Validity/simplicity and other genuine prepared-plan
 /// consumers keep the prepared/array-cached path. Distance-basis linref
 /// needs a frame cache without necessarily needing prepared persistence.
 #[derive(Clone, Copy)]
@@ -56,7 +56,7 @@ enum UnaryRowMode {
     /// Persist large/mixed prepared handles into the array cache; still no
     /// eager frame-cache acquisition.
     Prepared,
-    /// Transient `ShapeData` + per-row frame cache (distance-basis linref).
+    /// Transient `PreparedPlan` + per-row frame cache (distance-basis linref).
     ShapeWithFrameCache,
 }
 
@@ -67,7 +67,7 @@ pub(crate) fn unary_array<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
@@ -118,7 +118,7 @@ fn run_unary_rows<T: BulkElement>(
     resolver: super::metric::MetricResolver,
     op_name: &str,
     mode: UnaryRowMode,
-    kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<T> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<T> + Send + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
@@ -179,7 +179,7 @@ pub(crate) fn unary_scalar_shape(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&crate::ShapeData, &OpCtx<'_>) -> Result<Shape> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send,
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
     let shape = unary_scalar(py, geometry, op, unit, kernel)?;
@@ -199,7 +199,7 @@ pub(crate) fn unary_array_shapes(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
@@ -221,7 +221,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     unit: Option<DistanceUnit>,
     parameter: &'static str,
     mut kernel: impl FnMut(
-        &crate::ShapeData,
+        &PreparedPlan,
         &OpCtx<'_>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Shape>
@@ -272,7 +272,7 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&crate::ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
     let Some(input) = classify_input(value) else {

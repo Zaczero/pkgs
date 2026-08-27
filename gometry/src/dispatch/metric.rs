@@ -179,7 +179,7 @@ impl Lane {
 /// A unary kernel producing one `f64` per geometry — the shape every
 /// CRS-aware measure (`area`, `length`, `length_3d`) shares.
 pub(crate) type UnaryMeasureKernel =
-    fn(&crate::geometry::ShapeData, &OpCtx<'_>) -> crate::error::Result<f64>;
+    fn(&crate::geometry::PreparedPlan, &OpCtx<'_>) -> crate::error::Result<f64>;
 
 /// Per-call resolved context handed to unary/binary/grid kernels.
 pub(crate) struct OpCtx<'a> {

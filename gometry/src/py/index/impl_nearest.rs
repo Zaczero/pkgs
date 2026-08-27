@@ -1,9 +1,10 @@
 use super::str_tree::StrNode;
+use crate::geometry::PreparedPlan;
 use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
-    NonNegative, PyGeometry, PyResult, PySpatialIndex, RTreeNode, Shape, ShapeData,
-    aabb_box_distance_2, crs, index_envelope, nearest_candidates_from_heap, pair_distance_resolved,
-    push_nearest_candidate, resolve_metric, shape_pruner_point,
+    NonNegative, PyGeometry, PyResult, PySpatialIndex, RTreeNode, Shape, aabb_box_distance_2, crs,
+    index_envelope, nearest_candidates_from_heap, pair_distance_resolved, push_nearest_candidate,
+    resolve_metric, shape_pruner_point,
 };
 use crate::{try_push_heap, try_push_vec, try_reserve_heap, try_reserve_vec};
 
@@ -149,11 +150,12 @@ impl PySpatialIndex {
     ) -> PyResult<Vec<NearestCandidate>> {
         self.ensure_query_compatible(geometry, "spatial index nearest")?;
         let metric = resolve_metric(self.metric_crs_str(geometry.crs_str()), unit, "nearest")?;
+        let query_plan = geometry.plan_or_transient();
         let mut frontier = BinaryHeap::new();
         let mut leaf_frontier = Vec::new();
         self.nearest_core_ties(
             &metric,
-            &geometry.shape,
+            &query_plan,
             &geometry.frame_cache,
             k,
             max_distance,
@@ -179,7 +181,7 @@ impl PySpatialIndex {
     pub(crate) fn nearest_core_ties<'a>(
         &'a self,
         metric: &crs::MetricModel,
-        query: &ShapeData,
+        query: &PreparedPlan,
         query_cache: &crate::geometry::FrameDependentCaches,
         k: usize,
         max_distance: Option<NonNegative>,
@@ -217,7 +219,7 @@ impl PySpatialIndex {
     pub(crate) fn nearest_core<'a>(
         &'a self,
         metric: &crs::MetricModel,
-        query: &ShapeData,
+        query: &PreparedPlan,
         query_cache: &crate::geometry::FrameDependentCaches,
         k: usize,
         max_distance: Option<NonNegative>,

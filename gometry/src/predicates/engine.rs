@@ -6,7 +6,7 @@
 //! complete matrix produced by the graph relation owner. Batch and scalar
 //! surfaces therefore cannot drift in predicate semantics.
 
-use crate::geometry::{Bounds, Shape, ShapeData, graph_relate_data, point_is_geographic_pole};
+use crate::geometry::{Bounds, PreparedPlan, Shape, graph_relate_data, point_is_geographic_pole};
 use crate::{GeometryKind, PyGeometryArray, ShapeRow};
 
 /// Historical amortize threshold for prepared/array batch entry points.
@@ -273,7 +273,7 @@ impl PredicateSpec {
 )]
 pub(crate) fn scalar_vs_shapes<'a>(
     spec: &PredicateSpec,
-    scalar: &ShapeData,
+    scalar: &PreparedPlan,
     elements: impl ExactSizeIterator<Item = (usize, ShapeRow<'a>)>,
     scalar_is_left: bool,
     array: Option<&PyGeometryArray>,
@@ -298,7 +298,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     // antimeridian (including a fixed scalar against simple point rows).  A
     // physical pole has the same property: longitude is merely a spelling,
     // so its planar X cannot certify a negative against a geographic row.
-    let scalar_crosses = geographic && scalar_orig.shape().crosses_antimeridian();
+    let scalar_crosses = geographic && scalar_orig.crosses_antimeridian();
     let scalar_reaches_pole =
         geographic && crate::geometry::shape_reaches_geographic_pole(scalar_orig.shape());
     let scalar_is_pole = geographic
@@ -382,8 +382,8 @@ fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
 
 pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
-    left: &ShapeData,
-    right: &ShapeData,
+    left: &PreparedPlan,
+    right: &PreparedPlan,
     geographic: bool,
 ) -> bool {
     if geographic {
@@ -415,7 +415,7 @@ fn predicate_matrix_value(spec: &PredicateSpec, matrix: crate::geometry::De9im) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordSeq, Point, Polygon, Ring};
+    use crate::geometry::{CoordSeq, Point, Polygon, PreparedPlan, Ring};
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
         Shape::Polygon(Polygon::new(
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn geographic_crossing_rows_fail_open_the_bounds_gate() {
-        let query = ShapeData::from(rectangle(172.0, 42.0, 178.0, 48.0));
+        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
         let crossing = rectangle(170.0, 40.0, -170.0, 50.0);
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn geographic_crossing_packed_rows_fail_open_the_bounds_gate() {
-        let query = ShapeData::from(rectangle(172.0, 42.0, 178.0, 48.0));
+        let query = PreparedPlan::new(rectangle(172.0, 42.0, 178.0, 48.0));
         let coords = CoordSeq::from(vec![
             Point::new_unchecked_xy(170.0, 40.0),
             Point::new_unchecked_xy(-170.0, 40.0),

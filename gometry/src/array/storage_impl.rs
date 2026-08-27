@@ -580,7 +580,7 @@ impl GeometryArrayStorage {
     /// Build a scalar geometry for a packed row (always fresh ShapeData).
     ///
     /// Mixed rows must go through [`PyGeometryArray::geometry_at`] so the
-    /// array-side prepared cache owns the ShapeData.
+    /// array-side prepared cache owns the plan and its ShapeData.
     pub(crate) fn geometry_at(
         &self,
         index: usize,
@@ -590,6 +590,7 @@ impl GeometryArrayStorage {
         match self {
             Self::Mixed(shapes) => PyGeometry {
                 shape: Arc::new(ShapeData::new(shapes[index].clone())),
+                prepared_plan: None,
                 frame_cache,
                 frame,
             },
@@ -597,6 +598,7 @@ impl GeometryArrayStorage {
                 shape: Arc::new(ShapeData::new(Shape::Point(
                     coords.point_at(physical_row(row_map.as_deref(), index)),
                 ))),
+                prepared_plan: None,
                 frame_cache,
                 frame,
             },
@@ -611,6 +613,7 @@ impl GeometryArrayStorage {
                     ring_offsets,
                     polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
                 )))),
+                prepared_plan: None,
                 frame_cache,
                 frame,
             },
@@ -622,6 +625,7 @@ impl GeometryArrayStorage {
                 shape: Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_trusted(
                     Self::line_view(coords, offsets, row_map.as_deref(), index),
                 )))),
+                prepared_plan: None,
                 frame_cache,
                 frame,
             },

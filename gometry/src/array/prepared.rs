@@ -6,23 +6,23 @@ use std::sync::{Arc, OnceLock};
 use crate::array::{
     GeometryArrayStorage, PyGeometry, PyGeometryArray, RowSelection, RowSelectionRef, ShapeRow,
 };
-use crate::geometry::{Bounds, FrameDependentCaches, Shape, ShapeData};
+use crate::geometry::{Bounds, FrameDependentCaches, PreparedPlan, Shape, ShapeData};
 use crate::heap_size::HeapSize;
 
 /// Sidecar cache: one [`OnceLock`] per logical row, shared across array clones.
-pub(crate) type PreparedRowCache = Arc<OnceLock<Arc<[OnceLock<Arc<ShapeData>>]>>>;
+pub(crate) type PreparedRowCache = Arc<OnceLock<Arc<[OnceLock<Arc<PreparedPlan>>]>>>;
 
 #[expect(
     clippy::large_enum_variant,
     reason = "Transient avoids an allocation on the linear packed fast path"
 )]
 pub(crate) enum PreparedRow<'a> {
-    Shared(&'a Arc<ShapeData>),
-    Transient(ShapeData),
+    Shared(&'a Arc<PreparedPlan>),
+    Transient(PreparedPlan),
 }
 
 impl Deref for PreparedRow<'_> {
-    type Target = ShapeData;
+    type Target = PreparedPlan;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -53,17 +53,21 @@ impl<'a> PreparedRow<'a> {
 
     fn from_row(row: ShapeRow<'a>, seeded_bounds: BoundsSeed) -> Self {
         let data = match row {
-            ShapeRow::Handle(handle) => return Self::Shared(handle),
-            ShapeRow::Shape(shape) => ShapeData::new(shape.clone()),
-            ShapeRow::Point(point) => ShapeData::new(Shape::Point(point)),
-            ShapeRow::Line(coords, start, end) => ShapeData::new(Shape::LineString(
-                crate::geometry::LineSeq::from_trusted(coords.view(
+            ShapeRow::Handle(handle) => {
+                return Self::Shared(handle);
+            },
+            ShapeRow::Shape(shape) => PreparedPlan::new(ShapeData::new(shape.clone())),
+            ShapeRow::Point(point) => PreparedPlan::new(ShapeData::new(Shape::Point(point))),
+            ShapeRow::Line(coords, start, end) => PreparedPlan::new(ShapeData::new(
+                Shape::LineString(crate::geometry::LineSeq::from_trusted(coords.view(
                     crate::geometry::CoordWindow::trusted(start..end, coords.len()),
-                )),
+                ))),
             )),
-            ShapeRow::Rings(coords, ring_offsets, start, end) => ShapeData::new(Shape::Polygon(
-                GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
-            )),
+            ShapeRow::Rings(coords, ring_offsets, start, end) => {
+                PreparedPlan::new(ShapeData::new(Shape::Polygon(
+                    GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
+                )))
+            },
         };
         Self::Transient(match seeded_bounds {
             BoundsSeed::Value(bounds) => data.with_seeded_bounds(bounds),
@@ -72,7 +76,7 @@ impl<'a> PreparedRow<'a> {
     }
 
     /// Ownership boundary for durable boxed geometry; refine paths borrow this guard instead.
-    pub(crate) fn into_owned_data(self) -> Arc<ShapeData> {
+    pub(crate) fn into_owned_plan(self) -> Arc<PreparedPlan> {
         match self {
             Self::Shared(data) => Arc::clone(data),
             Self::Transient(data) => Arc::new(data),
@@ -208,7 +212,7 @@ pub(crate) fn mapped_prepared_cache(
     if unchanged.iter().all(|&value| value) && source_slots.len() == unchanged.len() {
         return Arc::clone(source);
     }
-    let slots: Arc<[OnceLock<Arc<ShapeData>>]> = unchanged
+    let slots: Arc<[OnceLock<Arc<PreparedPlan>>]> = unchanged
         .iter()
         .enumerate()
         .map(|(row, &keep)| {
@@ -271,7 +275,7 @@ impl PyGeometryArray {
                     .prepared_cache
                     .get_or_init(|| Arc::from(vec![OnceLock::new(); self.storage().len()]));
                 let handle = slots[index].get_or_init(|| {
-                    let data = ShapeData::new(shape.clone());
+                    let data = PreparedPlan::new(ShapeData::new(shape.clone()));
                     if let Some(element_bounds) = self.cached_element_bounds() {
                         Arc::new(
                             data.with_seeded_bounds(element_bounds.get(index).copied().flatten()),
@@ -320,7 +324,7 @@ impl PyGeometryArray {
     }
 
     /// Scalar geometry for a logical row: mixed rows share one array-cached
-    /// [`ShapeData`]; packed rows build a fresh handle (same as before).
+    /// [`PreparedPlan`]; packed rows build a fresh handle (same as before).
     pub(crate) fn geometry_at(&self, index: usize) -> PyGeometry {
         let frame_cache = self.row_frame_cache(index);
         let frame = self.frame.clone();
@@ -329,16 +333,30 @@ impl PyGeometryArray {
                 let slots = self
                     .prepared_cache
                     .get_or_init(|| Arc::from(vec![OnceLock::new(); self.storage().len()]));
-                let shape = Arc::clone(
-                    slots[index].get_or_init(|| Arc::new(ShapeData::new(shapes[index].clone()))),
-                );
+                let shape = Arc::clone(slots[index].get_or_init(|| {
+                    Arc::new(PreparedPlan::new(ShapeData::new(shapes[index].clone())))
+                }));
                 PyGeometry {
-                    shape,
+                    shape: Arc::clone(shape.shape_arc()),
+                    prepared_plan: Some(shape),
                     frame_cache,
                     frame,
                 }
             },
-            _ => self.storage().geometry_at(index, frame, frame_cache),
+            _ => {
+                let geometry = self.storage().geometry_at(index, frame, frame_cache);
+                if let Some(plan) = self
+                    .prepared_cache
+                    .get()
+                    .and_then(|slots| slots.get(index))
+                    .and_then(OnceLock::get)
+                    .cloned()
+                {
+                    geometry.with_prepared_plan(plan)
+                } else {
+                    geometry
+                }
+            },
         }
     }
 
@@ -389,13 +407,13 @@ mod frame_cache_row_tests {
     }
 
     #[test]
-    fn mixed_geometry_at_shares_prepared_shape_data_arc() {
+    fn mixed_geometry_at_shares_prepared_plan_shape_data_arc() {
         let array = mixed_shapes();
         let a = array.geometry_at(1);
         let b = array.geometry_at(1);
         assert!(
             Arc::ptr_eq(&a.shape, &b.shape),
-            "arr[i] must reuse the array-side prepared ShapeData Arc"
+            "arr[i] must reuse the array-side prepared plan's ShapeData Arc"
         );
         assert!(Arc::ptr_eq(&a.frame_cache, &b.frame_cache));
         // Different rows stay independent.
@@ -521,6 +539,24 @@ mod prepared_row_ownership_tests {
     }
 
     #[test]
+    fn packed_geometry_at_reuses_an_initialized_prepared_plan() {
+        let array = lines(34);
+        let plan = array
+            .prepared_row(0, array.storage().row(0))
+            .into_owned_plan();
+        let geometry = array.geometry_at(0);
+        let extracted = geometry
+            .prepared_plan
+            .as_ref()
+            .expect("initialized packed rows retain their plan");
+        assert!(Arc::ptr_eq(&plan, extracted));
+        assert!(Arc::ptr_eq(
+            &geometry.frame_cache,
+            &array.row_frame_cache(0)
+        ));
+    }
+
+    #[test]
     fn transient_point_conversion_preserves_shape_and_bounds() {
         let array = PyGeometryArray::packed_points(
             CoordSeq::from_vecs(vec![2.0], vec![3.0], None, None),
@@ -528,9 +564,9 @@ mod prepared_row_ownership_tests {
         );
         let prepared = array
             .prepared_row(0, array.storage().row(0))
-            .into_owned_data();
+            .into_owned_plan();
         assert!(matches!(prepared.shape(), Shape::Point(Point { x, y, .. })
-            if (*x - 2.0).abs() < f64::EPSILON && (*y - 3.0).abs() < f64::EPSILON));
+            if (x - 2.0).abs() < f64::EPSILON && (y - 3.0).abs() < f64::EPSILON));
         assert_eq!(
             prepared.bounds(),
             Some(crate::geometry::Bounds::new_unchecked(2.0, 3.0, 2.0, 3.0))
@@ -574,7 +610,7 @@ mod prepared_row_ownership_tests {
         let source_size = crate::HeapSize::heap_bytes(&array);
         let owned = array
             .prepared_row(0, array.storage().row(0))
-            .into_owned_data();
+            .into_owned_plan();
         let warm_size = crate::HeapSize::heap_bytes(&array);
         assert!(warm_size > source_size);
         let slots = array.prepared_cache.get().unwrap();
@@ -614,9 +650,9 @@ mod prepared_row_ownership_tests {
 
     #[test]
     fn handle_conversion_is_borrowed_not_rebuilt() {
-        let shape = ShapeData::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
+        let shape = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
         let source = Arc::new(shape);
-        let prepared = PreparedRow::Shared(&source).into_owned_data();
+        let prepared = PreparedRow::Shared(&source).into_owned_plan();
         assert!(Arc::ptr_eq(&source, &prepared));
     }
 }

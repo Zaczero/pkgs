@@ -218,7 +218,8 @@ pub enum GeometryArrayStorage {
     /// The array frame, missing mask, prepared-row cache, and frame-cache
     /// sidecars live on [`PyGeometryArray`] — not per-row scalar wrappers.
     /// Scalar extract (`arr[i]`) and prepared kernels materialize
-    /// [`ShapeData`] once into the array-side prepared cache.
+    /// [`crate::geometry::PreparedPlan`] once into the array-side prepared
+    /// cache.
     Mixed(Vec<Shape>),
     Points {
         coords: Arc<CoordSeq>,

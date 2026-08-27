@@ -61,13 +61,12 @@ impl PyGeometry {
     /// >>> gm.contains(prep, gm.Point(1, 1))
     /// True
     pub fn prepare(&self) -> PyPreparedGeometry {
-        // The prepared state IS the geometry's shared `ShapeData` handle: its
-        // `OnceLock` caches (point tester, distance parts, convex-shell,
-        // validity, bounds) build lazily on first use and amortize across every
-        // later query — the native predicate engine reads them directly, so no
-        // eager geo-rs prepared graph or `to_geo` conversion is built here.
+        // The explicit plan owns all heavy topology and metric products. They
+        // remain lazy so preparing is cheap, while every later operand path
+        // sees the same plan rather than rebuilding transient state.
         PyPreparedGeometry {
             geometry: self.clone(),
+            plan: self.plan_or_transient(),
         }
     }
 

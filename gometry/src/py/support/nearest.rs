@@ -57,7 +57,11 @@ pub(crate) fn py_nearest_points(
     let model = resolve_metric(left.crs_str(), unit, "nearest_points")?;
     let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
     let (left_shape, right_shape) = crate::geometry::nearest_point_pair(
-        metric_nearest_points(&model, &left.shape, &right.shape)?,
+        metric_nearest_points(
+            &model,
+            &left.plan_or_transient(),
+            &right.plan_or_transient(),
+        )?,
         common,
     );
     Ok((
@@ -136,7 +140,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         "nearest_points",
     )?;
     let model = resolve_metric(fixed.crs_str(), unit, "nearest_points")?;
-    let fixed_shape = Arc::clone(&fixed.shape);
+    let fixed_plan = fixed.plan_or_transient();
     let fixed_cache = Arc::clone(&fixed.frame_cache);
     let array_owned = array.clone();
     let missing = array.missing().cloned();
@@ -144,12 +148,12 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         let rows = py.detach(move || {
             crate::crs::with_resolved_ellipsoid_metric_at(
                 &crs,
-                &[fixed_shape.shape()],
+                &[fixed_plan.shape()],
                 &state,
                 |crs, metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    if !fixed_shape.shape().crosses_antimeridian() {
-                        fixed_shape.prepare_geodesic_parts(
+                    if !fixed_plan.shape().crosses_antimeridian() {
+                        fixed_plan.prepare_geodesic_parts(
                             &fixed_cache,
                             crs,
                             semi_major,
@@ -168,9 +172,9 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                             let element = array_owned.prepared_row(row_index, row);
                             let element_cache = array_owned.row_frame_cache(row_index);
                             let common =
-                                crate::geometry::common_axes(fixed_shape.shape(), element.shape());
+                                crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
-                                fixed_shape.geodesic_nearest_points_cached_split(
+                                fixed_plan.geodesic_nearest_points_cached_split(
                                     &fixed_cache,
                                     &element,
                                     &element_cache,
@@ -182,7 +186,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                             } else {
                                 element.geodesic_nearest_points_cached_split(
                                     &element_cache,
-                                    &fixed_shape,
+                                    &fixed_plan,
                                     &fixed_cache,
                                     crs,
                                     semi_major,
@@ -215,11 +219,11 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                         return Ok((None, CoordinateAxes::XY));
                     }
                     let element = array_owned.prepared_row(row_index, row);
-                    let common = crate::geometry::common_axes(fixed_shape.shape(), element.shape());
+                    let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                     if fixed_is_left {
-                        metric_nearest_points(&model, &fixed_shape, &element)
+                        metric_nearest_points(&model, &fixed_plan, &element)
                     } else {
-                        metric_nearest_points(&model, &element, &fixed_shape)
+                        metric_nearest_points(&model, &element, &fixed_plan)
                     }
                     .map(|pair| (pair, common))
                 })

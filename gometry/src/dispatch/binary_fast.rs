@@ -16,7 +16,7 @@ use crate::dispatch::binary::{
 use crate::dispatch::kernels;
 use crate::dispatch::metric::OpCtx;
 use crate::dispatch::operation::Operation;
-use crate::geometry::{ShapeData, is_geographic_frame};
+use crate::geometry::{PreparedPlan, is_geographic_frame};
 use crate::predicates::engine::{Predicate, topology_scalar_pair};
 use crate::{DistanceUnit, NonNegative, OverlayOp};
 
@@ -126,9 +126,7 @@ pub(crate) fn dispatch_broadcast2<R>(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    op: impl Fn(&crate::geometry::Shape, &crate::geometry::Shape) -> crate::error::Result<R>
-    + Send
-    + Sync,
+    op: impl Fn(&PreparedPlan, &PreparedPlan) -> crate::error::Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: Send + crate::broadcast::BulkElement,
@@ -140,7 +138,7 @@ where
         op_name,
         super::MetricResolver::None,
         &NoBinaryFastPath,
-        move |left, right, _ctx| op(left.shape(), right.shape()),
+        move |left, right, _ctx| op(left, right),
     )
 }
 
@@ -150,7 +148,7 @@ fn dispatch_metric_binary<R>(
     right: &Bound<'_, PyAny>,
     op: Operation,
     unit: Option<DistanceUnit>,
-    scalar_kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> crate::error::Result<R>
+    scalar_kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> crate::error::Result<R>
     + Copy
     + Send
     + Sync,
@@ -316,7 +314,7 @@ fn dispatch_similarity_metric<ScalarKernel, PerDensifyKernel, PackedLineKernel>(
     packed_line_kernel: PackedLineKernel,
 ) -> PyResult<Py<PyAny>>
 where
-    ScalarKernel: Fn(&ShapeData, &ShapeData, &OpCtx<'_>, Option<f64>) -> crate::error::Result<f64>
+    ScalarKernel: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>, Option<f64>) -> crate::error::Result<f64>
         + Copy
         + Send
         + Sync,

@@ -486,9 +486,11 @@ impl IndexRows {
         {
             return Some(packed.source.storage().row(handle));
         }
-        self.boxed
-            .get(handle - packed_len)
-            .map(|item| ShapeRow::Handle(&item.shape))
+        self.boxed.get(handle - packed_len).map(|item| {
+            item.prepared_plan
+                .as_ref()
+                .map_or_else(|| ShapeRow::Shape(item.shape.shape()), ShapeRow::Handle)
+        })
     }
 
     fn row(&self, handle: usize) -> ShapeRow<'_> {
@@ -501,7 +503,10 @@ impl IndexRows {
         {
             return packed.source.storage().row(handle);
         }
-        ShapeRow::Handle(&self.boxed[handle - packed_len].shape)
+        let item = &self.boxed[handle - packed_len];
+        item.prepared_plan
+            .as_ref()
+            .map_or_else(|| ShapeRow::Shape(item.shape.shape()), ShapeRow::Handle)
     }
 
     fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
@@ -515,7 +520,15 @@ impl IndexRows {
             let row = packed.source.storage().row(handle);
             return packed.source.prepared_row(handle, row);
         }
-        crate::array::PreparedRow::Shared(&self.boxed[handle - packed_len].shape)
+        let geometry = &self.boxed[handle - packed_len];
+        geometry.prepared_plan.as_ref().map_or_else(
+            || {
+                crate::array::PreparedRow::Transient(crate::PreparedPlan::new(Arc::clone(
+                    &geometry.shape,
+                )))
+            },
+            crate::array::PreparedRow::Shared,
+        )
     }
 
     fn frame_cache(&self, handle: usize) -> Arc<crate::geometry::FrameDependentCaches> {

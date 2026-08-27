@@ -1,6 +1,7 @@
 #[cfg(test)]
 use std::cell::Cell;
 
+use crate::geometry::PreparedPlan;
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
@@ -333,7 +334,7 @@ impl PySpatialIndex {
     pub(crate) fn geodesic_capped_nearest(
         &self,
         metric: &crs::MetricModel,
-        query: &ShapeData,
+        query: &PreparedPlan,
         query_cache: &crate::geometry::FrameDependentCaches,
         k: usize,
         max_distance: Option<NonNegative>,
@@ -558,9 +559,10 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Vec<usize>> {
         let plan = PreparedIndexQuery::for_geometry(self, geometry, None, distance, unit)?;
+        let query_plan = geometry.plan_or_transient();
         let row = plan.row(
             self,
-            ShapeRow::Handle(&geometry.shape),
+            ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
         );
         let mut ids = Vec::new();
@@ -692,7 +694,7 @@ impl PySpatialIndex {
             }
             let data = self.rows.prepared_row(idx);
             for &(row, position) in group {
-                let query = ShapeData::new(Shape::Point(points.get(row)));
+                let query = PreparedPlan::new(ShapeData::new(Shape::Point(points.get(row))));
                 keep[position] = topology_scalar_pair(&spec, &query, &data, geographic);
             }
         }
@@ -736,6 +738,7 @@ impl PySpatialIndex {
         plan: &PreparedIndexQuery,
     ) -> PyResult<Vec<usize>> {
         let mut matches = candidates;
+        let query_plan = geometry.plan_or_transient();
         match plan {
             PreparedIndexQuery::Topological { predicate } => {
                 let spec = predicate.spec();
@@ -746,7 +749,7 @@ impl PySpatialIndex {
                     let data = self.rows.prepared_row(idx);
                     Ok(topology_scalar_pair(
                         &spec,
-                        &geometry.shape,
+                        &query_plan,
                         &data,
                         self.geographic(),
                     ))
@@ -762,7 +765,7 @@ impl PySpatialIndex {
                         resolved,
                         &data,
                         &self.rows.frame_cache(idx),
-                        &geometry.shape,
+                        &query_plan,
                         &geometry.frame_cache,
                         distance,
                     )
@@ -787,14 +790,15 @@ impl PySpatialIndex {
     ) -> PyResult<Vec<usize>> {
         let plan =
             PreparedIndexQuery::for_geometry(self, geometry, Some(predicate), distance, unit)?;
+        let query_plan = geometry.plan_or_transient();
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {
-            return self.topological_matches(&geometry.shape, predicate);
+            return self.topological_matches(&query_plan, predicate);
         }
         let prepared = plan.row(
             self,
-            ShapeRow::Handle(&geometry.shape),
+            ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
         );
         let mut candidates = Vec::new();
@@ -817,7 +821,7 @@ impl PySpatialIndex {
     /// per-row `PyGeometry` materialization). Distance-free by contract.
     pub(crate) fn topological_matches(
         &self,
-        shape: &ShapeData,
+        shape: &PreparedPlan,
         predicate: Predicate,
     ) -> PyResult<Vec<usize>> {
         let mut matches = Vec::new();
@@ -829,7 +833,7 @@ impl PySpatialIndex {
     /// column — the array `query` lane's one-pass builder.
     pub(crate) fn topological_matches_append(
         &self,
-        shape: &ShapeData,
+        shape: &PreparedPlan,
         predicate: Predicate,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
@@ -911,7 +915,7 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
-            let query = ShapeData::new(Shape::Point(point));
+            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             match (coordinate_distance, distance) {
                 (Some(radius), _) => {

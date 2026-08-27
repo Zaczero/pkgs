@@ -6,11 +6,11 @@ import gometry as gm
 import pytest
 
 
-def test_mixed_array_scalar_extract_reuses_prepared_shape_data() -> None:
-    """arr[i] on mixed storage materializes ShapeData once and reuses it.
+def test_mixed_array_scalar_extract_reuses_prepared_plan() -> None:
+    """arr[i] on mixed storage materializes one PreparedPlan and reuses it.
 
     Arc identity of the prepared handle is pinned in the Rust unit test
-    ``mixed_geometry_at_shares_prepared_shape_data_arc`` (array prepared
+    ``mixed_geometry_at_shares_prepared_plan_shape_data_arc`` (array prepared
     cache). This Python seam checks the public consequences: distinct
     wrapper objects, value equality, and that a warmed scalar cache
     (``is_valid`` / length) remains consistent across repeated extract.
@@ -21,7 +21,7 @@ def test_mixed_array_scalar_extract_reuses_prepared_shape_data() -> None:
         'POLYGON ((0 0, 2 0, 2 2, 0 0))',
     ])
     a = arr[1]
-    # Warm prepared verdicts on the shared ShapeData.
+    # Warm prepared verdicts on the shared plan.
     assert a.is_valid is True
     length = a.length
     b = arr[1]

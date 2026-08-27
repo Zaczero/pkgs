@@ -1,6 +1,6 @@
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    Point, PointBatchTester, PolePosition, Polygon, Ring, Shape, ShapeData, pole_position,
+    Point, PointBatchTester, PolePosition, Polygon, PreparedPlan, Ring, Shape, pole_position,
     shape_has_polar_ring, shape_spans_full_longitude,
 };
 use crate::grid::affine_source::visit_grid_cover_components;
@@ -45,9 +45,9 @@ fn center_covers_prepared(tester: &PointBatchTester, cell: CellIndex) -> bool {
 /// Geographic classifier against the unsplit whole source (H3 covers are always
 /// WGS84). Used when `checked` is true so seam/polar cell probes cannot take
 /// the false-middle planar path.
-fn checked_predicate(source: &ShapeData, cell: CellIndex) -> bool {
+fn checked_predicate(source: &PreparedPlan, cell: CellIndex) -> bool {
     let center = LatLng::from(cell);
-    let probe = ShapeData::from(Shape::Point(Point::new_unchecked_xy(
+    let probe = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(
         center.lng(),
         center.lat(),
     )));
@@ -75,7 +75,7 @@ pub(super) fn h3_tile(
     // component is tiled against its own source, then the shared map performs
     // the sole deduplicated global budget check.
     visit_grid_cover_components(shape, &mut |component| {
-        let component_source = ShapeData::new(component.clone());
+        let component_source = PreparedPlan::new(component.clone());
         h3_tile_shape(
             component,
             &component_source,
@@ -97,7 +97,7 @@ pub(super) fn h3_tile(
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
     shape: &Shape,
-    unsplit_source: &ShapeData,
+    unsplit_source: &PreparedPlan,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -156,7 +156,7 @@ fn points_equal_signed_zero(a: Point, b: Point) -> bool {
 /// Center-rule cells for a line.  Exact overlap/bbox line contact belongs to
 /// the affine carrier and ordered H3 arcs, never this sample-ring helper.
 pub(super) fn h3_tile_line(
-    source: &ShapeData,
+    source: &PreparedPlan,
     coords: &crate::geometry::CoordSeq,
     resolution: Resolution,
     max_cells: Option<usize>,
@@ -185,7 +185,7 @@ pub(super) fn h3_tile_line(
 /// Checked inward flood: every first-seen neighbor is tested against the
 /// unsplit source; only matched cells are recorded and enqueued.
 fn flood_checked(
-    unsplit_source: &ShapeData,
+    unsplit_source: &PreparedPlan,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
     seen: &mut HashSet<CellIndex>,
@@ -242,7 +242,7 @@ fn flood_unchecked(
 /// Flood-fill one polygon's center-rule H3 coverage into `coverage`.
 pub(super) fn h3_tile_polygon(
     polygon: &Polygon,
-    unsplit_source: &ShapeData,
+    unsplit_source: &PreparedPlan,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -350,7 +350,7 @@ pub(super) fn h3_tile_polygon(
 fn h3_tile_polygon_seeds_center(
     polygon: &Polygon,
     part_source: &Shape,
-    unsplit_source: &ShapeData,
+    unsplit_source: &PreparedPlan,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,

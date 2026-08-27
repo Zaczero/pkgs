@@ -13,13 +13,6 @@ use crate::geometry::{
     PlanarMetric, PointBatchTester, SegmentMetric, bounds_to_shape,
 };
 
-#[derive(Default)]
-struct ColdCaches {
-    topology_graph: OnceLock<crate::geometry::topology::TopologyGraph>,
-    geographic_topology_graph: OnceLock<crate::geometry::topology::TopologyGraph>,
-    distance_3d: OnceLock<crate::geometry::Distance3dParts>,
-}
-
 /// One-frame sidecar for state that depends on the coordinate frame rather
 /// than immutable coordinates alone. Ownership guarantees one logical
 /// CRS/ellipsoid per sidecar; the key remains explicit so a PROJ runtime
@@ -90,46 +83,51 @@ impl HeapSize for FrameDependentEntry {
     }
 }
 
-/// Frozen geometry payload plus its lazily-built prepared state.
+/// Frozen geometry payload and its cheap bounds cache.
 ///
-/// The keystone handle every `PyGeometry` (and detached worker clone) shares
-/// behind one `Arc`, so an index built by any operation amortizes across
-/// every later operation on the same geometry.
-///
-/// Large prepared working sets (`DistanceParts`, `PointBatchTester`,
-/// `LineIndexSlot`, `ValidationIssue`) live behind `OnceLock<Box<_>>` so a
-/// cold handle does not reserve hundreds of bytes of inline `OnceLock`
-/// storage per geometry. Hot scalar paths that never touch those products
-/// keep a small `ShapeData` header; first use allocates the product once.
-/// The caches are pure functions of `shape` (which is immutable), so
-/// identity, equality, and hashing delegate to the shape alone. Relation
-/// graphs are source-owned and are safe to share across detached work.
+/// Heavy working sets belong to [`PreparedPlan`], not to ordinary geometry
+/// values. This keeps a geometry that is never used as a repeated operand
+/// free of topology, distance, tester, and linear-index slots.
 pub struct ShapeData {
     shape: Shape,
     bounds: OnceLock<Option<Bounds>>,
-    /// Structured validity verdict, computed once — the shape is frozen,
-    /// so the answer can never change. Boxed: the issue payload is large
-    /// relative to a cold handle and rare on the hot path.
-    validity: OnceLock<Box<Option<ValidationIssue>>>,
-    /// OGC simplicity verdict, computed once (see `validity`).
-    simplicity: OnceLock<bool>,
-    /// Antimeridian-crossing verdict, computed once for geographic bounds and
-    /// other frame-aware operations that consult it repeatedly per handle.
-    antimeridian_crossing: OnceLock<bool>,
-    /// Distance working set — boxed so cold `OnceLock` is pointer-sized.
-    distance: OnceLock<Box<DistanceParts>>,
-    /// Point-membership tester — boxed (large hierarchical index).
-    point_tester: OnceLock<Box<Option<PointBatchTester>>>,
-    /// Planar LRS index — boxed (large prefix tables).
-    line_index: OnceLock<Box<LineIndexSlot>>,
-    /// Rarely-used lazy caches (geodesic and topology graph) boxed behind one
-    /// `OnceLock` so transient and persistent handles stay small.
-    cold: OnceLock<Box<ColdCaches>>,
 }
 
-// Large lazy products are `OnceLock<Box<_>>` (~16 B cold) rather than inline
-// `OnceLock`s of 128-280 B values; the pre-shrink header was ~968 B, which cost
-// ~1.1 KB per scalar geometry.
+/// Shape-derived topology products shared by persistent and transient plans.
+///
+/// The geographic graph owns seam charts and pole quotient topology. The point
+/// tester is separate and lazy so preparing a linear shape never constructs an
+/// inapplicable areal tester.
+#[derive(Default)]
+struct TopologyPlan {
+    cartesian_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
+    geographic_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
+    validity: OnceLock<Box<Option<ValidationIssue>>>,
+    simplicity: OnceLock<bool>,
+    antimeridian_crossing: OnceLock<bool>,
+    point_tester: OnceLock<Box<Option<PointBatchTester>>>,
+}
+
+/// Shape-derived metric products shared by persistent and transient plans.
+#[derive(Default)]
+struct MetricPlan {
+    distance: OnceLock<Box<DistanceParts>>,
+    distance_3d: OnceLock<Box<crate::geometry::Distance3dParts>>,
+    line_index: OnceLock<Box<LineIndexSlot>>,
+}
+
+/// One reusable execution plan for one immutable geometry.
+///
+/// Persistent prepared geometries, array rows, and spatial-index rows retain
+/// this same type. Ordinary one-shot calls construct a transient plan and drop
+/// it after the operation. Frame-keyed geodesic products remain in the
+/// caller-owned [`FrameDependentCaches`] sidecar because their interpretation
+/// depends on CRS, ellipsoid, and runtime generation.
+pub struct PreparedPlan {
+    shape: Arc<ShapeData>,
+    topology: OnceLock<Box<TopologyPlan>>,
+    metric: OnceLock<Box<MetricPlan>>,
+}
 
 impl ShapeData {
     pub(crate) fn retained_heap_bytes(&self) -> usize {
@@ -140,60 +138,11 @@ impl ShapeData {
         Self {
             shape,
             bounds: OnceLock::new(),
-            validity: OnceLock::new(),
-            simplicity: OnceLock::new(),
-            antimeridian_crossing: OnceLock::new(),
-            distance: OnceLock::new(),
-            point_tester: OnceLock::new(),
-            line_index: OnceLock::new(),
-            cold: OnceLock::new(),
         }
-    }
-
-    fn cold(&self) -> &ColdCaches {
-        self.cold.get_or_init(|| Box::new(ColdCaches::default()))
     }
 
     pub const fn shape(&self) -> &Shape {
         &self.shape
-    }
-
-    pub(in crate::geometry) fn topology_graph(&self) -> &crate::geometry::topology::TopologyGraph {
-        self.cold()
-            .topology_graph
-            .get_or_init(|| crate::geometry::topology::TopologyGraph::cartesian(&self.shape))
-    }
-
-    pub(in crate::geometry) fn geographic_topology_graph(
-        &self,
-    ) -> &crate::geometry::topology::TopologyGraph {
-        self.cold()
-            .geographic_topology_graph
-            .get_or_init(|| crate::geometry::topology::TopologyGraph::geographic(&self.shape))
-    }
-
-    /// The cached validity verdict (`None` = valid). Shapely re-validates
-    /// every call; a frozen handle answers repeats for free.
-    pub fn validate_cached(&self) -> Option<&ValidationIssue> {
-        self.validity
-            .get_or_init(|| Box::new(self.shape.validate()))
-            .as_ref()
-            .as_ref()
-    }
-
-    /// The cached OGC simplicity verdict (see [`Self::validate_cached`]).
-    pub fn is_simple_cached(&self) -> bool {
-        *self.simplicity.get_or_init(|| self.shape.is_simple())
-    }
-
-    /// The cached antimeridian-crossing verdict. An inherent method that
-    /// shadows the `Deref`→[`Shape::crosses_antimeridian`], so the geographic
-    /// split gate walks the rings only once per handle no matter how many
-    /// topology ops (or how many times within one op) consult it.
-    pub fn crosses_antimeridian(&self) -> bool {
-        *self
-            .antimeridian_crossing
-            .get_or_init(|| self.shape.crosses_antimeridian())
     }
 
     /// Take the shape out of a uniquely-owned handle (the caches are
@@ -207,14 +156,8 @@ impl ShapeData {
         *self.bounds.get_or_init(|| self.shape.bounds())
     }
 
-    /// Seed the bounds cache from an already-known box (the array path computes
-    /// every row's box ONCE with the SIMD `per_element_bounds` fold, so the
-    /// per-pair transient handle skips a cold scalar rescan). A no-op if bounds
-    /// were already cached. Returns `self` for builder-style materialization.
-    #[must_use]
-    pub(crate) fn with_seeded_bounds(self, bounds: Option<Bounds>) -> Self {
+    fn seed_bounds(&self, bounds: Option<Bounds>) {
         let _ = self.bounds.set(bounds);
-        self
     }
 
     /// Envelope (bounding-box polygon) built from the cached bounds, so a
@@ -229,35 +172,97 @@ impl ShapeData {
         self.bounds()
             .map_or_else(Shape::empty_polygon, bounds_to_shape)
     }
+}
 
-    /// The distance working set (packed linework + isolated points + lazy
-    /// facet BVH), built once and shared by every distance/dwithin/intersects
-    /// call on this geometry.
-    pub fn distance_parts(&self) -> &DistanceParts {
-        self.distance
-            .get_or_init(|| Box::new(self.shape.distance_parts()))
+impl PreparedPlan {
+    pub(crate) fn new(shape: impl Into<Arc<ShapeData>>) -> Self {
+        Self {
+            shape: shape.into(),
+            topology: OnceLock::new(),
+            metric: OnceLock::new(),
+        }
     }
 
-    /// The 3D segment working set (packed segments + lazy AABB BVH), built
-    /// once and shared by every `distance_3d` call on this geometry.
+    pub(crate) fn transient(shape: &Shape) -> Self {
+        Self::new(ShapeData::new(shape.clone()))
+    }
+
+    pub(crate) fn shape_data(&self) -> &ShapeData {
+        &self.shape
+    }
+
+    pub(crate) fn shape_arc(&self) -> &Arc<ShapeData> {
+        &self.shape
+    }
+
+    fn topology(&self) -> &TopologyPlan {
+        self.topology
+            .get_or_init(|| Box::new(TopologyPlan::default()))
+    }
+
+    fn metric(&self) -> &MetricPlan {
+        self.metric.get_or_init(|| Box::new(MetricPlan::default()))
+    }
+
+    pub(in crate::geometry) fn topology_graph(&self) -> &crate::geometry::topology::TopologyGraph {
+        self.topology().cartesian_graph.get_or_init(|| {
+            Box::new(crate::geometry::topology::TopologyGraph::cartesian(
+                self.shape(),
+            ))
+        })
+    }
+
+    pub(in crate::geometry) fn geographic_topology_graph(
+        &self,
+    ) -> &crate::geometry::topology::TopologyGraph {
+        self.topology().geographic_graph.get_or_init(|| {
+            Box::new(crate::geometry::topology::TopologyGraph::geographic(
+                self.shape(),
+            ))
+        })
+    }
+
+    pub(crate) fn validate_cached(&self) -> Option<&ValidationIssue> {
+        self.topology()
+            .validity
+            .get_or_init(|| Box::new(self.shape().validate()))
+            .as_ref()
+            .as_ref()
+    }
+
+    pub(crate) fn is_simple_cached(&self) -> bool {
+        *self
+            .topology()
+            .simplicity
+            .get_or_init(|| self.shape().is_simple())
+    }
+
+    pub(crate) fn crosses_antimeridian(&self) -> bool {
+        *self
+            .topology()
+            .antimeridian_crossing
+            .get_or_init(|| self.shape().crosses_antimeridian())
+    }
+
+    pub(crate) fn distance_parts(&self) -> &DistanceParts {
+        self.metric()
+            .distance
+            .get_or_init(|| Box::new(self.shape().distance_parts()))
+    }
+
     pub(crate) fn distance_3d_parts(&self) -> &crate::geometry::Distance3dParts {
-        self.cold()
+        self.metric()
             .distance_3d
-            .get_or_init(|| crate::geometry::Distance3dParts::build(&self.shape))
+            .get_or_init(|| Box::new(crate::geometry::Distance3dParts::build(self.shape())))
     }
 
-    /// The planar linear-referencing index (prefix lengths over the
-    /// linework), built once; non-lineal/empty shapes re-raise their build
-    /// error.
-    pub fn line_index(&self) -> Result<&LineIndex> {
-        self.line_index
-            .get_or_init(|| Box::new(LineIndexSlot::build(&self.shape, &PlanarMetric)))
+    pub(crate) fn line_index(&self) -> Result<&LineIndex> {
+        self.metric()
+            .line_index
+            .get_or_init(|| Box::new(LineIndexSlot::build(self.shape(), &PlanarMetric)))
             .get()
     }
 
-    /// The geodesic linear-referencing index for `crs` — per-segment Karney
-    /// lengths paid once per (shape, CRS), shared by every later
-    /// interpolate/substring/locate call.
     pub(crate) fn geodesic_line_index(
         &self,
         frame_cache: &FrameDependentCaches,
@@ -266,25 +271,20 @@ impl ShapeData {
         flattening: f64,
         runtime_generation: u64,
         metric: &impl SegmentMetric,
-    ) -> Result<std::sync::Arc<LineIndex>> {
+    ) -> Result<Arc<LineIndex>> {
         let key =
             GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
         }
-        // Build outside the lock (Karney work); a racing duplicate build is
-        // cheaper than holding the lock across it.
-        let index = Arc::new(LineIndex::build(&self.shape, metric)?);
+        let index = Arc::new(LineIndex::build(self.shape(), metric)?);
         let entry = frame_cache.merge(key, |entry| {
             entry.line_index.get_or_insert_with(|| Arc::clone(&index));
         });
         Ok(entry.and_then(|entry| entry.line_index).unwrap_or(index))
     }
 
-    /// The geodesic distance/nearest working set for one normalized CRS and
-    /// ellipsoid. Builds outside the cache lock; duplicate racing builds are
-    /// acceptable, and failed domain validation is never stored.
     pub(in crate::geometry) fn cached_geodesic_parts(
         &self,
         frame_cache: &FrameDependentCaches,
@@ -303,7 +303,7 @@ impl ShapeData {
         if let Some(parts) = cached {
             return Ok(parts);
         }
-        let parts = Arc::new(self.shape.geodesic_parts(metric)?);
+        let parts = Arc::new(self.shape().geodesic_parts(metric)?);
         let entry = frame_cache.merge(key, |entry| {
             entry.parts.get_or_insert_with(|| Arc::clone(&parts));
         });
@@ -327,56 +327,73 @@ impl ShapeData {
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
-    /// The DE-9IM matrix over the prepared operands.
-    pub fn relate(&self, other: &Self) -> String {
-        self.relate_matrix(other).text()
-    }
-
-    /// The DE-9IM matrix over the prepared operands, shared by relation and
-    /// pattern queries.
-    fn relate_matrix(&self, other: &Self) -> crate::geometry::relate::De9im {
-        crate::geometry::relate::graph_relate_data(self, other)
-    }
-
-    /// The prepared point-membership tester (hierarchical
-    /// [`PointBatchTester`] / Y-stabbing for polygonal shapes; `None`
-    /// otherwise), built once.
     pub(in crate::geometry) fn point_tester_required(
         &self,
         _required: crate::geometry::distance::RequiredPointTester,
     ) -> Option<&PointBatchTester> {
-        self.point_tester
+        self.topology()
+            .point_tester
             .get_or_init(|| {
                 Box::new(
-                    matches!(self.shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
-                        .then(|| PointBatchTester::new(&self.shape)),
+                    matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_))
+                        .then(|| PointBatchTester::new(self.shape())),
                 )
             })
             .as_ref()
             .as_ref()
     }
+
+    pub(crate) fn with_seeded_bounds(self, bounds: Option<Bounds>) -> Self {
+        self.shape.seed_bounds(bounds);
+        self
+    }
+
+    pub(crate) fn retained_heap_bytes(&self) -> usize {
+        self.heap_bytes()
+    }
 }
 
-impl HeapSize for ColdCaches {
-    fn heap_bytes(&self) -> usize {
-        self.distance_3d
-            .get()
-            .map_or(0, crate::geometry::Distance3dParts::heap_bytes)
+impl std::ops::Deref for PreparedPlan {
+    type Target = ShapeData;
+
+    fn deref(&self) -> &Self::Target {
+        self.shape_data()
+    }
+}
+
+impl fmt::Debug for PreparedPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.shape.fmt(f)
     }
 }
 
 impl HeapSize for ShapeData {
     fn heap_bytes(&self) -> usize {
-        // Shape payload (coordinates + container Vec/Arc structure) plus any
-        // *initialized* prepared products. Uninitialized `OnceLock`s
-        // contribute 0 and are never forced here. Boxed product allocations
-        // are counted via `HeapSize for Box<T>`.
         self.shape.heap_bytes()
-            + self.distance.heap_bytes()
-            + self.point_tester.heap_bytes()
-            + self.line_index.heap_bytes()
+    }
+}
+
+impl HeapSize for TopologyPlan {
+    fn heap_bytes(&self) -> usize {
+        self.cartesian_graph.heap_bytes()
+            + self.geographic_graph.heap_bytes()
             + self.validity.heap_bytes()
-            + self.cold.heap_bytes()
+            + self.point_tester.heap_bytes()
+    }
+}
+
+impl HeapSize for MetricPlan {
+    fn heap_bytes(&self) -> usize {
+        self.distance.heap_bytes() + self.distance_3d.heap_bytes() + self.line_index.heap_bytes()
+    }
+}
+
+impl HeapSize for PreparedPlan {
+    fn heap_bytes(&self) -> usize {
+        std::mem::size_of_val(self.shape.as_ref())
+            + self.shape.as_ref().heap_bytes()
+            + self.topology.heap_bytes()
+            + self.metric.heap_bytes()
     }
 }
 
@@ -443,18 +460,18 @@ mod footprint_tests {
 
     #[test]
     fn retained_heap_bytes_does_not_force_caches() {
-        let data = ShapeData::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
+        let data = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
         let cold = data.retained_heap_bytes();
-        assert!(data.distance.get().is_none());
-        assert!(data.point_tester.get().is_none());
+        assert!(data.metric.get().is_none());
+        assert!(data.topology.get().is_none());
         assert_eq!(data.retained_heap_bytes(), cold);
-        assert!(data.distance.get().is_none());
         let _ = data.bounds();
-        // bounds is inline OnceLock — still no boxed products forced
-        assert!(data.distance.get().is_none());
+        // Bounds are owned by ShapeData; they do not force a boxed product.
+        assert!(data.metric.get().is_none());
+        assert!(data.topology.get().is_none());
         assert_eq!(data.retained_heap_bytes(), cold);
         let _ = data.distance_parts();
-        assert!(data.distance.get().is_some());
+        assert!(data.metric.get().is_some());
         assert!(data.retained_heap_bytes() > cold);
     }
 }
@@ -514,7 +531,7 @@ mod frame_cache_tests {
 
     #[test]
     fn repeated_lrs_reuses_the_same_line_index_arc() {
-        let shape = ShapeData::new(Shape::LineString(LineSeq::from_trusted(
+        let shape = PreparedPlan::new(Shape::LineString(LineSeq::from_trusted(
             CoordSeq::from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0], None, None),
         )));
         let cache = FrameDependentCaches::default();

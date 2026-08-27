@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::array::{GeometryArrayStorage, polygon_row_point_membership, row_bounds};
-use crate::geometry::{Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, Shape, ShapeData};
+use crate::geometry::{
+    Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, PreparedPlan, Shape,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct VertexWindow {
@@ -12,7 +14,7 @@ pub(crate) struct VertexWindow {
 #[derive(Clone, Copy)]
 pub enum ShapeRow<'a> {
     /// Persistent prepared handle (index boxed rows, scalar geometry).
-    Handle(&'a Arc<ShapeData>),
+    Handle(&'a Arc<PreparedPlan>),
     /// Array-owned mixed storage: plain shape; prepared state lives in the
     /// array-side prepared-row cache (see [`PyGeometryArray::prepared_row`]).
     Shape(&'a Shape),

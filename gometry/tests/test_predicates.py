@@ -1086,6 +1086,8 @@ def test_equals_identical_is_the_vectorized_value_identity() -> None:
     """
     p = gm.Point(1, 2)
     assert gm.equals_identical(p, gm.Point(1, 2)) is True
+    assert gm.equals_identical(p.prepare(), p) is True
+    assert gm.equals_identical(p, p.prepare()) is True
     # frame is part of the value: differing CRS/epoch is inequality, not an error
     assert gm.equals_identical(p, gm.Point(1, 2, crs=4326)) is False
     tagged = gm.Point(1, 2, crs=4326)

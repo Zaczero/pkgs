@@ -127,7 +127,7 @@ impl PyGeometry {
         PyValidationReport {
             geometry: self.clone(),
             issue: geometry::validate_data_in_frame(
-                &self.shape,
+                &self.plan_or_transient(),
                 geometry::is_geographic_frame(&self.frame),
             ),
         }
@@ -135,8 +135,9 @@ impl PyGeometry {
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
         let geographic = geometry::is_geographic_frame(&self.frame);
-        let repaired =
-            py.detach(|| geometry::repair_data_in_frame(&self.shape, geographic, method))?;
+        let repaired = py.detach(|| {
+            geometry::repair_data_in_frame(&self.plan_or_transient(), geographic, method)
+        })?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
             |shape| self.with_shape(shape),

@@ -226,7 +226,8 @@ impl PyGeometryArray {
                 None
             } else {
                 let geometry = self.geometry_at(index);
-                let issue = crate::geometry::validate_data_in_frame(&geometry.shape, geographic);
+                let plan = geometry.plan_or_transient();
+                let issue = crate::geometry::validate_data_in_frame(&plan, geographic);
                 Some(PyValidationReport { geometry, issue })
             };
             crate::try_push(&mut reports, report)?;
@@ -391,7 +392,7 @@ impl PyGeometryArray {
                     "shortest_line",
                 )?;
                 let lefts = self.clone();
-                let right = Arc::clone(&geometry.shape);
+                let right = geometry.plan_or_transient();
                 let right_cache = Arc::clone(&geometry.frame_cache);
                 let missing = self.missing().cloned();
                 let rows = Python::attach(|py| {

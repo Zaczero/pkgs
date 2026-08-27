@@ -188,7 +188,7 @@ fn require_geometry_contract(
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
     if let Some(issue) = geometry::validate_data_in_frame(
-        &geometry.shape,
+        &geometry.plan_or_transient(),
         geometry::is_geographic_frame(&geometry.frame),
     ) {
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));

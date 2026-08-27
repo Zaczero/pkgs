@@ -158,6 +158,20 @@ pub(crate) fn equals_identical(
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
+    let left_geometry = match left.cast::<crate::PyPreparedGeometry>() {
+        Ok(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
+        Err(_) => None,
+    };
+    let right_geometry = match right.cast::<crate::PyPreparedGeometry>() {
+        Ok(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
+        Err(_) => None,
+    };
+    let left = left_geometry
+        .as_ref()
+        .map_or(left, |geometry| geometry.as_any());
+    let right = right_geometry
+        .as_ref()
+        .map_or(right, |geometry| geometry.as_any());
     let left_frame = identity_frame(left);
     let right_frame = identity_frame(right);
     if let (Some(left_frame), Some(right_frame)) = (left_frame, right_frame)
@@ -178,7 +192,9 @@ pub(crate) fn equals_identical(
             (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
         };
     }
-    broadcast2(py, left, right, "equals_identical", |a, b| Ok(a == b))
+    broadcast2(py, left, right, "equals_identical", |a, b| {
+        Ok(a.shape() == b.shape())
+    })
 }
 
 /// The value frame (CRS + epoch) of a geometry-typed operand; `None` when the
@@ -251,11 +267,11 @@ pub(crate) fn equals_exact(
     let left_prepared = left.cast::<crate::PyPreparedGeometry>().ok();
     let right_prepared = right.cast::<crate::PyPreparedGeometry>().ok();
     let left_geometry = match left_prepared {
-        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
         None => None,
     };
     let right_geometry = match right_prepared {
-        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
         None => None,
     };
     let left = left_geometry
@@ -299,6 +315,6 @@ fn equals_exact_broadcast<const Z: bool, const M: bool>(
     tolerance: f64,
 ) -> PyResult<Py<PyAny>> {
     broadcast2(py, left, right, "equals_exact", move |a, b| {
-        Ok(a.equals_exact_impl::<Z, M>(b, tolerance))
+        Ok(a.shape().equals_exact_impl::<Z, M>(b.shape(), tolerance))
     })
 }

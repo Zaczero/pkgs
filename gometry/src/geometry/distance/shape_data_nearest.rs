@@ -3,10 +3,10 @@ use crate::geometry::distance::{
     quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, ShapeData, same_point,
+    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, same_point,
     squared_norm_is_trustworthy,
 };
-impl ShapeData {
+impl PreparedPlan {
     /// Nearest point pair on cached prepared state — argmin vertex sweeps
     /// (the disjoint-pair minimum is always a vertex projection; see
     /// [`Self::distance`]) with an exact intersection witness for touching/
@@ -131,13 +131,17 @@ impl ShapeData {
         // form (held in these deferred-init locals so the borrows outlive the call).
         let (self_split, other_split);
         let left = if self.shape().crosses_antimeridian() {
-            self_split = Self::from(self.shape().split_antimeridian()?);
+            self_split = Self::new(crate::geometry::ShapeData::from(
+                self.shape().split_antimeridian()?,
+            ));
             &self_split
         } else {
             self
         };
         let right = if other.shape().crosses_antimeridian() {
-            other_split = Self::from(other.shape().split_antimeridian()?);
+            other_split = Self::new(crate::geometry::ShapeData::from(
+                other.shape().split_antimeridian()?,
+            ));
             &other_split
         } else {
             other

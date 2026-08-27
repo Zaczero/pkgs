@@ -84,7 +84,7 @@ pub(crate) fn shortest_line(
                 && !geometry.shape.shape().crosses_antimeridian()
                 && !array.has_missing()
             {
-                let scalar = Arc::clone(&geometry.shape);
+                let scalar = geometry.plan_or_transient();
                 let scalar_cache = Arc::clone(&geometry.frame_cache);
                 let array = array.clone();
                 let rows = py.detach(move || {
@@ -531,13 +531,13 @@ pub(crate) fn dwithin(
 ) -> PyResult<Py<PyAny>> {
     if let Ok(prepared) = left.cast::<crate::PyPreparedGeometry>() {
         return Python::attach(|py| {
-            let geometry = prepared.get().geometry.clone().into_pyobject(py)?;
+            let geometry = prepared.get().as_geometry().into_pyobject(py)?;
             dwithin(py, geometry.as_any(), right, distance, unit)
         });
     }
     if let Ok(prepared) = right.cast::<crate::PyPreparedGeometry>() {
         return Python::attach(|py| {
-            let geometry = prepared.get().geometry.clone().into_pyobject(py)?;
+            let geometry = prepared.get().as_geometry().into_pyobject(py)?;
             dwithin(py, left, geometry.as_any(), distance, unit)
         });
     }

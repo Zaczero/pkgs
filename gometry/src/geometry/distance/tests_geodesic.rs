@@ -15,7 +15,7 @@ use crate::geometry::distance::{
     GeodesicSweepCaps, collect_geodesic_segments_into, geodesic_min_distance_to_target,
     geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
-use crate::geometry::{FrameDependentCaches, GeodesicMetric, Shape, ShapeData};
+use crate::geometry::{FrameDependentCaches, GeodesicMetric, PreparedPlan, Shape};
 
 fn brute_geodesic_directed_hausdorff(
     source: &Shape,
@@ -178,8 +178,8 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
     for (name, left, right) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let left_data = ShapeData::new(left.clone());
-            let right_data = ShapeData::new(right.clone());
+            let left_data = PreparedPlan::new(left.clone());
+            let right_data = PreparedPlan::new(right.clone());
             let left_cache = FrameDependentCaches::default();
             let right_cache = FrameDependentCaches::default();
             let expected_distance = left.geodesic_distance(&right, metric)?;
@@ -448,7 +448,7 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                 _ => panic!("{name}: fused sweep caps presence mismatch"),
             }
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let data = ShapeData::new(shape.clone());
+            let data = PreparedPlan::new(shape.clone());
             let frame_cache = FrameDependentCaches::default();
             let runtime_state = crate::crs::runtime_state_snapshot()?;
             data.prepare_geodesic_parts(&frame_cache, "EPSG:4326", semi_major, flattening, metric)?;

@@ -45,8 +45,8 @@ pub(crate) use types::{
     FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
     GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq, MOrdinate,
     MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon, PolygonLevel,
-    PolygonizeFull, PolylabelCell, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeData,
-    SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
+    PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape,
+    ShapeData, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
     canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
     reverse_column_arc, segment_midpoint, witness_pair,
 };
@@ -183,7 +183,7 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
 }
 pub(crate) use relate::{
     De9im, graph_intersects_rectangle_data, graph_relate_data, graph_relate_data_geographic,
-    graph_relate_shapes, graph_relate_shapes_geographic,
+    graph_relate_shapes,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,

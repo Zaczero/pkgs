@@ -17,8 +17,8 @@ use pyo3::types::PyAny;
 use crate::{
     Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, Crs, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
-    Point, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Shape,
-    ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
+    Point, PreparedPlan, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError,
+    Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
     coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
     geometry_type_err, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
     point_distance, scalar_vs_shapes, validate_lonlat_shape,
@@ -70,7 +70,7 @@ pub(crate) fn broadcast2<R>(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    op: impl Fn(&Shape, &Shape) -> Result<R> + Send + Sync,
+    op: impl Fn(&PreparedPlan, &PreparedPlan) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: Send + BulkElement,
@@ -88,7 +88,7 @@ pub(crate) fn broadcast2_geometry<K>(
     kernel: K,
 ) -> PyResult<Py<PyAny>>
 where
-    K: Fn(&ShapeData, &ShapeData) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
 {
     crate::dispatch::dispatch_binary_geometry(
         py,
@@ -245,7 +245,7 @@ pub(crate) fn array_binary_geometry<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&ShapeData, &ShapeData) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
 {
     let right = classify_required(right)?;
     crate::dispatch::geometry_kernel_over_array(

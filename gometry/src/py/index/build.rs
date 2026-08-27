@@ -48,12 +48,15 @@ fn spatial_index_rows(
     let total_rows = items.len();
     let placeholder_frame = metadata.clone().unwrap_or_default();
     let rows = crate::try_collect_results(items.into_iter().map(|item| {
-        Ok::<_, pyo3::PyErr>(item.unwrap_or_else(|| {
-            PyGeometry::with_frame(
-                PyGeometryArray::missing_placeholder(),
-                placeholder_frame.clone(),
-            )
-        }))
+        Ok::<_, pyo3::PyErr>(item.map_or_else(
+            || {
+                PyGeometry::with_frame(
+                    PyGeometryArray::missing_placeholder(),
+                    placeholder_frame.clone(),
+                )
+            },
+            |item| item.with_prepared_plan(item.plan_or_transient()),
+        ))
     }))?;
     Ok(PySpatialIndex {
         rows: IndexRows {
@@ -206,8 +209,8 @@ pub(crate) fn build_spatial_index(values: &Bound<'_, PyAny>) -> PyResult<PySpati
             |(index, (missing, row))| {
                 (!missing)
                     .then(|| {
-                        let shape = array.prepared_row(index, row).into_owned_data();
-                        PyGeometry::with_frame(shape, array.frame.clone())
+                        let plan = array.prepared_row(index, row).into_owned_plan();
+                        PyGeometry::from_prepared_plan(plan, array.frame.clone())
                     })
                     .map_or_else(|| Ok(None), |geometry| Ok(Some(geometry)))
             },
@@ -276,12 +279,12 @@ pub(crate) fn restore_spatial_index(
     }
     let mut rows = crate::try_vec_with_capacity_hint(values.storage().len())?;
     for row in values.storage().iter_rows() {
+        let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
+            row.with_shape(std::clone::Clone::clone),
+        )));
         crate::try_push(
             &mut rows,
-            PyGeometry::with_frame(
-                ShapeData::new(row.with_shape(std::clone::Clone::clone)),
-                values.frame.clone(),
-            ),
+            PyGeometry::from_prepared_plan(plan, values.frame.clone()),
         )?;
     }
     let total_rows = rows.len();
@@ -408,14 +411,14 @@ mod ownership_tests {
             crate::array::PreparedRow::Shared(data) => Arc::clone(data),
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index.rows.prepared_row(0).into_owned_data();
+        let indexed_arc = index.rows.prepared_row(0).into_owned_plan();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse.rows.prepared_row(0).into_owned_data();
+        let indexed_first = inverse.rows.prepared_row(0).into_owned_plan();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
-            .into_owned_data();
+            .into_owned_plan();
         assert!(Arc::ptr_eq(&indexed_first, &source_second));
         assert_eq!(
             source

@@ -10,8 +10,8 @@ use crate::Finite;
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
-    HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, Segment,
-    SegmentMetric, SegmentProjection, Shape, ShapeData, distance_3d_with_parts, point_distance,
+    HasZ, LineIndex, LineSeq, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
+    Segment, SegmentMetric, SegmentProjection, Shape, distance_3d_with_parts, point_distance,
     same_point, segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
 };
 
@@ -127,7 +127,7 @@ impl Shape {
     }
 }
 
-impl ShapeData {
+impl PreparedPlan {
     /// Cached-engine siblings of the `Shape` linear-referencing methods —
     /// the prefix index builds once per handle and serves every later call
     /// (shadowing the `Shape` versions via `Deref`, like distance/dwithin).

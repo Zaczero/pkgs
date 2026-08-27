@@ -43,7 +43,7 @@ fn line_locate_geometry_points(
         )?
         .require_model(op_name)?
         .clone();
-    let line = Arc::clone(&geometry.shape);
+    let line = geometry.plan_or_transient();
     let missing = points.missing().cloned();
     detach_collect_f64(py, move || {
         queries
@@ -158,7 +158,8 @@ pub(crate) fn line_locate_point_m_input(
             )?;
             let query = require_locate_point(point_geometry, op_name)?;
             let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
-            return Ok(line_locate_shape_m(&model, &geometry.shape, query)?
+            let line = geometry.plan_or_transient();
+            return Ok(line_locate_shape_m(&model, &line, query)?
                 .into_pyobject(py)?
                 .unbind()
                 .into());
@@ -173,7 +174,7 @@ pub(crate) fn line_locate_point_m_input(
             )?;
             let queries = require_locate_points(points, op_name)?;
             let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
-            let line = Arc::clone(&geometry.shape);
+            let line = geometry.plan_or_transient();
             let missing = points.missing().cloned();
             detach_collect_f64(py, move || {
                 queries
@@ -251,7 +252,7 @@ pub(crate) fn line_interpolate_points_scalar(
         )?
         .require_model(op_name)?
         .clone();
-    let shapes =
-        line_interpolate_points_shape(&model, &geometry.shape, &geometry.frame_cache, plan)?;
+    let line = geometry.plan_or_transient();
+    let shapes = line_interpolate_points_shape(&model, &line, &geometry.frame_cache, plan)?;
     Ok(PyGeometryArray::from_shapes(shapes, geometry.frame.clone()))
 }

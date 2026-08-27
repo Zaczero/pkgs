@@ -5,7 +5,7 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicPartsKey, GeodesicSegment, Point,
-    Shape, ShapeData,
+    PreparedPlan, Shape,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
@@ -81,7 +81,7 @@ pub(crate) fn geodesic_cap_from_parts(
     Some((anchor, reach))
 }
 
-impl ShapeData {
+impl PreparedPlan {
     /// Auxiliary-sphere cap reusing a cached [`GeodesicParts`] when present.
     pub(crate) fn geodesic_cap_cached(
         &self,

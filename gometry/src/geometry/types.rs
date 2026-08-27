@@ -36,7 +36,8 @@ pub(crate) use shape::{
 };
 pub(crate) use shape_data::{
     FrameDependentCaches, GeodesicMetric, GeodesicSegmentWitness, IndexedSegment, PointKey,
-    PolygonizeFull, PolylabelCell, ShapeData, ValidationIssue, canonical_f64_bits, ordered_edge,
+    PolygonizeFull, PolylabelCell, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
+    ordered_edge,
 };
 
 #[cfg(test)]

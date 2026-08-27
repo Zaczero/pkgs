@@ -4,8 +4,8 @@
 )]
 use crate::error::Result;
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, RepairMethod, Ring,
-    Segment, Shape, ShapeData, ValidationIssue, shape_encloses_pole, shape_has_polar_ring,
+    Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, PreparedPlan,
+    RepairMethod, Ring, Segment, Shape, ValidationIssue, shape_encloses_pole, shape_has_polar_ring,
     shared_segment_part,
 };
 
@@ -184,7 +184,7 @@ pub(crate) fn validate_shape_in_frame(shape: &Shape, geographic: bool) -> Option
 
 /// Cached-handle twin of [`validate_shape_in_frame`].
 pub(crate) fn validate_data_in_frame(
-    data: &ShapeData,
+    data: &PreparedPlan,
     geographic: bool,
 ) -> Option<ValidationIssue> {
     if geographic && data.crosses_antimeridian() {
@@ -196,7 +196,7 @@ pub(crate) fn validate_data_in_frame(
 
 /// Frame-aware simplicity. Non-crossing inputs keep the frozen handle's cached
 /// verdict; seam-crossing geographic inputs answer on normalized topology.
-pub(crate) fn is_simple_data_in_frame(data: &ShapeData, geographic: bool) -> bool {
+pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, geographic: bool) -> bool {
     if geographic && data.crosses_antimeridian() {
         try_topology_split(data.shape()).is_ok_and(|shape| shape.is_simple())
     } else {
@@ -206,7 +206,7 @@ pub(crate) fn is_simple_data_in_frame(data: &ShapeData, geographic: bool) -> boo
 
 /// Frame-aware `is_ring`: closure is structural on the original line, while
 /// simplicity is evaluated on normalized seam topology.
-pub(crate) fn is_ring_data_in_frame(data: &ShapeData, geographic: bool) -> bool {
+pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, geographic: bool) -> bool {
     if geographic && data.crosses_antimeridian() {
         data.shape().is_closed()
             && try_topology_split(data.shape()).is_ok_and(|shape| shape.is_simple())
@@ -261,7 +261,7 @@ pub(crate) fn repair_shape_in_frame(
 
 /// Cached-handle twin of [`repair_shape_in_frame`].
 pub(crate) fn repair_data_in_frame(
-    data: &ShapeData,
+    data: &PreparedPlan,
     geographic: bool,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {

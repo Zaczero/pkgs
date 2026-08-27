@@ -10,7 +10,7 @@ use crate::broadcast::metrics::{
     GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
     crs, geometry_type_err, validate_lonlat_shape,
 };
-use crate::geometry::{FrameDependentCaches, LineSeq, witness_pair};
+use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, witness_pair};
 use crate::py::errors::InvalidGeometryError;
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
@@ -48,8 +48,8 @@ fn dispatch_resolved_metric<R>(
 /// Shared geodesic-pair setup: domain validation plus ellipsoid parameters.
 fn prepare_geodesic_pair<'a>(
     geodesic: &'a geographiclib_rs::Geodesic,
-    a: &ShapeData,
-    b: &ShapeData,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
     runtime_generation: u64,
 ) -> crate::error::Result<(crs::EllipsoidMetric<'a>, f64, f64)> {
     crs::ensure_geographic_domain(a.shape())?;
@@ -120,7 +120,7 @@ pub(crate) fn geodesic_point_columns_to_shape_values(
     crs: &str,
     xs: &[f64],
     ys: &[f64],
-    shape: &ShapeData,
+    shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     state: &crs::RuntimeState,
 ) -> crate::error::Result<Vec<f64>> {
@@ -141,7 +141,7 @@ pub(crate) fn geodesic_point_columns_dwithin_shape_values(
     crs: &str,
     xs: &[f64],
     ys: &[f64],
-    shape: &ShapeData,
+    shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     distance: f64,
     state: &crs::RuntimeState,
@@ -260,9 +260,9 @@ pub(crate) fn require_point(geometry: &PyGeometry, operation: &str) -> PyResult<
 /// longer crosses.
 pub(crate) fn geodesic_split_operands(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
-    b: &ShapeData,
-) -> crate::error::Result<Option<(ShapeData, ShapeData)>> {
+    a: &PreparedPlan,
+    b: &PreparedPlan,
+) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
     if let crs::ResolvedMetric::Geodesic { .. } = metric
         && !a.shape().is_empty()
         && !b.shape().is_empty()
@@ -272,27 +272,28 @@ pub(crate) fn geodesic_split_operands(
         let a_crosses = a.crosses_antimeridian();
         let b_crosses = b.crosses_antimeridian();
         if a_crosses || b_crosses {
-            let normalize = |x: &ShapeData, crosses: bool| -> crate::error::Result<ShapeData> {
-                Ok(if crosses {
-                    ShapeData::from(x.shape().split_antimeridian()?)
-                } else {
-                    ShapeData::new(x.shape().clone())
-                })
-            };
+            let normalize =
+                |x: &PreparedPlan, crosses: bool| -> crate::error::Result<PreparedPlan> {
+                    Ok(if crosses {
+                        PreparedPlan::new(ShapeData::from(x.shape().split_antimeridian()?))
+                    } else {
+                        PreparedPlan::new(ShapeData::new(x.shape().clone()))
+                    })
+                };
             return Ok(Some((normalize(a, a_crosses)?, normalize(b, b_crosses)?)));
         }
     }
     Ok(None)
 }
 
-/// Bare `ShapeData` distance against an already-resolved metric — the batch lanes
+/// Prepared-plan distance against an already-resolved metric — the batch lanes
 /// (array × array, index queries) resolve the geodesic ONCE then call this per
 /// pair, so the per-pair CRS/ellipsoid resolution is paid a single time.
 pub(crate) fn pair_distance_resolved_result(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<f64> {
     if let Some((a, b)) = geodesic_split_operands(metric, a, b)? {
@@ -327,9 +328,9 @@ pub(crate) fn pair_distance_resolved_result(
 
 pub(crate) fn pair_distance_resolved(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> PyResult<f64> {
     pair_distance_resolved_result(metric, a, a_cache, b, b_cache).map_err(Into::into)
@@ -337,9 +338,9 @@ pub(crate) fn pair_distance_resolved(
 
 pub(crate) fn pair_dwithin_resolved_result(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
     distance: f64,
 ) -> crate::error::Result<bool> {
@@ -349,9 +350,9 @@ pub(crate) fn pair_dwithin_resolved_result(
 
 fn pair_dwithin_resolved_checked_result(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
     distance: NonNegative,
 ) -> crate::error::Result<bool> {
@@ -386,9 +387,9 @@ fn pair_dwithin_resolved_checked_result(
 
 pub(crate) fn pair_dwithin_resolved(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
     distance: f64,
 ) -> PyResult<bool> {
@@ -597,8 +598,8 @@ impl OptionalDensifyParam {
 /// pair of points, not a scaled distance.
 pub(crate) fn metric_nearest_points(
     model: &crs::MetricModel,
-    a: &ShapeData,
-    b: &ShapeData,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
 ) -> crate::error::Result<Option<(Point, Point)>> {
     let a_cache = FrameDependentCaches::default();
     let b_cache = FrameDependentCaches::default();
@@ -617,9 +618,9 @@ pub(crate) fn metric_nearest_points(
 /// `LINESTRING EMPTY`), mirroring distance's empty→`inf`.
 pub(crate) fn metric_nearest_points_resolved(
     metric: &crs::ResolvedMetric,
-    a: &ShapeData,
+    a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
-    b: &ShapeData,
+    b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<Option<(Point, Point)>> {
     if let Some((a, b)) = geodesic_split_operands(metric, a, b)? {
@@ -654,8 +655,8 @@ pub(crate) fn metric_nearest_points_resolved(
 /// in the operands' common axes when a side is empty.
 pub(crate) fn metric_shortest_line(
     model: &crs::MetricModel,
-    a: &ShapeData,
-    b: &ShapeData,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
 ) -> crate::error::Result<Shape> {
     Ok(crate::geometry::nearest_line(
         metric_nearest_points(model, a, b)?,
@@ -786,7 +787,8 @@ mod dwithin_parity_tests {
     }
 
     fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
-        ShapeData::new(Shape::Point(a)).dwithin(&ShapeData::new(Shape::Point(b)), limit)
+        PreparedPlan::new(ShapeData::new(Shape::Point(a)))
+            .dwithin(&PreparedPlan::new(ShapeData::new(Shape::Point(b))), limit)
     }
 
     #[test]

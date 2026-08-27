@@ -11,7 +11,7 @@ mod operands;
 pub(crate) use de9im::{De9im, Loc};
 pub(crate) use graph_matrix::{
     graph_intersects_rectangle_data, graph_relate_data, graph_relate_data_geographic,
-    graph_relate_shapes, graph_relate_shapes_geographic,
+    graph_relate_shapes,
 };
 pub(crate) use operands::{
     line_has_nonzero_segment, multiline_has_nonzero_segment, polygon_has_nondegenerate_area,

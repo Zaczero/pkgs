@@ -16,7 +16,7 @@ use crate::broadcast::{
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
 use crate::error::Result;
-use crate::geometry::{Shape, ShapeData, is_geographic_frame};
+use crate::geometry::{PreparedPlan, Shape, ShapeData, is_geographic_frame};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type MaskedRows<R> = (Vec<R>, Option<MissingMask>);
@@ -234,7 +234,7 @@ fn run_binary_fixed_array_rows<R, K>(
 ) -> PyResult<(Vec<R>, Frame)>
 where
     R: BulkElement,
-    K: Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 {
     let (frame, geographic) = match side {
         ArrayOperandSide::Left => binary_frame(
@@ -251,10 +251,10 @@ where
     let output_frame = frame.clone();
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let fixed_shape = Arc::clone(&fixed.shape);
+    let fixed_plan = fixed.plan_or_transient();
     let fixed_cache = Arc::clone(&fixed.frame_cache);
     let array_handle = array.clone();
-    // Metric/predicate binary array×scalar: keep prepared handles (`&ShapeData`);
+    // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
     // bare `&Shape` (Deref coercion would drop prepared engines).
     let values = run_array_rows(
@@ -280,8 +280,8 @@ where
                 },
             };
             match side {
-                ArrayOperandSide::Left => kernel(&array_data, &fixed_shape, &ordered),
-                ArrayOperandSide::Right => kernel(&fixed_shape, &array_data, &ordered),
+                ArrayOperandSide::Left => kernel(&array_data, &fixed_plan, &ordered),
+                ArrayOperandSide::Right => kernel(&fixed_plan, &array_data, &ordered),
             }
         },
     )?;
@@ -298,7 +298,7 @@ fn run_binary_array_array_rows<R, K>(
 ) -> PyResult<FramedMaskedRows<R>>
 where
     R: BulkElement,
-    K: Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 {
     let (lefts, rights) = paired_arrays(left, right, op_name)?;
     let (frame, geographic) = binary_frame(
@@ -342,7 +342,7 @@ pub(crate) fn dispatch_binary<R, F>(
     op_name: &str,
     resolver: super::metric::MetricResolver,
     fast_path: &F,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -418,7 +418,7 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
     right: &PyGeometry,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (frame, geographic) = binary_frame(
         (left.crs_ref(), left.epoch()),
@@ -435,9 +435,9 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
         left_frame_cache: Some(&left.frame_cache),
         right_frame_cache: Some(&right.frame_cache),
     };
-    let left_shape = Arc::clone(&left.shape);
-    let right_shape = Arc::clone(&right.shape);
-    let result = py.detach(move || kernel(&left_shape, &right_shape, &ctx))?;
+    let left_plan = left.plan_or_transient();
+    let right_plan = right.plan_or_transient();
+    let result = py.detach(move || kernel(&left_plan, &right_plan, &ctx))?;
     R::into_py(result, py, &frame)
 }
 
@@ -447,7 +447,7 @@ fn dispatch_binary_scalar_array<R: BulkElement>(
     right: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, output_frame) = run_binary_fixed_array_rows(
         py,
@@ -467,7 +467,7 @@ fn dispatch_binary_array_scalar<R: BulkElement>(
     right: &PyGeometry,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, output_frame) = run_binary_fixed_array_rows(
         py,
@@ -487,7 +487,7 @@ fn dispatch_binary_array_array<R: BulkElement>(
     right: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, missing, output_frame) =
         run_binary_array_array_rows(py, left, right, resolver, op_name, kernel)?;
@@ -502,7 +502,7 @@ pub(crate) fn dispatch_binary_array_left<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Vec<R>>
 where
     R: BulkElement,
@@ -533,41 +533,49 @@ where
 /// crosses ±180, reusing the handle otherwise.
 fn split_operand_arc_for_topology(
     geographic: bool,
-    shape: &Arc<ShapeData>,
-) -> Result<Arc<ShapeData>> {
-    if geographic && shape.shape().crosses_antimeridian() {
-        Ok(Arc::new(ShapeData::from(
-            shape.shape().split_antimeridian()?,
-        )))
+    geometry: &PyGeometry,
+) -> Result<Arc<PreparedPlan>> {
+    let plan = geometry.plan_or_transient();
+    if geographic && plan.crosses_antimeridian() {
+        Ok(Arc::new(PreparedPlan::new(ShapeData::from(
+            plan.shape().split_antimeridian()?,
+        ))))
     } else {
-        Ok(Arc::clone(shape))
+        Ok(plan)
     }
 }
 
 /// The shared antimeridian gate for geometry-returning binary lanes.
 fn invoke_topology_geometry_kernel<K>(
     geographic: bool,
-    left: &ShapeData,
-    right: &ShapeData,
+    left: &PreparedPlan,
+    right: &PreparedPlan,
     kernel: &K,
 ) -> Result<Shape>
 where
-    K: Fn(&ShapeData, &ShapeData) -> Result<Shape>,
+    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape>,
 {
     let left_crosses = geographic && left.crosses_antimeridian();
     let right_crosses = geographic && right.crosses_antimeridian();
     if left_crosses || right_crosses {
-        let left = if left_crosses {
-            ShapeData::from(left.shape().split_antimeridian()?)
+        let left_split = if left_crosses {
+            Some(PreparedPlan::new(ShapeData::from(
+                left.shape().split_antimeridian()?,
+            )))
         } else {
-            ShapeData::new(left.shape().clone())
+            None
         };
-        let right = if right_crosses {
-            ShapeData::from(right.shape().split_antimeridian()?)
+        let right_split = if right_crosses {
+            Some(PreparedPlan::new(ShapeData::from(
+                right.shape().split_antimeridian()?,
+            )))
         } else {
-            ShapeData::new(right.shape().clone())
+            None
         };
-        kernel(&left, &right)
+        kernel(
+            left_split.as_ref().unwrap_or(left),
+            right_split.as_ref().unwrap_or(right),
+        )
     } else {
         kernel(left, right)
     }
@@ -584,7 +592,7 @@ pub(crate) fn dispatch_binary_geometry<F>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     fast_path: &F,
-    kernel: impl Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     F: BinaryArrayFastPath<Shape>,
@@ -610,8 +618,8 @@ where
                 left_frame_cache: Some(&left.frame_cache),
                 right_frame_cache: Some(&right.frame_cache),
             };
-            let left_shape = Arc::clone(&left.shape);
-            let right_shape = Arc::clone(&right.shape);
+            let left_shape = left.plan_or_transient();
+            let right_shape = right.plan_or_transient();
             let shape = py.detach(move || {
                 invoke_topology_geometry_kernel(geographic, &left_shape, &right_shape, &|l, r| {
                     kernel(l, r, &ctx)
@@ -641,8 +649,8 @@ where
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-            let left_fixed = split_operand_arc_for_topology(geographic, &left.shape)?;
-            // Overlay rows use transient ShapeData only; MetricCtx is None so
+            let left_fixed = split_operand_arc_for_topology(geographic, left)?;
+            // Overlay rows use transient plans only; MetricCtx is None so
             // no frame-dependent cache is retained.
             let shapes = run_array_rows(
                 py,
@@ -717,7 +725,7 @@ pub(crate) fn geometry_kernel_over_array<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&ShapeData, &ShapeData, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
 {
     use GeometryInput::{Many, One};
     let (right_crs, right_epoch) = match right {
@@ -747,7 +755,7 @@ where
     let left_bounds = left.bounds_cache.get().cloned().flatten();
     let (shapes, output_missing) = match right {
         One(right) => {
-            let right_shape = split_operand_arc_for_topology(geographic, &right.shape)?;
+            let right_shape = split_operand_arc_for_topology(geographic, right)?;
             // Pure topology overlay: MetricCtx is None → no frame caches.
             let shapes = run_array_rows(
                 py,

@@ -2,8 +2,8 @@ use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
 use crate::geometry::topology::{TopologyGraph, TopologyLocation, TopologyNodeId, TopologySpace};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, Ring, Segment,
-    Shape, XY, overlay, same_point, segments_intersect,
+    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, PreparedPlan,
+    Ring, Segment, Shape, XY, overlay, same_point, segments_intersect,
 };
 
 /// Compute the complete relation matrix from the two source-owned topology
@@ -12,26 +12,18 @@ pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> De9im {
     graph_relate_shapes_in(left, right, TopologySpace::Cartesian)
 }
 
-pub(crate) fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
+#[cfg(test)]
+fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
     graph_relate_shapes_in(left, right, TopologySpace::Geographic)
 }
 
 fn graph_relate_shapes_in(left: &Shape, right: &Shape, space: TopologySpace) -> De9im {
-    let left = match space {
-        TopologySpace::Cartesian => TopologyGraph::cartesian(left),
-        TopologySpace::Geographic => TopologyGraph::geographic(left),
-    };
-    let right = match space {
-        TopologySpace::Cartesian => TopologyGraph::cartesian(right),
-        TopologySpace::Geographic => TopologyGraph::geographic(right),
-    };
-    graph_relate(&left, &right)
+    let left = PreparedPlan::transient(left);
+    let right = PreparedPlan::transient(right);
+    graph_relate_plans(&left, &right, space)
 }
 
-pub(crate) fn graph_relate_data(
-    left: &crate::geometry::ShapeData,
-    right: &crate::geometry::ShapeData,
-) -> De9im {
+pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
     if let Some(point) = shape_point(right.shape()) {
         return graph_relate_to_point(left.topology_graph(), point);
     }
@@ -41,10 +33,7 @@ pub(crate) fn graph_relate_data(
     graph_relate(left.topology_graph(), right.topology_graph())
 }
 
-pub(crate) fn graph_relate_data_geographic(
-    left: &crate::geometry::ShapeData,
-    right: &crate::geometry::ShapeData,
-) -> De9im {
+pub(crate) fn graph_relate_data_geographic(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
     if let Some(point) = shape_point(right.shape()) {
         return graph_relate_to_point(left.geographic_topology_graph(), point);
     }
@@ -57,12 +46,22 @@ pub(crate) fn graph_relate_data_geographic(
     )
 }
 
+fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: TopologySpace) -> De9im {
+    match space {
+        TopologySpace::Cartesian => graph_relate(left.topology_graph(), right.topology_graph()),
+        TopologySpace::Geographic => graph_relate(
+            left.geographic_topology_graph(),
+            right.geographic_topology_graph(),
+        ),
+    }
+}
+
 /// Exact `intersects` certificate for a rectangle row. A closed rectangle
 /// intersects a source iff one of its corners is on the source, one source
 /// graph node lies in the rectangle, or their boundary segments meet. The
 /// general case still returns the complete matrix below this certificate.
 pub(crate) fn graph_intersects_rectangle_data(
-    source: &crate::geometry::ShapeData,
+    source: &PreparedPlan,
     rectangle: &Shape,
     geographic: bool,
 ) -> Option<bool> {
@@ -631,7 +630,7 @@ const fn to_loc(location: TopologyLocation) -> Loc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, ShapeData};
+    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring};
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
@@ -819,8 +818,8 @@ mod tests {
         ];
         for (left, right) in pairs {
             let expected = graph_relate_shapes(&left, &right);
-            let left = ShapeData::from(left);
-            let right = ShapeData::from(right);
+            let left = PreparedPlan::new(left);
+            let right = PreparedPlan::new(right);
             assert_eq!(graph_relate_data(&left, &right).text(), expected.text());
         }
     }

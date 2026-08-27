@@ -352,8 +352,8 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
     /// (including the ``Shape`` payload — coordinate columns **and**
     /// container allocations such as multipart ``Vec``s, polygon hole
-    /// ``Arc``s, and nested collection members — plus any
-    /// *already-initialized* prepared caches), and the Arc-owned
+    /// ``Arc``s, and nested collection members), any attached
+    /// *already-initialized* ``PreparedPlan`` products, and the Arc-owned
     /// frame-cache sidecar with any products already built on it.
     /// Uninitialized lazy caches are not counted and this method never
     /// builds them — so two cold ``__sizeof__`` reads report the same

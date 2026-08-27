@@ -2,15 +2,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::geometry::PreparedPlan;
 use crate::py::support::{
     Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
-    PyGeometry, PyResult, Result, Shape, ShapeData, parameter_values, require_locate_point,
-    resolve_metric,
+    PyGeometry, PyResult, Result, Shape, parameter_values, require_locate_point, resolve_metric,
 };
 
 pub(crate) fn line_interpolate_shape_m(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     m: f64,
 ) -> Result<Shape> {
     match model {
@@ -25,7 +25,7 @@ pub(crate) fn line_interpolate_shape_m(
 
 pub(crate) fn line_locate_shape_m(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     query: Point,
 ) -> Result<f64> {
     line_locate_shape_m_value(model, line.shape(), query)
@@ -49,7 +49,7 @@ pub(crate) fn line_locate_shape_m_value(
 
 pub(crate) fn line_substring_shape_m(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     range: crate::geometry::MeasureRange,
 ) -> Result<Shape> {
     match model {
@@ -189,7 +189,7 @@ pub(crate) fn line_interpolate_points_coordseq(
 /// many samples.
 pub(crate) fn line_interpolate_points_shape(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     plan: &InterpolatePlan,
 ) -> Result<Vec<Shape>, crate::error::Error> {
@@ -229,7 +229,7 @@ pub(crate) fn line_interpolate_points_shape(
 /// the surfaces; a persistent `line` handle keeps its cached `LineIndex`).
 pub(crate) fn line_interpolate_shape(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     distance: f64,
     normalized: bool,
@@ -245,7 +245,7 @@ pub(crate) fn line_interpolate_shape(
 
 fn line_interpolate_shape_with_mode(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     distance: f64,
     distance_mode: crate::crs::DistanceMode,
@@ -269,7 +269,7 @@ fn line_interpolate_shape_with_mode(
 /// The `line_substring` row kernel (see [`line_interpolate_shape`]).
 pub(crate) fn line_substring_shape(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     range: crate::geometry::MeasureRange,
     normalized: bool,
@@ -304,9 +304,10 @@ pub(crate) fn crs_line_locate_point(
 ) -> PyResult<f64> {
     let query = require_locate_point(point, "line_locate_point")?;
     let model = resolve_line_metric(line.crs_str(), unit, normalized, "line_locate_point")?;
+    let line_plan = line.plan_or_transient();
     Ok(line_locate_shape(
         &model,
-        &line.shape,
+        &line_plan,
         &line.frame_cache,
         query,
         normalized,
@@ -406,7 +407,7 @@ pub(crate) fn line_locate_coordseq(
 /// `LineIndex` across rows and calls.
 pub(crate) fn line_locate_shape(
     model: &crate::crs::MetricModel,
-    line: &ShapeData,
+    line: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     query: Point,
     normalized: bool,

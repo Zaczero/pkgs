@@ -16,6 +16,7 @@ use crate::geometry::{
     Segment, Shape, XY, canonical_f64_bits, dimension, point_on_segment, ring_encloses_pole,
     same_point, segment_projection, shared_segment_part,
 };
+use crate::heap_size::HeapSize;
 
 /// The coordinate quotient used by a topology graph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,6 +40,8 @@ impl TopologyNodeId {
         self.0 as usize
     }
 }
+
+crate::heapless!(TopologyNodeId);
 
 /// Source edge category. A line edge contributes line interior support;
 /// polygon ring edges contribute areal boundary support.
@@ -113,6 +116,59 @@ pub(crate) struct TopologyGraph {
     pub(crate) is_collection: bool,
     pub(crate) lineal_overlap_collection: bool,
     node_lookup: HashMap<TopologyKey, TopologyNodeId>,
+}
+
+impl HeapSize for TopologyGraph {
+    fn heap_bytes(&self) -> usize {
+        self.nodes.heap_bytes()
+            + self.edges.heap_bytes()
+            + self.source_edges.heap_bytes()
+            + self.source_points.heap_bytes()
+            + self.area_support.heap_bytes()
+            + self.line_boundary.heap_bytes()
+            // `HashMap` has no crate-wide accounting implementation; charge
+            // its key/value arrays conservatively without exposing its table
+            // representation to the topology layer.
+            + self.node_lookup.capacity()
+                * (std::mem::size_of::<TopologyKey>()
+                    + std::mem::size_of::<TopologyNodeId>())
+    }
+}
+
+impl HeapSize for TopologyNode {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl HeapSize for TopologyEdge {
+    fn heap_bytes(&self) -> usize {
+        self.sources.heap_bytes()
+    }
+}
+
+impl HeapSize for SourceEdge {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl HeapSize for SourcePoint {
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl HeapSize for AreaSupport {
+    fn heap_bytes(&self) -> usize {
+        self.source.heap_bytes() + self.shell.heap_bytes() + self.holes.heap_bytes()
+    }
+}
+
+impl HeapSize for ChartRing {
+    fn heap_bytes(&self) -> usize {
+        self.points.heap_bytes()
+    }
 }
 
 impl TopologyGraph {

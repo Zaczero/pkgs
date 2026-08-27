@@ -7,7 +7,7 @@ use super::{EllipsoidMetric, GEODESIC_LINE_CACHE, geodesic_counters};
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, GeodesicMetric, GeodesicSegment, LineSeq, Point,
-    Shape, ShapeData,
+    PreparedPlan, Shape,
 };
 
 fn p(x: f64, y: f64) -> Point {
@@ -435,8 +435,8 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     );
 
     let expected_distance = brute_geodesic_distance(&left, &right, &metric);
-    let left_data = ShapeData::new(left.clone());
-    let right_data = ShapeData::new(right.clone());
+    let left_data = PreparedPlan::new(left.clone());
+    let right_data = PreparedPlan::new(right.clone());
     let left_cache = FrameDependentCaches::default();
     let right_cache = FrameDependentCaches::default();
     let actual_distance = left_data.geodesic_distance_cached(

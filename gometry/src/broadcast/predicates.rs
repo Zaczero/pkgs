@@ -13,14 +13,14 @@ use pyo3::{IntoPyObject as _, IntoPyObjectExt as _};
 use crate::array::MissingMask;
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    Arc, Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
+    Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
     GeometryErrorKind, GeometryInput, GeometryKind, Point, PredicateSpec, Py, PyErr, PyGeometry,
     PyGeometryArray, PyResult, Python, Shape, ShapeData, broadcast_coordinate_input, broadcast2,
     classify_input, coordinate_input_with_expected, coordinate_sequence_len_hint,
     expected_geometry_or_array_for, mask_missing, paired_arrays, py_bool, scalar_vs_shapes,
 };
 use crate::error::Result;
-use crate::geometry::is_geographic_frame;
+use crate::geometry::{PreparedPlan, is_geographic_frame};
 use crate::predicates::PyPreparedGeometry;
 use crate::predicates::engine::{
     Predicate, skip_antimeridian_bounds_gate_row, topology_scalar_pair,
@@ -58,11 +58,11 @@ fn with_prepared_operands(
     let left_prepared = left.cast::<PyPreparedGeometry>().ok();
     let right_prepared = right.cast::<PyPreparedGeometry>().ok();
     let left_geometry = match left_prepared {
-        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
         None => None,
     };
     let right_geometry = match right_prepared {
-        Some(prepared) => Some(prepared.get().geometry.clone().into_pyobject(py)?),
+        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
         None => None,
     };
     let left = left_geometry
@@ -112,14 +112,14 @@ pub(crate) fn predicate_scalar_vs_array(
     let geographic = is_geographic_frame(&scalar.frame) || is_geographic_frame(&array.frame);
     let spec = *spec;
     let missing = array.missing().cloned();
-    let shape = Arc::clone(&scalar.shape);
+    let plan = scalar.plan_or_transient();
     let array = array.clone();
     bool_array_mask_missing(
         py,
         py.detach(move || {
             scalar_vs_shapes(
                 &spec,
-                &shape,
+                &plan,
                 array.storage().iter_rows().enumerate(),
                 scalar_is_left,
                 Some(&array),
@@ -283,11 +283,11 @@ pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {
     }
 }
 
-fn relate_shape_pair(geographic: bool, left: &Shape, right: &Shape) -> String {
+fn relate_plan_pair(geographic: bool, left: &PreparedPlan, right: &PreparedPlan) -> String {
     if geographic {
-        crate::geometry::graph_relate_shapes_geographic(left, right).text()
+        crate::geometry::graph_relate_data_geographic(left, right).text()
     } else {
-        crate::geometry::graph_relate_shapes(left, right).text()
+        crate::geometry::graph_relate_data(left, right).text()
     }
 }
 
@@ -302,16 +302,16 @@ pub(crate) fn relate_string_broadcast(
             (classify_input(left), classify_input(right))
         {
             left.frame.compatible(&right.frame, "relate")?;
-            return relate_shape_pair(
+            return relate_plan_pair(
                 is_geographic_frame(&left.frame),
-                left.shape.shape(),
-                right.shape.shape(),
+                &left.plan_or_transient(),
+                &right.plan_or_transient(),
             )
             .into_py_any(py);
         }
         let geographic = input_is_geographic(left) || input_is_geographic(right);
         broadcast2(py, left, right, "relate", move |left, right| {
-            Ok(relate_shape_pair(geographic, left, right))
+            Ok(relate_plan_pair(geographic, left, right))
         })
     })
 }
@@ -341,21 +341,24 @@ pub(crate) fn relate_pattern_broadcast(
         {
             left.frame.compatible(&right.frame, "relate_pattern")?;
             let matrix = if is_geographic_frame(&left.frame) {
-                crate::geometry::graph_relate_shapes_geographic(
-                    left.shape.shape(),
-                    right.shape.shape(),
+                crate::geometry::graph_relate_data_geographic(
+                    &left.plan_or_transient(),
+                    &right.plan_or_transient(),
                 )
             } else {
-                crate::geometry::graph_relate_shapes(left.shape.shape(), right.shape.shape())
+                crate::geometry::graph_relate_data(
+                    &left.plan_or_transient(),
+                    &right.plan_or_transient(),
+                )
             };
             return Ok(py_bool(py, compiled.matches(matrix)));
         }
         let geographic = input_is_geographic(left) || input_is_geographic(right);
         broadcast2(py, left, right, "relate_pattern", move |left, right| {
             let matrix = if geographic {
-                crate::geometry::graph_relate_shapes_geographic(left, right)
+                crate::geometry::graph_relate_data_geographic(left, right)
             } else {
-                crate::geometry::graph_relate_shapes(left, right)
+                crate::geometry::graph_relate_data(left, right)
             };
             Ok(compiled.matches(matrix))
         })
@@ -373,7 +376,8 @@ pub(crate) fn xy_predicate(
     inclusive: bool,
 ) -> PyResult<Py<PyAny>> {
     if let Ok(prepared) = geometry.cast::<PyPreparedGeometry>() {
-        return xy_predicate_geometry(py, &prepared.get().geometry, x, y, inclusive);
+        let geometry = prepared.get().as_geometry();
+        return xy_predicate_geometry(py, &geometry, x, y, inclusive);
     }
     let input = classify_input(geometry).ok_or_else(|| expected_geometry_or_array_for(geometry))?;
     let receiver_len = match input {
@@ -472,7 +476,7 @@ fn xy_predicate_array_values(
                     }
                     let point = Point::new_unchecked_xy(x, y);
                     let row = crate::array::PreparedRow::transient(row);
-                    let point = ShapeData::from(Shape::Point(point));
+                    let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
                     Ok(topology_scalar_pair(&spec, &row, &point, geographic))
                 })
                 .collect_rows()
@@ -484,7 +488,7 @@ fn xy_predicate_array_values(
 fn xy_array_values(
     x: Vec<f64>,
     y: Vec<f64>,
-    original: &Arc<ShapeData>,
+    original: &PreparedPlan,
     spec: PredicateSpec,
     geographic: bool,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
@@ -496,7 +500,7 @@ fn xy_array_values(
     points
         .into_iter()
         .map(|point| {
-            let point = ShapeData::from(Shape::Point(point));
+            let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
             Ok(topology_scalar_pair(&spec, original, &point, geographic))
         })
         .collect_rows()
@@ -516,10 +520,10 @@ pub(crate) fn xy_predicate_values(
         Predicate::Contains.spec()
     };
     let geographic = is_geographic_frame(&geometry.frame);
-    let original = Arc::clone(&geometry.shape);
+    let original = geometry.plan_or_transient();
     if scalar {
         let point = Point::new(x[0], y[0])?;
-        let point = ShapeData::from(Shape::Point(point));
+        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
         return Ok(py_bool(
             py,
             topology_scalar_pair(&spec, &original, &point, geographic),
@@ -569,14 +573,12 @@ mod geographic_tests {
         ];
         let x = probes.iter().map(|&(x, _)| x).collect();
         let y = probes.iter().map(|&(_, y)| y).collect();
+        let source = geometry.plan_or_transient();
         let expected: Vec<bool> = probes
             .iter()
             .map(|&(x, y)| {
-                crate::geometry::graph_relate_shapes_geographic(
-                    geometry.shape.shape(),
-                    &Shape::Point(Point::new_unchecked_xy(x, y)),
-                )
-                .is_intersects()
+                let point = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(x, y)));
+                crate::geometry::graph_relate_data_geographic(&source, &point).is_intersects()
             })
             .collect();
 

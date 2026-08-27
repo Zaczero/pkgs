@@ -7,10 +7,10 @@ use crate::geometry::distance::{
     squared_space_safe,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, Shape, ShapeData,
+    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, Shape,
     finish_planar_squared_min, point_distance, points_dwithin,
 };
-impl ShapeData {
+impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
     /// caller holding the handle gets amortized indexes automatically.
