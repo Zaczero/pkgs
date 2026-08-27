@@ -9,7 +9,7 @@ use pyo3::types::PyAny;
 
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
-use crate::py::wire_crs::{guard_embedded_crs_conflict, prefer_wire_alias_crs, split_ewkt_srid};
+use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
 use crate::{
     CoordinateAxes, Crs, FrameEdit, GeoJsonDecodeContext, HeapSize, PyGeometry, PyGeometryArray,
     ScalarOrIterator, Typed, ValidationIssue, classify_scalar_or_iterator,
@@ -251,8 +251,7 @@ fn require_array_contract(
 fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry> {
     let (body, srid) = split_ewkt_srid(text)?;
     let embedded = io::crs_from_optional_srid(srid)?;
-    guard_embedded_crs_conflict(embedded.as_deref(), fallback.map(Crs::as_str), "EWKT SRID")?;
-    let crs = prefer_wire_alias_crs(embedded.map(crs_arc), fallback).or_else(|| fallback.cloned());
+    let crs = resolve_wire_crs(embedded.map(crs_arc), fallback, "EWKT SRID")?;
     guard_epoch_frame(None, crs.as_ref())?;
     Ok(PyGeometry::with_epoch(io::parse_wkt(body)?, crs, None))
 }
@@ -289,9 +288,7 @@ fn parse_require_bytes_slice(data: &[u8], fallback: Option<&Crs>) -> PyResult<Py
         return parse_require_geojson_value(&parsed, fallback);
     }
     let mut geometry = parse_wkb_geometry(data)?;
-    guard_embedded_crs_conflict(geometry.crs_str(), fallback.map(Crs::as_str), "EWKB SRID")?;
-    let resolved =
-        prefer_wire_alias_crs(geometry.crs_ref().cloned(), fallback).or_else(|| fallback.cloned());
+    let resolved = resolve_wire_crs(geometry.crs_ref().cloned(), fallback, "EWKB SRID")?;
     geometry.set_crs_keep_epoch(resolved);
     Ok(geometry)
 }

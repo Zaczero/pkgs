@@ -221,6 +221,16 @@ pub(crate) fn prefer_wire_alias_crs(embedded: Option<Crs>, explicit: Option<&Crs
     }
 }
 
+/// Reconcile one embedded wire CRS with the caller's fallback CRS.
+pub(crate) fn resolve_wire_crs(
+    embedded: Option<Crs>,
+    fallback: Option<&Crs>,
+    source: &str,
+) -> PyResult<Option<Crs>> {
+    guard_embedded_crs_conflict(embedded.as_deref(), fallback.map(Crs::as_str), source)?;
+    Ok(prefer_wire_alias_crs(embedded, fallback).or_else(|| fallback.cloned()))
+}
+
 /// Split an optional EWKT ``SRID=<code>;`` prefix from a WKT string,
 /// returning the WKT body and the normalized embedded SRID.
 ///

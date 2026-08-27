@@ -91,6 +91,60 @@ def _ewkb_point(x: float, y: float, srid: int) -> bytes:
     return struct.pack('<BII2d', 1, 0x20000001, srid, x, y)
 
 
+def test_scalar_wire_crs_reconciliation_policy() -> None:
+    """Scalar WKT/WKB and require share wire CRS reconciliation semantics."""
+    wire_cases = (
+        (gm.from_wkt, gm.require, 'POINT (1 2)', 'SRID=4326;POINT (1 2)', 'EWKT'),
+        (
+            gm.from_wkb,
+            gm.require,
+            gm.Point(1, 2).to_wkb(),
+            _ewkb_point(1.0, 2.0, 4326),
+            'EWKB',
+        ),
+    )
+    for from_wire, require, plain, embedded, source in wire_cases:
+        assert from_wire(plain).crs is None
+        assert require(plain).crs is None
+        assert from_wire(plain, crs=4326).crs == 'EPSG:4326'
+        assert require(plain, crs=4326).crs == 'EPSG:4326'
+
+        for parse in (from_wire, require):
+            assert parse(embedded, crs=4326).crs == 'EPSG:4326'
+            assert parse(embedded, crs='OGC:CRS84').crs == 'OGC:CRS84'
+            with pytest.raises(
+                gm.CRSMismatchError,
+                match=rf'crs argument .* conflicts with the embedded {source} SRID',
+            ):
+                parse(embedded, crs=3857)
+
+        invalid = (
+            'SRID=999999;POINT (1 2)'
+            if source == 'EWKT'
+            else _ewkb_point(1.0, 2.0, 999_999)
+        )
+        with pytest.raises(gm.CRSError):
+            from_wire(invalid)
+        with pytest.raises(gm.CRSError):
+            require(invalid)
+
+    alias_h_cases = (
+        ('SRID=4979;POINT Z (1 2 3)', gm.from_wkt),
+        (gm.Point(1, 2, z=3, crs=4979).to_wkb(include_srid=True), gm.from_wkb),
+    )
+    for payload, from_wire in alias_h_cases:
+        assert from_wire(payload, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+        assert gm.require(payload, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+
+    for parse, payload in (
+        (gm.from_wkt, 'SRID=4326;POINT (1 2)'),
+        (gm.from_wkb, _ewkb_point(1.0, 2.0, 4326)),
+    ):
+        geometry = parse(payload, epoch=2020.0)
+        assert geometry.crs == 'EPSG:4326'
+        assert geometry.epoch == 2020.0
+
+
 def test_bulk_mixed_distinct_srids_require_shared_crs() -> None:
     """Two distinct embedded SRIDs in one batch → SharedCrs (EWKB and EWKT)."""
     a = _ewkb_point(1.0, 2.0, 32634)

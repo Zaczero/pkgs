@@ -7,9 +7,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::py::functions::bulk_rows::{StreamedSridRow, stream_bulk_srid};
-use crate::py::wire_crs::{guard_embedded_crs_conflict, prefer_wire_alias_crs, split_ewkt_srid};
+use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
 use crate::{
-    PyGeometry, Typed, coordinate_epoch_option, crs_arc, guard_epoch_frame, io, parse_crs,
+    PyGeometry, Typed, coordinate_epoch_option, guard_epoch_frame, io, parse_crs,
     parse_wkb_geometry, parse_wkb_payload, parse_wkb_payload_bytes,
 };
 
@@ -74,9 +74,7 @@ pub(crate) fn from_wkt(
     let parse = |text: &str| -> PyResult<PyGeometry> {
         let (body, srid) = split_ewkt_srid(text)?;
         let embedded = io::crs_from_optional_srid(srid)?;
-        guard_embedded_crs_conflict(embedded.as_deref(), fallback.as_deref(), "EWKT SRID")?;
-        let crs = prefer_wire_alias_crs(embedded.map(crs_arc), fallback.as_ref())
-            .or_else(|| fallback.clone());
+        let crs = resolve_wire_crs(embedded, fallback.as_ref(), "EWKT SRID")?;
         guard_epoch_frame(parsed_epoch, crs.as_ref())?;
         Ok(PyGeometry::with_epoch(
             io::parse_wkt(body)?,
@@ -172,9 +170,8 @@ pub(crate) fn from_wkb(
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
     let attach = |mut geometry: PyGeometry| -> PyResult<PyGeometry> {
-        guard_embedded_crs_conflict(geometry.crs_str(), fallback.as_deref(), "EWKB SRID")?;
-        let resolved = prefer_wire_alias_crs(geometry.crs_ref().cloned(), fallback.as_ref())
-            .or_else(|| fallback.clone());
+        let resolved =
+            resolve_wire_crs(geometry.crs_ref().cloned(), fallback.as_ref(), "EWKB SRID")?;
         geometry.set_crs_keep_epoch(resolved);
         guard_epoch_frame(parsed_epoch, geometry.crs_ref())?;
         geometry.set_epoch_keep_crs(parsed_epoch);
