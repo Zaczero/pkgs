@@ -279,7 +279,7 @@ impl PyGeometryArray {
     pub fn sort_by_spatial_key(
         &self,
         curve: SpatialCurve,
-        level: i64,
+        #[pyo3(from_py_with = crate::strict_i64)] level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let keys = self.curve_keys(level, bounds, "sort_by_spatial_key", curve.into())?;

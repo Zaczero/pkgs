@@ -67,6 +67,23 @@ def test_integer_domains_reject_bool_and_report_large_ids() -> None:
         gm.Point(0, 0).spatial_key(level=True)
 
 
+def test_array_spatial_key_rejects_bool_level() -> None:
+    points = gm.GeometryArray([gm.Point(0, 0)])
+    with pytest.raises(TypeError, match='integer'):
+        points.sort_by_spatial_key(level=True)
+
+
+def test_spatial_key_reports_oversized_level_as_geometry_error() -> None:
+    points = gm.GeometryArray([gm.Point(0, 0)])
+    for operation in (
+        lambda: gm.Point(0, 0).spatial_key(level=10**100),
+        lambda: points.sort_by_spatial_key(level=10**100),
+    ):
+        with pytest.raises(gm.GeometryError, match='integer is too large') as excinfo:
+            operation()
+        assert not isinstance(excinfo.value, OverflowError)
+
+
 def test_scalar_float_providers_are_admitted_once_and_must_be_finite() -> None:
     with pytest.raises(gm.GeometryError, match='x_angle must be finite'):
         gm.Point(0, 0).skew(x_angle=math.nan)
