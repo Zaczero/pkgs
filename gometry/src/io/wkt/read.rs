@@ -643,26 +643,29 @@ fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
 }
 
 fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
+    let bytes = value.as_bytes();
     let mut capacity = 1;
-    let mut ascii = true;
-    for &byte in value.as_bytes() {
+    for &byte in bytes {
         capacity += usize::from(byte == b',');
-        ascii &= byte.is_ascii();
     }
-    if ascii {
-        return parse_wkt_ascii_points_impl::<Z, M>(value.as_bytes(), capacity);
+    match parse_wkt_ascii_points_impl::<Z, M>(bytes, capacity) {
+        Ok(sequence) => Ok(sequence),
+        Err(error) if bytes.is_ascii() => Err(error),
+        Err(_) => {
+            let mut builder =
+                CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
+            for coordinate in value.split(',') {
+                parse_wkt_coordinate_into::<Z, M>(coordinate, &mut builder)?;
+            }
+            builder.finish()
+        },
     }
-    let mut builder =
-        CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
-    for coordinate in value.split(',') {
-        parse_wkt_coordinate_into::<Z, M>(coordinate, &mut builder)?;
-    }
-    builder.finish()
 }
 
 /// Parse the ASCII WKT coordinate lists produced by normal serializers without
 /// layering `split(',')` and `split_whitespace()` iterators for every vertex.
-/// Non-ASCII input stays on the Unicode-aware path above.
+/// Non-ASCII input falls back to the Unicode-aware path above if byte parsing
+/// encounters it.
 fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
     bytes: &[u8],
     capacity: usize,
@@ -737,8 +740,11 @@ fn parse_wkt_point(value: &str, axes: CoordinateAxes) -> Result<Point> {
 }
 
 fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Point> {
-    if value.is_ascii() {
-        return parse_wkt_ascii_point_impl::<Z, M>(value.as_bytes());
+    let bytes = value.as_bytes();
+    match parse_wkt_ascii_point_impl::<Z, M>(bytes) {
+        Ok(point) => return Ok(point),
+        Err(error) if bytes.is_ascii() => return Err(error),
+        Err(_) => {},
     }
     let mut values = value.split_whitespace();
     let x = parse_wkt_float_token(
@@ -845,5 +851,36 @@ mod tests {
         assert_eq!(point.y, 2.0);
         assert_eq!(point.z(), Some(3.0));
         assert_eq!(point.m(), Some(4.0));
+    }
+
+    #[test]
+    fn coordinate_dispatch_preserves_unicode_whitespace_compatibility() {
+        let point = parse_wkt("POINT ZM (1\u{00a0}2\u{2003}3\u{2028}4)")
+            .expect("Unicode whitespace remains accepted");
+        let Shape::Point(point) = point else {
+            panic!("expected point");
+        };
+        assert_eq!(
+            (point.x, point.y, point.z(), point.m()),
+            (1.0, 2.0, Some(3.0), Some(4.0))
+        );
+
+        let line = parse_wkt("LINESTRING (1\u{2003}2, 3\u{2028}4)")
+            .expect("Unicode whitespace remains accepted in lists");
+        let Shape::LineString(line) = line else {
+            panic!("expected line string");
+        };
+        assert_eq!(line.as_coords().xs(), &[1.0, 3.0]);
+        assert_eq!(line.as_coords().ys(), &[2.0, 4.0]);
+    }
+
+    #[test]
+    fn coordinate_dispatch_rejects_non_whitespace_unicode_in_numbers() {
+        let error = parse_wkt("POINT (1\u{00e9} 2)").expect_err("Unicode character is invalid");
+        assert!(error.to_string().contains("x coordinate must be numeric"));
+
+        let error = parse_wkt("POINT (1\u{00a0}not-a-number)")
+            .expect_err("Unicode whitespace cannot make a bad number valid");
+        assert!(error.to_string().contains("y coordinate must be numeric"));
     }
 }
