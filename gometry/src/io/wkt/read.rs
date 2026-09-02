@@ -3,8 +3,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::geometry::{
-    CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
-    ZOrdinate,
+    CoordSeqBuilder, HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
 };
 use crate::io::wkt::{
     CoordSeq, CoordinateAxes, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
@@ -758,36 +757,13 @@ fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Poi
         Err(error) if bytes.is_ascii() => return Err(error),
         Err(_) => {},
     }
-    let mut values = value.split_whitespace();
-    let x = parse_wkt_float_token(
-        values
-            .next()
-            .ok_or_else(|| IoError::wkt("coordinate is missing x"))?,
-        "x",
-    )?;
-    let y = parse_wkt_float_token(
-        values
-            .next()
-            .ok_or_else(|| IoError::wkt("coordinate is missing y"))?,
-        "y",
-    )?;
-    let z = if Z {
-        Some(parse_wkt_ordinate(&mut values, "z")?)
-    } else {
-        None
-    };
-    let m = if M {
-        Some(parse_wkt_ordinate(&mut values, "m")?)
-    } else {
-        None
-    };
-    if values.next().is_some() {
-        return Err(IoError::wkt("coordinate has too many ordinates"));
-    }
-    Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))
+    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
+    parse_wkt_coordinate_into::<Z, M>(value, &mut builder)?;
+    finish_wkt_point(builder)
 }
 
 fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Result<Point> {
+    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
     let mut index = 0;
     let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", false)?;
     let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", false)?;
@@ -801,7 +777,15 @@ fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Res
     if index != bytes.len() {
         return Err(IoError::wkt("coordinate has too many ordinates"));
     }
-    Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m))
+    builder.push_xyzm(x, y, z, m);
+    finish_wkt_point(builder)
+}
+
+fn finish_wkt_point(builder: CoordSeqBuilder) -> Result<Point> {
+    builder
+        .finish()?
+        .first()
+        .ok_or_else(|| IoError::wkt("coordinate is missing x"))
 }
 
 /// Read one ASCII numeric token. The comma delimiter is enabled for coordinate

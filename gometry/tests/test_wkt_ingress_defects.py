@@ -10,6 +10,38 @@ import gometry as gm
 import pytest
 
 # ---------------------------------------------------------------------------
+# WKT coordinate finiteness
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'wkt',
+    [
+        'POINT (nan 0)',
+        'POINT ZM (0 0 inf -inf)',
+        'MULTIPOINT (0 0, -inf 1)',
+        'MULTIPOINT Z ((0 0 1), (1 1 nan))',
+        'LINESTRING (0 0, nan 1)',
+        'LINESTRING M (0 0 1, 1 1 inf)',
+        'POLYGON ((0 0, 1 0, nan 1, 0 0))',
+        'POLYGON ZM ((0 0 1 2, 1 0 1 2, 0 1 1 -inf, 0 0 1 2))',
+        'MULTILINESTRING ((0 0, 1 1), (2 2, inf 3))',
+        'MULTIPOLYGON (((0 0, 1 0, 0 1, 0 0)), ((2 2, 3 2, nan 3, 2 2)))',
+        'GEOMETRYCOLLECTION (POINT (0 0), LINESTRING (1 1, -inf 2))',
+        'GEOMETRYCOLLECTION Z (GEOMETRYCOLLECTION (POINT (0 0 1)), POLYGON ((0 0 1, 1 0 1, 0 1 nan, 0 0 1)))',
+        'LINESTRING (0 0, 1e400 1)',
+    ],
+)
+def test_wkt_rejects_nonfinite_coordinates_at_one_admission_boundary(wkt: str) -> None:
+    """Every WKT geometry kind rejects non-finite parsed coordinate lanes."""
+    with pytest.raises(gm.ParseError, match='invalid WKT: coordinates must be finite') as raised:
+        gm.from_wkt(wkt)
+    assert type(raised.value) is gm.ParseError
+    assert raised.value.format == 'wkt'
+    assert raised.value.position == len(wkt.encode())
+
+
+# ---------------------------------------------------------------------------
 # D16 — all-empty multipart WKT keeps declared axes
 # ---------------------------------------------------------------------------
 

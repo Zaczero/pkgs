@@ -1161,8 +1161,9 @@ impl FromIterator<Point> for CoordSeq {
 /// for `Vec<Point>` staging.
 ///
 /// Axes are declared up front (per the design-by-contract boundary rule:
-/// sequences are axis-homogeneous, checked on [`finish`](Self::finish));
-/// columns are pre-sized and filled in a single pass over the source.
+/// sequences are axis-homogeneous and finite, checked on
+/// [`finish`](Self::finish)); columns are pre-sized and filled in a single
+/// pass over the source.
 pub(crate) struct CoordSeqBuilder {
     xs: Vec<f64>,
     ys: Vec<f64>,
@@ -1259,7 +1260,7 @@ impl CoordSeqBuilder {
         self.xs.capacity()
     }
 
-    /// Append one point (must match the declared axes — validated on
+    /// Append one point (axes and finiteness are validated on
     /// [`finish`](Self::finish)).
     pub(crate) fn push(&mut self, point: Point) {
         if point.axes != self.axes() {
@@ -1297,7 +1298,8 @@ impl CoordSeqBuilder {
     }
 
     /// Append one contiguous coordinate window column-wise. The caller owns
-    /// row/CSR validation; axes are checked when the builder is finished.
+    /// row/CSR validation; axes and finiteness are checked when the builder is
+    /// finished.
     pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) {
         if coords.axes() != self.axes() {
             self.mismatch_axes.get_or_insert_with(|| coords.axes());
@@ -1313,8 +1315,8 @@ impl CoordSeqBuilder {
     }
 
     /// Append one coordinate from raw ordinates. `z`/`m` must be `Some`
-    /// exactly when the declared axes carry them — validated on
-    /// [`finish`](Self::finish).
+    /// exactly when the declared axes carry them; axes and finiteness are
+    /// validated on [`finish`](Self::finish).
     pub(crate) fn push_xyzm(&mut self, x: f64, y: f64, z: Option<f64>, m: Option<f64>) {
         if z.is_some() != self.zs.is_some() || m.is_some() != self.ms.is_some() {
             self.mismatch_axes
@@ -1330,7 +1332,7 @@ impl CoordSeqBuilder {
         }
     }
 
-    /// Seal the columns into a [`CoordSeq`].
+    /// Seal finite, axis-homogeneous columns into a [`CoordSeq`].
     pub(crate) fn finish(self) -> Result<CoordSeq> {
         if let Some(got) = self.mismatch_axes {
             return Err(GeometryErrorKind::CoordinateAxesMismatch {
@@ -1338,6 +1340,9 @@ impl CoordSeqBuilder {
                 got,
             }
             .into());
+        }
+        if !columns_all_finite(&self.xs, &self.ys, self.zs.as_deref(), self.ms.as_deref()) {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
         CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
