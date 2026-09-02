@@ -316,6 +316,39 @@ fn source_windows(west: f64, east: f64, domain: TopologyDomain) -> Result<(Vec<[
     Ok((windows, false))
 }
 
+pub(super) fn canonical_identity_longitudes(
+    west: f64,
+    east: f64,
+    frame: GeographicFrame,
+) -> Result<(f64, f64)> {
+    let axis = frame.longitude();
+    let raw_span = east - west;
+    if !raw_span.is_finite() || raw_span.abs() >= axis.period() {
+        return Ok((-axis.half_period(), axis.half_period()));
+    }
+    let canonical = |value| {
+        axis.canonicalize(value)
+            .map(|value| value.get())
+            .map_err(|error| CrsError::invalid(error.to_string()))
+    };
+    Ok((canonical(west)?, canonical(east)?))
+}
+
+pub(super) fn canonical_identity_latitudes(
+    south: f64,
+    north: f64,
+    frame: GeographicFrame,
+) -> Result<[f64; 2]> {
+    Ok([
+        Latitude::try_new(frame, south)
+            .map_err(map_geographic_conversion_error)?
+            .get(),
+        Latitude::try_new(frame, north)
+            .map_err(map_geographic_conversion_error)?
+            .get(),
+    ])
+}
+
 fn admitted_source_latitude_bounds(
     domain: TopologyDomain,
     south: f64,

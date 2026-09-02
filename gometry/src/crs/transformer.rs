@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use crate::crs::transform::{
-    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, transform_in_core_xy_with_domains,
+    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, canonical_identity_longitudes,
+    transform_in_core_xy_with_domains,
 };
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
@@ -286,16 +287,11 @@ impl TransformPlan {
     ) -> Result<(f64, f64, f64, f64)> {
         self.begin_execution();
         let result = if self.is_identity() {
-            if self.source_domain.is_geographic() {
-                let mut samples = BoundsSamplePlan::new_2d(
-                    bounds,
-                    0,
-                    self.source_domain,
-                    self.target_domain,
-                    self.options.source_epoch,
-                )?;
-                self.execute_bounds_samples(&mut samples)?;
-                samples.finish_2d()
+            if let TopologyDomain::Geographic(frame) = self.target_domain {
+                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.2, frame)?;
+                let [south, north] =
+                    crate::crs::transform::canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
+                Ok((west, south, east, north))
             } else {
                 Ok(bounds)
             }
@@ -345,16 +341,11 @@ impl TransformPlan {
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         self.begin_execution();
         let result = if self.is_identity() {
-            if self.source_domain.is_geographic() {
-                let mut samples = BoundsSamplePlan::new_3d(
-                    bounds,
-                    0,
-                    self.source_domain,
-                    self.target_domain,
-                    self.options.source_epoch,
-                )?;
-                self.execute_bounds_samples(&mut samples)?;
-                samples.finish_3d()
+            if let TopologyDomain::Geographic(frame) = self.target_domain {
+                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.3, frame)?;
+                let [south, north] =
+                    crate::crs::transform::canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
+                Ok((west, south, bounds.2, east, north, bounds.5))
             } else {
                 Ok(bounds)
             }
