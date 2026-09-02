@@ -75,17 +75,20 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> boo
         && left.len() == right.len()
         && (Arc::ptr_eq(left.storage_arc(), right.storage_arc())
             || left
-                .logical_shape_rows()
-                .zip(right.logical_shape_rows())
+                .row_operation()
+                .rows_with_missing(|| ())
+                .zip(right.row_operation().rows_with_missing(|| ()))
                 .all(|(left, right)| match (left, right) {
                     (
-                        crate::array::LogicalShapeRow::Missing { .. },
-                        crate::array::LogicalShapeRow::Missing { .. },
+                        crate::array::ArrayRow::Missing { .. },
+                        crate::array::ArrayRow::Missing { .. },
                     ) => true,
                     (
-                        crate::array::LogicalShapeRow::Present { shape: left, .. },
-                        crate::array::LogicalShapeRow::Present { shape: right, .. },
-                    ) => left == right,
+                        crate::array::ArrayRow::Present(left),
+                        crate::array::ArrayRow::Present(right),
+                    ) => left
+                        .row()
+                        .with_shape(|left| right.row().with_shape(|right| left == right)),
                     _ => false,
                 }))
 }

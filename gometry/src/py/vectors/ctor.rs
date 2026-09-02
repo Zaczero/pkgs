@@ -139,17 +139,20 @@ impl Groups {
     pub fn from_self_intersection_rows(array: &PyGeometryArray) -> PyResult<Self> {
         let mut builder = CsrBuilder::<Shape>::new();
         let domain = crate::geometry::topology_domain(&array.frame)?;
-        for row in array.logical_shape_rows() {
+        for row in array.row_operation().rows_with_missing(|| ()) {
             match row {
-                crate::array::LogicalShapeRow::Missing { .. } => builder
+                crate::array::ArrayRow::Missing { .. } => builder
                     .push_row(std::iter::empty())
                     .map_err(pyo3::PyErr::from)?,
-                crate::array::LogicalShapeRow::Present { shape, .. } => builder
-                    .push_row(
-                        crate::geometry::self_intersections_in_frame(&shape, domain)
-                            .into_iter()
-                            .map(Shape::Point),
-                    )
+                crate::array::ArrayRow::Present(row) => row
+                    .row()
+                    .with_shape(|shape| {
+                        builder.push_row(
+                            crate::geometry::self_intersections_in_frame(shape, domain)
+                                .into_iter()
+                                .map(Shape::Point),
+                        )
+                    })
                     .map_err(pyo3::PyErr::from)?,
             }
         }

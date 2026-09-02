@@ -6,7 +6,9 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::array::{GeometryArrayStorage, PyGeometry, PyGeometryArray, RowSelection, ShapeRow};
+use crate::array::{
+    GeometryArrayStorage, LogicalRow, PyGeometry, PyGeometryArray, RowSelection, ShapeRow,
+};
 use crate::geometry::{Bounds, FrameDependentCaches, PreparedPlan, Shape, ShapeData};
 use crate::heap_size::HeapSize;
 
@@ -128,6 +130,100 @@ pub(crate) struct RowProductsHandle {
     owner: Arc<RowProductOwner>,
     selection: RowSelection,
     current: Option<ResolvedRowProductChunk>,
+}
+
+/// One sequential operation over an array's logical rows.
+///
+/// The operation owns the directory cursor and is borrowed for the same
+/// lifetime as the array rows. This keeps logical identity, missing emission,
+/// prepared lookup, and frame-cache lookup on one path without requiring a
+/// self-referential iterator or boxing row values.
+pub(crate) struct ArrayRowOperation<'a> {
+    array: &'a PyGeometryArray,
+    products: RowProductsHandle,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PresentRow<'a> {
+    logical: usize,
+    row: ShapeRow<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ArrayRow<'a, T> {
+    Missing { logical: usize, value: T },
+    Present(PresentRow<'a>),
+}
+
+impl<'a> PresentRow<'a> {
+    pub(crate) const fn logical(self) -> usize {
+        self.logical
+    }
+
+    pub(crate) const fn row(self) -> ShapeRow<'a> {
+        self.row
+    }
+}
+
+impl<'a> ArrayRowOperation<'a> {
+    pub(crate) fn new(array: &'a PyGeometryArray) -> Self {
+        Self {
+            array,
+            products: array.row_products.operation(),
+        }
+    }
+
+    /// Return logical rows while making the missing output explicit at the
+    /// call site. The factory avoids imposing `Clone` on output values.
+    pub(crate) fn rows_with_missing<T>(
+        &self,
+        missing: impl Fn() -> T + Copy + 'a,
+    ) -> impl ExactSizeIterator<Item = ArrayRow<'a, T>> + 'a {
+        self.array.logical_rows().map(move |row| match row {
+            LogicalRow::Missing { logical } => ArrayRow::Missing {
+                logical,
+                value: missing(),
+            },
+            LogicalRow::Present { logical, row } => ArrayRow::Present(PresentRow { logical, row }),
+        })
+    }
+
+    /// Present-only traversal for operations that intentionally skip missing
+    /// rows, such as index joins and sparse geometry collection builders.
+    pub(crate) fn present_rows(&self) -> impl Iterator<Item = PresentRow<'a>> + 'a {
+        self.array.logical_rows().filter_map(|row| match row {
+            LogicalRow::Missing { .. } => None,
+            LogicalRow::Present { logical, row } => Some(PresentRow { logical, row }),
+        })
+    }
+
+    pub(crate) fn prepared(&mut self, row: PresentRow<'a>) -> PreparedRow<'a> {
+        self.array
+            .prepared_row_with(&mut self.products, row.logical, row.row)
+    }
+
+    pub(crate) fn prepared_at(&mut self, logical: usize, row: ShapeRow<'a>) -> PreparedRow<'a> {
+        self.array
+            .prepared_row_with(&mut self.products, logical, row)
+    }
+
+    pub(crate) fn warm_prepared_at(
+        &mut self,
+        logical: usize,
+        row: ShapeRow<'a>,
+        bounds: Option<Bounds>,
+    ) -> PreparedRow<'a> {
+        self.array
+            .warm_prepared_row_or_transient_with(&mut self.products, logical, row, bounds)
+    }
+
+    pub(crate) fn frame_cache(&mut self, logical: usize) -> Arc<FrameDependentCaches> {
+        self.products.frame_cache(logical)
+    }
+
+    pub(crate) fn bounds_seed(&self, logical: usize) -> BoundsSeed {
+        self.array.row_bounds_seed(logical)
+    }
 }
 
 impl RowProductsHandle {
@@ -484,6 +580,10 @@ fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
 }
 
 impl PyGeometryArray {
+    pub(crate) fn row_operation(&self) -> ArrayRowOperation<'_> {
+        ArrayRowOperation::new(self)
+    }
+
     pub(crate) fn selected_row_products(
         &self,
         rows: impl IntoIterator<Item = usize>,
@@ -635,6 +735,71 @@ mod frame_cache_row_tests {
             CoordSeq::from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0], None, None),
             Frame::None,
         )
+    }
+
+    #[test]
+    fn row_operation_keeps_dense_compact_and_duplicate_logical_identity() {
+        let dense = points();
+        let masked = PyGeometryArray::scatter_present_rows(
+            &dense,
+            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false])
+                .expect("validity length"),
+        );
+        assert!(masked.is_compact_nullable());
+
+        let logical_xs = |array: &PyGeometryArray| {
+            array
+                .row_operation()
+                .rows_with_missing(|| Option::<f64>::None)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => value,
+                    ArrayRow::Present(row) => match row.row() {
+                        ShapeRow::Point(point) => Some(point.x),
+                        _ => unreachable!("point fixture yields point rows"),
+                    },
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(logical_xs(&masked), [
+            Some(0.0),
+            None,
+            Some(1.0),
+            None,
+            Some(2.0)
+        ]);
+        let gathered = masked.gather_logical_rows(&[4, 2, 4, 1]);
+        assert_eq!(logical_xs(&gathered), [
+            Some(2.0),
+            Some(1.0),
+            Some(2.0),
+            None
+        ]);
+    }
+
+    #[test]
+    fn row_operation_does_not_prepare_missing_rows() {
+        let source = PyGeometryArray::mixed_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+                Shape::Point(Point::new_raw_xy(2.0, 2.0)),
+            ],
+            Frame::None,
+        )
+        .with_missing_mask(Some(
+            crate::array::ValidityMask::from_vec(3, vec![false, true, false])
+                .expect("validity length"),
+        ));
+        let mut operation = source.row_operation();
+        for row in operation.rows_with_missing(|| ()) {
+            if let ArrayRow::Present(row) = row {
+                let logical = row.logical();
+                let _ = operation.prepared(row);
+                let _ = operation.frame_cache(logical);
+            }
+        }
+        assert_eq!(source.row_products.initialized_counts(), (1, 2, 2));
     }
 
     #[test]

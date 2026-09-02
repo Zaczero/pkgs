@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::array::{ArrayRow, ArrayRowOperation};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
@@ -85,7 +86,14 @@ pub(crate) fn unary_array<R: BulkElement>(
     // repeats; distance-basis linref needs a frame cache; pure geometry
     // transforms use the Shape-only lane.
     let mode = unary_row_mode(op);
-    let (values, output_frame) = run_unary_rows(py, array, resolver, op_name, mode, kernel)?;
+    let (values, output_frame) = run_unary_rows(
+        py,
+        array,
+        resolver,
+        op_name,
+        mode,
+        move |data, ctx, _rows| kernel(data, ctx),
+    )?;
     R::bulk_into_py_masked(values, py, &output_frame, array.missing())
 }
 
@@ -108,7 +116,9 @@ fn run_unary_rows<T: BulkElement>(
     resolver: super::metric::MetricResolver,
     op_name: &str,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<T> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
+    + Send
+    + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
@@ -119,36 +129,31 @@ fn run_unary_rows<T: BulkElement>(
     let values = py
         .detach(move || {
             let frame = &frame;
-            let mut products = array.row_products.operation();
-            array
-                .logical_storage_rows()
-                .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row,
-                        row: shape_row,
-                    } = logical_row
-                    else {
-                        // Missing rows never reach the kernel: they yield the
-                        // element's missing value (NaN / false / placeholder).
-                        return Ok(T::missing_value());
-                    };
-                    let ctx = CachelessRowContext {
-                        frame,
-                        domain,
-                        metric,
-                        lane: Lane::Array(row),
-                    };
-                    match mode {
-                        UnaryRowMode::ShapeOnly => {
-                            // Transient handle — never write prepared slots.
-                            let data = crate::array::PreparedRow::transient(shape_row);
-                            kernel(&data, &ctx)
-                        },
-                        UnaryRowMode::Prepared => {
-                            let data = array.prepared_row_with(&mut products, row, shape_row);
-                            kernel(&data, &ctx)
-                        },
-                    }
+            let mut rows = array.row_operation();
+            rows.rows_with_missing(T::missing_value)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(present) => {
+                        let row_index = present.logical();
+                        let shape_row = present.row();
+                        let ctx = CachelessRowContext {
+                            frame,
+                            domain,
+                            metric,
+                            lane: Lane::Array(row_index),
+                        };
+                        match mode {
+                            UnaryRowMode::ShapeOnly => {
+                                // Transient handle — never write prepared slots.
+                                let data = crate::array::PreparedRow::transient(shape_row);
+                                kernel(&data, &ctx, &mut rows)
+                            },
+                            UnaryRowMode::Prepared => {
+                                let data = rows.prepared_at(row_index, shape_row);
+                                kernel(&data, &ctx, &mut rows)
+                            },
+                        }
+                    },
                 })
                 .collect_rows()
         })
@@ -188,8 +193,14 @@ pub(crate) fn unary_array_shapes(
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
     }
-    let (shapes, frame) =
-        run_unary_rows(py, array, resolver, op.name(), unary_row_mode(op), kernel)?;
+    let (shapes, frame) = run_unary_rows(
+        py,
+        array,
+        resolver,
+        op.name(),
+        unary_row_mode(op),
+        move |data, ctx, _rows| kernel(data, ctx),
+    )?;
     Ok(PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(array.missing().cloned()))
 }
 
@@ -241,19 +252,16 @@ pub(crate) fn unary_array_linref_shapes(
     let array = array.clone();
     let shapes = py
         .detach(move || {
-            let mut products = array.row_products.operation();
-            array
-                .logical_storage_rows()
-                .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row_index,
-                        row: shape,
-                    } = logical_row
-                    else {
+            let mut rows = array.row_operation();
+            rows.rows_with_missing(|| Shape::empty_point())
+                .map(|row| {
+                    let ArrayRow::Present(present) = row else {
                         return Ok(Shape::empty_point());
                     };
+                    let row_index = present.logical();
+                    let shape = present.row();
                     let data = crate::array::PreparedRow::transient(shape);
-                    let cache = products.frame_cache(row_index);
+                    let cache = rows.frame_cache(row_index);
                     let row = LinearReferenceRow {
                         op: CachelessRowContext {
                             frame: &frame,
@@ -300,24 +308,21 @@ pub(crate) fn unary_array_shapes_budgeted(
     let shapes = py
         .detach(move || {
             let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
-            let mut products = array.row_products.operation();
-            array
-                .logical_storage_rows()
-                .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row,
-                        row: shape_row,
-                    } = logical_row
-                    else {
+            let mut rows = array.row_operation();
+            rows.rows_with_missing(|| Shape::empty_point())
+                .map(|row| {
+                    let ArrayRow::Present(present) = row else {
                         return Ok(Shape::empty_point());
                     };
+                    let row = present.logical();
+                    let shape_row = present.row();
                     let ctx = CachelessRowContext {
                         frame: &frame,
                         domain,
                         metric,
                         lane: Lane::Array(row),
                     };
-                    let data = array.prepared_row_with(&mut products, row, shape_row);
+                    let data = rows.prepared_at(row, shape_row);
                     kernel(&data, &ctx, &mut budget)
                 })
                 .collect_rows()

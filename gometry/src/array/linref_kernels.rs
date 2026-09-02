@@ -175,21 +175,32 @@ pub(crate) fn line_interpolate_points_rows(
         return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
     }
     let mut builder = crate::CsrBuilder::<Shape>::new();
-    let mut products = array.row_products.operation();
-    for logical_row in array.logical_storage_rows() {
-        let row = logical_row.logical();
-        let values = match logical_row {
-            crate::array::LogicalRow::Missing { .. } => Vec::new(),
-            crate::array::LogicalRow::Present { row: handle, .. } => plan
-                .with_row(row, |plan| {
-                    let line = array.prepared_row_with(&mut products, row, handle);
-                    line_interpolate_points_shape(&model, &line, &products.frame_cache(row), plan)
-                })
-                .map_err(|error| note_array_row(error.into(), row))?,
-        };
-        builder
-            .push_row(values)
-            .map_err(|error| note_array_row(error.into(), row))?;
+    let mut rows = array.row_operation();
+    for logical_row in rows.rows_with_missing(|| ()) {
+        match logical_row {
+            crate::array::ArrayRow::Missing { logical, .. } => {
+                builder
+                    .push_row(Vec::new())
+                    .map_err(|error| note_array_row(error.into(), logical))?;
+            },
+            crate::array::ArrayRow::Present(row) => {
+                let logical = row.logical();
+                let values = plan
+                    .with_row(logical, |plan| {
+                        let line = rows.prepared(row);
+                        line_interpolate_points_shape(
+                            &model,
+                            &line,
+                            &rows.frame_cache(logical),
+                            plan,
+                        )
+                    })
+                    .map_err(|error| note_array_row(error.into(), logical))?;
+                builder
+                    .push_row(values)
+                    .map_err(|error| note_array_row(error.into(), logical))?;
+            },
+        }
     }
     crate::py::vectors::Groups::from_geometry_builder(array.frame.clone(), builder)
 }

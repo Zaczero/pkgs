@@ -281,13 +281,13 @@ pub(crate) fn import_stream(
             let batch_arr = batch_bound.cast::<crate::PyGeometryArray>()?;
             let borrowed = batch_arr.borrow();
             let batch_len = borrowed.__len__();
-            for row in borrowed.logical_shape_rows() {
+            for row in borrowed.row_operation().rows_with_missing(|| ()) {
                 match row {
-                    crate::array::LogicalShapeRow::Missing { logical } => {
+                    crate::array::ArrayRow::Missing { logical, .. } => {
                         crate::try_push(&mut missing_rows, row_base + logical)?;
                     },
-                    crate::array::LogicalShapeRow::Present { shape, .. } => {
-                        crate::try_push(&mut shapes, shape.into_owned())?;
+                    crate::array::ArrayRow::Present(row) => {
+                        crate::try_push(&mut shapes, row.row().with_shape(Clone::clone))?;
                     },
                 }
             }

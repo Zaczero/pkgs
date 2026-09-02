@@ -36,12 +36,13 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
     };
     let frame = array.frame.clone();
     let shapes = array
-        .logical_shape_rows()
+        .row_operation()
+        .rows_with_missing(|| {
+            Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
+        })
         .map(|row| match row {
-            crate::array::LogicalShapeRow::Missing { .. } => {
-                Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
-            },
-            crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+            crate::array::ArrayRow::Missing { value, .. } => value,
+            crate::array::ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
         })
         .collect();
     Ok((frame, shapes))

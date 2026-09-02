@@ -269,7 +269,7 @@ impl PySpatialIndex {
         let domain = crate::geometry::topology_domain(frame)?;
         let cover = index_envelopes(query.shape(), query_bounds, domain)?;
         let query_envelopes = cover.entries();
-        let mut products = self.rows.row_products_operation();
+        let mut rows = self.rows.operation();
         if k == 1 {
             return self.bound_ordered_nearest_shared(
                 |envelope| {
@@ -281,7 +281,7 @@ impl PySpatialIndex {
                         * to_metre
                 },
                 |idx| {
-                    let data = self.rows.prepared_row_with(idx, &mut products);
+                    let data = rows.prepared(idx);
                     pair_distance_planar(to_metre, &data, query).map_err(Into::into)
                 },
                 OneNearest::default(),
@@ -302,7 +302,7 @@ impl PySpatialIndex {
                     * to_metre
             },
             |idx| {
-                let data = self.rows.prepared_row_with(idx, &mut products);
+                let data = rows.prepared(idx);
                 pair_distance_planar(to_metre, &data, query).map_err(Into::into)
             },
             k,
@@ -390,18 +390,18 @@ impl PySpatialIndex {
         let exclude = exclusive.then_some(query.shape());
         if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
             let query_cache_owner = query_cache();
-            let mut products = self.rows.row_products_operation();
+            let mut rows = self.rows.operation();
             // Geodesic point query over an all-point index: prune with the
             // sound lower bound instead of Karney-evaluating every entry.
             if k == 1 {
                 return self.bound_ordered_nearest_shared(
                     |envelope| pruner.envelope_lower_bound(envelope),
                     |idx| {
-                        let data = self.rows.prepared_row_with(idx, &mut products);
+                        let data = rows.prepared(idx);
                         pair_distance_geodesic(
                             resolved,
                             &data,
-                            &self.rows.frame_cache_with(idx, &mut products),
+                            &rows.frame_cache(idx),
                             query,
                             &query_cache_owner,
                         )
@@ -418,11 +418,11 @@ impl PySpatialIndex {
             return self.bound_ordered_nearest(
                 |envelope| pruner.envelope_lower_bound(envelope),
                 |idx| {
-                    let data = self.rows.prepared_row_with(idx, &mut products);
+                    let data = rows.prepared(idx);
                     pair_distance_geodesic(
                         resolved,
                         &data,
-                        &self.rows.frame_cache_with(idx, &mut products),
+                        &rows.frame_cache(idx),
                         query,
                         &query_cache_owner,
                     )
@@ -448,20 +448,20 @@ impl PySpatialIndex {
         try_reserve_heap(&mut nearest, k.min(self.__len__())).map_err(pyo3::PyErr::from)?;
         visited.reset(self.rows.len())?;
         let query_cache_owner = query_cache();
-        let mut products = self.rows.row_products_operation();
+        let mut rows = self.rows.operation();
         for entry in self.live_entries() {
             if !visited.visit(entry.idx)? {
                 continue;
             }
-            let row = self.rows.row(entry.idx);
+            let row = rows.row(entry.idx);
             if exclude.is_some_and(|shape| row.with_shape(|other| *other == *shape)) {
                 continue;
             }
-            let data = self.rows.prepared_row_with(entry.idx, &mut products);
+            let data = rows.prepared(entry.idx);
             let distance = pair_distance_geodesic(
                 resolved,
                 &data,
-                &self.rows.frame_cache_with(entry.idx, &mut products),
+                &rows.frame_cache(entry.idx),
                 query,
                 &query_cache_owner,
             )?;

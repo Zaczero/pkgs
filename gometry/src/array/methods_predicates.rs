@@ -6,7 +6,7 @@ use numpy::PyArrayMethods as _;
 use pyo3::IntoPyObjectExt as _;
 
 use crate::array::{
-    ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, Py, PyAny,
+    ArrayRow, ArrowEncoding, Bound, F64Param, GeometryArrayStorage, GeometryError, Py, PyAny,
     PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python,
     RowSelectionRef, SimplifyMethod, Typed, packed_points_to_arrow, pymethods,
 };
@@ -14,11 +14,15 @@ use crate::array::{
 impl PyGeometryArray {
     pub(crate) fn materialized_objects(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         use pyo3::IntoPyObjectExt as _;
-        self.logical_shape_rows()
+        self.row_operation()
+            .rows_with_missing(|| ())
             .map(|row| match row {
-                crate::array::LogicalShapeRow::Missing { .. } => Ok(py.None()),
-                crate::array::LogicalShapeRow::Present { shape, .. } => {
-                    let geometry = PyGeometry::with_frame(shape.into_owned(), self.frame.clone());
+                ArrayRow::Missing { .. } => Ok(py.None()),
+                ArrayRow::Present(row) => {
+                    let geometry = PyGeometry::with_frame(
+                        row.row().with_shape(Clone::clone),
+                        self.frame.clone(),
+                    );
                     Typed(geometry).into_py_any(py)
                 },
             })
@@ -33,10 +37,10 @@ fn to_arrow_dense(
 ) -> PyResult<Py<PyAny>> {
     if array.is_compact_nullable() && encoding == ArrowEncoding::Wkb {
         let mut shapes = crate::try_vec_with_capacity(array.len())?;
-        for row in array.logical_shape_rows() {
+        for row in array.row_operation().rows_with_missing(|| ()) {
             let shape = match row {
-                crate::array::LogicalShapeRow::Missing { .. } => None,
-                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.into_owned()),
+                ArrayRow::Missing { .. } => None,
+                ArrayRow::Present(row) => Some(row.row().with_shape(Clone::clone)),
             };
             crate::try_push(&mut shapes, shape)?;
         }

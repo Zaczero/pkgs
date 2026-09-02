@@ -28,14 +28,11 @@ fn geocode_array_codes(
         }
         let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
         let mut present = Vec::new();
-        for logical_row in array.logical_storage_rows() {
-            let crate::array::LogicalRow::Present {
-                logical,
-                row: crate::array::ShapeRow::Point(point),
-            } = logical_row
-            else {
+        for row in array.row_operation().present_rows() {
+            let crate::array::ShapeRow::Point(point) = row.row() else {
                 continue;
             };
+            let logical = row.logical();
             crate::try_push(&mut present, (logical, point)).map_err(pyo3::PyErr::from)?;
         }
         if lonlat_frame || present.is_empty() {

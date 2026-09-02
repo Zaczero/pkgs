@@ -3,8 +3,8 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::line_locate_point_on_lines;
 use crate::array::missing::{is_missing_row, union_pair};
+use crate::array::{ArrayRow, line_locate_point_on_lines};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
@@ -49,13 +49,13 @@ fn line_locate_geometry_points(
         let points = points.clone();
         return detach_collect_f64(py, move || {
             points
-                .logical_storage_rows()
+                .row_operation()
+                .rows_with_missing(|| f64::NAN)
                 .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        row: crate::array::ShapeRow::Point(query),
-                        ..
-                    } = logical_row
-                    else {
+                    let ArrayRow::Present(row) = logical_row else {
+                        return Ok(f64::NAN);
+                    };
+                    let crate::array::ShapeRow::Point(query) = row.row() else {
                         return Ok(f64::NAN);
                     };
                     line_locate_shape(&model, &line, &geometry.frame_cache(), query, normalized)
@@ -120,29 +120,24 @@ pub(crate) fn line_locate_point_input(
                 let array = array.clone();
                 let points = points.clone();
                 return detach_collect_f64(py, move || {
-                    let mut products = array.row_products.operation();
-                    array
-                        .logical_storage_rows()
-                        .zip(points.logical_storage_rows())
+                    let mut rows = array.row_operation();
+                    let point_rows = points.row_operation();
+                    rows.rows_with_missing(|| f64::NAN)
+                        .zip(point_rows.rows_with_missing(|| f64::NAN))
                         .map(|(line, point)| {
-                            let (
-                                crate::array::LogicalRow::Present {
-                                    logical: row,
-                                    row: line,
-                                },
-                                crate::array::LogicalRow::Present {
-                                    row: crate::array::ShapeRow::Point(query),
-                                    ..
-                                },
-                            ) = (line, point)
+                            let (ArrayRow::Present(line), ArrayRow::Present(point)) = (line, point)
                             else {
                                 return Ok(f64::NAN);
                             };
-                            let line = array.prepared_row_with(&mut products, row, line);
+                            let row = line.logical();
+                            let crate::array::ShapeRow::Point(query) = point.row() else {
+                                return Ok(f64::NAN);
+                            };
+                            let line = rows.prepared(line);
                             degrade_linref_float(line_locate_shape(
                                 &model,
                                 &line,
-                                &products.frame_cache(row),
+                                &rows.frame_cache(row),
                                 query,
                                 normalized,
                             ))
@@ -171,29 +166,25 @@ pub(crate) fn line_locate_point_input(
             let array = array.clone();
             let points = points.clone();
             detach_collect_f64(py, move || {
-                let mut products = array.row_products.operation();
-                array
-                    .logical_storage_rows()
-                    .zip(points.logical_storage_rows())
+                let mut rows = array.row_operation();
+                let point_rows = points.row_operation();
+                rows.rows_with_missing(|| f64::NAN)
+                    .zip(point_rows.rows_with_missing(|| f64::NAN))
                     .map(|(line_row, point_row)| {
-                        let (
-                            crate::array::LogicalRow::Present {
-                                logical: row,
-                                row: line_row,
-                            },
-                            crate::array::LogicalRow::Present {
-                                row: crate::array::ShapeRow::Point(query),
-                                ..
-                            },
-                        ) = (line_row, point_row)
+                        let (ArrayRow::Present(line_row), ArrayRow::Present(point_row)) =
+                            (line_row, point_row)
                         else {
                             return Ok(f64::NAN);
                         };
-                        let line = array.prepared_row_with(&mut products, row, line_row);
+                        let row = line_row.logical();
+                        let crate::array::ShapeRow::Point(query) = point_row.row() else {
+                            return Ok(f64::NAN);
+                        };
+                        let line = rows.prepared(line_row);
                         degrade_linref_float(line_locate_shape(
                             &model,
                             &line,
-                            &products.frame_cache(row),
+                            &rows.frame_cache(row),
                             query,
                             normalized,
                         ))
@@ -244,13 +235,13 @@ pub(crate) fn line_locate_point_m_input(
                 let points = points.clone();
                 return detach_collect_f64(py, move || {
                     points
-                        .logical_storage_rows()
+                        .row_operation()
+                        .rows_with_missing(|| f64::NAN)
                         .map(|logical_row| {
-                            let crate::array::LogicalRow::Present {
-                                row: crate::array::ShapeRow::Point(query),
-                                ..
-                            } = logical_row
-                            else {
+                            let ArrayRow::Present(row) = logical_row else {
+                                return Ok(f64::NAN);
+                            };
+                            let crate::array::ShapeRow::Point(query) = row.row() else {
                                 return Ok(f64::NAN);
                             };
                             line_locate_shape_m(&model, &line, query)
@@ -286,12 +277,13 @@ pub(crate) fn line_locate_point_m_input(
             let array = array.clone();
             detach_collect_f64(py, move || {
                 array
-                    .logical_shape_rows()
+                    .row_operation()
+                    .rows_with_missing(|| f64::NAN)
                     .map(|row| match row {
-                        crate::array::LogicalShapeRow::Missing { .. } => Ok(f64::NAN),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            degrade_linref_float(line_locate_shape_m_value(&model, &shape, query))
-                        },
+                        ArrayRow::Missing { value, .. } => Ok(value),
+                        ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                            degrade_linref_float(line_locate_shape_m_value(&model, shape, query))
+                        }),
                     })
                     .collect_rows()
             })
@@ -304,16 +296,18 @@ pub(crate) fn line_locate_point_m_input(
             let points = points.clone();
             detach_collect_f64(py, move || {
                 array
-                    .logical_shape_rows()
-                    .zip(points.logical_storage_rows())
+                    .row_operation()
+                    .rows_with_missing(|| f64::NAN)
+                    .zip(points.row_operation().rows_with_missing(|| f64::NAN))
                     .map(|(line, point)| match (line, point) {
-                        (
-                            crate::array::LogicalShapeRow::Present { shape: line, .. },
-                            crate::array::LogicalRow::Present {
-                                row: crate::array::ShapeRow::Point(query),
-                                ..
-                            },
-                        ) => degrade_linref_float(line_locate_shape_m_value(&model, &line, query)),
+                        (ArrayRow::Present(line), ArrayRow::Present(point)) => {
+                            let crate::array::ShapeRow::Point(query) = point.row() else {
+                                return Ok(f64::NAN);
+                            };
+                            line.row().with_shape(|line| {
+                                degrade_linref_float(line_locate_shape_m_value(&model, line, query))
+                            })
+                        },
                         _ => Ok(f64::NAN),
                     })
                     .collect_rows()

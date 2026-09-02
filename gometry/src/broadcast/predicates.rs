@@ -10,7 +10,7 @@
 use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
-use crate::array::ValidityMask;
+use crate::array::{ArrayRow, ValidityMask};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
@@ -113,10 +113,13 @@ pub(crate) fn predicate_scalar_vs_array(
             scalar_vs_shapes(
                 &spec,
                 &plan,
-                array.logical_storage_rows().map(|row| match row {
-                    crate::array::LogicalRow::Missing { logical } => (logical, None),
-                    crate::array::LogicalRow::Present { logical, row } => (logical, Some(row)),
-                }),
+                array
+                    .row_operation()
+                    .rows_with_missing(|| ())
+                    .map(|row| match row {
+                        ArrayRow::Missing { logical, .. } => (logical, None),
+                        ArrayRow::Present(row) => (row.logical(), Some(row.row())),
+                    }),
                 scalar_is_left,
                 Some(&array),
                 domain,
@@ -145,25 +148,21 @@ pub(crate) fn predicate_pairwise_arrays(
     bool_array_mask_missing(
         py,
         py.detach(move || {
-            let mut left_products = left_array.row_products.operation();
-            let mut right_products = right_array.row_products.operation();
-            left_array
-                .logical_storage_rows()
-                .zip(right_array.logical_storage_rows())
+            let mut left_rows = left_array.row_operation();
+            let mut right_rows = right_array.row_operation();
+            left_rows
+                .rows_with_missing(|| ())
+                .zip(right_rows.rows_with_missing(|| ()))
                 .map(|(left, right)| {
                     // A missing row is a placeholder, not an empty geometry.
                     // It never reaches an exact kernel, and the mask replaces
                     // this value on the way out.
-                    let (
-                        crate::array::LogicalRow::Present {
-                            logical: index,
-                            row: left,
-                        },
-                        crate::array::LogicalRow::Present { row: right, .. },
-                    ) = (left, right)
-                    else {
+                    let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right) else {
                         return false;
                     };
+                    let index = left.logical();
+                    let left = left.row();
+                    let right = right.row();
                     if let Some(verdict) = spec.pre_topology(
                         GateOperand::new(
                             left,
@@ -182,10 +181,10 @@ pub(crate) fn predicate_pairwise_arrays(
                     ) {
                         return verdict;
                     }
-                    let left = left_array.prepared_row_with(&mut left_products, index, left);
-                    let right = right_array.prepared_row_with(&mut right_products, index, right);
-                    let left_cache = left_products.frame_cache(index);
-                    let right_cache = right_products.frame_cache(index);
+                    let left = left_rows.prepared_at(index, left);
+                    let right = right_rows.prepared_at(index, right);
+                    let left_cache = left_rows.frame_cache(index);
+                    let right_cache = right_rows.frame_cache(index);
                     topology_scalar_pair(
                         &spec,
                         PreparedTopologyPair::for_domain(
@@ -210,8 +209,9 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
     if let GeometryArrayStorage::Points { coords, row_map } = splitters.storage() {
         if splitters.is_compact_nullable() {
             let points = splitters
+                .row_operation()
                 .present_rows()
-                .map(|(_, row)| match row {
+                .map(|row| match row.row() {
                     crate::array::ShapeRow::Point(point) => point.to_xy(),
                     _ => unreachable!("compact point storage yields point rows"),
                 })
@@ -240,17 +240,23 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
         });
     }
     let mut points = Vec::new();
-    for row in splitters.logical_shape_rows() {
-        let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
-            continue;
-        };
-        match &*shape {
-            Shape::Point(point) => points.push(point.to_xy()),
-            Shape::MultiPoint(items) => points.extend(items.iter().map(Point::to_xy)),
-            // `POINT EMPTY` is point-like but contributes no split locations.
-            Shape::Empty(GeometryKind::Point, _) => {},
-            _ => return Err(GeometryErrorKind::PointSplitterRequired.into()),
-        }
+    for row in splitters.row_operation().present_rows() {
+        row.row()
+            .with_shape(|shape| -> Result<(), crate::error::Error> {
+                match shape {
+                    Shape::Point(point) => {
+                        points.push(point.to_xy());
+                        Ok(())
+                    },
+                    Shape::MultiPoint(items) => {
+                        points.extend(items.iter().map(Point::to_xy));
+                        Ok(())
+                    },
+                    // `POINT EMPTY` is point-like but contributes no split locations.
+                    Shape::Empty(GeometryKind::Point, _) => Ok(()),
+                    _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
+                }
+            })?;
     }
     Ok(if points.is_empty() {
         Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
@@ -292,19 +298,19 @@ where
     let array = array.clone();
     let values = py
         .detach(move || {
-            let mut products = array.row_products.operation();
-            array
-                .logical_storage_rows()
-                .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row,
-                        row: shape,
-                    } = logical_row
-                    else {
-                        return Ok(R::missing_value());
+            let mut rows = array.row_operation();
+            rows.rows_with_missing(R::missing_value)
+                .map(|row| {
+                    let ArrayRow::Present(present) = row else {
+                        if let ArrayRow::Missing { value, .. } = row {
+                            return Ok(value);
+                        }
+                        unreachable!();
                     };
-                    let element_plan = array.prepared_row_with(&mut products, row, shape);
-                    let element_cache = products.frame_cache(row);
+                    let row = present.logical();
+                    let shape = present.row();
+                    let element_plan = rows.prepared_at(row, shape);
+                    let element_cache = rows.frame_cache(row);
                     let operands = if scalar_is_left {
                         PreparedTopologyPair::for_domain(
                             &scalar_plan,
@@ -350,30 +356,24 @@ where
     let right = right.clone();
     let values = py
         .detach(move || {
-            let mut left_products = left.row_products.operation();
-            let mut right_products = right.row_products.operation();
-            left.logical_storage_rows()
-                .zip(right.logical_storage_rows())
+            let mut left_rows = left.row_operation();
+            let mut right_rows = right.row_operation();
+            left_rows
+                .rows_with_missing(|| ())
+                .zip(right_rows.rows_with_missing(|| ()))
                 .map(|(left_row, right_row)| {
-                    let (
-                        crate::array::LogicalRow::Present {
-                            logical: left_index,
-                            row: left_shape,
-                        },
-                        crate::array::LogicalRow::Present {
-                            logical: right_index,
-                            row: right_shape,
-                        },
-                    ) = (left_row, right_row)
+                    let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left_row, right_row)
                     else {
                         return Ok(R::missing_value());
                     };
-                    let left_plan =
-                        left.prepared_row_with(&mut left_products, left_index, left_shape);
-                    let right_plan =
-                        right.prepared_row_with(&mut right_products, right_index, right_shape);
-                    let left_cache = left_products.frame_cache(left_index);
-                    let right_cache = right_products.frame_cache(right_index);
+                    let left_index = left.logical();
+                    let right_index = right.logical();
+                    let left_shape = left.row();
+                    let right_shape = right.row();
+                    let left_plan = left_rows.prepared_at(left_index, left_shape);
+                    let right_plan = right_rows.prepared_at(right_index, right_shape);
+                    let left_cache = left_rows.frame_cache(left_index);
+                    let right_cache = right_rows.frame_cache(right_index);
                     Ok(evaluate(PreparedTopologyPair::for_domain(
                         &left_plan,
                         &left_cache,
@@ -578,16 +578,17 @@ fn xy_predicate_array_values(
     };
     let values = py
         .detach(move || {
-            let mut products = array.row_products.operation();
-            array
-                .logical_storage_rows()
+            let mut rows = array.row_operation();
+            rows.rows_with_missing(|| ())
                 .zip(x.into_iter().zip(y))
                 .map(|(logical_row, (x, y))| match logical_row {
-                    crate::array::LogicalRow::Missing { .. } => Ok(false),
-                    crate::array::LogicalRow::Present { logical, row } => {
+                    ArrayRow::Missing { .. } => Ok(false),
+                    ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        let row = row.row();
                         let point = Point::new_raw_xy(x, y);
-                        let row = array.prepared_row_with(&mut products, logical, row);
-                        let row_cache = products.frame_cache(logical);
+                        let row = rows.prepared_at(logical, row);
+                        let row_cache = rows.frame_cache(logical);
                         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
                         let point_cache = crate::geometry::FrameDependentCaches::default();
                         Ok(topology_scalar_pair(

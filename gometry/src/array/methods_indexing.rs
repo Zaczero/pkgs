@@ -21,10 +21,11 @@ use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::types::{PyBool, PyInt, PyList, PySequence, PyTuple};
 
 use crate::array::{
-    Arc, Bound, CoordSeq, GeometryArrayStorage, GeometryError, HeapSize, IntoPyObject as _,
-    OverlayOp, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray,
-    PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _,
-    Python, Shape, Typed, ValidityMask, exact_geometry, exact_geometry_array, overlay_operator,
+    Arc, ArrayRow, Bound, CoordSeq, GeometryArrayStorage, GeometryError, HeapSize,
+    IntoPyObject as _, OverlayOp, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr,
+    PyGeometryArray, PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _,
+    PyTypeMethods as _, Python, Shape, Typed, ValidityMask, exact_geometry, exact_geometry_array,
+    overlay_operator,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
@@ -473,12 +474,13 @@ impl PyGeometryArray {
         if self.frame_matches(geometry)
             && start < stop
             && let Some(position) = self
-                .logical_shape_rows()
+                .row_operation()
+                .rows_with_missing(|| ())
                 .take(stop)
                 .skip(start)
                 .position(|row| {
-                    matches!(row, crate::array::LogicalShapeRow::Present { shape, .. }
-                        if shape.as_ref() == geometry.shape.shape())
+                    matches!(row, ArrayRow::Present(row)
+                        if row.row().with_shape(|shape| shape == geometry.shape.shape()))
                 })
         {
             return Ok(start + position);
@@ -510,10 +512,11 @@ impl PyGeometryArray {
         if !self.frame_matches(geometry) {
             return 0;
         }
-        self.logical_shape_rows()
+        self.row_operation()
+            .rows_with_missing(|| ())
             .filter(|row| {
-                matches!(row, crate::array::LogicalShapeRow::Present { shape, .. }
-                    if shape.as_ref() == geometry.shape.shape())
+                matches!(row, ArrayRow::Present(row)
+                    if row.row().with_shape(|shape| shape == geometry.shape.shape()))
             })
             .count()
     }
@@ -556,19 +559,19 @@ impl PyGeometryArray {
                 && self.missing() == other.missing()
                 && (Arc::ptr_eq(self.storage_arc(), other.storage_arc())
                     || (self.len() == other.len()
-                        && self.logical_shape_rows().zip(other.logical_shape_rows()).all(
-                            |(left, right)| match (left, right) {
-                                (
-                                    crate::array::LogicalShapeRow::Missing { .. },
-                                    crate::array::LogicalShapeRow::Missing { .. },
-                                ) => true,
-                                (
-                                    crate::array::LogicalShapeRow::Present { shape: left, .. },
-                                    crate::array::LogicalShapeRow::Present { shape: right, .. },
-                                ) => left == right,
+                        && self
+                            .row_operation()
+                            .rows_with_missing(|| ())
+                            .zip(other.row_operation().rows_with_missing(|| ()))
+                            .all(|(left, right)| match (left, right) {
+                                (ArrayRow::Missing { .. }, ArrayRow::Missing { .. }) => true,
+                                (ArrayRow::Present(left), ArrayRow::Present(right)) => left
+                                    .row()
+                                    .with_shape(|left| {
+                                        right.row().with_shape(|right| left == right)
+                                    }),
                                 _ => false,
-                            },
-                        )))
+                            })))
         })
     }
 
@@ -815,10 +818,11 @@ impl PyGeometryArray {
         }
 
         let mut shapes: Vec<Option<Shape>> = self
-            .logical_shape_rows()
+            .row_operation()
+            .rows_with_missing(|| None::<Shape>)
             .map(|row| match row {
-                crate::array::LogicalShapeRow::Missing { .. } => None,
-                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.into_owned()),
+                ArrayRow::Missing { value, .. } => value,
+                ArrayRow::Present(row) => Some(row.row().with_shape(Clone::clone)),
             })
             .collect();
         for (row, shape) in rows {
@@ -865,12 +869,12 @@ impl PyGeometryArray {
         self.crs_ref().hash(&mut hasher);
         self.epoch().map(f64::to_bits).hash(&mut hasher);
         self.len().hash(&mut hasher);
-        for row in self.logical_shape_rows() {
+        for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
-                crate::array::LogicalShapeRow::Missing { .. } => true.hash(&mut hasher),
-                crate::array::LogicalShapeRow::Present { shape, .. } => {
+                ArrayRow::Missing { .. } => true.hash(&mut hasher),
+                ArrayRow::Present(row) => {
                     false.hash(&mut hasher);
-                    shape.hash(&mut hasher);
+                    row.row().with_shape(|shape| shape.hash(&mut hasher));
                 },
             }
         }
@@ -938,10 +942,11 @@ impl PyGeometryArray {
     /// mixed storage patches only missing rows. Never stages `PyGeometry`.
     fn fill_missing_with_shape(&self, _mask: &ValidityMask, fill: &Shape) -> Self {
         let shapes = self
-            .logical_shape_rows()
+            .row_operation()
+            .rows_with_missing(|| ())
             .map(|row| match row {
-                crate::array::LogicalShapeRow::Missing { .. } => fill.clone(),
-                crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+                ArrayRow::Missing { .. } => fill.clone(),
+                ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
             })
             .collect();
         Self::from_shapes(shapes, self.frame.clone())
@@ -951,16 +956,17 @@ impl PyGeometryArray {
     /// otherwise collect shapes only (no `PyGeometry` staging).
     fn fill_missing_with_array(&self, _mask: &ValidityMask, fill: &Self) -> Self {
         let shapes = self
-            .logical_shape_rows()
-            .zip(fill.logical_shape_rows())
+            .row_operation()
+            .rows_with_missing(|| ())
+            .zip(fill.row_operation().rows_with_missing(|| ()))
             .map(|(left, right)| match left {
-                crate::array::LogicalShapeRow::Missing { .. } => match right {
-                    crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
-                    crate::array::LogicalShapeRow::Missing { .. } => {
+                ArrayRow::Missing { .. } => match right {
+                    ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
+                    ArrayRow::Missing { .. } => {
                         unreachable!("required fill rows were checked present")
                     },
                 },
-                crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+                ArrayRow::Present(shape) => shape.row().with_shape(Clone::clone),
             })
             .collect();
         Self::from_shapes(shapes, self.frame.clone())

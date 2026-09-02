@@ -206,22 +206,23 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         let mut present = Vec::new();
         crate::try_reserve_pair(&mut xs, &mut ys, array.len()).map_err(PyErr::from)?;
         crate::try_reserve_vec(&mut present, array.len()).map_err(PyErr::from)?;
-        for logical_row in array.logical_storage_rows() {
+        for logical_row in array
+            .row_operation()
+            .rows_with_missing(|| (f64::NAN, f64::NAN))
+        {
             match logical_row {
-                crate::array::LogicalRow::Missing { .. } => {
-                    crate::try_push_pair(&mut xs, &mut ys, f64::NAN, f64::NAN)
+                crate::array::ArrayRow::Missing { value, .. } => {
+                    crate::try_push_pair(&mut xs, &mut ys, value.0, value.1)
                         .map_err(PyErr::from)?;
                 },
-                crate::array::LogicalRow::Present {
-                    logical,
-                    row: crate::array::ShapeRow::Point(point),
-                } => {
+                crate::array::ArrayRow::Present(row) => {
+                    let logical = row.logical();
+                    let crate::array::ShapeRow::Point(point) = row.row() else {
+                        unreachable!("compact point storage yields point rows")
+                    };
                     crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
                         .map_err(PyErr::from)?;
                     crate::try_push(&mut present, logical).map_err(PyErr::from)?;
-                },
-                crate::array::LogicalRow::Present { .. } => {
-                    unreachable!("compact point storage yields point rows")
                 },
             }
         }
@@ -330,27 +331,38 @@ pub(crate) fn grid_cover_dispatch<'py>(
     let rows = py.detach(move || {
         let crs = array.crs_str().map(str::to_owned);
         let mut produced = 0_usize;
-        crate::try_collect_results(array.logical_shape_rows().map(|row| {
-            let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
-                return Ok(Vec::new());
-            };
-            let shape = crate::lonlat_shape_under(&shape, crs.as_deref())?.into_owned();
-            // Scalar factories reject empty sources, but an array must retain row
-            // alignment. Represent a present empty exactly like a missing row in
-            // the ragged cell result: an empty group, not a batch error.
-            if shape.is_empty() {
-                return Ok(Vec::new());
-            }
-            let remaining = remaining_cover_budget(produced, max_cells)?;
-            if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
-                return Err(crate::py::cells::coverage_ops::cover_budget_err(
-                    crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
-                ));
-            }
-            let ids = build(&PyGeometry::wgs84(shape), remaining)?;
-            produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
-            Ok(ids)
-        }))
+        crate::try_collect_results(
+            array
+                .row_operation()
+                .rows_with_missing(|| Vec::<u64>::new())
+                .map(|row| {
+                    let crate::array::ArrayRow::Present(row) = row else {
+                        return Ok(Vec::new());
+                    };
+                    row.row().with_shape(|shape| {
+                        let shape = crate::lonlat_shape_under(shape, crs.as_deref())?.into_owned();
+                        // Scalar factories reject empty sources, but an array must retain row
+                        // alignment. Represent a present empty exactly like a missing row in
+                        // the ragged cell result: an empty group, not a batch error.
+                        if shape.is_empty() {
+                            return Ok(Vec::new());
+                        }
+                        let remaining = remaining_cover_budget(produced, max_cells)?;
+                        if remaining == Some(0)
+                            && !matches!(&shape, crate::geometry::Shape::Empty(..))
+                        {
+                            return Err(crate::py::cells::coverage_ops::cover_budget_err(
+                                crate::grid::CoverBudgetExceeded::new(
+                                    max_cells.expect("finite budget"),
+                                ),
+                            ));
+                        }
+                        let ids = build(&PyGeometry::wgs84(shape), remaining)?;
+                        produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
+                        Ok(ids)
+                    })
+                }),
+        )
     })?;
     crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
 }

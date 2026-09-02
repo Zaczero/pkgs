@@ -208,18 +208,17 @@ pub(crate) fn join_pair_columns(
         if let IndexPredicate::Topological(topological) = predicate
             && distance.is_none()
         {
-            let mut products = array.row_products.operation();
-            for logical_row in array.logical_storage_rows() {
-                let crate::array::LogicalRow::Present { logical, row } = logical_row else {
+            let mut rows = array.row_operation();
+            for logical_row in rows.rows_with_missing(|| ()) {
+                let crate::array::ArrayRow::Present(row) = logical_row else {
                     continue;
                 };
+                let logical = row.logical();
                 let left = logical as i64;
-                let shape = array.prepared_row_with(&mut products, logical, row);
-                for right_idx in index.topological_matches(
-                    &shape,
-                    &products.frame_cache(logical),
-                    topological,
-                )? {
+                let shape = rows.prepared(row);
+                for right_idx in
+                    index.topological_matches(&shape, &rows.frame_cache(logical), topological)?
+                {
                     crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
                 }
             }
@@ -229,13 +228,15 @@ pub(crate) fn join_pair_columns(
         let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
             unreachable!("dwithin join constructs a dwithin plan")
         };
-        let mut products = array.row_products.operation();
         match resolved {
             crate::crs::ResolvedMetric::Planar { .. } => {
-                for logical_row in array.logical_storage_rows() {
-                    let crate::array::LogicalRow::Present { logical, row } = logical_row else {
+                let rows = array.row_operation();
+                for logical_row in rows.rows_with_missing(|| ()) {
+                    let crate::array::ArrayRow::Present(row) = logical_row else {
                         continue;
                     };
+                    let logical = row.logical();
+                    let row = row.row();
                     index.planar_dwithin_query_row_matches(
                         row,
                         &plan,
@@ -253,12 +254,15 @@ pub(crate) fn join_pair_columns(
                 }
             },
             crate::crs::ResolvedMetric::Geodesic(metric) => {
-                for logical_row in array.logical_storage_rows() {
-                    let crate::array::LogicalRow::Present { logical, row } = logical_row else {
+                let mut rows = array.row_operation();
+                for logical_row in rows.rows_with_missing(|| ()) {
+                    let crate::array::ArrayRow::Present(row) = logical_row else {
                         continue;
                     };
+                    let logical = row.logical();
+                    let row = row.row();
                     scratch.clear();
-                    let mut query_cache = || products.frame_cache(logical);
+                    let mut query_cache = || rows.frame_cache(logical);
                     index.geodesic_dwithin_query_row_matches_append(
                         row,
                         metric,

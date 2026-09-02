@@ -5,12 +5,13 @@
 use std::sync::Arc;
 
 use crate::array::{
-    Bound, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
-    Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry, PyGeometryArray, PyResult, Python,
-    Result, RingLevel, RowSelection, RowSelectionRef, Shape, column_window, concat_coord_columns,
-    curves, line_logical_len, note_array_row, packed_lines_coord_len, packed_polygons_coord_len,
-    packed_polygons_ring_len, parse_curve_bounds, physical_row, point_logical_len,
-    polygon_logical_len, row_selection_from_logical_rows, rows_err,
+    ArrayRow, Bound, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage,
+    PackedColumnBuilder, Point, PointColumnBuilder, PolygonLevel, PyAny, PyGeometry,
+    PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, RowSelectionRef, Shape,
+    column_window, concat_coord_columns, curves, line_logical_len, note_array_row,
+    packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
+    parse_curve_bounds, physical_row, point_logical_len, polygon_logical_len,
+    row_selection_from_logical_rows, rows_err,
 };
 
 #[repr(transparent)]
@@ -663,12 +664,12 @@ impl PyGeometryArray {
         };
         let frame = curves::CurveFrame::new(bounds, level);
         let mut keys = crate::try_vec_with_capacity(self.len())?;
-        for row in self.logical_shape_rows() {
+        for row in self.row_operation().rows_with_missing(|| u64::MAX) {
             let key = match row {
-                crate::array::LogicalShapeRow::Missing { .. } => u64::MAX,
-                crate::array::LogicalShapeRow::Present { shape, .. } => {
-                    kind.key(&frame, &shape).unwrap_or(u64::MAX)
-                },
+                ArrayRow::Missing { value, .. } => value,
+                ArrayRow::Present(row) => row
+                    .row()
+                    .with_shape(|shape| kind.key(&frame, shape).unwrap_or(u64::MAX)),
             };
             crate::try_push(&mut keys, key)?;
         }
@@ -716,12 +717,16 @@ impl PyGeometryArray {
         let builder = py
             .detach(move || {
                 let mut builder = crate::CsrBuilder::<Shape>::new();
-                for logical_row in array.logical_shape_rows() {
-                    let row = logical_row.logical();
-                    let values = match logical_row {
-                        crate::array::LogicalShapeRow::Missing { .. } => Vec::new(),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            transform(row, &shape).map_err(|error| (row, error))?
+                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                    let (row, values) = match logical_row {
+                        ArrayRow::Missing { logical, value } => (logical, value),
+                        ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            let values = row
+                                .row()
+                                .with_shape(|shape| transform(logical, shape))
+                                .map_err(|error| (logical, error))?;
+                            (logical, values)
                         },
                     };
                     builder.push_row(values).map_err(|error| (row, error))?;
@@ -753,12 +758,16 @@ impl PyGeometryArray {
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Shape>::new();
-                for logical_row in array.logical_shape_rows() {
-                    let row = logical_row.logical();
-                    let values = match logical_row {
-                        crate::array::LogicalShapeRow::Missing { .. } => Vec::new(),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?
+                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                    let (row, values) = match logical_row {
+                        ArrayRow::Missing { logical, value } => (logical, value),
+                        ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            let values = row
+                                .row()
+                                .with_shape(|shape| transform(logical, shape, &mut budget))
+                                .map_err(|error| (logical, error))?;
+                            (logical, values)
                         },
                     };
                     builder.push_row(values).map_err(|error| (row, error))?;
@@ -790,12 +799,16 @@ impl PyGeometryArray {
             .detach(move || {
                 let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Point>::new();
-                for logical_row in array.logical_shape_rows() {
-                    let row = logical_row.logical();
-                    let values = match logical_row {
-                        crate::array::LogicalShapeRow::Missing { .. } => Vec::new(),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            transform(row, &shape, &mut budget).map_err(|error| (row, error))?
+                for logical_row in array.row_operation().rows_with_missing(Vec::new) {
+                    let (row, values) = match logical_row {
+                        ArrayRow::Missing { logical, value } => (logical, value),
+                        ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            let values = row
+                                .row()
+                                .with_shape(|shape| transform(logical, shape, &mut budget))
+                                .map_err(|error| (logical, error))?;
+                            (logical, values)
                         },
                     };
                     if values.len() % 4 != 0 {

@@ -426,17 +426,14 @@ impl PySpatialIndex {
                     let row_count = array.len();
                     let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count)
                         .map_err(pyo3::PyErr::from)?;
-                    let mut products = array.row_products.operation();
-                    for logical_row in array.logical_storage_rows() {
-                        if let crate::array::LogicalRow::Present {
-                            logical: row_index,
-                            row,
-                        } = logical_row
-                        {
-                            let shape = array.prepared_row_with(&mut products, row_index, row);
+                    let mut rows = array.row_operation();
+                    for logical_row in rows.rows_with_missing(|| ()) {
+                        if let crate::array::ArrayRow::Present(row) = logical_row {
+                            let row_index = row.logical();
+                            let shape = rows.prepared(row);
                             self.topological_matches_append(
                                 &shape,
-                                &products.frame_cache(row_index),
+                                &rows.frame_cache(row_index),
                                 topological,
                                 builder.values_mut(),
                             )?;
@@ -461,15 +458,13 @@ impl PySpatialIndex {
                 let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
                     unreachable!("dwithin array query constructs a dwithin plan")
                 };
-                let mut products = array.row_products.operation();
                 match resolved {
                     crate::crs::ResolvedMetric::Planar { .. } => {
-                        for logical_row in array.logical_storage_rows() {
-                            if let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row,
-                            } = logical_row
-                            {
+                        let rows = array.row_operation();
+                        for logical_row in rows.rows_with_missing(|| ()) {
+                            if let crate::array::ArrayRow::Present(row) = logical_row {
+                                let row_index = row.logical();
+                                let row = row.row();
                                 self.planar_dwithin_query_row_matches_append(
                                     row,
                                     &plan,
@@ -482,13 +477,12 @@ impl PySpatialIndex {
                         }
                     },
                     crate::crs::ResolvedMetric::Geodesic(metric) => {
-                        for logical_row in array.logical_storage_rows() {
-                            if let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row,
-                            } = logical_row
-                            {
-                                let mut query_cache = || products.frame_cache(row_index);
+                        let mut rows = array.row_operation();
+                        for logical_row in rows.rows_with_missing(|| ()) {
+                            if let crate::array::ArrayRow::Present(row) = logical_row {
+                                let row_index = row.logical();
+                                let row = row.row();
+                                let mut query_cache = || rows.frame_cache(row_index);
                                 self.geodesic_dwithin_query_row_matches_append(
                                     row,
                                     metric,
@@ -712,15 +706,14 @@ impl PySpatialIndex {
                 CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
             let mut sort_scratch = RowIdSortScratch::default();
             let (predicate, distance, metric) = plan.candidate_parts();
-            for logical_row in array.logical_storage_rows() {
-                if let crate::array::LogicalRow::Present {
-                    logical: row_index,
-                    row,
-                } = logical_row
-                {
+            let rows = array.row_operation();
+            for logical_row in rows.rows_with_missing(|| ()) {
+                if let crate::array::ArrayRow::Present(row) = logical_row {
+                    let row_index = row.logical();
+                    let row = row.row();
                     let row_start = builder.len();
                     let ids = builder.values_mut();
-                    let seeded = array.row_bounds_seed(row_index);
+                    let seeded = rows.bounds_seed(row_index);
                     if envelope_only {
                         let bounds = match seeded {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
@@ -876,16 +869,12 @@ impl PySpatialIndex {
                     include_ties: ties,
                 };
                 let resolved = crate::crs::ResolvedMetric::from_model(&metric)?;
-                let mut products = array.row_products.operation();
                 match &resolved {
                     crate::crs::ResolvedMetric::Planar { to_metre } => {
-                        for logical_row in array.logical_storage_rows() {
-                            if let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row,
-                            } = logical_row
-                            {
-                                let query = array.prepared_row_with(&mut products, row_index, row);
+                        let mut rows = array.row_operation();
+                        for logical_row in rows.rows_with_missing(|| ()) {
+                            if let crate::array::ArrayRow::Present(row) = logical_row {
+                                let query = rows.prepared(row);
                                 let candidates = self.planar_nearest_core_ties(
                                     to_metre.get(),
                                     &query,
@@ -908,14 +897,12 @@ impl PySpatialIndex {
                         }
                     },
                     crate::crs::ResolvedMetric::Geodesic(geodesic) => {
-                        for logical_row in array.logical_storage_rows() {
-                            if let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row,
-                            } = logical_row
-                            {
-                                let query = array.prepared_row_with(&mut products, row_index, row);
-                                let mut query_cache = || products.frame_cache(row_index);
+                        let mut rows = array.row_operation();
+                        for logical_row in rows.rows_with_missing(|| ()) {
+                            if let crate::array::ArrayRow::Present(row) = logical_row {
+                                let row_index = row.logical();
+                                let query = rows.prepared(row);
+                                let mut query_cache = || rows.frame_cache(row_index);
                                 let candidates = self.geodesic_nearest_core_ties(
                                     &metric,
                                     geodesic,

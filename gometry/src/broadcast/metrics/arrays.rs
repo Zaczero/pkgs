@@ -9,7 +9,7 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use pyo3::types::PyAny;
 
 use crate::PackedColumnError;
-use crate::array::{RowProductsHandle, ValidityMask};
+use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
     Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryArrayStorage,
@@ -70,22 +70,23 @@ pub(crate) fn array_crs_metric_float(
                     py.detach(move || {
                         let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
                         array
-                            .logical_shape_rows()
+                            .row_operation()
+                            .rows_with_missing(|| f64::NAN)
                             .map(|row| match row {
-                                crate::array::LogicalShapeRow::Missing { .. } => Ok(f64::NAN),
-                                crate::array::LogicalShapeRow::Present { shape, .. } => {
+                                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                                crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
                                     if operation == "frechet_distance" {
                                         crate::broadcast::metrics::metric_frechet_densified_with_scratch(
                                             &model,
-                                            &shape,
+                                            shape,
                                             right.shape(),
                                             frechet_densify,
                                             &mut frechet_scratch,
                                         )
                                     } else {
-                                        kernel(&model, &shape, right.shape())
+                                        kernel(&model, shape, right.shape())
                                     }
-                                },
+                                }),
                             })
                             .collect_rows()
                     })
@@ -139,25 +140,24 @@ pub(crate) fn array_crs_metric_float(
                     py,
                     py.detach(move || {
                         let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
-                        left.logical_shape_rows()
-                            .zip(right.logical_shape_rows())
+                        left.row_operation()
+                            .rows_with_missing(|| f64::NAN)
+                            .zip(right.row_operation().rows_with_missing(|| f64::NAN))
                             .map(|(left, right)| match (left, right) {
-                                (
-                                    crate::array::LogicalShapeRow::Present { shape: left, .. },
-                                    crate::array::LogicalShapeRow::Present { shape: right, .. },
-                                ) => {
-                                    if operation == "frechet_distance" {
-                                        crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                                            &model,
-                                            &left,
-                                            &right,
-                                            frechet_densify,
-                                            &mut frechet_scratch,
-                                        )
-                                    } else {
-                                        kernel(&model, &left, &right)
-                                    }
-                                }
+                                (crate::array::ArrayRow::Present(left), crate::array::ArrayRow::Present(right)) =>
+                                    left.row().with_shape(|left| right.row().with_shape(|right| {
+                                        if operation == "frechet_distance" {
+                                            crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                                &model,
+                                                left,
+                                                right,
+                                                frechet_densify,
+                                                &mut frechet_scratch,
+                                            )
+                                        } else {
+                                            kernel(&model, left, right)
+                                        }
+                                    })),
                                 _ => Ok(f64::NAN),
                             })
                             .collect_rows()
@@ -361,8 +361,8 @@ where
             usize,
             &PreparedPlan,
             &PreparedPlan,
-            &mut RowProductsHandle,
-            &mut RowProductsHandle,
+            &mut ArrayRowOperation<'_>,
+            &mut ArrayRowOperation<'_>,
         ) -> crate::error::Result<T>
         + Send
         + Sync,
@@ -415,38 +415,34 @@ where
         let right_array = right.clone();
         return py
             .detach(move || {
-                let mut left_products = left_array.row_products.operation();
-                let mut right_products = right_array.row_products.operation();
-                left_array
-                    .logical_storage_rows()
-                    .zip(right_array.logical_storage_rows())
+                let mut left_rows = left_array.row_operation();
+                let mut right_rows = right_array.row_operation();
+                left_rows
+                    .rows_with_missing(|| missing_value)
+                    .zip(right_rows.rows_with_missing(|| missing_value))
                     .map(|(left, right)| {
-                        let (
-                            crate::array::LogicalRow::Present {
-                                logical: index,
-                                row: left_row,
-                            },
-                            crate::array::LogicalRow::Present { row: right_row, .. },
-                        ) = (left, right)
+                        let (ArrayRow::Present(left_row), ArrayRow::Present(right_row)) =
+                            (left, right)
                         else {
-                            return Ok(missing_value);
+                            return Ok(match left {
+                                ArrayRow::Missing { value, .. } => value,
+                                ArrayRow::Present(_) => match right {
+                                    ArrayRow::Missing { value, .. } => value,
+                                    ArrayRow::Present(_) => unreachable!(),
+                                },
+                            });
                         };
+                        let index = left_row.logical();
+                        let left_row = left_row.row();
+                        let right_row = right_row.row();
                         if let (Some(lb), Some(rb)) = (left_bounds[index], right_bounds[index])
                             && let Some(verdict) = refute(lb, rb)
                         {
                             return Ok(verdict);
                         }
-                        let left =
-                            left_array.prepared_row_with(&mut left_products, index, left_row);
-                        let right =
-                            right_array.prepared_row_with(&mut right_products, index, right_row);
-                        pair(
-                            index,
-                            &left,
-                            &right,
-                            &mut left_products,
-                            &mut right_products,
-                        )
+                        let left = left_rows.prepared_at(index, left_row);
+                        let right = right_rows.prepared_at(index, right_row);
+                        pair(index, &left, &right, &mut left_rows, &mut right_rows)
                     })
                     .collect_rows()
             })
@@ -455,31 +451,26 @@ where
     let left_array = array.clone();
     let right_array = right.clone();
     py.detach(move || {
-        let mut left_products = left_array.row_products.operation();
-        let mut right_products = right_array.row_products.operation();
-        left_array
-            .logical_storage_rows()
-            .zip(right_array.logical_storage_rows())
+        let mut left_rows = left_array.row_operation();
+        let mut right_rows = right_array.row_operation();
+        left_rows
+            .rows_with_missing(|| missing_value)
+            .zip(right_rows.rows_with_missing(|| missing_value))
             .map(|(left, right)| {
-                let (
-                    crate::array::LogicalRow::Present {
-                        logical: index,
-                        row: left_row,
-                    },
-                    crate::array::LogicalRow::Present { row: right_row, .. },
-                ) = (left, right)
+                let (ArrayRow::Present(left_row), ArrayRow::Present(right_row)) = (left, right)
                 else {
-                    return Ok(missing_value);
+                    return Ok(match left {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(_) => match right {
+                            ArrayRow::Missing { value, .. } => value,
+                            ArrayRow::Present(_) => unreachable!(),
+                        },
+                    });
                 };
-                let left = left_array.prepared_row_with(&mut left_products, index, left_row);
-                let right = right_array.prepared_row_with(&mut right_products, index, right_row);
-                pair(
-                    index,
-                    &left,
-                    &right,
-                    &mut left_products,
-                    &mut right_products,
-                )
+                let index = left_row.logical();
+                let left = left_rows.prepared(left_row);
+                let right = right_rows.prepared(right_row);
+                pair(index, &left, &right, &mut left_rows, &mut right_rows)
             })
             .collect_rows()
     })
@@ -559,18 +550,16 @@ pub(crate) fn array_crs_distances(
                 return float64_array(
                     py,
                     py.detach(move || {
-                        let mut products = array.row_products.operation();
-                        array
-                            .logical_storage_rows()
+                        let mut rows = array.row_operation();
+                        rows.rows_with_missing(|| f64::NAN)
                             .map(|logical_row| {
-                                let crate::array::LogicalRow::Present {
-                                    logical: row,
-                                    row: row_shape,
-                                } = logical_row
-                                else {
-                                    return Ok(f64::NAN);
+                                let ArrayRow::Present(row) = logical_row else {
+                                    if let ArrayRow::Missing { value, .. } = logical_row {
+                                        return Ok(value);
+                                    }
+                                    unreachable!();
                                 };
-                                let left = array.prepared_row_with(&mut products, row, row_shape);
+                                let left = rows.prepared(row);
                                 Ok(left.distance(&right_shape) * to_metre.get())
                             })
                             .collect_rows()
@@ -635,7 +624,7 @@ pub(crate) fn array_crs_distances(
                 let right_shape = right.plan_or_transient();
                 let right_cache = right.frame_cache();
                 let rows = py.detach(move || {
-                    let mut products = array.row_products.operation();
+                    let mut rows = array.row_operation();
                     crs::with_resolved_ellipsoid_metric_at(
                         &crs,
                         &[right_shape.shape()],
@@ -649,19 +638,18 @@ pub(crate) fn array_crs_distances(
                                 flattening,
                                 metric,
                             )?;
-                            Ok(array
-                                .logical_storage_rows()
+                            Ok(rows
+                                .rows_with_missing(|| f64::NAN)
                                 .map(|logical_row| {
-                                    let crate::array::LogicalRow::Present {
-                                        logical: row_index,
-                                        row,
-                                    } = logical_row
-                                    else {
-                                        return Ok(f64::NAN);
+                                    let ArrayRow::Present(row) = logical_row else {
+                                        if let ArrayRow::Missing { value, .. } = logical_row {
+                                            return Ok(value);
+                                        }
+                                        unreachable!();
                                     };
-                                    let left =
-                                        array.prepared_row_with(&mut products, row_index, row);
-                                    let left_cache = products.frame_cache(row_index);
+                                    let row_index = row.logical();
+                                    let left = rows.prepared(row);
+                                    let left_cache = rows.frame_cache(row_index);
                                     finite_geodesic_value(
                                         left.geodesic_distance_cached(
                                             &left_cache,
@@ -984,21 +972,18 @@ pub(crate) fn array_crs_dwithin_per_element(
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.plan_or_transient();
             let right_cache = right.frame_cache();
-            let mut products = array.row_products.operation();
             let results: Vec<bool> = match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
                     let right_bounds = right_plan.bounds();
                     let left_bounds = array.cached_element_bounds();
-                    array
-                        .logical_storage_rows()
+                    let mut rows = array.row_operation();
+                    rows.rows_with_missing(|| false)
                         .map(|left| {
-                            let crate::array::LogicalRow::Present {
-                                logical: row,
-                                row: left,
-                            } = left
-                            else {
+                            let ArrayRow::Present(left) = left else {
                                 return Ok(false);
                             };
+                            let row = left.logical();
+                            let left = left.row();
                             if dwithin_box_refutes(
                                 left_bounds
                                     .as_ref()
@@ -1009,7 +994,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                             ) {
                                 return Ok(false);
                             }
-                            let left = array.prepared_row_with(&mut products, row, left);
+                            let left = rows.prepared_at(row, left);
                             pair_dwithin_planar(
                                 to_metre.get(),
                                 &left,
@@ -1020,29 +1005,28 @@ pub(crate) fn array_crs_dwithin_per_element(
                         })
                         .collect::<PyResult<_>>()?
                 },
-                crs::ResolvedMetric::Geodesic(metric) => array
-                    .logical_storage_rows()
-                    .map(|left| {
-                        let crate::array::LogicalRow::Present {
-                            logical: row,
-                            row: left,
-                        } = left
-                        else {
-                            return Ok(false);
-                        };
-                        let left = array.prepared_row_with(&mut products, row, left);
-                        let left_cache = products.frame_cache(row);
-                        pair_dwithin_geodesic(
-                            metric,
-                            &left,
-                            &left_cache,
-                            &right_plan,
-                            &right_cache,
-                            distance.get(row),
-                        )
-                        .map_err(Into::into)
-                    })
-                    .collect::<PyResult<_>>()?,
+                crs::ResolvedMetric::Geodesic(metric) => {
+                    let mut rows = array.row_operation();
+                    rows.rows_with_missing(|| false)
+                        .map(|left| {
+                            let ArrayRow::Present(left) = left else {
+                                return Ok(false);
+                            };
+                            let row = left.logical();
+                            let left = rows.prepared(left);
+                            let left_cache = rows.frame_cache(row);
+                            pair_dwithin_geodesic(
+                                metric,
+                                &left,
+                                &left_cache,
+                                &right_plan,
+                                &right_cache,
+                                distance.get(row),
+                            )
+                            .map_err(Into::into)
+                        })
+                        .collect::<PyResult<_>>()?
+                },
             };
             bool_array(py, results)
         },
@@ -1050,26 +1034,24 @@ pub(crate) fn array_crs_dwithin_per_element(
             paired_arrays(array, right, operation)?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
-            let mut left_products = array.row_products.operation();
-            let mut right_products = right.row_products.operation();
             let results: Vec<bool> = match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
                     let left_bounds = array.cached_element_bounds();
                     let right_bounds = right.cached_element_bounds();
-                    array
-                        .logical_storage_rows()
-                        .zip(right.logical_storage_rows())
+                    let mut left_rows = array.row_operation();
+                    let mut right_rows = right.row_operation();
+                    left_rows
+                        .rows_with_missing(|| false)
+                        .zip(right_rows.rows_with_missing(|| false))
                         .map(|(left, right_row)| {
-                            let (
-                                crate::array::LogicalRow::Present {
-                                    logical: row,
-                                    row: left,
-                                },
-                                crate::array::LogicalRow::Present { row: right_row, .. },
-                            ) = (left, right_row)
+                            let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
+                                (left, right_row)
                             else {
                                 return Ok(false);
                             };
+                            let row = left.logical();
+                            let left = left.row();
+                            let right_row = right_row.row();
                             if dwithin_box_refutes(
                                 left_bounds
                                     .as_ref()
@@ -1083,9 +1065,8 @@ pub(crate) fn array_crs_dwithin_per_element(
                             ) {
                                 return Ok(false);
                             }
-                            let left = array.prepared_row_with(&mut left_products, row, left);
-                            let right_data =
-                                right.prepared_row_with(&mut right_products, row, right_row);
+                            let left = left_rows.prepared_at(row, left);
+                            let right_data = right_rows.prepared_at(row, right_row);
                             pair_dwithin_planar(
                                 to_metre.get(),
                                 &left,
@@ -1096,36 +1077,37 @@ pub(crate) fn array_crs_dwithin_per_element(
                         })
                         .collect::<PyResult<_>>()?
                 },
-                crs::ResolvedMetric::Geodesic(metric) => array
-                    .logical_storage_rows()
-                    .zip(right.logical_storage_rows())
-                    .map(|(left, right_row)| {
-                        let (
-                            crate::array::LogicalRow::Present {
-                                logical: row,
-                                row: left,
-                            },
-                            crate::array::LogicalRow::Present { row: right_row, .. },
-                        ) = (left, right_row)
-                        else {
-                            return Ok(false);
-                        };
-                        let left = array.prepared_row_with(&mut left_products, row, left);
-                        let right_data =
-                            right.prepared_row_with(&mut right_products, row, right_row);
-                        let left_cache = left_products.frame_cache(row);
-                        let right_cache = right_products.frame_cache(row);
-                        pair_dwithin_geodesic(
-                            metric,
-                            &left,
-                            &left_cache,
-                            &right_data,
-                            &right_cache,
-                            distance.get(row),
-                        )
-                        .map_err(Into::into)
-                    })
-                    .collect::<PyResult<_>>()?,
+                crs::ResolvedMetric::Geodesic(metric) => {
+                    let mut left_rows = array.row_operation();
+                    let mut right_rows = right.row_operation();
+                    left_rows
+                        .rows_with_missing(|| false)
+                        .zip(right_rows.rows_with_missing(|| false))
+                        .map(|(left, right_row)| {
+                            let (ArrayRow::Present(left), ArrayRow::Present(right_row)) =
+                                (left, right_row)
+                            else {
+                                return Ok(false);
+                            };
+                            let row = left.logical();
+                            let left = left.row();
+                            let right_row = right_row.row();
+                            let left = left_rows.prepared_at(row, left);
+                            let right_data = right_rows.prepared_at(row, right_row);
+                            let left_cache = left_rows.frame_cache(row);
+                            let right_cache = right_rows.frame_cache(row);
+                            pair_dwithin_geodesic(
+                                metric,
+                                &left,
+                                &left_cache,
+                                &right_data,
+                                &right_cache,
+                                distance.get(row),
+                            )
+                            .map_err(Into::into)
+                        })
+                        .collect::<PyResult<_>>()?
+                },
             };
             bool_array(py, results)
         },
@@ -1164,46 +1146,42 @@ pub(crate) fn array_crs_dwithin_scalar(
         let array_owned = array.clone();
         let other_shape = other.plan_or_transient();
         let other_cache = other.frame_cache();
-        let mut products = array_owned.row_products.operation();
         let rows = match &resolved {
-            crs::ResolvedMetric::Planar { to_metre } => array_owned
-                .logical_storage_rows()
-                .map(|row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row_index,
-                        row,
-                    } = row
-                    else {
-                        return Ok(false);
-                    };
-                    let left = array_owned.prepared_row_with(&mut products, row_index, row);
-                    pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
+            crs::ResolvedMetric::Planar { to_metre } => {
+                let mut rows = array_owned.row_operation();
+                rows.rows_with_missing(|| false)
+                    .map(|row| {
+                        let ArrayRow::Present(row) = row else {
+                            return Ok(false);
+                        };
+                        let left = rows.prepared(row);
+                        pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
+                            .map_err(Into::into)
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            },
+            crs::ResolvedMetric::Geodesic(metric) => {
+                let mut rows = array_owned.row_operation();
+                rows.rows_with_missing(|| false)
+                    .map(|row| {
+                        let ArrayRow::Present(row) = row else {
+                            return Ok(false);
+                        };
+                        let row_index = row.logical();
+                        let left = rows.prepared(row);
+                        let left_cache = rows.frame_cache(row_index);
+                        pair_dwithin_geodesic(
+                            metric,
+                            &left,
+                            &left_cache,
+                            &other_shape,
+                            &other_cache,
+                            distance,
+                        )
                         .map_err(Into::into)
-                })
-                .collect::<PyResult<Vec<_>>>()?,
-            crs::ResolvedMetric::Geodesic(metric) => array_owned
-                .logical_storage_rows()
-                .map(|row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row_index,
-                        row,
-                    } = row
-                    else {
-                        return Ok(false);
-                    };
-                    let left = array_owned.prepared_row_with(&mut products, row_index, row);
-                    let left_cache = products.frame_cache(row_index);
-                    pair_dwithin_geodesic(
-                        metric,
-                        &left,
-                        &left_cache,
-                        &other_shape,
-                        &other_cache,
-                        distance,
-                    )
-                    .map_err(Into::into)
-                })
-                .collect::<PyResult<Vec<_>>>()?,
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            },
         };
         return bool_array(py, rows);
     }
@@ -1249,17 +1227,14 @@ pub(crate) fn array_crs_dwithin_scalar(
             bool_array_mask_missing(
                 py,
                 py.detach(move || {
-                    let mut products = array.row_products.operation();
-                    array
-                        .logical_storage_rows()
+                    let mut rows = array.row_operation();
+                    rows.rows_with_missing(|| false)
                         .map(|row| {
-                            let crate::array::LogicalRow::Present {
-                                logical: index,
-                                row,
-                            } = row
-                            else {
+                            let ArrayRow::Present(row) = row else {
                                 return false;
                             };
+                            let index = row.logical();
+                            let row = row.row();
                             if let (Some(sq_limit), Some(other_bounds), Some(element_bounds)) =
                                 (sq_limit, other_bounds, element_bounds.as_ref())
                                 && let Some(element) = element_bounds[index]
@@ -1267,7 +1242,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             {
                                 return false;
                             }
-                            let left = array.prepared_row_with(&mut products, index, row);
+                            let left = rows.prepared_at(index, row);
                             left.dwithin(&other_shape, limit)
                         })
                         .collect::<Vec<bool>>()
@@ -1332,7 +1307,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             let other_shape = other.plan_or_transient();
             let other_cache = other.frame_cache();
             let rows = py.detach(move || {
-                let mut products = array_owned.row_products.operation();
+                let mut rows = array_owned.row_operation();
                 crs::with_resolved_ellipsoid_metric_at(
                     &crs,
                     &[other_shape.shape()],
@@ -1346,19 +1321,15 @@ pub(crate) fn array_crs_dwithin_scalar(
                             flattening,
                             metric,
                         )?;
-                        Ok(array_owned
-                            .logical_storage_rows()
+                        Ok(rows
+                            .rows_with_missing(|| false)
                             .map(|row| {
-                                let crate::array::LogicalRow::Present {
-                                    logical: row_index,
-                                    row,
-                                } = row
-                                else {
+                                let ArrayRow::Present(row) = row else {
                                     return Ok(false);
                                 };
-                                let left =
-                                    array_owned.prepared_row_with(&mut products, row_index, row);
-                                let left_cache = products.frame_cache(row_index);
+                                let row_index = row.logical();
+                                let left = rows.prepared(row);
+                                let left_cache = rows.frame_cache(row_index);
                                 left.geodesic_dwithin_cached(
                                     &left_cache,
                                     &other_shape,

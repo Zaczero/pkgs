@@ -93,15 +93,15 @@ fn svg_bounds(shape: &Shape) -> Option<Bounds> {
 /// north points up) via a `matrix(1 0 0 -1 0 dy)` transform on a wrapping `g`.
 /// HTML grid of inline SVG previews for a geometry array.
 pub(crate) fn geometry_array_svg_grid_html_masked<'a>(
-    rows: impl Iterator<Item = crate::array::LogicalShapeRow<'a>>,
+    rows: impl Iterator<Item = crate::array::ArrayRow<'a, ()>>,
     n: usize,
     preview: usize,
 ) -> Result<String> {
     let mut cells = TryString::new();
     for row in rows.take(preview) {
         let svg = match row {
-            crate::array::LogicalShapeRow::Missing { .. } => missing_svg()?,
-            crate::array::LogicalShapeRow::Present { shape, .. } => render_shape_svg(&shape)?,
+            crate::array::ArrayRow::Missing { .. } => missing_svg()?,
+            crate::array::ArrayRow::Present(row) => row.row().with_shape(render_shape_svg)?,
         };
         cells.write_fmt(format_args!(
             "<div style=\"display:inline-block;margin:2px\">{svg}</div>"

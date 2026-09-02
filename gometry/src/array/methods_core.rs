@@ -12,9 +12,9 @@ use pyo3::PyErr;
 use pyo3::types::PyList;
 
 use crate::array::{
-    Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq, CoordinateReplacement,
-    CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage, GeometryKind,
-    InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
+    ArrayRow, Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq,
+    CoordinateReplacement, CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage,
+    GeometryKind, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
     PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
     PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
     ValidityMask, bool_array, coerce_collected_geometry_items, coordinate_epoch_option, crs,
@@ -174,14 +174,15 @@ fn replace_array_coordinates(
     }
     let mut present_cursor = 0;
     let mut shapes = crate::try_vec_with_capacity(array.len())?;
-    for row in array.logical_shape_rows() {
-        let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
-            continue;
-        };
-        let count = shape.coord_count();
+    for row in array.row_operation().present_rows() {
+        let count = row.row().with_shape(|shape| shape.coord_count());
         let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
         present_cursor += count;
-        crate::try_push(&mut shapes, replace_shape_coordinates(&shape, &sub)?)?;
+        crate::try_push(
+            &mut shapes,
+            row.row()
+                .with_shape(|shape| replace_shape_coordinates(shape, &sub))?,
+        )?;
     }
     debug_assert_eq!(present_cursor, replacement.len);
     Ok(array.scatter_present_result(PyGeometryArray::from_shapes(shapes, array.frame.clone())))
@@ -313,7 +314,7 @@ impl PyGeometryArray {
             return Ok(html);
         }
         Ok(geometry_array_svg_grid_html_masked(
-            self.logical_shape_rows(),
+            self.row_operation().rows_with_missing(|| ()),
             self.len(),
             SVG_ARRAY_PREVIEW,
         )?)
@@ -321,7 +322,7 @@ impl PyGeometryArray {
 
     pub fn _repr_html_svg(&self) -> PyResult<String> {
         Ok(geometry_array_svg_grid_html_masked(
-            self.logical_shape_rows(),
+            self.row_operation().rows_with_missing(|| ()),
             self.len(),
             SVG_ARRAY_PREVIEW,
         )?)
@@ -392,10 +393,12 @@ impl PyGeometryArray {
     #[getter("coordinate_axes")]
     pub fn coordinate_axes_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let rows = try_collect_values(
-            self.logical_shape_rows().map(|row| match row {
-                crate::array::LogicalShapeRow::Missing { .. } => "",
-                crate::array::LogicalShapeRow::Present { shape, .. } => shape.axes().as_str(),
-            }),
+            self.row_operation()
+                .rows_with_missing(|| "")
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => value,
+                    ArrayRow::Present(row) => row.row().with_shape(|shape| shape.axes().as_str()),
+                }),
             self.len(),
         )?;
         self.masked_row_list(py, rows)
@@ -420,10 +423,12 @@ impl PyGeometryArray {
         bool_array(
             py,
             try_collect_values(
-                self.logical_shape_rows().map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => false,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => shape.has_z(),
-                }),
+                self.row_operation()
+                    .rows_with_missing(|| false)
+                    .map(|row| match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row.row().with_shape(Shape::has_z),
+                    }),
                 self.len(),
             )?,
         )
@@ -464,10 +469,12 @@ impl PyGeometryArray {
         bool_array(
             py,
             try_collect_values(
-                self.logical_shape_rows().map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => false,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => shape.has_m(),
-                }),
+                self.row_operation()
+                    .rows_with_missing(|| false)
+                    .map(|row| match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row.row().with_shape(Shape::has_m),
+                    }),
                 self.len(),
             )?,
         )
@@ -654,12 +661,14 @@ impl PyGeometryArray {
                 self.len(),
             )?,
             GeometryArrayStorage::Mixed(_) => try_collect_values(
-                self.logical_shape_rows().map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => 0,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => {
-                        shape.part_count() as i64
-                    },
-                }),
+                self.row_operation()
+                    .rows_with_missing(|| 0_i64)
+                    .map(|row| match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => {
+                            row.row().with_shape(|shape| shape.part_count() as i64)
+                        },
+                    }),
                 self.len(),
             )?,
         };
@@ -676,12 +685,14 @@ impl PyGeometryArray {
         crate::py::numpy::int64_array(
             py,
             try_collect_values(
-                self.logical_shape_rows().map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => 0,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => {
-                        shape.coord_count() as i64
-                    },
-                }),
+                self.row_operation()
+                    .rows_with_missing(|| 0_i64)
+                    .map(|row| match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => {
+                            row.row().with_shape(|shape| shape.coord_count() as i64)
+                        },
+                    }),
                 self.len(),
             )?,
         )
@@ -806,12 +817,14 @@ impl PyGeometryArray {
                 self.len(),
             )?,
             GeometryArrayStorage::Mixed(_) => try_collect_values(
-                self.logical_shape_rows().map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => -1,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => {
-                        i64::from(shape.topological_dimension().code())
-                    },
-                }),
+                self.row_operation()
+                    .rows_with_missing(|| -1_i64)
+                    .map(|row| match row {
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .with_shape(|shape| i64::from(shape.topological_dimension().code())),
+                    }),
                 self.len(),
             )?,
         };
@@ -943,10 +956,11 @@ impl PyGeometryArray {
     pub(crate) fn is_empty_unary_packed(&self) -> PyResult<Vec<bool>> {
         if self.has_missing() {
             return self
-                .logical_shape_rows()
+                .row_operation()
+                .rows_with_missing(|| false)
                 .map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => Ok(false),
-                    crate::array::LogicalShapeRow::Present { shape, .. } => Ok(shape.is_empty()),
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => Ok(row.row().with_shape(Shape::is_empty)),
                 })
                 .collect();
         }
@@ -1074,14 +1088,15 @@ impl PyGeometryArray {
             if let Some(_mask) = missing {
                 return Some((|| {
                     let mut values = crate::try_vec_with_capacity(len)?;
-                    for row in self.logical_storage_rows() {
+                    for row in self.row_operation().rows_with_missing(|| false) {
                         let value = match row {
-                            crate::array::LogicalRow::Missing { .. } => false,
-                            crate::array::LogicalRow::Present {
-                                row: crate::array::ShapeRow::Point(point),
-                                ..
-                            } => point.x.is_finite() && point.y.is_finite(),
-                            crate::array::LogicalRow::Present { .. } => false,
+                            crate::array::ArrayRow::Missing { value, .. } => value,
+                            crate::array::ArrayRow::Present(row) => match row.row() {
+                                crate::array::ShapeRow::Point(point) => {
+                                    point.x.is_finite() && point.y.is_finite()
+                                },
+                                _ => false,
+                            },
                         };
                         crate::try_push(&mut values, value)?;
                     }

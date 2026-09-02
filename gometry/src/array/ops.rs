@@ -11,9 +11,9 @@ use pyo3::exceptions::PyOverflowError;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
-    Arc, Bound, CollectRows as _, CoordinateAxes, DefaultedF64Input, DistanceUnit, Error, F64Param,
-    Frame, I64Param, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometryArray, PyResult,
-    PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput,
+    Arc, ArrayRow, Bound, CollectRows as _, CoordinateAxes, DefaultedF64Input, DistanceUnit, Error,
+    F64Param, Frame, I64Param, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometryArray,
+    PyResult, PyValidationReport, Python, RepairMethod, Result, Shape, VoronoiClipInput,
     array_binary_geometry, bool_array, cdt_refinement_values, crs, curves, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
     geometry, io, metric_nearest_points, metric_shortest_line, non_negative_int, note_array_row,
@@ -61,21 +61,22 @@ impl PyGeometryArray {
         let crs = self.crs_ref().cloned();
         py.detach(move || {
             array
-                .logical_shape_rows()
-                .map(|row| {
-                    let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
-                        return Ok(String::new());
-                    };
-                    let shape = match precision {
-                        Some(precision) => std::borrow::Cow::Owned(shape.quantize(precision)),
-                        None => shape,
-                    };
-                    io::to_wkt_with_dimension(
-                        &shape,
-                        output_dimension,
-                        crs.as_deref(),
-                        include_srid,
-                    )
+                .row_operation()
+                .rows_with_missing(String::new)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                        let shape = precision
+                            .map_or(std::borrow::Cow::Borrowed(shape), |precision| {
+                                std::borrow::Cow::Owned(shape.quantize(precision))
+                            });
+                        io::to_wkt_with_dimension(
+                            &shape,
+                            output_dimension,
+                            crs.as_deref(),
+                            include_srid,
+                        )
+                    }),
                 })
                 .collect_rows()
         })
@@ -126,12 +127,15 @@ impl PyGeometryArray {
                     move || -> Result<(Vec<u8>, Vec<usize>), (usize, crate::error::Error)> {
                         let mut buffer: Vec<u8> = Vec::new();
                         let mut ends: Vec<usize> = Vec::new();
-                        for (offset, logical_row) in
-                            array.logical_storage_rows().skip(start_row).enumerate()
+                        let rows = array.row_operation();
+                        for (offset, logical_row) in rows
+                            .rows_with_missing(String::new)
+                            .skip(start_row)
+                            .enumerate()
                         {
                             let row = start_row + offset;
-                            if let crate::array::LogicalRow::Present { row: view, .. } = logical_row
-                            {
+                            if let ArrayRow::Present(view) = logical_row {
+                                let view = view.row();
                                 view.with_shape(|shape| {
                                     let shape = precision.map_or_else(
                                         || std::borrow::Cow::Borrowed(shape),
@@ -190,12 +194,12 @@ impl PyGeometryArray {
         Ok(if include_z {
             py.detach(move || {
                 let mut out = Vec::new();
-                for row in array.logical_shape_rows() {
+                for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {
-                        crate::array::LogicalShapeRow::Missing { .. } => String::new(),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            io::to_geojson_string::<true>(&shape, domain)?
-                        },
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .with_shape(|shape| io::to_geojson_string::<true>(shape, domain))?,
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
                 }
@@ -204,12 +208,12 @@ impl PyGeometryArray {
         } else {
             py.detach(move || {
                 let mut out = Vec::new();
-                for row in array.logical_shape_rows() {
+                for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {
-                        crate::array::LogicalShapeRow::Missing { .. } => String::new(),
-                        crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            io::to_geojson_string::<false>(&shape, domain)?
-                        },
+                        ArrayRow::Missing { value, .. } => value,
+                        ArrayRow::Present(row) => row
+                            .row()
+                            .with_shape(|shape| io::to_geojson_string::<false>(shape, domain))?,
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
                 }
@@ -242,23 +246,25 @@ impl PyGeometryArray {
             .detach(move || {
                 let mut all_present_valid = true;
                 let mut shapes = Vec::new();
-                for logical_row in array.logical_shape_rows() {
-                    let crate::array::LogicalShapeRow::Present {
-                        logical: row,
-                        shape,
-                    } = logical_row
-                    else {
+                for logical_row in array.row_operation().rows_with_missing(|| ()) {
+                    let ArrayRow::Present(row) = logical_row else {
                         continue;
                     };
-                    match geometry::repair_shape_in_frame(&shape, domain, method)
-                        .map_err(|error| (row, error))?
+                    let logical = row.logical();
+                    let shape = row.row();
+                    match shape
+                        .with_shape(|shape| geometry::repair_shape_in_frame(shape, domain, method))
+                        .map_err(|error| (logical, error))?
                     {
-                        None => crate::boundary::try_push_vec(&mut shapes, shape.into_owned())
-                            .map_err(|error| (row, error))?,
+                        None => crate::boundary::try_push_vec(
+                            &mut shapes,
+                            shape.with_shape(Clone::clone),
+                        )
+                        .map_err(|error| (logical, error))?,
                         Some(repaired) => {
                             all_present_valid = false;
                             crate::boundary::try_push_vec(&mut shapes, repaired)
-                                .map_err(|error| (row, error))?;
+                                .map_err(|error| (logical, error))?;
                         },
                     }
                 }
@@ -396,7 +402,7 @@ impl PyGeometryArray {
                 let right_cache = geometry.frame_cache();
                 let rows = Python::attach(|py| {
                     py.detach(move || {
-                        let mut products = lefts.row_products.operation();
+                        let mut rows = lefts.row_operation();
                         crs::with_resolved_ellipsoid_metric_at(
                             &crs,
                             &[right.shape()],
@@ -410,19 +416,15 @@ impl PyGeometryArray {
                                     flattening,
                                     metric,
                                 )?;
-                                Ok(lefts
-                                    .logical_storage_rows()
+                                Ok(rows
+                                    .rows_with_missing(|| None::<Shape>)
                                     .map(|logical_row| {
-                                        let crate::array::LogicalRow::Present {
-                                            logical: row_index,
-                                            row,
-                                        } = logical_row
-                                        else {
+                                        let ArrayRow::Present(row) = logical_row else {
                                             return Ok(None);
                                         };
-                                        let left =
-                                            lefts.prepared_row_with(&mut products, row_index, row);
-                                        let left_cache = products.frame_cache(row_index);
+                                        let row_index = row.logical();
+                                        let left = rows.prepared(row);
+                                        let left_cache = rows.frame_cache(row_index);
                                         Ok(Some(crate::geometry::nearest_line(
                                             left.geodesic_nearest_points_cached_split(
                                                 &left_cache,
@@ -457,30 +459,24 @@ impl PyGeometryArray {
                 let missing = crate::array::missing::union_pair(self.missing(), array.missing());
                 let rows = Python::attach(|py| {
                     py.detach(move || {
-                        let mut left_products = lefts.row_products.operation();
-                        let mut right_products = rights.row_products.operation();
+                        let mut left_rows = lefts.row_operation();
+                        let mut right_rows = rights.row_operation();
                         crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            Ok(lefts
-                                .logical_storage_rows()
-                                .zip(rights.logical_storage_rows())
+                            Ok(left_rows
+                                .rows_with_missing(|| None::<Shape>)
+                                .zip(right_rows.rows_with_missing(|| None::<Shape>))
                                 .map(|(left, right)| {
-                                    let (
-                                        crate::array::LogicalRow::Present {
-                                            logical: row,
-                                            row: left,
-                                        },
-                                        crate::array::LogicalRow::Present { row: right, .. },
-                                    ) = (left, right)
+                                    let (ArrayRow::Present(left), ArrayRow::Present(right)) =
+                                        (left, right)
                                     else {
                                         return Ok(None);
                                     };
-                                    let left =
-                                        lefts.prepared_row_with(&mut left_products, row, left);
-                                    let right =
-                                        rights.prepared_row_with(&mut right_products, row, right);
-                                    let left_cache = left_products.frame_cache(row);
-                                    let right_cache = right_products.frame_cache(row);
+                                    let row = left.logical();
+                                    let left = left_rows.prepared(left);
+                                    let right = right_rows.prepared(right);
+                                    let left_cache = left_rows.frame_cache(row);
+                                    let right_cache = right_rows.frame_cache(row);
                                     Ok(Some(crate::geometry::nearest_line(
                                         left.geodesic_nearest_points_cached_split(
                                             &left_cache,
@@ -534,30 +530,34 @@ impl PyGeometryArray {
             if let crs::MetricModel::Geodesic { crs, frame, state } = model {
                 let pairs = py
                     .detach(move || {
-                        let mut left_products = lefts.row_products.operation();
-                        let mut right_products = rights.row_products.operation();
+                        let mut left_rows = lefts.row_operation();
+                        let mut right_rows = rights.row_operation();
                         crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
-                            Ok(lefts
-                                .logical_storage_rows()
-                                .zip(rights.logical_storage_rows())
+                            Ok(left_rows
+                                .rows_with_missing(|| {
+                                    (
+                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                        CoordinateAxes::XY,
+                                    )
+                                })
+                                .zip(right_rows.rows_with_missing(|| {
+                                    (
+                                        None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                        CoordinateAxes::XY,
+                                    )
+                                }))
                                 .map(|(left, right)| {
-                                    let (
-                                        crate::array::LogicalRow::Present {
-                                            logical: row,
-                                            row: left,
-                                        },
-                                        crate::array::LogicalRow::Present { row: right, .. },
-                                    ) = (left, right)
+                                    let (ArrayRow::Present(left), ArrayRow::Present(right)) =
+                                        (left, right)
                                     else {
                                         return Ok((None, CoordinateAxes::XY));
                                     };
-                                    let left =
-                                        lefts.prepared_row_with(&mut left_products, row, left);
-                                    let right =
-                                        rights.prepared_row_with(&mut right_products, row, right);
-                                    let left_cache = left_products.frame_cache(row);
-                                    let right_cache = right_products.frame_cache(row);
+                                    let row = left.logical();
+                                    let left = left_rows.prepared(left);
+                                    let right = right_rows.prepared(right);
+                                    let left_cache = left_rows.frame_cache(row);
+                                    let right_cache = right_rows.frame_cache(row);
                                     let common =
                                         crate::geometry::common_axes(left.shape(), right.shape());
                                     left.geodesic_nearest_points_cached_split(
@@ -584,24 +584,28 @@ impl PyGeometryArray {
             }
             let pairs = py
                 .detach(move || {
-                    let mut left_products = lefts.row_products.operation();
-                    let mut right_products = rights.row_products.operation();
-                    lefts
-                        .logical_storage_rows()
-                        .zip(rights.logical_storage_rows())
+                    let mut left_rows = lefts.row_operation();
+                    let mut right_rows = rights.row_operation();
+                    left_rows
+                        .rows_with_missing(|| {
+                            (
+                                None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                CoordinateAxes::XY,
+                            )
+                        })
+                        .zip(right_rows.rows_with_missing(|| {
+                            (
+                                None::<(crate::geometry::Point, crate::geometry::Point)>,
+                                CoordinateAxes::XY,
+                            )
+                        }))
                         .map(|(left, right)| {
-                            let (
-                                crate::array::LogicalRow::Present {
-                                    logical: row,
-                                    row: left,
-                                },
-                                crate::array::LogicalRow::Present { row: right, .. },
-                            ) = (left, right)
+                            let (ArrayRow::Present(left), ArrayRow::Present(right)) = (left, right)
                             else {
                                 return Ok((None, CoordinateAxes::XY));
                             };
-                            let left = lefts.prepared_row_with(&mut left_products, row, left);
-                            let right = rights.prepared_row_with(&mut right_products, row, right);
+                            let left = left_rows.prepared(left);
+                            let right = right_rows.prepared(right);
                             let common = crate::geometry::common_axes(left.shape(), right.shape());
                             metric_nearest_points(&model, &left, &right).map(|pair| (pair, common))
                         })
@@ -716,39 +720,36 @@ impl PyGeometryArray {
         }
         let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
             .map_err(pyo3::PyErr::from)?;
-        for logical_row in self.logical_shape_rows() {
-            let row = logical_row.logical();
-            // An empty row yields an empty group rather than aborting: the
-            // columnar contract is that one bad row never fails the batch. The
-            // SCALAR surface still raises, per the ergonomic/columnar split.
-            if let crate::array::LogicalShapeRow::Present { shape, .. } = logical_row
-                && !shape.is_empty()
-            {
-                let count = usize::try_from(count.get(row)).expect("validated non-negative");
-                // One rule: a geometry seeded with `s` always draws
-                // `row_sample_seed(s, 0)`. A single seed spreads across rows by
-                // index; per-row seeds are each that row's OWN seed, so each
-                // draws the stream a scalar with that seed draws. Both keep
-                // rows independent AND agree with the scalar surface — the
-                // per-element lane used the raw seed and so disagreed.
-                let seed = match &seed {
-                    I64Param::Scalar(value) => row_sample_seed(*value as u64, row),
-                    I64Param::PerElement(values) => row_sample_seed(values[row] as u64, 0),
-                };
-                builder
-                    .push_row(
-                        shape
-                            .sample_points(count, seed)
-                            .map_err(|error| note_array_row(error.into(), row))?
-                            .into_iter()
-                            .map(Shape::Point),
+        for logical_row in self.row_operation().rows_with_missing(|| ()) {
+            let (row, values) = match logical_row {
+                crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
+                crate::array::ArrayRow::Present(row) => {
+                    let logical = row.logical();
+                    let count =
+                        usize::try_from(count.get(logical)).expect("validated non-negative");
+                    // One rule: a geometry seeded with `s` always draws
+                    // `row_sample_seed(s, 0)`. A single seed spreads across rows by
+                    // index; per-row seeds are each that row's OWN seed, so each
+                    // draws the stream a scalar with that seed draws. Both keep
+                    // rows independent AND agree with the scalar surface.
+                    let seed = match &seed {
+                        I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
+                        I64Param::PerElement(values) => row_sample_seed(values[logical] as u64, 0),
+                    };
+                    let values = row.row().with_shape(|shape| {
+                        (!shape.is_empty())
+                            .then(|| shape.sample_points(count, seed))
+                            .transpose()
+                    })?;
+                    (
+                        logical,
+                        values.map(|points| points.into_iter().map(Shape::Point)),
                     )
-                    .map_err(|error| note_array_row(error.into(), row))?;
-            } else {
-                builder
-                    .push_row(std::iter::empty())
-                    .map_err(|error| note_array_row(error.into(), row))?;
-            }
+                },
+            };
+            builder
+                .push_row(values.into_iter().flatten())
+                .map_err(|error| note_array_row(error.into(), row))?;
         }
         crate::py::vectors::Groups::from_geometry_builder(self.frame.clone(), builder)
     }
@@ -832,14 +833,21 @@ impl PyGeometryArray {
             let cutters = splitters.clone();
             py.detach(move || {
                 let mut shapes = Vec::new();
-                for (line, cutter) in lines.logical_shape_rows().zip(cutters.logical_shape_rows()) {
-                    if let (
-                        crate::array::LogicalShapeRow::Present { shape: line, .. },
-                        crate::array::LogicalShapeRow::Present { shape: cutter, .. },
-                    ) = (line, cutter)
-                    {
-                        shapes.extend(line.split(&cutter, tolerance)?);
-                    }
+                for (line, cutter) in lines
+                    .row_operation()
+                    .rows_with_missing(|| ())
+                    .zip(cutters.row_operation().rows_with_missing(|| ()))
+                {
+                    let (ArrayRow::Present(line), ArrayRow::Present(cutter)) = (line, cutter)
+                    else {
+                        continue;
+                    };
+                    line.row().with_shape(|line| {
+                        cutter.row().with_shape(|cutter| {
+                            shapes.extend(line.split(cutter, tolerance)?);
+                            Ok::<_, Error>(())
+                        })
+                    })?;
                 }
                 Ok::<_, Error>(shapes)
             })?

@@ -2,6 +2,7 @@
 
 use pyo3::types::PyAny;
 
+use crate::array::ArrayRow;
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, Frame, GeometryInput, Py, PyGeometryArray,
     PyResult, Python, Shape, classify_required, crs, float64_array, paired_arrays, resolve_metric,
@@ -35,11 +36,15 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             float64_array(
                 py,
                 array
-                    .logical_shape_rows()
+                    .row_operation()
+                    .rows_with_missing(|| f64::NAN)
                     .map(|left| match left {
-                        crate::array::LogicalShapeRow::Missing { .. } => Ok(f64::NAN),
-                        crate::array::LogicalShapeRow::Present { logical, shape } => {
-                            kernel(&model, &shape, right.shape(), densify.at(logical))
+                        ArrayRow::Missing { value, .. } => Ok(value),
+                        ArrayRow::Present(left) => {
+                            let logical = left.logical();
+                            left.row().with_shape(|left| {
+                                kernel(&model, left, right.shape(), densify.at(logical))
+                            })
                         },
                     })
                     .collect_rows()
@@ -52,16 +57,18 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             float64_array(
                 py,
                 array
-                    .logical_shape_rows()
-                    .zip(right.logical_shape_rows())
+                    .row_operation()
+                    .rows_with_missing(|| f64::NAN)
+                    .zip(right.row_operation().rows_with_missing(|| f64::NAN))
                     .map(|(left, right)| match (left, right) {
-                        (
-                            crate::array::LogicalShapeRow::Present {
-                                logical,
-                                shape: left,
-                            },
-                            crate::array::LogicalShapeRow::Present { shape: right, .. },
-                        ) => kernel(&model, &left, &right, densify.at(logical)),
+                        (ArrayRow::Present(left), ArrayRow::Present(right)) => {
+                            let logical = left.logical();
+                            left.row().with_shape(|left| {
+                                right.row().with_shape(|right| {
+                                    kernel(&model, left, right, densify.at(logical))
+                                })
+                            })
+                        },
                         _ => Ok(f64::NAN),
                     })
                     .collect_rows()

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::{GeometryArrayStorage, RowProductsHandle, ShapeRow, ValidityMask};
+use crate::array::{ArrayRow, ArrayRowOperation, GeometryArrayStorage, ShapeRow, ValidityMask};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, paired_arrays,
@@ -105,7 +105,7 @@ where
             usize,
             ShapeRow<'row>,
             &CachelessRowContext<'ctx>,
-            &mut RowProductsHandle,
+            &mut ArrayRowOperation<'row>,
         ) -> Result<R>
         + Send
         + Sync,
@@ -113,24 +113,21 @@ where
     let array = array.clone();
     py.detach(move || {
         let frame = &frame;
-        let mut products = array.row_products.operation();
-        array
-            .logical_storage_rows()
-            .map(|logical_row| {
-                let crate::array::LogicalRow::Present {
-                    logical: row,
-                    row: shape_row,
-                } = logical_row
-                else {
-                    return Ok(R::missing_value());
-                };
-                let ctx = CachelessRowContext {
-                    frame,
-                    domain,
-                    metric,
-                    lane: Lane::Array(row),
-                };
-                kernel(row, shape_row, &ctx, &mut products)
+        let mut rows = array.row_operation();
+        rows.rows_with_missing(R::missing_value)
+            .map(|row| match row {
+                ArrayRow::Missing { value, .. } => Ok(value),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape_row = present.row();
+                    let ctx = CachelessRowContext {
+                        frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    kernel(row_index, shape_row, &ctx, &mut rows)
+                },
             })
             .collect_rows()
     })
@@ -154,8 +151,8 @@ where
             ShapeRow<'left>,
             ShapeRow<'right>,
             &CachelessRowContext<'ctx>,
-            &mut RowProductsHandle,
-            &mut RowProductsHandle,
+            &mut ArrayRowOperation<'left>,
+            &mut ArrayRowOperation<'right>,
         ) -> Result<R>
         + Send
         + Sync,
@@ -166,36 +163,34 @@ where
     let values = py
         .detach(move || {
             let frame = &frame;
-            let mut left_products = left_array.row_products.operation();
-            let mut right_products = right_array.row_products.operation();
-            left_array
-                .logical_storage_rows()
-                .zip(right_array.logical_storage_rows())
-                .map(|(left_row, right_row)| {
-                    let (
-                        crate::array::LogicalRow::Present {
-                            logical: row,
-                            row: left_row,
-                        },
-                        crate::array::LogicalRow::Present { row: right_row, .. },
-                    ) = (left_row, right_row)
-                    else {
-                        return Ok(R::missing_value());
-                    };
-                    let ctx = CachelessRowContext {
-                        frame,
-                        domain,
-                        metric,
-                        lane: Lane::Array(row),
-                    };
-                    kernel(
-                        row,
-                        left_row,
-                        right_row,
-                        &ctx,
-                        &mut left_products,
-                        &mut right_products,
-                    )
+            let mut left_rows = left_array.row_operation();
+            let mut right_rows = right_array.row_operation();
+            left_rows
+                .rows_with_missing(R::missing_value)
+                .zip(right_rows.rows_with_missing(R::missing_value))
+                .map(|(left, right)| match (left, right) {
+                    (ArrayRow::Present(left), ArrayRow::Present(right)) => {
+                        let row_index = left.logical();
+                        let left_row = left.row();
+                        let right_row = right.row();
+                        let ctx = CachelessRowContext {
+                            frame,
+                            domain,
+                            metric,
+                            lane: Lane::Array(row_index),
+                        };
+                        kernel(
+                            row_index,
+                            left_row,
+                            right_row,
+                            &ctx,
+                            &mut left_rows,
+                            &mut right_rows,
+                        )
+                    },
+                    (ArrayRow::Missing { value, .. }, _) | (_, ArrayRow::Missing { value, .. }) => {
+                        Ok(value)
+                    },
                 })
                 .collect_rows()
         })
@@ -232,7 +227,6 @@ where
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let fixed_plan = fixed.plan_or_transient();
-    let array_handle = array.clone();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
     // bare `&Shape` (Deref coercion would drop prepared engines).
@@ -243,7 +237,7 @@ where
         domain,
         metric,
         move |row, array_row, ctx, products| {
-            let array_data = array_handle.prepared_row_with(products, row, array_row);
+            let array_data = products.prepared_at(row, array_row);
             match side {
                 ArrayOperandSide::Left => kernel(&array_data, &fixed_plan, ctx),
                 ArrayOperandSide::Right => kernel(&fixed_plan, &array_data, ctx),
@@ -274,8 +268,6 @@ where
     let output_frame = frame.clone();
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let left_array = left.clone();
-    let right_array = right.clone();
     // Prepared handles; frame caches derived from MetricCtx.
     let (values, missing) = run_paired_rows(
         py,
@@ -286,8 +278,8 @@ where
         domain,
         metric,
         move |row, left_row, right_row, ctx, left_products, right_products| {
-            let left_data = left_array.prepared_row_with(left_products, row, left_row);
-            let right_data = right_array.prepared_row_with(right_products, row, right_row);
+            let left_data = left_products.prepared_at(row, left_row);
+            let right_data = right_products.prepared_at(row, right_row);
             kernel(&left_data, &right_data, ctx)
         },
     )?;
@@ -418,18 +410,16 @@ where
             let array = array.clone();
             let values = py
                 .detach(move || {
-                    let mut products = array.row_products.operation();
-                    array
-                        .logical_storage_rows()
+                    let mut rows = array.row_operation();
+                    rows.rows_with_missing(R::missing_value)
                         .map(|logical_row| {
-                            let crate::array::LogicalRow::Present {
-                                logical: row,
-                                row: shape,
-                            } = logical_row
-                            else {
-                                return Ok(R::missing_value());
+                            let ArrayRow::Present(row) = logical_row else {
+                                if let ArrayRow::Missing { value, .. } = logical_row {
+                                    return Ok(value);
+                                }
+                                unreachable!();
                             };
-                            let data = array.prepared_row_with(&mut products, row, shape);
+                            let data = rows.prepared(row);
                             if scalar_left {
                                 planar(to_metre.get(), &fixed, &data)
                             } else {
@@ -450,19 +440,18 @@ where
             let array = array.clone();
             let values = py
                 .detach(move || {
-                    let mut products = array.row_products.operation();
-                    array
-                        .logical_storage_rows()
+                    let mut rows = array.row_operation();
+                    rows.rows_with_missing(R::missing_value)
                         .map(|logical_row| {
-                            let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row: shape,
-                            } = logical_row
-                            else {
-                                return Ok(R::missing_value());
+                            let ArrayRow::Present(row) = logical_row else {
+                                if let ArrayRow::Missing { value, .. } = logical_row {
+                                    return Ok(value);
+                                }
+                                unreachable!();
                             };
-                            let data = array.prepared_row_with(&mut products, row_index, shape);
-                            let row_cache = products.frame_cache(row_index);
+                            let row_index = row.logical();
+                            let data = rows.prepared(row);
+                            let row_cache = rows.frame_cache(row_index);
                             let row = if scalar_left {
                                 GeodesicBinaryRow {
                                     metric,
@@ -495,24 +484,19 @@ where
             let right = right.clone();
             let values = py
                 .detach(move || {
-                    let mut left_products = left.row_products.operation();
-                    let mut right_products = right.row_products.operation();
-                    left.logical_storage_rows()
-                        .zip(right.logical_storage_rows())
-                        .map(|(left_row, right_row)| {
-                            let (
-                                crate::array::LogicalRow::Present {
-                                    logical: row,
-                                    row: a,
-                                },
-                                crate::array::LogicalRow::Present { row: b, .. },
-                            ) = (left_row, right_row)
-                            else {
-                                return Ok(R::missing_value());
-                            };
-                            let a = left.prepared_row_with(&mut left_products, row, a);
-                            let b = right.prepared_row_with(&mut right_products, row, b);
-                            planar(to_metre.get(), &a, &b)
+                    let mut left_rows = left.row_operation();
+                    let mut right_rows = right.row_operation();
+                    left_rows
+                        .rows_with_missing(R::missing_value)
+                        .zip(right_rows.rows_with_missing(R::missing_value))
+                        .map(|(left_row, right_row)| match (left_row, right_row) {
+                            (ArrayRow::Present(a), ArrayRow::Present(b)) => {
+                                let a = left_rows.prepared(a);
+                                let b = right_rows.prepared(b);
+                                planar(to_metre.get(), &a, &b)
+                            },
+                            (ArrayRow::Missing { value, .. }, _)
+                            | (_, ArrayRow::Missing { value, .. }) => Ok(value),
                         })
                         .collect_rows()
                 })
@@ -527,31 +511,27 @@ where
             let right = right.clone();
             let values = py
                 .detach(move || {
-                    let mut left_products = left.row_products.operation();
-                    let mut right_products = right.row_products.operation();
-                    left.logical_storage_rows()
-                        .zip(right.logical_storage_rows())
-                        .map(|(left_row, right_row)| {
-                            let (
-                                crate::array::LogicalRow::Present {
-                                    logical: row_index,
-                                    row: a,
-                                },
-                                crate::array::LogicalRow::Present { row: b, .. },
-                            ) = (left_row, right_row)
-                            else {
-                                return Ok(R::missing_value());
-                            };
-                            let a = left.prepared_row_with(&mut left_products, row_index, a);
-                            let b = right.prepared_row_with(&mut right_products, row_index, b);
-                            let left_cache = left_products.frame_cache(row_index);
-                            let right_cache = right_products.frame_cache(row_index);
-                            let row = GeodesicBinaryRow {
-                                metric,
-                                left_cache: &left_cache,
-                                right_cache: &right_cache,
-                            };
-                            geodesic(&a, &b, &row)
+                    let mut left_rows = left.row_operation();
+                    let mut right_rows = right.row_operation();
+                    left_rows
+                        .rows_with_missing(R::missing_value)
+                        .zip(right_rows.rows_with_missing(R::missing_value))
+                        .map(|(left_row, right_row)| match (left_row, right_row) {
+                            (ArrayRow::Present(a), ArrayRow::Present(b)) => {
+                                let row_index = a.logical();
+                                let a = left_rows.prepared(a);
+                                let b = right_rows.prepared(b);
+                                let left_cache = left_rows.frame_cache(row_index);
+                                let right_cache = right_rows.frame_cache(row_index);
+                                let row = GeodesicBinaryRow {
+                                    metric,
+                                    left_cache: &left_cache,
+                                    right_cache: &right_cache,
+                                };
+                                geodesic(&a, &b, &row)
+                            },
+                            (ArrayRow::Missing { value, .. }, _)
+                            | (_, ArrayRow::Missing { value, .. }) => Ok(value),
                         })
                         .collect_rows()
                 })
@@ -829,12 +809,7 @@ where
                 metric,
                 move |row, right_row, ctx, products| {
                     let known_bounds = right_row.quick_bounds();
-                    let right_data = right.warm_prepared_row_or_transient_with(
-                        products,
-                        row,
-                        right_row,
-                        known_bounds,
-                    );
+                    let right_data = products.warm_prepared_at(row, right_row, known_bounds);
                     invoke_topology_geometry_kernel(domain, &left_fixed, &right_data, &|l, r| {
                         kernel(l, r, ctx)
                     })
@@ -931,8 +906,7 @@ where
                 metric,
                 move |row, left_row, ctx, products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
-                    let left_data =
-                        left.warm_prepared_row_or_transient_with(products, row, left_row, left_box);
+                    let left_data = products.warm_prepared_at(row, left_row, left_box);
                     invoke_topology_geometry_kernel(domain, &left_data, &right_shape, &|l, r| {
                         kernel(l, r, ctx)
                     })
@@ -955,18 +929,8 @@ where
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let right_box =
                         row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
-                    let left_data = left.warm_prepared_row_or_transient_with(
-                        left_products,
-                        row,
-                        left_row,
-                        left_box,
-                    );
-                    let right_data = right.warm_prepared_row_or_transient_with(
-                        right_products,
-                        row,
-                        right_row,
-                        right_box,
-                    );
+                    let left_data = left_products.warm_prepared_at(row, left_row, left_box);
+                    let right_data = right_products.warm_prepared_at(row, right_row, right_box);
                     invoke_topology_geometry_kernel(domain, &left_data, &right_data, &|l, r| {
                         kernel(l, r, ctx)
                     })

@@ -1705,19 +1705,23 @@ fn destination_many_array(
         let frame = array.frame.clone();
         let shapes = py.detach(move || {
             array
-                .logical_shape_rows()
+                .row_operation()
+                .rows_with_missing(|| Option::<Shape>::None)
                 .map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
-                    crate::array::LogicalShapeRow::Present { logical, shape } => {
-                        let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                        point_destination(
-                            &geometry,
-                            bearing.values[logical],
-                            distance.values[logical],
-                            unit,
-                        )
-                        .map(Some)
-                        .map_err(|err| crate::note_array_row(err, logical))
+                    crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                    crate::array::ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        row.row().with_shape(|shape| {
+                            let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                            point_destination(
+                                &geometry,
+                                bearing.values[logical],
+                                distance.values[logical],
+                                unit,
+                            )
+                            .map(Some)
+                            .map_err(|err| crate::note_array_row(err, logical))
+                        })
                     },
                 })
                 .collect::<PyResult<Vec<_>>>()
@@ -1737,19 +1741,23 @@ fn destination_many_array(
         let frame = array.frame.clone();
         let shapes = py.detach(move || {
             array
-                .logical_shape_rows()
+                .row_operation()
+                .rows_with_missing(|| Option::<Shape>::None)
                 .map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
-                    crate::array::LogicalShapeRow::Present { logical, shape } => {
-                        let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                        point_destination(
-                            &geometry,
-                            bearing.values[logical],
-                            distance.values[logical],
-                            unit,
-                        )
-                        .map(Some)
-                        .map_err(|err| crate::note_array_row(err, logical))
+                    crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                    crate::array::ArrayRow::Present(row) => {
+                        let logical = row.logical();
+                        row.row().with_shape(|shape| {
+                            let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                            point_destination(
+                                &geometry,
+                                bearing.values[logical],
+                                distance.values[logical],
+                                unit,
+                            )
+                            .map(Some)
+                            .map_err(|err| crate::note_array_row(err, logical))
+                        })
                     },
                 })
                 .collect::<PyResult<Vec<_>>>()
@@ -2238,15 +2246,19 @@ fn point_unary_geometry(
                     let frame = output_frame.clone();
                     let shapes = py.detach(move || {
                         array
-                            .logical_shape_rows()
+                            .row_operation()
+                            .rows_with_missing(|| Option::<Shape>::None)
                             .map(|row| match row {
-                                crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
-                                crate::array::LogicalShapeRow::Present { logical, shape } => {
-                                    let geometry =
-                                        PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                                    fallback(&geometry, logical)
-                                        .map(Some)
-                                        .map_err(|err| crate::note_array_row(err, logical))
+                                crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                                crate::array::ArrayRow::Present(row) => {
+                                    let logical = row.logical();
+                                    row.row().with_shape(|shape| {
+                                        let geometry =
+                                            PyGeometry::with_frame(shape.clone(), frame.clone());
+                                        fallback(&geometry, logical)
+                                            .map(Some)
+                                            .map_err(|err| crate::note_array_row(err, logical))
+                                    })
                                 },
                             })
                             .collect::<PyResult<Vec<_>>>()
@@ -2282,15 +2294,18 @@ fn point_unary_geometry(
             let frame = output_frame.clone();
             let shapes = py.detach(move || {
                 array
-                    .logical_shape_rows()
+                    .row_operation()
+                    .rows_with_missing(|| Option::<Shape>::None)
                     .map(|row| match row {
-                        crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
-                        crate::array::LogicalShapeRow::Present { logical, shape } => {
-                            let geometry =
-                                PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                            fallback(&geometry, logical)
-                                .map(Some)
-                                .map_err(|err| crate::note_array_row(err, logical))
+                        crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                        crate::array::ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            row.row().with_shape(|shape| {
+                                let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
+                                fallback(&geometry, logical)
+                                    .map(Some)
+                                    .map_err(|err| crate::note_array_row(err, logical))
+                            })
                         },
                     })
                     .collect::<PyResult<Vec<_>>>()

@@ -11,9 +11,9 @@ use std::sync::Arc;
 use crate::array::{
     ArrayRows, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn, ElementBounds,
     Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows,
-    OriginSpec, PackedColumns, Point, PointColumnBuilder, PolygonLevel, PresentRows, Py, PyAny,
-    PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef,
-    Shape, TotalBoundsCache, ValidityMask, affine_about, contiguous_physical_range,
+    OriginSpec, PackedColumns, Point, PointColumnBuilder, PolygonLevel, Py, PyAny, PyErr,
+    PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef, Shape,
+    TotalBoundsCache, ValidityMask, affine_about, contiguous_physical_range,
     packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
     row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
 };
@@ -48,10 +48,6 @@ impl PyGeometryArray {
 
     pub(crate) fn logical_rows(&self) -> LogicalRows<'_> {
         self.rows.logical_rows()
-    }
-
-    pub(crate) fn present_rows(&self) -> PresentRows<'_> {
-        self.rows.present_rows()
     }
 
     pub(crate) const fn is_compact_nullable(&self) -> bool {
@@ -124,10 +120,11 @@ impl PyGeometryArray {
     ) -> PyResult<Py<PyAny>> {
         if self.is_compact_nullable() {
             let values: Vec<Option<f64>> = self
-                .logical_shape_rows()
+                .row_operation()
+                .rows_with_missing(|| None::<f64>)
                 .map(|row| match row {
-                    crate::array::LogicalShapeRow::Missing { .. } => None,
-                    crate::array::LogicalShapeRow::Present { shape, .. } => from_shape(&shape),
+                    crate::array::ArrayRow::Missing { value, .. } => value,
+                    crate::array::ArrayRow::Present(row) => row.row().with_shape(&from_shape),
                 })
                 .collect();
             return crate::py::numpy::optional_float64_array(py, values);
@@ -170,10 +167,11 @@ impl PyGeometryArray {
             .get_or_init(|| {
                 if self.is_compact_nullable() {
                     Some(
-                        self.logical_rows()
+                        self.row_operation()
+                            .rows_with_missing(|| ())
                             .map(|row| match row {
-                                LogicalRow::Missing { .. } => None,
-                                LogicalRow::Present { row, .. } => row.quick_bounds(),
+                                crate::array::ArrayRow::Missing { .. } => None,
+                                crate::array::ArrayRow::Present(row) => row.row().quick_bounds(),
                             })
                             .collect::<Vec<_>>()
                             .into(),
@@ -258,20 +256,19 @@ impl PyGeometryArray {
         };
         let axes = coords.axes();
         let mut builder = CoordSeqBuilder::try_with_capacity(axes, self.len())?;
-        for row in self.logical_storage_rows() {
+        for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
-                LogicalRow::Missing { .. } => builder.push_xyzm(
+                crate::array::ArrayRow::Missing { .. } => builder.push_xyzm(
                     f64::NAN,
                     f64::NAN,
                     axes.has_z().then_some(f64::NAN),
                     axes.has_m().then_some(f64::NAN),
                 ),
-                LogicalRow::Present {
-                    row: crate::array::ShapeRow::Point(point),
-                    ..
-                } => builder.push(point),
-                LogicalRow::Present { .. } => {
-                    unreachable!("compact point storage yields only point rows")
+                crate::array::ArrayRow::Present(row) => match row.row() {
+                    crate::array::ShapeRow::Point(point) => builder.push(point),
+                    _ => {
+                        unreachable!("compact point storage yields point rows")
+                    },
                 },
             }
         }

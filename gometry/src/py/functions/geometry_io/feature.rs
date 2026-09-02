@@ -344,22 +344,27 @@ fn to_feature_collection_impl(
         };
         let ids = aligned_rows(ids, array.len(), "ids")?;
         for ((row, properties), id) in array
-            .logical_shape_rows()
+            .row_operation()
+            .rows_with_missing(|| ())
             .zip(properties.iter())
             .zip(ids.iter())
         {
-            let shape = match &row {
-                crate::array::LogicalShapeRow::Missing { .. } => None,
-                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.as_ref()),
+            let feature = match row {
+                crate::array::ArrayRow::Missing { .. } => {
+                    feature_dict(py, None, array_crs, properties.as_ref(), id.as_ref(), true)?
+                },
+                crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
+                    feature_dict(
+                        py,
+                        Some(shape),
+                        array_crs,
+                        properties.as_ref(),
+                        id.as_ref(),
+                        true,
+                    )
+                })?,
             };
-            features.append(feature_dict(
-                py,
-                shape,
-                array_crs,
-                properties.as_ref(),
-                id.as_ref(),
-                true,
-            )?)?;
+            features.append(feature)?;
         }
     } else {
         let geometry_rows = if exact_geometry(values).is_some() || values.is_none() {

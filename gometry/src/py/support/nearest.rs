@@ -2,7 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::array::ValidityMask;
+use crate::array::{ArrayRow, ValidityMask};
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
     PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
@@ -87,21 +87,18 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
     let left = left.clone();
     let result = py
         .detach(move || {
-            let mut products = left.row_products.operation();
-            left.logical_storage_rows()
+            let mut rows = left.row_operation();
+            rows.rows_with_missing(|| f64::NAN)
                 .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: index,
-                        row,
-                    } = logical_row
-                    else {
+                    let ArrayRow::Present(row) = logical_row else {
                         return Ok(f64::NAN);
                     };
-                    let line = left.prepared_row_with(&mut products, index, row);
+                    let index = row.logical();
+                    let line = rows.prepared(row);
                     crate::broadcast::degrade_linref_float(line_locate_shape(
                         &model,
                         &line,
-                        &products.frame_cache(index),
+                        &rows.frame_cache(index),
                         query,
                         normalized,
                     ))
@@ -138,7 +135,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     let array_owned = array.clone();
     if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
         let rows = py.detach(move || {
-            let mut products = array_owned.row_products.operation();
+            let mut rows = array_owned.row_operation();
             crate::crs::with_resolved_ellipsoid_metric_at(
                 &crs,
                 &[fixed_plan.shape()],
@@ -154,19 +151,15 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                             metric,
                         )?;
                     }
-                    Ok(array_owned
-                        .logical_storage_rows()
+                    Ok(rows
+                        .rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
                         .map(|logical_row| {
-                            let crate::array::LogicalRow::Present {
-                                logical: row_index,
-                                row,
-                            } = logical_row
-                            else {
+                            let ArrayRow::Present(row) = logical_row else {
                                 return Ok((None, CoordinateAxes::XY));
                             };
-                            let element =
-                                array_owned.prepared_row_with(&mut products, row_index, row);
-                            let element_cache = products.frame_cache(row_index);
+                            let row_index = row.logical();
+                            let element = rows.prepared(row);
+                            let element_cache = rows.frame_cache(row_index);
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
@@ -203,18 +196,13 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     }
     let pairs = py
         .detach(move || {
-            let mut products = array_owned.row_products.operation();
-            array_owned
-                .logical_storage_rows()
+            let mut rows = array_owned.row_operation();
+            rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
                 .map(|logical_row| {
-                    let crate::array::LogicalRow::Present {
-                        logical: row_index,
-                        row,
-                    } = logical_row
-                    else {
+                    let ArrayRow::Present(row) = logical_row else {
                         return Ok((None, CoordinateAxes::XY));
                     };
-                    let element = array_owned.prepared_row_with(&mut products, row_index, row);
+                    let element = rows.prepared(row);
                     let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                     if fixed_is_left {
                         metric_nearest_points(&model, &fixed_plan, &element)

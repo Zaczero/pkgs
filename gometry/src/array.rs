@@ -95,14 +95,6 @@ pub(crate) enum LogicalRow<'a> {
     Present { logical: usize, row: ShapeRow<'a> },
 }
 
-impl LogicalRow<'_> {
-    pub(crate) const fn logical(self) -> usize {
-        match self {
-            Self::Missing { logical } | Self::Present { logical, .. } => logical,
-        }
-    }
-}
-
 enum LogicalRowsState<'a> {
     Dense(RowsIter<'a>),
     RowAligned {
@@ -160,19 +152,6 @@ impl<'a> Iterator for LogicalRows<'a> {
 }
 
 impl ExactSizeIterator for LogicalRows<'_> {}
-
-pub(crate) struct PresentRows<'a>(LogicalRows<'a>);
-
-impl<'a> Iterator for PresentRows<'a> {
-    type Item = (usize, ShapeRow<'a>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.find_map(|row| match row {
-            LogicalRow::Missing { .. } => None,
-            LogicalRow::Present { logical, row } => Some((logical, row)),
-        })
-    }
-}
 
 impl ArrayRows {
     fn new(storage: Arc<GeometryArrayStorage>, missing: Option<ValidityMask>) -> Self {
@@ -298,10 +277,6 @@ impl ArrayRows {
             remaining,
         }
     }
-
-    fn present_rows(&self) -> PresentRows<'_> {
-        PresentRows(self.logical_rows())
-    }
 }
 
 #[pyclass(
@@ -358,7 +333,6 @@ pub(crate) type ElementBounds = Arc<[Option<Bounds>]>;
 type TotalBoundsCache = Arc<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>;
 mod linref_kernels;
 mod masked;
-pub(crate) use masked::LogicalShapeRow;
 mod methods_buffer;
 mod methods_convert;
 mod methods_core;
@@ -378,7 +352,9 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use prepared::{BoundsSeed, PreparedRow, RowProducts, RowProductsHandle};
+pub(crate) use prepared::{
+    ArrayRow, ArrayRowOperation, BoundsSeed, PreparedRow, RowProducts, RowProductsHandle,
+};
 mod storage_helpers;
 mod storage_types;
 pub(crate) use packed_column_builder::{PackedColumnBuilder, PointColumnBuilder};

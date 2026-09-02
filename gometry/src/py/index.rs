@@ -462,7 +462,80 @@ pub(crate) struct IndexRows {
     live_count: usize,
 }
 
+/// Operation-scoped access to the index's arbitrary live handles.
+///
+/// Unlike [`crate::array::ArrayRowOperation`], this domain has no logical
+/// missing rows or sequential traversal: candidate refinement visits handles
+/// in tree/order-dependent sequences and also serves boxed overflow rows.
+/// Keeping that distinction explicit avoids making the array adapter carry an
+/// optional product owner or index-specific lifetime rules.
+pub(crate) struct IndexRowOperation<'a> {
+    rows: &'a IndexRows,
+    products: Option<crate::array::RowProductsHandle>,
+}
+
+impl<'a> IndexRowOperation<'a> {
+    fn new(rows: &'a IndexRows) -> Self {
+        Self {
+            rows,
+            products: rows
+                .packed
+                .as_ref()
+                .map(|packed| packed.source.row_products.operation()),
+        }
+    }
+
+    pub(crate) fn row(&self, handle: usize) -> ShapeRow<'a> {
+        self.rows.row(handle)
+    }
+
+    pub(crate) fn prepared(&mut self, handle: usize) -> crate::array::PreparedRow<'a> {
+        let packed_len = self
+            .rows
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.len());
+        if let Some(packed) = &self.rows.packed
+            && handle < packed_len
+        {
+            let row = packed.source.storage().row(handle);
+            return packed.source.prepared_row_with(
+                self.products
+                    .as_mut()
+                    .expect("packed rows have a product handle"),
+                handle,
+                row,
+            );
+        }
+        let geometry = &self.rows.boxed[handle - packed_len];
+        crate::array::PreparedRow::Owned(geometry.prepared_plan())
+    }
+
+    pub(crate) fn frame_cache(
+        &mut self,
+        handle: usize,
+    ) -> Arc<crate::geometry::FrameDependentCaches> {
+        let packed_len = self
+            .rows
+            .packed
+            .as_ref()
+            .map_or(0, |packed| packed.source.len());
+        if self.rows.packed.is_some() && handle < packed_len {
+            return self
+                .products
+                .as_mut()
+                .expect("packed rows have a product handle")
+                .frame_cache(handle);
+        }
+        self.rows.boxed[handle - packed_len].frame_cache()
+    }
+}
+
 impl IndexRows {
+    pub(crate) fn operation(&self) -> IndexRowOperation<'_> {
+        IndexRowOperation::new(self)
+    }
+
     fn live_count(&self) -> usize {
         self.live_count
     }
@@ -498,54 +571,9 @@ impl IndexRows {
         ShapeRow::Shape(item.shape.shape())
     }
 
-    fn row_products_operation(&self) -> Option<crate::array::RowProductsHandle> {
-        self.packed
-            .as_ref()
-            .map(|packed| packed.source.row_products.operation())
-    }
-
-    fn prepared_row_with(
-        &self,
-        handle: usize,
-        products: &mut Option<crate::array::RowProductsHandle>,
-    ) -> crate::array::PreparedRow<'_> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
-        if let Some(packed) = &self.packed
-            && handle < packed_len
-        {
-            let row = packed.source.storage().row(handle);
-            return packed.source.prepared_row_with(
-                products
-                    .as_mut()
-                    .expect("packed rows have a product handle"),
-                handle,
-                row,
-            );
-        }
-        let geometry = &self.boxed[handle - packed_len];
-        crate::array::PreparedRow::Owned(geometry.prepared_plan())
-    }
-
     fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
-        let mut products = self.row_products_operation();
-        self.prepared_row_with(handle, &mut products)
-    }
-
-    fn frame_cache_with(
-        &self,
-        handle: usize,
-        products: &mut Option<crate::array::RowProductsHandle>,
-    ) -> Arc<crate::geometry::FrameDependentCaches> {
-        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
-        if let Some(packed) = &self.packed
-            && handle < packed.source.len()
-        {
-            return products
-                .as_mut()
-                .expect("packed rows have a product handle")
-                .frame_cache(handle);
-        }
-        self.boxed[handle - packed_len].frame_cache()
+        let mut operation = self.operation();
+        operation.prepared(handle)
     }
 
     fn push(&mut self, geometry: PyGeometry) -> usize {

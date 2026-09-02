@@ -483,7 +483,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     // admitted, the fixed scalar graph remains query-local and shared by rows.
     let scalar_cartesian_graph = OnceCell::new();
     let scalar_geographic_graph = OnceCell::new();
-    let mut row_products = array.map(|array| array.row_products.operation());
+    let mut row_operation = array.map(PyGeometryArray::row_operation);
     let gate = |index: usize, row: ShapeRow<'_>| -> Option<bool> {
         let row_operand = GateOperand::new(
             row,
@@ -542,16 +542,14 @@ pub(crate) fn scalar_vs_shapes<'a>(
             } else {
                 let row = row.expect("present logical row carries storage");
                 gate(index, row).unwrap_or_else(|| {
-                    let element = match (array, row_products.as_mut()) {
-                        (Some(array), Some(products)) => {
-                            array.prepared_row_with(products, index, row)
-                        },
-                        _ => crate::array::PreparedRow::transient(row),
-                    };
+                    let element = row_operation.as_mut().map_or_else(
+                        || crate::array::PreparedRow::transient(row),
+                        |operation| operation.prepared_at(index, row),
+                    );
                     let transient_cache = crate::geometry::FrameDependentCaches::default();
-                    let row_cache = row_products
+                    let row_cache = row_operation
                         .as_mut()
-                        .map(|products| products.frame_cache(index));
+                        .map(|operation| operation.frame_cache(index));
                     let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
                     match domain {
                         TopologyDomain::Cartesian => {
@@ -784,10 +782,13 @@ mod tests {
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
             &scalar,
-            array.logical_storage_rows().map(|row| match row {
-                crate::array::LogicalRow::Missing { logical } => (logical, None),
-                crate::array::LogicalRow::Present { logical, row } => (logical, Some(row)),
-            }),
+            array
+                .row_operation()
+                .rows_with_missing(|| ())
+                .map(|row| match row {
+                    crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
+                    crate::array::ArrayRow::Present(row) => (row.logical(), Some(row.row())),
+                }),
             false,
             Some(&array),
             TopologyDomain::Cartesian,
@@ -870,10 +871,13 @@ mod tests {
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
             &scalar,
-            array.logical_storage_rows().map(|row| match row {
-                crate::array::LogicalRow::Missing { logical } => (logical, None),
-                crate::array::LogicalRow::Present { logical, row } => (logical, Some(row)),
-            }),
+            array
+                .row_operation()
+                .rows_with_missing(|| ())
+                .map(|row| match row {
+                    crate::array::ArrayRow::Missing { logical, .. } => (logical, None),
+                    crate::array::ArrayRow::Present(row) => (row.logical(), Some(row.row())),
+                }),
             false,
             Some(&array),
             TopologyDomain::Geographic(degrees()),

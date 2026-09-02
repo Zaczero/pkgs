@@ -91,7 +91,7 @@ pub(crate) fn shortest_line(
                 let scalar_cache = geometry.frame_cache();
                 let array = array.clone();
                 let rows = py.detach(move || {
-                    let mut products = array.row_products.operation();
+                    let mut rows = array.row_operation();
                     crs::with_resolved_ellipsoid_metric_at(
                         &crs,
                         &[scalar.shape()],
@@ -105,14 +105,12 @@ pub(crate) fn shortest_line(
                                 flattening,
                                 metric,
                             )?;
-                            Ok(array
-                                .storage()
-                                .iter_rows()
-                                .enumerate()
-                                .map(|(row_index, row)| {
-                                    let element =
-                                        array.prepared_row_with(&mut products, row_index, row);
-                                    let element_cache = products.frame_cache(row_index);
+                            Ok(rows
+                                .present_rows()
+                                .map(|row| {
+                                    let row_index = row.logical();
+                                    let element = rows.prepared(row);
+                                    let element_cache = rows.frame_cache(row_index);
                                     Ok(crate::geometry::nearest_line(
                                         scalar.geodesic_nearest_points_cached_split(
                                             &scalar_cache,

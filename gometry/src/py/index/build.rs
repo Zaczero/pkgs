@@ -241,21 +241,19 @@ pub(crate) fn build_spatial_index(
         {
             return Ok(index);
         }
-        let mut products = array.row_products.operation();
-        let rows = crate::try_collect_results(array.logical_storage_rows().map(|logical_row| {
-            match logical_row {
-                crate::array::LogicalRow::Missing { .. } => Ok(None),
-                crate::array::LogicalRow::Present { logical, row } => {
-                    let plan = array
-                        .prepared_row_with(&mut products, logical, row)
-                        .into_owned_plan();
+        let mut row_operation = array.row_operation();
+        let rows = crate::try_collect_results(row_operation.rows_with_missing(|| ()).map(
+            |logical_row| match logical_row {
+                crate::array::ArrayRow::Missing { .. } => Ok(None),
+                crate::array::ArrayRow::Present(row) => {
+                    let plan = row_operation.prepared(row).into_owned_plan();
                     Ok(Some(PyGeometry::from_prepared_plan(
                         plan,
                         array.frame.clone(),
                     )))
                 },
-            }
-        }))?;
+            },
+        ))?;
         // Frame is adopted only when at least one non-missing geometry is
         // present. A zero-row OR all-missing source leaves the index
         // frame-FREE (adopted by the first successful insert) — locking an
