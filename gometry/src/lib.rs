@@ -45,6 +45,7 @@ use boundary::{
     try_reserve_heap, try_reserve_hint, try_reserve_pair, try_reserve_vec, try_string_from_str,
     try_vec_with_capacity, try_vec_with_capacity_hint, validate_lonlat_shape,
     validate_subdivide_max_vertices, wgs84_crs, with_one_byte_buffer,
+    reject_multidimensional_coordinate_array,
 };
 mod collections;
 #[cfg(test)]

@@ -294,6 +294,22 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
     assert points[1].z == 6.0
 
 
+def test_points_reject_multidimensional_columns_without_flattening() -> None:
+    matrix = np.zeros((3, 3), dtype=np.float64)
+    with pytest.raises(TypeError, match='one-dimensional'):
+        gm.points(matrix, matrix)
+    with pytest.raises(TypeError, match='one-dimensional'):
+        gm.points(np.zeros(3), np.zeros(3), z=matrix)
+
+    points = gm.points(
+        np.array([-0.0, 1e300]),
+        np.array([0.0, -1e300]),
+    )
+    assert len(points) == 2
+    assert gm.equals(points[0], gm.Point(0.0, 0.0))
+    assert points[1].coords.to_nested() == [1e300, -1e300]
+
+
 @pytest.mark.parametrize(
     ('z', 'm', 'axes'),
     [

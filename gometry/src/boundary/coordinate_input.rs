@@ -49,6 +49,29 @@ pub(crate) fn coordinate_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult
     }
 }
 
+/// Coordinate columns are scalar or one-dimensional.  A two-dimensional
+/// numeric array is a coordinate matrix, not a column; accepting its buffer
+/// item count would silently flatten rows into unrelated points.
+pub(crate) fn reject_multidimensional_coordinate_array(
+    value: &Bound<'_, PyAny>,
+    name: &str,
+) -> PyResult<()> {
+    crate::py::numpy::reject_masked_array(value)?;
+    let dimensions = if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+        buffer.dimensions()
+    } else if let Ok(array) = value.cast::<PyUntypedArray>() {
+        array.ndim()
+    } else {
+        return Ok(());
+    };
+    if dimensions > 1 {
+        return Err(PyTypeError::new_err(format!(
+            "{name} must be a scalar or a one-dimensional sequence; got a {dimensions}-dimensional array"
+        )));
+    }
+    Ok(())
+}
+
 fn coordinate_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
     let scalar = match f64_scalar_named(name, value) {
         Ok(scalar) => scalar,
@@ -407,7 +430,7 @@ pub(crate) fn coordinate_arc_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Arc<[f64]>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         return coordinate_arc_values_from_buffer(py, &buffer);
     }
@@ -723,7 +746,7 @@ pub(crate) fn coordinate_arc_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Arc<[f64]>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got != expected {
@@ -783,7 +806,7 @@ pub(crate) fn coordinate_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Vec<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
@@ -829,7 +852,7 @@ pub(crate) fn coordinate_values_at_most(
     maximum: usize,
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_multidimensional_coordinate_array(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got > maximum {
@@ -893,6 +916,7 @@ pub(crate) fn coordinate_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
+    reject_multidimensional_coordinate_array(value, name)?;
     coordinate_values_exact_with(py, value, name, expected, on_len, |item| {
         coordinate_float(name, item)
     })
@@ -942,13 +966,13 @@ fn coordinate_values_exact_with(
 /// (no `__len__`) return `None`.
 pub(crate) fn coordinate_sequence_len_hint(
     value: &Bound<'_, PyAny>,
-    _name: &str,
+    name: &str,
 ) -> PyResult<Option<usize>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_multidimensional_coordinate_array(value, name)?;
     // Do not invoke a user `__float__` provider merely to discover the pair
     // length. Numeric admission below owns that conversion and must call it
-    // once. Check f64 buffers first because their item count includes every
-    // dimension, matching the existing flattening behavior.
+    // once. Check f64 buffers first because their item count is authoritative
+    // after the rank check above.
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         return Ok((buffer.dimensions() != 0).then_some(buffer.item_count()));
     }

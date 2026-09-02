@@ -148,6 +148,14 @@ pub(super) fn points(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
+    for (name, value) in [("x", x), ("y", y)] {
+        crate::reject_multidimensional_coordinate_array(value, name)?;
+    }
+    for (name, value) in [("z", z), ("m", m)].into_iter().filter_map(|(name, value)| {
+        value.filter(|value| !value.is_none()).map(|value| (name, value))
+    }) {
+        crate::reject_multidimensional_coordinate_array(value, name)?;
+    }
     // Contiguous non-scalar buffers → final Arc columns (Item 12). Scalar
     // broadcast and arbitrary iterators keep the CoordinateInput path below.
     if let Some(seq) = try_points_from_arc_columns(py, x, y, z, m)? {

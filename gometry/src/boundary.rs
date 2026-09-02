@@ -19,6 +19,7 @@ pub(crate) use coordinate_input::{
     optional_coordinate_arc_values_from_buffer, optional_coordinate_input_with_expected,
     parameter_input_with_expected, parameter_values, parameter_values_at_most,
     parameter_values_exact, try_coordseq_from_nd_buffer,
+    reject_multidimensional_coordinate_array,
 };
 pub(crate) use geographic::{point_xy, validate_lonlat_shape};
 pub(crate) use input::{
