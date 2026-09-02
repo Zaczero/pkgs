@@ -77,7 +77,7 @@ side : {'both', 'left', 'right'}, default 'both'
 
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -101,7 +101,7 @@ Examples
 --------
 >>> import gometry as gm
 >>> disc = gm.Point(0, 0).buffer(10)
->>> round(disc.area)  # ~ pi * 10^2
+>>> round(disc.area)  # ~ pi * 10²
 312"
     };
 }
@@ -164,7 +164,7 @@ miter_limit : float, default 5.0
 
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -507,7 +507,7 @@ Parameters
         r"
 unit : {'planar', 'meters'} or None, default None
     ``None`` follows the CRS. ``'planar'`` forces raw coordinate units
-    (degrees-as-Cartesian on a geographic CRS — only for deliberate
+    (native angular units as Cartesian coordinates on a geographic CRS — only for deliberate
     coordinate-space math); ``'meters'`` forces the CRS metric and raises
     without a CRS. Cannot be combined with ``fraction``, which is already
     relative to each segment."
@@ -562,6 +562,12 @@ GeometryArray
 
 Source ordinates are carried where meaningful; synthesized clip vertices use
 the operation's natural XY result.
+
+In a geographic CRS, a subject or rectangle that crosses the seam, reaches a
+pole, or has a non-canonical longitude is clipped through frame-aware overlay.
+Canonical, seam-free, pole-free inputs use direct rectangle clipping. Geographic
+rectangle horizontal edges follow parallels and use the same construction as
+``gm.box``.
 
 Parameters
 ----------

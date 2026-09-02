@@ -4,7 +4,8 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
-use crate::geometry::{FrameDependentCaches, PreparedPlan};
+use crate::array::RowProducts;
+use crate::geometry::PreparedPlan;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
@@ -22,8 +23,8 @@ use crate::{Point, Shape};
 /// Construct with the leaf classes (``Point(...)``, ``LineString(...)``) or
 /// parsers (``from_wkt(...)``),
 /// inspect it (``geom.bounds``, ``geom.coords``), relate it
-/// (``contains(geom, other)``), measure it (``geom.area`` — meters when
-/// a CRS is set), and derive from it (``geom.buffer(10.0)``); every
+/// (``contains(geom, other)``), measure it (``geom.area`` — geodesic meters on
+/// a geographic CRS), and derive from it (``geom.buffer(10.0)``); every
 /// operation returns a new geometry. Instances are one of the typed subclasses
 /// (``Point``, ``LineString``, ``Polygon``, ...), so ``isinstance`` narrows.
 #[pyclass(
@@ -37,14 +38,13 @@ use crate::{Point, Shape};
 )]
 #[derive(Clone, Debug)]
 pub struct PyGeometry {
-    // Frozen, immutable geometry. Heavy prepared state is attached only when
-    // this internal value represents a persistent prepared/index row.
-    // pattern-matches use `geometry.shape.shape()`.
+    // Frozen, immutable geometry. Pattern-matches use `geometry.shape.shape()`.
     pub shape: Arc<ShapeData>,
-    pub(crate) prepared_plan: Option<Arc<PreparedPlan>>,
-    /// Prepared products whose interpretation depends on `frame`. Clones of
-    /// the same framed value share it; every retag creates a fresh sidecar.
-    pub(crate) frame_cache: Arc<FrameDependentCaches>,
+    /// One physical row-product cell owns both shape-derived and frame-derived
+    /// products. Array scalar extraction clones this view, so the scalar and
+    /// its source cannot initialize drifting plan/cache pairs.
+    pub(crate) row_products: RowProducts,
+    pub(crate) product_row: usize,
     /// CRS + coordinate epoch as one frame — the `epoch ⟹ crs` invariant lives
     /// in the type (`Frame` has no epoch-without-CRS variant), not a runtime
     /// guard.
@@ -53,18 +53,16 @@ pub struct PyGeometry {
 
 impl HeapSize for PyGeometry {
     fn heap_bytes(&self) -> usize {
-        // Honest retained cost: the shape block, any explicitly attached
-        // prepared plan, and the Arc-owned frame-cache sidecar and products.
-        // Uninitialized lazy caches are not counted and never forced here.
-        self.prepared_plan
-            .is_none()
-            .then(|| std::mem::size_of_val(self.shape.as_ref()) + self.shape.retained_heap_bytes())
-            .unwrap_or(0)
-            + self.prepared_plan.as_ref().map_or(0, |plan| {
-                std::mem::size_of_val(plan.as_ref()) + plan.heap_bytes()
-            })
-            + std::mem::size_of_val(self.frame_cache.as_ref())
-            + self.frame_cache.heap_bytes()
+        let shape_bytes =
+            std::mem::size_of_val(self.shape.as_ref()) + self.shape.retained_heap_bytes();
+        let product_bytes = self.row_products.heap_bytes_at(self.product_row);
+        // A scalar prepared plan borrows this exact ShapeData Arc. Its retained
+        // size includes the shape, which the scalar already reports above.
+        let prepared_shape_bytes = self
+            .cached_prepared_plan()
+            .filter(|plan| Arc::ptr_eq(plan.shape_arc(), &self.shape))
+            .map_or(0, |_| shape_bytes);
+        shape_bytes + product_bytes.saturating_sub(prepared_shape_bytes)
     }
 }
 
@@ -554,8 +552,8 @@ impl PyGeometryPartsIter {
             source: PyGeometryParts {
                 geometry: PyGeometry {
                     shape: Arc::clone(&base.shape),
-                    prepared_plan: base.prepared_plan.clone(),
-                    frame_cache: Arc::clone(&base.frame_cache),
+                    row_products: base.row_products.clone(),
+                    product_row: base.product_row,
                     frame: base.frame.clone(),
                 },
             },
@@ -609,8 +607,8 @@ impl PyGeometry {
         PyGeometryParts {
             geometry: Self {
                 shape: Arc::clone(&self.shape),
-                prepared_plan: self.prepared_plan.clone(),
-                frame_cache: Arc::clone(&self.frame_cache),
+                row_products: self.row_products.clone(),
+                product_row: self.product_row,
                 frame: self.frame.clone(),
             },
         }
@@ -623,18 +621,55 @@ mod frame_cache_ownership_tests {
     use crate::boundary::crs_arc_static;
 
     #[test]
-    fn scalar_clone_shares_but_retag_gets_fresh_frame_cache() {
+    fn scalar_retag_preserves_row_products_but_new_shapes_are_fresh() {
         let geometry =
-            PyGeometry::with_frame(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)), Frame::None);
+            PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 2.0)), Frame::None);
         let clone = geometry.clone();
-        assert!(Arc::ptr_eq(&geometry.frame_cache, &clone.frame_cache));
+        assert!(Arc::ptr_eq(&geometry.frame_cache(), &clone.frame_cache()));
 
-        let retagged = PyGeometry::with_frame(
-            Arc::clone(&geometry.shape),
-            Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), None),
+        let retagged = geometry.retag_frame(
+            Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("valid static CRS"),
         );
         assert!(Arc::ptr_eq(&geometry.shape, &retagged.shape));
-        assert!(!Arc::ptr_eq(&geometry.frame_cache, &retagged.frame_cache));
+        assert!(Arc::ptr_eq(
+            &geometry.frame_cache(),
+            &retagged.frame_cache()
+        ));
+        assert!(Arc::ptr_eq(
+            &geometry.prepared_plan(),
+            &retagged.prepared_plan()
+        ));
+        assert_eq!(geometry.heap_bytes(), retagged.heap_bytes());
+
+        let mut construction_retag = geometry.clone();
+        construction_retag
+            .set_crs_keep_epoch(Some(crs_arc_static("EPSG:4326")))
+            .expect("static CRS has no epoch to validate");
+        construction_retag
+            .set_epoch_keep_crs(Some(2020.0))
+            .expect("EPSG:4326 accepts a coordinate epoch");
+        assert!(Arc::ptr_eq(
+            &geometry.prepared_plan(),
+            &construction_retag.prepared_plan()
+        ));
+        assert!(Arc::ptr_eq(
+            &geometry.frame_cache(),
+            &construction_retag.frame_cache()
+        ));
+
+        let transformed = PyGeometry::with_frame(
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            retagged.frame.clone(),
+        );
+        assert!(!Arc::ptr_eq(&retagged.shape, &transformed.shape));
+        assert!(!Arc::ptr_eq(
+            &retagged.frame_cache(),
+            &transformed.frame_cache()
+        ));
+        assert!(!Arc::ptr_eq(
+            &retagged.prepared_plan(),
+            &transformed.prepared_plan()
+        ));
     }
 }
 
@@ -658,8 +693,8 @@ macro_rules! geometry_parts_methods {
                 PyGeometryParts {
                     geometry: crate::PyGeometry {
                         shape: Arc::clone(&base.shape),
-                        prepared_plan: base.prepared_plan.clone(),
-                        frame_cache: Arc::clone(&base.frame_cache),
+                        row_products: base.row_products.clone(),
+                        product_row: base.product_row,
                         frame: base.frame.clone(),
                     },
                 }
@@ -778,6 +813,33 @@ geometry_parts_methods!(PyMultiPolygon);
 geometry_parts_methods!(PyGeometryCollection);
 
 impl PyGeometry {
+    pub(crate) fn with_row_products(
+        shape: Arc<ShapeData>,
+        frame: Frame,
+        row_products: RowProducts,
+        product_row: usize,
+    ) -> Self {
+        Self {
+            shape,
+            row_products,
+            product_row,
+            frame,
+        }
+    }
+
+    pub(crate) fn frame_cache(&self) -> Arc<crate::geometry::FrameDependentCaches> {
+        self.row_products.frame_cache(self.product_row)
+    }
+
+    pub(crate) fn prepared_plan(&self) -> Arc<PreparedPlan> {
+        self.row_products
+            .prepared_plan(self.product_row, Arc::clone(&self.shape))
+    }
+
+    pub(crate) fn cached_prepared_plan(&self) -> Option<Arc<PreparedPlan>> {
+        self.row_products.cached_prepared_plan(self.product_row)
+    }
+
     // Constructors take `impl Into<Arc<ShapeData>>` so a caller can pass
     // either a freshly-built `Shape` (wrapped once, fresh caches) or an
     // existing `Arc<ShapeData>` (shared with no coordinate copy AND shared
@@ -788,7 +850,7 @@ impl PyGeometry {
         reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
     )]
     pub fn from_shape_crs(shape: impl Into<Arc<ShapeData>>, crs: Option<Crs>) -> Self {
-        Self::with_epoch(shape, crs, None)
+        Self::with_frame(shape, crs.map_or(Frame::None, Frame::Crs))
     }
 
     // Borrowing frame accessors keep internal kernels on the canonical `Frame`
@@ -816,18 +878,18 @@ impl PyGeometry {
         shape: impl Into<Arc<ShapeData>>,
         crs: Option<Crs>,
         epoch: Option<f64>,
-    ) -> Self {
-        Self {
+    ) -> crate::Result<Self> {
+        Ok(Self {
             shape: shape.into(),
-            prepared_plan: None,
-            frame_cache: Arc::new(FrameDependentCaches::default()),
-            frame: Frame::from_trusted_parts(crs, epoch),
-        }
+            row_products: RowProducts::fresh(1),
+            product_row: 0,
+            frame: Frame::new(crs, epoch)?,
+        })
     }
 
     /// New WGS84 lon/lat geometry with no coordinate epoch.
     pub(crate) fn wgs84(shape: impl Into<Arc<ShapeData>>) -> Self {
-        Self::with_epoch(shape, Some(wgs84_crs()), None)
+        Self::with_frame(shape, Frame::Crs(wgs84_crs()))
     }
 
     /// [`wgs84`](Self::wgs84) wrapped as [`Typed`] for return to Python.
@@ -835,29 +897,38 @@ impl PyGeometry {
         Typed(Self::wgs84(shape))
     }
 
-    /// New geometry from an already-built [`Frame`] — the zero-conversion path
-    /// when the frame is threaded directly (avoids the `from_trusted_parts`
-    /// re-match).
+    /// New geometry from an already-built [`Frame`] with fresh products — the
+    /// zero-conversion path for new coordinate storage.
     pub(crate) fn with_frame(shape: impl Into<Arc<ShapeData>>, frame: Frame) -> Self {
         Self {
             shape: shape.into(),
-            prepared_plan: None,
-            frame_cache: Arc::new(FrameDependentCaches::default()),
+            row_products: RowProducts::fresh(1),
+            product_row: 0,
+            frame,
+        }
+    }
+
+    /// Re-tag immutable coordinates without invalidating their row products.
+    pub(crate) fn retag_frame(&self, frame: Frame) -> Self {
+        Self {
+            shape: Arc::clone(&self.shape),
+            row_products: self.row_products.clone(),
+            product_row: self.product_row,
             frame,
         }
     }
 
     /// Re-tag the CRS, keeping any epoch — a construction-time mutation (the
     /// geometry is `frozen` to Python; these run before it is exposed).
-    pub(crate) fn set_crs_keep_epoch(&mut self, crs: Option<Crs>) {
-        self.frame = Frame::from_trusted_parts(crs, self.frame.epoch());
-        self.frame_cache = Arc::new(FrameDependentCaches::default());
+    pub(crate) fn set_crs_keep_epoch(&mut self, crs: Option<Crs>) -> crate::Result<()> {
+        self.frame = Frame::new(crs, self.frame.epoch())?;
+        Ok(())
     }
 
     /// Re-tag the epoch, keeping the CRS — see [`set_crs_keep_epoch`].
-    pub(crate) fn set_epoch_keep_crs(&mut self, epoch: Option<f64>) {
-        self.frame = Frame::from_trusted_parts(self.frame.crs_owned(), epoch);
-        self.frame_cache = Arc::new(FrameDependentCaches::default());
+    pub(crate) fn set_epoch_keep_crs(&mut self, epoch: Option<f64>) -> crate::Result<()> {
+        self.frame = Frame::new(self.frame.crs_owned(), epoch)?;
+        Ok(())
     }
 
     /// New geometry that keeps this one's CRS and epoch but swaps in `shape`.
@@ -866,14 +937,17 @@ impl PyGeometry {
         reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
     )]
     pub fn with_shape(&self, shape: impl Into<Arc<ShapeData>>) -> Self {
-        Self::with_epoch(shape, self.crs_ref().cloned(), self.epoch())
+        Self::with_frame(shape, self.frame.clone())
     }
 
     pub(crate) fn with_prepared_plan(&self, plan: Arc<PreparedPlan>) -> Self {
+        let plan = self
+            .row_products
+            .install_prepared_plan(self.product_row, plan);
         Self {
             shape: Arc::clone(plan.shape_arc()),
-            prepared_plan: Some(plan),
-            frame_cache: Arc::clone(&self.frame_cache),
+            row_products: self.row_products.clone(),
+            product_row: self.product_row,
             frame: self.frame.clone(),
         }
     }
@@ -881,16 +955,14 @@ impl PyGeometry {
     pub(crate) fn from_prepared_plan(plan: Arc<PreparedPlan>, frame: Frame) -> Self {
         Self {
             shape: Arc::clone(plan.shape_arc()),
-            prepared_plan: Some(plan),
-            frame_cache: Arc::new(FrameDependentCaches::default()),
+            row_products: RowProducts::fresh(1),
+            product_row: 0,
             frame,
         }
     }
 
     pub(crate) fn plan_or_transient(&self) -> Arc<PreparedPlan> {
-        self.prepared_plan
-            .clone()
-            .unwrap_or_else(|| Arc::new(PreparedPlan::new(Arc::clone(&self.shape))))
+        self.prepared_plan()
     }
 
     /// Like [`with_shape`](Self::with_shape) but wrapped as [`Typed`] for
@@ -902,20 +974,5 @@ impl PyGeometry {
     )]
     pub fn typed_shape(&self, shape: impl Into<Arc<ShapeData>>) -> Typed {
         Typed(self.with_shape(shape))
-    }
-
-    /// Like [`with_epoch`](Self::with_epoch) but wrapped as [`Typed`] for
-    /// return to Python (used where the CRS/epoch change, e.g. `to_crs`,
-    /// `set_crs`).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the constructor accepts an ownership conversion; a named generic is not part of its API"
-    )]
-    pub fn typed_with_epoch(
-        shape: impl Into<Arc<ShapeData>>,
-        crs: Option<Crs>,
-        epoch: Option<f64>,
-    ) -> Typed {
-        Typed(Self::with_epoch(shape, crs, epoch))
     }
 }

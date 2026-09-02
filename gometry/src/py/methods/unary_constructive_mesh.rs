@@ -16,6 +16,7 @@ impl PyGeometry {
     )]
     pub fn triangulate(
         &self,
+        py: Python<'_>,
         method: TriangulationMethod,
         min_angle: Option<&Bound<'_, PyAny>>,
         max_area: Option<&Bound<'_, PyAny>>,
@@ -23,14 +24,14 @@ impl PyGeometry {
         match method {
             TriangulationMethod::Earcut => {
                 require_plain_triangulation_options(min_angle, max_area)?;
-                self.polygon_triangles_impl()
+                self.polygon_triangles_impl(py)
             },
             TriangulationMethod::Delaunay => {
                 require_plain_triangulation_options(min_angle, max_area)?;
-                self.delaunay_triangles_impl()
+                self.delaunay_triangles_impl(py)
             },
             TriangulationMethod::Constrained => {
-                self.constrained_delaunay_triangles_impl(min_angle, max_area)
+                self.constrained_delaunay_triangles_impl(py, min_angle, max_area)
             },
         }
     }
@@ -38,10 +39,11 @@ impl PyGeometry {
     #[pyo3(signature = (count, *, seed))]
     pub fn sample_points(
         &self,
+        py: Python<'_>,
         count: &Bound<'_, PyAny>,
         seed: &Bound<'_, PyAny>,
     ) -> PyResult<PyGeometryArray> {
-        self.sample_points_impl(count, seed)
+        self.sample_points_impl(py, count, seed)
     }
     #[doc = doc_voronoi_polygons!(scalar)]
     #[pyo3(

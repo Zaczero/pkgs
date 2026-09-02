@@ -9,7 +9,7 @@ use crate::py::classes::geometry_methods::{
 use crate::py::crs::drain_accuracy_warning;
 use crate::py::replace::{ReplacePresence, reject_unknown_kwargs, replace_crs, replace_epoch};
 use crate::{
-    Arc, GeometryTransformFrame, PyCrs, PyPreparedGeometry, coordinate_epoch_option, crs, crs_arc,
+    GeometryTransformFrame, PyCrs, PyPreparedGeometry, coordinate_epoch_option, crs, crs_arc,
     parse_crs, parse_geometry_transform_options,
 };
 
@@ -61,12 +61,9 @@ impl PyGeometry {
     /// >>> gm.contains(prep, gm.Point(1, 1))
     /// True
     pub fn prepare(&self) -> PyPreparedGeometry {
-        // The explicit plan owns all heavy topology and metric products. They
-        // remain lazy so preparing is cheap, while every later operand path
-        // sees the same plan rather than rebuilding transient state.
+        self.plan_or_transient();
         PyPreparedGeometry {
             geometry: self.clone(),
-            plan: self.plan_or_transient(),
         }
     }
 
@@ -112,7 +109,7 @@ impl PyGeometry {
             overwrite,
         }
         .apply(&self.frame)?;
-        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
+        Ok(Typed(self.retag_frame(frame)))
     }
 
     /// Declare (or clear) the coordinate epoch without moving coordinates.
@@ -151,7 +148,7 @@ impl PyGeometry {
     pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
-        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
+        Ok(Typed(self.retag_frame(frame)))
     }
 
     /// Return a copy with the given CRS/epoch metadata replaced.
@@ -190,7 +187,7 @@ impl PyGeometry {
             .apply(&frame)
             .map_err(PyErr::from)?;
         }
-        Ok(Typed(Self::with_frame(Arc::clone(&self.shape), frame)))
+        Ok(Typed(self.retag_frame(frame)))
     }
 
     /// Reproject coordinates to a target CRS.

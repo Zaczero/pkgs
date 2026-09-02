@@ -6,7 +6,7 @@ macro_rules! unary_len {
         1_usize
     };
     (array, $self:expr) => {
-        $self.storage().len()
+        $self.len()
     };
 }
 

@@ -42,8 +42,8 @@ impl PyPoint {
     /// Parameters
     /// ----------
     /// x, y : float, optional
-    ///     Finite coordinates (lon, lat for a geographic ``crs``). Omit both for
-    ///     an empty point.
+    ///     Finite coordinates (longitude, latitude in the CRS-native angular
+    ///     units for a geographic ``crs``). Omit both for an empty point.
     ///
     /// z : float, optional
     ///     Z (elevation) ordinate, producing an ``XYZ`` or ``XYZM`` point.

@@ -6,7 +6,7 @@ use crate::py::support::{Point, Polygon, PyResult, Ring, Shape};
 
 pub(crate) fn box_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> PyResult<Polygon> {
     Ok(Polygon::new(
-        Ring::from_trusted_closed(vec![
+        Ring::from_closed(vec![
             Point::new(minx, miny)?,
             Point::new(maxx, miny)?,
             Point::new(maxx, maxy)?,

@@ -226,7 +226,7 @@ fn coordinate_groups(
         builder.push_end(end).map_err(pyo3::PyErr::from)?;
         next_row += 1;
     }
-    while next_row < array.storage().len() {
+    while next_row < array.len() {
         let end = builder.len();
         builder.push_end(end).map_err(pyo3::PyErr::from)?;
         next_row += 1;

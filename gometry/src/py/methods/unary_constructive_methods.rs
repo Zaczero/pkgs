@@ -179,7 +179,7 @@ Parameters
     (@post) => {
         r"unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -629,7 +629,7 @@ Parameters
 ----------
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -676,7 +676,7 @@ Parameters
 ----------
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -770,7 +770,7 @@ Examples
 >>> import gometry as gm
 >>> lines = gm.MultiLineString([[(0,0),(2,0)],[(1,-1),(1,1)]])
 >>> lines.node().to_wkt()
-'MULTILINESTRING ((0 0, 1 0), (1 0, 2 0), (1 0, 1 1), (1 -1, 1 0))'"
+'MULTILINESTRING ((0 0, 1 0), (2 0, 1 0), (1 1, 1 0), (1 -1, 1 0))'"
     };
 }
 
@@ -920,7 +920,7 @@ Parameters
     (@post) => {
         r"unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };

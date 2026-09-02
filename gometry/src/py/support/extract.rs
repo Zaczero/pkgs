@@ -24,7 +24,7 @@ impl CoercedCollectedGeometryItems {
             Self::FramelessShapes(shapes) => {
                 let mut items = Vec::new();
                 for shape in shapes {
-                    crate::try_push(&mut items, PyGeometry::with_epoch(shape, None, None))?;
+                    crate::try_push(&mut items, PyGeometry::with_epoch(shape, None, None)?)?;
                 }
                 Ok(items)
             },
@@ -131,7 +131,7 @@ fn coerce_collected_wkb_items(
     Ok(CoercedCollectedGeometryItems::Items(
         crate::try_collect_results(
             rows.into_iter()
-                .map(|(shape, crs)| Ok(PyGeometry::with_epoch(shape, crs, None))),
+                .map(|(shape, crs)| PyGeometry::with_epoch(shape, crs, None).map_err(Into::into)),
         )?,
     ))
 }
@@ -373,7 +373,10 @@ fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
         if failure.is_none() {
             if let Err(error) = crate::try_push_vec(
                 &mut rings,
-                Shape::LineString(crate::geometry::LineSeq::from_trusted(ring.clone())),
+                Shape::LineString(
+                    crate::geometry::LineSeq::try_new(ring.clone())
+                        .expect("ring has at least two vertices"),
+                ),
             ) {
                 failure = Some(error);
             }
@@ -390,6 +393,7 @@ pub(crate) fn extract_points(
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Point>> {
+    crate::py::numpy::reject_masked_array(value)?;
     let coordinates = crate::collect_py_iter(value, |item| {
         coordinate_values_at_most(item.py(), &item, "coordinate", 4, |got| {
             InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
@@ -417,7 +421,7 @@ pub(crate) fn extract_points(
         }
         crate::try_push(
             &mut points,
-            Point::new_unchecked_axes(
+            Point::new_raw_axes(
                 coordinate[0],
                 coordinate[1],
                 ZOrdinate(
@@ -445,6 +449,7 @@ pub(crate) fn extract_coordinate(value: &Bound<'_, PyAny>) -> PyResult<Point> {
 /// Admit one raw coordinate once, retaining an empty member for multipart
 /// constructors that use an explicit empty point.
 pub(crate) fn extract_coordinate_or_empty(value: &Bound<'_, PyAny>) -> PyResult<Option<Point>> {
+    crate::py::numpy::reject_masked_array(value)?;
     let coordinate = coordinate_values_at_most(value.py(), value, "coordinate", 4, |got| {
         InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
     })?;
@@ -462,7 +467,7 @@ pub(crate) fn extract_coordinate_or_empty(value: &Bound<'_, PyAny>) -> PyResult<
     if coordinate.iter().any(|value| !value.is_finite()) {
         return Err(InvalidGeometryError::new_err("coordinates must be finite"));
     }
-    Ok(Some(Point::new_unchecked_axes(
+    Ok(Some(Point::new_raw_axes(
         coordinate[0],
         coordinate[1],
         ZOrdinate(coordinate.get(2).copied()),

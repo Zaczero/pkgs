@@ -293,7 +293,8 @@ impl PyCoordinates {
     /// ----------
     /// dtype : float dtype, optional
     ///     ``None`` or any floating dtype (native export is ``float64``;
-    ///     other floating dtypes are cast with ``astype``).
+    ///     other floating dtypes, including opposite-endian ``float64``, are
+    ///     cast with ``astype``).
     /// copy : bool, optional
     ///     When ``False``, raises — coordinate export always copies.
     ///
@@ -330,7 +331,8 @@ impl PyCoordinates {
         let numpy = crate::py::numpy::numpy_module(py)?;
         let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
         let kind = dtype.getattr("kind")?.extract::<String>()?;
-        if kind == "f" && dtype.getattr("itemsize")?.extract::<usize>()? == 8 {
+        let native = dtype.getattr("isnative")?.extract::<bool>()?;
+        if kind == "f" && dtype.getattr("itemsize")?.extract::<usize>()? == 8 && native {
             return Ok(array);
         }
         if kind != "f" {
@@ -338,7 +340,7 @@ impl PyCoordinates {
                 "dtype must be a floating dtype or None",
             ));
         }
-        Ok(array.bind(py).call_method1("astype", (dtype,))?.unbind())
+        crate::py::numpy::astype_readonly(array.bind(py), &dtype)
     }
 
     /// Return the coordinates as a nested structure mirroring the geometry's topology
@@ -365,13 +367,30 @@ impl PyCoordinates {
                     GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask[*row]))
+                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
                         .map(|(_, shape)| coordinates_object(py, shape))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Points { coords, row_map } => {
                         let map = row_map.as_deref();
+                        if let Some(mask) = missing
+                            && mask.len() != crate::array::point_logical_len(coords, map)
+                        {
+                            let nested =
+                                mask.cursor()
+                                    .filter_map(|(_, present)| present)
+                                    .map(|present| {
+                                        coordinates_object(
+                                            py,
+                                            &Shape::Point(coords.point_at(
+                                                crate::array::physical_row(map, present),
+                                            )),
+                                        )
+                                    })
+                                    .collect::<PyResult<Vec<_>>>()?;
+                            return Ok(PyList::new(py, nested)?.unbind().into());
+                        }
                         (0..crate::array::point_logical_len(coords, map))
-                            .filter(|&index| !missing.is_some_and(|mask| mask[index]))
+                            .filter(|&index| !missing.is_some_and(|mask| mask.is_missing(index)))
                             .map(|index| {
                                 coordinates_object(
                                     py,
@@ -386,7 +405,7 @@ impl PyCoordinates {
                         storage
                             .iter_shapes()
                             .enumerate()
-                            .filter(|(row, _)| !missing.is_some_and(|mask| mask[*row]))
+                            .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
                             .map(|(_, shape)| coordinates_object(py, &shape))
                             .collect::<PyResult<Vec<_>>>()?
                     },

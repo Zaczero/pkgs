@@ -222,7 +222,7 @@ Parameters
 
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
-    forces raw coordinate units (degrees-as-Cartesian on a geographic CRS
+    forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
     CRS metric and raises without a CRS."
     };
@@ -374,20 +374,18 @@ impl PyGeometry {
         let op = crate::dispatch::Operation::LineInterpolate;
         let distance = F64Param::Scalar(at);
         distance.ensure_finite("distance")?;
-        let model = op
-            .resolver_with_line_unit(unit, normalized)
-            .resolve_ctx(
-                &self.frame,
-                op.name(),
-                &mut crate::dispatch::MetricScratch::default(),
-            )?
-            .require_model(op.name())?
-            .clone();
-        let value = unary_spine_shapes!(scalar, py, self, op, None, default, move |data, ctx| {
-            crate::dispatch::kernels::unary_line_interpolate_point(
-                data, ctx, &model, &distance, normalized,
-            )
-        })?;
+        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let value = crate::dispatch::unary_scalar_linref_shape(
+            py,
+            self,
+            op,
+            resolver,
+            move |data, ctx| {
+                crate::dispatch::kernels::unary_line_interpolate_point(
+                    data, ctx, &distance, normalized,
+                )
+            },
+        )?;
         value.into_pyobject(py).map(Bound::unbind)
     }
 
@@ -428,20 +426,11 @@ impl PyGeometry {
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(scalar))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let model = op
-            .resolver_with_line_unit(unit, normalized)
-            .resolve_ctx(
-                &self.frame,
-                op.name(),
-                &mut crate::dispatch::MetricScratch::default(),
-            )?
-            .require_model(op.name())?
-            .clone();
-        unary_spine_shapes!(scalar, py, self, op, None, default, move |data, ctx| {
+        let resolver = op.resolver_with_line_unit(unit, normalized);
+        crate::dispatch::unary_scalar_linref_shape(py, self, op, resolver, move |data, ctx| {
             crate::dispatch::kernels::unary_line_substring(
                 data,
                 ctx,
-                &model,
                 &start_distance,
                 &end_distance,
                 normalized,
@@ -606,8 +595,8 @@ impl PyGeometryArray {
         let op = crate::dispatch::Operation::LineInterpolate;
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
         distance.ensure_finite("distance")?;
-        let model = op
-            .resolver_with_line_unit(unit, normalized)
+        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let model = resolver
             .resolve_ctx(
                 &self.frame,
                 op.name(),
@@ -615,20 +604,22 @@ impl PyGeometryArray {
             )?
             .require_model(op.name())?
             .clone();
-        let value = unary_spine_shapes_extras!(
-            array,
+        let packed = crate::dispatch::PackedUnary::LineInterpolatePoint {
+            distance: distance.clone(),
+            normalized,
+            metric: model.clone(),
+        };
+        let value = crate::dispatch::unary_array_linref_shapes(
             py,
             self,
             op,
-            None,
-            crate::dispatch::PackedUnary::LineInterpolatePoint {
-                distance: distance.clone(),
-                normalized,
-                metric: model.clone(),
+            resolver,
+            Some(&packed),
+            move |data, ctx| {
+                crate::dispatch::kernels::unary_line_interpolate_point(
+                    data, ctx, &distance, normalized,
+                )
             },
-            move |data, ctx| crate::dispatch::kernels::unary_line_interpolate_point(
-                data, ctx, &model, &distance, normalized,
-            )
         )?;
         value.into_pyobject(py).map(|value| value.unbind().into())
     }
@@ -670,8 +661,8 @@ impl PyGeometryArray {
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let model = op
-            .resolver_with_line_unit(unit, normalized)
+        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let model = resolver
             .resolve_ctx(
                 &self.frame,
                 op.name(),
@@ -679,26 +670,27 @@ impl PyGeometryArray {
             )?
             .require_model(op.name())?
             .clone();
-        unary_spine_shapes_extras!(
-            array,
+        let packed = crate::dispatch::PackedUnary::LineSubstring {
+            start_distance: start_distance.clone(),
+            end_distance: end_distance.clone(),
+            normalized,
+            metric: model.clone(),
+        };
+        crate::dispatch::unary_array_linref_shapes(
             py,
             self,
             op,
-            None,
-            crate::dispatch::PackedUnary::LineSubstring {
-                start_distance: start_distance.clone(),
-                end_distance: end_distance.clone(),
-                normalized,
-                metric: model.clone(),
+            resolver,
+            Some(&packed),
+            move |data, ctx| {
+                crate::dispatch::kernels::unary_line_substring(
+                    data,
+                    ctx,
+                    &start_distance,
+                    &end_distance,
+                    normalized,
+                )
             },
-            move |data, ctx| crate::dispatch::kernels::unary_line_substring(
-                data,
-                ctx,
-                &model,
-                &start_distance,
-                &end_distance,
-                normalized,
-            )
         )
     }
 

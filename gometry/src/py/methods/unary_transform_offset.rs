@@ -321,9 +321,10 @@ impl PyGeometry {
     #[pyo3(signature = (*, max_vertices = 256))]
     pub fn subdivide(
         &self,
+        py: Python<'_>,
         #[pyo3(from_py_with = crate::strict_i64)] max_vertices: i64,
     ) -> PyResult<PyGeometryArray> {
-        self.subdivide_parts(max_vertices)
+        self.subdivide_parts(py, max_vertices)
     }
 }
 

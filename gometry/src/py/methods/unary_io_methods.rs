@@ -303,13 +303,14 @@ impl PyGeometry {
     #[pyo3(signature = (*, output_dimension = None, include_srid = false, precision = None, drop_epoch = false))]
     pub fn to_wkt(
         &self,
+        py: Python<'_>,
         output_dimension: Option<&Bound<'_, PyAny>>,
         include_srid: bool,
         precision: Option<&Bound<'_, PyAny>>,
         drop_epoch: bool,
     ) -> PyResult<String> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_wkt")?;
-        self.to_wkt_impl(output_dimension, include_srid, precision)
+        self.to_wkt_impl(py, output_dimension, include_srid, precision)
     }
 
     #[doc = doc_to_wkb!(scalar)]
@@ -327,14 +328,19 @@ impl PyGeometry {
 
     #[doc = doc_to_geojson!(scalar)]
     #[pyo3(signature = (*, include_z = true, drop_epoch = false))]
-    pub fn to_geojson(&self, include_z: bool, drop_epoch: bool) -> PyResult<String> {
+    pub fn to_geojson(
+        &self,
+        py: Python<'_>,
+        include_z: bool,
+        drop_epoch: bool,
+    ) -> PyResult<String> {
         require_epoch_drop(self.epoch(), drop_epoch, "to_geojson")?;
-        self.to_geojson_impl(include_z)
+        self.to_geojson_impl(py, include_z)
     }
 
     #[doc = doc_validate!(scalar)]
-    pub fn validate(&self) -> PyValidationReport {
-        self.validate_impl()
+    pub fn validate(&self, py: Python<'_>) -> PyValidationReport {
+        self.validate_impl(py)
     }
 
     #[doc = doc_repair!(scalar)]

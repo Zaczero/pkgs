@@ -76,17 +76,18 @@ pub(crate) fn require(
     // iterable) so row parsers never re-canonicalize the same text.
     let expected = parse_crs(crs)?;
     if let Some(geometry) = exact_geometry(value) {
-        let geometry = require_geometry_contract(geometry.clone(), expected.as_ref(), axes, None)?;
+        let geometry =
+            require_geometry_contract(geometry.clone(), expected.as_ref(), axes, None, Some(py))?;
         return Ok(Typed(geometry).into_pyobject(py)?.into_any().unbind());
     }
     if let Some(array) = exact_geometry_array(value) {
-        let array = require_array_contract(array.clone(), expected.as_ref(), axes)?;
+        let array = require_array_contract(array.clone(), expected.as_ref(), axes, Some(py))?;
         return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
     if let Ok(groups) = value.cast::<crate::py::vectors::Groups>()
         && let Some(array) = groups.get().geometry_values_view()
     {
-        let array = require_array_contract(array, expected.as_ref(), axes)?;
+        let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
         return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
     match classify_scalar_or_iterator(value)? {
@@ -95,6 +96,7 @@ pub(crate) fn require(
                 parse_require_input(value, expected.as_ref())?,
                 expected.as_ref(),
                 axes,
+                None,
                 None,
             )?;
             Ok(Typed(geometry).into_pyobject(py)?.into_any().unbind())
@@ -117,6 +119,7 @@ pub(crate) fn require(
                         expected_for_rows.as_ref(),
                         axes,
                         Some(row),
+                        None,
                     )?;
                     rows.try_push(geometry.shape.shape().clone())?;
                     Ok(StreamedRow::Present {
@@ -168,9 +171,10 @@ fn require_geometry_contract(
     expected: Option<&Crs>,
     axes: Option<CoordinateAxes>,
     row: Option<usize>,
+    py: Option<Python<'_>>,
 ) -> PyResult<PyGeometry> {
     if require_crs_retag(geometry.crs_ref(), expected, row)? {
-        geometry.set_crs_keep_epoch(expected.cloned());
+        geometry.set_crs_keep_epoch(expected.cloned())?;
     }
     if let Some(axes) = axes
         && geometry.shape.coordinate_axes() != axes.as_str()
@@ -187,10 +191,13 @@ fn require_geometry_contract(
         );
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
-    if let Some(issue) = geometry::validate_data_in_frame(
-        &geometry.plan_or_transient(),
-        geometry::is_geographic_frame(&geometry.frame),
-    ) {
+    let plan = geometry.plan_or_transient();
+    let geographic = geometry::is_geographic_frame(&geometry.frame);
+    let issue = match py {
+        Some(py) => py.detach(move || geometry::validate_data_in_frame(&plan, geographic)),
+        None => geometry::validate_data_in_frame(&plan, geographic),
+    };
+    if let Some(issue) = issue {
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
     Ok(geometry)
@@ -200,6 +207,7 @@ fn require_array_contract(
     mut array: PyGeometryArray,
     expected: Option<&Crs>,
     axes: Option<CoordinateAxes>,
+    py: Option<Python<'_>>,
 ) -> PyResult<PyGeometryArray> {
     if require_crs_retag(array.crs_ref(), expected, None)? {
         // Attach the pre-parsed CRS without re-parsing a Bound token.
@@ -210,9 +218,7 @@ fn require_array_contract(
             overwrite: true,
         }
         .apply(&array.frame)?;
-        array =
-            PyGeometryArray::from_storage_arc(std::sync::Arc::clone(array.storage_arc()), frame)
-                .with_missing_mask(array.missing().cloned());
+        array = array.retag_frame(frame);
     }
     if let Some(axes) = axes
         && array.uniform_axes() != Some(axes)
@@ -240,6 +246,18 @@ fn require_array_contract(
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
     let geographic = geometry::is_geographic_frame(&array.frame);
+    if let Some(py) = py {
+        let (array, issue) = py.detach(move || {
+            let issue = array.present_shape_rows().find_map(|(row, shape)| {
+                geometry::validate_shape_in_frame(&shape, geographic).map(|issue| (row, issue))
+            });
+            (array, issue)
+        });
+        if let Some((row, issue)) = issue {
+            return Err(crate::py::errors::invalid_geometry_issue(&issue, Some(row)));
+        }
+        return Ok(array);
+    }
     if let Some((row, issue)) = array.present_shape_rows().find_map(|(row, shape)| {
         geometry::validate_shape_in_frame(&shape, geographic).map(|issue| (row, issue))
     }) {
@@ -253,7 +271,7 @@ fn parse_require_wkt(text: &str, fallback: Option<&Crs>) -> PyResult<PyGeometry>
     let embedded = io::crs_from_optional_srid(srid)?;
     let crs = resolve_wire_crs(embedded.map(crs_arc), fallback, "EWKT SRID")?;
     guard_epoch_frame(None, crs.as_ref())?;
-    Ok(PyGeometry::with_epoch(io::parse_wkt(body)?, crs, None))
+    Ok(PyGeometry::with_epoch(io::parse_wkt(body)?, crs, None)?)
 }
 
 fn parse_require_geojson_value(
@@ -289,7 +307,7 @@ fn parse_require_bytes_slice(data: &[u8], fallback: Option<&Crs>) -> PyResult<Py
     }
     let mut geometry = parse_wkb_geometry(data)?;
     let resolved = resolve_wire_crs(geometry.crs_ref().cloned(), fallback, "EWKB SRID")?;
-    geometry.set_crs_keep_epoch(resolved);
+    geometry.set_crs_keep_epoch(resolved)?;
     Ok(geometry)
 }
 
@@ -346,12 +364,13 @@ type ValidationReportPickleArgs = (Typed,);
 /// trusted.
 #[pyfunction]
 pub(crate) fn _unpickle_validation_report(
+    py: Python<'_>,
     geometry: &Bound<'_, PyAny>,
 ) -> PyResult<PyValidationReport> {
     let geometry = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
-    Ok(geometry.validate_impl())
+    Ok(geometry.validate_impl(py))
 }
 
 // --- ValidationReport #[pymethods] (moved from crate root) ---

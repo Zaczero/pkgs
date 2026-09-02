@@ -373,6 +373,7 @@ pub(crate) fn metric_minimum_bounding_radius(
         crate::crs::MetricModel::Geodesic {
             crs: geodesic_crs,
             state,
+            ..
         } => {
             if shape.is_empty() {
                 return Ok(f64::NAN);
@@ -427,6 +428,7 @@ pub(crate) fn metric_interpolate_m(
         crate::crs::MetricModel::Geodesic {
             crs: geodesic_crs,
             state,
+            ..
         } => crate::crs::with_ellipsoid_metric_at(geodesic_crs, &[shape], state, |metric| {
             use crate::geometry::GeodesicMetric as _;
             shape.interpolate_m(range, overwrite, |a, b| metric.segment_length(a, b))

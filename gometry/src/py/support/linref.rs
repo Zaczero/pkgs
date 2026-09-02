@@ -15,7 +15,10 @@ pub(crate) fn line_interpolate_shape_m(
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { .. } => line.shape().line_interpolate_point_m(m),
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
             crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
                 line.shape().line_interpolate_point_m_with(m, metric)
             })
@@ -38,8 +41,9 @@ pub(crate) fn line_locate_shape_m_value(
 ) -> Result<f64> {
     match model {
         crate::crs::MetricModel::Planar { .. } => line.line_locate_point_m(query),
-        crate::crs::MetricModel::Geodesic { crs, state } => {
-            crate::crs::ensure_geographic_lonlat(query.x, query.y)?;
+        crate::crs::MetricModel::Geodesic { crs, frame, state } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, line)?;
+            crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)?;
             crate::crs::with_ellipsoid_metric_at(crs, &[line], state, |metric| {
                 line.line_locate_point_m_with(query, metric)
             })
@@ -54,7 +58,10 @@ pub(crate) fn line_substring_shape_m(
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { .. } => line.shape().line_substring_m(range),
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
             crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
                 line.shape().line_substring_m_with(range, metric)
             })
@@ -255,14 +262,16 @@ fn line_interpolate_shape_with_mode(
             distance_mode.planar_along(distance, to_metre.get()),
             distance_mode.is_normalized(),
         )?,
-        crate::crs::MetricModel::Geodesic { crs, state } => crate::crs::geodesic_line_interpolate(
-            crs,
-            line,
-            frame_cache,
-            distance,
-            distance_mode,
-            state,
-        )?,
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+            crate::crs::geodesic_line_interpolate(
+                crs,
+                line,
+                frame_cache,
+                distance,
+                distance_mode,
+                state,
+            )?
+        },
     })
 }
 
@@ -283,14 +292,16 @@ pub(crate) fn line_substring_shape(
             )?,
             distance_mode.is_normalized(),
         )?,
-        crate::crs::MetricModel::Geodesic { crs, state } => crate::crs::geodesic_line_substring(
-            crs,
-            line,
-            frame_cache,
-            range,
-            distance_mode,
-            state,
-        )?,
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+            crate::crs::geodesic_line_substring(
+                crs,
+                line,
+                frame_cache,
+                range,
+                distance_mode,
+                state,
+            )?
+        },
     })
 }
 
@@ -308,7 +319,7 @@ pub(crate) fn crs_line_locate_point(
     Ok(line_locate_shape(
         &model,
         &line_plan,
-        &line.frame_cache,
+        &line.frame_cache(),
         query,
         normalized,
     )?)
@@ -332,7 +343,7 @@ pub(crate) fn line_interpolate_coordseq(
                 &PlanarMetric,
             ))
         },
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
             crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
                 crate::crs::geodesic_line_interpolate_coordseq(
                     line,
@@ -366,7 +377,7 @@ pub(crate) fn line_substring_coordseq(
                 &PlanarMetric,
             )
         },
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
             crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
                 crate::crs::geodesic_line_substring_coordseq(line, range, distance_mode, metric)
             })
@@ -394,7 +405,7 @@ pub(crate) fn line_locate_coordseq(
                 located * to_metre.get()
             })
         },
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
             crate::crs::with_geodesic_coordseq_metric_at(crs, state, |metric| {
                 crate::crs::geodesic_line_locate_coordseq(line, query, distance_mode, metric)
             })
@@ -422,7 +433,7 @@ pub(crate) fn line_locate_shape(
                 located * to_metre.get()
             }
         },
-        crate::crs::MetricModel::Geodesic { crs, state } => {
+        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
             crate::crs::geodesic_line_locate(crs, line, frame_cache, query, distance_mode, state)?
         },
     })

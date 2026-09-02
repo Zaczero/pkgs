@@ -80,12 +80,12 @@ pub(crate) fn from_wkt(
             io::parse_wkt(body)?,
             crs,
             parsed_epoch,
-        ))
+        )?)
     };
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {
-        return Ok(Typed(parse(text.to_cow()?.as_ref())?)
-            .into_pyobject(py)?
-            .unbind());
+        let text = text.to_cow()?.into_owned();
+        let geometry = py.detach(move || parse(&text))?;
+        return Ok(Typed(geometry).into_pyobject(py)?.unbind());
     }
     let error = || PyTypeError::new_err("expected WKT string or iterable of WKT strings");
     let iter = crate::py_iter_or_error(data, error)?;
@@ -172,13 +172,16 @@ pub(crate) fn from_wkb(
     let attach = |mut geometry: PyGeometry| -> PyResult<PyGeometry> {
         let resolved =
             resolve_wire_crs(geometry.crs_ref().cloned(), fallback.as_ref(), "EWKB SRID")?;
-        geometry.set_crs_keep_epoch(resolved);
+        geometry.set_crs_keep_epoch(resolved)?;
         guard_epoch_frame(parsed_epoch, geometry.crs_ref())?;
-        geometry.set_epoch_keep_crs(parsed_epoch);
+        geometry.set_epoch_keep_crs(parsed_epoch)?;
         Ok(geometry)
     };
-    match parse_wkb_payload_bytes(data, parse_wkb_geometry) {
-        Ok(geometry) => return Ok(Typed(attach(geometry)?).into_pyobject(py)?.unbind()),
+    match parse_wkb_payload_bytes(data, |bytes| Ok(bytes.to_vec())) {
+        Ok(bytes) => {
+            let geometry = py.detach(move || attach(parse_wkb_geometry(&bytes)?))?;
+            return Ok(Typed(geometry).into_pyobject(py)?.unbind());
+        },
         Err(err) if err.is_instance_of::<PyTypeError>(py) => {},
         Err(err) => return Err(err),
     }

@@ -36,20 +36,20 @@ unary_shape_method!(
 #[pymethods]
 impl PyGeometry {
     #[doc = doc_polygonize!(scalar)]
-    pub fn polygonize(&self) -> PyResult<PyGeometryArray> {
-        self.polygonize_impl()
+    pub fn polygonize(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
+        self.polygonize_impl(py)
     }
     #[doc = doc_line_merge!(scalar)]
-    pub fn line_merge(&self) -> PyResult<crate::Typed> {
-        self.line_merge_impl()
+    pub fn line_merge(&self, py: Python<'_>) -> PyResult<crate::Typed> {
+        self.line_merge_impl(py)
     }
     #[doc = doc_extremes!(scalar)]
     pub fn extremes(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.extremes_impl(py)
     }
     #[doc = doc_self_intersections!(scalar)]
-    pub fn self_intersections(&self) -> PyResult<PyGeometryArray> {
-        self.self_intersections_impl()
+    pub fn self_intersections(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
+        self.self_intersections_impl(py)
     }
 }
 

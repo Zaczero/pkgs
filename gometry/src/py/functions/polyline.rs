@@ -378,13 +378,11 @@ pub(crate) fn from_polyline(
         Ok(shape_from_decoded_polyline(points))
     };
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {
-        return Ok(Typed(PyGeometry::with_epoch(
-            decode_tagged(text.to_cow()?.as_ref())?,
-            crs,
-            epoch,
-        ))
-        .into_pyobject(py)?
-        .unbind());
+        let text = text.to_cow()?.into_owned();
+        let shape = py.detach(move || decode_tagged(&text))?;
+        return Ok(Typed(PyGeometry::with_epoch(shape, crs, epoch)?)
+            .into_pyobject(py)?
+            .unbind());
     }
     let error = || PyTypeError::new_err("expected polyline string or iterable of strings");
     let iter = crate::py_iter_or_error(data, error)?;

@@ -194,7 +194,7 @@ pub(crate) fn parse_curve_bounds(
             "bounds must be finite (minx, miny, maxx, maxy) with min <= max",
         ));
     }
-    Ok(Some(crate::geometry::Bounds::new_unchecked(
+    Ok(Some(crate::geometry::Bounds::new_raw(
         *minx, *miny, *maxx, *maxy,
     )))
 }

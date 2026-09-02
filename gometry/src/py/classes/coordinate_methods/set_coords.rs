@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pyo3::types::{PyDict, PyTuple};
 
 use crate::boundary::coordinate_input::coordinate_arc_values;
-use crate::geometry::{MOrdinate, Ring, ZOrdinate};
+use crate::geometry::{MOrdinate, ZOrdinate};
 use crate::py::classes::coordinate_methods::{
     Bound, CoordSeq, CoordinateAxes, CoordinateAxis, CoordinateReplacement, Point, PyAny,
     PyAnyMethods as _, PyCoordinates, PyDictMethods as _, PyErr, PyRef, PyResult,
@@ -383,21 +383,22 @@ fn replacement_point(
 }
 
 fn validate_ring(seq: &CoordSeq) -> PyResult<()> {
-    // Same active-ordinate closure as pack_admission::ring_seq_is_packable /
-    // pickle admission (D05): XY-only same_point would admit Z/M-open rings
-    // that the unpickler then rejects.
-    if seq.len() < Ring::MIN_VERTICES_CLOSED {
-        let error: crate::error::Error =
-            crate::geometry::GeometryErrorKind::RingTooShort(seq.len()).into();
-        return Err(error.into());
+    match crate::array::CheckedRingWindow::checked(seq, 0..seq.len()) {
+        Ok(_) => Ok(()),
+        Err(crate::array::RingWindowError::TooShort(len)) => {
+            let error: crate::error::Error =
+                crate::geometry::GeometryErrorKind::RingTooShort(len).into();
+            Err(error.into())
+        },
+        Err(crate::array::RingWindowError::Open) => {
+            Err(InvalidGeometryError::new_err("polygon ring must be closed"))
+        },
+        Err(
+            crate::array::RingWindowError::Inverted | crate::array::RingWindowError::OutOfRange,
+        ) => Err(InvalidGeometryError::new_err(
+            "polygon ring range is invalid",
+        )),
     }
-    // Length guard above makes first/last present; index them directly.
-    let first = seq.first().expect("ring length checked");
-    let last = seq.last().expect("ring length checked");
-    if !crate::geometry::same_active_position(first, last) {
-        return Err(InvalidGeometryError::new_err("polygon ring must be closed"));
-    }
-    Ok(())
 }
 
 pub(crate) fn validate_shape_rings(shape: &Shape) -> PyResult<()> {
