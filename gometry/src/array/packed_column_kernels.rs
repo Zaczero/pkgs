@@ -25,9 +25,9 @@ use crate::array::storage_helpers::{
 };
 use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
-    PackedColumnOutput, Result, RingLevel, RowSelectionRef, Shape, ValidityMask, affine_about,
-    column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds_3d,
-    row_bounds_values,
+    PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
+    affine_about, column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range,
+    row_bounds_3d, row_bounds_values,
 };
 use crate::geometry::{CoordSeqBuilder, CoordWindow, LineSeq, XY, clip_segment, same_point};
 
@@ -58,7 +58,7 @@ pub(crate) fn buffer_point_columns(
     let vertices_per_row = steps.checked_add(1).ok_or_else(|| {
         batch_err(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
     })?;
-    let point_rows = PointRows::new(points.coords().len(), points.selection(), missing);
+    let point_rows = points.rows();
     let present_rows = point_rows.present_count();
     let total = crate::geometry::ExpansionBudget::product(
         "buffer",
@@ -799,8 +799,9 @@ pub(crate) fn map_masked_point_columns_to_crs(
     selection: RowSelectionRef<'_>,
     missing: &ValidityMask,
     present_count: usize,
+    layout: PointRowLayout,
 ) -> crate::error::Result<CoordSeq> {
-    let rows = PointRows::new(coords.len(), selection, Some(missing));
+    let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
     debug_assert_eq!(rows.len(), missing.len());
     debug_assert_eq!(rows.present_count(), present_count);
     let compact = rows.is_compact();

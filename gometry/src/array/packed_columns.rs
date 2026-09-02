@@ -14,9 +14,9 @@ use std::sync::Arc;
 use crate::array::missing::ValidityCursor;
 use crate::array::{
     CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder, CsrOffsetColumn, Frame,
-    GeometryArrayStorage, Point, PolygonLevel, PyErr, PyGeometryArray, PyResult, Python,
-    ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask, map_masked_point_columns_to_crs,
-    rows_err,
+    GeometryArrayStorage, Point, PointRowLayout, PolygonLevel, PyErr, PyGeometryArray, PyResult,
+    Python, ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask,
+    map_masked_point_columns_to_crs, rows_err,
 };
 use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate};
 
@@ -34,13 +34,15 @@ pub(crate) type PackedColumnResult<T> = std::result::Result<T, PackedColumnError
 ///
 /// The cursor owns the only sequential validity/rank walk used by point
 /// kernels. Row-aligned masks map a present logical row directly; compact
-/// masks feed the present rank through the selected physical-row map.
+/// masks feed the present rank through the selected physical-row map. The
+/// layout is supplied by the owning `ArrayRows` variant, never inferred from
+/// mask and selection lengths.
 #[derive(Clone, Copy)]
 pub(crate) struct PointRows<'a> {
     logical_len: usize,
     row_map: RowSelectionRef<'a>,
     missing: Option<&'a ValidityMask>,
-    compact: bool,
+    layout: PointRowLayout,
 }
 
 impl<'a> PointRows<'a> {
@@ -48,15 +50,20 @@ impl<'a> PointRows<'a> {
         coords_len: usize,
         row_map: RowSelectionRef<'a>,
         missing: Option<&'a ValidityMask>,
+        layout: PointRowLayout,
     ) -> Self {
         let selected_len = row_map.len(coords_len);
         let logical_len = missing.map_or(selected_len, ValidityMask::len);
         debug_assert!(missing.is_none_or(|mask| mask.len() == logical_len));
+        debug_assert!(
+            !layout.is_compact() || missing.is_some(),
+            "compact point rows require a validity mask"
+        );
         Self {
             logical_len,
             row_map,
             missing,
-            compact: missing.is_some_and(|mask| mask.len() != selected_len),
+            layout,
         }
     }
 
@@ -72,7 +79,7 @@ impl<'a> PointRows<'a> {
     }
 
     pub(crate) const fn is_compact(self) -> bool {
-        self.compact
+        self.layout.is_compact()
     }
 
     pub(crate) fn cursor(self) -> PointRowCursor<'a> {
@@ -80,7 +87,7 @@ impl<'a> PointRows<'a> {
             logical: 0,
             remaining: self.logical_len,
             row_map: self.row_map,
-            compact: self.compact,
+            layout: self.layout,
             validity: self.missing.map(ValidityMask::cursor),
         }
     }
@@ -90,7 +97,7 @@ pub(crate) struct PointRowCursor<'a> {
     logical: usize,
     remaining: usize,
     row_map: RowSelectionRef<'a>,
-    compact: bool,
+    layout: PointRowLayout,
     validity: Option<ValidityCursor<'a>>,
 }
 
@@ -110,8 +117,11 @@ impl Iterator for PointRowCursor<'_> {
                     validity.next().expect("point validity length is exact");
                 debug_assert_eq!(validity_logical, logical);
                 present.map(|present| {
-                    self.row_map
-                        .physical(if self.compact { present } else { logical })
+                    self.row_map.physical(if self.layout.is_compact() {
+                        present
+                    } else {
+                        logical
+                    })
                 })
             },
             None => Some(self.row_map.physical(logical)),
@@ -130,6 +140,7 @@ pub(crate) struct PointColumns<'a> {
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
     missing: Option<&'a ValidityMask>,
+    layout: PointRowLayout,
 }
 
 pub(crate) struct XyColumns<'a> {
@@ -138,6 +149,10 @@ pub(crate) struct XyColumns<'a> {
 }
 
 impl PointColumns<'_> {
+    pub(crate) const fn row_layout(&self) -> PointRowLayout {
+        self.layout
+    }
+
     pub(crate) const fn selection(&self) -> RowSelectionRef<'_> {
         self.row_map
     }
@@ -159,7 +174,7 @@ impl PointColumns<'_> {
     }
 
     pub(crate) fn rows(&self) -> PointRows<'_> {
-        PointRows::new(self.coords.len(), self.row_map, self.missing)
+        PointRows::new(self.coords.len(), self.row_map, self.missing, self.layout)
     }
 
     pub(crate) fn contiguous_coords(&self) -> Option<CoordSeq> {
@@ -600,11 +615,13 @@ fn resolve_point_columns<'a>(
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
     missing: Option<&'a ValidityMask>,
+    layout: PointRowLayout,
 ) -> PointColumns<'a> {
     PointColumns {
         coords,
         row_map,
         missing,
+        layout,
     }
 }
 
@@ -641,11 +658,12 @@ fn resolve_polygon_columns<'a>(
 fn resolve_packed_columns<'a>(
     storage: &'a GeometryArrayStorage,
     missing: Option<&'a ValidityMask>,
+    point_layout: PointRowLayout,
 ) -> PackedColumnResult<Option<PackedColumns<'a>>> {
     Ok(match storage {
         GeometryArrayStorage::Mixed(_) => None,
         GeometryArrayStorage::Points { coords, row_map } => Some(PackedColumns::Points(
-            resolve_point_columns(coords, row_map.as_deref(), missing),
+            resolve_point_columns(coords, row_map.as_deref(), missing, point_layout),
         )),
         GeometryArrayStorage::Lines {
             coords,
@@ -1119,6 +1137,7 @@ fn map_selected_to_crs(
                     points.selection(),
                     missing,
                     missing.present_count(),
+                    points.row_layout(),
                 )
                 .map_err(batch_err)?;
                 return Ok(PackedColumnOutput::Points(coords));
@@ -1232,10 +1251,12 @@ impl PyGeometryArray {
         }
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
+        let point_layout = self.point_row_layout();
         let result = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                        .expect("not mixed");
                 kernel(columns)
             })
             .map_err(packed_columns_err)?;
@@ -1290,10 +1311,12 @@ impl PyGeometryArray {
         }
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
+        let point_layout = self.point_row_layout();
         let output = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                        .expect("not mixed");
                 map_selected_points(columns, output_axes, map)
             })
             .map_err(packed_columns_err)?;
@@ -1313,10 +1336,12 @@ impl PyGeometryArray {
         }
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
+        let point_layout = self.point_row_layout();
         let output = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                        .expect("not mixed");
                 map_selected_to_crs(columns, &transformer)
             })
             .map_err(packed_columns_err)?;
@@ -1336,10 +1361,12 @@ impl PyGeometryArray {
         }
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
+        let point_layout = self.point_row_layout();
         let output = py
             .detach(move || -> PackedColumnResult<PackedColumnOutput> {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                        .expect("not mixed");
                 let mut replacement_index = 0;
                 let output = replace_packed_columns_dispatch(
                     columns,
@@ -1382,14 +1409,22 @@ impl PyGeometryArray {
         let right_storage = Arc::clone(right.storage_arc());
         let left_missing = left.missing().cloned();
         let right_missing = right.missing().cloned();
+        let left_point_layout = left.point_row_layout();
+        let right_point_layout = right.point_row_layout();
         let result = py
             .detach(move || {
-                let left_columns =
-                    resolve_packed_columns(left_storage.as_ref(), left_missing.as_ref())?
-                        .expect("not mixed");
-                let right_columns =
-                    resolve_packed_columns(right_storage.as_ref(), right_missing.as_ref())?
-                        .expect("not mixed");
+                let left_columns = resolve_packed_columns(
+                    left_storage.as_ref(),
+                    left_missing.as_ref(),
+                    left_point_layout,
+                )?
+                .expect("not mixed");
+                let right_columns = resolve_packed_columns(
+                    right_storage.as_ref(),
+                    right_missing.as_ref(),
+                    right_point_layout,
+                )?
+                .expect("not mixed");
                 kernel(left_columns, right_columns)
             })
             .map_err(packed_columns_err)?;
@@ -1410,10 +1445,12 @@ impl PyGeometryArray {
         };
         let storage = Arc::clone(self.storage_arc());
         let missing = self.missing().cloned();
+        let point_layout = self.point_row_layout();
         let result = py
             .detach(move || -> PackedColumnResult<R> {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("points");
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                        .expect("points");
                 let PackedColumns::Points(point_columns) = columns else {
                     unreachable!("reduce_packed_points_detached requires point storage");
                 };
@@ -1441,14 +1478,22 @@ impl PyGeometryArray {
         let right_storage = Arc::clone(right.storage_arc());
         let left_missing = self.missing().cloned();
         let right_missing = right.missing().cloned();
+        let left_point_layout = self.point_row_layout();
+        let right_point_layout = right.point_row_layout();
         let values = py
             .detach(move || -> PackedColumnResult<Option<Vec<T>>> {
-                let left_columns =
-                    resolve_packed_columns(left_storage.as_ref(), left_missing.as_ref())?
-                        .expect("points");
-                let right_columns =
-                    resolve_packed_columns(right_storage.as_ref(), right_missing.as_ref())?
-                        .expect("points");
+                let left_columns = resolve_packed_columns(
+                    left_storage.as_ref(),
+                    left_missing.as_ref(),
+                    left_point_layout,
+                )?
+                .expect("points");
+                let right_columns = resolve_packed_columns(
+                    right_storage.as_ref(),
+                    right_missing.as_ref(),
+                    right_point_layout,
+                )?
+                .expect("points");
                 let PackedColumns::Points(left) = left_columns else {
                     unreachable!("pair_packed_points_detached requires point storage");
                 };
@@ -1540,7 +1585,8 @@ mod tests {
         };
 
         for storage in [&point_storage, &line_storage, &polygon_storage] {
-            let Ok(Some(columns)) = resolve_packed_columns(storage, None) else {
+            let Ok(Some(columns)) = resolve_packed_columns(storage, None, PointRowLayout::Dense)
+            else {
                 panic!("packed view resolution failed");
             };
             assert_eq!(columns.row_count(), 3);
@@ -1555,7 +1601,12 @@ mod tests {
         let compact_map = RowSelection::gather(Arc::from([5_usize, 2, 5]), 6);
         let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
             .expect("compact mask");
-        let compact = PointRows::new(6, compact_map.as_deref(), Some(&compact_mask));
+        let compact = PointRows::new(
+            6,
+            compact_map.as_deref(),
+            Some(&compact_mask),
+            PointRowLayout::Compact,
+        );
         assert!(compact.is_compact());
         assert_eq!(compact.present_count(), 3);
         assert_eq!(compact.cursor().collect::<Vec<_>>(), [
@@ -1570,12 +1621,32 @@ mod tests {
         let row_aligned_map = RowSelection::gather(Arc::from([2_usize, 0, 2]), 3);
         let row_aligned_mask =
             ValidityMask::from_vec(3, vec![false, true, false]).expect("row-aligned mask");
-        let row_aligned = PointRows::new(3, row_aligned_map.as_deref(), Some(&row_aligned_mask));
+        let row_aligned = PointRows::new(
+            3,
+            row_aligned_map.as_deref(),
+            Some(&row_aligned_mask),
+            PointRowLayout::RowAligned,
+        );
         assert!(!row_aligned.is_compact());
         assert_eq!(row_aligned.cursor().collect::<Vec<_>>(), [
             (0, Some(2)),
             (1, None),
             (2, Some(2))
+        ]);
+
+        let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1]).expect("compact mask");
+        let equal_length_compact_map = RowSelection::gather(Arc::from([0_usize, 1, 0]), 2);
+        let equal_length_compact = PointRows::new(
+            2,
+            equal_length_compact_map.as_deref(),
+            Some(&equal_length_compact_mask),
+            PointRowLayout::Compact,
+        );
+        assert!(equal_length_compact.is_compact());
+        assert_eq!(equal_length_compact.cursor().collect::<Vec<_>>(), [
+            (0, Some(0)),
+            (1, None),
+            (2, Some(1))
         ]);
     }
 
@@ -1593,7 +1664,7 @@ mod tests {
     #[test]
     fn selected_reduction_allocates_only_its_result() {
         let storage = gathered_lines(32);
-        let columns = resolve_packed_columns(&storage, None)
+        let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
             .ok()
             .flatten()
             .expect("packed columns");
@@ -1609,7 +1680,7 @@ mod tests {
     fn selected_pointwise_map_has_constant_output_owner_allocations() {
         fn count(rows: usize) -> usize {
             let storage = gathered_lines(rows);
-            let columns = resolve_packed_columns(&storage, None)
+            let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
                 .ok()
                 .flatten()
                 .expect("packed columns");

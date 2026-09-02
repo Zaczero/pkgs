@@ -75,6 +75,20 @@ enum ArrayRows {
     },
 }
 
+/// Physical layout of packed point rows relative to a validity mask.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PointRowLayout {
+    Dense,
+    RowAligned,
+    Compact,
+}
+
+impl PointRowLayout {
+    pub(crate) const fn is_compact(self) -> bool {
+        matches!(self, Self::Compact)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum LogicalRow<'a> {
     Missing { logical: usize },
@@ -211,6 +225,14 @@ impl ArrayRows {
 
     const fn is_compact_nullable(&self) -> bool {
         matches!(self, Self::CompactNullable { .. })
+    }
+
+    const fn point_row_layout(&self) -> PointRowLayout {
+        match self {
+            Self::Dense(_) => PointRowLayout::Dense,
+            Self::Masked { .. } => PointRowLayout::RowAligned,
+            Self::CompactNullable { .. } => PointRowLayout::Compact,
+        }
     }
 
     fn logical_row(&self, logical: usize) -> Option<LogicalRow<'_>> {

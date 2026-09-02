@@ -69,10 +69,10 @@ pub(crate) fn packed_points_to_arrow(
     if cfg!(target_endian = "little") {
         let columns = seq.column_arcs();
         let window = columns.window.clone();
-        let m_window = columns.m_window.clone();
         let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
             crate::py::vectors::Float64Buffer::view(arc, window)
         };
+        let m_parts = columns.m_parts();
         let (xs, ys) = (
             column(columns.xs, window.clone())?,
             column(columns.ys, window.clone())?,
@@ -82,9 +82,8 @@ pub(crate) fn packed_points_to_arrow(
                 .zs
                 .map(|arc| column(arc, window.clone()))
                 .transpose()?,
-            columns
-                .ms
-                .map(|arc| column(arc, m_window.clone()))
+            m_parts
+                .map(|(arc, window)| column(arc, window))
                 .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?
@@ -124,10 +123,10 @@ pub(crate) fn packed_polygons_to_arrow(
         let ring_offset_bytes = crate::py::vectors::Int32Buffer::new(ring_offsets.as_arc_i32());
         let columns = coords.column_arcs();
         let window = columns.window.clone();
-        let m_window = columns.m_window.clone();
         let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
             crate::py::vectors::Float64Buffer::view(arc, window)
         };
+        let m_parts = columns.m_parts();
         let (xs, ys) = (
             column(columns.xs, window.clone())?,
             column(columns.ys, window.clone())?,
@@ -137,9 +136,8 @@ pub(crate) fn packed_polygons_to_arrow(
                 .zs
                 .map(|arc| column(arc, window.clone()))
                 .transpose()?,
-            columns
-                .ms
-                .map(|arc| column(arc, m_window.clone()))
+            m_parts
+                .map(|(arc, window)| column(arc, window))
                 .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?
@@ -200,10 +198,10 @@ pub(crate) fn packed_lines_to_arrow(
         let offset_bytes = crate::py::vectors::Int32Buffer::new(offsets.as_arc_i32());
         let columns = coords.column_arcs();
         let window = columns.window.clone();
-        let m_window = columns.m_window.clone();
         let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
             crate::py::vectors::Float64Buffer::view(arc, window)
         };
+        let m_parts = columns.m_parts();
         let (xs, ys) = (
             column(columns.xs, window.clone())?,
             column(columns.ys, window.clone())?,
@@ -213,9 +211,8 @@ pub(crate) fn packed_lines_to_arrow(
                 .zs
                 .map(|arc| column(arc, window.clone()))
                 .transpose()?,
-            columns
-                .ms
-                .map(|arc| column(arc, m_window.clone()))
+            m_parts
+                .map(|(arc, window)| column(arc, window))
                 .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?

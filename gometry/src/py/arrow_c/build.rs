@@ -427,8 +427,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     let columns = seq.column_arcs();
     let start = columns.window.start;
     let len = columns.window.end - columns.window.start;
-    let m_start = columns.m_window.start;
-    let m_len = columns.m_window.end - columns.m_window.start;
+    let m_parts = columns.m_parts();
     let mut children = vec![
         primitive_f64_array_windowed(columns.xs, start, len)?,
         primitive_f64_array_windowed(columns.ys, start, len)?,
@@ -436,8 +435,12 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     if let Some(zs) = columns.zs {
         children.push(primitive_f64_array_windowed(zs, start, len)?);
     }
-    if let Some(ms) = columns.ms {
-        children.push(primitive_f64_array_windowed(ms, m_start, m_len)?);
+    if let Some((ms, m_range)) = m_parts {
+        children.push(primitive_f64_array_windowed(
+            ms,
+            m_range.start,
+            m_range.end - m_range.start,
+        )?);
     }
     make_array(len, vec![OwnedBufferSlot::Null], children)
 }

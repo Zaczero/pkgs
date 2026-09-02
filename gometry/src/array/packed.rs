@@ -58,6 +58,10 @@ impl PyGeometryArray {
         self.rows.is_compact_nullable()
     }
 
+    pub(crate) const fn point_row_layout(&self) -> crate::array::PointRowLayout {
+        self.rows.point_row_layout()
+    }
+
     /// Shared driver for the Z-extreme accessors (`min_z`/`max_z`/`z_range`):
     /// reads packed per-row extremes when storage exposes them, else falls back
     /// to per-shape computation. See [`Self::extreme_lane`].

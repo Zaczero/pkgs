@@ -14,15 +14,75 @@ use crate::geometry::types::{
 };
 use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all};
 
-/// One sequence's shared column storage + coordinate/M row windows (see
+/// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).
-pub struct SharedColumns {
+pub(crate) struct SharedColumns {
     pub xs: Arc<[f64]>,
     pub ys: Arc<[f64]>,
     pub zs: Option<Arc<[f64]>>,
-    pub ms: Option<Arc<[f64]>>,
+    pub ms: Option<MColumn>,
     pub window: Range<usize>,
-    pub m_window: Range<usize>,
+}
+
+impl SharedColumns {
+    /// Return the M owner and its visible window in the same shape consumed by
+    /// Arrow primitive-array builders.
+    pub(crate) fn m_parts(&self) -> Option<(Arc<[f64]>, Range<usize>)> {
+        self.ms
+            .as_ref()
+            .map(|column| (column.arc(), column.window(self.window.clone())))
+    }
+}
+
+/// M storage is either aligned with the shared X/Y/Z columns or already copied
+/// to the sequence's visible window. The distinction is established when a
+/// sequence is built and is never inferred from lengths later.
+#[derive(Clone, Debug)]
+pub(crate) enum MColumn {
+    Shared(Arc<[f64]>),
+    Local(Arc<[f64]>),
+}
+
+impl MColumn {
+    fn arc(&self) -> Arc<[f64]> {
+        match self {
+            Self::Shared(column) | Self::Local(column) => Arc::clone(column),
+        }
+    }
+
+    fn values(&self, range: Range<usize>) -> &[f64] {
+        match self {
+            Self::Shared(column) => &column[range],
+            Self::Local(column) => &column[..range.end - range.start],
+        }
+    }
+
+    fn window(&self, range: Range<usize>) -> Range<usize> {
+        match self {
+            Self::Shared(_) => range,
+            Self::Local(_) => 0..range.end - range.start,
+        }
+    }
+
+    fn view(&self, window: Range<usize>, source_len: usize) -> Self {
+        match self {
+            Self::Shared(column) => Self::Shared(Arc::clone(column)),
+            Self::Local(column) if window.start == 0 && window.end == source_len => {
+                Self::Local(Arc::clone(column))
+            },
+            Self::Local(column) => Self::Local(Arc::from(&column[window])),
+        }
+    }
+
+    fn carried(&self, range: Range<usize>, physical_len: usize) -> Arc<[f64]> {
+        match self {
+            Self::Shared(column) if range.start == 0 && range.end == physical_len => {
+                Arc::clone(column)
+            },
+            Self::Shared(column) => Arc::from(&column[range]),
+            Self::Local(column) => Arc::clone(column),
+        }
+    }
 }
 
 /// Checked coordinate-row window into a [`CoordSeq`]'s physical columns.
@@ -84,14 +144,14 @@ pub struct CoordSeq {
     xs: Arc<[f64]>,
     ys: Arc<[f64]>,
     zs: Option<Arc<[f64]>>,
-    ms: Option<Arc<[f64]>>,
+    ms: Option<MColumn>,
     range: Range<u32>,
 }
 
-// Four (fat) `Arc` pointers + the u32 window; the storage win is per-vertex,
-// not per-sequence: the XY case (the common one) holds 16 B/vertex in two
-// `f64` columns versus the 40-byte AoS `Point` — 2.5× less cache/bandwidth,
-// and contiguous columns the reducers read with no gather.
+// Three (fat) `Arc` pointers, an explicit M-column owner, and the u32 window;
+// the storage win is per-vertex, not per-sequence: the XY case (the common one)
+// holds 16 B/vertex in two `f64` columns versus the 40-byte AoS `Point` — 2.5×
+// less cache/bandwidth, and contiguous columns the reducers read with no gather.
 
 impl AsRef<Self> for CoordSeq {
     fn as_ref(&self) -> &Self {
@@ -270,18 +330,16 @@ impl CoordSeq {
             xs,
             ys,
             zs,
-            ms,
+            ms: ms.map(MColumn::Shared),
             range,
         }
     }
 
     /// Assemble shared coordinate columns with a local M column.
     ///
-    /// # Safety
-    ///
-    /// `window` must reference equal-length X/Y/Z rows, and a present M column
-    /// must have exactly as many rows as `window`.
-    pub(crate) unsafe fn from_columns_unchecked_with_window(
+    /// The window is a checked coordinate boundary, and all inputs are
+    /// validated before the resulting sequence can expose them.
+    pub(crate) fn from_columns_with_window(
         xs: Arc<[f64]>,
         ys: Arc<[f64]>,
         zs: Option<Arc<[f64]>>,
@@ -293,13 +351,14 @@ impl CoordSeq {
         debug_assert!(window.end() <= xs.len());
         debug_assert!(
             ms.as_ref()
-                .is_none_or(|column| { column.len() == window.end() - window.start() })
+                .is_none_or(|column| column.len() == window.end() - window.start())
         );
+        debug_assert!(ensure_coordseq_vertex_capacity(xs.len()).is_ok());
         Self {
             xs,
             ys,
             zs,
-            ms,
+            ms: ms.map(MColumn::Local),
             range: window.start() as u32..window.end() as u32,
         }
     }
@@ -310,15 +369,10 @@ impl CoordSeq {
     pub fn view(&self, window: CoordWindow) -> Self {
         let start = self.range.start + window.start() as u32;
         let end = self.range.start + window.end() as u32;
-        let ms = self.ms.as_ref().map(|column| {
-            if self.has_local_m_window(column)
-                && (window.start() != 0 || window.end() != self.len())
-            {
-                Arc::from(&column[window.start()..window.end()])
-            } else {
-                Arc::clone(column)
-            }
-        });
+        let ms = self
+            .ms
+            .as_ref()
+            .map(|column| column.view(window.start()..window.end(), self.len()));
         Self {
             xs: Arc::clone(&self.xs),
             ys: Arc::clone(&self.ys),
@@ -386,30 +440,15 @@ impl CoordSeq {
         &column[self.range.start as usize..self.range.end as usize]
     }
 
-    fn has_local_m_window(&self, column: &[f64]) -> bool {
-        column.len() == self.len()
-            && (self.range.start != 0 || self.range.end as usize != self.xs.len())
-    }
-
     /// The shared column storage + this sequence's windows — the zero-copy
     /// hand-off for buffer-protocol exports (Arrow coordinate buffers).
-    pub fn column_arcs(&self) -> SharedColumns {
+    pub(crate) fn column_arcs(&self) -> SharedColumns {
         SharedColumns {
             xs: Arc::clone(&self.xs),
             ys: Arc::clone(&self.ys),
             zs: self.zs.clone(),
             ms: self.ms.clone(),
             window: self.range.start as usize..self.range.end as usize,
-            m_window: self.ms.as_ref().map_or(
-                self.range.start as usize..self.range.end as usize,
-                |column| {
-                    if self.has_local_m_window(column) {
-                        0..self.len()
-                    } else {
-                        self.range.start as usize..self.range.end as usize
-                    }
-                },
-            ),
         }
     }
 
@@ -544,13 +583,9 @@ impl CoordSeq {
     }
 
     pub fn ms(&self) -> Option<&[f64]> {
-        self.ms.as_deref().map(|column| {
-            if self.has_local_m_window(column) {
-                &column[..self.len()]
-            } else {
-                self.window(column)
-            }
-        })
+        self.ms
+            .as_ref()
+            .map(|column| column.values(self.range.start as usize..self.range.end as usize))
     }
 
     /// Whether this sequence's row window spans the whole backing column.
@@ -591,11 +626,10 @@ impl CoordSeq {
     /// common case — for ops that rewrite XY but leave M untouched.
     pub(crate) fn carried_ms(&self) -> Option<Arc<[f64]>> {
         self.ms.as_ref().map(|column| {
-            if self.has_local_m_window(column) || self.is_full_window(column) {
-                Arc::clone(column)
-            } else {
-                Arc::from(self.window(column))
-            }
+            column.carried(
+                self.range.start as usize..self.range.end as usize,
+                self.xs.len(),
+            )
         })
     }
 

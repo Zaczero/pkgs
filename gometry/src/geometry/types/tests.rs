@@ -400,7 +400,7 @@ mod coordseq_xy_transform_carry_tests {
             Some([0.1, 0.2, 0.3].into()),
         );
         let parent_z = seq.column_arcs().zs.expect("Z column");
-        let parent_m = seq.column_arcs().ms.expect("M column");
+        let parent_m = seq.column_arcs().m_parts().expect("M column").0;
         let mapped = seq
             .try_affine(&[0.0, 1.0, 1.0, 0.0, 0.0, 0.0])
             .expect("swap XY affine");
@@ -409,8 +409,14 @@ mod coordseq_xy_transform_carry_tests {
         assert_eq!(mapped.zs().expect("Z carried").to_vec(), [9.0, 8.0, 7.0]);
         assert_eq!(mapped.ms().expect("M carried").to_vec(), [0.1, 0.2, 0.3]);
         let child = mapped.column_arcs();
-        assert!(Arc::ptr_eq(&parent_z, &child.zs.expect("shared Z arc")));
-        assert!(Arc::ptr_eq(&parent_m, &child.ms.expect("shared M arc")));
+        assert!(Arc::ptr_eq(
+            &parent_z,
+            child.zs.as_ref().expect("shared Z arc")
+        ));
+        assert!(Arc::ptr_eq(
+            &parent_m,
+            &child.m_parts().expect("shared M arc").0
+        ));
     }
 
     #[test]
@@ -427,6 +433,48 @@ mod coordseq_xy_transform_carry_tests {
         assert_eq!(mapped.zs().expect("Z carried").to_vec(), [11.0, 12.0]);
         let child_z = mapped.column_arcs().zs.expect("Z column");
         assert!(!Arc::ptr_eq(&parent_z, &child_z));
+    }
+}
+
+#[cfg(test)]
+mod coordseq_m_storage_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn local_m_storage_copies_only_the_requested_visible_window() {
+        let m: Arc<[f64]> = [50.0, 60.0].into();
+        let seq = CoordSeq::from_columns_with_window(
+            [0.0, 1.0, 2.0, 3.0].into(),
+            [10.0, 11.0, 12.0, 13.0].into(),
+            None,
+            Some(Arc::clone(&m)),
+            CoordWindow::from_range(1..3, 4),
+        );
+        assert_eq!(seq.ms(), Some([50.0, 60.0].as_slice()));
+        assert_eq!(seq.column_arcs().m_parts().unwrap().1, 0..2);
+        assert!(Arc::ptr_eq(&seq.column_arcs().m_parts().unwrap().0, &m));
+
+        let child = seq.view(CoordWindow::from_range(1..2, seq.len()));
+        assert_eq!(child.ms(), Some([60.0].as_slice()));
+        assert_eq!(child.column_arcs().m_parts().unwrap().1, 0..1);
+        assert!(!Arc::ptr_eq(&child.column_arcs().m_parts().unwrap().0, &m));
+    }
+
+    #[test]
+    fn shared_m_storage_keeps_the_parent_window() {
+        let m: Arc<[f64]> = [50.0, 60.0, 70.0, 80.0].into();
+        let seq = CoordSeq::from_columns(
+            [0.0, 1.0, 2.0, 3.0].into(),
+            [10.0, 11.0, 12.0, 13.0].into(),
+            None,
+            Some(Arc::clone(&m)),
+        )
+        .view(CoordWindow::from_range(1..3, 4));
+        assert_eq!(seq.ms(), Some([60.0, 70.0].as_slice()));
+        assert_eq!(seq.column_arcs().m_parts().unwrap().1, 1..3);
+        assert!(Arc::ptr_eq(&seq.column_arcs().m_parts().unwrap().0, &m));
     }
 }
 

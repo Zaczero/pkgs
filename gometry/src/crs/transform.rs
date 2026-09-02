@@ -1263,18 +1263,13 @@ impl TransformOutputPlan {
                     OutputBatch::Xyz => (&xyz_xs, &xyz_ys, Some(&xyz_zs)),
                 };
                 let window = CoordWindow::from_range(owner.range, xs.len());
-                // SAFETY: the sizing pass checked every final batch against
-                // CoordSeq's offset capacity, append kept all columns in
-                // lockstep, and carried M was checked when it was admitted.
-                unsafe {
-                    CoordSeq::from_columns_unchecked_with_window(
-                        Arc::clone(xs),
-                        Arc::clone(ys),
-                        zs.map(Arc::clone),
-                        owner.ms,
-                        window,
-                    )
-                }
+                CoordSeq::from_columns_with_window(
+                    Arc::clone(xs),
+                    Arc::clone(ys),
+                    zs.map(Arc::clone),
+                    owner.ms,
+                    window,
+                )
             })
             .collect();
         let mut cursor = TransformCursor {
@@ -1638,12 +1633,18 @@ mod lane_tests {
         };
         assert_eq!(first.ms(), Some([50.0, 60.0].as_slice()));
         assert_eq!(second.ms(), Some([70.0].as_slice()));
-        assert!(Arc::ptr_eq(&first.column_arcs().ms.unwrap(), &first_ms));
-        assert!(Arc::ptr_eq(&second.column_arcs().ms.unwrap(), &second_ms));
+        assert!(Arc::ptr_eq(
+            &first.column_arcs().m_parts().unwrap().0,
+            &first_ms
+        ));
+        assert!(Arc::ptr_eq(
+            &second.column_arcs().m_parts().unwrap().0,
+            &second_ms
+        ));
         assert_eq!(first.column_arcs().window, 0..2);
-        assert_eq!(first.column_arcs().m_window, 0..2);
+        assert_eq!(first.column_arcs().m_parts().unwrap().1, 0..2);
         assert_eq!(second.column_arcs().window, 2..3);
-        assert_eq!(second.column_arcs().m_window, 0..1);
+        assert_eq!(second.column_arcs().m_parts().unwrap().1, 0..1);
     }
 
     #[test]
