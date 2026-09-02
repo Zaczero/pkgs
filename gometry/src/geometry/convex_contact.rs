@@ -77,18 +77,11 @@ fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> 
     if !shell_is_convex(a) || !shell_is_convex(b) {
         return None;
     }
-    if !ring_envelopes_overlap(a, b) {
+    if !Bounds::from_xy_iter(a.iter().copied()).intersects(Bounds::from_xy_iter(b.iter().copied()))
+    {
         return None;
     }
     Some((left, right))
-}
-
-fn ring_envelopes_overlap(a: &[XY], b: &[XY]) -> bool {
-    ring_bounds(a).intersects(ring_bounds(b))
-}
-
-fn ring_bounds(ring: &[XY]) -> Bounds {
-    Bounds::from_xy_iter(ring.iter().copied())
 }
 
 /// Upper and lower x-monotone edge-index chains for a CCW convex shell.
@@ -240,21 +233,21 @@ mod tests {
         let mut points: Vec<Point> = (0..n)
             .map(|i| {
                 let angle = std::f64::consts::TAU * i as f64 / n as f64;
-                Point::new_unchecked_xy(cx + radius * angle.cos(), cy + radius * angle.sin())
+                Point::new_raw_xy(cx + radius * angle.cos(), cy + radius * angle.sin())
             })
             .collect();
         points.push(points[0]);
-        Polygon::new(Ring::from_trusted_closed(points), Vec::new())
+        Polygon::new(Ring::from_closed(points), Vec::new())
     }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
-            Ring::from_trusted_closed(vec![
-                Point::new_unchecked_xy(minx, miny),
-                Point::new_unchecked_xy(maxx, miny),
-                Point::new_unchecked_xy(maxx, maxy),
-                Point::new_unchecked_xy(minx, maxy),
-                Point::new_unchecked_xy(minx, miny),
+            Ring::from_closed(vec![
+                Point::new_raw_xy(minx, miny),
+                Point::new_raw_xy(maxx, miny),
+                Point::new_raw_xy(maxx, maxy),
+                Point::new_raw_xy(minx, maxy),
+                Point::new_raw_xy(minx, miny),
             ]),
             Vec::new(),
         )

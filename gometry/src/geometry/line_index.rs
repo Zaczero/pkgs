@@ -19,7 +19,7 @@ use crate::geometry::{
 };
 
 /// Per-segment measurement for the linear-referencing engine.
-pub trait SegmentMetric {
+pub(crate) trait SegmentMetric {
     /// Length of the segment `start`–`end` in this metric.
     fn length(&self, start: Point, end: Point) -> f64;
     /// The point at `fraction` (`[0, 1]`) along the segment.
@@ -233,11 +233,11 @@ struct OrdinateSegment {
 
 crate::heapless!(OrdinateSegment);
 
-pub struct LineIndex {
+pub(crate) struct LineIndex {
     /// Non-zero-length segments, in linework order.
     segments: Box<[OrdinateSegment]>,
     /// `prefix[i]` = cumulative length before segment `i`; the last entry is
-    /// [`total`](Self::total). Lengths are cached here — locate's
+    /// the cached total length. Lengths are cached here — locate's
     /// `mul_add(length, fraction, offset)` and every interpolation walk read
     /// them back instead of re-measuring.
     prefix: Box<[f64]>,
@@ -251,11 +251,7 @@ impl LineIndex {
     /// shapes, `EmptyLinework` when there is no first vertex (the zero-total
     /// degeneracies — all-zero-length linework — build fine and resolve to
     /// `first`, matching the walks).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
+    pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = shape.segment_count();
@@ -310,11 +306,7 @@ impl LineIndex {
     /// Build over one line's zero-copy [`CoordSeq`] window — the packed-`Lines`
     /// batch lane reads CSR rows through this with no per-row `Shape` / `Arc`
     /// traffic (the measured gap vs the `iter_rows` + transient fallback).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
+    pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
         let mut segments = Vec::with_capacity(upper);
@@ -352,10 +344,6 @@ impl LineIndex {
         })
     }
 
-    pub const fn total(&self) -> f64 {
-        self.total
-    }
-
     /// The segment containing `target` (a clamped `[0, total]` measure) and
     /// the local offset into it. An exact boundary resolves to the segment it
     /// ends, matching the old `target <= length` walk.
@@ -373,11 +361,7 @@ impl LineIndex {
 
     /// The point at `distance` along the linework (the engine behind
     /// `line_interpolate_point`). Caller has validated finiteness.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-    )]
-    pub fn interpolate(
+    pub(crate) fn interpolate(
         &self,
         distance: f64,
         normalized: bool,
@@ -481,7 +465,7 @@ impl LineIndex {
 
     /// The along-line offset of `probe`'s nearest projection (the engine
     /// behind `line_locate_point`). First-wins tie ordering, like the scan.
-    pub fn locate_point<M: SegmentMetric>(
+    pub(crate) fn locate_point<M: SegmentMetric>(
         &self,
         probe: Point,
         normalized: bool,

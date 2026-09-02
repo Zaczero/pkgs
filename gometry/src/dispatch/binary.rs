@@ -7,20 +7,22 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::{GeometryArrayStorage, MissingMask, ShapeRow};
+use crate::array::{GeometryArrayStorage, RowProductsHandle, ShapeRow, ValidityMask};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, paired_arrays,
     paired_arrays_len, rows_err,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
-use crate::dispatch::metric::{Lane, MetricCtx, MetricScratch, OpCtx};
+use crate::dispatch::metric::{
+    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
+};
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, Shape, ShapeData, is_geographic_frame};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
-type MaskedRows<R> = (Vec<R>, Option<MissingMask>);
-type FramedMaskedRows<R> = (Vec<R>, Option<MissingMask>, Frame);
+type MaskedRows<R> = (Vec<R>, Option<ValidityMask>);
+type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
 
 #[derive(Clone, Copy)]
 enum ArrayOperandSide {
@@ -89,27 +91,6 @@ where
     )
 }
 
-/// Whether the per-row binary fallback materializes frame-dependent caches.
-///
-/// Derived from [`MetricCtx`]: only `Metric` kernels (distance/dwithin/LRS)
-/// inspect cached fields. `None` and `Antimeridian` need no frame cache —
-/// acquiring an empty `FrameDependentCaches` Arc per row is retained memory
-/// with no payoff.
-#[derive(Clone, Copy)]
-enum FrameCachePolicy {
-    None,
-    Eager,
-}
-
-impl FrameCachePolicy {
-    const fn from_metric(metric: MetricCtx<'_>) -> Self {
-        match metric {
-            MetricCtx::Metric { .. } => Self::Eager,
-            MetricCtx::None | MetricCtx::Antimeridian(_) => Self::None,
-        }
-    }
-}
-
 fn run_array_rows<R, K>(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -120,39 +101,36 @@ fn run_array_rows<R, K>(
 ) -> PyResult<Vec<R>>
 where
     R: BulkElement,
-    K: for<'row, 'ctx> Fn(usize, ShapeRow<'row>, &OpCtx<'ctx>) -> Result<R> + Send + Sync,
+    K: for<'row, 'ctx> Fn(
+            usize,
+            ShapeRow<'row>,
+            &CachelessRowContext<'ctx>,
+            &mut RowProductsHandle,
+        ) -> Result<R>
+        + Send
+        + Sync,
 {
     let array = array.clone();
-    let missing = array.missing().cloned();
-    let frame_caches = FrameCachePolicy::from_metric(metric);
     py.detach(move || {
         let frame = &frame;
+        let mut products = array.row_products.operation();
         array
-            .storage()
-            .iter_rows()
-            .enumerate()
-            .map(|(row, shape_row)| {
-                if missing.as_ref().is_some_and(|mask| mask[row]) {
+            .logical_storage_rows()
+            .map(|logical_row| {
+                let crate::array::LogicalRow::Present {
+                    logical: row,
+                    row: shape_row,
+                } = logical_row
+                else {
                     return Ok(R::missing_value());
-                }
-                // Demand-driven: only MetricCtx::Metric asks for frame caches.
-                let row_cache;
-                let left_frame_cache = match frame_caches {
-                    FrameCachePolicy::Eager => {
-                        row_cache = array.row_frame_cache(row);
-                        Some(row_cache.as_ref())
-                    },
-                    FrameCachePolicy::None => None,
                 };
-                let ctx = OpCtx {
+                let ctx = CachelessRowContext {
                     frame,
                     geographic,
                     metric,
                     lane: Lane::Array(row),
-                    left_frame_cache,
-                    right_frame_cache: None,
                 };
-                kernel(row, shape_row, &ctx)
+                kernel(row, shape_row, &ctx, &mut products)
             })
             .collect_rows()
     })
@@ -163,7 +141,7 @@ fn run_paired_rows<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
-    rows: (Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>),
+    _rows: (Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>),
     frame: &Frame,
     geographic: bool,
     metric: MetricCtx<'_>,
@@ -175,47 +153,49 @@ where
             usize,
             ShapeRow<'left>,
             ShapeRow<'right>,
-            &OpCtx<'ctx>,
+            &CachelessRowContext<'ctx>,
+            &mut RowProductsHandle,
+            &mut RowProductsHandle,
         ) -> Result<R>
         + Send
         + Sync,
 {
-    let (lefts, rights) = rows;
     let left_array = left.clone();
     let right_array = right.clone();
     let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-    let row_missing = missing.clone();
-    let frame_caches = FrameCachePolicy::from_metric(metric);
     let values = py
         .detach(move || {
             let frame = &frame;
-            lefts
-                .iter_rows()
-                .zip(rights.iter_rows())
-                .enumerate()
-                .map(|(row, (left_row, right_row))| {
-                    if row_missing.as_ref().is_some_and(|mask| mask[row]) {
-                        return Ok(R::missing_value());
-                    }
-                    let left_owned;
-                    let right_owned;
-                    let (left_frame_cache, right_frame_cache) = match frame_caches {
-                        FrameCachePolicy::Eager => {
-                            left_owned = left_array.row_frame_cache(row);
-                            right_owned = right_array.row_frame_cache(row);
-                            (Some(left_owned.as_ref()), Some(right_owned.as_ref()))
+            let mut left_products = left_array.row_products.operation();
+            let mut right_products = right_array.row_products.operation();
+            left_array
+                .logical_storage_rows()
+                .zip(right_array.logical_storage_rows())
+                .map(|(left_row, right_row)| {
+                    let (
+                        crate::array::LogicalRow::Present {
+                            logical: row,
+                            row: left_row,
                         },
-                        FrameCachePolicy::None => (None, None),
+                        crate::array::LogicalRow::Present { row: right_row, .. },
+                    ) = (left_row, right_row)
+                    else {
+                        return Ok(R::missing_value());
                     };
-                    let ctx = OpCtx {
+                    let ctx = CachelessRowContext {
                         frame,
                         geographic,
                         metric,
                         lane: Lane::Array(row),
-                        left_frame_cache,
-                        right_frame_cache,
                     };
-                    kernel(row, left_row, right_row, &ctx)
+                    kernel(
+                        row,
+                        left_row,
+                        right_row,
+                        &ctx,
+                        &mut left_products,
+                        &mut right_products,
+                    )
                 })
                 .collect_rows()
         })
@@ -234,7 +214,7 @@ fn run_binary_fixed_array_rows<R, K>(
 ) -> PyResult<(Vec<R>, Frame)>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     let (frame, geographic) = match side {
         ArrayOperandSide::Left => binary_frame(
@@ -252,7 +232,6 @@ where
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let fixed_plan = fixed.plan_or_transient();
-    let fixed_cache = Arc::clone(&fixed.frame_cache);
     let array_handle = array.clone();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
@@ -263,25 +242,11 @@ where
         &frame,
         geographic,
         metric,
-        move |row, array_row, ctx| {
-            let array_data = array_handle.prepared_row(row, array_row);
-            let ordered = OpCtx {
-                frame: ctx.frame,
-                geographic: ctx.geographic,
-                metric: ctx.metric,
-                lane: ctx.lane,
-                left_frame_cache: match side {
-                    ArrayOperandSide::Left => ctx.left_frame_cache,
-                    ArrayOperandSide::Right => Some(&fixed_cache),
-                },
-                right_frame_cache: match side {
-                    ArrayOperandSide::Left => Some(&fixed_cache),
-                    ArrayOperandSide::Right => ctx.left_frame_cache,
-                },
-            };
+        move |row, array_row, ctx, products| {
+            let array_data = array_handle.prepared_row_with(products, row, array_row);
             match side {
-                ArrayOperandSide::Left => kernel(&array_data, &fixed_plan, &ordered),
-                ArrayOperandSide::Right => kernel(&fixed_plan, &array_data, &ordered),
+                ArrayOperandSide::Left => kernel(&array_data, &fixed_plan, ctx),
+                ArrayOperandSide::Right => kernel(&fixed_plan, &array_data, ctx),
             }
         },
     )?;
@@ -298,7 +263,7 @@ fn run_binary_array_array_rows<R, K>(
 ) -> PyResult<FramedMaskedRows<R>>
 where
     R: BulkElement,
-    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     let (lefts, rights) = paired_arrays(left, right, op_name)?;
     let (frame, geographic) = binary_frame(
@@ -320,9 +285,9 @@ where
         &frame,
         geographic,
         metric,
-        move |row, left_row, right_row, ctx| {
-            let left_data = left_array.prepared_row(row, left_row);
-            let right_data = right_array.prepared_row(row, right_row);
+        move |row, left_row, right_row, ctx, left_products, right_products| {
+            let left_data = left_array.prepared_row_with(left_products, row, left_row);
+            let right_data = right_array.prepared_row_with(right_products, row, right_row);
             kernel(&left_data, &right_data, ctx)
         },
     )?;
@@ -342,7 +307,7 @@ pub(crate) fn dispatch_binary<R, F>(
     op_name: &str,
     resolver: super::metric::MetricResolver,
     fast_path: &F,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
@@ -400,6 +365,251 @@ where
     }
 }
 
+pub(crate) fn dispatch_typed_metric_binary<R>(
+    py: Python<'_>,
+    left: &Bound<'_, PyAny>,
+    right: &Bound<'_, PyAny>,
+    op_name: &str,
+    resolver: super::metric::MetricResolver,
+    planar: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> Result<R> + Send + Sync,
+    geodesic: impl Fn(&PreparedPlan, &PreparedPlan, &GeodesicBinaryRow<'_>) -> Result<R> + Send + Sync,
+) -> PyResult<Py<PyAny>>
+where
+    R: BulkElement,
+{
+    use GeometryInput::{Many, One};
+    let (left_input, right_input) = (classify_required(left)?, classify_required(right)?);
+    let (left_crs, left_epoch) = match left_input {
+        One(value) => (value.crs_ref(), value.epoch()),
+        Many(value) => (value.crs_ref(), value.epoch()),
+    };
+    let (right_crs, right_epoch) = match right_input {
+        One(value) => (value.crs_ref(), value.epoch()),
+        Many(value) => (value.crs_ref(), value.epoch()),
+    };
+    let (frame, _geographic) =
+        binary_frame((left_crs, left_epoch), (right_crs, right_epoch), op_name)?;
+    let mut scratch = MetricScratch::default();
+    let metric_ctx = resolver.resolve_ctx(&frame, op_name, &mut scratch)?;
+    let resolved = metric_ctx.require_resolved(op_name)?;
+
+    match (left_input, right_input, resolved) {
+        (One(left), One(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+            let left = left.plan_or_transient();
+            let right = right.plan_or_transient();
+            let value = py.detach(|| planar(to_metre.get(), &left, &right))?;
+            R::into_py(value, py, &frame)
+        },
+        (
+            One(left),
+            One(right),
+            crate::crs::ResolvedMetric::Geodesic {
+                crs,
+                geodesic: metric,
+                frame: geographic_frame,
+                state,
+            },
+        ) => {
+            let left_plan = left.plan_or_transient();
+            let right_plan = right.plan_or_transient();
+            let row = GeodesicBinaryRow {
+                crs,
+                geodesic: metric,
+                frame: *geographic_frame,
+                state,
+                left_cache: &left.frame_cache(),
+                right_cache: &right.frame_cache(),
+            };
+            let value = py.detach(|| geodesic(&left_plan, &right_plan, &row))?;
+            R::into_py(value, py, &frame)
+        },
+        (Many(array), One(fixed), crate::crs::ResolvedMetric::Planar { to_metre })
+        | (One(fixed), Many(array), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+            let scalar_left = matches!(left_input, One(_));
+            let fixed = fixed.plan_or_transient();
+            let output_missing = array.missing().cloned();
+            let array = array.clone();
+            let values = py
+                .detach(move || {
+                    let mut products = array.row_products.operation();
+                    array
+                        .logical_storage_rows()
+                        .map(|logical_row| {
+                            let crate::array::LogicalRow::Present {
+                                logical: row,
+                                row: shape,
+                            } = logical_row
+                            else {
+                                return Ok(R::missing_value());
+                            };
+                            let data = array.prepared_row_with(&mut products, row, shape);
+                            if scalar_left {
+                                planar(to_metre.get(), &fixed, &data)
+                            } else {
+                                planar(to_metre.get(), &data, &fixed)
+                            }
+                        })
+                        .collect_rows()
+                })
+                .map_err(rows_err)?;
+            R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
+        },
+        (
+            Many(array),
+            One(fixed),
+            crate::crs::ResolvedMetric::Geodesic {
+                crs,
+                geodesic: metric,
+                frame: geographic_frame,
+                state,
+            },
+        )
+        | (
+            One(fixed),
+            Many(array),
+            crate::crs::ResolvedMetric::Geodesic {
+                crs,
+                geodesic: metric,
+                frame: geographic_frame,
+                state,
+            },
+        ) => {
+            let scalar_left = matches!(left_input, One(_));
+            let fixed_plan = fixed.plan_or_transient();
+            let fixed_cache = fixed.frame_cache();
+            let output_missing = array.missing().cloned();
+            let array = array.clone();
+            let values = py
+                .detach(move || {
+                    let mut products = array.row_products.operation();
+                    array
+                        .logical_storage_rows()
+                        .map(|logical_row| {
+                            let crate::array::LogicalRow::Present {
+                                logical: row_index,
+                                row: shape,
+                            } = logical_row
+                            else {
+                                return Ok(R::missing_value());
+                            };
+                            let data = array.prepared_row_with(&mut products, row_index, shape);
+                            let row_cache = products.frame_cache(row_index);
+                            let row = if scalar_left {
+                                GeodesicBinaryRow {
+                                    crs,
+                                    geodesic: metric,
+                                    frame: *geographic_frame,
+                                    state,
+                                    left_cache: &fixed_cache,
+                                    right_cache: &row_cache,
+                                }
+                            } else {
+                                GeodesicBinaryRow {
+                                    crs,
+                                    geodesic: metric,
+                                    frame: *geographic_frame,
+                                    state,
+                                    left_cache: &row_cache,
+                                    right_cache: &fixed_cache,
+                                }
+                            };
+                            if scalar_left {
+                                geodesic(&fixed_plan, &data, &row)
+                            } else {
+                                geodesic(&data, &fixed_plan, &row)
+                            }
+                        })
+                        .collect_rows()
+                })
+                .map_err(rows_err)?;
+            R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
+        },
+        (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
+            paired_arrays(left, right, op_name)?;
+            let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+            let output_missing = missing.clone();
+            let left = left.clone();
+            let right = right.clone();
+            let values = py
+                .detach(move || {
+                    let mut left_products = left.row_products.operation();
+                    let mut right_products = right.row_products.operation();
+                    left.logical_storage_rows()
+                        .zip(right.logical_storage_rows())
+                        .map(|(left_row, right_row)| {
+                            let (
+                                crate::array::LogicalRow::Present {
+                                    logical: row,
+                                    row: a,
+                                },
+                                crate::array::LogicalRow::Present { row: b, .. },
+                            ) = (left_row, right_row)
+                            else {
+                                return Ok(R::missing_value());
+                            };
+                            let a = left.prepared_row_with(&mut left_products, row, a);
+                            let b = right.prepared_row_with(&mut right_products, row, b);
+                            planar(to_metre.get(), &a, &b)
+                        })
+                        .collect_rows()
+                })
+                .map_err(rows_err)?;
+            R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
+        },
+        (
+            Many(left),
+            Many(right),
+            crate::crs::ResolvedMetric::Geodesic {
+                crs,
+                geodesic: metric,
+                frame: geographic_frame,
+                state,
+            },
+        ) => {
+            paired_arrays(left, right, op_name)?;
+            let missing = crate::array::missing::union_pair(left.missing(), right.missing());
+            let output_missing = missing.clone();
+            let left = left.clone();
+            let right = right.clone();
+            let values = py
+                .detach(move || {
+                    let mut left_products = left.row_products.operation();
+                    let mut right_products = right.row_products.operation();
+                    left.logical_storage_rows()
+                        .zip(right.logical_storage_rows())
+                        .map(|(left_row, right_row)| {
+                            let (
+                                crate::array::LogicalRow::Present {
+                                    logical: row_index,
+                                    row: a,
+                                },
+                                crate::array::LogicalRow::Present { row: b, .. },
+                            ) = (left_row, right_row)
+                            else {
+                                return Ok(R::missing_value());
+                            };
+                            let a = left.prepared_row_with(&mut left_products, row_index, a);
+                            let b = right.prepared_row_with(&mut right_products, row_index, b);
+                            let left_cache = left_products.frame_cache(row_index);
+                            let right_cache = right_products.frame_cache(row_index);
+                            let row = GeodesicBinaryRow {
+                                crs,
+                                geodesic: metric,
+                                frame: *geographic_frame,
+                                state,
+                                left_cache: &left_cache,
+                                right_cache: &right_cache,
+                            };
+                            geodesic(&a, &b, &row)
+                        })
+                        .collect_rows()
+                })
+                .map_err(rows_err)?;
+            R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
+        },
+    }
+}
+
 /// Shared binary prologue: the ONE frame-compatibility + geographic
 /// resolution all five scalar/array shape handlers start from.
 fn binary_frame(
@@ -418,7 +628,7 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
     right: &PyGeometry,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (frame, geographic) = binary_frame(
         (left.crs_ref(), left.epoch()),
@@ -427,13 +637,11 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
     )?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let ctx = OpCtx {
+    let ctx = CachelessRowContext {
         frame: &frame,
         geographic,
         metric,
         lane: Lane::Scalar,
-        left_frame_cache: Some(&left.frame_cache),
-        right_frame_cache: Some(&right.frame_cache),
     };
     let left_plan = left.plan_or_transient();
     let right_plan = right.plan_or_transient();
@@ -447,7 +655,7 @@ fn dispatch_binary_scalar_array<R: BulkElement>(
     right: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, output_frame) = run_binary_fixed_array_rows(
         py,
@@ -467,7 +675,7 @@ fn dispatch_binary_array_scalar<R: BulkElement>(
     right: &PyGeometry,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, output_frame) = run_binary_fixed_array_rows(
         py,
@@ -487,7 +695,7 @@ fn dispatch_binary_array_array<R: BulkElement>(
     right: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
     op_name: &str,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let (values, missing, output_frame) =
         run_binary_array_array_rows(py, left, right, resolver, op_name, kernel)?;
@@ -502,7 +710,7 @@ pub(crate) fn dispatch_binary_array_left<R>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Vec<R>>
 where
     R: BulkElement,
@@ -532,13 +740,15 @@ where
 /// Split one operand when the resolved frame is geographic and the shape
 /// crosses ±180, reusing the handle otherwise.
 fn split_operand_arc_for_topology(
-    geographic: bool,
+    frame: Option<crate::geographic::GeographicFrame>,
     geometry: &PyGeometry,
 ) -> Result<Arc<PreparedPlan>> {
     let plan = geometry.plan_or_transient();
-    if geographic && plan.crosses_antimeridian() {
+    if let Some(frame) = frame
+        && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
+    {
         Ok(Arc::new(PreparedPlan::new(ShapeData::from(
-            plan.shape().split_antimeridian()?,
+            plan.shape().split_antimeridian_in_frame(frame)?,
         ))))
     } else {
         Ok(plan)
@@ -547,7 +757,7 @@ fn split_operand_arc_for_topology(
 
 /// The shared antimeridian gate for geometry-returning binary lanes.
 fn invoke_topology_geometry_kernel<K>(
-    geographic: bool,
+    frame: Option<crate::geographic::GeographicFrame>,
     left: &PreparedPlan,
     right: &PreparedPlan,
     kernel: &K,
@@ -555,19 +765,24 @@ fn invoke_topology_geometry_kernel<K>(
 where
     K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape>,
 {
-    let left_crosses = geographic && left.crosses_antimeridian();
-    let right_crosses = geographic && right.crosses_antimeridian();
+    let left_crosses = frame
+        .is_some_and(|frame| crate::geometry::crosses_antimeridian_in_frame(left.shape(), frame));
+    let right_crosses = frame
+        .is_some_and(|frame| crate::geometry::crosses_antimeridian_in_frame(right.shape(), frame));
     if left_crosses || right_crosses {
         let left_split = if left_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                left.shape().split_antimeridian()?,
+                left.shape()
+                    .split_antimeridian_in_frame(frame.expect("crossing has a frame"))?,
             )))
         } else {
             None
         };
         let right_split = if right_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                right.shape().split_antimeridian()?,
+                right
+                    .shape()
+                    .split_antimeridian_in_frame(frame.expect("crossing has a frame"))?,
             )))
         } else {
             None
@@ -592,7 +807,9 @@ pub(crate) fn dispatch_binary_geometry<F>(
     right: &Bound<'_, PyAny>,
     op_name: &str,
     fast_path: &F,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+    + Send
+    + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     F: BinaryArrayFastPath<Shape>,
@@ -610,20 +827,22 @@ where
             )?;
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-            let ctx = OpCtx {
+            let ctx = CachelessRowContext {
                 frame: &frame,
                 geographic,
                 metric,
                 lane: Lane::Scalar,
-                left_frame_cache: Some(&left.frame_cache),
-                right_frame_cache: Some(&right.frame_cache),
             };
+            let geographic_frame = crate::geometry::geographic_frame(&frame)?;
             let left_shape = left.plan_or_transient();
             let right_shape = right.plan_or_transient();
             let shape = py.detach(move || {
-                invoke_topology_geometry_kernel(geographic, &left_shape, &right_shape, &|l, r| {
-                    kernel(l, r, &ctx)
-                })
+                invoke_topology_geometry_kernel(
+                    geographic_frame,
+                    &left_shape,
+                    &right_shape,
+                    &|l, r| kernel(l, r, &ctx),
+                )
             })?;
             Ok(Typed(PyGeometry::with_frame(shape, frame))
                 .into_pyobject(py)?
@@ -649,7 +868,8 @@ where
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-            let left_fixed = split_operand_arc_for_topology(geographic, left)?;
+            let geographic_frame = crate::geometry::geographic_frame(&frame)?;
+            let left_fixed = split_operand_arc_for_topology(geographic_frame, left)?;
             // Overlay rows use transient plans only; MetricCtx is None so
             // no frame-dependent cache is retained.
             let shapes = run_array_rows(
@@ -658,12 +878,16 @@ where
                 &frame,
                 geographic,
                 metric,
-                move |row, right_row, ctx| {
+                move |row, right_row, ctx, products| {
                     let known_bounds = right_row.quick_bounds();
-                    let right_data =
-                        right.warm_prepared_row_or_transient(row, right_row, known_bounds);
+                    let right_data = right.warm_prepared_row_or_transient_with(
+                        products,
+                        row,
+                        right_row,
+                        known_bounds,
+                    );
                     invoke_topology_geometry_kernel(
-                        geographic,
+                        geographic_frame,
                         &left_fixed,
                         &right_data,
                         &|l, r| kernel(l, r, ctx),
@@ -712,10 +936,6 @@ where
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "cohesive geometry array runner: one branch owns scalar-right shortcut, one owns pair shortcut"
-)]
 pub(crate) fn geometry_kernel_over_array<K>(
     py: Python<'_>,
     left: &PyGeometryArray,
@@ -725,7 +945,7 @@ pub(crate) fn geometry_kernel_over_array<K>(
     kernel: K,
 ) -> PyResult<PyGeometryArray>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
 {
     use GeometryInput::{Many, One};
     let (right_crs, right_epoch) = match right {
@@ -747,6 +967,7 @@ where
         bounds.as_ref().and_then(|b| b.get(row).copied()).flatten()
     };
     let geographic = is_geographic_frame(&frame);
+    let geographic_frame = crate::geometry::geographic_frame(&frame)?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     // Prefer already-warm bounds caches, but do NOT force-initialize them:
@@ -755,7 +976,7 @@ where
     let left_bounds = left.bounds_cache.get().cloned().flatten();
     let (shapes, output_missing) = match right {
         One(right) => {
-            let right_shape = split_operand_arc_for_topology(geographic, right)?;
+            let right_shape = split_operand_arc_for_topology(geographic_frame, right)?;
             // Pure topology overlay: MetricCtx is None → no frame caches.
             let shapes = run_array_rows(
                 py,
@@ -763,11 +984,12 @@ where
                 &frame,
                 geographic,
                 metric,
-                move |row, left_row, ctx| {
+                move |row, left_row, ctx, products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
-                    let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
+                    let left_data =
+                        left.warm_prepared_row_or_transient_with(products, row, left_row, left_box);
                     invoke_topology_geometry_kernel(
-                        geographic,
+                        geographic_frame,
                         &left_data,
                         &right_shape,
                         &|l, r| kernel(l, r, ctx),
@@ -787,16 +1009,28 @@ where
                 &frame,
                 geographic,
                 metric,
-                move |row, left_row, right_row, ctx| {
+                move |row, left_row, right_row, ctx, left_products, right_products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let right_box =
                         row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
-                    let left_data = left.warm_prepared_row_or_transient(row, left_row, left_box);
-                    let right_data =
-                        right.warm_prepared_row_or_transient(row, right_row, right_box);
-                    invoke_topology_geometry_kernel(geographic, &left_data, &right_data, &|l, r| {
-                        kernel(l, r, ctx)
-                    })
+                    let left_data = left.warm_prepared_row_or_transient_with(
+                        left_products,
+                        row,
+                        left_row,
+                        left_box,
+                    );
+                    let right_data = right.warm_prepared_row_or_transient_with(
+                        right_products,
+                        row,
+                        right_row,
+                        right_box,
+                    );
+                    invoke_topology_geometry_kernel(
+                        geographic_frame,
+                        &left_data,
+                        &right_data,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )?
         },
