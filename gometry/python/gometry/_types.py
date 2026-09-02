@@ -54,6 +54,10 @@ ScalarFloatArray: TypeAlias = np.ndarray[
     tuple[()],
     np.dtype[np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]],
 ]
+# Python and NumPy numeric scalar values accepted by the native f64 boundary.
+FloatScalar: TypeAlias = (
+    float | np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]
+)
 
 TYPE_CHECKING = False
 
@@ -76,6 +80,7 @@ if TYPE_CHECKING:
     PyArrowChunkedArray: TypeAlias = pa.ChunkedArray
     PyArrowTable: TypeAlias = pa.Table
     PyArrowRecordBatch: TypeAlias = pa.RecordBatch
+    PyArrowRecordBatchReader: TypeAlias = pa.RecordBatchReader
     PyArrowCapsule: TypeAlias = object
     PyArrowSchemaCapsule: TypeAlias = object
     GeoPandasSeries: TypeAlias = gpd.GeoSeries
@@ -88,6 +93,7 @@ else:
     PyArrowChunkedArray = Any
     PyArrowTable = Any
     PyArrowRecordBatch = Any
+    PyArrowRecordBatchReader = Any
     PyArrowCapsule = Any
     PyArrowSchemaCapsule = Any
     GeoPandasSeries = Any
@@ -233,6 +239,7 @@ __all__ = [
     'PyArrowCapsule',
     'PyArrowChunkedArray',
     'PyArrowRecordBatch',
+    'PyArrowRecordBatchReader',
     'PyArrowTable',
     'PyprojAreaOfInterest',
     'PyprojCrs',
@@ -806,13 +813,14 @@ class SupportsToWkt(Protocol):
     def to_wkt(self) -> str: ...
 
 
-#: A float lane: any iterable of floats, or a zero-copy buffer exporter
-#: (numpy arrays — float32 included — ``array.array``, memoryviews).
+#: A float lane: any iterable of floats, or a PEP-3118 buffer exporter
+#: (numpy arrays — float32 included — ``array.array``, memoryviews). Buffer
+#: values are copied into native storage; float32 values are converted to f64.
 FloatColumn: TypeAlias = Iterable[float] | Buffer
 
 #: One float per geometry: a scalar broadcasts, or pass an iterable /
 #: zero-copy buffer with one value per element.
-FloatInput: TypeAlias = float | FloatColumn
+FloatInput: TypeAlias = FloatScalar | ScalarFloatArray | FloatColumn
 
 ParseFormat: TypeAlias = Literal[
     'wkt',

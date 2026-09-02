@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use crate::array::{GeometryArrayStorage, ValidityMask};
 use crate::geometry::{HasM, HasZ, column_all_finite};
 use crate::py::arrow::{
     ArrowCoordinateValues, ArrowListLevel, ArrowPolygonLevels, ArrowStorage, CoordSeq,
     CoordinateAxes, ExactArrowCoordinateFill, Frame, PyAnyMethods as _, PyGeometryArray, PyResult,
-    Python, arrow_content_error, arrow_coordinate_values, arrow_ring_needs_closure, arrow_validity,
-    coordinate_span, ensure_vertex_range_in_span, geoarrow_parse_error,
+    Python, arrow_content_error, arrow_coordinate_values, arrow_validity, coordinate_span,
+    geoarrow_parse_error,
 };
 
 pub(crate) fn packed_linestrings_import(
@@ -14,8 +15,13 @@ pub(crate) fn packed_linestrings_import(
     frame: Frame,
 ) -> PyResult<Option<PyGeometryArray>> {
     let multi_chunk = storages.len() > 1;
-    let capacity = if multi_chunk {
-        precompute_linestring_coordinate_total(py, storages)?
+    let nullable = storages.iter().try_fold(false, |nullable, storage| {
+        let array = storage.storage.bind(py);
+        let validity = arrow_validity(py, array)?;
+        Ok::<bool, pyo3::PyErr>(nullable || validity.first_invalid(array.len()?).is_some())
+    })?;
+    let capacity = if multi_chunk || nullable {
+        precompute_linestring_coordinate_total(py, storages, nullable)?
     } else {
         0
     };
@@ -23,16 +29,14 @@ pub(crate) fn packed_linestrings_import(
     let mut single = None;
     let mut offsets: Vec<i32> = vec![0];
     let mut total = 0_usize;
+    let mut row_base = 0_usize;
+    let mut missing_rows = Vec::new();
+    let mut compact_layout = true;
     let mut axes: Option<CoordinateAxes> = None;
     for storage in storages {
         let array = storage.storage.bind(py);
         let len = array.len()?;
-        // Dense packed lane: geometry-level nulls fall through to the append
-        // path (missing-row scatter). Do not reject — outer nulls are legal.
         let validity = arrow_validity(py, array)?;
-        if validity.first_invalid(len).is_some() {
-            return Ok(None);
-        }
         let level = ArrowListLevel::read(py, array)?;
         level.ensure(0, len)?;
         let values = array.getattr("values")?;
@@ -41,7 +45,7 @@ pub(crate) fn packed_linestrings_import(
         let end = base
             .checked_add(span)
             .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
-        if !coordinates.all_valid(base, end) {
+        if !nullable && !coordinates.all_valid(base, end) {
             return Ok(None);
         }
         let chunk_axes =
@@ -51,6 +55,19 @@ pub(crate) fn packed_linestrings_import(
         }
         for index in 0..len {
             let range = level.range(index)?;
+            if !validity.is_valid(index) {
+                if !range.is_empty() {
+                    compact_layout = false;
+                }
+                crate::try_push(&mut missing_rows, row_base + index)?;
+                push_offset(
+                    &mut offsets,
+                    i32::try_from(total)
+                        .map_err(|_| geoarrow_parse_error("Arrow coordinate count overflows"))?,
+                    &mut builder,
+                )?;
+                continue;
+            }
             if range.len() == 1 {
                 return Ok(None);
             }
@@ -63,7 +80,45 @@ pub(crate) fn packed_linestrings_import(
             };
             push_offset(&mut offsets, offset, &mut builder)?;
         }
-        if multi_chunk {
+        row_base = row_base
+            .checked_add(len)
+            .ok_or_else(|| geoarrow_parse_error("Arrow row count overflows"))?;
+        if nullable {
+            for index in 0..len {
+                if validity.is_valid(index) {
+                    let range = level.range(index)?;
+                    if !coordinates.all_valid(range.start, range.end)
+                        || coordinates
+                            .ensure_range_finite(range.start, range.end)
+                            .is_err()
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
+            if builder.is_none() {
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
+                    chunk_axes, capacity,
+                )?);
+            }
+            if compact_layout {
+                builder
+                    .as_mut()
+                    .expect("builder inserted")
+                    .append_arrow_coordinates(&coordinates)?;
+            } else {
+                for index in 0..len {
+                    if !validity.is_valid(index) {
+                        continue;
+                    }
+                    let range = level.range(index)?;
+                    builder
+                        .as_mut()
+                        .expect("builder inserted")
+                        .append_arrow_coordinate_range(&coordinates, range.start, range.end)?;
+                }
+            }
+        } else if multi_chunk {
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
@@ -86,6 +141,17 @@ pub(crate) fn packed_linestrings_import(
     else {
         return Ok(None);
     };
+    if let Some(mask) = ValidityMask::from_sparse(row_base, &missing_rows) {
+        return Ok(Some(PyGeometryArray::compact_from_storage(
+            GeometryArrayStorage::Lines {
+                coords: Arc::new(coords),
+                offsets,
+                row_map: crate::array::RowSelection::Identity,
+            },
+            mask,
+            frame,
+        )));
+    }
     Ok(Some(PyGeometryArray::packed_lines(coords, offsets, frame)))
 }
 
@@ -100,44 +166,70 @@ pub(crate) fn packed_points_import(
     frame: Frame,
 ) -> PyResult<Option<PyGeometryArray>> {
     let multi_chunk = storages.len() > 1;
-    let capacity = if multi_chunk {
-        storages.iter().try_fold(0_usize, |total, storage| {
-            total
-                .checked_add(storage.storage.bind(py).len()?)
-                .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))
-        })?
-    } else {
-        0
-    };
-    let mut builder = None;
-    let mut single = None;
-    let mut axes: Option<CoordinateAxes> = None;
+    let mut total_rows = 0_usize;
+    let mut total_present = 0_usize;
+    let mut nullable = false;
     for storage in storages {
         let array = storage.storage.bind(py);
         let len = array.len()?;
         let validity = arrow_validity(py, array)?;
-        if validity.first_invalid(len).is_some() {
-            return Ok(None);
-        }
+        nullable |= validity.first_invalid(len).is_some();
+        total_rows = total_rows
+            .checked_add(len)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))?;
+        total_present = total_present
+            .checked_add((0..len).filter(|&index| validity.is_valid(index)).count())
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))?;
+    }
+    let capacity =
+        (multi_chunk || nullable).then_some(if nullable { total_present } else { total_rows });
+    let mut builder = None;
+    let mut single = None;
+    let mut axes: Option<CoordinateAxes> = None;
+    let mut row_base = 0_usize;
+    let mut missing_rows = Vec::new();
+    for storage in storages {
+        let array = storage.storage.bind(py);
+        let len = array.len()?;
+        let validity = arrow_validity(py, array)?;
         let coordinates = arrow_coordinate_values(py, array, 0, len)?;
-        if !coordinates.all_valid(0, len) {
-            return Ok(None);
-        }
-        // Non-finite includes the GeoArrow all-NaN POINT EMPTY sentinel — that
-        // must land as Shape::Empty via the boxed path, never packed NaN rows
-        // (packed NaN is the missing-row placeholder, a different contract).
-        if !coordinates_all_finite(&coordinates) {
-            return Ok(None);
-        }
         let chunk_axes =
             CoordinateAxes::new(HasZ(coordinates.z.is_some()), HasM(coordinates.m.is_some()));
         if *axes.get_or_insert(chunk_axes) != chunk_axes {
             return Ok(None);
         }
-        if multi_chunk {
+        if nullable {
+            for index in 0..len {
+                if validity.is_valid(index)
+                    && (!coordinates.is_valid(index)
+                        || coordinates.ensure_range_finite(index, index + 1).is_err())
+                {
+                    return Ok(None);
+                }
+            }
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
-                    chunk_axes, capacity,
+                    chunk_axes,
+                    capacity.expect("nullable point capacity"),
+                )?);
+            }
+            builder
+                .as_mut()
+                .expect("builder inserted")
+                .append_arrow_present_coordinates(&coordinates, &validity)?;
+            for index in 0..len {
+                if !validity.is_valid(index) {
+                    crate::try_push(&mut missing_rows, row_base + index)?;
+                }
+            }
+        } else if multi_chunk {
+            if !coordinates.all_valid(0, len) || !coordinates_all_finite(&coordinates) {
+                return Ok(None);
+            }
+            if builder.is_none() {
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
+                    chunk_axes,
+                    capacity.expect("multi-chunk point capacity"),
                 )?);
             }
             builder
@@ -145,13 +237,34 @@ pub(crate) fn packed_points_import(
                 .expect("builder inserted")
                 .append_arrow_coordinates(&coordinates)?;
         } else {
+            if !coordinates.all_valid(0, len) {
+                return Ok(None);
+            }
+            // Non-finite includes the GeoArrow all-NaN POINT EMPTY sentinel —
+            // that must use the boxed path, never packed NaN rows.
+            if !coordinates_all_finite(&coordinates) {
+                return Ok(None);
+            }
             single = Some(coordseq_from_arrow_coordinates(&coordinates)?);
         }
+        row_base = row_base
+            .checked_add(len)
+            .ok_or_else(|| geoarrow_parse_error("Arrow row count overflows"))?;
     }
     let coords = builder.map_or_else(
         || Ok(single.unwrap_or_else(|| CoordSeq::empty(CoordinateAxes::XY))),
         ExactArrowCoordinateFill::into_coord_seq,
     )?;
+    if let Some(mask) = ValidityMask::from_sparse(total_rows, &missing_rows) {
+        return Ok(Some(PyGeometryArray::compact_from_storage(
+            GeometryArrayStorage::Points {
+                coords: Arc::new(coords),
+                row_map: crate::array::RowSelection::Identity,
+            },
+            mask,
+            frame,
+        )));
+    }
     Ok(Some(PyGeometryArray::packed_points(coords, frame)))
 }
 
@@ -169,8 +282,13 @@ pub(crate) fn packed_polygons_import(
     frame: Frame,
 ) -> PyResult<Option<PyGeometryArray>> {
     let multi_chunk = storages.len() > 1;
-    let capacity = if multi_chunk {
-        precompute_polygon_coordinate_total(py, storages)?
+    let nullable = storages.iter().try_fold(false, |nullable, storage| {
+        let array = storage.storage.bind(py);
+        let validity = arrow_validity(py, array)?;
+        Ok::<bool, pyo3::PyErr>(nullable || validity.first_invalid(array.len()?).is_some())
+    })?;
+    let capacity = if multi_chunk || nullable {
+        precompute_polygon_coordinate_total(py, storages, nullable)?
     } else {
         0
     };
@@ -180,14 +298,14 @@ pub(crate) fn packed_polygons_import(
     let mut polygon_offsets: Vec<i32> = vec![0];
     let mut total_vertices = 0_usize;
     let mut total_rings = 0_usize;
+    let mut row_base = 0_usize;
+    let mut missing_rows = Vec::new();
+    let mut compact_layout = true;
     let mut axes: Option<CoordinateAxes> = None;
     for storage in storages {
         let array = storage.storage.bind(py);
         let len = array.len()?;
         let validity = arrow_validity(py, array)?;
-        if validity.first_invalid(len).is_some() {
-            return Ok(None);
-        }
         let levels = ArrowPolygonLevels::read(py, array)?;
         levels.polygons.ensure(0, len)?;
         // This full selected child window is the packed path's layout
@@ -208,7 +326,7 @@ pub(crate) fn packed_polygons_import(
         let end = base
             .checked_add(span)
             .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
-        if !coordinates.all_valid(base, end) {
+        if !nullable && !coordinates.all_valid(base, end) {
             return Ok(None);
         }
         let chunk_axes =
@@ -218,25 +336,58 @@ pub(crate) fn packed_polygons_import(
         }
         for polygon_index in 0..len {
             let ring_range = levels.polygons.range(polygon_index)?;
+            if !validity.is_valid(polygon_index) {
+                if !ring_range.is_empty() {
+                    compact_layout = false;
+                }
+                crate::try_push(&mut missing_rows, row_base + polygon_index)?;
+                push_offset(
+                    &mut polygon_offsets,
+                    i32::try_from(total_rings)
+                        .map_err(|_| geoarrow_parse_error("Arrow ring count overflows"))?,
+                    &mut builder,
+                )?;
+                continue;
+            }
             if ring_range.is_empty() {
                 return Ok(None);
             }
             levels.rings.ensure(ring_range.start, ring_range.len())?;
             for ring_index in ring_range.clone() {
                 let vertex_range = levels.rings.range(ring_index)?;
-                // Nested-offset containment before any ordinate indexing:
-                // malformed ring windows (e.g. [0,100] against a 4-vertex
-                // loaded span) must raise cleanly, never PanicException.
-                ensure_vertex_range_in_span(&vertex_range, base, span)?;
-                // Shared pack floor: ≥ Ring::MIN_VERTICES_CLOSED (=4), not 3.
-                // A closed 3-coordinate ring must not enter packed storage.
-                if !crate::array::packable_closed_ring_len(vertex_range.len()) {
+                let bounds_end = base
+                    .checked_add(span)
+                    .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
+                if nullable
+                    && (!coordinates.all_valid(vertex_range.start, vertex_range.end)
+                        || coordinates
+                            .ensure_range_finite(vertex_range.start, vertex_range.end)
+                            .is_err())
+                {
                     return Ok(None);
                 }
-                if arrow_ring_needs_closure(&coordinates, &vertex_range)? {
-                    return Ok(None);
-                }
-                total_vertices = match total_vertices.checked_add(vertex_range.len()) {
+                let checked = match crate::array::CheckedRingWindow::checked_in(
+                    &coordinates,
+                    vertex_range.clone(),
+                    base..bounds_end,
+                ) {
+                    Ok(checked) => checked,
+                    Err(
+                        crate::array::RingWindowError::TooShort(_)
+                        | crate::array::RingWindowError::Open,
+                    ) => {
+                        return Ok(None);
+                    },
+                    Err(crate::array::RingWindowError::Inverted) => {
+                        return Err(geoarrow_parse_error("Arrow ring vertex range is inverted"));
+                    },
+                    Err(crate::array::RingWindowError::OutOfRange) => {
+                        return Err(geoarrow_parse_error(
+                            "Arrow ring vertex range exceeds the loaded coordinate span",
+                        ));
+                    },
+                };
+                total_vertices = match total_vertices.checked_add(checked.range().len()) {
                     Some(total) => total,
                     None => return Ok(None),
                 };
@@ -254,7 +405,40 @@ pub(crate) fn packed_polygons_import(
             };
             push_offset(&mut polygon_offsets, polygon_offset, &mut builder)?;
         }
-        if multi_chunk {
+        row_base = row_base
+            .checked_add(len)
+            .ok_or_else(|| geoarrow_parse_error("Arrow row count overflows"))?;
+        if nullable {
+            if builder.is_none() {
+                builder = Some(ExactArrowCoordinateFill::with_capacity(
+                    chunk_axes, capacity,
+                )?);
+            }
+            if compact_layout {
+                builder
+                    .as_mut()
+                    .expect("builder inserted")
+                    .append_arrow_coordinates(&coordinates)?;
+            } else {
+                for polygon_index in 0..len {
+                    if !validity.is_valid(polygon_index) {
+                        continue;
+                    }
+                    let ring_range = levels.polygons.range(polygon_index)?;
+                    for ring_index in ring_range {
+                        let vertex_range = levels.rings.range(ring_index)?;
+                        builder
+                            .as_mut()
+                            .expect("builder inserted")
+                            .append_arrow_coordinate_range(
+                                &coordinates,
+                                vertex_range.start,
+                                vertex_range.end,
+                            )?;
+                    }
+                }
+            }
+        } else if multi_chunk {
             if builder.is_none() {
                 builder = Some(ExactArrowCoordinateFill::with_capacity(
                     chunk_axes, capacity,
@@ -272,6 +456,30 @@ pub(crate) fn packed_polygons_import(
         || Ok(single.unwrap_or_else(|| CoordSeq::empty(CoordinateAxes::XY))),
         ExactArrowCoordinateFill::into_coord_seq,
     )?;
+    if let Some(mask) = ValidityMask::from_sparse(row_base, &missing_rows) {
+        let ring_offsets =
+            crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_from_arc_i32(
+                ring_offsets.into(),
+                coords.len(),
+            )
+            .map_err(|_| geoarrow_parse_error("Arrow ring offsets are not a valid CSR"))?;
+        let polygon_offsets =
+            crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_from_arc_i32(
+                polygon_offsets.into(),
+                ring_offsets.len().saturating_sub(1),
+            )
+            .map_err(|_| geoarrow_parse_error("Arrow polygon offsets are not a valid CSR"))?;
+        return Ok(Some(PyGeometryArray::compact_from_storage(
+            GeometryArrayStorage::Polygons {
+                coords: Arc::new(coords),
+                ring_offsets,
+                polygon_offsets,
+                row_map: crate::array::RowSelection::Identity,
+            },
+            mask,
+            frame,
+        )));
+    }
     Ok(finish_packed_polygons(
         coords,
         ring_offsets,
@@ -354,32 +562,61 @@ fn coordinates_all_finite(coordinates: &ArrowCoordinateValues) -> bool {
 fn precompute_linestring_coordinate_total(
     py: Python<'_>,
     storages: &[ArrowStorage],
+    present_only: bool,
 ) -> PyResult<usize> {
     storages.iter().try_fold(0_usize, |total, storage| {
         let array = storage.storage.bind(py);
         let len = array.len()?;
         let level = ArrowListLevel::read(py, array)?;
         level.ensure(0, len)?;
-        let (_, span) = coordinate_span(level.endpoint(0)?, level.endpoint(len)?)?;
-        total
-            .checked_add(span)
-            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))
+        if !present_only {
+            let (_, span) = coordinate_span(level.endpoint(0)?, level.endpoint(len)?)?;
+            return total
+                .checked_add(span)
+                .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"));
+        }
+        let validity = arrow_validity(py, array)?;
+        (0..len).try_fold(total, |total, index| {
+            if !validity.is_valid(index) {
+                return Ok(total);
+            }
+            let range = level.range(index)?;
+            total
+                .checked_add(range.len())
+                .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))
+        })
     })
 }
 
 fn precompute_polygon_coordinate_total(
     py: Python<'_>,
     storages: &[ArrowStorage],
+    present_only: bool,
 ) -> PyResult<usize> {
     storages.iter().try_fold(0_usize, |total, storage| {
         let array = storage.storage.bind(py);
         let len = array.len()?;
         let levels = ArrowPolygonLevels::read(py, array)?;
         levels.polygons.ensure(0, len)?;
-        let (_, span) = levels.visible_coordinate_span(len)?;
-        total
-            .checked_add(span)
-            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))
+        if !present_only {
+            let (_, span) = levels.visible_coordinate_span(len)?;
+            return total
+                .checked_add(span)
+                .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"));
+        }
+        let validity = arrow_validity(py, array)?;
+        (0..len).try_fold(total, |total, index| {
+            if !validity.is_valid(index) {
+                return Ok(total);
+            }
+            let rings = levels.polygons.range(index)?;
+            rings.into_iter().try_fold(total, |total, ring| {
+                let vertices = levels.rings.range(ring)?;
+                total
+                    .checked_add(vertices.len())
+                    .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))
+            })
+        })
     })
 }
 

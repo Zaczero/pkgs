@@ -255,7 +255,7 @@ fn resolve_wkt_member_axes(
 }
 
 /// Longest type keyword incl. compact PostGIS axes suffix (`GEOMETRYCOLLECTIONZM`).
-const WKT_MAX_KEYWORD: usize = 20;
+pub(crate) const WKT_MAX_TYPE_TOKEN_LEN: usize = 20;
 
 /// Strip a trailing compact PostGIS axes suffix (`ZM` / `Z` / `M`).
 fn strip_wkt_compact_axes(token: &[u8]) -> (&[u8], Option<CoordinateAxes>) {
@@ -272,9 +272,24 @@ fn strip_wkt_compact_axes(token: &[u8]) -> (&[u8], Option<CoordinateAxes>) {
     (token, None)
 }
 
-/// Split a compact type token (`POINTM`, `MULTILINESTRINGZM`, …) into the base
-/// geometry kind and optional axes. Spaced tags (`POINT M`) are handled later.
-fn parse_wkt_type_keyword(upper: &[u8]) -> Option<(IoGeometryKind, Option<CoordinateAxes>)> {
+/// Classify a compact WKT type token (`POINTM`, `MULTILINESTRINGZM`, …).
+/// Spaced tags (`POINT M`) are handled by the header parser.
+pub(crate) fn classify_wkt_type_token(
+    token: &str,
+) -> Option<(IoGeometryKind, Option<CoordinateAxes>)> {
+    if token.is_empty()
+        || token.len() > WKT_MAX_TYPE_TOKEN_LEN
+        || !token.as_bytes().iter().all(u8::is_ascii_alphabetic)
+    {
+        return None;
+    }
+    let mut upper = [0_u8; WKT_MAX_TYPE_TOKEN_LEN];
+    upper[..token.len()].copy_from_slice(token.as_bytes());
+    upper[..token.len()].make_ascii_uppercase();
+    parse_wkt_type_keyword_upper(&upper[..token.len()])
+}
+
+fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(IoGeometryKind, Option<CoordinateAxes>)> {
     let (base, compact_axes) = strip_wkt_compact_axes(upper);
     let geometry_type = match base {
         b"POINT" => IoGeometryKind::Point,
@@ -299,13 +314,10 @@ fn parse_wkt_header(text: &str) -> Result<WktHeader<'_>> {
     let keyword = text
         .get(..keyword_len)
         .ok_or_else(|| IoError::wkt("invalid WKT geometry type"))?;
-    if keyword_len == 0 || keyword_len > WKT_MAX_KEYWORD {
+    if keyword_len == 0 || keyword_len > WKT_MAX_TYPE_TOKEN_LEN {
         return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
     }
-    let mut upper = [0_u8; WKT_MAX_KEYWORD];
-    upper[..keyword_len].copy_from_slice(keyword.as_bytes());
-    upper[..keyword_len].make_ascii_uppercase();
-    let Some((geometry_type, compact_axes)) = parse_wkt_type_keyword(&upper[..keyword_len]) else {
+    let Some((geometry_type, compact_axes)) = classify_wkt_type_token(keyword) else {
         return Err(IoError::wkt(unsupported_wkt_geometry_type_message(keyword)));
     };
     let mut rest = text

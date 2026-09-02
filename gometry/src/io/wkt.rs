@@ -7,7 +7,7 @@ use crate::io::{
 mod read;
 mod write;
 
-pub(crate) use read::parse_wkt;
+pub(crate) use read::{classify_wkt_type_token, parse_wkt};
 pub(crate) use write::{
     WktDimension, WktNumberFormat, to_wkt, to_wkt_display, to_wkt_preview, to_wkt_with_dimension,
 };

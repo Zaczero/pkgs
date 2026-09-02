@@ -68,11 +68,7 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
             Err(GeometryErrorKind::OrdinateDropped("GeoJSON Z ordinate".into()).into())
         },
         Shape::MultiPoint(points) => {
-            if points
-                .members()
-                .iter()
-                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
-            {
+            if points.has_empty_members() {
                 return Err(GeometryErrorKind::OrdinateDropped(
                     "GeoJSON empty MultiPoint member".into(),
                 )
@@ -81,11 +77,7 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
             Ok(())
         },
         Shape::MultiLineString(lines) => {
-            if lines
-                .members()
-                .iter()
-                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
-            {
+            if lines.has_empty_members() {
                 return Err(GeometryErrorKind::OrdinateDropped(
                     "GeoJSON empty MultiLineString member".into(),
                 )
@@ -94,11 +86,7 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
-            if polygons
-                .members()
-                .iter()
-                .any(|member| matches!(member, crate::geometry::MultiMember::Empty))
-            {
+            if polygons.has_empty_members() {
                 return Err(GeometryErrorKind::OrdinateDropped(
                     "GeoJSON empty MultiPolygon member".into(),
                 )
@@ -473,7 +461,7 @@ fn parse_geojson_ring(value: &Value, path: &JsonPath) -> Result<Ring> {
         return Err(IoError::geojson("Polygon ring must be explicitly closed")
             .with_parse_path(path.as_str()));
     }
-    Ok(Ring::from_trusted_closed(points))
+    Ok(Ring::from_closed(points))
 }
 
 fn parse_geojson_multipoint(value: &Value, path: &JsonPath) -> Result<MultiPoint> {
@@ -716,11 +704,7 @@ pub(crate) fn validate_legacy_geojson_crs(
             "legacy GeoJSON CRS member is not supported",
         ));
     };
-    if !crs::same(
-        &legacy_canonical,
-        target,
-        crate::crs::CrsComparison::IgnoreAxisOrder,
-    )? {
+    if !crate::boundary::metadata::crs_labels_operationally_equal(&legacy_canonical, target)? {
         return Err(IoError::geojson(format!(
             "legacy GeoJSON CRS member ({legacy_canonical}) conflicts with crs={target}"
         )));

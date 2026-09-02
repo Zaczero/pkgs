@@ -118,6 +118,7 @@ pub(crate) fn py_index_object<'py>(
     name: &str,
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if value.cast_exact::<PyBool>().is_ok() {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     }
@@ -142,6 +143,7 @@ pub(crate) fn py_index_object<'py>(
 /// failures as a failed classification. A plain ``TypeError`` means the
 /// value is a sequence; every other exception belongs to the provider.
 pub(crate) fn f64_scalar(value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     match value.extract::<f64>() {
         Ok(value) => Ok(Some(value)),
         Err(error) if error.is_instance_of::<PyTypeError>(value.py()) => {
@@ -434,6 +436,7 @@ pub(crate) fn angle_radians(name: &str, value: &Bound<'_, PyAny>, radians: bool)
 
 /// Parse a 6-element `(a, b, d, e, xoff, yoff)` affine matrix of finite floats.
 pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6]> {
+    crate::py::numpy::reject_masked_array(matrix)?;
     let names = ["a", "b", "d", "e", "xoff", "yoff"];
     let mut position = 0;
     let iter = crate::py_iter_or_error(matrix, || {
@@ -513,6 +516,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for OriginSpec {
 
 /// Parse a 2-element `(x, y)` sequence of finite numbers.
 pub(crate) fn parse_xy_pair(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
+    crate::py::numpy::reject_masked_array(value)?;
     // Propagate provider exceptions from `__iter__` / `__next__`; only a
     // bare "not iterable" TypeError becomes the domain message.
     let mut items = crate::py_iter_or_error(value, || {
@@ -579,6 +583,7 @@ pub(crate) fn finite_coordinate_required(name: &str, value: &Bound<'_, PyAny>) -
 }
 
 pub(crate) fn f64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
+    crate::py::numpy::reject_masked_array(value)?;
     let has_float_provider = value
         .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
         .is_some();

@@ -3,6 +3,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 """
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -35,6 +36,18 @@ def test_crs_public_type_hints_resolve() -> None:
     assert gm.CRS(3857).is_projected is True
     assert isinstance(gm.CRS(5703).geoid_models, list)
     assert isinstance(gm.CRS(4326).to_projjson_dict(), dict)
+
+
+def test_crs_html_preview_escapes_retained_text() -> None:
+    projjson = gm.CRS(3857).to_projjson_dict()
+    projjson['name'] = '<img src=x onerror=alert(1)>&unsafe<script>'
+    projjson.pop('id')
+
+    html = gm.CRS(projjson)._repr_html_()
+
+    assert '<img' not in html
+    assert '<script>' not in html
+    assert '&lt;img src=x onerror=alert(1)&gt;&amp;unsafe&lt;script&gt;' in html
 
 
 def test_crs_public_surface_stays_documented_and_native_registered() -> None:
@@ -200,6 +213,12 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
         assert gm.require(gm.Point(0, 0, crs=4326), crs=form).crs == 'EPSG:4326'
     planar = gm.crs_transform_bounds(pyproj_crs, gm.CRS(3857), (-1.0, 50.0, 1.0, 51.0))
     assert planar[0] == pytest.approx(-111319.4907932736)
+
+
+def test_crs_transform_bounds_accepts_one_dimensional_numpy_float_array() -> None:
+    bounds = np.array([-1.0, 50.0, 1.0, 51.0], dtype=np.float32)
+    transformed = gm.crs_transform_bounds(4326, 4326, bounds, densify=0)
+    assert transformed == pytest.approx(tuple(bounds.astype(np.float64)))
 
 
 def test_raw_transform_canonicalizes_equivalent_crs_spellings() -> None:

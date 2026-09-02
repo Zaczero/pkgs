@@ -545,6 +545,7 @@ pub(crate) fn crs_transform_bounds(
     only_best: Option<bool>,
     force_over: bool,
 ) -> PyResult<Py<PyAny>> {
+    crate::py::numpy::reject_masked_array(bounds)?;
     let densify = u32::try_from(densify).map_err(|_| {
         crate::py::errors::integer_parameter_error(
             format!("bounds densify must be between 0 and 10000, got {densify}"),

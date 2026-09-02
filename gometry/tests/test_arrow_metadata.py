@@ -15,6 +15,34 @@ import pytest
 pa = pytest.importorskip('pyarrow')
 
 
+_RADIAN_CRS = (
+    'GEOGCS["WGS 84 rad",'
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+
+
+@pytest.mark.parametrize(
+    ('crs', 'coordinates'),
+    [
+        pytest.param(4326, (120.0, 45.0), id='degree'),
+        pytest.param(4807, (200.0, 50.0), id='grad'),
+        pytest.param(_RADIAN_CRS, (1.0, 0.5), id='radian'),
+    ],
+)
+def test_arrow_round_trip_preserves_native_geographic_coordinates(
+    crs: object, coordinates: tuple[float, float]
+) -> None:
+    """Arrow frame metadata must not reinterpret native angular ordinates."""
+    source = gm.points([coordinates[0]], [coordinates[1]], crs=crs)
+    restored = gm.from_arrow(source.to_arrow())
+
+    assert restored.to_wkt() == source.to_wkt()
+    assert restored.crs is not None
+    assert restored.crs.same_as(source.crs, mode='ignore_axis_order')
+
+
 def test_geoarrow_extension_types_and_arrays_pickle_round_trip() -> None:
     values = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326, epoch=2020.0)
     arrow = values.to_arrow()
@@ -413,6 +441,27 @@ def test_from_arrow_extension_only_and_field_only_crs_agree_across_frontends() -
     assert gm.from_arrow(agree_table).crs == 'EPSG:4326'
     assert gm.from_arrow(_ArrowCStreamOnly(agree_table)).crs == 'EPSG:4326'
     assert gm.from_arrow(_pure_stream_freevar(agree_table)).crs == 'EPSG:4326'
+
+
+def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> None:
+    """Frame agreement is semantic even when producers choose axis aliases."""
+    values = gm.points([1.0], [2.0], crs=4326)
+    arrow = values.to_arrow()
+    field = pa.field(
+        'geometry',
+        arrow.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': _json.dumps({
+                'crs': gm.CRS('OGC:CRS84').to_projjson_dict()
+            }).encode(),
+        },
+    )
+    table = pa.Table.from_arrays([arrow], schema=pa.schema([field]))
+
+    restored = gm.from_arrow(table)
+    assert restored.crs == 'EPSG:4326'
+    assert restored.to_wkt() == ['POINT (1 2)']
 
 
 def test_from_arrow_plain_stream_preserves_crs() -> None:

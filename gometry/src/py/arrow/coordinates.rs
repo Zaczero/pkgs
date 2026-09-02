@@ -8,8 +8,7 @@ use crate::py::arrow::{
     arrow_f64_values_span, arrow_i32_offsets_window, arrow_i64_offsets_window, arrow_null_error,
     arrow_validity_window, coordinate_span, ensure_arrow_range,
     ensure_offset_terminal_within_child, ensure_usize_offsets_monotonic, geoarrow_parse_error,
-    i32_offset_to_usize, i64_offset_to_usize, reject_inner_nulls_in_range, same_active_position,
-    usize_offset_at,
+    i32_offset_to_usize, i64_offset_to_usize, reject_inner_nulls_in_range, usize_offset_at,
 };
 
 /// Decode the coordinate columns for the visible coordinate run
@@ -246,7 +245,7 @@ impl ArrowCoordinateValues {
             let _ = self.full.set(built);
         }
         let full = self.full.get().expect("just initialized");
-        Ok(full.view(CoordWindow::trusted(
+        Ok(full.view(CoordWindow::from_range(
             start - self.x.base..end - self.x.base,
             full.len(),
         )))
@@ -308,6 +307,28 @@ impl ArrowCoordinateValues {
     }
 }
 
+impl crate::array::RingCoordinateColumns for ArrowCoordinateValues {
+    fn width(&self) -> usize {
+        self.x.base.saturating_add(self.x.values.len())
+    }
+
+    fn x(&self, index: usize) -> f64 {
+        self.x.value(index)
+    }
+
+    fn y(&self, index: usize) -> f64 {
+        self.y.value(index)
+    }
+
+    fn z(&self, index: usize) -> Option<f64> {
+        self.z.as_ref().map(|values| values.value(index))
+    }
+
+    fn m(&self, index: usize) -> Option<f64> {
+        self.m.as_ref().map(|values| values.value(index))
+    }
+}
+
 impl ArrowOrdinateValues {
     pub(crate) fn value(&self, index: usize) -> f64 {
         self.values[index - self.base]
@@ -366,7 +387,8 @@ pub(crate) fn optional_arrow_ordinate_values(
 
 /// One selected nesting level of an Arrow list / large_list array.
 ///
-/// Only the `(row_count + 1)` visible offset slots are owned. Their values are
+/// Only the `(row_count + 1)` visible offset slots are owned. Admission proves
+/// they are monotonic and remain within the child array. Their values are
 /// rebased to `child_base`, while public ranges remain absolute child indices
 /// so the next nested level can project the same selected span.
 pub(crate) struct ArrowListLevel {
@@ -376,8 +398,6 @@ pub(crate) struct ArrowListLevel {
     row_base: usize,
     /// Original child index represented by a rebased offset of zero.
     child_base: usize,
-    /// Child array length the offsets index into (N2 terminal bound).
-    pub(crate) child_len: usize,
 }
 
 impl ArrowListLevel {
@@ -413,6 +433,9 @@ impl ArrowListLevel {
         let child_base = *raw
             .first()
             .ok_or_else(|| geoarrow_parse_error("Arrow offsets buffer is shorter than declared"))?;
+        let terminal = *raw
+            .last()
+            .expect("offset snapshots always contain row_count + 1 slots");
         let offsets = raw
             .into_iter()
             .map(|value| {
@@ -421,29 +444,24 @@ impl ArrowListLevel {
                     .ok_or_else(|| geoarrow_parse_error("Arrow offsets must be ordered"))
             })
             .collect::<PyResult<Vec<_>>>()?;
+        let child_len = array.getattr("values")?.len()?;
+        ensure_usize_offsets_monotonic(&offsets, 0, row_count, usize::MAX)?;
+        ensure_offset_terminal_within_child(terminal, child_len)?;
         Ok(Self {
             offsets,
             row_base,
             child_base,
-            child_len: array.getattr("values")?.len()?,
         })
     }
 
-    /// Verify the offsets buffer covers `count` rows starting at `start` and
-    /// is non-decreasing across that whole window (null slots included — m01).
-    /// Terminal offset must not exceed [`Self::child_len`] (N2).
+    /// Verify a requested logical row window lies within this admitted level.
     pub(crate) fn ensure(&self, start: usize, count: usize) -> PyResult<()> {
         let window = self.local_row(start)?;
-        // Validate the compact rebased representation first, then compare the
-        // original terminal against the physical child length so diagnostics
-        // retain Arrow's absolute offset values.
-        ensure_usize_offsets_monotonic(&self.offsets, window, count, usize::MAX)?;
-        ensure_offset_terminal_within_child(
-            self.absolute_offset(window.checked_add(count).ok_or_else(|| {
-                geoarrow_parse_error("Arrow offsets window overflows the buffer")
-            })?)?,
-            self.child_len,
-        )
+        window
+            .checked_add(count)
+            .filter(|&end| end < self.offsets.len())
+            .ok_or_else(|| geoarrow_parse_error("Arrow offsets buffer is shorter than declared"))?;
+        Ok(())
     }
 
     /// Child range of the `index`-th visible row, ordering-checked.
@@ -552,73 +570,6 @@ impl ArrowPolygonLevels {
             self.rings.endpoint(self.polygons.endpoint(len)?)?,
         )
     }
-}
-
-/// Ensure a ring's vertex range lies entirely within the loaded coordinate
-/// span `[base, base + span)` before any ordinate indexing.
-pub(crate) fn ensure_vertex_range_in_span(
-    vertex_range: &std::ops::Range<usize>,
-    base: usize,
-    span: usize,
-) -> PyResult<()> {
-    let end = base
-        .checked_add(span)
-        .ok_or_else(|| geoarrow_parse_error("Arrow coordinate span overflows"))?;
-    if vertex_range.start < base || vertex_range.end > end {
-        return Err(geoarrow_parse_error(
-            "Arrow ring vertex range exceeds the loaded coordinate span",
-        ));
-    }
-    Ok(())
-}
-
-/// Whether a ring's first and last vertices differ on any **active** ordinate
-/// (X/Y/Z/M) — the packed lane cannot auto-close rings the way [`Ring::closed`]
-/// does on the per-row path.
-///
-/// Uses [`same_active_position`] — the same pack-admission / D05 pickle
-/// predicate as [`crate::array::ring_seq_is_packable`]. GeoArrow requires
-/// endpoint identity on all active ordinates; XY-only comparison would admit
-/// Z/M-open rings into trusted packed state the unpickler rejects (F4).
-///
-/// Fallible: validates the vertex range against the ordinate buffers before
-/// indexing so malformed nested offsets raise a clean parse error instead of
-/// panicking on out-of-bounds access.
-pub(crate) fn arrow_ring_needs_closure(
-    coordinates: &ArrowCoordinateValues,
-    vertex_range: &std::ops::Range<usize>,
-) -> PyResult<bool> {
-    if vertex_range.is_empty() {
-        return Ok(false);
-    }
-    let len = vertex_range
-        .end
-        .checked_sub(vertex_range.start)
-        .ok_or_else(|| geoarrow_parse_error("Arrow ring vertex range is inverted"))?;
-    coordinates.x.ensure_range(vertex_range.start, len)?;
-    coordinates.y.ensure_range(vertex_range.start, len)?;
-    if let Some(z) = coordinates.z.as_ref() {
-        z.ensure_range(vertex_range.start, len)?;
-    }
-    if let Some(m) = coordinates.m.as_ref() {
-        m.ensure_range(vertex_range.start, len)?;
-    }
-    let first = vertex_range.start;
-    let last = vertex_range.end - 1;
-    // Comparison-only Points (finiteness is gated on the coordinate span).
-    let first_pt = Point::new_unchecked_axes(
-        coordinates.x.value(first),
-        coordinates.y.value(first),
-        ZOrdinate(coordinates.z.as_ref().map(|values| values.value(first))),
-        MOrdinate(coordinates.m.as_ref().map(|values| values.value(first))),
-    );
-    let last_pt = Point::new_unchecked_axes(
-        coordinates.x.value(last),
-        coordinates.y.value(last),
-        ZOrdinate(coordinates.z.as_ref().map(|values| values.value(last))),
-        MOrdinate(coordinates.m.as_ref().map(|values| values.value(last))),
-    );
-    Ok(!same_active_position(first_pt, last_pt))
 }
 
 pub(crate) fn arrow_polygon_from_ring_range(

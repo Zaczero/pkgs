@@ -156,6 +156,8 @@ pub(crate) struct ArrowGeometryInput {
     pub(crate) field: Option<Py<PyAny>>,
 }
 
+// The public ingress has already classified the root as a genuine PyArrow
+// container before this helper inspects PyArrow's shape attributes.
 pub(crate) fn arrow_geometry_input(
     pa: &Bound<'_, PyModule>,
     value: &Bound<'_, PyAny>,

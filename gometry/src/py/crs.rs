@@ -64,10 +64,3 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     );
     Ok(())
 }
-
-pub(crate) fn crs_html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}

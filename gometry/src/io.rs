@@ -179,7 +179,7 @@ pub(crate) fn extended_srid_code(
 /// Thin alias of [`Ring::closed_coordseq`] — `Ring` is the single admission
 /// owner so constructors and serialized ingresses cannot diverge. GeoJSON keeps
 /// the stricter RFC 7946 rule (explicit close only) in its own reader. Trusted
-/// transforms of an already-admitted ring still use [`Ring::from_trusted_closed`].
+/// transforms of an already-admitted ring still use [`Ring::from_closed`].
 pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
     Ring::closed_coordseq(coords)
 }
@@ -279,7 +279,7 @@ struct WkbAxes {
 /// The seven supported geometry kinds, shared by the WKT and WKB grammars:
 /// one enum drives keyword parsing, type-code encoding, and header writing.
 #[derive(Clone, Copy)]
-enum IoGeometryKind {
+pub(crate) enum IoGeometryKind {
     Point,
     MultiPoint,
     LineString,
@@ -334,6 +334,6 @@ pub(crate) use wkb::{
     parse_wkb, to_wkb, to_wkb_len, wkb_len, write_wkb_into, write_wkb_to, write_wkb_to_srid,
 };
 pub(crate) use wkt::{
-    WktDimension, WktNumberFormat, parse_wkt, to_wkt, to_wkt_display, to_wkt_preview,
-    to_wkt_with_dimension,
+    WktDimension, WktNumberFormat, classify_wkt_type_token, parse_wkt, to_wkt, to_wkt_display,
+    to_wkt_preview, to_wkt_with_dimension,
 };

@@ -219,7 +219,7 @@ fn write_wkt(
                 "MULTIPOINT{} (",
                 wkt_output_axes(shape.axes(), output_dimension).wkt_tag()
             );
-            for (index, member) in points.members().iter().enumerate() {
+            for (index, member) in points.members().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
@@ -229,7 +229,7 @@ fn write_wkt(
                 match member {
                     crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
                     crate::geometry::MultiMember::Value(point_index) => {
-                        let point = points.point_at(*point_index);
+                        let point = points.point_at(point_index);
                         out.push('(');
                         write_wkt_point(
                             out,
@@ -252,7 +252,7 @@ fn write_wkt(
         Shape::MultiLineString(lines) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "MULTILINESTRING{} (", axes.wkt_tag());
-            for (index, member) in lines.members().iter().enumerate() {
+            for (index, member) in lines.members().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
@@ -262,7 +262,7 @@ fn write_wkt(
                 match member {
                     crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
                     crate::geometry::MultiMember::Value(line_index) => {
-                        let line = &lines.as_slice()[*line_index];
+                        let line = &lines.as_slice()[line_index];
                         out.push('(');
                         write_wkt_ring(out, line, axes, format, limit);
                         out.push(')');
@@ -280,7 +280,7 @@ fn write_wkt(
         Shape::MultiPolygon(polygons) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             let _ = write!(out, "MULTIPOLYGON{} (", axes.wkt_tag());
-            for (index, member) in polygons.members().iter().enumerate() {
+            for (index, member) in polygons.members().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
@@ -293,7 +293,7 @@ fn write_wkt(
                         out.push('(');
                         write_wkt_polygon(
                             out,
-                            &polygons.as_slice()[*polygon_index],
+                            &polygons.as_slice()[polygon_index],
                             axes,
                             format,
                             limit,

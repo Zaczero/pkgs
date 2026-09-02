@@ -360,6 +360,7 @@ impl HeapSize for crs::CrsInfo {
             datum,
             ellipsoid,
             prime_meridian,
+            ..
         } = self;
         crs.heap_bytes()
             + name.heap_bytes()

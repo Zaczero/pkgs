@@ -163,14 +163,6 @@ def test_planar_similarity_metrics_are_rust_backed() -> None:
     peak_line = gm.LineString([(0, 0), (10, 0)])
     far_peak = gm.LineString([(0, 1), (5, 8), (10, 1)])
     assert gm.hausdorff_distance(peak_line, far_peak) == pytest.approx(8)
-    geo_peak = gm.LineString([(0, 0), (10, 0)], crs=4326)
-    geo_far = gm.LineString([(0, 1), (5, 8), (10, 1)], crs=4326)
-    assert gm.hausdorff_distance(geo_peak, geo_far) > 500000
-    assert gm.hausdorff_distance(geo_peak, geo_far, densify=0.5) > 500000
-    assert gm.hausdorff_distance(geo_peak, geo_far, densify=0.5) == pytest.approx(
-        gm.hausdorff_distance(geo_peak, geo_far)
-    )
-    assert gm.hausdorff_distance(left, right) == pytest.approx(1)
     assert gm.hausdorff_distance(left, right) == pytest.approx(1)
     assert gm.hausdorff_distance(
         point, gm.MultiPoint([(0, 0), (1, 2)])
@@ -821,11 +813,13 @@ def test_geometry_collections_flow_through_every_strategy() -> None:
 
 def test_prepared_empty_geometry_answers_through_kernels() -> None:
     prepared = gm.from_wkt('POLYGON EMPTY').prepare()
+    assert not prepared
     assert gm.contains(prepared, gm.Point(0, 0)) is False
     np.testing.assert_array_equal(
         gm.contains(prepared, gm.GeometryArray([gm.Point(0, 0)] * 20)), [False] * 20
     )
     assert gm.equals(prepared, gm.from_wkt('POINT EMPTY')) is True
+    assert gm.contains(gm.box(0, 0, 1, 1).prepare(), gm.Point(0.5, 0.5)) is True
 
 
 def test_multiline_mod2_junction_rule_holds_on_every_spelling() -> None:

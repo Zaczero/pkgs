@@ -5,9 +5,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::{
-    HeapSize, PreparedPlan, PyGeometry, Typed, exact_geometry, expected_geometry_or_array,
-};
+use crate::{HeapSize, PyGeometry, Typed, exact_geometry, expected_geometry_or_array};
 // --- PreparedGeometry #[pymethods] (moved from crate root) ---
 
 /// Rebuild a pickled `PreparedGeometry` by re-preparing its geometry
@@ -17,8 +15,8 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
     let geometry = exact_geometry(geometry)
         .ok_or_else(expected_geometry_or_array)?
         .clone();
-    let plan = std::sync::Arc::new(PreparedPlan::new(std::sync::Arc::clone(&geometry.shape)));
-    Ok(PyPreparedGeometry { geometry, plan })
+    geometry.prepared_plan();
+    Ok(PyPreparedGeometry { geometry })
 }
 
 /// A geometry handle that opts repeated predicate tests into prepared kernels.
@@ -36,7 +34,6 @@ pub(crate) fn _unpickle_prepared(geometry: &Bound<'_, PyAny>) -> PyResult<PyPrep
 #[derive(Clone, Debug)]
 pub struct PyPreparedGeometry {
     pub geometry: PyGeometry,
-    pub(crate) plan: std::sync::Arc<PreparedPlan>,
 }
 
 // PreparedGeometry is shared across threads under free-threaded CPython: the
@@ -47,12 +44,14 @@ const _: fn() = || {
     assert_send_sync::<PyPreparedGeometry>();
 };
 
-frozen_pymethods! {
 impl PyPreparedGeometry {
     pub(crate) fn as_geometry(&self) -> PyGeometry {
-        self.geometry.with_prepared_plan(std::sync::Arc::clone(&self.plan))
+        self.geometry.clone()
     }
+}
 
+frozen_pymethods! {
+impl PyPreparedGeometry {
     /// Source geometry retained by this prepared handle.
     ///
     /// Returns
@@ -62,6 +61,11 @@ impl PyPreparedGeometry {
     #[getter]
     fn geometry(&self) -> Typed {
         Typed(self.as_geometry())
+    }
+
+    /// False when the source geometry is empty; True otherwise.
+    fn __bool__(&self) -> bool {
+        !self.geometry.shape.is_empty()
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus the source geometry's
@@ -112,12 +116,6 @@ impl PyPreparedGeometry {
 
 impl HeapSize for PyPreparedGeometry {
     fn heap_bytes(&self) -> usize {
-        // The plan owns the shared source ShapeData block. Count it once,
-        // rather than charging both the wrapper's geometry Arc and the plan.
-        // Does not force uninitialized lazy products.
-        std::mem::size_of_val(self.plan.as_ref())
-            + self.plan.retained_heap_bytes()
-            + std::mem::size_of_val(self.geometry.frame_cache.as_ref())
-            + self.geometry.frame_cache.heap_bytes()
+        self.geometry.heap_bytes()
     }
 }

@@ -14,13 +14,31 @@ use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::PyModule;
+use pyo3::types::{PyAny, PyModule, PyType};
 
 pub(crate) fn numpy_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     static NUMPY: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
     NUMPY
         .get_or_try_init(py, || py.import("numpy").map(Bound::unbind))
         .map(|module| module.bind(py))
+}
+
+/// Reject NumPy masked arrays before any buffer or iterator can expose their
+/// hidden data values. The type comparison deliberately does not inspect a
+/// user-provided `mask` attribute, and ordinary ndarray subclasses remain
+/// valid inputs.
+pub(crate) fn reject_masked_array(value: &Bound<'_, PyAny>) -> PyResult<()> {
+    if value.cast::<numpy::PyUntypedArray>().is_err() {
+        return Ok(());
+    }
+    static MASKED_ARRAY: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+    let masked_array = MASKED_ARRAY.import(value.py(), "numpy.ma", "MaskedArray")?;
+    if value.get_type().is_subclass(masked_array.as_any())? {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "masked NumPy arrays are not supported; fill or disable the mask before passing data to gometry",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn freeze<T, D>(array: &Bound<'_, numpy::PyArray<T, D>>) -> PyResult<()>
@@ -66,6 +84,15 @@ pub(crate) fn uint64_array(py: Python<'_>, values: Vec<u64>) -> PyResult<Py<PyAn
     let array = values.into_pyarray(py);
     freeze(&array)?;
     Ok(array.into_any().unbind())
+}
+
+pub(crate) fn astype_readonly(
+    array: &Bound<'_, PyAny>,
+    dtype: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let cast = array.call_method1("astype", (dtype,))?;
+    cast.call_method1("setflags", (false,))?;
+    Ok(cast.unbind())
 }
 
 /// Read-only `NumPy` view over a `u64` slice owned by `owner`.

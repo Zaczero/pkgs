@@ -281,6 +281,23 @@ def test_bool_is_not_empty() -> None:
     assert gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
 
 
+def test_prepared_bool_preserves_source_emptiness_through_copies() -> None:
+    for geometry in (
+        gm.Point(0, 0),
+        gm.from_wkt('POINT EMPTY'),
+        gm.from_wkt('POLYGON EMPTY'),
+    ):
+        prepared = geometry.prepare()
+        for reconstructed in (
+            prepared,
+            copy.copy(prepared),
+            copy.deepcopy(prepared),
+            pickle.loads(pickle.dumps(prepared)),
+        ):
+            assert bool(reconstructed) is bool(geometry)
+            assert bool(reconstructed) is bool(reconstructed.geometry)
+
+
 def test_geometry_array_value_equality_and_hash() -> None:
     pts = [gm.Point(0, 0), gm.Point(1, 1)]
     left, right = (gm.GeometryArray(pts, crs=4326), gm.GeometryArray(pts, crs=4326))

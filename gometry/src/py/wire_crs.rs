@@ -193,6 +193,7 @@ pub(crate) fn guard_embedded_crs_conflict(
     if let (Some(embedded), Some(explicit)) = (embedded, explicit)
         && embedded != explicit
         && !io::is_wire_alias_restore(explicit, embedded)
+        && !crate::boundary::metadata::crs_labels_operationally_equal(embedded, explicit)?
     {
         return Err(crate::py::errors::crs_mismatch_error(
             format!(

@@ -14,7 +14,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use crate::GeometryArrayStorage;
-use crate::array::MissingMask;
+use crate::array::ValidityMask;
 use crate::geometry::{
     CoordSeq, CoordWindow, CoordinateAxes, MOrdinate, Point, Shape, ShapeData, ZOrdinate,
 };
@@ -80,15 +80,15 @@ enum CoordinateOwner {
     Shape(Arc<ShapeData>),
     Array {
         storage: Arc<GeometryArrayStorage>,
-        missing: Option<MissingMask>,
+        missing: Option<ValidityMask>,
     },
 }
 
 /// The geometry source behind a view, for nested (topology-shaped) coordinate
 /// rendering that the flat columns intentionally do not preserve.
-pub enum CoordinateSource<'a> {
+pub(crate) enum CoordinateSource<'a> {
     Shape(&'a Shape),
-    Array(&'a GeometryArrayStorage, Option<&'a [bool]>),
+    Array(&'a GeometryArrayStorage, Option<&'a ValidityMask>),
 }
 
 /// Shape-wide coordinate access. Flattening order matches
@@ -113,7 +113,7 @@ impl CoordinateView {
 
     pub(crate) const fn from_array_masked(
         storage: Arc<GeometryArrayStorage>,
-        missing: Option<MissingMask>,
+        missing: Option<ValidityMask>,
     ) -> Self {
         Self {
             owner: CoordinateOwner::Array { storage, missing },
@@ -121,11 +121,11 @@ impl CoordinateView {
     }
 
     /// The geometry source, for topology-shaped (nested) rendering.
-    pub fn source(&self) -> CoordinateSource<'_> {
+    pub(crate) fn source(&self) -> CoordinateSource<'_> {
         match &self.owner {
             CoordinateOwner::Shape(shape) => CoordinateSource::Shape(shape),
             CoordinateOwner::Array { storage, missing } => {
-                CoordinateSource::Array(storage, missing.as_deref())
+                CoordinateSource::Array(storage, missing.as_ref())
             },
         }
     }
@@ -153,7 +153,7 @@ impl CoordinateView {
             CoordinateOwner::Array { storage, missing } => match storage.as_ref() {
                 GeometryArrayStorage::Mixed(shapes) => {
                     for (row, shape) in shapes.iter().enumerate() {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
                         try_walk(shape, Some(row), visit)?;
@@ -164,8 +164,24 @@ impl CoordinateView {
                 // contributes one coordinate tagged with its own row index.
                 GeometryArrayStorage::Points { coords, row_map } => {
                     let map = row_map.as_deref();
+                    if let Some(mask) = missing
+                        && mask.len() != crate::array::point_logical_len(coords, map)
+                    {
+                        for (row, present) in mask.cursor() {
+                            let Some(present) = present else { continue };
+                            visit(
+                                Some(row),
+                                0,
+                                None,
+                                CoordinateRun::Point(
+                                    coords.point_at(crate::array::physical_row(map, present)),
+                                ),
+                            )?;
+                        }
+                        return ControlFlow::Continue(());
+                    }
                     for row in 0..crate::array::point_logical_len(coords, map) {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
                         visit(
@@ -189,11 +205,11 @@ impl CoordinateView {
                     let map = row_map.as_deref();
                     let rows = crate::array::line_logical_len(offsets.as_slice(), map);
                     for row in 0..rows {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
                         let window = map.csr_window(offsets.as_slice(), row);
-                        let view = coords.view(CoordWindow::trusted(window, coords.len()));
+                        let view = coords.view(CoordWindow::from_range(window, coords.len()));
                         visit(Some(row), 0, None, CoordinateRun::Seq(&view))?;
                     }
                     ControlFlow::Continue(())
@@ -211,7 +227,7 @@ impl CoordinateView {
                     let ring_offsets = ring_offsets.as_slice();
                     let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
                     for row in 0..rows {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
                         for (ring, physical_ring) in
@@ -219,7 +235,7 @@ impl CoordinateView {
                         {
                             let window = ring_offsets[physical_ring] as usize
                                 ..ring_offsets[physical_ring + 1] as usize;
-                            let view = coords.view(CoordWindow::trusted(window, coords.len()));
+                            let view = coords.view(CoordWindow::from_range(window, coords.len()));
                             visit(Some(row), 0, Some(ring), CoordinateRun::Seq(&view))?;
                         }
                     }
@@ -288,7 +304,7 @@ impl CoordinateView {
             } => match storage.as_ref() {
                 GeometryArrayStorage::Points { coords, row_map } => {
                     let rows = crate::array::point_logical_len(coords, row_map.as_deref());
-                    (0..rows).filter(|&row| !missing[row]).count()
+                    (0..rows).filter(|&row| missing.is_valid(row)).count()
                 },
                 GeometryArrayStorage::Lines {
                     offsets, row_map, ..
@@ -296,7 +312,7 @@ impl CoordinateView {
                     let map = row_map.as_deref();
                     let rows = crate::array::line_logical_len(offsets.as_slice(), map);
                     (0..rows)
-                        .filter(|&row| !missing[row])
+                        .filter(|&row| missing.is_valid(row))
                         .map(|row| map.csr_window(offsets.as_slice(), row).len())
                         .sum()
                 },
@@ -310,7 +326,7 @@ impl CoordinateView {
                     let rings = ring_offsets.as_slice();
                     let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
                     (0..rows)
-                        .filter(|&row| !missing[row])
+                        .filter(|&row| missing.is_valid(row))
                         .map(|row| {
                             let row_rings = map.csr_window(polygon_offsets.as_slice(), row);
                             if row_rings.is_empty() {
@@ -324,7 +340,7 @@ impl CoordinateView {
                 GeometryArrayStorage::Mixed(shapes) => shapes
                     .iter()
                     .zip(missing.iter())
-                    .filter(|(_, missing)| !**missing)
+                    .filter(|(_, missing)| !*missing)
                     .map(|(shape, _)| shape.coord_count())
                     .sum(),
             },
@@ -556,7 +572,7 @@ impl CoordinateView {
                 let ms = seq.ms().map(|column| &column[..width]);
                 for coord in 0..width {
                     visit(CoordinatePoint {
-                        point: Point::new_unchecked_axes(
+                        point: Point::new_raw_axes(
                             xs[coord],
                             ys[coord],
                             ZOrdinate(zs.map(|column| column[coord])),
@@ -1099,8 +1115,8 @@ fn packed_points_columnar_eq(
     match ma.as_deref() {
         crate::array::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
         crate::array::RowSelectionRef::Window { start, len } => {
-            let la = ca.view(CoordWindow::trusted(start..start + len, ca.len()));
-            let lb = cb.view(CoordWindow::trusted(start..start + len, cb.len()));
+            let la = ca.view(CoordWindow::from_range(start..start + len, ca.len()));
+            let lb = cb.view(CoordWindow::from_range(start..start + len, cb.len()));
             Some(coordseq_columns_bit_eq(&la, &lb))
         },
         // Gathered points: physical rows may differ — stream is the safe path.
@@ -1140,8 +1156,8 @@ fn packed_lines_columnar_eq(
             if c1a > ca.len() || c1b > cb.len() || c0a > c1a || c0b > c1b {
                 return Some(false);
             }
-            let la = ca.view(CoordWindow::trusted(c0a..c1a, ca.len()));
-            let lb = cb.view(CoordWindow::trusted(c0b..c1b, cb.len()));
+            let la = ca.view(CoordWindow::from_range(c0a..c1a, ca.len()));
+            let lb = cb.view(CoordWindow::from_range(c0b..c1b, cb.len()));
             Some(coordseq_columns_bit_eq(&la, &lb))
         },
         crate::array::RowSelectionRef::Gather(_) => None,
@@ -1450,7 +1466,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::{MissingMask, RowSelection};
+    use crate::array::{RowSelection, ValidityMask};
     use crate::geometry::{
         CoordSeq, CsrOffsetColumn, LineSeq, Polygon, PolygonLevel, Ring, RingLevel,
     };
@@ -1560,7 +1576,7 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-            RowSelection::gather_trusted(vec![1, 0].into(), 2),
+            RowSelection::gather(vec![1, 0].into(), 2),
         );
         let gathered_points = gathered.coordinate_view().collect_points();
         assert_eq!(gathered_points.len(), 15);
@@ -1570,7 +1586,7 @@ mod tests {
         assert_eq!(gathered_points[5].path.geometry, Some(1));
         assert_eq!(gathered_points[10].path.ring, Some(1));
 
-        let masked = gathered.with_missing_mask(MissingMask::from_vec(2, vec![true, false]));
+        let masked = gathered.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
         let masked_view = masked.coordinate_view();
         let masked_points = masked_view.collect_points();
         assert_eq!(masked_view.flattened_capacity(), 10);
@@ -1650,7 +1666,7 @@ mod tests {
             coords,
             offsets,
             Frame::default(),
-            RowSelection::gather_trusted(vec![2, 0].into(), 3),
+            RowSelection::gather(vec![2, 0].into(), 3),
         );
         let view = gathered.coordinate_view();
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
@@ -1690,7 +1706,7 @@ mod tests {
         let collection = Shape::GeometryCollection(
             vec![
                 Shape::Point(pt(0.0, 0.0)),
-                Shape::Point(Point::new_unchecked_axes(
+                Shape::Point(Point::new_raw_axes(
                     1.0,
                     1.0,
                     ZOrdinate(Some(f64::NAN)),

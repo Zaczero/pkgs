@@ -18,8 +18,7 @@ use serde_json::Value;
 
 use crate::boundary::metadata::Frame;
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HasM, HasZ, LineSeq, Point, Polygon,
-    Shape, same_active_position,
+    CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HasM, HasZ, LineSeq, Point, Polygon, Shape,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError, ParseFormat, parse_error};
 use crate::py::geoarrow::GeometryEncoding;
@@ -80,13 +79,64 @@ pub(crate) fn pyarrow_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     static PYARROW: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
     PYARROW
         .get_or_try_init(py, || {
-            py.import("pyarrow").map(Bound::unbind).map_err(|_| {
-                PyModuleNotFoundError::new_err(
-                    "Arrow interop requires pyarrow; install gometry with pyarrow available",
-                )
-            })
+            py.import("pyarrow")
+                .map(Bound::unbind)
+                .map_err(|error| map_pyarrow_import_error(py, error))
         })
         .map(|module| module.bind(py))
+}
+
+fn map_pyarrow_import_error(py: Python<'_>, error: PyErr) -> PyErr {
+    let missing_pyarrow = error.is_instance_of::<PyModuleNotFoundError>(py)
+        && error
+            .value(py)
+            .getattr("name")
+            .ok()
+            .and_then(|name| name.extract::<Option<String>>().ok().flatten())
+            .as_deref()
+            == Some("pyarrow");
+    if missing_pyarrow {
+        PyModuleNotFoundError::new_err(
+            "Arrow interop requires pyarrow; install gometry with pyarrow available",
+        )
+    } else {
+        error
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PyArrowInputKind {
+    Container,
+    Reader,
+}
+
+/// A genuine PyArrow object necessarily keeps its top-level module loaded.
+/// Looking there avoids importing an optional dependency merely to inspect a
+/// foreign Arrow-C provider.
+fn loaded_pyarrow_module(py: Python<'_>) -> PyResult<Option<&Bound<'_, PyModule>>> {
+    let modules = py.import("sys")?.getattr("modules")?;
+    let module = modules.call_method1("get", ("pyarrow", py.None()))?;
+    if module.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(pyarrow_module(py)?))
+}
+
+fn pyarrow_input_kind(
+    pa: &Bound<'_, PyModule>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<PyArrowInputKind>> {
+    let reader = pa.getattr("RecordBatchReader")?;
+    if value.is_instance(&reader)? {
+        return Ok(Some(PyArrowInputKind::Reader));
+    }
+    for class_name in ["Array", "ChunkedArray", "Table", "RecordBatch"] {
+        let class = pa.getattr(class_name)?;
+        if value.is_instance(&class)? {
+            return Ok(Some(PyArrowInputKind::Container));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn gometry_arrow_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
@@ -168,16 +218,23 @@ fn reconcile_storages_frame(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<(Option<String>, Option<f64>, Frame)> {
-    let mut frame = None;
+    let mut frame: Option<(Option<String>, Option<f64>)> = None;
     for storage in storages {
-        match &frame {
-            Some(frame) if *frame != (storage.crs.clone(), storage.epoch) => {
-                return Err(geoarrow_parse_error(
-                    "Arrow chunks have mixed CRS/epoch metadata",
-                ));
-            },
-            Some(_) => {},
-            None => frame = Some((storage.crs.clone(), storage.epoch)),
+        if let Some((existing_crs, existing_epoch)) = &frame
+            && (!crate::boundary::metadata::optional_crs_labels_operationally_equal(
+                existing_crs.as_deref(),
+                storage.crs.as_deref(),
+            )? || !crate::boundary::metadata::optional_epochs_equal(
+                *existing_epoch,
+                storage.epoch,
+            ))
+        {
+            return Err(geoarrow_parse_error(
+                "Arrow chunks have mixed CRS/epoch metadata",
+            ));
+        }
+        if frame.is_none() {
+            frame = Some((storage.crs.clone(), storage.epoch));
         }
     }
     let (embedded_crs, embedded_epoch) = frame.unwrap_or((None, None));
@@ -310,7 +367,7 @@ pub(crate) fn geometries_from_arrow_storages(
         Some(crs) => Some(crs_arc(crs)),
         None => arrow_import_common_crs(&geometries, &missing_rows)?,
     };
-    apply_arrow_batch_frame(&mut geometries, crs.as_ref(), epoch);
+    apply_arrow_batch_frame(&mut geometries, crs.as_ref(), epoch)?;
     let mask = crate::array::sparse_missing_mask(geometries.len(), &missing_rows);
     Ok(
         PyGeometryArray::pack_or_mixed(geometries, Frame::new(crs, epoch)?)?
@@ -336,12 +393,16 @@ fn is_homogeneous_packed_list(storages: &[ArrowStorage]) -> bool {
 /// differ. Append paths already attach storage CRS (or embedded EWKB SRID)
 /// with epoch `None`; the common path therefore does no per-row
 /// `FrameDependentCaches` rebuild (the measured mixed-import churn).
-fn apply_arrow_batch_frame(geometries: &mut [PyGeometry], crs: Option<&Crs>, epoch: Option<f64>) {
+fn apply_arrow_batch_frame(
+    geometries: &mut [PyGeometry],
+    crs: Option<&Crs>,
+    epoch: Option<f64>,
+) -> crate::Result<()> {
     for geometry in geometries {
         if geometry.crs_ref().is_none()
             && let Some(crs) = crs
         {
-            geometry.set_crs_keep_epoch(Some(crs.clone()));
+            geometry.set_crs_keep_epoch(Some(crs.clone()))?;
         }
         let epoch_differs = match (geometry.epoch(), epoch) {
             (None, None) => false,
@@ -349,9 +410,10 @@ fn apply_arrow_batch_frame(geometries: &mut [PyGeometry], crs: Option<&Crs>, epo
             _ => true,
         };
         if epoch_differs {
-            geometry.set_epoch_keep_crs(epoch);
+            geometry.set_epoch_keep_crs(epoch)?;
         }
     }
+    Ok(())
 }
 
 fn arrow_import_common_crs(
@@ -525,7 +587,7 @@ fn masked_pyarrow_import(
         .retag_frame(frame);
     // Unknown null_count (-1) may resolve to zero actual nulls after the
     // bitmap is inspected; return the dense import without scattering.
-    let Some(mask) = crate::array::MissingMask::from_vec(mask.len(), mask) else {
+    let Some(mask) = crate::array::ValidityMask::from_vec(mask.len(), mask) else {
         return Ok(dense.into_pyobject(py)?.unbind().into());
     };
     Ok(PyGeometryArray::scatter_present_rows(&dense, mask)
@@ -545,33 +607,23 @@ pub(crate) fn geometries_from_arrow(
             "from_arrow expects foreign Arrow data; a Geometry or GeometryArray is already decoded",
         ));
     }
-    if value.getattr_opt(pyo3::intern!(py, "type"))?.is_some()
-        || value.getattr_opt(pyo3::intern!(py, "chunks"))?.is_some()
-        || value
-            .getattr_opt(pyo3::intern!(py, "column_names"))?
-            .is_some()
-    {
-        let pa = pyarrow_module(py)?;
-        return geometries_from_pyarrow(py, pa, value, crs, epoch);
-    }
-    // RecordBatchReader / stream-like: materialize via PyArrow so ExtensionType
-    // and field metadata remain dual-visible for the reconciliation keystone
-    // (pure C export collapses them and can drop a CRS on conflict).
-    // Propagate `read_all()` errors when pyarrow is available — never fall
-    // through to the Arrow-C stream path after a failed/partial consume
-    // (that yields a silent empty array). Fall through only when pyarrow is
-    // genuinely unavailable.
-    if value.hasattr("read_all")?
-        && let Ok(pa) = pyarrow_module(py)
-    {
-        let table = value.call_method0("read_all")?;
-        return geometries_from_pyarrow(py, pa, &table, crs, epoch);
+    if let Some(pa) = loaded_pyarrow_module(py)? {
+        match pyarrow_input_kind(pa, value)? {
+            Some(PyArrowInputKind::Container) => {
+                return geometries_from_pyarrow(py, pa, value, crs, epoch);
+            },
+            Some(PyArrowInputKind::Reader) => {
+                let table = value.call_method0("read_all")?;
+                return geometries_from_pyarrow(py, pa, &table, crs, epoch);
+            },
+            None => {},
+        }
     }
     if let Some(output) = crate::py::arrow_c::geometries_from_arrow_c(py, value, crs, epoch)? {
         return Ok(output);
     }
     Err(PyTypeError::new_err(
-        "expected a GeoArrow-encoded Arrow array, ChunkedArray, Table, RecordBatch, or Arrow C provider",
+        "expected a GeoArrow-encoded Arrow array, ChunkedArray, Table, RecordBatch, RecordBatchReader, or Arrow C provider",
     ))
 }
 
@@ -599,11 +651,11 @@ pub(crate) use buffers::{
 };
 pub(crate) use coordinates::{
     ArrowListLevel, ArrowPolygonLevels, arrow_coordinate_values, arrow_polygon_from_ring_range,
-    arrow_ring_needs_closure, ensure_vertex_range_in_span,
 };
 pub(crate) use export::{
-    packed_lines_to_arrow, packed_points_to_arrow, packed_polygons_to_arrow, shapes_to_arrow,
-    shapes_to_wkb_arrow, storage_to_wkb_arrow, validity_bitmap_from_missing,
+    nullable_shapes_to_wkb_arrow, packed_lines_to_arrow, packed_points_to_arrow,
+    packed_polygons_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow, storage_to_wkb_arrow,
+    validity_bitmap_from_mask, validity_bitmap_from_missing,
 };
 pub(crate) use export_buffers::{
     ArrowCoordinateBuffers, ExactArrowCoordinateFill, columns_to_pybytes,
@@ -626,8 +678,9 @@ pub(crate) use packed_import::{
 ///
 /// Parameters
 /// ----------
-/// data : Arrow array
-///     A GeoArrow-encoded array (anything exposing the Arrow C stream).
+/// data : Arrow input
+///     A PyArrow Array, ChunkedArray, Table, RecordBatch, or RecordBatchReader,
+///     or an object exposing the Arrow C array or stream protocol.
 ///
 /// crs : str or int, optional
 ///     CRS for arrays without embedded `GeoArrow` metadata. When metadata
@@ -691,6 +744,98 @@ fn from_arrow(
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     geometries_from_arrow(py, data, crs, epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::exceptions::{PyImportError, PyModuleNotFoundError, PyRuntimeError};
+    use pyo3::ffi::c_str;
+    use pyo3::prelude::*;
+    use pyo3::types::PyDict;
+
+    use super::pyarrow_module;
+
+    #[test]
+    fn pyarrow_import_reclassifies_only_missing_root_module() {
+        Python::initialize();
+        Python::attach(|py| -> PyResult<()> {
+            let locals = PyDict::new(py);
+            py.run(
+                c_str!(
+                    r#"import sys
+class FailureFinder:
+    mode = 'missing'
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != 'pyarrow': return None
+        if self.mode == 'missing':
+            raise ModuleNotFoundError("No module named 'pyarrow'", name='pyarrow')
+        if self.mode == 'broken':
+            raise RuntimeError('broken pyarrow initialization')
+        if self.mode == 'abi':
+            raise ImportError('pyarrow ABI mismatch')
+        raise ModuleNotFoundError("No module named 'numpy'", name='numpy')
+finder = FailureFinder()
+sys.modules.pop('pyarrow', None)
+sys.meta_path.insert(0, finder)"#
+                ),
+                Some(&locals),
+                None,
+            )?;
+
+            let missing = match pyarrow_module(py) {
+                Ok(_) => panic!("missing pyarrow should fail"),
+                Err(error) => error,
+            };
+            assert!(missing.is_instance_of::<PyModuleNotFoundError>(py));
+            assert!(missing.value(py).to_string().contains("install gometry"));
+
+            let finder = locals
+                .get_item("finder")?
+                .expect("finder is defined")
+                .unbind();
+            finder.bind(py).setattr("mode", "broken")?;
+            let broken = match pyarrow_module(py) {
+                Ok(_) => panic!("broken pyarrow should fail"),
+                Err(error) => error,
+            };
+            assert!(broken.is_instance_of::<PyRuntimeError>(py));
+            assert!(
+                broken
+                    .value(py)
+                    .to_string()
+                    .contains("broken pyarrow initialization")
+            );
+
+            finder.bind(py).setattr("mode", "abi")?;
+            let abi = match pyarrow_module(py) {
+                Ok(_) => panic!("ABI failure should fail"),
+                Err(error) => error,
+            };
+            assert!(abi.is_instance_of::<PyImportError>(py));
+            assert!(abi.value(py).to_string().contains("pyarrow ABI mismatch"));
+
+            finder.bind(py).setattr("mode", "nested")?;
+            let nested = match pyarrow_module(py) {
+                Ok(_) => panic!("nested dependency failure should fail"),
+                Err(error) => error,
+            };
+            assert!(nested.is_instance_of::<PyModuleNotFoundError>(py));
+            assert!(
+                nested
+                    .value(py)
+                    .to_string()
+                    .contains("No module named 'numpy'")
+            );
+
+            py.run(
+                c_str!("sys.meta_path.remove(finder)\nsys.modules.pop('pyarrow', None)"),
+                Some(&locals),
+                None,
+            )?;
+            Ok(())
+        })
+        .expect("Python import-failure probe should complete");
+    }
 }
 
 /// Register the Arrow interchange free functions on the module.

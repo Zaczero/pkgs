@@ -82,6 +82,35 @@ def test_cell_construct_and_round_trip(grid: GridCase) -> None:
     assert grid.cell_type(projected, **{grid.depth_kw: grid.depth}) == cell
 
 
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_construct_canonicalizes_periodic_seam_aliases(grid: GridCase) -> None:
+    owner = grid.make(-180.0, 23.0)
+    assert grid.make(180.0, 23.0) == owner
+    assert grid.make(540.0, 23.0) == owner
+    assert grid.make(-540.0, 23.0) == owner
+    assert grid.make(np.nextafter(-180.0, 0.0), 23.0) == owner
+    east_neighbor = grid.make(np.nextafter(180.0, 0.0), 23.0)
+    if grid.name != 'h3':
+        assert east_neighbor != owner
+
+    cells = grid.factory(
+        [-180.0, 180.0, 540.0, -540.0],
+        [23.0, 23.0, 23.0, 23.0],
+        **{grid.depth_kw: grid.depth},
+    )
+    assert cells.token == [owner.token] * 4
+
+
+@pytest.mark.parametrize('grid', GRID_CASES[:3], ids=[g.name for g in GRID_CASES[:3]])
+@pytest.mark.parametrize('latitude', [-90.0, 90.0], ids=['south', 'north'])
+def test_cell_construct_canonicalizes_pole_longitude(
+    grid: GridCase, latitude: float
+) -> None:
+    owner = grid.make(-180.0, latitude)
+    for longitude in (-179.0, 0.0, 73.0, 180.0, 540.0):
+        assert grid.make(longitude, latitude) == owner
+
+
 def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
     """Geohash arrays never expose their private packed identity key."""
     import pickle
@@ -340,6 +369,35 @@ def test_cells_columnar_and_broadcast() -> None:
     ]
 
 
+@pytest.mark.parametrize('dtype', [np.int64, np.uint64], ids=['signed', 'unsigned'])
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[grid.name for grid in GRID_CASES])
+def test_cells_accept_numpy_scalar_and_zero_d_depths(grid: GridCase, dtype) -> None:
+    for depth in (dtype(grid.depth), np.array(grid.depth, dtype=dtype)):
+        cells = grid.factory(
+            [grid.sample_lon, grid.sample_lon + 1.0],
+            [grid.sample_lat, grid.sample_lat + 1.0],
+            **{grid.depth_kw: depth},
+        )
+        assert [grid.depth_of(cell) for cell in cells] == [grid.depth, grid.depth]
+
+
+@pytest.mark.parametrize('dtype', [np.int64, np.uint64], ids=['signed', 'unsigned'])
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[grid.name for grid in GRID_CASES])
+def test_cells_accept_rank_one_numpy_depths_per_row(grid: GridCase, dtype) -> None:
+    """Grid depth arrays are parsed per row for every cell factory.
+
+    Mutation: removing the rank classification makes this positive rank-one
+    case fail while NumPy is probed as a scalar index.
+    """
+    depths = np.array([grid.depth, grid.depth + 1], dtype=dtype)
+    cells = grid.factory(
+        [grid.sample_lon, grid.sample_lon + 1.0],
+        [grid.sample_lat, grid.sample_lat + 1.0],
+        **{grid.depth_kw: depths},
+    )
+    assert [grid.depth_of(cell) for cell in cells] == [grid.depth, grid.depth + 1]
+
+
 def test_geohash_bulk_tokens_keep_precision_alphabet_and_missing_rows() -> None:
     lon = [-120.6623, 112.5584]
     lat = [35.3003, 37.8324]
@@ -555,6 +613,54 @@ def test_cell_array_ndarray_and_memoryview_rank_parity() -> None:
         gm.H3VertexArray(v2d)
     with pytest.raises(TypeError, match='zero- or one-dimensional'):
         gm.H3VertexArray(memoryview(v2d))
+
+
+def test_h3_numeric_array_protocol_honors_endian_dtype_and_copy_contract() -> None:
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    vertices = cell.vertices
+    edges = cell.edges
+    arrays = (
+        (gm.CellArray([cell], type=gm.H3Cell), [cell.id]),
+        (vertices, [value.id for value in vertices]),
+        (edges, [value.id for value in edges]),
+    )
+    byteorder = '>' if np.little_endian else '<'
+    requested = np.dtype(f'{byteorder}u8')
+
+    for array, values in arrays:
+        expected = np.array(values, dtype=requested)
+        for dtype in (None, np.dtype(np.uint64)):
+            result = array.__array__(dtype=dtype)
+            assert result.dtype == np.dtype(np.uint64)
+            assert result.flags.writeable is False
+            np.testing.assert_array_equal(result, expected)
+
+        native = array.__array__(dtype=np.dtype(np.uint64), copy=False)
+        assert native.flags.writeable is False
+        assert np.shares_memory(native, array.to_numpy())
+
+        for copy in (None, True):
+            direct = array.__array__(dtype=requested, copy=copy)
+            via_numpy = np.asarray(array, dtype=requested)
+            for result in (direct, via_numpy):
+                assert result.dtype == requested
+                assert result.dtype.isnative is False
+                assert result.flags.writeable is False
+                np.testing.assert_array_equal(result, expected)
+
+        objects = array.__array__(dtype=object)
+        assert objects.dtype == np.dtype(object)
+        assert objects.flags.writeable is False
+        assert objects[0] == array[0]
+
+        with pytest.raises(gm.GeometryError, match='dtype must be uint64'):
+            array.__array__(dtype=np.float64)
+        with pytest.raises(gm.GeometryError, match='dtype must be uint64'):
+            np.asarray(array, dtype=np.float64)
+        with pytest.raises(ValueError, match='without copying'):
+            array.__array__(dtype=requested, copy=False)
+        with pytest.raises(ValueError, match='without copying'):
+            np.asarray(array, dtype=requested, copy=False)
 
 
 def test_cell_collections_reject_byte_payloads_before_numeric_iteration() -> None:

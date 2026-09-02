@@ -253,6 +253,68 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
     assert restored[0].epoch == 2020.0
 
 
+@pytest.mark.parametrize(
+    ('rows', 'extension_name', 'present_payload_count'),
+    [
+        (
+            [gm.Point(0, 0), None, gm.Point(2, 2)],
+            'geoarrow.point',
+            2,
+        ),
+        (
+            [
+                gm.LineString([(0, 0), (1, 1)]),
+                None,
+                gm.LineString([(2, 2), (3, 3)]),
+            ],
+            'geoarrow.linestring',
+            4,
+        ),
+        (
+            [gm.box(0, 0, 1, 1), None, gm.box(2, 2, 3, 3)],
+            'geoarrow.polygon',
+            10,
+        ),
+    ],
+)
+def test_nullable_arrow_c_import_keeps_compact_native_payload(
+    rows: list[object], extension_name: str, present_payload_count: int
+) -> None:
+    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    source = values.to_arrow()
+
+    class CapsuleOnly:
+        def __arrow_c_array__(self, requested_schema=None):
+            return source.__arrow_c_array__()
+
+    restored = cast('gm.GeometryArray', gm.from_arrow(CapsuleOnly()))
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.is_missing.tolist() == [False, True, False]
+    assert restored.crs == 'EPSG:4326'
+    assert restored.epoch == 2020.0
+    native = restored.to_arrow()
+    assert native.type.extension_name == extension_name
+    if extension_name == 'geoarrow.point':
+        assert len(native.storage.field('x')) == len(values)
+    elif extension_name == 'geoarrow.linestring':
+        assert len(native.storage.values.field('x')) == present_payload_count
+    else:
+        assert len(native.storage.values.values.field('x')) == present_payload_count
+
+
+def test_nullable_wkb_arrow_omits_null_payload_bytes() -> None:
+    values = gm.GeometryArray([
+        gm.Point(0, 0),
+        None,
+        gm.Point(2, 2),
+    ])
+    arrow = values.to_arrow(encoding='wkb')
+    offsets = struct.unpack('<4i', arrow.storage.buffers()[1].to_pybytes())
+    first, last = values[[0, 2]].to_wkb()
+    assert offsets == (0, len(first), len(first), len(first) + len(last))
+    assert arrow.storage.buffers()[2].size == len(first) + len(last)
+
+
 def test_from_arrow_deeply_nested_list_schema_no_sigsegv() -> None:
     """P01: deep list nesting must not stack-overflow; clean typed rejection.
 
@@ -552,6 +614,93 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
 
 def test_arrow_c_array_import_does_not_import_pyarrow() -> None:
     code = "\nimport importlib.abc\nimport sys\n\nimport gometry as gm\n\nclass _CapsuleArrayOnly:\n    def __init__(self, schema, array):\n        self._schema = schema\n        self._array = array\n\n    def __arrow_c_array__(self, requested_schema=None):\n        return (self._schema, self._array)\n\nclass BlockPyArrow(importlib.abc.MetaPathFinder):\n    def find_spec(self, fullname, path=None, target=None):\n        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):\n            raise AssertionError('pyarrow import attempted')\n        return None\n\nsys.meta_path.insert(0, BlockPyArrow())\nvalues = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)\nschema, array = values.__arrow_c_array__()\nrestored = gm.from_arrow(_CapsuleArrayOnly(schema, array))\nassert 'pyarrow' not in sys.modules\nassert restored.crs == 'EPSG:4326'\nassert restored.epoch == 2020.0\nassert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']\n"
+    subprocess.run([sys.executable, '-c', code], check=True)
+
+
+def test_foreign_arrow_c_providers_with_shape_attributes_use_native_path() -> None:
+    values = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)
+
+    class ForeignType:
+        pass
+
+    class ArrayProvider:
+        type = ForeignType()
+
+        def __arrow_c_array__(self, requested_schema: Any | None = None) -> Any:
+            return values.__arrow_c_array__(requested_schema)
+
+    class StreamProvider:
+        column_names = ('geometry',)
+
+        def __arrow_c_stream__(self, requested_schema: Any | None = None) -> Any:
+            return values.__arrow_c_stream__(requested_schema)
+
+    providers: list[Any] = [ArrayProvider(), StreamProvider()]
+    try:
+        import arro3.core as arro3
+    except ModuleNotFoundError:
+        pass
+    else:
+        providers.extend([
+            arro3.Array.from_arrow(values.to_arrow()),
+            arro3.Table.from_arrow(pa.table({'geometry': values.to_arrow()})),
+        ])
+
+    for provider in providers:
+        restored = cast('gm.GeometryArray', gm.from_arrow(provider))
+        assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert restored.crs == 'EPSG:4326'
+        assert restored.epoch == 2020.0
+
+
+def test_pyarrow_container_types_preserve_geometry_frame() -> None:
+    values = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)
+    arrow = values.to_arrow()
+    table = pa.table({'geometry': arrow})
+    inputs: list[Any] = [
+        arrow,
+        pa.chunked_array([arrow]),
+        table,
+        pa.RecordBatch.from_arrays([arrow], names=['geometry']),
+        pa.RecordBatchReader.from_batches(table.schema, table.to_batches()),
+    ]
+
+    for source in inputs:
+        restored = cast('gm.GeometryArray', gm.from_arrow(source))
+        assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert restored.crs == 'EPSG:4326'
+        assert restored.epoch == 2020.0
+
+
+def test_arrow_c_provider_shape_attributes_do_not_import_pyarrow() -> None:
+    code = """
+import importlib.abc
+
+import gometry as gm
+
+class BlockPyArrow(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):
+            raise AssertionError('pyarrow import attempted')
+        return None
+
+class Provider:
+    type = object()
+
+    def __init__(self, source):
+        self._source = source
+
+    def __arrow_c_array__(self, requested_schema=None):
+        return self._source.__arrow_c_array__(requested_schema)
+
+import sys
+sys.meta_path.insert(0, BlockPyArrow())
+values = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)
+restored = gm.from_arrow(Provider(values))
+assert restored.crs == 'EPSG:4326'
+assert restored.epoch == 2020.0
+assert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']
+"""
     subprocess.run([sys.executable, '-c', code], check=True)
 
 
@@ -1473,33 +1622,6 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
     assert len(out) == 0
     assert out.crs == 'EPSG:4326'
     assert out.to_wkt() == []
-
-    # Count the public-ingress work directly. Point chunks have no offset chain,
-    # so classifying the first chunk is sufficient; a restored per-empty
-    # storage path would call chunk() once per physical chunk.
-    class CountedEmptyChunks:
-        type = arr.type
-        num_chunks = n_empty
-
-        def __init__(self) -> None:
-            self.chunk_calls: list[int] = []
-
-        def __len__(self) -> int:
-            return 0
-
-        @property
-        def chunks(self) -> object:
-            return (self.chunk(index) for index in range(n_empty))
-
-        def chunk(self, index: int) -> object:
-            self.chunk_calls.append(index)
-            return empty
-
-    counted = CountedEmptyChunks()
-    counted_out = cast('gm.GeometryArray', gm.from_arrow(counted))
-    assert len(counted_out) == 0
-    assert counted_out.crs == 'EPSG:4326'
-    assert counted.chunk_calls == [0]
 
     # Empty around real data: only present rows land.
     mixed = pa.chunked_array([empty, arr, empty, empty], type=arr.type)

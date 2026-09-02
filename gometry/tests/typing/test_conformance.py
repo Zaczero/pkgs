@@ -147,6 +147,37 @@ if TYPE_CHECKING:
     assert_type(gm.from_geopandas(geopandas_series), gm.GeometryArray[gm.Geometry])
 
     float_column: sht.FloatColumn = [1.0, 2.0]
+    assert_type(gm.Point(np.float32(1.0), np.int64(2)), gm.Point)
+    assert_type(
+        gm.Point(1.0, 2.0).set_coordinates(np.zeros((1, 2), dtype=np.float32)),
+        gm.Point,
+    )
+    assert_type(POINTS[np.int64(0)], gm.Point | None)
+    integer_index_0d: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(
+        0, dtype=np.int64
+    )
+    assert_type(POINTS[integer_index_0d], gm.Point | None)
+    assert_type(gm.contains_xy(POLY, np.float32(1.0), np.int64(1)), bool)
+    assert_type(
+        gm.crs_transform(4326, 3857, np.float32(1.0), np.float64(2.0)),
+        tuple[float, float],
+    )
+    bounds_array: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
+        [-1.0, 50.0, 1.0, 51.0], dtype=np.float64
+    )
+    assert_type(
+        gm.crs_transform_bounds(4326, 3857, bounds_array),
+        tuple[float, float, float, float]
+        | tuple[float, float, float, float, float, float],
+    )
+    assert_type(
+        gm.pluscode_encode(np.float32(8.0), np.float64(47.0), length=np.int64(10)),
+        str,
+    )
+    assert_type(
+        gm.osm_shortlink_encode(np.float32(8.0), np.float64(47.0), zoom=np.int64(16)),
+        str,
+    )
     navigation_path: sht.NavigationPath = 'rhumb'
     features = gm.Features(POINTS)
     assert_type(POINTS.to_geoparquet('points.parquet', encoding='native'), None)

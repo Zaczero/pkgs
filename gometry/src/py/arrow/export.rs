@@ -5,6 +5,7 @@
 use pyo3::exceptions::PyOverflowError;
 
 use crate::GeometryArrayStorage;
+use crate::array::ValidityMask;
 use crate::py::arrow::{
     ArrowCoordinateBuffers, CoordSeq, CoordinateAxes, Polygon, Py, PyAny, PyAnyMethods as _,
     PyBytes, PyResult, Python, Shape, accumulate_geometry_axes, columns_to_pybytes,
@@ -20,6 +21,16 @@ pub(crate) fn validity_bitmap_from_missing(mask: &[bool]) -> PyResult<Vec<u8>> {
         }
     }
     Ok(validity)
+}
+
+pub(crate) fn validity_bitmap_from_mask(mask: &ValidityMask) -> Vec<u8> {
+    let mut validity = vec![0; mask.len().div_ceil(8)];
+    for row in 0..mask.len() {
+        if mask.is_valid(row) {
+            validity[row / 8] |= 1 << (row % 8);
+        }
+    }
+    validity
 }
 
 pub(crate) fn push_arrow_polygon(
@@ -58,13 +69,23 @@ pub(crate) fn packed_points_to_arrow(
     if cfg!(target_endian = "little") {
         let columns = seq.column_arcs();
         let window = columns.window.clone();
-        let column = |arc: std::sync::Arc<[f64]>| {
-            crate::py::vectors::Float64Buffer::view(arc, window.clone())
+        let m_window = columns.m_window.clone();
+        let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
+            crate::py::vectors::Float64Buffer::view(arc, window)
         };
-        let (xs, ys) = (column(columns.xs)?, column(columns.ys)?);
+        let (xs, ys) = (
+            column(columns.xs, window.clone())?,
+            column(columns.ys, window.clone())?,
+        );
         let (zs, ms) = (
-            columns.zs.map(&column).transpose()?,
-            columns.ms.map(&column).transpose()?,
+            columns
+                .zs
+                .map(|arc| column(arc, window.clone()))
+                .transpose()?,
+            columns
+                .ms
+                .map(|arc| column(arc, m_window.clone()))
+                .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?
             .call_method1(
@@ -103,13 +124,23 @@ pub(crate) fn packed_polygons_to_arrow(
         let ring_offset_bytes = crate::py::vectors::Int32Buffer::new(ring_offsets.as_arc_i32());
         let columns = coords.column_arcs();
         let window = columns.window.clone();
-        let column = |arc: std::sync::Arc<[f64]>| {
-            crate::py::vectors::Float64Buffer::view(arc, window.clone())
+        let m_window = columns.m_window.clone();
+        let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
+            crate::py::vectors::Float64Buffer::view(arc, window)
         };
-        let (xs, ys) = (column(columns.xs)?, column(columns.ys)?);
+        let (xs, ys) = (
+            column(columns.xs, window.clone())?,
+            column(columns.ys, window.clone())?,
+        );
         let (zs, ms) = (
-            columns.zs.map(&column).transpose()?,
-            columns.ms.map(&column).transpose()?,
+            columns
+                .zs
+                .map(|arc| column(arc, window.clone()))
+                .transpose()?,
+            columns
+                .ms
+                .map(|arc| column(arc, m_window.clone()))
+                .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?
             .call_method1(
@@ -169,13 +200,23 @@ pub(crate) fn packed_lines_to_arrow(
         let offset_bytes = crate::py::vectors::Int32Buffer::new(offsets.as_arc_i32());
         let columns = coords.column_arcs();
         let window = columns.window.clone();
-        let column = |arc: std::sync::Arc<[f64]>| {
-            crate::py::vectors::Float64Buffer::view(arc, window.clone())
+        let m_window = columns.m_window.clone();
+        let column = |arc: std::sync::Arc<[f64]>, window: std::ops::Range<usize>| {
+            crate::py::vectors::Float64Buffer::view(arc, window)
         };
-        let (xs, ys) = (column(columns.xs)?, column(columns.ys)?);
+        let (xs, ys) = (
+            column(columns.xs, window.clone())?,
+            column(columns.ys, window.clone())?,
+        );
         let (zs, ms) = (
-            columns.zs.map(&column).transpose()?,
-            columns.ms.map(&column).transpose()?,
+            columns
+                .zs
+                .map(|arc| column(arc, window.clone()))
+                .transpose()?,
+            columns
+                .ms
+                .map(|arc| column(arc, m_window.clone()))
+                .transpose()?,
         );
         return Ok(gometry_arrow_module(py)?
             .call_method1(
@@ -245,18 +286,9 @@ fn shapes_to_packed_arrow(
         Shape::GeometryCollection(_) | Shape::Empty(..) => return Ok(None),
     };
     if shapes.iter().any(|shape| match shape {
-        Shape::MultiPoint(points) => points
-            .members()
-            .iter()
-            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
-        Shape::MultiLineString(lines) => lines
-            .members()
-            .iter()
-            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
-        Shape::MultiPolygon(polygons) => polygons
-            .members()
-            .iter()
-            .any(|member| matches!(member, crate::geometry::MultiMember::Empty)),
+        Shape::MultiPoint(points) => points.has_empty_members(),
+        Shape::MultiLineString(lines) => lines.has_empty_members(),
+        Shape::MultiPolygon(polygons) => polygons.has_empty_members(),
         _ => false,
     }) {
         return Ok(None);
@@ -551,6 +583,41 @@ pub(crate) fn shapes_to_wkb_arrow(
     push_i32_le(&mut offsets, 0)?;
     for shape in shapes {
         io::write_wkb_to(&mut data, shape, crs, false)?;
+        push_i32_le(&mut offsets, data.len())?;
+    }
+    let offsets = PyBytes::new(py, &offsets);
+    let data = PyBytes::new(py, &data);
+    Ok(gometry_arrow_module(py)?
+        .call_method1(
+            pyo3::intern!(py, "to_arrow_wkb"),
+            (offsets, data, crs, epoch),
+        )?
+        .unbind())
+}
+
+/// Export nullable logical rows to Arrow WKB without manufacturing payload for
+/// null rows. Binary/list offsets already align null rows at the wire boundary;
+/// only the validity bitmap, not a placeholder geometry, represents missingness.
+pub(crate) fn nullable_shapes_to_wkb_arrow(
+    py: Python<'_>,
+    shapes: &[Option<Shape>],
+    crs: Option<&str>,
+    epoch: Option<f64>,
+) -> PyResult<Py<PyAny>> {
+    let total = shapes.iter().try_fold(0_usize, |total, shape| {
+        shape.as_ref().map_or(Ok(total), |shape| {
+            total
+                .checked_add(io::wkb_len(shape, false)?)
+                .ok_or_else(|| PyOverflowError::new_err("WKB size overflows usize"))
+        })
+    })?;
+    let mut offsets = Vec::new();
+    let mut data = crate::try_vec_with_capacity(total)?;
+    push_i32_le(&mut offsets, 0)?;
+    for shape in shapes {
+        if let Some(shape) = shape {
+            io::write_wkb_to(&mut data, shape, crs, false)?;
+        }
         push_i32_le(&mut offsets, data.len())?;
     }
     let offsets = PyBytes::new(py, &offsets);

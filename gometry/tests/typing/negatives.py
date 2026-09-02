@@ -1,6 +1,6 @@
 """Negative typing conformance: misuse that must FAIL type-checking.
 
-Every line here is a deliberate error carrying a ``# type: ignore[code]``.
+Every line here is a deliberate error carrying a checker-specific ignore.
 ``tools/gates/_check_typing_runtime.py`` runs mypy with ``--warn-unused-ignores``
 and pyright with ``reportUnnecessaryTypeIgnoreComment=error`` over this file:
 if the stub ever *loosens* (an overload widens, a Literal vocabulary drifts,
@@ -169,6 +169,14 @@ if TYPE_CHECKING:
     # Point constructor rejects non-numeric coordinates.
     gm.Point('x', 'y')  # type: ignore[call-overload]
     gm.Point(None, 1.0)  # type: ignore[call-overload]
+    matrix_1d: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
+        [0.0, 0.0], dtype=np.float64
+    )
+    POINT.set_coordinates(matrix_1d)  # type: ignore[arg-type]
+    matrix_3d: np.ndarray[tuple[int, int, int], np.dtype[np.float64]] = np.zeros(
+        (1, 1, 2), dtype=np.float64
+    )
+    POINT.set_coordinates(matrix_3d)  # type: ignore[arg-type]
     gm.LineString([(0.0, 0.0), (1.0, 1.0)], x=[0.0], y=[1.0])  # type: ignore[call-overload]
     POINT.set_coordinates()  # type: ignore[call-overload]
     POINT.set_coordinates(x=[0.0])  # type: ignore[call-overload]
@@ -217,6 +225,9 @@ if TYPE_CHECKING:
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
     H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
+    POINTS[np.float64(0)]  # pyright: ignore[reportArgumentType]
+    POINTS[np.asarray([0.0], dtype=np.float64)]  # pyright: ignore[reportArgumentType]
+    POINTS[np.asarray([[0]], dtype=np.int64)]  # pyright: ignore[reportArgumentType]
 
     # CRS kind vocabulary rejects unknown tokens.
     gm.crs_search('WGS', kind='not_a_kind')  # type: ignore[arg-type]

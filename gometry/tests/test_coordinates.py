@@ -58,6 +58,7 @@ def test_coords_sequence_is_flat_and_columnar() -> None:
     np.testing.assert_array_equal(columns['x'], [0.0, 1.0, 2.0, 3.0])
     np.testing.assert_array_equal(columns['y'], [0.0, 1.0, 2.0, 3.0])
     np.testing.assert_array_equal(columns['index'], [0, 1, 1, 2])
+    assert 'z' not in columns and 'm' not in columns
     assert all(not column.flags.writeable for column in columns.values())
     mat = np.asarray(line.coords)
     assert mat.shape == (3, 2) and mat.dtype == np.float64
@@ -128,8 +129,8 @@ def test_coordinates_numpy_protocol_accepts_float_dtype_spellings(
 
 @pytest.mark.parametrize(
     'dtype',
-    [np.int64, 'int64', np.bool_, 'bool'],
-    ids=['int64-type', 'int64-name', 'bool-type', 'bool-name'],
+    [np.int64, 'int64', np.bool_, 'bool', object, 'O'],
+    ids=['int64-type', 'int64-name', 'bool-type', 'bool-name', 'object-type', 'O'],
 )
 def test_coordinates_numpy_protocol_rejects_nonfloating_dtype(dtype: object) -> None:
     coords = gm.LineString([(0, 0), (1, 2)]).coords
@@ -138,6 +139,33 @@ def test_coordinates_numpy_protocol_rejects_nonfloating_dtype(dtype: object) -> 
         coords.__array__(dtype=dtype)
     with pytest.raises(gm.GeometryError, match=message):
         np.asarray(coords, dtype=dtype)
+
+
+def test_coordinates_numpy_protocol_honors_direct_opposite_endian_dtype() -> None:
+    coords = gm.LineString([(0, 0), (1, 2)]).coords
+    byteorder = '>' if np.little_endian else '<'
+    requested = np.dtype(f'{byteorder}f8')
+    expected = np.array([[0.0, 0.0], [1.0, 2.0]], dtype=requested)
+
+    for dtype in (None, np.dtype(np.float64)):
+        direct = coords.__array__(dtype=dtype)
+        assert direct.dtype == np.dtype(np.float64)
+        assert direct.flags.writeable is False
+        np.testing.assert_array_equal(direct, expected)
+
+    for copy in (None, True):
+        direct = coords.__array__(dtype=requested, copy=copy)
+        via_numpy = np.asarray(coords, dtype=requested)
+        for result in (direct, via_numpy):
+            assert result.dtype == requested
+            assert result.dtype.isnative is False
+            assert result.flags.writeable is False
+            np.testing.assert_array_equal(result, expected)
+
+    with pytest.raises(ValueError, match='without copying'):
+        coords.__array__(dtype=requested, copy=False)
+    with pytest.raises(ValueError, match='without copying'):
+        np.asarray(coords, dtype=requested, copy=False)
 
 
 def test_coordinates_equality_compares_visible_values() -> None:
@@ -309,6 +337,32 @@ def test_get_coordinates() -> None:
     np.testing.assert_array_equal(iterable, [[5.0, 6.0], [7.0, 8.0]])
 
 
+def test_get_coordinates_array_values_offsets_reconstruct_row_indices() -> None:
+    arr = gm.GeometryArray([
+        gm.Point(1, 2),
+        gm.from_wkt('LINESTRING EMPTY'),
+        None,
+        gm.LineString([(3, 4), (5, 6)]),
+    ])
+    coordinates = gm.get_coordinates(arr)
+    with_index = gm.get_coordinates(arr, return_index=True)
+
+    np.testing.assert_array_equal(
+        coordinates.values,
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+    )
+    assert coordinates.offsets.tolist() == [0, 1, 1, 1, 3]
+    np.testing.assert_array_equal(with_index.values, coordinates.values)
+    np.testing.assert_array_equal(with_index.offsets, coordinates.offsets)
+    np.testing.assert_array_equal(
+        np.repeat(
+            np.arange(len(with_index), dtype=np.int64),
+            np.diff(with_index.offsets),
+        ),
+        [0, 3, 3],
+    )
+
+
 def test_get_coordinates_return_index_packed_lines() -> None:
     """Packed identity lines: matrix + CSR-derived logical row index."""
     lines = gm.GeometryArray([
@@ -466,6 +520,10 @@ def test_set_coordinates_array_mask_and_row_map_round_trip() -> None:
 
 def test_set_coordinates_validation_errors() -> None:
     line = gm.LineString([(0, 0), (1, 1)])
+    with pytest.raises(gm.InvalidGeometryError, match='two-dimensional'):
+        line.set_coordinates(np.array([0.0, 0.0]))
+    with pytest.raises(gm.InvalidGeometryError, match='two-dimensional'):
+        line.set_coordinates(np.zeros((1, 2, 1)))
     with pytest.raises(gm.InvalidGeometryError, match='length 2'):
         line.set_coordinates(np.array([[0.0, 0.0]]))
     with pytest.raises(gm.InvalidGeometryError, match='width 2'):
@@ -482,6 +540,22 @@ def test_set_coordinates_validation_errors() -> None:
     opened[-1] = [9.0, 9.0]
     with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
         poly.set_coordinates(opened)
+
+
+def test_numpy_scalar_coordinates_and_float32_matrix_are_admitted() -> None:
+    point = gm.Point(np.float32(1.0), np.int64(2), z=np.float64(3.0))
+    assert point.to_wkt() == 'POINT Z (1 2 3)'
+
+    line = gm.LineString([(0.0, 0.0), (1.0, 1.0)])
+    replacement = np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32)
+    out = line.set_coordinates(replacement)
+    assert out.to_wkt() == 'LINESTRING (5 6, 7 8)'
+    assert out.coords.x.dtype == np.float64
+    assert out.coords.y.dtype == np.float64
+
+    points = gm.points(replacement[:, 0], replacement[:, 1])
+    assert points.coords.x.dtype == np.float64
+    assert not np.shares_memory(points.coords.x, replacement[:, 0])
 
 
 @pytest.mark.parametrize(

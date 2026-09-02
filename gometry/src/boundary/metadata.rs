@@ -166,9 +166,7 @@ pub(crate) struct GeometryTransformFrame {
 
 impl Frame {
     /// Build from optional parts, enforcing `epoch ⟹ dynamic crs` — the single
-    /// checked constructor. Used at untrusted (Python / deserialization) ingress;
-    /// internal propagation from valid parents uses
-    /// [`Self::from_trusted_parts`].
+    /// checked constructor for every optional-parts ingress.
     pub(crate) fn new(crs: Option<Crs>, epoch: Option<f64>) -> Result<Self> {
         match (crs, epoch) {
             (Some(crs), Some(epoch)) => {
@@ -180,37 +178,6 @@ impl Frame {
             (Some(crs), None) => Ok(Self::Crs(crs)),
             (None, None) => Ok(Self::None),
             (None, Some(_)) => Err(FrameError::EpochRequiresCrs.into()),
-        }
-    }
-
-    /// Build from parts already known valid — internal propagation from a
-    /// valid parent, which by contract already upheld `epoch ⟹ dynamic crs`.
-    ///
-    /// Constructs directly rather than re-running [`Self::new`]. That checked
-    /// constructor consults PROJ (`crs::is_dynamic`), so routing trusted
-    /// propagation through it had two costs: a `.expect()` turned any *PROJ*
-    /// failure — an unavailable database after `crs_configure`, an exotic CRS —
-    /// into a panic across the FFI boundary, reported as "epoch requires a
-    /// dynamic CRS", which misdescribes the cause; and it paid a database
-    /// lookup on every internal propagation site. The invariant is re-checked
-    /// under `debug_assert!` only, as an own-bug tripwire.
-    pub(crate) fn from_trusted_parts(crs: Option<Crs>, epoch: Option<f64>) -> Self {
-        match (crs, epoch) {
-            (Some(crs), Some(epoch)) => {
-                // `unwrap_or(true)`: a PROJ lookup failure is not evidence of a
-                // broken invariant, so it must not trip the assertion.
-                debug_assert!(
-                    crs::is_dynamic(&crs).unwrap_or(true),
-                    "from_trusted_parts got an epoch on a static CRS: {crs}"
-                );
-                Self::CrsEpoch(crs, epoch)
-            },
-            (Some(crs), None) => Self::Crs(crs),
-            (None, None) => Self::None,
-            (None, Some(_)) => {
-                debug_assert!(false, "from_trusted_parts got an epoch with no CRS");
-                Self::None
-            },
         }
     }
 
@@ -315,7 +282,15 @@ impl Frame {
                 .into());
             },
         };
-        Self::new(crs, epoch)
+        // Both optional parts came from existing `Frame` values, so their
+        // combination preserves the enum's epoch/CRS invariant without a
+        // second runtime CRS lookup.
+        Ok(match (crs, epoch) {
+            (Some(crs), Some(epoch)) => Self::CrsEpoch(crs, epoch),
+            (Some(crs), None) => Self::Crs(crs),
+            (None, None) => Self::None,
+            (None, Some(_)) => unreachable!("existing frames never carry an epoch without a CRS"),
+        })
     }
 
     /// Shared frame: every item must agree on CRS and coordinate epoch (all
@@ -398,7 +373,7 @@ impl Frame {
                 }
             }
             for item in items.iter_mut() {
-                item.set_crs_keep_epoch(Some(crs.clone()));
+                item.set_crs_keep_epoch(Some(crs.clone()))?;
             }
             Some(crs)
         } else {
@@ -423,7 +398,7 @@ impl Frame {
             if let Some(label) = first_crs.as_ref() {
                 for item in items.iter_mut() {
                     if item.crs_ref().is_some_and(|existing| existing != label) {
-                        item.set_crs_keep_epoch(Some(label.clone()));
+                        item.set_crs_keep_epoch(Some(label.clone()))?;
                     }
                 }
             }
@@ -446,7 +421,7 @@ impl Frame {
             }
             let frame = Self::new(crs, Some(epoch))?;
             for item in items.iter_mut() {
-                item.set_epoch_keep_crs(Some(epoch));
+                item.set_epoch_keep_crs(Some(epoch))?;
             }
             return Ok(frame);
         }
@@ -582,6 +557,14 @@ pub(crate) fn epochs_equal(left: f64, right: f64) -> bool {
     left == right
 }
 
+pub(crate) fn optional_epochs_equal(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => epochs_equal(left, right),
+        _ => false,
+    }
+}
+
 /// Do two CRS labels name the same frame for computation — string-equal, or
 /// operationally equivalent under PROJ's axis-order-agnostic comparison?
 ///
@@ -594,14 +577,30 @@ pub(crate) fn epochs_equal(left: f64, right: f64) -> bool {
 /// yet ~3000 km apart, because the deriving conversion is load-bearing). Never
 /// reintroduce one.
 pub(crate) fn crs_operationally_equal(left: &Crs, right: &Crs) -> Result<bool> {
+    crs_labels_operationally_equal(left.as_str(), right.as_str())
+}
+
+/// Compare serialized CRS labels using the same operational rule as frames.
+///
+/// Wire metadata may carry equivalent labels from different producers, so
+/// string inequality is not enough to identify a conflict. Axis order is
+/// ignored because gometry stores coordinates in explicit x/y order.
+pub(crate) fn crs_labels_operationally_equal(left: &str, right: &str) -> Result<bool> {
     if left == right {
         return Ok(true);
     }
-    crs::same(
-        left.as_str(),
-        right.as_str(),
-        crs::CrsComparison::IgnoreAxisOrder,
-    )
+    crs::same(left, right, crs::CrsComparison::IgnoreAxisOrder)
+}
+
+pub(crate) fn optional_crs_labels_operationally_equal(
+    left: Option<&str>,
+    right: Option<&str>,
+) -> Result<bool> {
+    match (left, right) {
+        (None, None) => Ok(true),
+        (Some(left), Some(right)) => crs_labels_operationally_equal(left, right),
+        _ => Ok(false),
+    }
 }
 
 pub(crate) fn crs_arc(value: impl Into<Crs>) -> Crs {
@@ -653,9 +652,9 @@ mod tests {
 
     #[test]
     fn compatible_resolves_matching_frame_and_rejects_mismatch() {
-        let wgs84 = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), Some(2020.0));
-        let same = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), Some(2020.0));
-        let other = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:3857")), Some(2020.0));
+        let wgs84 = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
+        let same = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
+        let other = Frame::new(Some(crs_arc_static("EPSG:3857")), Some(2020.0)).unwrap();
 
         let resolved = wgs84.compatible(&same, "union").unwrap();
         assert_eq!(resolved.crs_str(), Some("EPSG:4326"));
@@ -669,9 +668,24 @@ mod tests {
     }
 
     #[test]
+    fn compatible_does_not_revalidate_existing_frames() {
+        // Equal labels take the compatibility fast path. An unavailable CRS
+        // models a valid frame retained across a later runtime reconfiguration:
+        // compatibility has already selected its left metadata, so it
+        // must not make another dynamic-CRS query while constructing the result.
+        let left = Frame::CrsEpoch(crs_arc_static("urn:example:unavailable"), 2020.0);
+        let right = Frame::CrsEpoch(crs_arc_static("urn:example:unavailable"), 2020.0);
+
+        let resolved = left.compatible(&right, "union").unwrap();
+
+        assert_eq!(resolved.crs_str(), Some("urn:example:unavailable"));
+        assert_eq!(resolved.epoch(), Some(2020.0));
+    }
+
+    #[test]
     fn compatible_accepts_axis_order_aliases_and_keeps_left_label() {
-        let epsg = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), None);
-        let crs84 = Frame::from_trusted_parts(Some(crs_arc_static("OGC:CRS84")), None);
+        let epsg = Frame::new(Some(crs_arc_static("EPSG:4326")), None).unwrap();
+        let crs84 = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
 
         let left_epsg = epsg.compatible(&crs84, "intersection").unwrap();
         assert_eq!(left_epsg.crs_str(), Some("EPSG:4326"));
@@ -691,8 +705,7 @@ mod tests {
     /// (~32.75 km in Y), and 4326/4258 differ by datum.
     #[test]
     fn compatible_rejects_same_attribute_different_conversion() {
-        let frame =
-            |code: &'static str| Frame::from_trusted_parts(Some(crs_arc_static(code)), None);
+        let frame = |code: &'static str| Frame::new(Some(crs_arc_static(code)), None).unwrap();
         for (left, right) in [
             ("EPSG:2180", "EPSG:2177"),
             ("EPSG:3857", "EPSG:3395"),
@@ -714,7 +727,7 @@ mod tests {
 
     #[test]
     fn frame_edit_clears_epoch_with_crs_and_guards_retags() {
-        let frame = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), Some(2020.0));
+        let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
 
         let cleared = FrameEdit::SetCrs {
             crs: None,
@@ -747,7 +760,7 @@ mod tests {
 
     #[test]
     fn transform_frame_resolves_epoch_defaults_and_identity() {
-        let source = Frame::from_trusted_parts(Some(crs_arc_static("EPSG:4326")), Some(2020.0));
+        let source = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
         let same = GeometryTransformFrame::new(
             &source,
             crs_arc_static("EPSG:4326"),

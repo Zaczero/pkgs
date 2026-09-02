@@ -13,6 +13,13 @@ from shapely.geometry import LineString, Point, Polygon
 
 from tests._support import canon
 
+_RADIAN_CRS = (
+    'GEOGCS["WGS 84 rad",'
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+
 
 @pytest.fixture
 def parquet_path() -> str:
@@ -30,6 +37,31 @@ def _assert_roundtrip(original: gm.GeometryArray, restored: gm.GeometryArray) ->
 def _read_geometry(path: str, **kwargs: object) -> gm.GeometryArray:
     geometries, _ = gm.from_geoparquet(path, **kwargs)
     return geometries
+
+
+@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize(
+    ('crs', 'coordinates'),
+    [
+        pytest.param(4326, (120.0, 45.0), id='degree'),
+        pytest.param(4807, (200.0, 50.0), id='grad'),
+        pytest.param(_RADIAN_CRS, (1.0, 0.5), id='radian'),
+    ],
+)
+def test_geoparquet_round_trip_preserves_native_geographic_coordinates(
+    encoding: str,
+    crs: object,
+    coordinates: tuple[float, float],
+    parquet_path: str,
+) -> None:
+    """GeoParquet frame metadata must not reinterpret angular ordinates."""
+    source = gm.points([coordinates[0]], [coordinates[1]], crs=crs)
+    source.to_geoparquet(parquet_path, encoding=encoding)
+    restored = _read_geometry(parquet_path)
+
+    assert restored.to_wkt() == source.to_wkt()
+    assert restored.crs is not None
+    assert restored.crs.same_as(source.crs, mode='ignore_axis_order')
 
 
 @pytest.mark.parametrize(
@@ -71,6 +103,31 @@ def test_scalar_geometry_writes_single_row(parquet_path: str) -> None:
     restored = _read_geometry(parquet_path)
     assert len(restored) == 1
     _assert_roundtrip(gm.GeometryArray([point]), restored)
+
+
+@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+@pytest.mark.parametrize(
+    'rows',
+    [
+        [gm.Point(0, 0), None, gm.Point(2, 2)],
+        [
+            gm.LineString([(0, 0), (1, 1)]),
+            None,
+            gm.LineString([(2, 2), (3, 3)]),
+        ],
+        [gm.box(0, 0, 1, 1), None, gm.box(2, 2, 3, 3)],
+    ],
+)
+def test_geoparquet_nullable_packed_roundtrip_preserves_frame_and_rows(
+    encoding: str, rows: list[object], parquet_path: str
+) -> None:
+    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values.to_geoparquet(parquet_path, encoding=encoding)
+    restored = _read_geometry(parquet_path)
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.is_missing.tolist() == [False, True, False]
+    assert restored.crs == values.crs
+    assert restored.epoch == values.epoch
 
 
 def test_geoparquet_readable_by_geopandas(parquet_path: str) -> None:
@@ -780,9 +837,9 @@ def _write_field_wkb_geoparquet(
     path: str,
     *,
     physical: str = 'binary',
-    field_crs: int | None = None,
+    field_crs: int | str | None = None,
     field_epoch: float | None = None,
-    declared_crs: int,
+    declared_crs: int | str,
     declared_epoch: float | None = None,
     field_extension: str | None = 'full',
 ) -> None:
@@ -958,6 +1015,26 @@ def test_wkb_field_and_declared_frame_agreement_preserves_frame(
         'status': 'accepted',
         'crs': 'EPSG:3857',
         'epoch': 2020.0,
+        'wkt': ['POINT (1 2)', 'POINT (3 4)', 'POINT (1 2)'],
+    }
+
+
+def test_wkb_field_and_declared_axis_alias_frame_agreement_preserves_frame(
+    parquet_path: str,
+) -> None:
+    """Equivalent lon/lat labels from Arrow and GeoParquet are one frame."""
+    _write_field_wkb_geoparquet(
+        parquet_path,
+        field_crs='OGC:CRS84',
+        declared_crs=4326,
+    )
+    outcome = _from_geoparquet_subprocess(
+        parquet_path, register_extensions=False, read_dictionary=False
+    )
+    assert outcome == {
+        'status': 'accepted',
+        'crs': 'EPSG:4326',
+        'epoch': None,
         'wkt': ['POINT (1 2)', 'POINT (3 4)', 'POINT (1 2)'],
     }
 

@@ -11,7 +11,14 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
-from gometry._lib import Geometry, GeometryArray, GeometryError, ParseError, from_arrow
+from gometry._lib import (
+    CRS,
+    Geometry,
+    GeometryArray,
+    GeometryError,
+    ParseError,
+    from_arrow,
+)
 from gometry._optional import missing_optional_dependency
 from gometry._types import PyArrowTable, mapping_as_dict
 
@@ -150,6 +157,27 @@ def _physical_storage_axes(encoding: str, source: Any) -> tuple[bool, bool]:
 def _geometry_types(arr: GeometryArray) -> list[str]:
     """Sorted unique GeoParquet geometry_types via one native batch call."""
     return arr._geoparquet_geometry_types()
+
+
+def _embedded_frame_conflicts(
+    embedded_crs: str | None,
+    embedded_epoch: float | None,
+    declared_crs: str | None,
+    declared_epoch: float | None,
+) -> bool:
+    """Whether declared frame metadata contradicts an embedded frame.
+
+    Missing embedded fields are no opinion. CRS labels that name the same
+    coordinate frame, including axis-order aliases, are not conflicts.
+    """
+    if embedded_crs is not None and (
+        declared_crs is None
+        or not CRS(embedded_crs).same_as(declared_crs, mode='ignore_axis_order')
+    ):
+        return True
+    return embedded_epoch is not None and (
+        declared_epoch is None or embedded_epoch != declared_epoch
+    )
 
 
 def _remove_id_from_member_of_ensembles(json_dict: dict[str, Any]) -> None:
@@ -626,13 +654,12 @@ def _native_geoarrow_column(
     has_extension, embedded_crs, embedded_epoch = _admit_geometry_storage(
         column.type, encoding, column_name, field
     )
-    # Conflict only when extension *declares* a value that disagrees.
     # Absent CRS/epoch is "no opinion" (GeoParquet declared frame wins).
     # GeoArrow explicit ``"crs": null`` is rejected during native metadata
     # admission; ``None`` here means the extension made no CRS declaration.
-    crs_conflict = embedded_crs is not None and embedded_crs != crs
-    epoch_conflict = embedded_epoch is not None and embedded_epoch != epoch
-    if has_extension and (crs_conflict or epoch_conflict):
+    if has_extension and _embedded_frame_conflicts(
+        embedded_crs, embedded_epoch, crs, epoch
+    ):
         raise _metadata_error(
             'geoparquet metadata conflicts with Arrow extension metadata'
         )
@@ -678,14 +705,13 @@ def _decode_geometry_column(
         has_extension, embedded_crs, embedded_epoch = _admit_geometry_storage(
             column.type, encoding, column_name, field
         )
-        # Conflict only when extension *declares* a value that disagrees.
         # Absent CRS/epoch is "no opinion" (GeoParquet declared frame wins).
         # Limitation: GeoArrow explicit ``"crs": null`` also arrives as None from
         # admission and is treated as no opinion — tri-state would require a
         # broader admission API change for rare producer output.
-        crs_conflict = embedded_crs is not None and embedded_crs != crs
-        epoch_conflict = embedded_epoch is not None and embedded_epoch != epoch
-        if has_extension and (crs_conflict or epoch_conflict):
+        if has_extension and _embedded_frame_conflicts(
+            embedded_crs, embedded_epoch, crs, epoch
+        ):
             raise _metadata_error(
                 'geoparquet metadata conflicts with Arrow extension metadata'
             )

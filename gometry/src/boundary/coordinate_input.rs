@@ -325,7 +325,21 @@ pub(crate) enum I64Param {
 
 impl I64Param {
     pub(crate) fn parse(value: &Bound<'_, PyAny>, name: &str, len: usize) -> PyResult<Self> {
-        if value.cast_exact::<pyo3::types::PyBool>().is_err()
+        if let Ok(array) = value.cast::<PyUntypedArray>() {
+            match array.ndim() {
+                0 => {
+                    let scalar = crate::py_i64_required(name, value)?;
+                    return Ok(Self::Scalar(scalar));
+                },
+                1 => {},
+                ndim => {
+                    return Err(PyTypeError::new_err(format!(
+                        "{name} must be an integer or a one-dimensional length-{len} sequence \
+                         (one per geometry); got a {ndim}-dimensional array"
+                    )));
+                },
+            }
+        } else if value.cast_exact::<pyo3::types::PyBool>().is_err()
             && value
                 .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
                 .is_some()
@@ -371,6 +385,7 @@ pub(crate) fn integer_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<i64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     match collect_py_iter_exact(
         value,
         expected,
@@ -392,6 +407,7 @@ pub(crate) fn coordinate_arc_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Arc<[f64]>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         return coordinate_arc_values_from_buffer(py, &buffer);
     }
@@ -558,6 +574,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
+    crate::py::numpy::reject_masked_array(value)?;
     let Ok(buffer) = PyBuffer::<f64>::get(value) else {
         return Ok(None);
     };
@@ -706,6 +723,7 @@ pub(crate) fn coordinate_arc_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Arc<[f64]>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got != expected {
@@ -765,6 +783,7 @@ pub(crate) fn coordinate_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Vec<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
@@ -788,6 +807,7 @@ pub(crate) fn parameter_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Vec<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         return buffer_to_vec_f64(py, &buffer);
     }
@@ -809,6 +829,7 @@ pub(crate) fn coordinate_values_at_most(
     maximum: usize,
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got > maximum {
@@ -837,6 +858,7 @@ pub(crate) fn parameter_values_at_most(
     maximum: usize,
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got > maximum {
@@ -896,6 +918,7 @@ fn coordinate_values_exact_with(
     on_len: impl FnOnce(usize) -> PyErr,
     convert: impl Fn(&Bound<'_, PyAny>) -> PyResult<f64>,
 ) -> PyResult<Vec<f64>> {
+    crate::py::numpy::reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got != expected {
@@ -921,6 +944,7 @@ pub(crate) fn coordinate_sequence_len_hint(
     value: &Bound<'_, PyAny>,
     _name: &str,
 ) -> PyResult<Option<usize>> {
+    crate::py::numpy::reject_masked_array(value)?;
     // Do not invoke a user `__float__` provider merely to discover the pair
     // length. Numeric admission below owns that conversion and must call it
     // once. Check f64 buffers first because their item count includes every

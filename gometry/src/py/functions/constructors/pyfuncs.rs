@@ -25,9 +25,9 @@ use crate::py::functions::constructors::{
 /// crs : str or int, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
-///     With a geographic degree CRS, horizontal sides are latitude parallels,
-///     not corner-to-corner geodesics. Material departures are tessellated
-///     with equal longitude chords.
+///     With a geographic CRS, horizontal sides are constant-latitude parallels
+///     in the CRS-native angular coordinates, not corner-to-corner geodesics.
+///     Material departures are tessellated with equal longitude chords.
 ///
 /// wrap : {'split'}, optional
 ///     Antimeridian handling for geographic (EPSG:4326) boxes. ``'split'``
@@ -214,6 +214,14 @@ fn try_points_from_arc_columns(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
     use pyo3::buffer::PyBuffer;
+    crate::py::numpy::reject_masked_array(x)?;
+    crate::py::numpy::reject_masked_array(y)?;
+    if let Some(value) = z {
+        crate::py::numpy::reject_masked_array(value)?;
+    }
+    if let Some(value) = m {
+        crate::py::numpy::reject_masked_array(value)?;
+    }
     // Real buffers only — never promote Sequence.__len__ to authority.
     let Ok(x_buffer) = PyBuffer::<f64>::get(x) else {
         return Ok(None);
@@ -264,7 +272,7 @@ fn try_points_from_arc_columns(
 ///     broadcast numpy-style.
 ///
 /// crs : str or int, optional
-///     CRS applied to every box. With a geographic degree CRS, horizontal
+///     CRS applied to every box. With a geographic CRS, horizontal
 ///     sides follow latitude parallels; material departures are tessellated
 ///     with equal longitude chords.
 ///

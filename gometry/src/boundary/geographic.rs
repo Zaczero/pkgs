@@ -61,7 +61,7 @@ pub(crate) fn normalize_accepted_geographic_latitudes(shape: &Shape) -> Shape {
     shape
         .map_points(&|point| {
             Ok::<_, crate::error::Error>(
-                point.with_xy_unchecked(point.x, normalize_accepted_latitude(point.y)),
+                point.with_xy_raw(point.x, normalize_accepted_latitude(point.y)),
             )
         })
         .expect("geographic latitude normalization is an infallible finite-coordinate map")

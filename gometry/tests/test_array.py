@@ -2,6 +2,8 @@
 3D accessors, and method/function form parity.
 """
 
+import sys
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -166,7 +168,7 @@ def test_packed_axes_survive_selection_and_missing_rows_for_every_storage_kind()
         ]
         all_missing = gm.GeometryArray([None, source[0]])[[0]]
         assert all_missing.coordinate_axes == [None]
-        assert all_missing.common_coordinate_axes == 'XY'
+        assert all_missing.common_coordinate_axes == source.common_coordinate_axes
         assert not all_missing.any_has_z
 
 
@@ -317,6 +319,7 @@ def test_geometry_array_fancy_getitem_routes_to_take_and_filter() -> None:
         (geom).to_wkt() for geom in array[np.array([0, 1, 2], dtype=np.uint64)[::2]]
     ] == ['POINT (0 0)', 'POINT (2 2)']
     assert (array[np.array(2, dtype=np.int64)]).to_wkt() == 'POINT (2 2)'
+    assert array[np.int64(2)].to_wkt() == 'POINT (2 2)'
     strided_mask = np.array([True, False, False, True, True, False])[::2]
     assert [(geom).to_wkt() for geom in array[strided_mask]] == [
         'POINT (0 0)',
@@ -341,6 +344,87 @@ def test_geometry_array_fancy_getitem_routes_to_take_and_filter() -> None:
         array[np.array([[0, 1]])]
     with pytest.raises(ValueError, match='mask length'):
         array[[True]]
+
+
+def _indexing_receivers() -> list[tuple[object, object]]:
+    cell = gm.H3Cell('8928308280fffff')
+    cells = gm.CellArray([cell, cell.parent(resolution=8), cell], type=gm.H3Cell)
+    edges = gm.H3EdgeArray(list(cell.edges)[:3])
+    vertices = gm.H3VertexArray(list(cell.vertices)[:3])
+    return [
+        (
+            gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1), gm.Point(2, 2)]),
+            lambda value: value.to_wkt(),
+        ),
+        (cells, lambda value: value.id),
+        (edges, lambda value: value.id),
+        (vertices, lambda value: value.id),
+    ]
+
+
+@pytest.mark.parametrize('signed', [True, False], ids=['signed', 'unsigned'])
+def test_opposite_endian_numpy_integer_indices_cover_all_receivers(signed: bool) -> None:
+    byteorder = '>' if sys.byteorder == 'little' else '<'
+    dtype = f'{byteorder}{"i8" if signed else "u8"}'
+    receivers = _indexing_receivers()
+
+    # The strided view is deliberately non-contiguous; its visible values are [2, 0].
+    selector = np.array([2, 99, 0], dtype=dtype)[::2]
+    for array, identity in receivers:
+        assert [identity(value) for value in array[selector]] == [
+            identity(array[2]),
+            identity(array[0]),
+        ]
+
+
+def test_opposite_endian_numpy_scalar_and_negative_indices_cover_all_receivers() -> None:
+    byteorder = '>' if sys.byteorder == 'little' else '<'
+    receivers = _indexing_receivers()
+    for array, identity in receivers:
+        scalar = np.array(2, dtype=f'{byteorder}i8')
+        assert identity(array[scalar]) == identity(array[2])
+        selected = array[np.array([-1, 0], dtype=f'{byteorder}i8')]
+        assert [identity(value) for value in selected] == [
+            identity(array[-1]),
+            identity(array[0]),
+        ]
+
+
+def test_numpy_integer_index_overflow_is_an_index_error_for_all_receivers() -> None:
+    byteorder = '>' if sys.byteorder == 'little' else '<'
+    selector = np.array([np.iinfo(np.uint64).max], dtype=f'{byteorder}u8')
+    for array, _identity in _indexing_receivers():
+        with pytest.raises(IndexError, match='index is too large'):
+            array[selector]
+
+
+def test_strided_numpy_boolean_masks_cover_all_receivers() -> None:
+    selector = np.array([True, False, True, False, False])[::2]
+    for array, identity in _indexing_receivers():
+        assert [identity(value) for value in array[selector]] == [
+            identity(array[0]),
+            identity(array[1]),
+        ]
+
+
+def test_numpy_integer_index_rejects_rank_two() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    with pytest.raises(TypeError, match='zero- or one-dimensional'):
+        array[np.array([[0, 1]], dtype='>i8' if sys.byteorder == 'little' else '<i8')]
+
+
+def test_numpy_index_ignores_an_ndarray_subclass_tobytes_override() -> None:
+    class ForgedBytes(np.ndarray):
+        def tobytes(self, *args: object, **kwargs: object) -> bytes:
+            del args, kwargs
+            return np.array([1, 1], dtype=np.int64).tobytes()
+
+    selector = np.array([2, 0], dtype=np.int64).view(ForgedBytes)
+    for array, identity in _indexing_receivers():
+        assert [identity(value) for value in array[selector]] == [
+            identity(array[2]),
+            identity(array[0]),
+        ]
 
 
 def test_geometry_array_3d_accessors_match_scalar() -> None:
@@ -485,3 +569,19 @@ def test_total_bounds_is_memoized_and_refreshes_on_frame_retag() -> None:
     # (east of west numerically for a wrapping ring).
     assert plain_bounds is not None
     assert plain_bounds[0] < plain_bounds[2]
+
+
+def test_total_bounds_reuses_warm_planar_element_bounds() -> None:
+    """A planar aggregate agrees after the per-row bounds product is warmed."""
+    arr = gm.GeometryArray([
+        gm.box(0, 0, 1, 1),
+        gm.LineString([(4, -2), (6, 3)]),
+        gm.GeometryCollection(),
+    ])
+
+    np.testing.assert_allclose(
+        arr.bounds,
+        [[0.0, 0.0, 1.0, 1.0], [4.0, -2.0, 6.0, 3.0], [np.nan] * 4],
+        equal_nan=True,
+    )
+    assert arr.total_bounds == (0.0, -2.0, 6.0, 3.0)

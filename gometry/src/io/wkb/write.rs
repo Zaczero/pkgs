@@ -422,12 +422,12 @@ impl WkbBody<'_> {
             // (the parent's), NOT the member's own axes — a mixed XY/XYZ
             // multipart must not size a child at XY while the outer type is Z.
             Self::MultiLineString(lines) => {
-                let total = lines.members().iter().try_fold(0_usize, |total, member| {
+                let total = lines.members().try_fold(0_usize, |total, member| {
                     let child = match member {
                         MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
                         MultiMember::Value(index) => {
                             WKB_HEADER_BASE.checked_add(WKB_COUNT).and_then(|prefix| {
-                                wkb_coords_len(lines.as_slice()[*index].len(), axes)
+                                wkb_coords_len(lines.as_slice()[index].len(), axes)
                                     .ok()
                                     .and_then(|body| prefix.checked_add(body))
                             })
@@ -444,21 +444,17 @@ impl WkbBody<'_> {
             },
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => {
-                let total = polygons
-                    .members()
-                    .iter()
-                    .try_fold(0_usize, |total, member| {
-                        let child = match member {
-                            MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
-                            MultiMember::Value(index) => WKB_HEADER_BASE.checked_add(
-                                wkb_polygon_body_len(&polygons.as_slice()[*index], axes)?,
-                            ),
-                        }
-                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-                        total
-                            .checked_add(child)
-                            .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
-                    })?;
+                let total = polygons.members().try_fold(0_usize, |total, member| {
+                    let child = match member {
+                        MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
+                        MultiMember::Value(index) => WKB_HEADER_BASE
+                            .checked_add(wkb_polygon_body_len(&polygons.as_slice()[index], axes)?),
+                    }
+                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
+                    total
+                        .checked_add(child)
+                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+                })?;
                 WKB_COUNT
                     .checked_add(total)
                     .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
@@ -500,7 +496,7 @@ impl WkbBody<'_> {
                             }
                         },
                         MultiMember::Value(index) => {
-                            write_point(out, points.point_at(*index), axes);
+                            write_point(out, points.point_at(index), axes);
                         },
                     }
                 }
@@ -514,7 +510,7 @@ impl WkbBody<'_> {
                     match member {
                         MultiMember::Empty => write_u32(out, 0),
                         MultiMember::Value(index) => {
-                            write_wkb_sequence(out, &lines.as_slice()[*index], axes)?;
+                            write_wkb_sequence(out, &lines.as_slice()[index], axes)?;
                         },
                     }
                 }
@@ -528,7 +524,7 @@ impl WkbBody<'_> {
                     match member {
                         MultiMember::Empty => write_u32(out, 0),
                         MultiMember::Value(index) => {
-                            write_wkb_polygon(out, &polygons.as_slice()[*index], axes)?;
+                            write_wkb_polygon(out, &polygons.as_slice()[index], axes)?;
                         },
                     }
                 }
@@ -673,15 +669,15 @@ mod tests {
     use crate::{CoordSeq, Ring};
 
     fn xy(x: f64, y: f64) -> Point {
-        Point::new_unchecked_xy(x, y)
+        Point::new_raw_xy(x, y)
     }
 
     fn xyz(x: f64, y: f64, z: f64) -> Point {
-        Point::new_unchecked_axes(x, y, ZOrdinate(Some(z)), MOrdinate(None))
+        Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(None))
     }
 
     fn xym(x: f64, y: f64, m: f64) -> Point {
-        Point::new_unchecked_axes(x, y, ZOrdinate(None), MOrdinate(Some(m)))
+        Point::new_raw_axes(x, y, ZOrdinate(None), MOrdinate(Some(m)))
     }
 
     fn line(points: &[Point]) -> LineSeq {
@@ -689,10 +685,7 @@ mod tests {
     }
 
     fn polygon(points: &[Point]) -> Polygon {
-        Polygon::new(
-            Ring::from_trusted_closed(CoordSeq::from_points(points)),
-            vec![],
-        )
+        Polygon::new(Ring::from_closed(CoordSeq::from_points(points)), vec![])
     }
 
     #[test]

@@ -455,7 +455,10 @@ pub(crate) fn reconcile_extension_sources(
             }
             let type_frame = parse_geoarrow_extension_metadata(&type_src.1)?;
             let field_frame = parse_geoarrow_extension_metadata(&field_src.1)?;
-            if type_frame.0 != field_frame.0 || !extension_epochs_match(type_frame.1, field_frame.1)
+            if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
+                type_frame.0.as_deref(),
+                field_frame.0.as_deref(),
+            )? || !crate::boundary::metadata::optional_epochs_equal(type_frame.1, field_frame.1)
             {
                 return Err(geoarrow_parse_error(
                     "conflicting GeoArrow extension metadata between ExtensionType and field",
@@ -463,14 +466,6 @@ pub(crate) fn reconcile_extension_sources(
             }
             Ok(Some(type_src))
         },
-    }
-}
-
-fn extension_epochs_match(left: Option<f64>, right: Option<f64>) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => crate::boundary::metadata::epochs_equal(left, right),
-        _ => false,
     }
 }
 
@@ -809,9 +804,7 @@ fn admit_geoparquet_geometry_storage(
             "unsupported GeoParquet geometry encoding: {encoding:?}"
         )));
     };
-    let pa = py.import("pyarrow").map_err(|_| {
-        geoparquet_meta_error("pyarrow is required for GeoParquet geometry storage")
-    })?;
+    let pa = crate::py::arrow::pyarrow_module(py)?;
     // Extension name/metadata decode errors (e.g. non-UTF-8) and source
     // conflicts surface as GeoParquet metadata — one boundary class for the
     // reader (Python previously used `_metadata_error` / format=geoparquet).

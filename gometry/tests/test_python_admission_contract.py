@@ -191,7 +191,7 @@ def test_mapping_subclass_uses_mapping_protocol_and_preserves_provider_error() -
         gm.from_geojson(bad_value)
 
 
-def test_arrow_table_probe_preserves_column_provider_error() -> None:
+def test_arrow_generic_table_shape_is_not_treated_as_pyarrow() -> None:
     class RaisingColumn:
         @property
         def type(self):
@@ -204,17 +204,17 @@ def test_arrow_table_probe_preserves_column_provider_error() -> None:
             assert index == 0
             return RaisingColumn()
 
-    with pytest.raises(RuntimeError, match='column type provider boom'):
+    with pytest.raises(TypeError, match='expected a GeoArrow-encoded Arrow'):
         gm.from_arrow(Table())
 
 
-def test_arrow_format_probe_preserves_top_level_provider_error() -> None:
+def test_arrow_generic_type_shape_is_not_treated_as_pyarrow() -> None:
     class RaisingType:
         @property
         def type(self):
             raise RuntimeError('top-level type provider boom')
 
-    with pytest.raises(RuntimeError, match='top-level type provider boom'):
+    with pytest.raises(TypeError, match='expected a GeoArrow-encoded Arrow'):
         gm.from_arrow(RaisingType())
 
 

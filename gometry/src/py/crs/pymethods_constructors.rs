@@ -1,6 +1,5 @@
-use crate::py::crs::{
-    Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, crs_html_escape, parse_crs,
-};
+use crate::html_text_escape;
+use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, parse_crs};
 frozen_pymethods! {
 impl PyCrs {
     /// Build a CRS from any accepted input.
@@ -101,9 +100,9 @@ impl PyCrs {
         let mut html = String::from("<table class=\"gometry-crs-html\">");
         for (label, value) in rows {
             html.push_str("<tr><th>");
-            html.push_str(&crs_html_escape(label));
+            html.push_str(&html_text_escape(label));
             html.push_str("</th><td>");
-            html.push_str(&crs_html_escape(&value));
+            html.push_str(&html_text_escape(&value));
             html.push_str("</td></tr>");
         }
         html.push_str("</table>");

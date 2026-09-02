@@ -8,18 +8,6 @@ use crate::py::support::{
 };
 use crate::py::wire_crs::has_ewkt_srid_prefix;
 
-const WKT_TYPE_KEYWORD_MAX: usize = 20;
-
-fn strip_wkt_type_axes_suffix(token: &[u8]) -> &[u8] {
-    if token.ends_with(b"ZM") {
-        &token[..token.len() - 2]
-    } else if token.ends_with(b"Z") || token.ends_with(b"M") {
-        &token[..token.len() - 1]
-    } else {
-        token
-    }
-}
-
 /// Select WKT before trying GeoJSON so malformed WKT-looking strings retain
 /// the WKT error format instead of being reported as JSON failures.
 pub(crate) fn is_wkt_string(text: &str) -> bool {
@@ -30,22 +18,10 @@ pub(crate) fn is_wkt_string(text: &str) -> bool {
     let keyword_len = trimmed
         .find(|ch: char| !ch.is_ascii_alphabetic())
         .unwrap_or(trimmed.len());
-    if keyword_len == 0 || keyword_len > WKT_TYPE_KEYWORD_MAX {
-        return false;
-    }
-    let mut upper = [0_u8; WKT_TYPE_KEYWORD_MAX];
-    upper[..keyword_len].copy_from_slice(&trimmed.as_bytes()[..keyword_len]);
-    upper[..keyword_len].make_ascii_uppercase();
-    matches!(
-        strip_wkt_type_axes_suffix(&upper[..keyword_len]),
-        b"POINT"
-            | b"LINESTRING"
-            | b"POLYGON"
-            | b"MULTIPOINT"
-            | b"MULTILINESTRING"
-            | b"MULTIPOLYGON"
-            | b"GEOMETRYCOLLECTION"
-    )
+    trimmed
+        .get(..keyword_len)
+        .and_then(crate::io::classify_wkt_type_token)
+        .is_some()
 }
 
 /// Borrow `value` as a dict when it is one, or convert any other mapping

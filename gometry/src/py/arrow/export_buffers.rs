@@ -2,6 +2,8 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::sync::Arc;
+
 use crate::py::arrow::{
     ArrowCoordinateValues, Bound, CoordSeq, CoordinateAxes, Coordinates, IntoPyObject as _, Point,
     Py, PyAny, PyBytes, PyResult, Python, arrow_content_error, geoarrow_parse_error,
@@ -216,6 +218,148 @@ impl ExactArrowCoordinateFill {
             }
         }
         self.pos = end;
+        Ok(())
+    }
+
+    /// Append only valid point rows from an aligned Arrow struct. Arrow point
+    /// children must be logical-row aligned, while gometry's compact point
+    /// payload is present-only, so this is the one intentional compaction copy
+    /// on nullable point import.
+    pub(crate) fn append_arrow_present_coordinates(
+        &mut self,
+        coordinates: &ArrowCoordinateValues,
+        validity: &crate::py::arrow::ArrowValidity,
+    ) -> PyResult<()> {
+        let xs = coordinates.x.values.as_ref();
+        let ys = coordinates.y.values.as_ref();
+        let zs = coordinates.z.as_ref().map(|values| values.values.as_ref());
+        let ms = coordinates.m.as_ref().map(|values| values.values.as_ref());
+        let src_axes = CoordinateAxes::new(
+            crate::geometry::HasZ(zs.is_some()),
+            crate::geometry::HasM(ms.is_some()),
+        );
+        if src_axes != self.axes {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate chunk axes do not match the multi-chunk fill axes",
+            ));
+        }
+        let n = xs.len();
+        if ys.len() != n
+            || zs.is_some_and(|column| column.len() != n)
+            || ms.is_some_and(|column| column.len() != n)
+        {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate columns have mismatched lengths",
+            ));
+        }
+        let present = (0..n).filter(|&index| validity.is_valid(index));
+        let count = present.clone().count();
+        let end = self
+            .pos
+            .checked_add(count)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))?;
+        if end > self.capacity {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate count exceeds precomputed total",
+            ));
+        }
+        let mut destination = self.pos;
+        // SAFETY: the destination range is within each uniquely-owned Arc and
+        // the importer validated every selected coordinate before this call.
+        unsafe {
+            let write =
+                |dst: &mut Arc<[std::mem::MaybeUninit<f64>]>, position: usize, value: f64| {
+                    Arc::get_mut(dst)
+                        .unwrap_unchecked()
+                        .get_unchecked_mut(position)
+                        .write(value);
+                };
+            for index in present {
+                write(&mut self.xs, destination, coordinates.x.value(index));
+                write(&mut self.ys, destination, coordinates.y.value(index));
+                if let Some(dst) = self.zs.as_mut() {
+                    write(
+                        dst,
+                        destination,
+                        coordinates.z.as_ref().unwrap_unchecked().value(index),
+                    );
+                }
+                if let Some(dst) = self.ms.as_mut() {
+                    write(
+                        dst,
+                        destination,
+                        coordinates.m.as_ref().unwrap_unchecked().value(index),
+                    );
+                }
+                destination += 1;
+            }
+        }
+        self.pos = end;
+        Ok(())
+    }
+
+    /// Append one already-admitted coordinate range. This compacts list
+    /// children when a foreign producer retained payload behind a null row.
+    pub(crate) fn append_arrow_coordinate_range(
+        &mut self,
+        coordinates: &ArrowCoordinateValues,
+        start: usize,
+        end: usize,
+    ) -> PyResult<()> {
+        let zs = coordinates.z.as_ref().map(|values| values.values.as_ref());
+        let ms = coordinates.m.as_ref().map(|values| values.values.as_ref());
+        let src_axes = CoordinateAxes::new(
+            crate::geometry::HasZ(zs.is_some()),
+            crate::geometry::HasM(ms.is_some()),
+        );
+        if src_axes != self.axes {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate chunk axes do not match the coordinate fill axes",
+            ));
+        }
+        let count = end
+            .checked_sub(start)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate range is inverted"))?;
+        coordinates.ensure_ranges(start, count)?;
+        let destination_end = self
+            .pos
+            .checked_add(count)
+            .ok_or_else(|| geoarrow_parse_error("Arrow coordinate count overflows"))?;
+        if destination_end > self.capacity {
+            return Err(geoarrow_parse_error(
+                "Arrow coordinate count exceeds precomputed total",
+            ));
+        }
+        // SAFETY: the destination range is within each uniquely-owned Arc and
+        // the caller validated validity and finiteness for this range.
+        unsafe {
+            let write =
+                |dst: &mut Arc<[std::mem::MaybeUninit<f64>]>, position: usize, value: f64| {
+                    Arc::get_mut(dst)
+                        .unwrap_unchecked()
+                        .get_unchecked_mut(position)
+                        .write(value);
+                };
+            for (position, index) in (self.pos..destination_end).zip(start..end) {
+                write(&mut self.xs, position, coordinates.x.value(index));
+                write(&mut self.ys, position, coordinates.y.value(index));
+                if let Some(dst) = self.zs.as_mut() {
+                    write(
+                        dst,
+                        position,
+                        coordinates.z.as_ref().unwrap_unchecked().value(index),
+                    );
+                }
+                if let Some(dst) = self.ms.as_mut() {
+                    write(
+                        dst,
+                        position,
+                        coordinates.m.as_ref().unwrap_unchecked().value(index),
+                    );
+                }
+            }
+        }
+        self.pos = destination_end;
         Ok(())
     }
 
