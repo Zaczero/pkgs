@@ -9,15 +9,6 @@ use crate::geometry::{
     shared_segment_part,
 };
 
-/// Planar-correct normalization for frame-aware topology: drop Z/M (topology
-/// is 2D) and split geographic seam crossings. Valid XY topology splits
-/// infallibly; malformed ring arrangements fall back to their planar 2D shape
-/// for bool-only predicate kernels, while frame-aware validation reports the
-/// split failure explicitly through [`try_topology_split`].
-pub(crate) fn topology_split(shape: &Shape) -> Shape {
-    try_topology_split(shape).unwrap_or_else(|_| shape.force_2d())
-}
-
 fn try_topology_split(shape: &Shape) -> Result<Shape> {
     shape.force_2d().split_antimeridian()
 }
@@ -373,7 +364,7 @@ pub(crate) fn geographic_crossing_bounds_for_shapes(
     // A pole-enclosing ring covers the whole polar cap, so its envelope reaches
     // the pole and spans every longitude — the eastern_min/western_max sliver
     // (which only describes the seam window) would otherwise drop the cap. Mirrors
-    // the spatial index's `crossing_index_bounds` so public bounds() and the index
+    // the spatial index's geographic envelopes so public bounds() and the index
     // agree.
     if has_polar_ring {
         (minx, maxx) = (-180.0, 180.0);
@@ -384,5 +375,5 @@ pub(crate) fn geographic_crossing_bounds_for_shapes(
     if encloses_south {
         miny = -90.0;
     }
-    Some(Bounds::new_unchecked(minx, miny, maxx, maxy))
+    Some(Bounds::new_raw(minx, miny, maxx, maxy))
 }

@@ -6,7 +6,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::dispatch::Operation;
-use crate::geometry::is_geographic_frame;
 use crate::py::numpy::bool_array;
 
 macro_rules! unary_predicate {
@@ -81,12 +80,14 @@ fn try_is_simple_packed(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
 ) -> Option<PyResult<Py<PyAny>>> {
-    if is_geographic_frame(&array.frame)
-        && array
-            .storage()
-            .iter_shapes()
-            .any(|shape| shape.crosses_antimeridian())
-    {
+    let geographic_frame = crate::geometry::geographic_frame(&array.frame)
+        .ok()
+        .flatten();
+    if geographic_frame.is_some_and(|frame| {
+        array
+            .present_shape_rows()
+            .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
+    }) {
         return None;
     }
     array

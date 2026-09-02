@@ -5,17 +5,18 @@
 
 use std::sync::Arc;
 
-use crate::crs::transform::TransformedBounds3d;
-use crate::crs::{
-    InCoreTransform, ProjDirection, RuntimeState, Shape, TransformExecution, TransformOptions,
-    begin_transform_observation, coordinate_identity_crs, ensure_geographic_domain,
-    ensure_geographic_lonlat, in_core_xy_op, is_geographic_crs_with_state, record_transform_engine,
-    runtime_state_snapshot, transform_in_core_bounds, transform_in_core_bounds_3d,
-    transform_in_core_xy_batch, transform_proj_shapes, try_in_core_transform_with_state,
-    validate_coordinate_lanes, with_proj_pipeline_at,
+use crate::crs::transform::{
+    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, transform_in_core_xy_with_frames,
 };
-use crate::error::Result;
-use crate::geometry::{Bounds, Bounds3D};
+use crate::crs::{
+    InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
+    TransformOptions, begin_transform_observation, coordinate_identity_crs,
+    ensure_geographic_domain_in_frame, is_geographic_crs_with_state, record_transform_engine,
+    runtime_state_snapshot, transform_in_core_xy_batch, transform_proj_shapes,
+    try_in_core_transform_with_state, validate_coordinate_lanes, with_proj_pipeline_at,
+};
+use crate::error::{ErrorKind, Result};
+use crate::geometry::GeometryErrorKind;
 
 impl TransformPlan {
     pub(crate) fn new(source: &str, target: &str) -> Self {
@@ -36,6 +37,8 @@ impl TransformPlan {
     ) -> Result<Self> {
         options.validate()?;
         let plan_options = options.clone();
+        let source_frame = crate::crs::info_with_state(source, &state)?.geographic_frame();
+        let target_frame = crate::crs::info_with_state(target, &state)?.geographic_frame();
         // A motion between unequal coordinate epochs is a real PROJ
         // operation, even when the CRS labels are otherwise identical.  Do
         // not let the same-CRS identity shortcut erase that time-dependent
@@ -64,9 +67,9 @@ impl TransformPlan {
             operation,
             state,
             execution: TransformExecution::default(),
-            source: source.to_owned(),
-            target: target.to_owned(),
             options: plan_options,
+            source_frame,
+            target_frame,
         })
     }
 
@@ -113,24 +116,27 @@ impl TransformPlan {
         let result = match &self.operation {
             TransformOperation::Identity { source_geographic } => {
                 if *source_geographic {
+                    let frame = self
+                        .source_frame
+                        .expect("geographic identity carries a typed source frame");
                     for shape in shapes {
-                        ensure_geographic_domain(shape)?;
+                        ensure_geographic_domain_in_frame(frame, shape)?;
                     }
                 }
                 Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
             },
             TransformOperation::InCore(operation) => {
-                let op = in_core_xy_op(operation);
-                shapes
-                    .iter()
-                    .map(|shape| {
-                        // Columnar in-core projection: no per-vertex Point gather
-                        // or axes re-derivation; Z/M columns carry through exactly
-                        // like the per-point `with_xy` form did. The operation
-                        // variant is resolved once per batch via `in_core_xy_op`.
-                        shape.map_xy_with(op)
-                    })
-                    .collect::<Result<_, _>>()
+                let mut output = TransformOutputPlan::try_new(shapes)?;
+                output.execute(|x, y, _| {
+                    transform_in_core_xy_with_frames(
+                        operation,
+                        self.source_frame,
+                        self.target_frame,
+                        x,
+                        y,
+                    )
+                })?;
+                Ok(output.finish(shapes))
             },
             TransformOperation::Proj {
                 source,
@@ -173,8 +179,11 @@ impl TransformPlan {
         let result = match &self.operation {
             TransformOperation::Identity { source_geographic } => {
                 if *source_geographic {
+                    let frame = self
+                        .source_frame
+                        .expect("geographic identity carries a typed source frame");
                     for (&lon, &lat) in x.iter().zip(y.iter()) {
-                        ensure_geographic_lonlat(lon, lat)?;
+                        crate::crs::ensure_geographic_lonlat_in_frame(frame, lon, lat)?;
                     }
                 }
                 Ok(())
@@ -184,7 +193,13 @@ impl TransformPlan {
                 // slices were already boundary-validated finite — transform
                 // XY in place, leave the other lanes untouched. The operation
                 // variant is resolved once per batch via `transform_in_core_xy_batch`.
-                transform_in_core_xy_batch(operation, x, y)
+                transform_in_core_xy_with_frames(
+                    operation,
+                    self.source_frame,
+                    self.target_frame,
+                    x,
+                    y,
+                )
             },
             TransformOperation::Proj {
                 source,
@@ -273,60 +288,18 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64)> {
         self.begin_execution();
-        let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    ensure_geographic_lonlat(bounds.0, bounds.1)?;
-                    ensure_geographic_lonlat(bounds.2, bounds.3)?;
-                }
-                Ok(bounds)
-            },
-            TransformOperation::InCore(operation) => {
-                if bounds.0 > bounds.2 {
-                    let (source, target) = crate::crs::normalize_pair(&self.source, &self.target)?;
-                    return with_proj_pipeline_at(
-                        &source,
-                        &target,
-                        &self.options,
-                        &self.state,
-                        &self.execution,
-                        |transformer| {
-                            transformer.transform_bounds(
-                                bounds,
-                                densify,
-                                self.options.source_epoch,
-                                &self.execution,
-                            )
-                        },
-                    );
-                }
-                let bounds = Bounds::new_unchecked(bounds.0, bounds.1, bounds.2, bounds.3);
-                transform_in_core_bounds(operation, bounds, densify).map(Bounds::into_tuple)
-            },
-            TransformOperation::Proj {
-                source,
-                target,
-                options,
-            } => with_proj_pipeline_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| {
-                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
-                        return Err(crate::crs::CrsError::message(
-                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
-                        ));
-                    }
-                    transformer.transform_bounds(
-                        bounds,
-                        densify,
-                        options.source_epoch,
-                        &self.execution,
-                    )
-                },
-            ),
+        let result = if self.is_identity() {
+            Ok(bounds)
+        } else {
+            let mut samples = BoundsSamplePlan::new_2d(
+                bounds,
+                densify,
+                self.source_frame,
+                self.target_frame,
+                self.options.source_epoch,
+            )?;
+            self.execute_bounds_samples(&mut samples)?;
+            samples.finish_2d()
         };
         self.finish_execution(result, true)
     }
@@ -337,63 +310,17 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<(f64, f64, f64, f64)>> {
         self.begin_execution();
-        let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    for bounds in rows {
-                        ensure_geographic_lonlat(bounds.0, bounds.1)?;
-                        ensure_geographic_lonlat(bounds.2, bounds.3)?;
-                    }
-                }
-                Ok(rows.to_vec())
-            },
-            TransformOperation::InCore(operation)
-                if rows.iter().any(|bounds| bounds.0 > bounds.2) =>
-            {
-                rows.iter()
-                    .map(|bounds| self.transform_bounds(*bounds, densify))
-                    .collect()
-            },
-            TransformOperation::InCore(operation) => rows
-                .iter()
-                .map(|bounds| {
-                    transform_in_core_bounds(
-                        operation,
-                        Bounds::new_unchecked(bounds.0, bounds.1, bounds.2, bounds.3),
-                        densify,
-                    )
-                    .map(Bounds::into_tuple)
-                })
-                .collect(),
-            TransformOperation::Proj {
-                source,
-                target,
-                options,
-            } => with_proj_pipeline_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| {
-                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
-                        return Err(crate::crs::CrsError::message(
-                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
-                        ));
-                    }
-                    rows.iter()
-                        .map(|bounds| {
-                            transformer.transform_bounds(
-                                *bounds,
-                                densify,
-                                options.source_epoch,
-                                &self.execution,
-                            )
-                        })
-                        .collect()
-                },
-            ),
-        };
+        let result = self.execute_bounds_many(rows, |bounds, executor| {
+            let mut samples = BoundsSamplePlan::new_2d(
+                bounds,
+                densify,
+                self.source_frame,
+                self.target_frame,
+                self.options.source_epoch,
+            )?;
+            self.execute_bounds_with_executor(&mut samples, executor)?;
+            samples.finish_2d()
+        });
         self.finish_execution(result, !rows.is_empty())
     }
 
@@ -403,60 +330,18 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         self.begin_execution();
-        let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    ensure_geographic_lonlat(bounds.0, bounds.1)?;
-                    ensure_geographic_lonlat(bounds.3, bounds.4)?;
-                }
-                Ok(bounds)
-            },
-            TransformOperation::InCore(operation) => {
-                if bounds.0 > bounds.3 {
-                    let (source, target) = crate::crs::normalize_pair(&self.source, &self.target)?;
-                    return with_proj_pipeline_at(
-                        &source,
-                        &target,
-                        &self.options,
-                        &self.state,
-                        &self.execution,
-                        |transformer| {
-                            transformer.transform_bounds_3d(
-                                bounds,
-                                densify,
-                                self.options.source_epoch,
-                                &self.execution,
-                            )
-                        },
-                    );
-                }
-                transform_in_core_bounds_3d(operation, Bounds3D::from(bounds), densify)
-                    .map(Bounds3D::into_tuple)
-            },
-            TransformOperation::Proj {
-                source,
-                target,
-                options,
-            } => with_proj_pipeline_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| {
-                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
-                        return Err(crate::crs::CrsError::message(
-                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
-                        ));
-                    }
-                    transformer.transform_bounds_3d(
-                        bounds,
-                        densify,
-                        options.source_epoch,
-                        &self.execution,
-                    )
-                },
-            ),
+        let result = if self.is_identity() {
+            Ok(bounds)
+        } else {
+            let mut samples = BoundsSamplePlan::new_3d(
+                bounds,
+                densify,
+                self.source_frame,
+                self.target_frame,
+                self.options.source_epoch,
+            )?;
+            self.execute_bounds_samples(&mut samples)?;
+            samples.finish_3d()
         };
         self.finish_execution(result, true)
     }
@@ -467,30 +352,72 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<TransformedBounds3d>> {
         self.begin_execution();
-        let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    for bounds in rows {
-                        ensure_geographic_lonlat(bounds.0, bounds.1)?;
-                        ensure_geographic_lonlat(bounds.3, bounds.4)?;
-                    }
+        let result = self.execute_bounds_many(rows, |bounds, executor| {
+            let mut samples = BoundsSamplePlan::new_3d(
+                bounds,
+                densify,
+                self.source_frame,
+                self.target_frame,
+                self.options.source_epoch,
+            )?;
+            self.execute_bounds_with_executor(&mut samples, executor)?;
+            samples.finish_3d()
+        });
+        self.finish_execution(result, !rows.is_empty())
+    }
+
+    fn execute_bounds_many<B: Copy, O: From<B>>(
+        &self,
+        rows: &[B],
+        mut transform: impl FnMut(B, BoundsExecutor<'_>) -> Result<O>,
+    ) -> Result<Vec<O>> {
+        let mut output = Vec::new();
+        crate::try_reserve_vec(&mut output, rows.len())?;
+        if rows.is_empty() {
+            return Ok(output);
+        }
+        match &self.operation {
+            TransformOperation::Identity { .. } => {
+                output.extend(rows.iter().copied().map(Into::into));
+                Ok(output)
+            },
+            TransformOperation::InCore(operation) => {
+                for &bounds in rows {
+                    output.push(transform(bounds, BoundsExecutor::InCore(operation))?);
                 }
-                Ok(rows.to_vec())
+                Ok(output)
             },
-            TransformOperation::InCore(operation)
-                if rows.iter().any(|bounds| bounds.0 > bounds.3) =>
-            {
-                rows.iter()
-                    .map(|bounds| self.transform_bounds_3d(*bounds, densify))
-                    .collect()
+            TransformOperation::Proj {
+                source,
+                target,
+                options,
+            } => with_proj_pipeline_at(
+                source,
+                target,
+                options,
+                &self.state,
+                &self.execution,
+                |pipeline| {
+                    if pipeline.requires_coordinate_epoch() && self.options.source_epoch.is_none() {
+                        return Err(crate::crs::CrsError::message(
+                            "transform requires a coordinate epoch; pass epoch= or source_epoch=",
+                        ));
+                    }
+                    for &bounds in rows {
+                        output.push(transform(bounds, BoundsExecutor::Proj(pipeline))?);
+                    }
+                    Ok(output)
+                },
+            ),
+        }
+    }
+
+    fn execute_bounds_samples(&self, samples: &mut BoundsSamplePlan) -> Result<()> {
+        match &self.operation {
+            TransformOperation::Identity { .. } => Ok(()),
+            TransformOperation::InCore(operation) => {
+                self.execute_bounds_with_executor(samples, BoundsExecutor::InCore(operation))
             },
-            TransformOperation::InCore(operation) => rows
-                .iter()
-                .map(|bounds| {
-                    transform_in_core_bounds_3d(operation, Bounds3D::from(*bounds), densify)
-                        .map(Bounds3D::into_tuple)
-                })
-                .collect(),
             TransformOperation::Proj {
                 source,
                 target,
@@ -502,25 +429,94 @@ impl TransformPlan {
                 &self.state,
                 &self.execution,
                 |transformer| {
-                    if transformer.requires_coordinate_epoch() && options.source_epoch.is_none() {
+                    if transformer.requires_coordinate_epoch() && samples.epoch.is_none() {
                         return Err(crate::crs::CrsError::message(
                             "transform requires a coordinate epoch; pass epoch= or source_epoch=",
                         ));
                     }
-                    rows.iter()
-                        .map(|bounds| {
-                            transformer.transform_bounds_3d(
-                                *bounds,
-                                densify,
-                                options.source_epoch,
-                                &self.execution,
-                            )
-                        })
-                        .collect()
+                    self.execute_bounds_with_executor(samples, BoundsExecutor::Proj(transformer))
                 },
             ),
-        };
-        self.finish_execution(result, !rows.is_empty())
+        }
+    }
+
+    fn execute_bounds_with_executor(
+        &self,
+        samples: &mut BoundsSamplePlan,
+        executor: BoundsExecutor<'_>,
+    ) -> Result<()> {
+        match executor {
+            BoundsExecutor::InCore(operation) => {
+                executor.execute(samples, &self.execution)?;
+                let reverse = operation.reversed();
+                samples.include_target_poles(|x, y| {
+                    let mut x = [x];
+                    let mut y = [y];
+                    let result = transform_in_core_xy_with_frames(
+                        &reverse,
+                        self.target_frame,
+                        self.source_frame,
+                        &mut x,
+                        &mut y,
+                    );
+                    match result {
+                        Ok(()) => Ok(Some((x[0], y[0]))),
+                        Err(error) if in_core_pole_domain_miss(&error) => Ok(None),
+                        Err(error) => Err(error),
+                    }
+                })
+            },
+            BoundsExecutor::Proj(transformer) => {
+                executor.execute(samples, &self.execution)?;
+                samples.include_target_poles(|x, y| {
+                    let epoch = self.options.target_epoch.or(self.options.source_epoch);
+                    transformer.transform_xy_probe(
+                        x,
+                        y,
+                        epoch,
+                        ProjDirection::Inverse,
+                        &self.execution,
+                    )
+                })
+            },
+        }
+    }
+}
+
+fn in_core_pole_domain_miss(error: &crate::error::Error) -> bool {
+    match error.kind() {
+        ErrorKind::Geometry(GeometryErrorKind::WebMercatorLatitude(_)) => true,
+        ErrorKind::Geometry(GeometryErrorKind::Projection(message)) => {
+            message.starts_with("coordinate is outside ")
+        },
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BoundsExecutor<'a> {
+    InCore(&'a InCoreTransform),
+    Proj(&'a ProjPipeline),
+}
+
+impl BoundsExecutor<'_> {
+    fn execute(self, samples: &mut BoundsSamplePlan, execution: &TransformExecution) -> Result<()> {
+        match self {
+            Self::InCore(operation) => {
+                samples.enter_in_core()?;
+                transform_in_core_xy_batch(operation, &mut samples.x, &mut samples.y)?;
+                samples.leave_in_core()?;
+                Ok(())
+            },
+            Self::Proj(pipeline) => pipeline.transform_lanes(
+                &mut samples.x,
+                &mut samples.y,
+                samples.z.as_deref_mut(),
+                samples.epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
+                ProjDirection::Forward,
+                execution,
+            ),
+        }
     }
 }
 
@@ -528,9 +524,9 @@ pub(crate) struct TransformPlan {
     operation: TransformOperation,
     state: Arc<RuntimeState>,
     execution: TransformExecution,
-    source: String,
-    target: String,
     options: TransformOptions,
+    source_frame: Option<crate::geographic::GeographicFrame>,
+    target_frame: Option<crate::geographic::GeographicFrame>,
 }
 
 #[expect(
@@ -549,4 +545,30 @@ pub(super) enum TransformOperation {
         target: String,
         options: TransformOptions,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_bulk_bounds_do_not_acquire_proj_pipeline() {
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:3857", TransformOptions {
+            force_over: true,
+            ..TransformOptions::default()
+        });
+
+        assert!(plan.transform_bounds_many(&[], 2).unwrap().is_empty());
+        let info = crate::crs::cache_info();
+        assert_eq!(info.last_transform_engine, None);
+        assert_eq!(
+            info.buckets
+                .iter()
+                .find(|bucket| bucket.name == "proj_pipeline")
+                .unwrap()
+                .entries,
+            0
+        );
+    }
 }

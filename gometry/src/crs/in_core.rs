@@ -27,7 +27,6 @@ use crate::crs::in_core::kernel::{DEG_TO_RAD, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::local::UtmZone as LocalUtmZone;
 use crate::crs::parse_epsg;
 use crate::error::Result;
-use crate::geometry::{Bounds, Bounds3D, XY};
 
 pub(super) fn lonlat_to_web_mercator_xy(lon: f64, lat: f64) -> Result<(f64, f64)> {
     webmerc::lonlat_to_web_mercator_xy(lon, lat)
@@ -55,6 +54,7 @@ pub(super) enum ProjSetup {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum InCoreTransform {
     RawWebMercatorForward,
+    RawWebMercatorInverse,
     One(InCoreStep),
     Two {
         inverse: ProjSetup,
@@ -68,6 +68,15 @@ pub(super) enum InCoreStep {
     Inverse(ProjSetup),
 }
 
+impl InCoreStep {
+    const fn reversed(self) -> Self {
+        match self {
+            Self::Forward(setup) => Self::Inverse(setup),
+            Self::Inverse(setup) => Self::Forward(setup),
+        }
+    }
+}
+
 impl InCoreTransform {
     pub(super) const fn lon_lat_to_web_mercator() -> Self {
         Self::RawWebMercatorForward
@@ -77,6 +86,18 @@ impl InCoreTransform {
         Self::One(InCoreStep::Inverse(ProjSetup::WebMercator(
             WGS84_WEB_MERCATOR,
         )))
+    }
+
+    pub(super) const fn reversed(self) -> Self {
+        match self {
+            Self::RawWebMercatorForward => Self::RawWebMercatorInverse,
+            Self::RawWebMercatorInverse => Self::RawWebMercatorForward,
+            Self::One(step) => Self::One(step.reversed()),
+            Self::Two { inverse, forward } => Self::Two {
+                inverse: forward,
+                forward: inverse,
+            },
+        }
     }
 
     pub(super) fn lon_lat_to_utm(zone: UtmZone) -> Self {
@@ -146,6 +167,7 @@ pub(super) fn transform_in_core_xy_batch(
 #[derive(Clone, Copy)]
 enum ResolvedInCoreXy<'a> {
     RawWebMercFwd,
+    RawWebMercInv,
     WebMercFwd(&'a Projected<webmerc::WebMerc>),
     WebMercInv(&'a Projected<webmerc::WebMerc>),
     TmercFwd(&'a Projected<tmerc::Tmerc>),
@@ -175,45 +197,10 @@ enum ResolvedInCoreXy<'a> {
 }
 
 impl ResolvedInCoreXy<'_> {
-    fn apply(self, x: f64, y: f64) -> Result<(f64, f64)> {
-        match self {
-            Self::RawWebMercFwd => WGS84_WEB_MERCATOR.forward_xy(x, y),
-            Self::WebMercFwd(p) => p.forward_xy(x, y),
-            Self::WebMercInv(p) => p.inverse_xy(x, y),
-            Self::TmercFwd(p) => p.forward_xy(x, y),
-            Self::TmercInv(p) => p.inverse_xy(x, y),
-            Self::LccFwd(p) => p.forward_xy(x, y),
-            Self::LccInv(p) => p.inverse_xy(x, y),
-            Self::LaeaFwd(p) => p.forward_xy(x, y),
-            Self::LaeaInv(p) => p.inverse_xy(x, y),
-            Self::AeaFwd(p) => p.forward_xy(x, y),
-            Self::AeaInv(p) => p.inverse_xy(x, y),
-            Self::PolarStereoFwd(p) => p.forward_xy(x, y),
-            Self::PolarStereoInv(p) => p.inverse_xy(x, y),
-            Self::StereaFwd(p) => p.forward_xy(x, y),
-            Self::StereaInv(p) => p.inverse_xy(x, y),
-            Self::WebMercToUtm { webmerc, tmerc } => {
-                let (x, mut y) = webmerc.inverse_xy(x, y)?;
-                y = snap_webmerc_to_utm_latitude(y);
-                tmerc.forward_xy(x, y)
-            },
-            Self::UtmToWebMerc { tmerc, webmerc } => {
-                let (x, y) = tmerc.inverse_xy(x, y)?;
-                webmerc.forward_xy(x, y)
-            },
-            Self::TwoGeneric { inverse, forward } => {
-                let (x, mut y) = inverse_setup(inverse, x, y)?;
-                if is_webmerc_to_utm_composition(inverse, forward) {
-                    y = snap_webmerc_to_utm_latitude(y);
-                }
-                forward_setup(forward, x, y)
-            },
-        }
-    }
-
     fn apply_batch(self, x: &mut [f64], y: &mut [f64]) -> Result<()> {
         match self {
             Self::RawWebMercFwd => webmerc::raw_forward_batch(x, y),
+            Self::RawWebMercInv => webmerc::raw_inverse_batch(x, y),
             Self::WebMercFwd(p) => projected_batch::<webmerc::WebMerc, true>(p, x, y),
             Self::WebMercInv(p) => projected_batch::<webmerc::WebMerc, false>(p, x, y),
             Self::TmercFwd(p) => projected_batch::<tmerc::Tmerc, true>(p, x, y),
@@ -328,6 +315,7 @@ fn two_generic_batch(
 const fn resolve_in_core_xy(operation: &InCoreTransform) -> ResolvedInCoreXy<'_> {
     match operation {
         InCoreTransform::RawWebMercatorForward => ResolvedInCoreXy::RawWebMercFwd,
+        InCoreTransform::RawWebMercatorInverse => ResolvedInCoreXy::RawWebMercInv,
         InCoreTransform::One(InCoreStep::Forward(ProjSetup::WebMercator(p))) => {
             ResolvedInCoreXy::WebMercFwd(p)
         },
@@ -374,15 +362,6 @@ const fn resolve_in_core_xy(operation: &InCoreTransform) -> ResolvedInCoreXy<'_>
             ResolvedInCoreXy::TwoGeneric { inverse, forward }
         },
     }
-}
-
-/// Fallible per-pair XY closure for [`Shape::map_xy_with`] — the operation
-/// variant is resolved once per batch, not per vertex.
-pub(super) fn in_core_xy_op(
-    operation: &InCoreTransform,
-) -> impl Fn(f64, f64) -> Result<(f64, f64)> + Copy + '_ {
-    let resolved = resolve_in_core_xy(operation);
-    move |x, y| resolved.apply(x, y)
 }
 
 /// Snap composition-boundary latitudes onto the UTM domain edge after a Web
@@ -457,61 +436,6 @@ impl UtmZone {
     }
 }
 
-pub(super) fn transform_in_core_bounds(
-    operation: &InCoreTransform,
-    bounds: Bounds,
-    densify: u32,
-) -> Result<Bounds> {
-    let (minx, miny, maxx, maxy) = bounds.into_tuple();
-    let segments = densify as usize + 1;
-    let resolved = resolve_in_core_xy(operation);
-    let mut out: Option<Bounds> = None;
-    let mut visit = |x: f64, y: f64| -> Result<()> {
-        let (x, y) = resolved.apply(x, y)?;
-        match &mut out {
-            Some(bounds) => {
-                bounds.include_xy(XY::new(x, y));
-            },
-            None => {
-                out = Some(Bounds::from_xy(XY::new(x, y)));
-            },
-        }
-        Ok(())
-    };
-    for index in 0..=segments {
-        let t = index as f64 / segments as f64;
-        let x = (maxx - minx) * t + minx;
-        visit(x, miny)?;
-        visit(x, maxy)?;
-        if index != 0 && index != segments {
-            let y = (maxy - miny) * t + miny;
-            visit(minx, y)?;
-            visit(maxx, y)?;
-        }
-    }
-    Ok(out.expect("densified bounds always include corners"))
-}
-
-pub(super) fn transform_in_core_bounds_3d(
-    operation: &InCoreTransform,
-    bounds: Bounds3D,
-    densify: u32,
-) -> Result<Bounds3D> {
-    let transformed = transform_in_core_bounds(
-        operation,
-        Bounds::new_unchecked(bounds.minx, bounds.miny, bounds.maxx, bounds.maxy),
-        densify,
-    )?;
-    Ok(Bounds3D {
-        minx: transformed.minx(),
-        miny: transformed.miny(),
-        minz: bounds.minz,
-        maxx: transformed.maxx(),
-        maxy: transformed.maxy(),
-        maxz: bounds.maxz,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::kernel::Ellipsoid;
@@ -572,5 +496,39 @@ mod tests {
         let error = projected_batch::<IdentityKernel, true>(&identity_projected(), &mut x, &mut y)
             .unwrap_err();
         assert!(error.to_string().contains("latitude"));
+    }
+
+    #[test]
+    fn reversed_raw_one_and_two_step_operations_restore_coordinates() {
+        let mut raw_x = [12.0];
+        let mut raw_y = [45.0];
+        let raw = InCoreTransform::lon_lat_to_web_mercator();
+        transform_in_core_xy_batch(&raw, &mut raw_x, &mut raw_y).unwrap();
+        transform_in_core_xy_batch(&raw.reversed(), &mut raw_x, &mut raw_y).unwrap();
+        assert!((raw_x[0] - 12.0).abs() < 1e-12);
+        assert!((raw_y[0] - 45.0).abs() < 1e-12);
+
+        let zone = UtmZone {
+            pole: Pole::North,
+            central_meridian: 15.0,
+        };
+        let one = InCoreTransform::lon_lat_to_utm(zone);
+        let mut one_x = [12.0];
+        let mut one_y = [45.0];
+        transform_in_core_xy_batch(&one, &mut one_x, &mut one_y).unwrap();
+        transform_in_core_xy_batch(&one.reversed(), &mut one_x, &mut one_y).unwrap();
+        assert!((one_x[0] - 12.0).abs() < 1e-12);
+        assert!((one_y[0] - 45.0).abs() < 1e-12);
+
+        let two = InCoreTransform::web_mercator_to_utm(zone);
+        let mut two_x = [12.0];
+        let mut two_y = [45.0];
+        let (web_x, web_y) = WGS84_WEB_MERCATOR.forward_xy(two_x[0], two_y[0]).unwrap();
+        two_x[0] = web_x;
+        two_y[0] = web_y;
+        transform_in_core_xy_batch(&two, &mut two_x, &mut two_y).unwrap();
+        transform_in_core_xy_batch(&two.reversed(), &mut two_x, &mut two_y).unwrap();
+        assert!((two_x[0] - web_x).abs() < 1e-9);
+        assert!((two_y[0] - web_y).abs() < 1e-9);
     }
 }

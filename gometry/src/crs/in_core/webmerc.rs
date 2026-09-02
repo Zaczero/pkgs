@@ -66,6 +66,24 @@ pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn raw_inverse_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
+    const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
+    for (lon, lat) in std::iter::zip(x, y) {
+        let out_lon = *lon / METRES_PER_DEGREE;
+        let lat_rad = if *lat == 0.0 {
+            *lat
+        } else {
+            2.0 * (*lat / WEB_MERCATOR_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2
+        };
+        let out_lat = lat_rad * RAD_TO_DEG;
+        if !out_lon.is_finite() || !out_lat.is_finite() {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        (*lon, *lat) = (out_lon, out_lat);
+    }
+    Ok(())
+}
+
 fn forward_unframed_setup(setup: Setup, lam_rad: f64, lat_rad: f64) -> Result<(f64, f64)> {
     let lat_deg = lat_rad * RAD_TO_DEG;
     if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {

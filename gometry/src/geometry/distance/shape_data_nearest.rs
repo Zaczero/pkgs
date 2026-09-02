@@ -1,3 +1,4 @@
+use crate::geographic::GeographicFrame;
 use crate::geometry::distance::{
     Result, geodesic_nearest_points_with_parts, nearest_probe_to_parts, parts_boundary_witness,
     quick_area_overlap, squared_space_safe,
@@ -115,8 +116,11 @@ impl PreparedPlan {
         semi_major: f64,
         flattening: f64,
         metric: &impl GeodesicMetric,
+        frame: GeographicFrame,
     ) -> Result<Option<(Point, Point)>> {
-        if !self.shape().crosses_antimeridian() && !other.shape().crosses_antimeridian() {
+        let self_crosses = crate::geometry::crosses_antimeridian_in_frame(self.shape(), frame);
+        let other_crosses = crate::geometry::crosses_antimeridian_in_frame(other.shape(), frame);
+        if !self_crosses && !other_crosses {
             return self.geodesic_nearest_points_cached(
                 self_cache,
                 other,
@@ -130,17 +134,17 @@ impl PreparedPlan {
         // Borrow the non-crossing operand; only a crossing one allocates a split
         // form (held in these deferred-init locals so the borrows outlive the call).
         let (self_split, other_split);
-        let left = if self.shape().crosses_antimeridian() {
+        let left = if self_crosses {
             self_split = Self::new(crate::geometry::ShapeData::from(
-                self.shape().split_antimeridian()?,
+                self.shape().split_antimeridian_in_frame(frame)?,
             ));
             &self_split
         } else {
             self
         };
-        let right = if other.shape().crosses_antimeridian() {
+        let right = if other_crosses {
             other_split = Self::new(crate::geometry::ShapeData::from(
-                other.shape().split_antimeridian()?,
+                other.shape().split_antimeridian_in_frame(frame)?,
             ));
             &other_split
         } else {

@@ -179,14 +179,27 @@ impl Lane {
 /// A unary kernel producing one `f64` per geometry — the shape every
 /// CRS-aware measure (`area`, `length`, `length_3d`) shares.
 pub(crate) type UnaryMeasureKernel =
-    fn(&crate::geometry::PreparedPlan, &OpCtx<'_>) -> crate::error::Result<f64>;
+    fn(&crate::geometry::PreparedPlan, &CachelessRowContext<'_>) -> crate::error::Result<f64>;
 
-/// Per-call resolved context handed to unary/binary/grid kernels.
-pub(crate) struct OpCtx<'a> {
+/// Per-row context for operations that cannot access frame-dependent products.
+pub(crate) struct CachelessRowContext<'a> {
     pub frame: &'a Frame,
     pub geographic: bool,
     pub metric: MetricCtx<'a>,
     pub lane: Lane,
-    pub(crate) left_frame_cache: Option<&'a crate::geometry::FrameDependentCaches>,
-    pub(crate) right_frame_cache: Option<&'a crate::geometry::FrameDependentCaches>,
+}
+
+pub(crate) struct LinearReferenceRow<'a> {
+    pub op: CachelessRowContext<'a>,
+    pub model: &'a MetricModel,
+    pub cache: &'a crate::geometry::FrameDependentCaches,
+}
+
+pub(crate) struct GeodesicBinaryRow<'a> {
+    pub crs: &'a str,
+    pub geodesic: &'a geographiclib_rs::Geodesic,
+    pub frame: crate::geographic::GeographicFrame,
+    pub state: &'a crate::crs::RuntimeState,
+    pub left_cache: &'a crate::geometry::FrameDependentCaches,
+    pub right_cache: &'a crate::geometry::FrameDependentCaches,
 }

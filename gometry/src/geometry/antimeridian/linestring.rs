@@ -1,72 +1,37 @@
 use crate::geometry::{Coordinates, MOrdinate, Point, ZOrdinate, interpolate_optional, same_point};
 
-/// Upstream's `math.isclose` (relative 1e-9) against ±180 — the seam
-/// snapping tolerance for a coordinate's own longitude.
-fn on_seam(lon: f64, seam: f64) -> bool {
-    (lon - seam).abs() <= 180.0 * 1e-9
-}
-
-/// Upstream's `numpy.isclose` (atol 1e-8 + rtol 1e-5) — the looser
-/// previous-point check deciding which seam side a ±180 vertex belongs to.
-fn near(left: f64, right: f64) -> bool {
-    (left - right).abs() <= 1e-8 + 1e-5 * right.abs()
-}
-
 pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     points.iter_coords().collect()
 }
 
-/// Snap near-±180 longitudes onto the seam, resolving the side from the
-/// previous vertex (a `180` vertex right after a `-180` one is really on
-/// the west side, and vice versa — upstream issue 81; pole vertices are
-/// exempt). When every vertex sits on the seam the ring is degenerate and
-/// passes through untouched. In-domain input needs no modular wrap.
-pub(super) fn normalize(coords: &mut [Point]) {
-    if coords.is_empty() {
+/// Resolve the two exact chart aliases of a quotient seam from the incoming
+/// edge. Pole aliases remain interchangeable. No neighborhood is snapped.
+pub(super) fn resolve_seam_aliases(coords: &mut [Point]) {
+    let Some(last) = coords.last() else {
         return;
-    }
-    // A ring entirely on the ±180 seam is degenerate — leave it untouched.
-    if coords
-        .iter()
-        .all(|point| on_seam(point.x, 180.0) || on_seam(point.x, -180.0))
-    {
-        return;
-    }
-    // Snap each on-seam vertex to the side implied by the PREVIOUS vertex's
-    // ORIGINAL longitude, carrying that longitude forward (seeded with the
-    // cyclically-last vertex) instead of indexing `original[(i + n - 1) % n]` —
-    // this drops both the per-vertex `% n` div and the whole `original` copy +
-    // restore pass. Bit-identical: same side decisions, same restore semantics
-    // (the all-on-seam no-op is the early return above).
-    let mut previous = coords[coords.len() - 1].x;
+    };
+    let mut previous = last.x;
     for point in coords.iter_mut() {
-        let lon = point.x;
-        if on_seam(lon, 180.0) {
-            point.x = if point.y.abs() != 90.0 && near(previous, -180.0) {
-                -180.0
-            } else {
-                180.0
-            };
-        } else if on_seam(lon, -180.0) {
-            point.x = if point.y.abs() != 90.0 && near(previous, 180.0) {
-                180.0
-            } else {
-                -180.0
-            };
+        let source = point.x;
+        if point.y.abs() != 90.0 {
+            if source == 180.0 && previous == -180.0 {
+                point.x = -180.0;
+            } else if source == -180.0 && previous == 180.0 {
+                point.x = 180.0;
+            }
         }
-        previous = lon;
+        previous = source;
     }
 }
 
-/// Drop consecutive near-duplicates (upstream `numpy.allclose` tolerance).
-/// Z/M must match exactly: collapsing a same-XY vertex with different
-/// ordinates would shift which source segment the seam interpolates from.
-pub(super) fn dedup_near(coords: Vec<Point>) -> Vec<Point> {
+/// Drop exact consecutive duplicates. One-ULP neighbors are distinct source
+/// vertices; Z/M differences also retain the source segment boundary.
+pub(super) fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
     let mut result: Vec<Point> = Vec::with_capacity(coords.len());
     for point in coords {
         if let Some(last) = result.last()
-            && near(point.x, last.x)
-            && near(point.y, last.y)
+            && point.x.to_bits() == last.x.to_bits()
+            && point.y.to_bits() == last.y.to_bits()
             && point.z() == last.z()
             && point.m() == last.m()
         {
@@ -83,8 +48,8 @@ pub(super) fn dedup_near(coords: Vec<Point>) -> Vec<Point> {
 /// every returned piece starts and ends on the seam.
 pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
     let mut coords = points.to_vec();
-    normalize(&mut coords);
-    let coords = dedup_near(coords);
+    resolve_seam_aliases(&mut coords);
+    let coords = dedup_consecutive(coords);
     let mut piece: Vec<Point> = Vec::new();
     let mut pieces: Vec<Vec<Point>> = Vec::new();
     for &[start, end] in coords.array_windows::<2>() {
@@ -137,6 +102,43 @@ fn crossing_points(west: Point, east: Point) -> (Point, Point) {
             .expect("seam coordinates are finite")
     };
     (make(-180.0), make(180.0))
+}
+
+pub(crate) fn crossing_latitude_in_frame(
+    start: Point,
+    end: Point,
+    frame: crate::geographic::GeographicFrame,
+) -> f64 {
+    let axis = frame.longitude();
+    if (end.x - start.x).abs() >= axis.period() {
+        return start.y;
+    }
+    let start_longitude = axis
+        .canonicalize(start.x)
+        .expect("validated longitude")
+        .get();
+    let end_longitude = axis.canonicalize(end.x).expect("validated longitude").get();
+    if start_longitude.abs() == axis.half_period() {
+        return start.y;
+    }
+    if end_longitude.abs() == axis.half_period() {
+        return end.y;
+    }
+    if start_longitude == end_longitude {
+        return start.y;
+    }
+    let (start, end) = if start_longitude < end_longitude {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let longitude_scale = axis.unit().radians_per_unit().to_degrees();
+    let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
+    let (latitude, _) = crossing_latitude_great_circle(
+        Point::new_raw_xy(start.x * longitude_scale, start.y * latitude_scale),
+        Point::new_raw_xy(end.x * longitude_scale, end.y * latitude_scale),
+    );
+    latitude / latitude_scale
 }
 
 fn unit_sphere(point: Point) -> [f64; 3] {

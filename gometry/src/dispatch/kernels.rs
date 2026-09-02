@@ -1,10 +1,9 @@
 use std::num::NonZeroU32;
 
-use crate::boundary::geographic::invalid_lonlat_error;
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
-use crate::crs::{CrsError, MetricModel, ResolvedMetric};
-use crate::dispatch::metric::{MetricCtx, OpCtx};
+use crate::crs::{CrsError, ResolvedMetric};
+use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
@@ -18,8 +17,7 @@ use crate::{
     metric_constructive_shape_budgeted, metric_frechet_densified, metric_hausdorff_densified,
     metric_interpolate_m, metric_maximum_inscribed_radius, metric_minimum_bounding_circle,
     metric_minimum_bounding_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_optional_constructive_shape, pair_distance_resolved_result,
-    pair_dwithin_resolved_result,
+    metric_optional_constructive_shape,
 };
 
 fn scale_length(value: f64, to_metre: f64) -> f64 {
@@ -31,7 +29,7 @@ fn scale_area(value: f64, to_metre: f64) -> f64 {
 }
 
 /// Centroid kernel shared by the spine-routed free function.
-pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
         ctx.geographic,
@@ -45,19 +43,22 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Sha
     clippy::unnecessary_wraps,
     reason = "uniform dispatch kernels return Result<Shape>"
 )]
-pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_envelope(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     Ok(data.shape().envelope())
 }
 
 /// Convex-hull kernel shared by the spine-routed free function.
-pub(crate) fn unary_convex_hull(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_convex_hull(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     data.shape().convex_hull()
 }
 
 /// Simplify kernel shared by the spine-routed free function.
 pub(crate) fn unary_simplify(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     tolerance: &F64Param,
     method: SimplifyMethod,
     preserve_topology: bool,
@@ -72,7 +73,7 @@ pub(crate) fn unary_simplify(
 /// Buffer kernel shared by the spine-routed free function.
 pub(crate) fn unary_buffer(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     distance: &F64Param,
     cap_style: BufferCapStyle,
     join_style: BufferJoinStyle,
@@ -110,7 +111,7 @@ pub(crate) fn unary_buffer(
 
 pub(crate) fn unary_buffer_budgeted(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     distance: &F64Param,
     cap_style: BufferCapStyle,
     join_style: BufferJoinStyle,
@@ -157,7 +158,7 @@ pub(crate) fn unary_buffer_budgeted(
 /// Offset-curve kernel shared by the spine-routed free function.
 pub(crate) fn unary_offset_curve(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     distance: &F64Param,
     join_style: BufferJoinStyle,
     quadrant_segments: NonZeroU32,
@@ -181,7 +182,7 @@ pub(crate) fn unary_offset_curve(
 
 pub(crate) fn unary_offset_curve_budgeted(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     distance: &F64Param,
     join_style: BufferJoinStyle,
     quadrant_segments: NonZeroU32,
@@ -212,7 +213,10 @@ pub(crate) fn unary_offset_curve_budgeted(
 }
 
 /// Point-on-surface kernel shared by the spine-routed free function.
-pub(crate) fn unary_point_on_surface(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_point_on_surface(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
         ctx.geographic,
@@ -224,7 +228,7 @@ pub(crate) fn unary_point_on_surface(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Re
 /// Concave-hull kernel shared by the spine-routed free function.
 pub(crate) fn unary_concave_hull(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     concavity: &F64Param,
     length_threshold: &F64Param,
 ) -> Result<Shape> {
@@ -242,7 +246,7 @@ pub(crate) fn unary_concave_hull(
 /// Polylabel kernel shared by the spine-routed free function.
 pub(crate) fn unary_polylabel(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model("polylabel")?;
@@ -258,7 +262,7 @@ pub(crate) fn unary_polylabel(
 /// Maximum-inscribed-circle kernel shared by the spine-routed free function.
 pub(crate) fn unary_maximum_inscribed_circle(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
     let model = ctx.metric.require_model("maximum_inscribed_circle")?;
@@ -275,7 +279,7 @@ pub(crate) fn unary_maximum_inscribed_circle(
 /// circle (so the radius matches the disk, and the center is `polylabel`).
 pub(crate) fn unary_maximum_inscribed_radius(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     tolerance: Option<&F64Param>,
 ) -> Result<f64> {
     // geometry — there are no output vertices onto which Z/M could be carried,
@@ -289,13 +293,19 @@ pub(crate) fn unary_maximum_inscribed_radius(
 }
 
 /// Minimum-bounding-circle kernel shared by the spine-routed free function.
-pub(crate) fn unary_minimum_bounding_circle(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_minimum_bounding_circle(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     let model = ctx.metric.require_model("minimum_bounding_circle")?;
     metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())
 }
 
 /// Minimum-bounding-circle radius kernel shared by scalar and array methods.
-pub(crate) fn unary_minimum_bounding_radius(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f64> {
+pub(crate) fn unary_minimum_bounding_radius(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<f64> {
     let model = ctx.metric.require_model("minimum_bounding_radius")?;
     metric_minimum_bounding_radius(model, data.shape())
 }
@@ -303,7 +313,7 @@ pub(crate) fn unary_minimum_bounding_radius(data: &PreparedPlan, ctx: &OpCtx<'_>
 /// Minimum-rotated-rectangle kernel shared by the spine-routed free function.
 pub(crate) fn unary_minimum_rotated_rectangle(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     data.shape().minimum_rotated_rectangle()
 }
@@ -313,16 +323,12 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     Ok(data.shape().boundary())
 }
 
-fn ensure_antimeridian_geographic_frame(ctx: &OpCtx<'_>, op: &str) -> Result<()> {
-    let model = match ctx.metric {
-        MetricCtx::Antimeridian(model) | MetricCtx::Metric { model, .. } => model,
-        MetricCtx::None => return Ok(()),
-    };
-    if ctx.frame.crs_ref().is_some() && matches!(model, MetricModel::Planar { .. }) {
+fn ensure_antimeridian_geographic_frame(ctx: &CachelessRowContext<'_>, op: &str) -> Result<()> {
+    if ctx.frame.crs_ref().is_some() && !ctx.geographic {
         return Err(CrsError::invalid(format!(
             "{op} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
         )));
@@ -330,26 +336,12 @@ fn ensure_antimeridian_geographic_frame(ctx: &OpCtx<'_>, op: &str) -> Result<()>
     Ok(())
 }
 
-fn validate_split_domain_shape(shape: &Shape) -> Result<()> {
-    let mut error = None;
-    shape.any_point(|point| {
-        let in_domain = (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y);
-        if in_domain {
-            false
-        } else {
-            error = Some(invalid_lonlat_error(point.x, point.y));
-            true
-        }
-    });
-    error.map_or(Ok(()), Err)
-}
-
 /// ``is_empty`` kernel shared by the spine-routed free function.
 #[expect(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_empty(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_empty(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(data.shape().is_empty())
 }
 
@@ -358,7 +350,7 @@ pub(crate) fn unary_is_empty(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bo
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(data.shape().is_closed())
 }
 
@@ -367,7 +359,7 @@ pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<b
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_ring(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_ring(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(crate::geometry::is_ring_data_in_frame(data, ctx.geographic))
 }
 
@@ -376,7 +368,7 @@ pub(crate) fn unary_is_ring(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bool
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_ccw(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_ccw(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(data.shape().is_ccw())
 }
 
@@ -385,7 +377,7 @@ pub(crate) fn unary_is_ccw(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bool
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(crate::geometry::is_simple_data_in_frame(
         data,
         ctx.geographic,
@@ -397,12 +389,12 @@ pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bo
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<bool>"
 )]
-pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(crate::geometry::validate_data_in_frame(data, ctx.geographic).is_none())
 }
 
 /// ``is_convex`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_is_convex(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_is_convex(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<bool> {
     Ok(match data.shape() {
         Shape::Polygon(_) | Shape::Empty(GeometryKind::Polygon, _) => data.shape().is_convex()?,
         _ => false,
@@ -410,32 +402,62 @@ pub(crate) fn unary_is_convex(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<b
 }
 
 /// ``crosses_antimeridian`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_crosses_antimeridian(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<bool> {
+pub(crate) fn unary_crosses_antimeridian(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<bool> {
     ensure_antimeridian_geographic_frame(ctx, "crosses_antimeridian")?;
-    Ok(data.shape().crosses_antimeridian())
+    if !ctx.geographic {
+        return Ok(data.shape().crosses_antimeridian());
+    }
+    let frame = crate::geometry::geographic_frame(ctx.frame)?
+        .expect("geographic context carries a typed frame");
+    Ok(crate::geometry::crosses_antimeridian_in_frame(
+        data.shape(),
+        frame,
+    ))
 }
 
 /// ``split_antimeridian`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_split_antimeridian(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_split_antimeridian(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     ensure_antimeridian_geographic_frame(ctx, "split_antimeridian")?;
-    validate_split_domain_shape(data.shape())?;
-    data.shape().split_antimeridian()
+    let frame = match ctx.frame.crs_str() {
+        Some(crs) => crate::crs::info(crs)?
+            .geographic_frame()
+            .ok_or_else(|| CrsError::invalid("split_antimeridian requires a geographic CRS"))?,
+        None => {
+            let degrees = crate::geographic::AngularFactor::try_new(
+                "angular unit",
+                std::f64::consts::PI / 180.0,
+            )
+            .expect("degree angular factor is valid");
+            crate::geographic::GeographicFrame::try_new(degrees, degrees, 0.0)
+                .expect("degree geographic frame is valid")
+        },
+    };
+    data.shape().split_antimeridian_in_frame(frame)
 }
 
 /// ``node`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     data.shape().node(Strictness::Lenient)
 }
 
 /// Build-area kernel shared by the spine-routed free function.
-pub(crate) fn unary_build_area(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_build_area(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     data.shape().build_area(false)
 }
 
 /// Smooth kernel shared by the spine-routed free function.
 pub(crate) fn unary_smooth(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     iterations: &I64Param,
     method: SmoothMethod,
     keep_endpoints: bool,
@@ -449,7 +471,7 @@ pub(crate) fn unary_smooth(
 
 pub(crate) fn unary_smooth_budgeted(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     iterations: &I64Param,
     method: SmoothMethod,
     keep_endpoints: bool,
@@ -466,7 +488,7 @@ pub(crate) fn unary_smooth_budgeted(
 /// Segmentize kernel shared by the spine-routed free function.
 pub(crate) fn unary_segmentize(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     max_segment_length: &F64Param,
 ) -> Result<Shape> {
     let metric = ctx.metric.require_resolved("segmentize")?;
@@ -477,11 +499,13 @@ pub(crate) fn unary_segmentize(
         // distance the caller named is a real-world one, exactly as it is for
         // `length`. `segmentize` only INSERTS vertices, so every original
         // survives bit-exactly under either placement.
-        ResolvedMetric::Geodesic { geodesic, .. } => {
-            crate::crs::ensure_geographic_domain(data.shape())?;
+        ResolvedMetric::Geodesic {
+            geodesic, frame, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
             data.shape().segmentize_budgeted(
                 length,
-                crate::geometry::SegmentPlacement::Geodesic(geodesic),
+                crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame),
                 &mut budget,
             )
         },
@@ -499,17 +523,19 @@ pub(crate) fn unary_segmentize(
 /// Densify kernel shared by the spine-routed free function.
 pub(crate) fn unary_densify(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     fraction: &F64Param,
 ) -> Result<Shape> {
     let fraction = fraction.get(ctx.lane.row());
     match ctx.metric.require_resolved("segmentize")? {
-        ResolvedMetric::Geodesic { geodesic, .. } => {
-            crate::crs::ensure_geographic_domain(data.shape())?;
+        ResolvedMetric::Geodesic {
+            geodesic, frame, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
             let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
             data.shape().densified_budgeted_with_placement(
                 fraction,
-                crate::geometry::SegmentPlacement::Geodesic(geodesic),
+                crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame),
                 &mut budget,
             )
         },
@@ -518,33 +544,45 @@ pub(crate) fn unary_densify(
 }
 
 /// Area kernel shared by the spine-routed free function.
-pub(crate) fn unary_area(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f64> {
+pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
     let metric = ctx.metric.require_resolved("area")?;
     match metric {
         ResolvedMetric::Planar { to_metre } => Ok(scale_area(data.shape().area(), to_metre.get())),
-        ResolvedMetric::Geodesic { geodesic, .. } => {
-            crate::crs::ensure_geographic_domain(data.shape())?;
-            Ok(crate::crs::geodesic_shape_area(geodesic, data.shape()))
+        ResolvedMetric::Geodesic {
+            geodesic, frame, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+            Ok(crate::crs::geodesic_shape_area(
+                geodesic,
+                data.shape(),
+                *frame,
+            ))
         },
     }
 }
 
 /// Length kernel shared by the spine-routed free function.
-pub(crate) fn unary_length(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f64> {
+pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
     let metric = ctx.metric.require_resolved("length")?;
     match metric {
         ResolvedMetric::Planar { to_metre } => {
             Ok(scale_length(data.shape().length(), to_metre.get()))
         },
-        ResolvedMetric::Geodesic { geodesic, .. } => {
-            crate::crs::ensure_geographic_domain(data.shape())?;
-            Ok(crate::crs::geodesic_shape_length(geodesic, data.shape()))
+        ResolvedMetric::Geodesic {
+            geodesic, frame, ..
+        } => {
+            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+            Ok(crate::crs::geodesic_shape_length(
+                geodesic,
+                data.shape(),
+                *frame,
+            ))
         },
     }
 }
 
 /// 3D length kernel shared by the spine-routed free function.
-pub(crate) fn unary_length_3d(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f64> {
+pub(crate) fn unary_length_3d(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
     let to_metre = ctx.metric.require_model("length_3d")?.coordinate_scale();
     if data.shape().is_empty() || data.shape().topological_dimension() == Dimension::Point {
         return Ok(0.0);
@@ -559,7 +597,7 @@ pub(crate) fn unary_length_3d(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f6
 /// Affine-transform kernel shared by the spine-routed free function.
 pub(crate) fn unary_affine_transform(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     matrix: &[f64; 6],
 ) -> Result<Shape> {
     data.shape().affine_transform(matrix)
@@ -568,7 +606,7 @@ pub(crate) fn unary_affine_transform(
 /// Translate kernel shared by the spine-routed free function.
 pub(crate) fn unary_translate(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     xoff: f64,
     yoff: f64,
 ) -> Result<Shape> {
@@ -578,7 +616,7 @@ pub(crate) fn unary_translate(
 /// Rotate kernel shared by the spine-routed free function.
 pub(crate) fn unary_rotate(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     angle: f64,
     origin: OriginSpec,
 ) -> Result<Shape> {
@@ -589,7 +627,7 @@ pub(crate) fn unary_rotate(
 /// Scale kernel shared by the spine-routed free function.
 pub(crate) fn unary_scale(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     xfact: f64,
     yfact: f64,
     origin: OriginSpec,
@@ -603,7 +641,7 @@ pub(crate) fn unary_scale(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_reverse(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_reverse(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     Ok(data.shape().reverse())
 }
 
@@ -612,7 +650,10 @@ pub(crate) fn unary_reverse(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Sha
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_normalize(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_normalize(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     Ok(data.shape().normalize())
 }
 
@@ -621,7 +662,7 @@ pub(crate) fn unary_normalize(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<S
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_swap_xy(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_swap_xy(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     Ok(data.shape().swap_xy())
 }
 
@@ -632,7 +673,7 @@ pub(crate) fn unary_swap_xy(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Sha
 )]
 pub(crate) fn unary_orient_polygons(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     ccw: bool,
 ) -> Result<Shape> {
     Ok(data.shape().orient_polygons(!ccw))
@@ -643,14 +684,17 @@ pub(crate) fn unary_orient_polygons(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_unique_points(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_unique_points(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     Ok(data.shape().unique_points())
 }
 
 /// Remove-repeated-points kernel shared by the spine-routed free function.
 pub(crate) fn unary_remove_repeated_points(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     tolerance: &F64Param,
 ) -> Result<Shape> {
     data.shape()
@@ -660,7 +704,7 @@ pub(crate) fn unary_remove_repeated_points(
 /// Snap-to-grid kernel shared by the spine-routed free function.
 pub(crate) fn unary_snap_to_grid(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     size: (f64, f64),
     origin: (f64, f64),
     repair: bool,
@@ -678,19 +722,23 @@ pub(crate) fn unary_snap_to_grid(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Shape>"
 )]
-pub(crate) fn unary_force_2d(data: &PreparedPlan, _ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_force_2d(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     Ok(data.shape().force_2d())
 }
 
 /// Force-3D kernel shared by the spine-routed free function.
-pub(crate) fn unary_force_3d(data: &PreparedPlan, _ctx: &OpCtx<'_>, z: f64) -> Result<Shape> {
+pub(crate) fn unary_force_3d(
+    data: &PreparedPlan,
+    _ctx: &CachelessRowContext<'_>,
+    z: f64,
+) -> Result<Shape> {
     data.shape().set_z(Some(z), false)
 }
 
 /// Set-Z kernel shared by the spine-routed free function.
 pub(crate) fn unary_set_z(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     value: Option<f64>,
     overwrite: bool,
 ) -> Result<Shape> {
@@ -700,7 +748,7 @@ pub(crate) fn unary_set_z(
 /// Set-M kernel shared by the spine-routed free function.
 pub(crate) fn unary_set_m(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     value: Option<f64>,
     overwrite: bool,
 ) -> Result<Shape> {
@@ -714,7 +762,7 @@ pub(crate) fn unary_set_m(
 )]
 pub(crate) fn unary_quantize(
     data: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    _ctx: &CachelessRowContext<'_>,
     precision: i32,
 ) -> Result<Shape> {
     Ok(data.shape().quantize(precision))
@@ -723,16 +771,18 @@ pub(crate) fn unary_quantize(
 /// Clip-by-rect kernel shared by the spine-routed free function.
 pub(crate) fn unary_clip_by_rect(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     rect: Bounds,
     drop: bool,
 ) -> Result<Shape> {
-    if ctx.geographic && data.crosses_antimeridian() {
-        let split = data.shape().split_antimeridian()?;
-        split.clip_by_rect_with_bounds(rect, drop, None)
-    } else {
-        data.clip_by_rect_with_bounds(rect, drop, data.bounds())
+    if ctx.geographic {
+        let frame = crate::geometry::geographic_frame(ctx.frame)?
+            .expect("geographic context carries a typed frame");
+        return data
+            .shape()
+            .clip_by_rect_in_geographic_frame(rect, drop, data.bounds(), frame);
     }
+    data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }
 
 /// Bounds kernel shared by the spine-routed free function.
@@ -740,7 +790,10 @@ pub(crate) fn unary_clip_by_rect(
     clippy::unnecessary_wraps,
     reason = "dispatch spine requires Result<Option<Bounds>>"
 )]
-pub(crate) fn unary_bounds(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Option<Bounds>> {
+pub(crate) fn unary_bounds(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Option<Bounds>> {
     if crate::geometry::geographic_crossing(ctx.frame, data) {
         Ok(crate::geometry::geographic_crossing_bounds(data.shape()))
     } else {
@@ -749,13 +802,19 @@ pub(crate) fn unary_bounds(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Optio
 }
 
 /// Minimum-clearance kernel shared by the spine-routed free function.
-pub(crate) fn unary_minimum_clearance(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<f64> {
+pub(crate) fn unary_minimum_clearance(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<f64> {
     let model = ctx.metric.require_model("minimum_clearance")?;
     metric_minimum_clearance(model, ctx.frame.crs_str(), data.shape())
 }
 
 /// Minimum-clearance witness kernel shared by the spine-routed free function.
-pub(crate) fn unary_minimum_clearance_line(data: &PreparedPlan, ctx: &OpCtx<'_>) -> Result<Shape> {
+pub(crate) fn unary_minimum_clearance_line(
+    data: &PreparedPlan,
+    ctx: &CachelessRowContext<'_>,
+) -> Result<Shape> {
     let model = ctx.metric.require_model("minimum_clearance_line")?;
     metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())
 }
@@ -764,15 +823,17 @@ pub(crate) fn unary_minimum_clearance_line(data: &PreparedPlan, ctx: &OpCtx<'_>)
 pub(crate) fn binary_distance(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &GeodesicBinaryRow<'_>,
 ) -> Result<f64> {
-    let metric = ctx.metric.require_resolved("distance")?;
-    pair_distance_resolved_result(
-        metric,
+    crate::broadcast::pair_distance_geodesic(
+        ctx.crs,
+        ctx.geodesic,
+        ctx.frame,
+        ctx.state,
         left,
-        ctx.left_frame_cache.expect("binary left frame cache"),
+        ctx.left_cache,
         right,
-        ctx.right_frame_cache.expect("binary right frame cache"),
+        ctx.right_cache,
     )
 }
 
@@ -780,16 +841,18 @@ pub(crate) fn binary_distance(
 pub(crate) fn binary_dwithin(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &GeodesicBinaryRow<'_>,
     distance: f64,
 ) -> Result<bool> {
-    let metric = ctx.metric.require_resolved("dwithin")?;
-    pair_dwithin_resolved_result(
-        metric,
+    crate::broadcast::pair_dwithin_geodesic(
+        ctx.crs,
+        ctx.geodesic,
+        ctx.frame,
+        ctx.state,
         left,
-        ctx.left_frame_cache.expect("binary left frame cache"),
+        ctx.left_cache,
         right,
-        ctx.right_frame_cache.expect("binary right frame cache"),
+        ctx.right_cache,
         distance,
     )
 }
@@ -798,7 +861,7 @@ pub(crate) fn binary_dwithin(
 pub(crate) fn binary_distance_3d(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<f64> {
     let to_metre = ctx.metric.require_model("distance_3d")?.coordinate_scale();
     if left.axes_all_z() && right.axes_all_z() {
@@ -820,7 +883,7 @@ pub(crate) fn binary_distance_3d(
 pub(crate) fn binary_hausdorff_distance(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     densify: Option<f64>,
 ) -> Result<f64> {
     let model = ctx.metric.require_model("hausdorff_distance")?;
@@ -831,7 +894,7 @@ pub(crate) fn binary_hausdorff_distance(
 pub(crate) fn binary_frechet_distance(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     densify: Option<f64>,
 ) -> Result<f64> {
     let model = ctx.metric.require_model("frechet_distance")?;
@@ -858,62 +921,59 @@ fn linref_linestring_lane(result: Result<Shape>, array_lane: bool) -> Result<Sha
 pub(crate) fn binary_overlay(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    _ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    op.kernel(strictness)(left, right)
+    op.apply_in_frame(
+        left.shape(),
+        right.shape(),
+        crate::geometry::geographic_frame(ctx.frame)?,
+        strictness,
+    )
 }
 
 /// ``line_interpolate_point`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_interpolate_point(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
-    model: &MetricModel,
+    ctx: &LinearReferenceRow<'_>,
     distance: &F64Param,
     normalized: bool,
 ) -> Result<Shape> {
     linref_point_lane(
         line_interpolate_shape(
-            model,
+            ctx.model,
             data,
-            ctx.left_frame_cache.expect("unary frame cache"),
-            distance.get(ctx.lane.row()),
+            ctx.cache,
+            distance.get(ctx.op.lane.row()),
             normalized,
         ),
-        ctx.lane.is_array(),
+        ctx.op.lane.is_array(),
     )
 }
 
 /// ``line_substring`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_substring(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
-    model: &MetricModel,
+    ctx: &LinearReferenceRow<'_>,
     start_distance: &F64Param,
     end_distance: &F64Param,
     normalized: bool,
 ) -> Result<Shape> {
     let range = MeasureRange::substring_distance(
-        start_distance.get(ctx.lane.row()),
-        end_distance.get(ctx.lane.row()),
+        start_distance.get(ctx.op.lane.row()),
+        end_distance.get(ctx.op.lane.row()),
     )?;
     linref_linestring_lane(
-        line_substring_shape(
-            model,
-            data,
-            ctx.left_frame_cache.expect("unary frame cache"),
-            range,
-            normalized,
-        ),
-        ctx.lane.is_array(),
+        line_substring_shape(ctx.model, data, ctx.cache, range, normalized),
+        ctx.op.lane.is_array(),
     )
 }
 
 /// ``line_interpolate_point_m`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_interpolate_point_m(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     m: &F64Param,
 ) -> Result<Shape> {
     linref_point_lane(
@@ -929,7 +989,7 @@ pub(crate) fn unary_line_interpolate_point_m(
 /// ``line_substring_m`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_line_substring_m(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     start_m: &F64Param,
     end_m: &F64Param,
 ) -> Result<Shape> {
@@ -944,7 +1004,7 @@ pub(crate) fn unary_line_substring_m(
 /// ``interpolate_m`` kernel shared by the spine-routed free function.
 pub(crate) fn unary_interpolate_m(
     data: &PreparedPlan,
-    ctx: &OpCtx<'_>,
+    ctx: &CachelessRowContext<'_>,
     start_m: &F64Param,
     end_m: &F64Param,
     overwrite: bool,

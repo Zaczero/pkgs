@@ -6,12 +6,12 @@ use geographiclib_rs::{Geodesic, PolygonArea, Winding, geodesic_capability as ca
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo, GeodesicInterpolateInfo,
-    GeodesicInverseInfo, ensure_geographic_lonlat, inverse_distance, inverse_distance_azimuths,
-    with_geodesic_erased_at,
+    GeodesicInverseInfo, inverse_distance, inverse_distance_azimuths, with_geodesic_erased_at,
 };
 use crate::error::Result;
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    Coordinates, Polygon, REDUCE_LANES, ReduceSimd, Shape, canonicalize_zero,
+    Coordinates, Point, Polygon, REDUCE_LANES, ReduceSimd, Shape, canonicalize_zero,
     same_topological_coordinate, simd_mask_all,
 };
 
@@ -132,18 +132,22 @@ pub(crate) fn with_resolved_ellipsoid_metric_at<T>(
     with_geodesic_erased_at(crs, shapes, state, |error| error, f)
 }
 
-pub(crate) fn geodesic_shape_area(geodesic: &Geodesic, shape: &Shape) -> f64 {
+pub(crate) fn geodesic_shape_area(
+    geodesic: &Geodesic,
+    shape: &Shape,
+    frame: GeographicFrame,
+) -> f64 {
     canonicalize_zero(match shape {
-        Shape::Polygon(polygon) => geodesic_polygon_area(geodesic, polygon),
+        Shape::Polygon(polygon) => geodesic_polygon_area(geodesic, polygon, frame),
         Shape::MultiPolygon(polygons) => compensated_sum(
             polygons
                 .iter()
-                .map(|polygon| geodesic_polygon_area(geodesic, polygon)),
+                .map(|polygon| geodesic_polygon_area(geodesic, polygon, frame)),
         ),
         Shape::GeometryCollection(geometries) => compensated_sum(
             geometries
                 .iter()
-                .map(|geometry| geodesic_shape_area(geodesic, geometry)),
+                .map(|geometry| geodesic_shape_area(geodesic, geometry, frame)),
         ),
         Shape::Point(_)
         | Shape::MultiPoint(_)
@@ -153,50 +157,62 @@ pub(crate) fn geodesic_shape_area(geodesic: &Geodesic, shape: &Shape) -> f64 {
     })
 }
 
-pub(crate) fn geodesic_shape_length(geodesic: &Geodesic, shape: &Shape) -> f64 {
+pub(crate) fn geodesic_shape_length(
+    geodesic: &Geodesic,
+    shape: &Shape,
+    frame: GeographicFrame,
+) -> f64 {
     canonicalize_zero(match shape {
         Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => 0.0,
-        Shape::LineString(points) => geodesic_line_length(geodesic, points),
+        Shape::LineString(points) => geodesic_line_length(geodesic, points, frame),
         Shape::MultiLineString(lines) => compensated_sum(
             lines
                 .iter()
-                .map(|line| geodesic_line_length(geodesic, line)),
+                .map(|line| geodesic_line_length(geodesic, line, frame)),
         ),
-        Shape::Polygon(polygon) => geodesic_polygon_perimeter(geodesic, polygon),
+        Shape::Polygon(polygon) => geodesic_polygon_perimeter(geodesic, polygon, frame),
         Shape::MultiPolygon(polygons) => compensated_sum(
             polygons
                 .iter()
-                .map(|polygon| geodesic_polygon_perimeter(geodesic, polygon)),
+                .map(|polygon| geodesic_polygon_perimeter(geodesic, polygon, frame)),
         ),
         Shape::GeometryCollection(geometries) => compensated_sum(
             geometries
                 .iter()
-                .map(|geometry| geodesic_shape_length(geodesic, geometry)),
+                .map(|geometry| geodesic_shape_length(geodesic, geometry, frame)),
         ),
     })
 }
 
-pub(crate) fn geodesic_polygon_area(geodesic: &Geodesic, polygon: &Polygon) -> f64 {
+pub(crate) fn geodesic_polygon_area(
+    geodesic: &Geodesic,
+    polygon: &Polygon,
+    frame: GeographicFrame,
+) -> f64 {
     // Orientation-independent, matching planar `Polygon::area`: the unsigned
     // shell area less the unsigned hole areas. The raw geodesic area is signed
     // (negative for clockwise rings), so take magnitudes.
     compensated_sum(
-        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell).abs()).chain(
+        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell, frame).abs()).chain(
             polygon
                 .holes
                 .iter()
-                .map(|hole| -geodesic_ring_area(geodesic, hole).abs()),
+                .map(|hole| -geodesic_ring_area(geodesic, hole, frame).abs()),
         ),
     )
 }
 
-pub(crate) fn geodesic_polygon_perimeter(geodesic: &Geodesic, polygon: &Polygon) -> f64 {
+pub(crate) fn geodesic_polygon_perimeter(
+    geodesic: &Geodesic,
+    polygon: &Polygon,
+    frame: GeographicFrame,
+) -> f64 {
     compensated_sum(
-        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell).0).chain(
+        std::iter::once(geodesic_ring_measure(geodesic, &polygon.shell, frame).0).chain(
             polygon
                 .holes
                 .iter()
-                .map(|hole| geodesic_ring_measure(geodesic, hole).0),
+                .map(|hole| geodesic_ring_measure(geodesic, hole, frame).0),
         ),
     )
 }
@@ -204,11 +220,17 @@ pub(crate) fn geodesic_polygon_perimeter(geodesic: &Geodesic, polygon: &Polygon)
 pub(crate) fn geodesic_ring_measure<C: Coordinates + ?Sized>(
     geodesic: &Geodesic,
     ring: &C,
+    frame: GeographicFrame,
 ) -> (f64, f64) {
     geodesic_ring_measure_lonlat(
         geodesic,
         ring.coord_count(),
-        ring.iter_coords().map(|point| (point.x, point.y)),
+        ring.iter_coords().map(|point| {
+            let point = frame
+                .to_geodesic_point(point)
+                .expect("geographic metric received admitted coordinates");
+            (point.x, point.y)
+        }),
     )
 }
 
@@ -216,12 +238,18 @@ pub(crate) fn geodesic_ring_measure_columns(
     geodesic: &Geodesic,
     xs: &[f64],
     ys: &[f64],
+    frame: GeographicFrame,
 ) -> (f64, f64) {
     debug_assert_eq!(xs.len(), ys.len());
     geodesic_ring_measure_lonlat(
         geodesic,
         xs.len(),
-        std::iter::zip(xs, ys).map(|(&lon, &lat)| (lon, lat)),
+        std::iter::zip(xs, ys).map(|(&lon, &lat)| {
+            let point = frame
+                .to_geodesic_point(Point::new_raw_xy(lon, lat))
+                .expect("geographic metric received admitted coordinates");
+            (point.x, point.y)
+        }),
     )
 }
 
@@ -231,11 +259,20 @@ pub(crate) fn geodesic_ring_measure_columns(
 /// edge, but area measurement discards the distance. The public raw inverse
 /// API accepts the narrower `AREA` mask, so keep the same transit/reduction
 /// rules while avoiding the unused perimeter work and its accumulator.
-fn geodesic_ring_area<C: Coordinates + ?Sized>(geodesic: &Geodesic, ring: &C) -> f64 {
+fn geodesic_ring_area<C: Coordinates + ?Sized>(
+    geodesic: &Geodesic,
+    ring: &C,
+    frame: GeographicFrame,
+) -> f64 {
     if ring.coord_count() < 3 {
         return 0.0;
     }
-    let mut points = ring.iter_coords().map(|point| (point.x, point.y));
+    let mut points = ring.iter_coords().map(|point| {
+        let point = frame
+            .to_geodesic_point(point)
+            .expect("geographic metric received admitted coordinates");
+        (point.x, point.y)
+    });
     let Some((initial_lon, initial_lat)) = points.next() else {
         return 0.0;
     };
@@ -338,24 +375,40 @@ fn geodesic_ring_measure_lonlat(
 pub(crate) fn geodesic_line_length<C: Coordinates + ?Sized>(
     geodesic: &Geodesic,
     points: &C,
+    frame: GeographicFrame,
 ) -> f64 {
     if let Some((xs, ys)) = points.xy_columns() {
-        return geodesic_line_length_columns(geodesic, xs, ys);
+        return geodesic_line_length_columns(geodesic, xs, ys, frame);
     }
-    compensated_sum(
-        points
-            .segment_pairs()
-            .map(|[start, end]| geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)),
-    )
+    compensated_sum(points.segment_pairs().map(|[start, end]| {
+        let start = frame
+            .to_geodesic_point(start)
+            .expect("geographic metric received admitted coordinates");
+        let end = frame
+            .to_geodesic_point(end)
+            .expect("geographic metric received admitted coordinates");
+        geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)
+    }))
 }
 
-pub(crate) fn geodesic_line_length_columns(geodesic: &Geodesic, xs: &[f64], ys: &[f64]) -> f64 {
+pub(crate) fn geodesic_line_length_columns(
+    geodesic: &Geodesic,
+    xs: &[f64],
+    ys: &[f64],
+    frame: GeographicFrame,
+) -> f64 {
     debug_assert_eq!(xs.len(), ys.len());
-    compensated_sum(
-        xs.array_windows::<2>()
-            .zip(ys.array_windows::<2>())
-            .map(|([x0, x1], [y0, y1])| geodesic_segment_length(geodesic, *x0, *y0, *x1, *y1)),
-    )
+    compensated_sum(xs.array_windows::<2>().zip(ys.array_windows::<2>()).map(
+        |([x0, x1], [y0, y1])| {
+            let start = frame
+                .to_geodesic_point(Point::new_raw_xy(*x0, *y0))
+                .expect("geographic metric received admitted coordinates");
+            let end = frame
+                .to_geodesic_point(Point::new_raw_xy(*x1, *y1))
+                .expect("geographic metric received admitted coordinates");
+            geodesic_segment_length(geodesic, start.x, start.y, end.x, end.y)
+        },
+    ))
 }
 
 fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
@@ -368,14 +421,6 @@ fn compensated_sum(values: impl IntoIterator<Item = f64>) -> f64 {
         sum = next;
     }
     sum
-}
-
-pub(crate) fn ensure_geographic_columns(xs: &[f64], ys: &[f64]) -> Result<()> {
-    debug_assert_eq!(xs.len(), ys.len());
-    for (&x, &y) in std::iter::zip(xs, ys) {
-        ensure_geographic_lonlat(x, y)?;
-    }
-    Ok(())
 }
 
 fn geodesic_segment_length(

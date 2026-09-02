@@ -9,16 +9,609 @@
 //! raw-pointer helpers (which stay private in the parent `crs` module) via
 //! `use super::*`; re-exported at `crs` so `crs::transform` callers resolve.
 
+use std::ops::Range;
+use std::sync::Arc;
+
 use crate::crs::{
     CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
     TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformOptions, TransformPlan, info,
-    info_with_state, proj_error_message, runtime_state_snapshot, with_proj_operation_at,
+    info_with_state, proj_error_message, runtime_state_snapshot, transform_in_core_xy_batch,
+    with_proj_operation_at,
 };
 use crate::error::Result;
-use crate::geometry::{LineSeq, MOrdinate, ZOrdinate};
+use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
+use crate::geometry::{CoordWindow, LineSeq, MOrdinate, ZOrdinate};
 
 /// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
+
+/// Backend-neutral edge samples for one bounds row. Geographic source windows
+/// are split at their native seam in visualization axis order, so neither
+/// execution backend has to interpret periodic topology.
+pub(super) struct BoundsSamplePlan {
+    pub(super) x: Vec<f64>,
+    pub(super) y: Vec<f64>,
+    pub(super) z: Option<Vec<f64>>,
+    pub(super) epoch: Option<[f64; 1]>,
+    source_windows: Vec<[f64; 2]>,
+    source_latitude_bounds: [f64; 2],
+    source_frame: Option<GeographicFrame>,
+    target_frame: Option<GeographicFrame>,
+    source_full_longitude: bool,
+    target_poles: [bool; 2],
+}
+
+impl BoundsSamplePlan {
+    pub(super) fn new_2d(
+        bounds: (f64, f64, f64, f64),
+        densify: u32,
+        source_frame: Option<GeographicFrame>,
+        target_frame: Option<GeographicFrame>,
+        epoch: Option<f64>,
+    ) -> Result<Self> {
+        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.2, source_frame)?;
+        let source_latitude_bounds =
+            admitted_source_latitude_bounds(source_frame, bounds.1, bounds.3)?;
+        let edge_points = densify as usize + 2;
+        let capacity = windows
+            .len()
+            .checked_mul(4)
+            .and_then(|value| value.checked_mul(edge_points))
+            .ok_or_else(|| GeometryErrorKind::message("bounds sample count overflows usize"))?;
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        crate::try_reserve_vec(&mut x, capacity)?;
+        crate::try_reserve_vec(&mut y, capacity)?;
+        for [west, east] in windows.iter().copied() {
+            let (south, north) = (bounds.1, bounds.3);
+            push_edge_2d(&mut x, &mut y, (west, south), (east, south), edge_points);
+            push_edge_2d(&mut x, &mut y, (east, south), (east, north), edge_points);
+            push_edge_2d(&mut x, &mut y, (east, north), (west, north), edge_points);
+            push_edge_2d(&mut x, &mut y, (west, north), (west, south), edge_points);
+        }
+        Ok(Self {
+            x,
+            y,
+            z: None,
+            epoch: epoch.map(|value| [value]),
+            source_windows: windows,
+            source_latitude_bounds,
+            source_frame,
+            target_frame,
+            source_full_longitude,
+            target_poles: [false; 2],
+        })
+    }
+
+    pub(super) fn new_3d(
+        bounds: TransformedBounds3d,
+        densify: u32,
+        source_frame: Option<GeographicFrame>,
+        target_frame: Option<GeographicFrame>,
+        epoch: Option<f64>,
+    ) -> Result<Self> {
+        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.3, source_frame)?;
+        let source_latitude_bounds =
+            admitted_source_latitude_bounds(source_frame, bounds.1, bounds.4)?;
+        let edge_points = densify as usize + 2;
+        let capacity = windows
+            .len()
+            .checked_mul(12)
+            .and_then(|value| value.checked_mul(edge_points))
+            .ok_or_else(|| GeometryErrorKind::message("bounds sample count overflows usize"))?;
+        let mut x = Vec::new();
+        let mut y = Vec::new();
+        let mut z = Vec::new();
+        crate::try_reserve_vec(&mut x, capacity)?;
+        crate::try_reserve_vec(&mut y, capacity)?;
+        crate::try_reserve_vec(&mut z, capacity)?;
+        for [west, east] in windows.iter().copied() {
+            let (south, north) = (bounds.1, bounds.4);
+            for (x0, x1, y0, y1, z0, z1) in [
+                (west, east, south, south, bounds.2, bounds.2),
+                (west, east, south, south, bounds.5, bounds.5),
+                (west, east, north, north, bounds.2, bounds.2),
+                (west, east, north, north, bounds.5, bounds.5),
+                (west, west, south, north, bounds.2, bounds.2),
+                (west, west, south, north, bounds.5, bounds.5),
+                (east, east, south, north, bounds.2, bounds.2),
+                (east, east, south, north, bounds.5, bounds.5),
+                (west, west, south, south, bounds.2, bounds.5),
+                (west, west, north, north, bounds.2, bounds.5),
+                (east, east, south, south, bounds.2, bounds.5),
+                (east, east, north, north, bounds.2, bounds.5),
+            ] {
+                push_edge_3d(
+                    &mut x,
+                    &mut y,
+                    &mut z,
+                    (x0, y0, z0),
+                    (x1, y1, z1),
+                    edge_points,
+                );
+            }
+        }
+        Ok(Self {
+            x,
+            y,
+            z: Some(z),
+            epoch: epoch.map(|value| [value]),
+            source_windows: windows,
+            source_latitude_bounds,
+            source_frame,
+            target_frame,
+            source_full_longitude,
+            target_poles: [false; 2],
+        })
+    }
+
+    pub(super) fn include_target_poles(
+        &mut self,
+        mut inverse: impl FnMut(f64, f64) -> Result<Option<(f64, f64)>>,
+    ) -> Result<()> {
+        // An operation may have no inverse at one physical pole (for example,
+        // a north-polar projection at the south pole). The executor reports
+        // that domain miss as `None`; all actual execution failures remain
+        // errors so they cannot silently erase a contained pole.
+        let Some(frame) = self.target_frame else {
+            return Ok(());
+        };
+        for (index, latitude) in [(1, frame.pole()), (0, -frame.pole())] {
+            let Some((longitude, latitude)) = inverse(0.0, latitude)? else {
+                continue;
+            };
+            if self.source_contains(longitude, latitude)? {
+                self.target_poles[index] = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn source_contains(&self, longitude: f64, latitude: f64) -> Result<bool> {
+        if !longitude.is_finite() || !latitude.is_finite() {
+            return Err(GeometryErrorKind::projection(
+                "inverse target-pole transform returned a non-finite coordinate",
+            ));
+        }
+        let latitude = if let Some(frame) = self.source_frame {
+            Latitude::try_new(frame, latitude)
+                .map_err(map_geographic_conversion_error)?
+                .get()
+        } else {
+            latitude
+        };
+        if !(self.source_latitude_bounds[0] < latitude && latitude < self.source_latitude_bounds[1])
+        {
+            return Ok(false);
+        }
+        let longitude = if let Some(frame) = self.source_frame {
+            frame
+                .longitude()
+                .canonicalize(longitude)
+                .map_err(map_geographic_conversion_error)?
+                .get()
+        } else {
+            longitude
+        };
+        Ok(self
+            .source_windows
+            .iter()
+            .any(|[west, east]| *west < longitude && longitude < *east))
+    }
+
+    pub(super) fn finish_2d(mut self) -> Result<(f64, f64, f64, f64)> {
+        let horizontal = accumulate_horizontal(
+            &mut self.x,
+            &self.y,
+            self.target_frame,
+            self.source_full_longitude,
+            self.target_poles,
+        )?;
+        Ok(horizontal.into())
+    }
+
+    pub(super) fn finish_3d(mut self) -> Result<TransformedBounds3d> {
+        let horizontal = accumulate_horizontal(
+            &mut self.x,
+            &self.y,
+            self.target_frame,
+            self.source_full_longitude,
+            self.target_poles,
+        )?;
+        let z = self.z.expect("3D bounds plan retains its z lane");
+        let (minz, maxz) = ordered_extrema(&z);
+        Ok((
+            horizontal[0],
+            horizontal[1],
+            minz,
+            horizontal[2],
+            horizontal[3],
+            maxz,
+        ))
+    }
+
+    pub(super) fn enter_in_core(&mut self) -> Result<()> {
+        if let Some(frame) = self
+            .source_frame
+            .filter(|frame| *frame != GeographicFrame::crs84())
+        {
+            frame
+                .to_geodesic_lanes(&mut self.x, &mut self.y)
+                .map_err(map_geographic_conversion_error)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn leave_in_core(&mut self) -> Result<()> {
+        if let Some(frame) = self.target_frame {
+            frame
+                .from_geodesic_lanes(&mut self.x, &mut self.y)
+                .map_err(map_geographic_conversion_error)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn transform_in_core_xy_with_frames(
+    operation: &crate::crs::InCoreTransform,
+    source_frame: Option<GeographicFrame>,
+    target_frame: Option<GeographicFrame>,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> Result<()> {
+    if let Some(frame) = source_frame.filter(|frame| *frame != GeographicFrame::crs84()) {
+        frame
+            .to_geodesic_lanes(x, y)
+            .map_err(map_geographic_conversion_error)?;
+    }
+    transform_in_core_xy_batch(operation, x, y)?;
+    if let Some(frame) = target_frame {
+        frame
+            .from_geodesic_lanes(x, y)
+            .map_err(map_geographic_conversion_error)?;
+    }
+    Ok(())
+}
+
+fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Error {
+    match error {
+        GeographicError::LatitudeOutOfRange { value } => GeometryErrorKind::projection(format!(
+            "latitude {value:e} is outside the geographic coordinate domain"
+        ))
+        .into(),
+        GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
+        other => CrsError::invalid(other.to_string()).into(),
+    }
+}
+
+fn source_windows(
+    west: f64,
+    east: f64,
+    frame: Option<GeographicFrame>,
+) -> Result<(Vec<[f64; 2]>, bool)> {
+    let Some(frame) = frame else {
+        let mut windows = Vec::new();
+        crate::try_reserve_vec(&mut windows, 1)?;
+        windows.push([west, east]);
+        return Ok((windows, false));
+    };
+    let axis = frame.longitude();
+    let raw_span = east - west;
+    let full = !raw_span.is_finite() || raw_span.abs() >= axis.period();
+    let west = axis
+        .canonicalize(west)
+        .map_err(|error| CrsError::invalid(error.to_string()))?
+        .get();
+    let east = axis
+        .canonicalize(east)
+        .map_err(|error| CrsError::invalid(error.to_string()))?
+        .get();
+    let mut windows = Vec::new();
+    crate::try_reserve_vec(&mut windows, 2)?;
+    if full {
+        windows.push([-axis.half_period(), axis.half_period()]);
+        return Ok((windows, true));
+    }
+    if west <= east {
+        windows.push([west, east]);
+    } else {
+        windows.push([west, axis.half_period()]);
+        windows.push([-axis.half_period(), east]);
+    }
+    Ok((windows, false))
+}
+
+fn admitted_source_latitude_bounds(
+    frame: Option<GeographicFrame>,
+    south: f64,
+    north: f64,
+) -> Result<[f64; 2]> {
+    let Some(frame) = frame else {
+        return Ok([south, north]);
+    };
+    Ok([
+        Latitude::try_new(frame, south)
+            .map_err(map_geographic_conversion_error)?
+            .get(),
+        Latitude::try_new(frame, north)
+            .map_err(map_geographic_conversion_error)?
+            .get(),
+    ])
+}
+
+fn push_edge_2d(
+    x: &mut Vec<f64>,
+    y: &mut Vec<f64>,
+    start: (f64, f64),
+    end: (f64, f64),
+    points: usize,
+) {
+    for index in 0..points {
+        let fraction = index as f64 / (points - 1) as f64;
+        x.push(interpolate(start.0, end.0, fraction));
+        y.push(interpolate(start.1, end.1, fraction));
+    }
+}
+
+fn push_edge_3d(
+    x: &mut Vec<f64>,
+    y: &mut Vec<f64>,
+    z: &mut Vec<f64>,
+    start: (f64, f64, f64),
+    end: (f64, f64, f64),
+    points: usize,
+) {
+    for index in 0..points {
+        let fraction = index as f64 / (points - 1) as f64;
+        x.push(interpolate(start.0, end.0, fraction));
+        y.push(interpolate(start.1, end.1, fraction));
+        z.push(interpolate(start.2, end.2, fraction));
+    }
+}
+
+fn interpolate(start: f64, end: f64, fraction: f64) -> f64 {
+    start * (1.0 - fraction) + end * fraction
+}
+
+fn accumulate_horizontal(
+    x: &mut [f64],
+    y: &[f64],
+    target_frame: Option<GeographicFrame>,
+    source_full_longitude: bool,
+    target_poles: [bool; 2],
+) -> Result<[f64; 4]> {
+    let Some(frame) = target_frame else {
+        let (minx, maxx) = ordered_extrema(x);
+        let (miny, maxy) = ordered_extrema(y);
+        return Ok([minx, miny, maxx, maxy]);
+    };
+    let axis = frame.longitude();
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    for (longitude, &latitude) in x.iter_mut().zip(y) {
+        let latitude = Latitude::try_new(frame, latitude)
+            .map_err(|error| CrsError::invalid(error.to_string()))?;
+        south = south.min(latitude.get());
+        north = north.max(latitude.get());
+        *longitude = axis
+            .canonicalize(*longitude)
+            .map_err(|error| CrsError::invalid(error.to_string()))?
+            .get();
+    }
+    if target_poles[0] {
+        south = -frame.pole();
+    }
+    if target_poles[1] {
+        north = frame.pole();
+    }
+    let interval = if source_full_longitude || target_poles.into_iter().any(|pole| pole) {
+        CircularInterval::Full
+    } else {
+        x.sort_unstable_by(f64::total_cmp);
+        let mut best_gap = -1.0;
+        let mut best_start = 0.0;
+        for index in 0..x.len() {
+            let (gap, start) = if index + 1 == x.len() {
+                ((axis.period() - x[index]) + x[0], x[0])
+            } else {
+                (x[index + 1] - x[index], x[index + 1])
+            };
+            if gap > best_gap || (gap.total_cmp(&best_gap).is_eq() && start < best_start) {
+                best_gap = gap;
+                best_start = start;
+            }
+        }
+        CircularInterval::try_arc(axis, best_start, axis.period() - best_gap)
+            .map_err(|error| CrsError::invalid(error.to_string()))?
+    };
+    let (west, east) = match interval {
+        CircularInterval::Full => (-axis.half_period(), axis.half_period()),
+        CircularInterval::Arc { .. } => interval
+            .west_east(axis)
+            .expect("non-empty arc has public endpoints"),
+        CircularInterval::Empty => unreachable!("bounds sample plan is non-empty"),
+    };
+    Ok([west, south, east, north])
+}
+
+fn ordered_extrema(values: &[f64]) -> (f64, f64) {
+    let mut low = values[0];
+    let mut high = values[0];
+    for &value in &values[1..] {
+        low = low.min(value);
+        high = high.max(value);
+    }
+    (low, high)
+}
+
+#[cfg(test)]
+mod bounds_plan_tests {
+    use super::*;
+    use crate::geographic::AngularFactor;
+
+    fn frame(radians_per_unit: f64, prime_meridian: f64) -> GeographicFrame {
+        GeographicFrame::try_new(
+            AngularFactor::try_new("longitude", radians_per_unit).unwrap(),
+            AngularFactor::try_new("latitude", radians_per_unit).unwrap(),
+            prime_meridian,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn wrapped_source_is_split_into_two_bounded_backend_windows() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let samples =
+            BoundsSamplePlan::new_2d((170.0, -10.0, -170.0, 10.0), 3, Some(degrees), None, None)
+                .unwrap();
+        assert_eq!(samples.x.len(), 2 * 4 * (3 + 2));
+        assert!(
+            samples
+                .x
+                .iter()
+                .all(|value| (-180.0..=180.0).contains(value))
+        );
+        assert!(samples.x.contains(&-180.0));
+        assert!(samples.x.contains(&180.0));
+    }
+
+    #[test]
+    fn full_unwrapped_band_stays_full_in_target_native_units() {
+        let grads = frame(std::f64::consts::PI / 200.0, 0.0);
+        let samples = BoundsSamplePlan::new_2d(
+            (0.0, -100.0, 400.0, 100.0),
+            2,
+            Some(grads),
+            Some(grads),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            samples.finish_2d().unwrap(),
+            (
+                -grads.longitude().half_period(),
+                -grads.pole(),
+                grads.longitude().half_period(),
+                grads.pole(),
+            )
+        );
+    }
+
+    #[test]
+    fn geographic_target_uses_smallest_closed_periodic_cover() {
+        let radians = frame(1.0, 2.0_f64.to_radians());
+        let mut samples =
+            BoundsSamplePlan::new_2d((0.0, 0.0, 1.0, 1.0), 2, None, Some(radians), None).unwrap();
+        for (index, value) in samples.x.iter_mut().enumerate() {
+            *value = if index % 2 == 0 {
+                179.0_f64.to_radians()
+            } else {
+                (-179.0_f64).to_radians()
+            };
+        }
+        samples.y.fill(45.0_f64.to_radians());
+        let bounds = samples.finish_2d().unwrap();
+        assert_eq!(bounds.0, 179.0_f64.to_radians());
+        assert_eq!(bounds.2, (-179.0_f64).to_radians());
+        assert_eq!(bounds.1, 45.0_f64.to_radians());
+        assert_eq!(bounds.3, 45.0_f64.to_radians());
+    }
+
+    #[test]
+    fn target_pole_flags_use_strict_split_source_containment() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let mut samples = BoundsSamplePlan::new_2d(
+            (170.0, -1.0, -170.0, 1.0),
+            2,
+            Some(degrees),
+            Some(degrees),
+            None,
+        )
+        .unwrap();
+        samples
+            .include_target_poles(|_, target_latitude| {
+                Ok(Some((
+                    if target_latitude > 0.0 { 175.0 } else { -175.0 },
+                    0.0,
+                )))
+            })
+            .unwrap();
+        assert_eq!(samples.target_poles, [true, true]);
+
+        let mut boundary = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 10.0, 1.0),
+            2,
+            Some(degrees),
+            Some(degrees),
+            None,
+        )
+        .unwrap();
+        boundary
+            .include_target_poles(|_, _| Ok(Some((0.0, 0.0))))
+            .unwrap();
+        assert_eq!(boundary.target_poles, [false, false]);
+
+        let mut admitted_boundary = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 10.0, degrees.pole().next_up()),
+            2,
+            Some(degrees),
+            Some(degrees),
+            None,
+        )
+        .unwrap();
+        admitted_boundary
+            .include_target_poles(|_, _| Ok(Some((5.0, degrees.pole()))))
+            .unwrap();
+        assert_eq!(admitted_boundary.target_poles, [false, false]);
+    }
+
+    #[test]
+    fn target_pole_probe_errors_are_not_treated_as_absent_poles() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let mut samples =
+            BoundsSamplePlan::new_2d((-1.0, -1.0, 1.0, 1.0), 2, None, Some(degrees), None).unwrap();
+        let error = samples.include_target_poles(|_, _| {
+            Err(GeometryErrorKind::projection("target pole probe failed"))
+        });
+        assert!(error.is_err());
+    }
+
+    #[test]
+    fn target_pole_clamping_preserves_three_dimensional_vertical_extrema() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let mut samples = BoundsSamplePlan::new_3d(
+            (-1.0, -1.0, 3.0, 1.0, 1.0, 7.0),
+            2,
+            None,
+            Some(degrees),
+            None,
+        )
+        .unwrap();
+        samples
+            .include_target_poles(|_, _| Ok(Some((0.0, 0.0))))
+            .unwrap();
+        assert_eq!(
+            samples.finish_3d().unwrap(),
+            (-180.0, -90.0, 3.0, 180.0, 90.0, 7.0)
+        );
+    }
+
+    #[test]
+    fn xyz_and_epoch_plan_share_one_lane_cardinality() {
+        let samples = BoundsSamplePlan::new_3d(
+            (-1.0, -2.0, 3.0, 4.0, 5.0, 6.0),
+            7,
+            None,
+            None,
+            Some(2020.0),
+        )
+        .unwrap();
+        assert_eq!(samples.x.len(), 12 * (7 + 2));
+        assert_eq!(samples.x.len(), samples.y.len());
+        assert_eq!(samples.x.len(), samples.z.as_ref().unwrap().len());
+        assert_eq!(samples.epoch, Some([2020.0]));
+    }
+}
 
 pub(crate) fn transform(shape: &Shape, source: &str, target: &str) -> Result<Shape> {
     let state = runtime_state_snapshot()?;
@@ -316,13 +909,12 @@ fn validate_transform_bounds_with_state(
     bounds: (f64, f64, f64, f64),
     state: &RuntimeState,
 ) -> Result<()> {
-    if is_geographic_crs_with_state(source, state)? {
-        if all_finite(&<[f64; 4]>::from(bounds))
-            && (-180.0..=180.0).contains(&bounds.0)
-            && (-180.0..=180.0).contains(&bounds.2)
-            && (-90.0..=90.0).contains(&bounds.1)
-            && (-90.0..=90.0).contains(&bounds.3)
+    if let Some(frame) = info_with_state(source, state)?.geographic_frame() {
+        if bounds.0.is_finite()
+            && bounds.2.is_finite()
             && bounds.1 <= bounds.3
+            && Latitude::try_new(frame, bounds.1).is_ok()
+            && Latitude::try_new(frame, bounds.3).is_ok()
         {
             return Ok(());
         }
@@ -348,13 +940,14 @@ fn validate_transform_bounds_3d_with_state(
     bounds: (f64, f64, f64, f64, f64, f64),
     state: &RuntimeState,
 ) -> Result<()> {
-    if is_geographic_crs_with_state(source, state)? {
-        if all_finite(&<[f64; 6]>::from(bounds))
-            && (-180.0..=180.0).contains(&bounds.0)
-            && (-180.0..=180.0).contains(&bounds.3)
-            && (-90.0..=90.0).contains(&bounds.1)
-            && (-90.0..=90.0).contains(&bounds.4)
+    if let Some(frame) = info_with_state(source, state)?.geographic_frame() {
+        if bounds.0.is_finite()
+            && bounds.3.is_finite()
             && bounds.1 <= bounds.4
+            && Latitude::try_new(frame, bounds.1).is_ok()
+            && Latitude::try_new(frame, bounds.4).is_ok()
+            && bounds.2.is_finite()
+            && bounds.5.is_finite()
             && bounds.2 <= bounds.5
         {
             return Ok(());
@@ -369,11 +962,11 @@ fn validate_transform_bounds_3d_with_state(
 /// component is geographic (e.g. EPSG:9707). Uses the same recursive kind
 /// walk as [`CrsInfo::is_geographic`].
 pub(crate) fn is_geographic_crs(value: &str) -> Result<bool> {
-    Ok(info(value)?.is_geographic())
+    Ok(info(value)?.geographic_frame().is_some())
 }
 
 pub(crate) fn is_geographic_crs_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
-    Ok(info_with_state(value, state)?.is_geographic())
+    Ok(info_with_state(value, state)?.geographic_frame().is_some())
 }
 
 pub(crate) fn transform_coordinates_with_pipeline(
@@ -410,231 +1003,337 @@ pub(crate) fn transform_proj_shapes(
     source_epoch: Option<f64>,
     execution: &crate::crs::TransformExecution,
 ) -> Result<Vec<Shape>> {
-    let mut scratch = TransformScratch::new();
-    for shape in shapes {
-        scratch.extend_shape(shape);
+    let mut output = TransformOutputPlan::try_new(shapes)?;
+    if source_epoch.is_none() {
+        transformer.require_epoch_lane()?;
     }
-    scratch.transform(transformer, source_epoch, execution)?;
-    let (xy_len, xyz_len) = (scratch.xy.xs.len(), scratch.xyz.xs.len());
-    let mut cursor = scratch.cursor();
-    let rebuilt = shapes
-        .iter()
-        .map(|shape| rebuild_shape_columns(shape, &mut cursor))
-        .collect();
-    debug_assert_eq!(cursor.xy_offset, xy_len);
-    debug_assert_eq!(cursor.xyz_offset, xyz_len);
-    Ok(rebuilt)
+    output.execute(|x, y, z| {
+        let mut epoch = source_epoch.map(|epoch| [epoch]);
+        transformer.transform_lanes(
+            x,
+            y,
+            z,
+            epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
+            ProjDirection::Forward,
+            execution,
+        )
+    })?;
+    Ok(output.finish(shapes))
 }
 
-/// One gathered ordinate batch for the transform. Same-axes coordinates from
-/// every input shape are packed contiguously so PROJ runs at most once per
-/// batch and the transformed columns feed the rebuild directly — no
-/// original-order scatter buffer, and no Z lane allocated for XY-only input.
-struct TransformLaneBatch {
-    xs: Vec<f64>,
-    ys: Vec<f64>,
+const TRANSFORM_CHUNK_BYTES: usize = 1024 * 1024;
+const XY_CHUNK_VERTICES: usize = TRANSFORM_CHUNK_BYTES / (2 * size_of::<f64>());
+const XYZ_CHUNK_VERTICES: usize = TRANSFORM_CHUNK_BYTES / (3 * size_of::<f64>());
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutputBatch {
+    Xy,
+    Xyz,
 }
 
-struct TransformZLaneBatch {
-    xs: Vec<f64>,
-    ys: Vec<f64>,
-    zs: Vec<f64>,
+#[derive(Clone, Copy)]
+enum OutputCoordSource<'a> {
+    Point(&'a Point),
+    Sequence(&'a CoordSeq),
 }
 
-/// The two gathered lane batches (XY and XYZ). Each input sequence is
-/// homogeneous, so it lands wholly in one batch; the rebuild walks the shapes
-/// in the same order and pulls each sequence's transformed columns straight
-/// from its batch via the paired cursor offsets.
-struct TransformScratch {
-    xy: TransformLaneBatch,
-    xyz: TransformZLaneBatch,
-}
-
-impl TransformScratch {
-    const fn new() -> Self {
-        Self {
-            xy: TransformLaneBatch {
-                xs: Vec::new(),
-                ys: Vec::new(),
-            },
-            xyz: TransformZLaneBatch {
-                xs: Vec::new(),
-                ys: Vec::new(),
-                zs: Vec::new(),
-            },
+impl OutputCoordSource<'_> {
+    fn batch(self) -> OutputBatch {
+        match self {
+            Self::Point(point) => point.z().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
+            Self::Sequence(seq) => seq.zs().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
         }
     }
 
-    fn extend_shape(&mut self, shape: &Shape) {
-        match shape {
-            Shape::Point(point) => self.extend_point(point),
-            Shape::MultiPoint(points) => self.extend_seq(points),
-            Shape::LineString(points) => self.extend_seq(points),
-            Shape::MultiLineString(lines) => {
-                for line in lines {
-                    self.extend_seq(line);
-                }
-            },
-            Shape::Polygon(polygon) => {
+    fn len(self) -> usize {
+        match self {
+            Self::Point(..) => 1,
+            Self::Sequence(seq) => seq.len(),
+        }
+    }
+
+    fn carried_ms(self) -> Option<Arc<[f64]>> {
+        match self {
+            Self::Point(point) => point.m().map(|m| Arc::from([m])),
+            Self::Sequence(seq) => seq.carried_ms(),
+        }
+    }
+}
+
+/// Visit every coordinate sequence in the same order used by reconstruction.
+/// MultiPoint is one sequence even when its member map contains empty points.
+fn visit_shape_sequences(
+    shape: &Shape,
+    visitor: &mut impl FnMut(OutputCoordSource<'_>) -> Result<()>,
+) -> Result<()> {
+    match shape {
+        Shape::Point(point) => visitor(OutputCoordSource::Point(point))?,
+        Shape::MultiPoint(points) => visitor(OutputCoordSource::Sequence(points))?,
+        Shape::LineString(points) => visitor(OutputCoordSource::Sequence(points))?,
+        Shape::MultiLineString(lines) => {
+            for line in lines {
+                visitor(OutputCoordSource::Sequence(line))?;
+            }
+        },
+        Shape::Polygon(polygon) => {
+            for ring in polygon.rings() {
+                visitor(OutputCoordSource::Sequence(ring))?;
+            }
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons {
                 for ring in polygon.rings() {
-                    self.extend_seq(ring);
+                    visitor(OutputCoordSource::Sequence(ring))?;
                 }
-            },
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons {
-                    for ring in polygon.rings() {
-                        self.extend_seq(ring);
-                    }
-                }
-            },
-            Shape::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    self.extend_shape(geometry);
-                }
-            },
-            Shape::Empty(..) => {},
-        }
+            }
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                visit_shape_sequences(geometry, visitor)?;
+            }
+        },
+        Shape::Empty(..) => {},
     }
+    Ok(())
+}
 
-    fn extend_point(&mut self, point: &Point) {
-        if let Some(z) = point.z() {
-            self.xyz.xs.push(point.x);
-            self.xyz.ys.push(point.y);
-            self.xyz.zs.push(z);
-        } else {
-            self.xy.xs.push(point.x);
-            self.xy.ys.push(point.y);
-        }
-    }
+#[derive(Default)]
+struct OutputCounts {
+    xy_vertices: usize,
+    xyz_vertices: usize,
+    sequences: usize,
+}
 
-    fn extend_seq(&mut self, seq: &CoordSeq) {
-        if seq.is_empty() {
-            return;
-        }
-        if let Some(zs) = seq.zs() {
-            self.xyz.xs.extend_from_slice(seq.xs());
-            self.xyz.ys.extend_from_slice(seq.ys());
-            self.xyz.zs.extend_from_slice(zs);
-        } else {
-            self.xy.xs.extend_from_slice(seq.xs());
-            self.xy.ys.extend_from_slice(seq.ys());
-        }
-    }
-
-    fn transform(
-        &mut self,
-        transformer: &ProjPipeline,
-        source_epoch: Option<f64>,
-        execution: &crate::crs::TransformExecution,
-    ) -> Result<()> {
-        if !self.xy.xs.is_empty() {
-            let mut epoch = broadcast_epoch(transformer, source_epoch)?;
-            transformer.transform_lanes(
-                &mut self.xy.xs,
-                &mut self.xy.ys,
-                None,
-                epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
-                ProjDirection::Forward,
-                execution,
-            )?;
-        }
-        if !self.xyz.xs.is_empty() {
-            let mut epoch = broadcast_epoch(transformer, source_epoch)?;
-            transformer.transform_lanes(
-                &mut self.xyz.xs,
-                &mut self.xyz.ys,
-                Some(&mut self.xyz.zs),
-                epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
-                ProjDirection::Forward,
-                execution,
-            )?;
-        }
+impl OutputCounts {
+    fn add(&mut self, source: OutputCoordSource<'_>) -> Result<()> {
+        self.sequences = self.sequences.checked_add(1).ok_or_else(|| {
+            GeometryErrorKind::message("transform sequence count overflows usize")
+        })?;
+        let vertices = source.len();
+        let total = match source.batch() {
+            OutputBatch::Xy => &mut self.xy_vertices,
+            OutputBatch::Xyz => &mut self.xyz_vertices,
+        };
+        *total = total.checked_add(vertices).ok_or_else(|| {
+            GeometryErrorKind::message("transform coordinate count overflows usize")
+        })?;
         Ok(())
     }
+}
 
-    fn cursor(&self) -> TransformCursor<'_> {
-        TransformCursor {
-            xy_xs: &self.xy.xs,
-            xy_ys: &self.xy.ys,
-            xy_offset: 0,
-            xyz_xs: &self.xyz.xs,
-            xyz_ys: &self.xyz.ys,
-            xyz_zs: &self.xyz.zs,
-            xyz_offset: 0,
+/// One final contiguous coordinate batch. M is carried independently because
+/// it is never transformed; full columns remain Arc-shared and windows are
+/// copied by `carried_ms` before any fallible backend work is published.
+struct OutputColumns {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    zs: Option<Vec<f64>>,
+}
+
+impl OutputColumns {
+    fn try_with_capacity(capacity: usize, has_z: bool) -> Result<Self> {
+        let mut xs = Vec::new();
+        crate::try_reserve_vec(&mut xs, capacity)?;
+        let mut ys = Vec::new();
+        if let Err(error) = crate::try_reserve_vec(&mut ys, capacity) {
+            drop(xs);
+            return Err(error);
         }
+        let zs = if has_z {
+            let mut values = Vec::new();
+            if let Err(error) = crate::try_reserve_vec(&mut values, capacity) {
+                drop((xs, ys));
+                return Err(error);
+            }
+            Some(values)
+        } else {
+            None
+        };
+        Ok(Self { xs, ys, zs })
+    }
+
+    fn append(&mut self, source: OutputCoordSource<'_>) -> Range<usize> {
+        let start = self.xs.len();
+        match source {
+            OutputCoordSource::Point(point) => {
+                debug_assert_eq!(self.zs.is_some(), point.z().is_some());
+                self.xs.push(point.x);
+                self.ys.push(point.y);
+                if let Some(zs) = &mut self.zs {
+                    zs.push(point.z().expect("XYZ output source carries Z"));
+                }
+            },
+            OutputCoordSource::Sequence(seq) => {
+                debug_assert_eq!(self.zs.is_some(), seq.zs().is_some());
+                self.xs.extend_from_slice(seq.xs());
+                self.ys.extend_from_slice(seq.ys());
+                if let (Some(zs), Some(source_zs)) = (&mut self.zs, seq.zs()) {
+                    zs.extend_from_slice(source_zs);
+                }
+            },
+        }
+        start..self.xs.len()
     }
 }
 
-/// The single-element broadcast epoch lane for a PROJ transform, or `None`
-/// when the source carries no coordinate epoch (raising early when the
-/// operation nonetheless requires one). PROJ treats a length-1 time array as
-/// a constant broadcast across every coordinate, so a dynamic-datum transform
-/// needs no per-vertex epoch buffer (see `transform_lanes`).
-fn broadcast_epoch(
-    transformer: &ProjPipeline,
-    source_epoch: Option<f64>,
-) -> Result<Option<[f64; 1]>> {
-    if let Some(epoch) = source_epoch {
-        Ok(Some([epoch]))
-    } else {
-        transformer.require_epoch_lane()?;
-        Ok(None)
+struct OutputCoordSeq {
+    batch: OutputBatch,
+    range: Range<usize>,
+    ms: Option<Arc<[f64]>>,
+}
+
+pub(crate) struct TransformOutputPlan {
+    xy: OutputColumns,
+    xyz: OutputColumns,
+    sequences: Vec<OutputCoordSeq>,
+}
+
+impl TransformOutputPlan {
+    pub(crate) fn try_new(shapes: &[&Shape]) -> Result<Self> {
+        let mut counts = OutputCounts::default();
+        for shape in shapes {
+            visit_shape_sequences(shape, &mut |source| counts.add(source))?;
+        }
+        crate::geometry::types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
+        crate::geometry::types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
+        let mut plan = Self {
+            xy: OutputColumns::try_with_capacity(counts.xy_vertices, false)?,
+            xyz: OutputColumns::try_with_capacity(counts.xyz_vertices, true)?,
+            sequences: Vec::new(),
+        };
+        crate::try_reserve_vec(&mut plan.sequences, counts.sequences)?;
+        for shape in shapes {
+            visit_shape_sequences(shape, &mut |source| plan.push_source(source))?;
+        }
+        Ok(plan)
     }
+
+    fn push_source(&mut self, source: OutputCoordSource<'_>) -> Result<()> {
+        let batch = source.batch();
+        let range = match batch {
+            OutputBatch::Xy => self.xy.append(source),
+            OutputBatch::Xyz => self.xyz.append(source),
+        };
+        crate::try_push_vec(&mut self.sequences, OutputCoordSeq {
+            batch,
+            range,
+            ms: source.carried_ms(),
+        })
+    }
+
+    pub(crate) fn execute(
+        &mut self,
+        mut transform: impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
+    ) -> Result<()> {
+        self.execute_with_capacities(XY_CHUNK_VERTICES, XYZ_CHUNK_VERTICES, &mut transform)
+    }
+
+    fn execute_with_capacities(
+        &mut self,
+        xy_capacity: usize,
+        xyz_capacity: usize,
+        transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
+    ) -> Result<()> {
+        self.execute_axes(false, xy_capacity, transform)?;
+        self.execute_axes(true, xyz_capacity, transform)
+    }
+
+    fn execute_axes(
+        &mut self,
+        has_z: bool,
+        capacity: usize,
+        transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
+    ) -> Result<()> {
+        let columns = if has_z { &mut self.xyz } else { &mut self.xy };
+        execute_batch(columns, capacity, transform)
+    }
+
+    pub(crate) fn finish(self, shapes: &[&Shape]) -> Vec<Shape> {
+        let Self { xy, xyz, sequences } = self;
+        let xy_xs: Arc<[f64]> = xy.xs.into();
+        let xy_ys: Arc<[f64]> = xy.ys.into();
+        let xyz_xs: Arc<[f64]> = xyz.xs.into();
+        let xyz_ys: Arc<[f64]> = xyz.ys.into();
+        let xyz_zs: Arc<[f64]> = xyz.zs.expect("XYZ output columns carry Z").into();
+        let sequences = sequences
+            .into_iter()
+            .map(|owner| {
+                let (xs, ys, zs) = match owner.batch {
+                    OutputBatch::Xy => (&xy_xs, &xy_ys, None),
+                    OutputBatch::Xyz => (&xyz_xs, &xyz_ys, Some(&xyz_zs)),
+                };
+                let window = CoordWindow::from_range(owner.range, xs.len());
+                // SAFETY: the sizing pass checked every final batch against
+                // CoordSeq's offset capacity, append kept all columns in
+                // lockstep, and carried M was checked when it was admitted.
+                unsafe {
+                    CoordSeq::from_columns_unchecked_with_window(
+                        Arc::clone(xs),
+                        Arc::clone(ys),
+                        zs.map(Arc::clone),
+                        owner.ms,
+                        window,
+                    )
+                }
+            })
+            .collect();
+        let mut cursor = TransformCursor {
+            sequences,
+            offset: 0,
+        };
+        shapes
+            .iter()
+            .map(|shape| rebuild_shape_columns(shape, &mut cursor))
+            .collect()
+    }
+}
+
+fn execute_batch(
+    columns: &mut OutputColumns,
+    capacity: usize,
+    transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
+) -> Result<()> {
+    let capacity = capacity.max(1);
+    let OutputColumns { xs, ys, zs } = columns;
+    let mut zs = zs.as_mut().map(Vec::as_mut_slice);
+    let mut offset = 0;
+    while offset < xs.len() {
+        let end = xs.len().min(offset.saturating_add(capacity));
+        transform(
+            &mut xs[offset..end],
+            &mut ys[offset..end],
+            zs.as_deref_mut().map(|values| &mut values[offset..end]),
+        )?;
+        offset = end;
+    }
+    Ok(())
 }
 
 /// Read cursor over the two transformed batches: each shape consumes exactly
 /// the slices it contributed, in order, from the XY or XYZ batch matching its
 /// axes.
-struct TransformCursor<'a> {
-    xy_xs: &'a [f64],
-    xy_ys: &'a [f64],
-    xy_offset: usize,
-    xyz_xs: &'a [f64],
-    xyz_ys: &'a [f64],
-    xyz_zs: &'a [f64],
-    xyz_offset: usize,
+struct TransformCursor {
+    sequences: Vec<CoordSeq>,
+    offset: usize,
 }
 
-struct TransformColumns<'a> {
-    xs: &'a [f64],
-    ys: &'a [f64],
-    zs: Option<&'a [f64]>,
-}
-
-impl<'a> TransformCursor<'a> {
-    /// Take the next `len` XY coordinates from the XY batch.
-    fn take_xy(&mut self, len: usize) -> TransformColumns<'a> {
-        let range = self.xy_offset..self.xy_offset + len;
-        self.xy_offset = range.end;
-        TransformColumns {
-            xs: &self.xy_xs[range.clone()],
-            ys: &self.xy_ys[range],
-            zs: None,
-        }
-    }
-
-    /// Take the next `len` XYZ coordinates from the XYZ batch.
-    fn take_xyz(&mut self, len: usize) -> TransformColumns<'a> {
-        let range = self.xyz_offset..self.xyz_offset + len;
-        self.xyz_offset = range.end;
-        TransformColumns {
-            xs: &self.xyz_xs[range.clone()],
-            ys: &self.xyz_ys[range.clone()],
-            zs: Some(&self.xyz_zs[range]),
-        }
+impl TransformCursor {
+    fn take(&mut self) -> CoordSeq {
+        let seq = std::mem::replace(
+            &mut self.sequences[self.offset],
+            CoordSeq::empty(crate::geometry::CoordinateAxes::XY),
+        );
+        self.offset += 1;
+        seq
     }
 }
 
-fn rebuild_point_columns(point: &Point, cursor: &mut TransformCursor<'_>) -> Point {
-    let cols = if point.z().is_some() {
-        cursor.take_xyz(1)
-    } else {
-        cursor.take_xy(1)
-    };
-    Point::new_unchecked_axes(
-        cols.xs[0],
-        cols.ys[0],
-        ZOrdinate(cols.zs.map(|zs| zs[0])),
+fn rebuild_point_columns(point: &Point, cursor: &mut TransformCursor) -> Point {
+    let transformed = cursor.take().point_at(0);
+    Point::new_raw_axes(
+        transformed.x,
+        transformed.y,
+        ZOrdinate(transformed.z()),
         MOrdinate(point.m()),
     )
 }
@@ -642,7 +1341,7 @@ fn rebuild_point_columns(point: &Point, cursor: &mut TransformCursor<'_>) -> Poi
 /// Rebuild one shape from the transformed batches — original axes are
 /// preserved (2D stays 2D; 3D gets the transformed Z lane). Infallible by
 /// construction.
-fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor<'_>) -> Shape {
+fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Shape {
     match shape {
         Shape::Point(point) => Shape::Point(rebuild_point_columns(point, cursor)),
         Shape::MultiPoint(points) => {
@@ -683,25 +1382,307 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor<'_>) -> Sha
 
 fn rebuild_polygon_columns(
     polygon: &crate::geometry::Polygon,
-    cursor: &mut TransformCursor<'_>,
+    cursor: &mut TransformCursor,
 ) -> crate::geometry::Polygon {
     use crate::geometry::Ring;
     crate::geometry::Polygon {
         // CRS rebuild only rewrites coordinates, preserving ring structure.
-        shell: Ring::from_trusted_closed(rebuild_seq_columns(polygon.shell.coords(), cursor)),
+        shell: Ring::from_closed(rebuild_seq_columns(polygon.shell.coords(), cursor)),
         holes: polygon
             .holes
             .iter()
-            .map(|hole| Ring::from_trusted_closed(rebuild_seq_columns(hole.coords(), cursor)))
+            .map(|hole| Ring::from_closed(rebuild_seq_columns(hole.coords(), cursor)))
             .collect(),
     }
 }
 
-fn rebuild_seq_columns(seq: &CoordSeq, cursor: &mut TransformCursor<'_>) -> CoordSeq {
-    let cols = if seq.zs().is_some() {
-        cursor.take_xyz(seq.len())
-    } else {
-        cursor.take_xy(seq.len())
-    };
-    CoordSeq::copy_from_trusted_columns(cols.xs, cols.ys, cols.zs, seq.ms())
+fn rebuild_seq_columns(seq: &CoordSeq, cursor: &mut TransformCursor) -> CoordSeq {
+    let transformed = cursor.take();
+    debug_assert_eq!(transformed.len(), seq.len());
+    transformed
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+    use crate::geometry::{CoordinateAxes, MultiPoint};
+
+    #[test]
+    fn chunks_cross_owners_and_run_xy_before_xyz() {
+        let shapes = [
+            Shape::Point(Point::new_raw_axes(
+                1.0,
+                2.0,
+                ZOrdinate(None),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_axes(
+                3.0,
+                4.0,
+                ZOrdinate(None),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_axes(
+                5.0,
+                6.0,
+                ZOrdinate(None),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_axes(
+                7.0,
+                8.0,
+                ZOrdinate(Some(9.0)),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_axes(
+                10.0,
+                11.0,
+                ZOrdinate(Some(12.0)),
+                MOrdinate(None),
+            )),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let mut calls = Vec::new();
+        plan.execute_with_capacities(2, 1, &mut |x, y, z| {
+            calls.push((z.is_some(), x.len()));
+            for value in x.iter_mut().chain(y.iter_mut()) {
+                *value += 100.0;
+            }
+            if let Some(z) = z {
+                for value in z {
+                    *value += 100.0;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls, [(false, 2), (false, 1), (true, 1), (true, 1)]);
+        assert_eq!(plan.xy.xs, [101.0, 103.0, 105.0]);
+        assert_eq!(plan.xy.ys, [102.0, 104.0, 106.0]);
+        assert_eq!(plan.xyz.xs, [107.0, 110.0]);
+        assert_eq!(plan.xyz.ys, [108.0, 111.0]);
+        assert_eq!(plan.xyz.zs.as_deref(), Some([109.0, 112.0].as_slice()));
+        assert!(plan.xy.xs.capacity() >= 3);
+        assert!(plan.xy.ys.capacity() >= 3);
+        assert!(plan.xyz.xs.capacity() >= 2);
+        assert!(plan.xyz.ys.capacity() >= 2);
+        assert!(plan.xyz.zs.as_ref().is_some_and(|zs| zs.capacity() >= 2));
+        let output = plan.finish(&refs);
+        let coordinates = output
+            .iter()
+            .map(|shape| match shape {
+                Shape::Point(point) => (point.x, point.y, point.z()),
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(coordinates, [
+            (101.0, 102.0, None),
+            (103.0, 104.0, None),
+            (105.0, 106.0, None),
+            (107.0, 108.0, Some(109.0)),
+            (110.0, 111.0, Some(112.0)),
+        ]);
+    }
+
+    #[test]
+    fn mixed_sequences_share_final_lanes_and_reconstruct_exactly() {
+        let xy = CoordSeq::from_columns(
+            [1.0, 2.0, 3.0].into(),
+            [10.0, 20.0, 30.0].into(),
+            None,
+            None,
+        );
+        let xyz = CoordSeq::from_columns(
+            [4.0, 5.0, 6.0].into(),
+            [40.0, 50.0, 60.0].into(),
+            Some([400.0, 500.0, 600.0].into()),
+            None,
+        );
+        let shapes = [
+            Shape::MultiPoint(MultiPoint::from_coordseq(xy).unwrap()),
+            Shape::MultiPoint(
+                MultiPoint::from_coordseq(CoordSeq::from_columns(
+                    [7.0].into(),
+                    [70.0].into(),
+                    None,
+                    None,
+                ))
+                .unwrap(),
+            ),
+            Shape::LineString(LineSeq::try_new(xyz).unwrap()),
+            Shape::MultiPoint(
+                MultiPoint::from_coordseq(CoordSeq::from_columns(
+                    [8.0].into(),
+                    [80.0].into(),
+                    Some([800.0].into()),
+                    None,
+                ))
+                .unwrap(),
+            ),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let mut calls = Vec::new();
+        plan.execute_with_capacities(2, 2, &mut |x, y, z| {
+            calls.push((z.is_some(), x.len()));
+            for value in x {
+                *value += 100.0;
+            }
+            for value in y {
+                *value += 1000.0;
+            }
+            if let Some(z) = z {
+                for value in z {
+                    *value += 10_000.0;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(calls, [(false, 2), (false, 2), (true, 2), (true, 2)]);
+        assert_eq!(plan.sequences[0].batch, OutputBatch::Xy);
+        assert_eq!(plan.sequences[0].range, 0..3);
+        assert_eq!(plan.sequences[1].range, 3..4);
+        assert_eq!(plan.sequences[2].batch, OutputBatch::Xyz);
+        assert_eq!(plan.sequences[2].range, 0..3);
+        assert_eq!(plan.sequences[3].range, 3..4);
+        assert_eq!(plan.xy.xs, [101.0, 102.0, 103.0, 107.0]);
+        assert_eq!(plan.xy.ys, [1010.0, 1020.0, 1030.0, 1070.0]);
+        assert_eq!(plan.xyz.xs, [104.0, 105.0, 106.0, 108.0]);
+        assert_eq!(plan.xyz.ys, [1040.0, 1050.0, 1060.0, 1080.0]);
+        assert_eq!(
+            plan.xyz.zs.as_deref(),
+            Some([10_400.0, 10_500.0, 10_600.0, 10_800.0].as_slice())
+        );
+        assert_eq!(plan.xy.xs.len(), 4);
+        assert_eq!(plan.xyz.xs.len(), 4);
+        assert!(plan.xy.xs.capacity() >= plan.xy.xs.len());
+        assert!(plan.xyz.xs.capacity() >= plan.xyz.xs.len());
+
+        let output = plan.finish(&refs);
+        let Shape::MultiPoint(output_xy) = &output[0] else {
+            unreachable!()
+        };
+        let Shape::MultiPoint(output_xy_point) = &output[1] else {
+            unreachable!()
+        };
+        let Shape::LineString(output_xyz) = &output[2] else {
+            unreachable!()
+        };
+        let Shape::MultiPoint(output_xyz_point) = &output[3] else {
+            unreachable!()
+        };
+        assert_eq!(output_xy.xs(), [101.0, 102.0, 103.0]);
+        assert_eq!(output_xy.ys(), [1010.0, 1020.0, 1030.0]);
+        assert_eq!(output_xy_point.xs(), [107.0]);
+        assert_eq!(output_xy_point.ys(), [1070.0]);
+        assert_eq!(output_xyz.xs(), [104.0, 105.0, 106.0]);
+        assert_eq!(output_xyz.ys(), [1040.0, 1050.0, 1060.0]);
+        assert_eq!(
+            output_xyz.zs(),
+            Some([10_400.0, 10_500.0, 10_600.0].as_slice())
+        );
+        assert_eq!(output_xyz_point.xs(), [108.0]);
+        assert_eq!(output_xyz_point.ys(), [1080.0]);
+        assert_eq!(output_xyz_point.zs(), Some([10_800.0].as_slice()));
+
+        let xy_columns = output_xy.column_arcs();
+        let xy_point_columns = output_xy_point.column_arcs();
+        assert!(Arc::ptr_eq(&xy_columns.xs, &xy_point_columns.xs));
+        let xyz_columns = output_xyz.column_arcs();
+        let xyz_point_columns = output_xyz_point.column_arcs();
+        assert!(Arc::ptr_eq(&xyz_columns.xs, &xyz_point_columns.xs));
+    }
+
+    #[test]
+    fn mixed_m_sequences_keep_local_windows_on_shared_coordinates() {
+        let first_ms: Arc<[f64]> = [50.0, 60.0].into();
+        let second_ms: Arc<[f64]> = [70.0].into();
+        let shapes = [
+            Shape::MultiPoint(
+                MultiPoint::from_coordseq(CoordSeq::from_columns(
+                    [1.0, 2.0].into(),
+                    [10.0, 20.0].into(),
+                    None,
+                    Some(Arc::clone(&first_ms)),
+                ))
+                .unwrap(),
+            ),
+            Shape::MultiPoint(
+                MultiPoint::from_coordseq(CoordSeq::from_columns(
+                    [3.0].into(),
+                    [30.0].into(),
+                    None,
+                    Some(Arc::clone(&second_ms)),
+                ))
+                .unwrap(),
+            ),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        plan.execute_with_capacities(2, 2, &mut |x, y, _| {
+            for value in x.iter_mut().chain(y.iter_mut()) {
+                *value += 1.0;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let output = plan.finish(&refs);
+        let Shape::MultiPoint(first) = &output[0] else {
+            unreachable!()
+        };
+        let Shape::MultiPoint(second) = &output[1] else {
+            unreachable!()
+        };
+        assert_eq!(first.ms(), Some([50.0, 60.0].as_slice()));
+        assert_eq!(second.ms(), Some([70.0].as_slice()));
+        assert!(Arc::ptr_eq(&first.column_arcs().ms.unwrap(), &first_ms));
+        assert!(Arc::ptr_eq(&second.column_arcs().ms.unwrap(), &second_ms));
+        assert_eq!(first.column_arcs().window, 0..2);
+        assert_eq!(first.column_arcs().m_window, 0..2);
+        assert_eq!(second.column_arcs().window, 2..3);
+        assert_eq!(second.column_arcs().m_window, 0..1);
+    }
+
+    #[test]
+    fn full_window_m_remains_shared() {
+        let ms: std::sync::Arc<[f64]> = [5.0, 6.0].into();
+        let seq = CoordSeq::from_columns(
+            [1.0, 2.0].into(),
+            [3.0, 4.0].into(),
+            None,
+            Some(std::sync::Arc::clone(&ms)),
+        );
+        let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
+        let refs = [&shape];
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        plan.execute_with_capacities(1, 1, &mut |_, _, _| Ok(()))
+            .unwrap();
+        assert!(Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
+        let Shape::MultiPoint(output) = plan.finish(&refs).pop().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(output.axes(), CoordinateAxes::XYM);
+    }
+
+    #[test]
+    fn windowed_m_copies_only_visible_values() {
+        let ms: std::sync::Arc<[f64]> = [4.0, 5.0, 6.0, 7.0].into();
+        let seq = CoordSeq::from_columns(
+            [0.0, 1.0, 2.0, 3.0].into(),
+            [10.0, 11.0, 12.0, 13.0].into(),
+            None,
+            Some(std::sync::Arc::clone(&ms)),
+        )
+        .view(crate::geometry::CoordWindow::from_range(1..3, 4));
+        let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
+        let refs = [&shape];
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        plan.execute_with_capacities(1, 1, &mut |_, _, _| Ok(()))
+            .unwrap();
+        assert_eq!(plan.sequences[0].ms.as_deref().unwrap(), [5.0, 6.0]);
+        assert!(!Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
+    }
 }

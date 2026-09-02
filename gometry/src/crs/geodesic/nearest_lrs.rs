@@ -1,9 +1,9 @@
 use crate::Finite;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    DistanceMode, EllipsoidMetric, Result, ensure_geodesic_lonlat_crs_at,
-    ensure_geographic_coordseq, ensure_geographic_domain, ensure_geographic_lonlat, normalize,
-    with_geodesic_at, with_geodesic_cache_at,
+    DistanceMode, EllipsoidMetric, Result, ensure_geographic_coordseq_in_frame,
+    ensure_geographic_domain_in_frame, ensure_geographic_lonlat_in_frame,
+    geographic_metric_frame_at, normalize, with_geodesic_at, with_geodesic_cache_at,
 };
 use crate::geometry::{
     CoordSeq, FrameDependentCaches, LineIndex, MeasureRange, Point, PreparedPlan, Shape,
@@ -21,12 +21,12 @@ pub(crate) fn geodesic_line_interpolate(
     state: &RuntimeState,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs_at(crs, state)?;
-    ensure_geographic_domain(shape)?;
+    let frame = geographic_metric_frame_at(crs, state)?;
+    ensure_geographic_domain_in_frame(frame, shape)?;
     let distance = Finite::try_new("distance", distance)?.get();
     let crs = normalize(crs)?;
     with_geodesic_at(&crs, &state, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(
             frame_cache,
@@ -55,11 +55,11 @@ pub(crate) fn geodesic_line_substring(
     state: &RuntimeState,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs_at(crs, state)?;
-    ensure_geographic_domain(shape)?;
+    let frame = geographic_metric_frame_at(crs, state)?;
+    ensure_geographic_domain_in_frame(frame, shape)?;
     let crs = normalize(crs)?;
     with_geodesic_at(&crs, &state, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(
             frame_cache,
@@ -84,12 +84,12 @@ pub(crate) fn geodesic_line_locate(
     state: &RuntimeState,
 ) -> Result<f64> {
     let distance_mode = distance_mode.into();
-    ensure_geodesic_lonlat_crs_at(crs, state)?;
-    ensure_geographic_domain(shape)?;
-    ensure_geographic_lonlat(point.x, point.y)?;
+    let frame = geographic_metric_frame_at(crs, state)?;
+    ensure_geographic_domain_in_frame(frame, shape)?;
+    ensure_geographic_lonlat_in_frame(frame, point.x, point.y)?;
     let crs = normalize(crs)?;
     with_geodesic_at(&crs, &state, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(
             frame_cache,
@@ -110,13 +110,13 @@ pub(crate) fn with_geodesic_erased_at<T, E>(
     map_err: impl Fn(crate::error::Error) -> E,
     f: impl FnOnce(&str, &EllipsoidMetric<'_>) -> Result<T, E>,
 ) -> Result<T, E> {
-    ensure_geodesic_lonlat_crs_at(crs, state).map_err(&map_err)?;
+    let frame = geographic_metric_frame_at(crs, state).map_err(&map_err)?;
     for shape in shapes {
-        ensure_geographic_domain(shape).map_err(&map_err)?;
+        ensure_geographic_domain_in_frame(frame, shape).map_err(&map_err)?;
     }
     let crs = normalize(crs).map_err(&map_err)?;
     with_geodesic_cache_at(&crs, state, map_err, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         f(&crs, &metric)
     })
 }
@@ -146,7 +146,7 @@ pub(crate) fn geodesic_line_interpolate_coordseq(
     metric: &EllipsoidMetric<'_>,
 ) -> Result<Point> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq(line)?;
+    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     let distance = Finite::try_new("distance", distance)?.get();
     let index = LineIndex::build_coordseq(line, metric)?;
     Ok(index.interpolate(distance, distance_mode.is_normalized(), metric))
@@ -160,7 +160,7 @@ pub(crate) fn geodesic_line_substring_coordseq(
     metric: &EllipsoidMetric<'_>,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq(line)?;
+    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     let index = LineIndex::build_coordseq(line, metric)?;
     index.substring(range, distance_mode.is_normalized(), metric)
 }
@@ -173,8 +173,8 @@ pub(crate) fn geodesic_line_locate_coordseq(
     metric: &EllipsoidMetric<'_>,
 ) -> Result<f64> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq(line)?;
-    ensure_geographic_lonlat(query.x, query.y)?;
+    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
+    ensure_geographic_lonlat_in_frame(metric.frame(), query.x, query.y)?;
     let index = LineIndex::build_coordseq(line, metric)?;
     index.locate_point(query, distance_mode.is_normalized(), metric)
 }

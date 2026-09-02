@@ -15,7 +15,7 @@ mod unary;
 
 pub(crate) use binary::{
     NoBinaryFastPath, dispatch_binary, dispatch_binary_array_left, dispatch_binary_geometry,
-    geometry_kernel_over_array,
+    dispatch_typed_metric_binary, geometry_kernel_over_array,
 };
 pub(crate) use binary_fast::{
     OverlayFastPath, dispatch_broadcast2, dispatch_distance, dispatch_distance_3d,
@@ -29,6 +29,6 @@ pub(crate) use metric::{MetricResolver, MetricScratch, UnaryMeasureKernel};
 pub(crate) use operation::Operation;
 pub(crate) use packed::PackedUnary;
 pub(crate) use unary::{
-    dispatch_unary, unary_array, unary_array_shapes, unary_array_shapes_budgeted, unary_scalar,
-    unary_scalar_shape,
+    dispatch_unary, unary_array, unary_array_linref_shapes, unary_array_shapes,
+    unary_array_shapes_budgeted, unary_scalar, unary_scalar_linref_shape, unary_scalar_shape,
 };

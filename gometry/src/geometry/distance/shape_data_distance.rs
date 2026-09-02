@@ -2,13 +2,14 @@ use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
     coordinate_squared_safe, geodesic_distance_with_parts, geodesic_dwithin_with_parts,
-    geodesic_point_distance_with_parts, geodesic_point_dwithin_with_parts, parts_boundary_contact,
-    parts_covers_point, puntal_brute_distance, puntal_brute_distance_squared, quick_area_overlap,
-    squared_space_safe,
+    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
+    parts_boundary_contact, parts_covers_point, puntal_brute_distance,
+    puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point, PreparedPlan, Shape,
-    finish_planar_squared_min, point_distance, points_dwithin,
+    DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric, GeodesicPartsKey, Point,
+    PointBatchTester, PreparedPlan, Shape, finish_planar_squared_min, point_distance,
+    points_dwithin,
 };
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
@@ -122,8 +123,8 @@ impl PreparedPlan {
         metric: &impl GeodesicMetric,
     ) -> Result<f64> {
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
-            crate::crs::ensure_geographic_lonlat(a.x, a.y)?;
-            crate::crs::ensure_geographic_lonlat(b.x, b.y)?;
+            metric.ensure_shape(self.shape())?;
+            metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b));
         }
         let key = GeodesicPartsKey::new_at_generation(
@@ -157,8 +158,8 @@ impl PreparedPlan {
         distance: f64,
     ) -> Result<bool> {
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
-            crate::crs::ensure_geographic_lonlat(a.x, a.y)?;
-            crate::crs::ensure_geographic_lonlat(b.x, b.y)?;
+            metric.ensure_shape(self.shape())?;
+            metric.ensure_shape(other.shape())?;
             return Ok(metric.segment_length(*a, *b) <= distance);
         }
         let key = GeodesicPartsKey::new_at_generation(
@@ -179,20 +180,6 @@ impl PreparedPlan {
         )
     }
 
-    /// Boundary-inclusive `covers_point` on cached prepared state — the
-    /// exact zero test for the point lanes. Bare (multi)polygons answer
-    /// through [`PointBatchTester`] (hierarchical Y-stabbing; interior + ring
-    /// boundary; they carry no other parts); everything else through the
-    /// prepared parts (isolated identity, robust on-segment via the facet
-    /// tree, recursive area parts).
-    pub(crate) fn covers_point_cached(&self, point: Point) -> bool {
-        self.point_tester_required(RequiredPointTester(()))
-            .map_or_else(
-                || parts_covers_point(self.shape(), self.distance_parts(), point),
-                |tester| tester.covers_point(point),
-            )
-    }
-
     /// Per-row planar distances from an XY probe stream, on cached prepared
     /// state — the packed point-array lane: parts resolve once and every
     /// probe's tree descent reuses one traversal stack (no per-row handle,
@@ -202,23 +189,46 @@ impl PreparedPlan {
         reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
     )]
     pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Vec<f64> {
+        let tester = self.point_tester_required(RequiredPointTester(()));
+        let parts = self.distance_parts();
+        let parts_squared_safe = squared_space_safe(parts);
+        let bvh = parts.bvh();
         let mut stack = Vec::new();
         probes
-            .map(|(x, y)| self.distance_point_with(Point::new_unchecked_xy(x, y), &mut stack))
+            .map(|(x, y)| {
+                Self::distance_point_with_resolved(
+                    self.shape(),
+                    Point::new_raw_xy(x, y),
+                    tester,
+                    parts,
+                    parts_squared_safe,
+                    bvh,
+                    &mut stack,
+                )
+            })
             .collect()
     }
 
-    /// One probe's distance over a caller-provided (reused) traversal stack.
-    fn distance_point_with(&self, point: Point, stack: &mut Vec<u32>) -> f64 {
-        if self.covers_point_cached(point) {
+    fn distance_point_with_resolved(
+        shape: &Shape,
+        point: Point,
+        tester: Option<&PointBatchTester>,
+        parts: &DistanceParts,
+        parts_squared_safe: bool,
+        bvh: Option<&FacetBvh>,
+        stack: &mut Vec<u32>,
+    ) -> f64 {
+        if tester.map_or_else(
+            || parts_covers_point(shape, parts, point),
+            |tester| tester.covers_point(point),
+        ) {
             return 0.0;
         }
-        let parts = self.distance_parts();
-        let safe = squared_space_safe(parts) && coordinate_squared_safe(point);
+        let safe = parts_squared_safe && coordinate_squared_safe(point);
         // Local min to linework: squared (SQUARED=true) or distance space.
         let mut min_linework = |squared: bool| -> f64 {
             if squared {
-                parts.bvh().map_or_else(
+                bvh.map_or_else(
                     || {
                         parts.linework.min_points_distance::<true>(
                             std::iter::once((point.x, point.y)),
@@ -236,7 +246,7 @@ impl PreparedPlan {
                     },
                 )
             } else {
-                parts.bvh().map_or_else(
+                bvh.map_or_else(
                     || {
                         parts.linework.min_points_distance::<false>(
                             std::iter::once((point.x, point.y)),
@@ -285,27 +295,74 @@ impl PreparedPlan {
         probes: impl Iterator<Item = (f64, f64)>,
         distance: f64,
     ) -> Vec<bool> {
+        let tester = self.point_tester_required(RequiredPointTester(()));
+        let parts = self.distance_parts();
+        let parts_squared_safe = squared_space_safe(parts);
+        let bvh = parts.bvh();
         let mut stack = Vec::new();
         probes
             .map(|(x, y)| {
-                self.dwithin_point_with(Point::new_unchecked_xy(x, y), distance, &mut stack)
+                Self::dwithin_point_with_resolved(
+                    self.shape(),
+                    Point::new_raw_xy(x, y),
+                    distance,
+                    tester,
+                    parts,
+                    parts_squared_safe,
+                    bvh,
+                    &mut stack,
+                )
             })
             .collect()
     }
 
     /// One probe's `dwithin` over a caller-provided (reused) traversal stack.
     fn dwithin_point_with(&self, point: Point, distance: f64, stack: &mut Vec<u32>) -> bool {
-        if self.covers_point_cached(point) {
+        let tester = self.point_tester_required(RequiredPointTester(()));
+        let parts = self.distance_parts();
+        Self::dwithin_point_with_resolved(
+            self.shape(),
+            point,
+            distance,
+            tester,
+            parts,
+            squared_space_safe(parts),
+            parts.bvh(),
+            stack,
+        )
+    }
+
+    fn dwithin_point_with_resolved(
+        shape: &Shape,
+        point: Point,
+        distance: f64,
+        tester: Option<&PointBatchTester>,
+        parts: &DistanceParts,
+        parts_squared_safe: bool,
+        bvh: Option<&FacetBvh>,
+        stack: &mut Vec<u32>,
+    ) -> bool {
+        if tester.map_or_else(
+            || parts_covers_point(shape, parts, point),
+            |tester| tester.covers_point(point),
+        ) {
             return true;
         }
-        let parts = self.distance_parts();
         let limit_sq = distance * distance;
         let use_sq = limit_sq.is_normal() && distance > 0.0;
         if !use_sq {
-            return self.distance_point_with(point, stack) <= distance;
+            return Self::distance_point_with_resolved(
+                shape,
+                point,
+                tester,
+                parts,
+                parts_squared_safe,
+                bvh,
+                stack,
+            ) <= distance;
         }
-        let simd = squared_space_safe(parts) && coordinate_squared_safe(point);
-        let linework_hit = parts.bvh().map_or_else(
+        let simd = parts_squared_safe && coordinate_squared_safe(point);
+        let linework_hit = bvh.map_or_else(
             || {
                 parts.linework.any_points_within(
                     std::iter::once((point.x, point.y)),
@@ -341,6 +398,7 @@ impl PreparedPlan {
         semi_major: f64,
         flattening: f64,
         metric: &impl GeodesicMetric,
+        frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<f64>> {
         let key = GeodesicPartsKey::new_at_generation(
             crs,
@@ -349,15 +407,19 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
+        let bvh = parts.geodesic_bvh(metric);
+        let mut scratch = crate::geometry::distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes
             .map(|(x, y)| {
-                crate::crs::ensure_geographic_lonlat(x, y)?;
-                Ok(geodesic_point_distance_with_parts(
-                    Point::new_unchecked_xy(x, y),
+                crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
+                Ok(geodesic_point_distance_with_parts_and_scratch(
+                    Point::new_raw_xy(x, y),
                     &parts,
                     metric,
-                    &mut stack,
+                    bvh,
+                    &mut scratch,
+                    Some(&mut stack),
                 )?)
             })
             .collect()
@@ -374,6 +436,7 @@ impl PreparedPlan {
         flattening: f64,
         metric: &impl GeodesicMetric,
         distance: f64,
+        frame: crate::geographic::GeographicFrame,
     ) -> Result<Vec<bool>> {
         let key = GeodesicPartsKey::new_at_generation(
             crs,
@@ -382,16 +445,20 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
+        let bvh = parts.geodesic_bvh(metric);
+        let mut scratch = crate::geometry::distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes
             .map(|(x, y)| {
-                crate::crs::ensure_geographic_lonlat(x, y)?;
-                Ok(geodesic_point_dwithin_with_parts(
-                    Point::new_unchecked_xy(x, y),
+                crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
+                Ok(geodesic_point_dwithin_with_parts_and_scratch(
+                    Point::new_raw_xy(x, y),
                     &parts,
                     metric,
                     distance,
-                    &mut stack,
+                    bvh,
+                    &mut scratch,
+                    Some(&mut stack),
                 )?)
             })
             .collect()
@@ -411,8 +478,8 @@ impl PreparedPlan {
         // Two axis-aligned rectangles each equal their bounding box, so
         // overlapping bounds is already the exact answer — the box/tile/
         // envelope fast path (GEOS special-cases rectangles the same way).
-        if left.is_axis_aligned_rectangle(left_bounds)
-            && right.is_axis_aligned_rectangle(right_bounds)
+        if crate::geometry::is_axis_aligned_rectangle(left, left_bounds)
+            && crate::geometry::is_axis_aligned_rectangle(right, right_bounds)
         {
             return true;
         }

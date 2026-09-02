@@ -6,6 +6,7 @@ use crate::crs::geodesic::{
     geodesic_point_to_segment, geodesic_point_within_segment,
     geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
 };
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
     GeodesicMetric, GeodesicSegment, GeodesicSegmentWitness, MOrdinate, Point, ZOrdinate,
 };
@@ -63,6 +64,7 @@ where
 /// ellipsoid without depending on the CRS module.
 pub(crate) struct EllipsoidMetric<'a> {
     geodesic: &'a Geodesic,
+    frame: GeographicFrame,
     runtime_generation: u64,
     /// Lazily built AND per-thread cached: the lower-bound tabulation is ~150
     /// µs of trig and is read ONLY by the foot-finding pruner
@@ -75,13 +77,18 @@ pub(crate) struct EllipsoidMetric<'a> {
 
 impl<'a> EllipsoidMetric<'a> {
     #[cfg(test)]
-    pub(crate) const fn for_geodesic(geodesic: &'a Geodesic) -> Self {
-        Self::for_geodesic_at(geodesic, 0)
+    pub(crate) const fn for_crs84_geometry_test(geodesic: &'a Geodesic) -> Self {
+        Self::for_geodesic_at_frame(geodesic, 0, GeographicFrame::crs84())
     }
 
-    pub(crate) const fn for_geodesic_at(geodesic: &'a Geodesic, runtime_generation: u64) -> Self {
+    pub(crate) const fn for_geodesic_at_frame(
+        geodesic: &'a Geodesic,
+        runtime_generation: u64,
+        frame: GeographicFrame,
+    ) -> Self {
         Self {
             geodesic,
+            frame,
             runtime_generation,
             lower_bound: std::cell::OnceCell::new(),
             intersection: std::cell::OnceCell::new(),
@@ -91,6 +98,24 @@ impl<'a> EllipsoidMetric<'a> {
     pub(crate) const fn ellipsoid_parameters(&self) -> (f64, f64) {
         (self.geodesic.a, self.geodesic.f)
     }
+
+    pub(crate) const fn frame(&self) -> GeographicFrame {
+        self.frame
+    }
+
+    fn to_geodesic_point(&self, point: Point) -> Point {
+        self.frame
+            .to_geodesic_point(point)
+            .expect("geographic metric received an admitted point")
+    }
+
+    fn to_geodesic_segment(&self, segment: GeodesicSegment) -> GeodesicSegment {
+        GeodesicSegment {
+            start: self.to_geodesic_point(segment.start),
+            end: self.to_geodesic_point(segment.end),
+            ..segment
+        }
+    }
 }
 
 impl GeodesicMetric for EllipsoidMetric<'_> {
@@ -98,8 +123,25 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         self.runtime_generation
     }
 
+    fn ensure_shape(&self, shape: &crate::geometry::Shape) -> crate::error::Result<()> {
+        crate::crs::ensure_geographic_domain_in_frame(self.frame, shape)
+    }
+
+    fn auxiliary_unit(&self, point: Point) -> [f64; 3] {
+        auxiliary_unit(self.to_geodesic_point(point))
+    }
+
     fn make_segment(&self, start: Point, end: Point) -> crate::error::Result<GeodesicSegment> {
-        checked_geodesic_segment(self.geodesic, start, end)
+        let mut segment = checked_geodesic_segment(
+            self.geodesic,
+            self.to_geodesic_point(start),
+            self.to_geodesic_point(end),
+        )?;
+        // Geometry-layer working sets retain source-frame endpoints for
+        // witnesses, ordering, and ordinate interpolation.
+        segment.start = start;
+        segment.end = end;
+        Ok(segment)
     }
 
     fn point_to_segment(
@@ -108,7 +150,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment: GeodesicSegment,
         best: f64,
     ) -> crate::error::Result<f64> {
-        geodesic_point_to_segment(self.geodesic, point, segment, best)
+        geodesic_point_to_segment(
+            self.geodesic,
+            self.to_geodesic_point(point),
+            self.to_geodesic_segment(segment),
+            best,
+        )
     }
 
     fn point_to_segment_within(
@@ -117,7 +164,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment: GeodesicSegment,
         limit: f64,
     ) -> crate::error::Result<bool> {
-        geodesic_point_within_segment(self.geodesic, point, segment, limit)
+        geodesic_point_within_segment(
+            self.geodesic,
+            self.to_geodesic_point(point),
+            self.to_geodesic_segment(segment),
+            limit,
+        )
     }
 
     fn segments_cross(&self, a: Point, b: Point, c: Point, d: Point) -> crate::error::Result<bool> {
@@ -136,8 +188,16 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
                 "geodesic segment intersection is supported only for flattening in [-1/4, 1/5]",
             ));
         }
-        let first = crate::crs::geodesic::checked_geodesic_segment(self.geodesic, a, b)?;
-        let second = crate::crs::geodesic::checked_geodesic_segment(self.geodesic, c, d)?;
+        let first = crate::crs::geodesic::checked_geodesic_segment(
+            self.geodesic,
+            self.to_geodesic_point(a),
+            self.to_geodesic_point(b),
+        )?;
+        let second = crate::crs::geodesic::checked_geodesic_segment(
+            self.geodesic,
+            self.to_geodesic_point(c),
+            self.to_geodesic_point(d),
+        )?;
         if self.intersection.get().is_none() {
             let solver = IntersectSolver::new(self.geodesic)?;
             let _ = self.intersection.set(solver);
@@ -146,37 +206,67 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
             .intersection
             .get()
             .expect("intersection solver is initialized");
-        geodesic_segment_intersection_with_solver(self.geodesic, solver, first, second)
+        Ok(
+            geodesic_segment_intersection_with_solver(self.geodesic, solver, first, second)?.map(
+                |(first, second)| {
+                    (
+                        self.frame
+                            .from_geodesic_point(first)
+                            .expect("geodesic witness is finite"),
+                        self.frame
+                            .from_geodesic_point(second)
+                            .expect("geodesic witness is finite"),
+                    )
+                },
+            ),
+        )
     }
 
     fn segment_length(&self, a: Point, b: Point) -> f64 {
         // Distance-only capability: this is the point-distance kernel of
         // every geodesic point lane — the azimuth grade is pure waste here.
-        geo_distance(self.geodesic, a, b)
+        geo_distance(
+            self.geodesic,
+            self.to_geodesic_point(a),
+            self.to_geodesic_point(b),
+        )
     }
 
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point {
-        let (length, azimuth, _) = geo_distance_azimuths(self.geodesic, a, b);
+        if fraction == 0.0 {
+            return a;
+        }
+        if fraction == 1.0 {
+            return b;
+        }
+        let a_geodesic = self.to_geodesic_point(a);
+        let b_geodesic = self.to_geodesic_point(b);
+        let (length, azimuth, _) = geo_distance_azimuths(self.geodesic, a_geodesic, b_geodesic);
         // Lat/lon-only direct — final azimuth is unused.
         // The equator is itself a geodesic. Keep its exact Cartesian longitude
         // ramp when the endpoints do not take the antimeridian shortcut; this
         // preserves exact legacy coordinates without changing the curve model.
-        #[expect(
-            clippy::float_cmp,
-            reason = "the equator is the literal zero-latitude geodesic"
-        )]
-        let (lat, lon): (f64, f64) = if a.y == 0.0 && b.y == 0.0 && (b.x - a.x).abs() < 180.0 {
-            (0.0, crate::geometry::interpolate_f64(a.x, b.x, fraction))
+        let (lat, lon): (f64, f64) = if a_geodesic.y == 0.0
+            && b_geodesic.y == 0.0
+            && (b_geodesic.x - a_geodesic.x).abs() < 180.0
+        {
+            (
+                0.0,
+                crate::geometry::interpolate_f64(a_geodesic.x, b_geodesic.x, fraction),
+            )
         } else {
-            geo_direct(self.geodesic, a, azimuth, length * fraction)
+            geo_direct(self.geodesic, a_geodesic, azimuth, length * fraction)
         };
-        Point::new_axes(
+        let point = Point::new_axes(
             lon,
             lat,
             ZOrdinate(interpolate_optional_ordinate(a.z(), b.z(), fraction)),
             MOrdinate(interpolate_optional_ordinate(a.m(), b.m(), fraction)),
         )
-        .unwrap_or(a)
+        .expect("geodesic interpolation is finite");
+        self.frame
+            .from_geodesic_point(point)
+            .expect("geodesic interpolation is finite")
     }
 
     fn locate_on_segment(
@@ -185,7 +275,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment: GeodesicSegment,
         best: f64,
     ) -> crate::error::Result<(f64, f64)> {
-        geodesic_locate_on_segment(self.geodesic, point, segment, best)
+        geodesic_locate_on_segment(
+            self.geodesic,
+            self.to_geodesic_point(point),
+            self.to_geodesic_segment(segment),
+            best,
+        )
     }
 
     fn point_segment_witness(
@@ -194,12 +289,38 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment: GeodesicSegment,
         best: f64,
     ) -> crate::error::Result<GeodesicSegmentWitness> {
-        geodesic_foot_on_segment(self.geodesic, point, segment, best)
+        let witness = geodesic_foot_on_segment(
+            self.geodesic,
+            self.to_geodesic_point(point),
+            self.to_geodesic_segment(segment),
+            best,
+        )?;
+        Ok(GeodesicSegmentWitness {
+            foot: self
+                .frame
+                .from_geodesic_point(witness.foot)
+                .expect("geodesic witness is finite"),
+            ..witness
+        })
     }
 
     fn point_distance_lower_bound(&self, a: Point, b: Point) -> f64 {
         self.lower_bound
             .get_or_init(|| cached_lower_bound_kernel(self.geodesic))
-            .bound(self.geodesic, a, b)
+            .bound(
+                self.geodesic,
+                self.to_geodesic_point(a),
+                self.to_geodesic_point(b),
+            )
     }
+}
+
+fn auxiliary_unit(point: Point) -> [f64; 3] {
+    let lon = point.x.to_radians();
+    let lat = point.y.to_radians();
+    // WGS84-ish reduced latitude is enough for a split heuristic; the
+    // pruning proof uses the metric-provided lower bound, not this centroid.
+    let beta = f64::atan((1.0 - 1.0 / 298.257_223_563) * lat.tan())
+        .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    [beta.cos() * lon.cos(), beta.cos() * lon.sin(), beta.sin()]
 }

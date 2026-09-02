@@ -10,9 +10,9 @@ use geographiclib_rs::{Geodesic, GeodesicLine, geodesic_capability as caps};
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,
-    DEGREE_TO_RADIAN, GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo,
-    GeodesicInverseInfo, GeometryErrorKind, Point, ensure_same_geodesic_len,
-    ensure_thread_caches_current, lru_resolve, normalize,
+    GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo, GeodesicInverseInfo,
+    GeometryErrorKind, Point, ensure_same_geodesic_len, ensure_thread_caches_current, lru_resolve,
+    normalize,
 };
 use crate::error::Result;
 
@@ -130,11 +130,13 @@ pub(crate) use bulk::{
 pub(crate) use cache::{with_geodesic, with_geodesic_at, with_geodesic_cache_at};
 pub(crate) use distance::{
     geodesic_frechet_at, geodesic_hausdorff_at, geodesic_point_distances,
-    geodesic_point_pair_distances, geodesic_point_pair_dwithin,
+    geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
+    geodesic_point_pair_dwithin_one,
 };
 pub(crate) use domain::{
-    ensure_geodesic_lonlat_crs_at, ensure_geographic_coordseq, ensure_geographic_domain,
-    ensure_geographic_lonlat, ensure_latitudes_in_domain,
+    ensure_geodesic_lonlat_crs_at, ensure_geographic_columns_in_frame,
+    ensure_geographic_coordseq_in_frame, ensure_geographic_domain_in_frame,
+    ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, ensure_latitudes_in_domain,
 };
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
@@ -144,15 +146,15 @@ use lower_bound::{LowerBoundKernel, cached_lower_bound_kernel};
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{
-    AngleUnit, DistanceMode, endpoints_are_repeated, ensure_geographic_columns,
-    geodesic_direct_on_ellipsoid, geodesic_direct_on_ellipsoid_const,
-    geodesic_interpolate_on_line_const, geodesic_inverse_on_ellipsoid,
-    geodesic_inverse_on_ellipsoid_const, geodesic_line_length_columns,
-    geodesic_line_solution_const, geodesic_ring_measure_columns, geodesic_shape_area,
-    geodesic_shape_length, with_ellipsoid_metric_at, with_resolved_ellipsoid_metric_at,
+    AngleUnit, DistanceMode, endpoints_are_repeated, geodesic_direct_on_ellipsoid,
+    geodesic_direct_on_ellipsoid_const, geodesic_interpolate_on_line_const,
+    geodesic_inverse_on_ellipsoid, geodesic_inverse_on_ellipsoid_const,
+    geodesic_line_length_columns, geodesic_line_solution_const, geodesic_ring_measure_columns,
+    geodesic_shape_area, geodesic_shape_length, with_ellipsoid_metric_at,
+    with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use metric_model::{
-    MetricModel, ResolvedMetric, ensure_3d_metric, ensure_geographic_degree_units, metric_model,
+    MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at, metric_model,
     metric_model_meters,
 };
 pub(crate) use nearest_lrs::{

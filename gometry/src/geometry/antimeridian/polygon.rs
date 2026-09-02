@@ -1,5 +1,11 @@
 use crate::error::Result;
-use crate::geometry::antimeridian::{collect_points, dedup_near, normalize, segment_coords};
+use crate::geographic::{
+    GeographicFrame, GeographicRing, Latitude, RingDomain, RingSummary, RingTurn,
+    ScalarGeographicView,
+};
+use crate::geometry::antimeridian::{
+    collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
+};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, LineSeq,
     MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness,
@@ -8,12 +14,30 @@ use crate::geometry::{
 };
 
 impl Shape {
+    /// Validate and split in the periodic coordinate frame. Canonical chart
+    /// coordinates exist only for this operation; source coordinates remain
+    /// the storage authority.
+    pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
+        let view = ScalarGeographicView::try_new(frame, self)
+            .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+        split_geographic_view(view)
+    }
+
+    pub fn split_antimeridian(&self) -> Result<Self> {
+        let degrees =
+            crate::geographic::AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0)
+                .expect("degree angular factor is valid");
+        let frame = GeographicFrame::try_new(degrees, degrees, 0.0)
+            .expect("degree geographic frame is valid");
+        self.split_antimeridian_in_frame(frame)
+    }
+
     /// Split at the antimeridian: parts that cross ±180 come back as
     /// multiple parts whose edges follow the seam (each side keeping its
     /// own seam sign), with great-circle crossing latitudes and automatic
     /// pole closure. Geometries that do not cross are returned unchanged.
-    /// The caller validates the lon/lat domain.
-    pub fn split_antimeridian(&self) -> Result<Self> {
+    /// The caller supplies an already-admitted canonical operation chart.
+    fn split_antimeridian_chart(&self) -> Result<Self> {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
             Self::LineString(points) => {
@@ -39,7 +63,7 @@ impl Shape {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(index) => {
-                            let line = &lines.as_slice()[*index];
+                            let line = &lines.as_slice()[index];
                             let pieces = segment_coords(&collect_points(line));
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
@@ -75,7 +99,7 @@ impl Shape {
                             split.extend(
                                 split_polygon(
                                     self,
-                                    &polygons.as_slice()[*index],
+                                    &polygons.as_slice()[index],
                                     PoleClosure::Auto,
                                 )?
                                 .into_iter()
@@ -92,7 +116,7 @@ impl Shape {
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                 geometries
                     .iter()
-                    .map(Self::split_antimeridian)
+                    .map(Self::split_antimeridian_chart)
                     .collect::<Result<_>>()?,
             )),
         }
@@ -132,7 +156,7 @@ impl Shape {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             split.extend(
-                                split_polygon(self, &polygons.as_slice()[*index], closure)?
+                                split_polygon(self, &polygons.as_slice()[index], closure)?
                                     .into_iter()
                                     .map(MultiMember::Value),
                             );
@@ -146,6 +170,178 @@ impl Shape {
             },
             _ => self.split_antimeridian(),
         }
+    }
+}
+
+fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
+    let frame = view.frame();
+    let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
+    let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
+    let chart = chart_shape(view.shape(), frame, longitude_scale, latitude_scale)?;
+    let mut source_is_canonical = true;
+    view.try_for_each_coordinate(|coordinate| {
+        let native = coordinate.native().x;
+        let canonical = coordinate.longitude().get();
+        let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
+        source_is_canonical &= positive_seam || native.to_bits() == canonical.to_bits();
+        Ok(())
+    })
+    .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+    if source_is_canonical && !chart.crosses_antimeridian() {
+        return Ok(view.shape().clone());
+    }
+    let split = chart.split_antimeridian_chart()?;
+    split.map_xy_with(|x, y| {
+        let latitude = if y == 90.0 {
+            frame.pole()
+        } else if y == -90.0 {
+            -frame.pole()
+        } else {
+            y / latitude_scale
+        };
+        Ok((x / longitude_scale, latitude))
+    })
+}
+
+fn chart_point(
+    point: Point,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+) -> Result<Point> {
+    point.with_xy(
+        chart_longitude(point.x, frame, longitude_scale)?,
+        chart_latitude(point.y, frame, latitude_scale)?,
+    )
+}
+
+fn chart_longitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
+    let axis = frame.longitude();
+    let remainder = value % axis.period();
+    if remainder.to_bits() == axis.half_period().to_bits() {
+        return Ok(180.0);
+    }
+    axis.canonicalize(value)
+        .map(|longitude| longitude.get() * scale)
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
+}
+
+fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64> {
+    Latitude::try_new(frame, value)
+        .map(|latitude| latitude.get() * scale)
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
+}
+
+fn chart_ring(
+    ring: &Ring,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+) -> Result<Ring> {
+    let geographic = GeographicRing::from_ring(ring);
+    let summary = RingSummary::try_new(frame, &geographic)
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+    let mut points = Vec::new();
+    points
+        .try_reserve_exact(geographic.len())
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    if matches!(summary.domain, RingDomain::FullLongitude(_))
+        && matches!(summary.turn, RingTurn::None)
+    {
+        let xs = geographic.native_xs();
+        let west = xs.iter().copied().fold(f64::INFINITY, f64::min);
+        let east = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        for index in 0..geographic.len() {
+            let point = geographic.native_point(index);
+            let x = if point.x.to_bits() == west.to_bits() {
+                -180.0
+            } else if point.x.to_bits() == east.to_bits() {
+                180.0
+            } else {
+                chart_longitude(point.x, frame, longitude_scale)?
+            };
+            points.push(point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)?);
+        }
+    } else {
+        for index in 0..geographic.len() {
+            points.push(chart_point(
+                geographic.native_point(index),
+                frame,
+                longitude_scale,
+                latitude_scale,
+            )?);
+        }
+    }
+    Ok(Ring::from_closed(CoordSeq::from(points)))
+}
+
+fn chart_polygon(
+    polygon: &Polygon,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+) -> Result<Polygon> {
+    let shell = chart_ring(&polygon.shell, frame, longitude_scale, latitude_scale)?;
+    let mut holes = Vec::new();
+    holes
+        .try_reserve_exact(polygon.holes.len())
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    for hole in polygon.holes.iter() {
+        holes.push(chart_ring(hole, frame, longitude_scale, latitude_scale)?);
+    }
+    Ok(Polygon::new(shell, holes))
+}
+
+fn chart_shape(
+    shape: &Shape,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+) -> Result<Shape> {
+    match shape {
+        Shape::Polygon(polygon) => Ok(Shape::Polygon(chart_polygon(
+            polygon,
+            frame,
+            longitude_scale,
+            latitude_scale,
+        )?)),
+        Shape::MultiPolygon(polygons) => {
+            let mut members = Vec::new();
+            members
+                .try_reserve_exact(polygons.members().len())
+                .map_err(|_| crate::error::ResourceError::Allocation)?;
+            for member in polygons.members() {
+                members.push(match member {
+                    MultiMember::Empty => MultiMember::Empty,
+                    MultiMember::Value(index) => MultiMember::Value(chart_polygon(
+                        &polygons.as_slice()[index],
+                        frame,
+                        longitude_scale,
+                        latitude_scale,
+                    )?),
+                });
+            }
+            Ok(Shape::MultiPolygon(MultiPolygon::try_new(
+                polygons.axes(),
+                members,
+            )?))
+        },
+        Shape::GeometryCollection(collection) => {
+            let mut result = Vec::new();
+            result
+                .try_reserve_exact(collection.len())
+                .map_err(|_| crate::error::ResourceError::Allocation)?;
+            for member in collection {
+                result.push(chart_shape(member, frame, longitude_scale, latitude_scale)?);
+            }
+            Ok(Shape::GeometryCollection(result.into()))
+        },
+        _ => shape.map_xy_with(|x, y| {
+            Ok((
+                chart_longitude(x, frame, longitude_scale)?,
+                chart_latitude(y, frame, latitude_scale)?,
+            ))
+        }),
     }
 }
 
@@ -232,8 +428,8 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         let mut result = shape_from_polygons(shell_parts, axes);
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
-            let north = ring_encloses_pole(hole.coords(), true);
-            let south = ring_encloses_pole(hole.coords(), false);
+            let north = ring_encloses_pole(&hole, true);
+            let south = ring_encloses_pole(&hole, false);
             let hole_closure = match (north, south) {
                 (true, false) => PoleClosure::North,
                 (false, true) => PoleClosure::South,
@@ -248,17 +444,11 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         return polygons_from_shape(result);
     }
 
-    let original = collect_points(polygon.shell.coords());
-    let mut exterior = original.clone();
-    normalize(&mut exterior);
-    let seam_canonicalized = exterior
-        .iter()
-        .zip(&original)
-        .any(|(canonical, raw)| canonical.x != raw.x);
-    let exterior = dedup_near(exterior);
+    let mut exterior = collect_points(polygon.shell.coords());
+    resolve_seam_aliases(&mut exterior);
+    let exterior = dedup_consecutive(exterior);
     let mut segments = segment_coords(&exterior);
     if segments.is_empty() {
-        let _ = seam_canonicalized;
         return Ok(vec![polygon.clone()]);
     }
     let mut kept_holes: Vec<&Ring> = Vec::new();
@@ -371,15 +561,15 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         ];
         let hole = close_ring(shells.remove(0));
         return Ok(vec![Polygon::new(
-            Ring::from_trusted_closed(CoordSeq::from(world)),
-            vec![Ring::from_trusted_closed(CoordSeq::from(hole))],
+            Ring::from_closed(CoordSeq::from(world)),
+            vec![Ring::from_closed(CoordSeq::from(hole))],
         )]);
     }
     let mut polygons: Vec<Polygon> = shells
         .into_iter()
         .map(|shell| {
             Polygon::new(
-                Ring::from_trusted_closed(CoordSeq::from(close_ring(shell))),
+                Ring::from_closed(CoordSeq::from(close_ring(shell))),
                 Vec::new(),
             )
         })
@@ -394,7 +584,10 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         .collect::<Vec<_>>();
     let mut assigned_holes = vec![Vec::<Ring>::new(); polygons.len()];
     for hole in kept_holes {
-        let hole_shape = Shape::LineString(LineSeq::from_trusted(hole.coords().clone()));
+        let hole_shape = Shape::LineString(
+            LineSeq::try_new(hole.coords().clone())
+                .expect("line coordinate sequence must contain at least two vertices"),
+        );
         let owner = candidate_shapes
             .iter()
             .position(|candidate| candidate.contains(&hole_shape));

@@ -484,11 +484,11 @@ mod tests {
     use crate::crs::catalog::{authority_matches, catalog_with_state};
     use crate::crs::operations::operations_info;
     use crate::crs::{
-        CrsObjectKind, ProjDirection, TransformPlan, WGS84_A, apply_operation, catalog,
-        clear_cache, configure_runtime, factors, geodesic_direct_columns, geodesic_interpolates,
-        geodesic_inverse, geodesic_inverses, info, non_deprecated, operation_info_at,
-        reset_runtime_config, rhumb_distance_crs, same, search, to_wkt_with_options,
-        transform_coordinates,
+        CrsObjectKind, ProjDirection, RUNTIME_STATE_TEST_LOCK, TransformPlan, WGS84_A,
+        apply_operation, catalog, clear_cache, configure_runtime, factors, geodesic_direct_columns,
+        geodesic_interpolates, geodesic_inverse, geodesic_inverses, info, non_deprecated,
+        operation_info_at, reset_runtime_config, rhumb_distance_crs, same, search,
+        to_wkt_with_options, transform_coordinates,
     };
 
     fn thread_cache_lengths() -> [usize; 18] {
@@ -521,8 +521,6 @@ mod tests {
     fn assert_some_thread_cache_is_warm() {
         assert!(thread_cache_lengths().iter().any(|length| *length > 0));
     }
-
-    static RUNTIME_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn warm_representative_thread_caches() {
         let options = TransformOptions::default();

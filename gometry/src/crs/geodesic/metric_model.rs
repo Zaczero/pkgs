@@ -3,10 +3,10 @@ use std::sync::Arc;
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    CrsError, CrsInfo, DEGREE_TO_RADIAN, Result, ensure_geodesic_lonlat_crs_at, normalize,
-    with_geodesic_cache_at,
+    CrsError, CrsInfo, Result, ensure_geodesic_lonlat_crs_at, normalize, with_geodesic_cache_at,
 };
 use crate::crs::info_with_state;
+use crate::geographic::GeographicFrame;
 use crate::text::str_contains_ignore_ascii_case;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +53,7 @@ pub(crate) enum MetricModel {
     /// Geodesic on the named (normalized) CRS's ellipsoid; results in meters.
     Geodesic {
         crs: String,
+        frame: GeographicFrame,
         state: Arc<crate::crs::RuntimeState>,
     },
 }
@@ -83,13 +84,6 @@ impl MetricModel {
             Self::Planar { to_metre } => to_metre.get(),
         }
     }
-
-    /// Whether distances under this model order monotonically with
-    /// coordinate-space distance (every planar model does; a geodesic one does
-    /// not, so R-tree distance pruning must use a geodesic lower bound).
-    pub(crate) const fn has_coordinate_order(&self) -> bool {
-        matches!(self, Self::Planar { .. })
-    }
 }
 
 /// A [`MetricModel`] with its batch-invariant CRS resolution done ONCE: the
@@ -107,6 +101,7 @@ pub(crate) enum ResolvedMetric {
     },
     Geodesic {
         crs: String,
+        frame: GeographicFrame,
         geodesic: Box<Geodesic>,
         state: Arc<crate::crs::RuntimeState>,
     },
@@ -121,15 +116,20 @@ impl ResolvedMetric {
             MetricModel::Planar { to_metre } => Self::Planar {
                 to_metre: *to_metre,
             },
-            MetricModel::Geodesic { crs, state } => {
+            MetricModel::Geodesic { crs, state, .. } => {
                 ensure_geodesic_lonlat_crs_at(crs, state)?;
                 // Normalize ONCE per batch (was once per pair), keeping the
                 // geodesic-cache key identical to the per-pair path.
                 let crs = normalize(crs)?;
                 let geodesic =
                     with_geodesic_cache_at(&crs, state, |error| error, |g| Ok(Box::new(*g)))?;
+                let frame = match model {
+                    MetricModel::Geodesic { frame, .. } => *frame,
+                    MetricModel::Planar { .. } => unreachable!(),
+                };
                 Self::Geodesic {
                     crs,
+                    frame,
                     geodesic,
                     state: Arc::clone(state),
                 }
@@ -167,7 +167,7 @@ pub(crate) fn metric_model_at(
 /// previously verbatim copies diverging in two lines.
 enum HorizontalComponent {
     /// A geographic CRS: measured geodesically on its own ellipsoid.
-    Geodesic(String),
+    Geodesic { crs: String, frame: GeographicFrame },
     /// A projected/engineering CRS, with the info its axis validation needs.
     ///
     /// The CRS name comes from `info.crs`, not a separate owned copy of the
@@ -183,13 +183,27 @@ fn horizontal_component(
     state: &crate::crs::RuntimeState,
 ) -> Result<HorizontalComponent> {
     let info = info_with_state(crs, state)?;
+    // Bound geographic CRSs expose their source frame through the typed
+    // metadata even though PROJ reports the root kind as `bound` and does not
+    // list that source in `sub_crs`.
+    if info.kind == "bound"
+        && let Some(frame) = info.geographic_frame()
+    {
+        return Ok(HorizontalComponent::Geodesic {
+            crs: info.crs.clone(),
+            frame,
+        });
+    }
     // Recursive geographic: compound horizontal components included.
     if info.is_geographic() {
-        // Degree-axis check on the geographic component (compound → first
-        // geographic sub-CRS when the root is not itself geographic).
         if info.kind.starts_with("geographic") {
-            ensure_geographic_degree_units(crs, &info)?;
-            return Ok(HorizontalComponent::Geodesic(info.crs.clone()));
+            let frame = info.geographic_frame().ok_or_else(|| {
+                CrsError::crs_create(crs, "geographic CRS has no typed native frame")
+            })?;
+            return Ok(HorizontalComponent::Geodesic {
+                crs: info.crs.clone(),
+                frame,
+            });
         }
         if let Some(sub) = info
             .sub_crs
@@ -215,8 +229,9 @@ pub(crate) fn metric_model_for_at(
     state: &crate::crs::RuntimeState,
 ) -> Result<MetricModel> {
     Ok(match horizontal_component(crs, state)? {
-        HorizontalComponent::Geodesic(name) => MetricModel::Geodesic {
-            crs: name,
+        HorizontalComponent::Geodesic { crs, frame } => MetricModel::Geodesic {
+            crs,
+            frame,
             state: Arc::new(state.clone()),
         },
         // Validate the axes, then discard the scale: the CRS-natural default
@@ -244,8 +259,9 @@ pub(crate) fn metric_model_meters_at(
     state: &crate::crs::RuntimeState,
 ) -> Result<MetricModel> {
     Ok(match horizontal_component(crs, state)? {
-        HorizontalComponent::Geodesic(name) => MetricModel::Geodesic {
-            crs: name,
+        HorizontalComponent::Geodesic { crs, frame } => MetricModel::Geodesic {
+            crs,
+            frame,
             state: Arc::new(state.clone()),
         },
         // Same walk as the CRS-natural resolver; here the axis factor is kept
@@ -298,24 +314,17 @@ pub(crate) fn planar_to_metre(
     Ok(unit)
 }
 
-pub(crate) fn ensure_geographic_degree_units(crs: &str, info: &CrsInfo) -> Result<()> {
-    let fail = |message: String| Err(CrsError::geodesic_units(crs, message));
-    if info.axes.len() < 2 {
-        return fail("geographic CRS does not expose two horizontal axes".to_owned());
-    }
-    for (index, axis) in info.axes.iter().take(2).enumerate() {
-        if !axis.unit_conversion_factor.is_finite()
-            || (axis.unit_conversion_factor - DEGREE_TO_RADIAN).abs() > 1e-12
-        {
-            return fail(format!(
-                "axis {index} uses {}, but geometry coordinates are interpreted as longitude/latitude degrees",
-                axis.unit_name
-                    .as_deref()
-                    .unwrap_or("an unknown angular unit"),
-            ));
-        }
-    }
-    Ok(())
+pub(crate) fn geographic_metric_frame_at(
+    crs: &str,
+    state: &crate::crs::RuntimeState,
+) -> Result<GeographicFrame> {
+    let info = info_with_state(crs, state)?;
+    info.geographic_frame().ok_or_else(|| {
+        CrsError::invalid(format!(
+            "{} geodesic geometry measurements require a geographic longitude-latitude CRS",
+            info.crs
+        ))
+    })
 }
 
 /// Validate that 3D Euclidean metrics (`distance_3d`/`length_3d`) are

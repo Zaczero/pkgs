@@ -1,6 +1,10 @@
 use std::ptr;
 
-use crate::crs::{AreaOfUse, AxisInfo, DomainInfo, OwnedPj, ProjContext, copy_proj_c_string};
+use crate::crs::{
+    AreaOfUse, AxisInfo, CrsError, DomainInfo, OwnedPj, ProjContext, copy_proj_c_string,
+    crs_type_name, prime_meridian_info,
+};
+use crate::geographic::{AngularFactor, GeographicFrame};
 
 pub(crate) fn area_of_use(context: &ProjContext, object: &OwnedPj) -> Option<AreaOfUse> {
     let mut west = 0.0;
@@ -156,13 +160,22 @@ pub(crate) fn axes(context: &ProjContext, object: &OwnedPj) -> Vec<AxisInfo> {
     axes
 }
 
+pub(crate) struct CompoundAxisMetadata {
+    pub axes: Vec<AxisInfo>,
+    pub axis_order: Vec<&'static str>,
+    pub geographic_frame: Option<GeographicFrame>,
+}
+
 pub(crate) fn compound_axis_metadata(
     context: &ProjContext,
     crs: &OwnedPj,
-) -> Option<(Vec<AxisInfo>, Vec<&'static str>)> {
+    normalized: &str,
+) -> crate::error::Result<Option<CompoundAxisMetadata>> {
     let mut axes = Vec::new();
     let mut axis_order = Vec::new();
-    for index in 0..32 {
+    let mut frame = None;
+    let mut index = 0_i32;
+    loop {
         // SAFETY: DOC-H. Typed owners; returns uniquely owned sub-CRS or null.
         let sub_crs =
             unsafe { proj_sys::proj_crs_get_sub_crs(context.as_ptr(), crs.as_ptr(), index) };
@@ -178,8 +191,121 @@ pub(crate) fn compound_axis_metadata(
                 .map(|axis| axis_role(coordinate_system, axis)),
         );
         axes.extend(sub_axes);
+        if let Some(candidate) = geographic_frame(context, &sub_crs, normalized)?
+            && frame.replace(candidate).is_some()
+        {
+            return Err(CrsError::crs_create(
+                normalized,
+                "CRS has multiple geographic horizontal components",
+            ));
+        }
+        index = index.checked_add(1).ok_or_else(|| {
+            CrsError::crs_create(normalized, "compound CRS component count overflowed")
+        })?;
     }
-    (!axes.is_empty()).then_some((axes, axis_order))
+    Ok((!axes.is_empty()).then_some(CompoundAxisMetadata {
+        axes,
+        axis_order,
+        geographic_frame: frame,
+    }))
+}
+
+/// Resolve the one geographic horizontal component while the owning PROJ CRS
+/// object is live. The resulting value is copied into the immutable `CrsInfo`.
+pub(crate) fn geographic_frame(
+    context: &ProjContext,
+    crs: &OwnedPj,
+    normalized: &str,
+) -> crate::error::Result<Option<GeographicFrame>> {
+    fn collect(
+        context: &ProjContext,
+        object: &OwnedPj,
+        normalized: &str,
+        found: &mut Option<GeographicFrame>,
+    ) -> crate::error::Result<()> {
+        // SAFETY: typed live object owned by the creating thread.
+        let type_ = unsafe { proj_sys::proj_get_type(object.as_ptr()) };
+        let kind = crs_type_name(type_);
+        if kind.starts_with("geographic") {
+            let object_axes = axes(context, object);
+            let coordinate_system = coordinate_system_type(context, object);
+            let mut longitude = None;
+            let mut latitude = None;
+            for axis in &object_axes {
+                match axis_role(coordinate_system, axis) {
+                    "lon" if longitude.is_none() => longitude = Some(axis.unit_conversion_factor),
+                    "lat" if latitude.is_none() => latitude = Some(axis.unit_conversion_factor),
+                    "lon" | "lat" => {
+                        return Err(CrsError::crs_create(
+                            normalized,
+                            "geographic CRS has duplicate horizontal angular axes",
+                        ));
+                    },
+                    _ => {},
+                }
+            }
+            let (Some(longitude), Some(latitude)) = (longitude, latitude) else {
+                return Err(CrsError::crs_create(
+                    normalized,
+                    "geographic CRS does not expose longitude and latitude angular axes",
+                ));
+            };
+            let prime_meridian = prime_meridian_info(context, object).ok_or_else(|| {
+                CrsError::crs_create(
+                    normalized,
+                    "geographic CRS does not expose a prime meridian",
+                )
+            })?;
+            let prime_meridian_radians =
+                prime_meridian.longitude * prime_meridian.unit_conversion_factor;
+            let frame = GeographicFrame::try_new(
+                AngularFactor::try_new("longitude unit", longitude)
+                    .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?,
+                AngularFactor::try_new("latitude unit", latitude)
+                    .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?,
+                prime_meridian_radians,
+            )
+            .map_err(|error| CrsError::crs_create(normalized, error.to_string()))?;
+            if found.replace(frame).is_some() {
+                return Err(CrsError::crs_create(
+                    normalized,
+                    "CRS has multiple geographic horizontal components",
+                ));
+            }
+            return Ok(());
+        }
+
+        if kind == "bound" {
+            // SAFETY: typed owners; a non-null source CRS is uniquely owned.
+            let source = unsafe {
+                OwnedPj::try_from_owned(proj_sys::proj_get_source_crs(
+                    context.as_ptr(),
+                    object.as_ptr(),
+                ))
+            };
+            let source = source.ok_or_else(|| {
+                CrsError::crs_create(normalized, "bound CRS does not expose its source CRS")
+            })?;
+            return collect(context, &source, normalized, found);
+        }
+
+        if kind == "compound"
+            && let Some(metadata) = compound_axis_metadata(context, object, normalized)?
+            && let Some(candidate) = metadata.geographic_frame
+            && found.replace(candidate).is_some()
+        {
+            return Err(CrsError::crs_create(
+                normalized,
+                "CRS has multiple geographic horizontal components",
+            ));
+        }
+
+        Ok(())
+    }
+
+    let mut frame = None;
+    collect(context, crs, normalized, &mut frame)?;
+    Ok(frame)
 }
 
 pub(crate) const fn coordinate_system_type_name(

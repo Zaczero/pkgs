@@ -133,9 +133,14 @@ pub(crate) struct CrsInfo {
     pub datum: Option<DatumInfo>,
     pub ellipsoid: Option<EllipsoidInfo>,
     pub prime_meridian: Option<PrimeMeridianInfo>,
+    pub(crate) geographic_frame: Option<crate::geographic::GeographicFrame>,
 }
 
 impl CrsInfo {
+    pub(crate) const fn geographic_frame(&self) -> Option<crate::geographic::GeographicFrame> {
+        self.geographic_frame
+    }
+
     /// Whether this CRS — or any component of a compound CRS — has a kind
     /// matching `predicate`.
     pub(crate) fn has_kind(&self, predicate: impl Fn(&str) -> bool) -> bool {
@@ -214,6 +219,7 @@ impl<'py> IntoPyObject<'py> for CrsInfo {
             datum,
             ellipsoid,
             prime_meridian,
+            ..
         } = self;
         let dict = PyDict::new(py);
         dict.set_item("crs", crs)?;

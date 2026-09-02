@@ -121,7 +121,7 @@ impl SimilarityFrame {
 
     pub(crate) fn frame_point(self, point: Point) -> Point {
         let xy = self.frame_xy(point.x, point.y);
-        Point::new_unchecked_xy(xy.x, xy.y)
+        Point::new_raw_xy(xy.x, xy.y)
     }
 }
 
@@ -184,7 +184,7 @@ impl AxisFrame {
 
     pub(crate) fn frame_point(self, point: Point) -> Point {
         let xy = self.frame_xy(point.x, point.y);
-        Point::new_unchecked_xy(xy.x, xy.y)
+        Point::new_raw_xy(xy.x, xy.y)
     }
 
     pub(crate) fn unframe_xy(self, point: XY) -> XY {

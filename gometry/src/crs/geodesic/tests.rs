@@ -11,7 +11,7 @@ use crate::geometry::{
 };
 
 fn p(x: f64, y: f64) -> Point {
-    Point::new_unchecked_xy(x, y)
+    Point::new_raw_xy(x, y)
 }
 
 fn line(points: Vec<Point>) -> Shape {
@@ -48,7 +48,7 @@ fn point_only_points(shape: &Shape) -> Vec<Point> {
 #[test]
 fn geodesic_point_segment_is_globally_certified() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let point = p(-102.23029036638832, 77.32057101285838);
     let segment = metric
         .make_segment(
@@ -67,7 +67,7 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
     GEODESIC_LINE_CACHE.with(|cache| cache.borrow_mut().clear());
     geodesic_counters::reset();
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let segment = metric
         .make_segment(p(-1.0, 0.0), p(1.0, 0.0))
         .expect("unique test segment");
@@ -90,7 +90,7 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
 #[test]
 fn geodesic_point_to_segment_threshold_is_inclusive_and_certified() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let segment = metric
         .make_segment(p(-10.0, 0.0), p(10.0, 0.0))
         .expect("unique test segment");
@@ -115,7 +115,7 @@ fn geodesic_point_to_segment_threshold_is_inclusive_and_certified() {
 #[test]
 fn geodesic_segment_intersection_uses_ellipsoidal_solver() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     assert!(
         metric
             .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
@@ -135,7 +135,7 @@ fn geodesic_segment_intersection_uses_ellipsoidal_solver() {
 #[test]
 fn geodesic_segment_intersection_returns_on_curve_witnesses() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let first = metric
         .make_segment(p(-20.0, -10.0), p(30.0, 20.0))
         .expect("unique test segment");
@@ -167,7 +167,7 @@ fn geodesic_segment_intersection_returns_on_curve_witnesses() {
 fn geodesic_segment_intersection_accepts_flattening_boundaries() {
     for flattening in [-0.25, 0.2] {
         let geodesic = Geodesic::new(6_378_137.0, flattening);
-        let metric = EllipsoidMetric::for_geodesic(&geodesic);
+        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
         assert!(
             metric
                 .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
@@ -175,7 +175,7 @@ fn geodesic_segment_intersection_accepts_flattening_boundaries() {
         );
     }
     let outside = Geodesic::new(6_378_137.0, 0.200_000_000_1);
-    let metric = EllipsoidMetric::for_geodesic(&outside);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&outside);
     assert!(
         metric
             .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
@@ -186,18 +186,18 @@ fn geodesic_segment_intersection_accepts_flattening_boundaries() {
 #[test]
 fn geodesic_segment_rejects_nonunique_shortest_endpoints() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     assert!(metric.make_segment(p(0.0, 10.0), p(180.0, -10.0)).is_err());
     assert!(metric.make_segment(p(0.0, 90.0), p(180.0, -90.0)).is_err());
     let sphere = Geodesic::new(6_378_137.0, 0.0);
-    let sphere_metric = EllipsoidMetric::for_geodesic(&sphere);
+    let sphere_metric = EllipsoidMetric::for_crs84_geometry_test(&sphere);
     assert!(
         sphere_metric
             .make_segment(p(0.0, 0.0), p(180.0, 0.0))
             .is_err()
     );
     let prolate = Geodesic::new(6_378_137.0, -0.01);
-    let prolate_metric = EllipsoidMetric::for_geodesic(&prolate);
+    let prolate_metric = EllipsoidMetric::for_crs84_geometry_test(&prolate);
     assert!(
         prolate_metric
             .make_segment(p(0.0, 10.0), p(180.0, -10.0))
@@ -233,7 +233,7 @@ fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
     let offsets = [0, 1, 2, 5, 17, 73, latitudes.len() / 2];
 
     for (name, geodesic, max_allowed_loss) in cases {
-        let metric = EllipsoidMetric::for_geodesic(&geodesic);
+        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
         let LowerBoundKernel::Tabulated(_) = LowerBoundKernel::for_geodesic(&geodesic) else {
             panic!("{name} should use the tabulated lower-bound kernel");
         };
@@ -264,7 +264,7 @@ fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
 #[test]
 fn non_tabulated_flattening_uses_exact_oblate_or_disabled_lane() {
     let prolate = Geodesic::new(6_378_137.0, -0.01);
-    let prolate_metric = EllipsoidMetric::for_geodesic(&prolate);
+    let prolate_metric = EllipsoidMetric::for_crs84_geometry_test(&prolate);
     assert_eq!(
         prolate_metric
             .point_distance_lower_bound(p(0.0, 0.0), p(1.0, 0.0))
@@ -273,7 +273,7 @@ fn non_tabulated_flattening_uses_exact_oblate_or_disabled_lane() {
     );
 
     let high_flattening = Geodesic::new(6_378_137.0, 0.2);
-    let exact_metric = EllipsoidMetric::for_geodesic(&high_flattening);
+    let exact_metric = EllipsoidMetric::for_crs84_geometry_test(&high_flattening);
     let a = p(-12.0, -45.0);
     let b = p(78.0, 41.0);
     assert_eq!(
@@ -406,7 +406,7 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     let flattening = 1.0 - semi_minor / semi_major;
     assert!(flattening < 0.0);
     let geodesic = Geodesic::new(semi_major, flattening);
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
 
     let equator_a = p(0.0, 0.0);
     let equator_b = p(1.0, 0.0);
@@ -534,7 +534,7 @@ fn geodesic_frechet_full_reference<S: Coordinates + ?Sized, L: Coordinates + ?Si
 #[test]
 fn banded_geodesic_frechet_matches_full_dp_bit_for_bit() {
     let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_geodesic(&geodesic);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
     let base = |n| {
         (0..n)
             .map(|i| {

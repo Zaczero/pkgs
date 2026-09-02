@@ -1,4 +1,5 @@
 use crate::crs::geodesic::{Geodesic, Point, REDUCED_LAT_MIN_ONE_MINUS_F, REDUCED_LAT_TABLE_CELLS};
+use crate::geographic::GeographicFrame;
 
 pub(crate) enum LowerBoundKernel {
     Disabled,
@@ -152,6 +153,18 @@ pub(crate) fn exact_auxiliary_sphere_bound(geodesic: &Geodesic, a: Point, b: Poi
     if geodesic.f < 0.0 || geodesic.f >= 1.0 {
         return 0.0;
     }
+    // This is a degree/Greenwich kernel. Collapse periodic aliases before
+    // deriving the longitude gap; otherwise 0 and 360 degrees could produce
+    // a positive lower bound for two coincident points.
+    let axis = GeographicFrame::crs84().longitude();
+    let a_lon = axis
+        .canonicalize(a.x)
+        .expect("finite lower-bound longitude")
+        .get();
+    let b_lon = axis
+        .canonicalize(b.x)
+        .expect("finite lower-bound longitude")
+        .get();
     // Auxiliary-sphere bound: the geodesic is at least the semi-minor
     // axis times the central angle between the reduced latitudes (raw
     // Δλ ≤ the auxiliary longitude difference) — the same verified bound
@@ -163,7 +176,7 @@ pub(crate) fn exact_auxiliary_sphere_bound(geodesic: &Geodesic, a: Point, b: Poi
             .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)
     };
     let (beta1, beta2) = (reduced(a.y), reduced(b.y));
-    let delta_lon = (b.x - a.x).to_radians();
+    let delta_lon = (b_lon - a_lon).to_radians();
     let sin_lat = ((beta2 - beta1) / 2.0).sin();
     let sin_lon = (delta_lon / 2.0).sin();
     // Plain ops: scalar `mul_add` is a libm call below x86-64-v3 (see

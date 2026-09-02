@@ -6,9 +6,9 @@ use geographiclib_rs::Geodesic;
 
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    EllipsoidMetric, Result, ensure_geodesic_lonlat_crs_at, ensure_geographic_lonlat, finite,
-    normalize, with_ellipsoid_metric_at, with_geodesic_at,
+    EllipsoidMetric, Result, finite, normalize, with_ellipsoid_metric_at, with_geodesic_at,
 };
+use crate::geographic::GeographicFrame;
 use crate::geometry::{Coordinates, GeodesicMetric as _, Point, Shape};
 
 /// Batch geodesic distances from packed lon/lat columns to one fixed
@@ -24,28 +24,41 @@ pub(crate) fn geodesic_point_pair_distances(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
+    frame: GeographicFrame,
 ) -> Result<Vec<f64>> {
     for (&x, &y) in std::iter::zip(left_xs, left_ys) {
-        ensure_geographic_lonlat(x, y)?;
+        crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
     for (&x, &y) in std::iter::zip(right_xs, right_ys) {
-        ensure_geographic_lonlat(x, y)?;
+        crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
-    let metric = EllipsoidMetric::for_geodesic_at(geodesic, 0);
+    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
     std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
     )
     .map(|((&lx, &ly), (&rx, &ry))| {
         finite(
-            metric.segment_length(
-                Point::new_unchecked_xy(lx, ly),
-                Point::new_unchecked_xy(rx, ry),
-            ),
+            metric.segment_length(Point::new_raw_xy(lx, ly), Point::new_raw_xy(rx, ry)),
             "geodesic distance",
         )
     })
     .collect()
+}
+
+/// Direct distance for one geographic point pair. This is the point arm of
+/// the prepared-pair path without constructing transient prepared plans.
+pub(crate) fn geodesic_point_pair_distance(
+    geodesic: &Geodesic,
+    left: Point,
+    right: Point,
+    frame: GeographicFrame,
+    runtime_generation: u64,
+) -> Result<f64> {
+    crate::crs::ensure_geographic_lonlat_in_frame(frame, left.x, left.y)?;
+    crate::crs::ensure_geographic_lonlat_in_frame(frame, right.x, right.y)?;
+    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
+    finite(metric.segment_length(left, right), "geodesic distance")
 }
 
 /// Element-wise geodesic `dwithin` over packed lon/lat columns (array × array
@@ -58,25 +71,39 @@ pub(crate) fn geodesic_point_pair_dwithin(
     right_xs: &[f64],
     right_ys: &[f64],
     distance: f64,
+    frame: GeographicFrame,
 ) -> Result<Vec<bool>> {
     for (&x, &y) in std::iter::zip(left_xs, left_ys) {
-        ensure_geographic_lonlat(x, y)?;
+        crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
     for (&x, &y) in std::iter::zip(right_xs, right_ys) {
-        ensure_geographic_lonlat(x, y)?;
+        crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
-    let metric = EllipsoidMetric::for_geodesic_at(geodesic, 0);
+    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
     Ok(std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
     )
     .map(|((&lx, &ly), (&rx, &ry))| {
-        metric.segment_length(
-            Point::new_unchecked_xy(lx, ly),
-            Point::new_unchecked_xy(rx, ry),
-        ) <= distance
+        metric.segment_length(Point::new_raw_xy(lx, ly), Point::new_raw_xy(rx, ry)) <= distance
     })
     .collect())
+}
+
+/// Direct `dwithin` for one geographic point pair, matching the prepared
+/// point-pair comparison at the threshold.
+pub(crate) fn geodesic_point_pair_dwithin_one(
+    geodesic: &Geodesic,
+    left: Point,
+    right: Point,
+    distance: f64,
+    frame: GeographicFrame,
+    runtime_generation: u64,
+) -> Result<bool> {
+    crate::crs::ensure_geographic_lonlat_in_frame(frame, left.x, left.y)?;
+    crate::crs::ensure_geographic_lonlat_in_frame(frame, right.x, right.y)?;
+    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
+    Ok(metric.segment_length(left, right) <= distance)
 }
 
 pub(crate) fn geodesic_point_distances(
@@ -84,20 +111,21 @@ pub(crate) fn geodesic_point_distances(
     xs: &[f64],
     ys: &[f64],
     target: Point,
+    frame: GeographicFrame,
     state: &RuntimeState,
 ) -> Result<Vec<f64>> {
-    ensure_geodesic_lonlat_crs_at(crs, state)?;
-    ensure_geographic_lonlat(target.x, target.y)?;
+    crate::crs::geographic_metric_frame_at(crs, state)?;
+    crate::crs::ensure_geographic_lonlat_in_frame(frame, target.x, target.y)?;
     for (&x, &y) in std::iter::zip(xs, ys) {
-        ensure_geographic_lonlat(x, y)?;
+        crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
     let crs = normalize(crs)?;
     with_geodesic_at(&crs, state, |geodesic| {
-        let metric = EllipsoidMetric::for_geodesic_at(geodesic, state.generation);
+        let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         std::iter::zip(xs, ys)
             .map(|(&x, &y)| {
                 finite(
-                    metric.segment_length(Point::new_unchecked_xy(x, y), target),
+                    metric.segment_length(Point::new_raw_xy(x, y), target),
                     "geodesic distance",
                 )
             })

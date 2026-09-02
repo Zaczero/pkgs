@@ -5,12 +5,12 @@
 //! `crs` module via `use super::*`.
 
 use crate::crs::{
-    AngularUnit, AuthorityObjectInfo, Confidence, CrsError, CrsInfo, CrsProjJsonOptions,
-    CrsProjOptions, CrsWktOptions, IdentifyCandidate, OwnedPj, ProjContext, ProjIntList,
-    ProjObjList, ProjObject, ProjectionFactorColumns, ProjectionFactors, RuntimeState, area_of_use,
-    authority_object_info, axes, axis_role, c_option_ptrs, compound_axis_metadata,
+    AngularUnit, AuthorityObjectInfo, CompoundAxisMetadata, Confidence, CrsError, CrsInfo,
+    CrsProjJsonOptions, CrsProjOptions, CrsWktOptions, IdentifyCandidate, OwnedPj, ProjContext,
+    ProjIntList, ProjObjList, ProjObject, ProjectionFactorColumns, ProjectionFactors, RuntimeState,
+    area_of_use, authority_object_info, axes, axis_role, c_option_ptrs, compound_axis_metadata,
     coordinate_system_type, copy_proj_c_string, crs_type_name, cstring, datum_info, domain_infos,
-    ellipsoid_info, exported_owned_crs, id_authority, optional_c_string,
+    ellipsoid_info, exported_owned_crs, geographic_frame, id_authority, optional_c_string,
     owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
     proj_context_error_message, proj_transform_error, ptr, split_authority, sub_crs_infos,
 };
@@ -101,7 +101,11 @@ impl ProjObject {
         Ok(columns)
     }
 
-    pub(super) fn info(&self, normalized: String) -> CrsInfo {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one snapshot keeps all metadata from the same live PROJ object"
+    )]
+    pub(super) fn info(&self, normalized: String) -> Result<CrsInfo> {
         // DOC-H block: context/object derive from `&self` typed owners on the
         // creating thread. Returned owned children are adopted into OwnedPj
         // immediately; strings are copied while the parent lives. PROJ invokes
@@ -112,12 +116,20 @@ impl ProjObject {
         let type_ = unsafe { proj_sys::proj_get_type(object.as_ptr()) };
         let coordinate_system = coordinate_system_type(context, object);
         let axes = axes(context, object);
+        let compound_metadata = if type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+            compound_axis_metadata(context, object, &normalized)?
+        } else {
+            None
+        };
+        let compound_frame = compound_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.geographic_frame);
         let (axes, axis_order) = if axes.is_empty()
-            && type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS
-            && let Some((compound_axes, compound_axis_order)) =
-                compound_axis_metadata(context, object)
+            && let Some(CompoundAxisMetadata {
+                axes, axis_order, ..
+            }) = compound_metadata
         {
-            (compound_axes, compound_axis_order)
+            (axes, axis_order)
         } else {
             let axis_order = axes
                 .iter()
@@ -177,7 +189,12 @@ impl ProjObject {
                 )),
             )
         };
-        CrsInfo {
+        let geographic_frame = if type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+            compound_frame
+        } else {
+            geographic_frame(context, object, &normalized)?
+        };
+        Ok(CrsInfo {
             crs: normalized,
             name,
             authority,
@@ -203,7 +220,8 @@ impl ProjObject {
             datum: datum_info(context, object),
             ellipsoid: ellipsoid_info(context, object),
             prime_meridian: prime_meridian_info(context, object),
-        }
+            geographic_frame,
+        })
     }
 
     pub(super) fn to_wkt_with_options(

@@ -102,7 +102,7 @@ define_operation! {
     Simplify => { name: "simplify", resolver: MetricResolver::None },
     Smooth => { name: "smooth", resolver: MetricResolver::None },
     SnapToGrid => { name: "snap_to_grid", resolver: MetricResolver::None },
-    SplitAntimeridian => { name: "split_antimeridian", resolver: MetricResolver::Antimeridian },
+    SplitAntimeridian => { name: "split_antimeridian", resolver: MetricResolver::None },
     SwapXy => { name: "swap_xy", resolver: MetricResolver::None },
     SymmetricDifference => { name: "symmetric_difference", resolver: MetricResolver::None },
     Translate => { name: "translate", resolver: MetricResolver::None },

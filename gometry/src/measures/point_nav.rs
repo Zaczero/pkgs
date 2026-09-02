@@ -7,7 +7,8 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::MissingMask;
+use crate::array::{GeometryArrayStorage, ValidityMask};
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HasM, HasZ, MOrdinate, ZOrdinate,
     same_topological_coordinate,
@@ -32,6 +33,18 @@ fn row_zero(err: PyErr) -> PyErr {
     crate::note_array_row(err, 0)
 }
 
+fn to_geodesic_point(frame: GeographicFrame, point: Point) -> PyResult<Point> {
+    frame
+        .to_geodesic_point(point)
+        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(point.x, point.y).into())
+}
+
+fn from_geodesic_point(frame: GeographicFrame, point: Point) -> PyResult<Point> {
+    frame
+        .from_geodesic_point(point)
+        .map_err(|error| crate::py::errors::CRSError::new_err(error.to_string()))
+}
+
 fn require_geographic_model(crs: Option<&str>, operation: &str) -> PyResult<crs::MetricModel> {
     match crs::metric_model(crs)? {
         model @ crs::MetricModel::Geodesic { .. } => Ok(model),
@@ -52,10 +65,13 @@ pub(crate) fn bearing_degrees(dx: f64, dy: f64) -> f64 {
 
 fn rhumb_distance_points(
     crs: &str,
+    frame: GeographicFrame,
     from: Point,
     to: Point,
     state: &crs::RuntimeState,
 ) -> PyResult<f64> {
+    let from = to_geodesic_point(frame, from)?;
+    let to = to_geodesic_point(frame, to)?;
     Ok(crs::rhumb_distance_crs_at(
         crs, from.x, from.y, to.x, to.y, state,
     )?)
@@ -63,10 +79,13 @@ fn rhumb_distance_points(
 
 fn rhumb_bearing_points(
     crs: &str,
+    frame: GeographicFrame,
     from: Point,
     to: Point,
     state: &crs::RuntimeState,
 ) -> PyResult<f64> {
+    let from = to_geodesic_point(frame, from)?;
+    let to = to_geodesic_point(frame, to)?;
     Ok(crs::rhumb_bearing_crs_at(
         crs, from.x, from.y, to.x, to.y, state,
     )?)
@@ -80,13 +99,31 @@ fn destination_point<const GEODESIC: bool>(
 ) -> PyResult<Point> {
     dispatch_point_nav::<GEODESIC>(model);
     if same_topological_coordinate(distance, 0.0) {
+        if GEODESIC {
+            let crs::MetricModel::Geodesic { frame, .. } = model else {
+                unreachable!("checked above");
+            };
+            to_geodesic_point(*frame, from)?;
+        }
         return Ok(from);
     }
     let (x, y) = if GEODESIC {
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("checked above");
         };
-        crs::geodesic_destination_crs_at(crs, from.x, from.y, bearing, distance, state)?
+        let from_geodesic = to_geodesic_point(*frame, from)?;
+        let (x, y) = crs::geodesic_destination_crs_at(
+            crs,
+            from_geodesic.x,
+            from_geodesic.y,
+            bearing,
+            distance,
+            state,
+        )?;
+        return from_geodesic_point(
+            *frame,
+            Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?,
+        );
     } else {
         let crs::MetricModel::Planar { to_metre } = model else {
             unreachable!("checked above");
@@ -105,61 +142,98 @@ fn destination_point<const GEODESIC: bool>(
 
 fn destination_point_on_geodesic(
     geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
     from: Point,
     bearing: f64,
     distance: f64,
 ) -> crate::error::Result<Point> {
     if same_topological_coordinate(distance, 0.0) {
+        frame
+            .to_geodesic_point(from)
+            .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
         return Ok(from);
     }
-    let (x, y) = crs::geodesic_destination(geodesic, from.x, from.y, bearing, distance)?;
-    Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))
+    let from_geodesic = frame
+        .to_geodesic_point(from)
+        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
+    let (x, y) = crs::geodesic_destination(
+        geodesic,
+        from_geodesic.x,
+        from_geodesic.y,
+        bearing,
+        distance,
+    )?;
+    let point = Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?;
+    frame
+        .from_geodesic_point(point)
+        .map_err(|error| crate::crs::CrsError::message(error.to_string()).into())
 }
 
 fn rhumb_destination_point(
     crs: &str,
+    frame: GeographicFrame,
     from: Point,
     bearing: f64,
     distance: f64,
     state: &crs::RuntimeState,
 ) -> PyResult<Shape> {
     if same_topological_coordinate(distance, 0.0) {
+        to_geodesic_point(frame, from)?;
         return Ok(Shape::Point(from));
     }
-    let Some((x, y)) =
-        crs::rhumb_destination_crs_at(crs, from.x, from.y, bearing, distance, state)?
+    let from_geodesic = to_geodesic_point(frame, from)?;
+    let Some((x, y)) = crs::rhumb_destination_crs_at(
+        crs,
+        from_geodesic.x,
+        from_geodesic.y,
+        bearing,
+        distance,
+        state,
+    )?
     else {
         return Err(crate::py::errors::InvalidGeometryError::new_err(
             "destination(path='rhumb') crosses a pole, where the destination longitude is \
              indeterminate",
         ));
     };
-    Ok(Shape::Point(Point::new_axes(
-        x,
-        y,
-        ZOrdinate(from.z()),
-        MOrdinate(from.m()),
+    Ok(Shape::Point(from_geodesic_point(
+        frame,
+        Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?,
     )?))
 }
 
 fn interpolate_point_on_geodesic(
     geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
     from: Point,
     to: Point,
     distance: f64,
     normalized: bool,
 ) -> crate::error::Result<Point> {
+    let from_geodesic = frame
+        .to_geodesic_point(from)
+        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
+    let to_geodesic = frame
+        .to_geodesic_point(to)
+        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(to.x, to.y))?;
     // One inverse (dist+az) + optional direct — total distance is never
     // solved as a separate inverse first.
-    let (x, y, ratio) =
-        crs::geodesic_point_between(geodesic, from.x, from.y, to.x, to.y, distance, normalized)?;
+    let (x, y, ratio) = crs::geodesic_point_between(
+        geodesic,
+        from_geodesic.x,
+        from_geodesic.y,
+        to_geodesic.x,
+        to_geodesic.y,
+        distance,
+        normalized,
+    )?;
     if same_topological_coordinate(ratio, 0.0) {
         return Ok(from);
     }
     if same_topological_coordinate(ratio, 1.0) {
         return Ok(to);
     }
-    Point::new_axes(
+    let point = Point::new_axes(
         x,
         y,
         ZOrdinate(crate::crs::interpolate_optional_ordinate(
@@ -172,7 +246,10 @@ fn interpolate_point_on_geodesic(
             to.m(),
             ratio,
         )),
-    )
+    )?;
+    frame
+        .from_geodesic_point(point)
+        .map_err(|error| crate::crs::CrsError::message(error.to_string()).into())
 }
 
 fn interpolate_point<const GEODESIC: bool>(
@@ -184,12 +261,12 @@ fn interpolate_point<const GEODESIC: bool>(
 ) -> PyResult<Shape> {
     dispatch_point_nav::<GEODESIC>(model);
     if GEODESIC {
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("checked above");
         };
         let geodesic = crs::geodesic_for_crs_at(crs, state)?;
         return Ok(Shape::Point(interpolate_point_on_geodesic(
-            &geodesic, from, to, distance, normalized,
+            &geodesic, *frame, from, to, distance, normalized,
         )?));
     }
     let crs::MetricModel::Planar { to_metre } = model else {
@@ -217,13 +294,23 @@ fn interpolate_point<const GEODESIC: bool>(
 
 fn rhumb_interpolate_point(
     crs: &str,
+    frame: GeographicFrame,
     from: Point,
     to: Point,
     distance: f64,
     normalized: bool,
     state: &crs::RuntimeState,
 ) -> PyResult<Shape> {
-    let total = crs::rhumb_distance_crs_at(crs, from.x, from.y, to.x, to.y, state)?;
+    let from_geodesic = to_geodesic_point(frame, from)?;
+    let to_geodesic = to_geodesic_point(frame, to)?;
+    let total = crs::rhumb_distance_crs_at(
+        crs,
+        from_geodesic.x,
+        from_geodesic.y,
+        to_geodesic.x,
+        to_geodesic.y,
+        state,
+    )?;
     let ratio = if normalized {
         distance
     } else if total == 0.0 {
@@ -238,28 +325,44 @@ fn rhumb_interpolate_point(
     if same_topological_coordinate(ratio, 1.0) {
         return Ok(Shape::Point(to));
     }
-    let bearing = crs::rhumb_bearing_crs_at(crs, from.x, from.y, to.x, to.y, state)?;
-    let Some((x, y)) =
-        crs::rhumb_destination_crs_at(crs, from.x, from.y, bearing, total * ratio, state)?
+    let bearing = crs::rhumb_bearing_crs_at(
+        crs,
+        from_geodesic.x,
+        from_geodesic.y,
+        to_geodesic.x,
+        to_geodesic.y,
+        state,
+    )?;
+    let Some((x, y)) = crs::rhumb_destination_crs_at(
+        crs,
+        from_geodesic.x,
+        from_geodesic.y,
+        bearing,
+        total * ratio,
+        state,
+    )?
     else {
         return Err(crate::py::errors::InvalidGeometryError::new_err(
             "point_between(path='rhumb') crosses a pole, where the destination longitude is \
              indeterminate",
         ));
     };
-    Ok(Shape::Point(Point::new_axes(
-        x,
-        y,
-        ZOrdinate(crate::crs::interpolate_optional_ordinate(
-            from.z(),
-            to.z(),
-            ratio,
-        )),
-        MOrdinate(crate::crs::interpolate_optional_ordinate(
-            from.m(),
-            to.m(),
-            ratio,
-        )),
+    Ok(Shape::Point(from_geodesic_point(
+        frame,
+        Point::new_axes(
+            x,
+            y,
+            ZOrdinate(crate::crs::interpolate_optional_ordinate(
+                from.z(),
+                to.z(),
+                ratio,
+            )),
+            MOrdinate(crate::crs::interpolate_optional_ordinate(
+                from.m(),
+                to.m(),
+                ratio,
+            )),
+        )?,
     )?))
 }
 
@@ -286,13 +389,13 @@ pub(crate) fn point_cross_track_distance(
         .frame
         .compatible(&end.frame, "cross_track_distance")?;
     let model = resolve_metric(geometry.crs_str(), None, "cross_track_distance")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         return Err(crate::py::errors::CRSError::new_err(
             "cross_track_distance requires a geographic CRS; use set_crs(...) or to_crs(...) \
              to attach one",
         ));
     };
-    cross_track_points(&crs, probe, from, to, &state)
+    cross_track_points(&crs, frame, probe, from, to, &state)
 }
 
 pub(crate) fn point_rhumb_distance(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
@@ -300,12 +403,12 @@ pub(crate) fn point_rhumb_distance(geometry: &PyGeometry, other: &PyGeometry) ->
     let to = require_point(other, "rhumb_distance")?;
     geometry.frame.compatible(&other.frame, "rhumb_distance")?;
     let model = resolve_metric(geometry.crs_str(), None, "rhumb_distance")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         return Err(crate::py::errors::CRSError::new_err(
             "rhumb_distance requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
-    rhumb_distance_points(&crs, from, to, &state)
+    rhumb_distance_points(&crs, frame, from, to, &state)
 }
 
 pub(crate) fn point_rhumb_bearing(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
@@ -315,12 +418,12 @@ pub(crate) fn point_rhumb_bearing(geometry: &PyGeometry, other: &PyGeometry) -> 
         .frame
         .compatible(&other.frame, "bearing(path='rhumb')")?;
     let model = resolve_metric(geometry.crs_str(), None, "bearing(path='rhumb')")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         return Err(crate::py::errors::CRSError::new_err(
             "bearing(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
-    rhumb_bearing_points(&crs, from, to, &state)
+    rhumb_bearing_points(&crs, frame, from, to, &state)
 }
 
 pub(crate) fn point_rhumb_destination(
@@ -330,12 +433,12 @@ pub(crate) fn point_rhumb_destination(
 ) -> PyResult<Shape> {
     let from = require_point(geometry, "destination(path='rhumb')")?;
     let model = resolve_metric(geometry.crs_str(), None, "destination(path='rhumb')")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         return Err(crate::py::errors::CRSError::new_err(
             "destination(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
-    rhumb_destination_point(&crs, from, bearing, distance, &state)
+    rhumb_destination_point(&crs, frame, from, bearing, distance, &state)
 }
 
 pub(crate) fn point_rhumb_between(
@@ -350,12 +453,12 @@ pub(crate) fn point_rhumb_between(
         .frame
         .compatible(&other.frame, "point_between(path='rhumb')")?;
     let model = resolve_metric(geometry.crs_str(), None, "point_between(path='rhumb')")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         return Err(crate::py::errors::CRSError::new_err(
             "point_between(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
-    rhumb_interpolate_point(&crs, from, to, distance, normalized, &state)
+    rhumb_interpolate_point(&crs, frame, from, to, distance, normalized, &state)
 }
 
 pub(crate) fn point_destination(
@@ -399,6 +502,7 @@ pub(crate) fn point_interpolate(
 
 fn cross_track_points(
     crs: &str,
+    frame: GeographicFrame,
     probe: Point,
     from: Point,
     to: Point,
@@ -409,6 +513,9 @@ fn cross_track_points(
             "cross_track_distance requires distinct start and end points",
         ));
     }
+    let probe = to_geodesic_point(frame, probe)?;
+    let from = to_geodesic_point(frame, from)?;
+    let to = to_geodesic_point(frame, to)?;
     Ok(crs::geodesic_cross_track_crs_at(
         crs,
         (probe.x, probe.y),
@@ -420,6 +527,7 @@ fn cross_track_points(
 
 fn cross_track_points_with_radius(
     radius: f64,
+    frame: GeographicFrame,
     probe: Point,
     from: Point,
     to: Point,
@@ -429,6 +537,9 @@ fn cross_track_points_with_radius(
             "cross_track_distance requires distinct start and end points",
         ));
     }
+    let probe = to_geodesic_point(frame, probe)?;
+    let from = to_geodesic_point(frame, from)?;
+    let to = to_geodesic_point(frame, to)?;
     Ok(crs::geodesic_cross_track_with_radius(
         radius,
         (probe.x, probe.y),
@@ -439,9 +550,10 @@ fn cross_track_points_with_radius(
 
 enum PointOperand<'a> {
     One(Point),
+    Compact(&'a PyGeometryArray),
     Many {
         points: PointRows<'a>,
-        missing: Option<&'a MissingMask>,
+        missing: Option<&'a ValidityMask>,
     },
 }
 
@@ -449,13 +561,21 @@ impl PointOperand<'_> {
     fn get(&self, row: usize) -> Point {
         match self {
             Self::One(point) => *point,
+            Self::Compact(array) => match array.logical_row(row) {
+                Some(crate::array::LogicalRow::Present {
+                    row: crate::array::ShapeRow::Point(point),
+                    ..
+                }) => point,
+                _ => unreachable!("point kernels read only present compact rows"),
+            },
             Self::Many { points, .. } => points.get(row),
         }
     }
 
-    const fn missing(&self) -> Option<&MissingMask> {
+    const fn missing(&self) -> Option<&ValidityMask> {
         match self {
             Self::One(_) => None,
+            Self::Compact(array) => array.missing(),
             Self::Many { missing, .. } => *missing,
         }
     }
@@ -477,6 +597,12 @@ impl PointRowSource for PointRows<'_> {
     }
 }
 
+impl PointRowSource for PointOperand<'_> {
+    fn point_at(&self, row: usize) -> Point {
+        self.get(row)
+    }
+}
+
 trait PointPairRowsSink {
     type Output;
 
@@ -491,30 +617,23 @@ fn dispatch_point_pair_rows<S: PointPairRowsSink>(
     right: PointOperand<'_>,
     sink: S,
 ) -> S::Output {
-    match (left, right) {
-        (PointOperand::One(left), PointOperand::One(right)) => sink.run(left, right),
-        (PointOperand::One(left), PointOperand::Many { points: right, .. }) => {
-            sink.run(left, right)
-        },
-        (PointOperand::Many { points: left, .. }, PointOperand::One(right)) => {
-            sink.run(left, right)
-        },
-        (PointOperand::Many { points: left, .. }, PointOperand::Many { points: right, .. }) => {
-            sink.run(left, right)
-        },
-    }
+    sink.run(left, right)
 }
 
 fn input_len(input: GeometryInput<'_>) -> Option<usize> {
     match input {
         GeometryInput::One(_) => None,
-        GeometryInput::Many(array) => Some(array.storage().len()),
+        GeometryInput::Many(array) => Some(array.len()),
     }
 }
 
 fn input_point<'a>(input: &'a GeometryInput<'a>) -> Option<PointOperand<'a>> {
     match input {
         GeometryInput::One(geometry) => geometry_point(geometry).map(PointOperand::One),
+        GeometryInput::Many(array) if array.is_compact_nullable() => {
+            matches!(array.storage(), GeometryArrayStorage::Points { .. })
+                .then_some(PointOperand::Compact(array))
+        },
         GeometryInput::Many(array) => array
             .masked_point_rows()
             .map(|(points, missing)| PointOperand::Many { points, missing }),
@@ -588,7 +707,7 @@ fn point_from_point_nav_shape(shape: &Shape) -> Point {
 }
 
 fn point_nav_missing_point_with_axes(axes: CoordinateAxes) -> Point {
-    Point::new_unchecked_axes(
+    Point::new_raw_axes(
         f64::NAN,
         f64::NAN,
         ZOrdinate(axes.has_z().then_some(f64::NAN)),
@@ -596,13 +715,15 @@ fn point_nav_missing_point_with_axes(axes: CoordinateAxes) -> Point {
     )
 }
 
-fn is_missing(mask: Option<&MissingMask>, row: usize) -> bool {
-    mask.is_some_and(|mask| mask[row])
+fn is_missing(mask: Option<&ValidityMask>, row: usize) -> bool {
+    mask.is_some_and(|mask| mask.is_missing(row))
 }
 
-fn row_missing<const HAS_MISSING: bool>(missing: Option<&[bool]>, row: usize) -> bool {
+fn row_missing<const HAS_MISSING: bool>(missing: Option<&ValidityMask>, row: usize) -> bool {
     if HAS_MISSING {
-        missing.expect("HAS_MISSING rows carry a mask")[row]
+        missing
+            .expect("HAS_MISSING rows carry a mask")
+            .is_missing(row)
     } else {
         false
     }
@@ -619,7 +740,7 @@ fn merge_uniform_axes(current: &mut Option<CoordinateAxes>, axes: CoordinateAxes
 fn uniform_point_axes<const HAS_MISSING: bool>(
     points: &PointRows<'_>,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> Option<CoordinateAxes> {
     let mut axes = None;
     for row in 0..len {
@@ -636,7 +757,7 @@ fn uniform_point_axes<const HAS_MISSING: bool>(
 fn uniform_point_axes_dispatch(
     points: &PointRows<'_>,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> Option<CoordinateAxes> {
     if let Some(mask) = missing {
         return uniform_point_axes::<true>(points, len, Some(mask));
@@ -666,13 +787,13 @@ trait PointBinaryF64Kernel: Copy + Send + Sync {
         self,
         model: &crs::MetricModel,
         len: usize,
-        missing: Option<&[bool]>,
+        missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<Vec<f64>> {
         match missing {
             Some(mask) => (0..len)
                 .map(|row| {
-                    if mask[row] {
+                    if mask.is_missing(row) {
                         return Ok(f64::NAN);
                     }
                     let (left, right) = points(row);
@@ -703,9 +824,11 @@ impl PointBinaryF64Kernel for BearingKernel {
     ) -> PyResult<f64> {
         dispatch_point_nav::<GEODESIC>(model);
         if GEODESIC {
-            let crs::MetricModel::Geodesic { crs, state } = model else {
+            let crs::MetricModel::Geodesic { crs, frame, state } = model else {
                 unreachable!("checked above");
             };
+            let from = to_geodesic_point(*frame, from)?;
+            let to = to_geodesic_point(*frame, to)?;
             Ok(crs::geodesic_bearing_crs_at(
                 crs, from.x, from.y, to.x, to.y, state,
             )?)
@@ -718,10 +841,10 @@ impl PointBinaryF64Kernel for BearingKernel {
         self,
         model: &crs::MetricModel,
         len: usize,
-        missing: Option<&[bool]>,
+        missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<Vec<f64>> {
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("geodesic rows require a geodesic model");
         };
         // One TLS/LRU resolve for the whole batch (`Geodesic` is Copy).
@@ -729,10 +852,14 @@ impl PointBinaryF64Kernel for BearingKernel {
         match missing {
             Some(mask) => (0..len)
                 .map(|row| {
-                    if mask[row] {
+                    if mask.is_missing(row) {
                         return Ok(f64::NAN);
                     }
                     let (from, to) = points(row);
+                    let from = to_geodesic_point(*frame, from)
+                        .map_err(|err| crate::note_array_row(err, row))?;
+                    let to = to_geodesic_point(*frame, to)
+                        .map_err(|err| crate::note_array_row(err, row))?;
                     crs::geodesic_bearing(&geodesic, from.x, from.y, to.x, to.y)
                         .map_err(|err| crate::note_array_row(err.into(), row))
                 })
@@ -740,6 +867,10 @@ impl PointBinaryF64Kernel for BearingKernel {
             None => (0..len)
                 .map(|row| {
                     let (from, to) = points(row);
+                    let from = to_geodesic_point(*frame, from)
+                        .map_err(|err| crate::note_array_row(err, row))?;
+                    let to = to_geodesic_point(*frame, to)
+                        .map_err(|err| crate::note_array_row(err, row))?;
                     crs::geodesic_bearing(&geodesic, from.x, from.y, to.x, to.y)
                         .map_err(|err| crate::note_array_row(err.into(), row))
                 })
@@ -759,10 +890,10 @@ impl PointBinaryF64Kernel for RhumbDistanceKernel {
         right: Point,
     ) -> PyResult<f64> {
         dispatch_point_nav::<GEODESIC>(model);
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("require_geographic returns geodesic");
         };
-        rhumb_distance_points(crs, left, right, state)
+        rhumb_distance_points(crs, *frame, left, right, state)
     }
 }
 
@@ -777,10 +908,10 @@ impl PointBinaryF64Kernel for RhumbBearingKernel {
         right: Point,
     ) -> PyResult<f64> {
         dispatch_point_nav::<GEODESIC>(model);
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("require_geographic returns geodesic");
         };
-        rhumb_bearing_points(crs, left, right, state)
+        rhumb_bearing_points(crs, *frame, left, right, state)
     }
 }
 
@@ -800,7 +931,7 @@ fn point_binary_f64_rows_planar<const HAS_MISSING: bool, K: PointBinaryF64Kernel
     kernel: K,
     model: &crs::MetricModel,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     mut points: impl FnMut(usize) -> (Point, Point),
 ) -> PyResult<Vec<f64>> {
     dispatch_point_nav::<false>(model);
@@ -821,7 +952,7 @@ fn point_binary_f64_rows_dispatch<K: PointBinaryF64Kernel>(
     kernel: K,
     model: &crs::MetricModel,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     points: impl FnMut(usize) -> (Point, Point),
 ) -> PyResult<Vec<f64>> {
     match model {
@@ -856,12 +987,12 @@ trait PointBinaryGeometryKernel: Copy + Send + Sync {
         model: &crs::MetricModel,
         len: usize,
         axes: CoordinateAxes,
-        missing: Option<&[bool]>,
+        missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<CoordSeq> {
         let mut builder = CoordSeqBuilder::with_capacity(axes, len);
         for row in 0..len {
-            if missing.is_some_and(|mask| mask[row]) {
+            if missing.is_some_and(|mask| mask.is_missing(row)) {
                 builder.push(point_nav_missing_point_with_axes(axes));
                 continue;
             }
@@ -896,10 +1027,18 @@ impl PointBinaryGeometryKernel for RhumbInterpolatePointKernel<'_> {
         right: Point,
     ) -> PyResult<Shape> {
         dispatch_point_nav::<GEODESIC>(model);
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("require_geographic returns geodesic");
         };
-        rhumb_interpolate_point(crs, left, right, self.distance[row], self.normalized, state)
+        rhumb_interpolate_point(
+            crs,
+            *frame,
+            left,
+            right,
+            self.distance[row],
+            self.normalized,
+            state,
+        )
     }
 
     fn output_axes(self, left: Point, right: Point) -> CoordinateAxes {
@@ -934,16 +1073,16 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
         model: &crs::MetricModel,
         len: usize,
         axes: CoordinateAxes,
-        missing: Option<&[bool]>,
+        missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<CoordSeq> {
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("geodesic rows require a geodesic model");
         };
         let geodesic = crs::geodesic_for_crs_at(crs, state)?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, len);
         for row in 0..len {
-            if missing.is_some_and(|mask| mask[row]) {
+            if missing.is_some_and(|mask| mask.is_missing(row)) {
                 builder.push(point_nav_missing_point_with_axes(axes));
                 continue;
             }
@@ -951,6 +1090,7 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
             // Fused inverse+direct into coordinate columns — no Shape::Point stage.
             let point = interpolate_point_on_geodesic(
                 &geodesic,
+                *frame,
                 left,
                 right,
                 self.distance[row],
@@ -981,7 +1121,7 @@ fn point_binary_geometry_coords_planar<const HAS_MISSING: bool, K: PointBinaryGe
     model: &crs::MetricModel,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     mut points: impl FnMut(usize) -> (Point, Point),
 ) -> PyResult<CoordSeq> {
     dispatch_point_nav::<false>(model);
@@ -1005,7 +1145,7 @@ fn point_binary_geometry_coords_dispatch<K: PointBinaryGeometryKernel>(
     model: &crs::MetricModel,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     points: impl FnMut(usize) -> (Point, Point),
 ) -> PyResult<CoordSeq> {
     match model {
@@ -1032,7 +1172,7 @@ fn point_binary_geometry_coords_dispatch<K: PointBinaryGeometryKernel>(
 fn uniform_point_binary_geometry_axes<const HAS_MISSING: bool, K: PointBinaryGeometryKernel>(
     kernel: K,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     mut points: impl FnMut(usize) -> (Point, Point),
 ) -> Option<CoordinateAxes> {
     let mut axes = None;
@@ -1051,7 +1191,7 @@ fn uniform_point_binary_geometry_axes<const HAS_MISSING: bool, K: PointBinaryGeo
 fn uniform_point_binary_geometry_axes_dispatch<K: PointBinaryGeometryKernel>(
     kernel: K,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
     points: impl FnMut(usize) -> (Point, Point),
 ) -> Option<CoordinateAxes> {
     match missing {
@@ -1103,10 +1243,17 @@ impl PointUnaryGeometryKernel for RhumbDestinationKernel<'_> {
         point: Point,
     ) -> PyResult<Shape> {
         dispatch_point_nav::<GEODESIC>(model);
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("require_geographic returns geodesic");
         };
-        rhumb_destination_point(crs, point, self.bearing[row], self.distance[row], state)
+        rhumb_destination_point(
+            crs,
+            *frame,
+            point,
+            self.bearing[row],
+            self.distance[row],
+            state,
+        )
     }
 }
 
@@ -1132,7 +1279,7 @@ fn point_unary_geometry_coords<
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
     dispatch_point_nav::<GEODESIC>(model);
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
@@ -1155,7 +1302,7 @@ fn point_unary_geometry_coords_dispatch<K: PointUnaryGeometryKernel>(
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
     match (model, missing) {
         (crs::MetricModel::Geodesic { .. }, Some(mask)) => {
@@ -1193,22 +1340,23 @@ fn destination_many_coords_geodesic(
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
     dispatch_point_nav::<true>(model);
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         unreachable!("checked above");
     };
     let geodesic = crs::geodesic_for_crs_at(crs, state)?;
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
-        if missing.is_some_and(|mask| mask[row]) {
+        if missing.is_some_and(|mask| mask.is_missing(row)) {
             builder.push(point_nav_missing_point_with_axes(axes));
             continue;
         }
         builder.try_push(
             destination_point_on_geodesic(
                 &geodesic,
+                *frame,
                 points.get(row),
                 kernel.bearing[row],
                 kernel.distance[row],
@@ -1225,7 +1373,7 @@ fn destination_many_coords_planar<const HAS_MISSING: bool>(
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
     dispatch_point_nav::<false>(model);
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
@@ -1249,7 +1397,7 @@ fn destination_many_coords_dispatch(
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
     match model {
         crs::MetricModel::Geodesic { .. } => {
@@ -1273,14 +1421,14 @@ fn destination_scalar_coords_geodesic(
     axes: CoordinateAxes,
 ) -> PyResult<CoordSeq> {
     dispatch_point_nav::<true>(model);
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         unreachable!("checked above");
     };
     let geodesic = crs::geodesic_for_crs_at(crs, state)?;
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         builder.try_push(
-            destination_point_on_geodesic(&geodesic, point, bearing[row], distance[row])
+            destination_point_on_geodesic(&geodesic, *frame, point, bearing[row], distance[row])
                 .map_err(|err| crate::note_array_row(err.into(), row)),
         )?;
     }
@@ -1326,11 +1474,12 @@ fn destination_scalar_coords_dispatch(
 
 fn cross_track_point_rows<const HAS_MISSING: bool>(
     radius: f64,
+    frame: GeographicFrame,
     points: &PointOperand<'_>,
     starts: &PointOperand<'_>,
     ends: &PointOperand<'_>,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<Vec<f64>> {
     (0..len)
         .map(|row| {
@@ -1338,7 +1487,7 @@ fn cross_track_point_rows<const HAS_MISSING: bool>(
                 return Ok(f64::NAN);
             }
             let (p, s, e) = (points.get(row), starts.get(row), ends.get(row));
-            cross_track_points_with_radius(radius, p, s, e)
+            cross_track_points_with_radius(radius, frame, p, s, e)
                 .map_err(|err| crate::note_array_row(err, row))
         })
         .collect()
@@ -1346,30 +1495,31 @@ fn cross_track_point_rows<const HAS_MISSING: bool>(
 
 fn cross_track_point_rows_dispatch(
     radius: f64,
+    frame: GeographicFrame,
     points: &PointOperand<'_>,
     starts: &PointOperand<'_>,
     ends: &PointOperand<'_>,
     len: usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<Vec<f64>> {
     missing.map_or_else(
-        || cross_track_point_rows::<false>(radius, points, starts, ends, len, None),
-        |mask| cross_track_point_rows::<true>(radius, points, starts, ends, len, Some(mask)),
+        || cross_track_point_rows::<false>(radius, frame, points, starts, ends, len, None),
+        |mask| cross_track_point_rows::<true>(radius, frame, points, starts, ends, len, Some(mask)),
     )
 }
 
-const fn input_missing<'a>(input: &'a GeometryInput<'_>) -> Option<&'a MissingMask> {
+const fn input_missing<'a>(input: &'a GeometryInput<'_>) -> Option<&'a ValidityMask> {
     match input {
         GeometryInput::One(_) => None,
         GeometryInput::Many(array) => array.missing(),
     }
 }
 
-fn union_missing_masks(inputs: &[&GeometryInput<'_>]) -> Option<MissingMask> {
+fn union_missing_masks(inputs: &[&GeometryInput<'_>]) -> Option<ValidityMask> {
     crate::array::missing::union_many(inputs.iter().map(|input| input_missing(input)))
 }
 
-fn union_point_operand_missing(inputs: &[&PointOperand<'_>]) -> Option<MissingMask> {
+fn union_point_operand_missing(inputs: &[&PointOperand<'_>]) -> Option<ValidityMask> {
     crate::array::missing::union_many(inputs.iter().map(|input| input.missing()))
 }
 
@@ -1396,7 +1546,7 @@ impl<'a> PointBinaryInput<'a> {
         }
     }
 
-    const fn missing(self) -> Option<&'a MissingMask> {
+    const fn missing(self) -> Option<&'a ValidityMask> {
         match self {
             Self::One(_) => None,
             Self::Many(array) => array.missing(),
@@ -1406,6 +1556,10 @@ impl<'a> PointBinaryInput<'a> {
     fn point_operand(self) -> Option<PointOperand<'a>> {
         match self {
             Self::One(geometry) => geometry_point(geometry).map(PointOperand::One),
+            Self::Many(array) if array.is_compact_nullable() => {
+                matches!(array.storage(), GeometryArrayStorage::Points { .. })
+                    .then_some(PointOperand::Compact(array))
+            },
             Self::Many(array) => array
                 .storage()
                 .point_rows()
@@ -1438,7 +1592,7 @@ struct PointBinaryPlan<'a> {
     right: PointBinaryInput<'a>,
     execution: PointBinaryExecution<'a>,
     output_frame: Frame,
-    missing: Option<MissingMask>,
+    missing: Option<ValidityMask>,
 }
 
 impl<'a> PointBinaryPlan<'a> {
@@ -1458,12 +1612,12 @@ impl<'a> PointBinaryPlan<'a> {
             },
             (PointBinaryInput::One(_), PointBinaryInput::Many(array))
             | (PointBinaryInput::Many(array), PointBinaryInput::One(_)) => {
-                PointBinaryExecution::Rows(array.storage().len())
+                PointBinaryExecution::Rows(array.len())
             },
             (PointBinaryInput::Many(left), PointBinaryInput::Many(right)) => {
                 // Length wins over frame compatibility for strict array broadcasting.
-                ensure_same_len(left.storage().len(), right.storage().len())?;
-                PointBinaryExecution::Rows(left.storage().len())
+                ensure_same_len(left.len(), right.len())?;
+                PointBinaryExecution::Rows(left.len())
             },
         };
         let output_frame = left.frame().compatible(right.frame(), operation)?;
@@ -1529,7 +1683,7 @@ fn destination_many_array(
     distance: CoordinateInput,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let len = array.storage().len();
+    let len = array.len();
     if len == 0 {
         return Ok(
             PyGeometryArray::from_shapes(Vec::new(), array.frame.clone())
@@ -1538,47 +1692,68 @@ fn destination_many_array(
                 .into(),
         );
     }
-    let Some(points) = array.storage().point_rows() else {
+    let Some(points) = (!array.is_compact_nullable())
+        .then(|| array.storage().point_rows())
+        .flatten()
+    else {
         let frame = array.frame.clone();
         let shapes = py.detach(move || {
             array
-                .masked_shape_rows()
-                .enumerate()
-                .map(|(row, (missing, shape))| {
-                    if missing {
-                        return Ok(PyGeometryArray::missing_placeholder());
-                    }
-                    let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                    point_destination(&geometry, bearing.values[row], distance.values[row], unit)
-                        .map_err(|err| crate::note_array_row(err, row))
+                .logical_shape_rows()
+                .map(|row| match row {
+                    crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
+                    crate::array::LogicalShapeRow::Present { logical, shape } => {
+                        let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
+                        point_destination(
+                            &geometry,
+                            bearing.values[logical],
+                            distance.values[logical],
+                            unit,
+                        )
+                        .map(Some)
+                        .map_err(|err| crate::note_array_row(err, logical))
+                    },
                 })
                 .collect::<PyResult<Vec<_>>>()
         })?;
-        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())
-            .with_missing_mask(array.missing().cloned())
+        let present = PyGeometryArray::from_shapes(
+            shapes.into_iter().flatten().collect(),
+            array.frame.clone(),
+        );
+        return Ok(array
+            .scatter_present_result(present)
             .into_pyobject(py)?
             .unbind()
             .into());
     };
     let missing = array.missing().cloned();
-    let Some(axes) = uniform_point_axes_dispatch(&points, len, missing.as_deref()) else {
+    let Some(axes) = uniform_point_axes_dispatch(&points, len, missing.as_ref()) else {
         let frame = array.frame.clone();
         let shapes = py.detach(move || {
             array
-                .masked_shape_rows()
-                .enumerate()
-                .map(|(row, (missing, shape))| {
-                    if missing {
-                        return Ok(PyGeometryArray::missing_placeholder());
-                    }
-                    let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                    point_destination(&geometry, bearing.values[row], distance.values[row], unit)
-                        .map_err(|err| crate::note_array_row(err, row))
+                .logical_shape_rows()
+                .map(|row| match row {
+                    crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
+                    crate::array::LogicalShapeRow::Present { logical, shape } => {
+                        let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
+                        point_destination(
+                            &geometry,
+                            bearing.values[logical],
+                            distance.values[logical],
+                            unit,
+                        )
+                        .map(Some)
+                        .map_err(|err| crate::note_array_row(err, logical))
+                    },
                 })
                 .collect::<PyResult<Vec<_>>>()
         })?;
-        return Ok(PyGeometryArray::from_shapes(shapes, array.frame.clone())
-            .with_missing_mask(missing)
+        let present = PyGeometryArray::from_shapes(
+            shapes.into_iter().flatten().collect(),
+            array.frame.clone(),
+        );
+        return Ok(array
+            .scatter_present_result(present)
             .into_pyobject(py)?
             .unbind()
             .into());
@@ -1596,7 +1771,7 @@ fn destination_many_array(
             &points,
             len,
             axes,
-            missing_for_rows.as_deref(),
+            missing_for_rows.as_ref(),
         )
     })?;
     Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
@@ -1745,12 +1920,18 @@ pub(crate) fn rhumb_destination_point_receiver(
     validate_destination_distances(&distance.values)?;
     let point = require_point(geometry, "destination(path='rhumb')")?;
     let model = require_geographic_model(geometry.crs_str(), "destination(path='rhumb')")?;
-    let crs::MetricModel::Geodesic { crs, state } = model else {
+    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
         unreachable!("geographic model check succeeded");
     };
     if len == 1 && bearing.scalar && distance.scalar {
-        let shape =
-            rhumb_destination_point(&crs, point, bearing.values[0], distance.values[0], &state)?;
+        let shape = rhumb_destination_point(
+            &crs,
+            frame,
+            point,
+            bearing.values[0],
+            distance.values[0],
+            &state,
+        )?;
         return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
     }
     let axes = CoordinateAxes::from_point(point);
@@ -1759,6 +1940,7 @@ pub(crate) fn rhumb_destination_point_receiver(
         for row in 0..len {
             let shape = rhumb_destination_point(
                 &crs,
+                frame,
                 point,
                 bearing.values[row],
                 distance.values[row],
@@ -1781,7 +1963,7 @@ struct PointBinaryNumericRowsSink<'py, K> {
     py: Python<'py>,
     model: crs::MetricModel,
     len: usize,
-    missing: Option<MissingMask>,
+    missing: Option<ValidityMask>,
     kernel: K,
 }
 
@@ -1803,7 +1985,7 @@ impl<K: PointBinaryF64Kernel> PointPairRowsSink for PointBinaryNumericRowsSink<'
         float64_array(
             py,
             py.detach(move || {
-                point_binary_f64_rows_dispatch(kernel, &model, len, missing.as_deref(), |row| {
+                point_binary_f64_rows_dispatch(kernel, &model, len, missing.as_ref(), |row| {
                     (left.point_at(row), right.point_at(row))
                 })
             })?,
@@ -1851,7 +2033,7 @@ where
         let Some(axes) = uniform_point_binary_geometry_axes_dispatch(
             kernel,
             len,
-            plan.missing.as_deref(),
+            plan.missing.as_ref(),
             |row| (left.point_at(row), right.point_at(row)),
         ) else {
             return point_binary_geometry_fallback(py, plan, len, fallback);
@@ -1864,7 +2046,7 @@ where
                 &model,
                 len,
                 axes,
-                missing_for_rows.as_deref(),
+                missing_for_rows.as_ref(),
                 |row| (left.point_at(row), right.point_at(row)),
             )
         })?;
@@ -2030,7 +2212,9 @@ fn point_unary_geometry(
                 .unbind())
         },
         Some(Many(array)) => {
-            if let Some(points) = array.storage().point_rows() {
+            if !array.is_compact_nullable()
+                && let Some(points) = array.storage().point_rows()
+            {
                 let ctx = setup(array.crs_str()).map_err(row_zero)?;
                 if points.is_empty() {
                     return Ok(
@@ -2042,28 +2226,31 @@ fn point_unary_geometry(
                 }
                 let missing = array.missing().cloned();
                 let Some(axes) =
-                    uniform_point_axes_dispatch(&points, points.len(), missing.as_deref())
+                    uniform_point_axes_dispatch(&points, points.len(), missing.as_ref())
                 else {
                     let output_frame = array.frame.clone();
                     let frame = output_frame.clone();
-                    let missing_mask = array.missing().cloned();
                     let shapes = py.detach(move || {
                         array
-                            .masked_shape_rows()
-                            .enumerate()
-                            .map(|(row, (missing, shape))| {
-                                if missing {
-                                    return Ok(PyGeometryArray::missing_placeholder());
-                                }
-                                let geometry =
-                                    PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                                fallback(&geometry, row)
-                                    .map_err(|err| crate::note_array_row(err, row))
+                            .logical_shape_rows()
+                            .map(|row| match row {
+                                crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
+                                crate::array::LogicalShapeRow::Present { logical, shape } => {
+                                    let geometry =
+                                        PyGeometry::with_frame(shape.into_owned(), frame.clone());
+                                    fallback(&geometry, logical)
+                                        .map(Some)
+                                        .map_err(|err| crate::note_array_row(err, logical))
+                                },
                             })
                             .collect::<PyResult<Vec<_>>>()
                     })?;
-                    return Ok(PyGeometryArray::from_shapes(shapes, output_frame)
-                        .with_missing_mask(missing_mask)
+                    let present = PyGeometryArray::from_shapes(
+                        shapes.into_iter().flatten().collect(),
+                        output_frame,
+                    );
+                    return Ok(array
+                        .scatter_present_result(present)
                         .into_pyobject(py)?
                         .unbind()
                         .into());
@@ -2076,7 +2263,7 @@ fn point_unary_geometry(
                         &points,
                         points.len(),
                         axes,
-                        missing_for_rows.as_deref(),
+                        missing_for_rows.as_ref(),
                     )
                 })?;
                 return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())
@@ -2087,22 +2274,25 @@ fn point_unary_geometry(
             }
             let output_frame = array.frame.clone();
             let frame = output_frame.clone();
-            let missing_mask = array.missing().cloned();
             let shapes = py.detach(move || {
                 array
-                    .masked_shape_rows()
-                    .enumerate()
-                    .map(|(row, (missing, shape))| {
-                        if missing {
-                            return Ok(PyGeometryArray::missing_placeholder());
-                        }
-                        let geometry = PyGeometry::with_frame(shape.into_owned(), frame.clone());
-                        fallback(&geometry, row).map_err(|err| crate::note_array_row(err, row))
+                    .logical_shape_rows()
+                    .map(|row| match row {
+                        crate::array::LogicalShapeRow::Missing { .. } => Ok(None),
+                        crate::array::LogicalShapeRow::Present { logical, shape } => {
+                            let geometry =
+                                PyGeometry::with_frame(shape.into_owned(), frame.clone());
+                            fallback(&geometry, logical)
+                                .map(Some)
+                                .map_err(|err| crate::note_array_row(err, logical))
+                        },
                     })
                     .collect::<PyResult<Vec<_>>>()
             })?;
-            Ok(PyGeometryArray::from_shapes(shapes, output_frame)
-                .with_missing_mask(missing_mask)
+            let present =
+                PyGeometryArray::from_shapes(shapes.into_iter().flatten().collect(), output_frame);
+            Ok(array
+                .scatter_present_result(present)
                 .into_pyobject(py)?
                 .unbind()
                 .into())
@@ -2148,10 +2338,10 @@ fn cross_track_broadcast(
             match (geometry_point(p), geometry_point(s), geometry_point(e)) {
                 (Some(probe), Some(start), Some(end)) => {
                     let model = require_geographic_model(p.crs_str(), OP)?;
-                    let crs::MetricModel::Geodesic { crs, state } = model else {
+                    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
                         unreachable!("geographic model check succeeded");
                     };
-                    cross_track_points(&crs, probe, start, end, &state)?.into_py_any(py)
+                    cross_track_points(&crs, frame, probe, start, end, &state)?.into_py_any(py)
                 },
                 _ => op(p, s, e)?.into_py_any(py),
             }
@@ -2171,7 +2361,7 @@ fn cross_track_broadcast(
             ) {
                 let model =
                     require_geographic_model(input_crs_str(&point_in), OP).map_err(row_zero)?;
-                let crs::MetricModel::Geodesic { crs, state } = model else {
+                let crs::MetricModel::Geodesic { crs, frame, state } = model else {
                     unreachable!("geographic model check succeeded");
                 };
                 let radius = crs::geodesic_cross_track_radius_crs_at(&crs, &state)
@@ -2183,17 +2373,18 @@ fn cross_track_broadcast(
                     py.detach(move || {
                         cross_track_point_rows_dispatch(
                             radius,
+                            frame,
                             &points,
                             &starts,
                             &ends,
                             len,
-                            missing_for_rows.as_deref(),
+                            missing_for_rows.as_ref(),
                         )
                     })?,
                 );
             }
             let model = require_geographic_model(point_crs.map(|value| value.as_str()), OP)?;
-            let crs::MetricModel::Geodesic { crs, state } = model else {
+            let crs::MetricModel::Geodesic { crs, frame, state } = model else {
                 unreachable!("geographic model check succeeded");
             };
             float64_array(
@@ -2212,7 +2403,7 @@ fn cross_track_broadcast(
                             let probe = require_point(&p, OP)?;
                             let start = require_point(&s, OP)?;
                             let end = require_point(&e, OP)?;
-                            cross_track_points(&crs, probe, start, end, &state)
+                            cross_track_points(&crs, frame, probe, start, end, &state)
                                 .map_err(|err| crate::note_array_row(err, row))
                         })
                         .collect::<PyResult<Vec<_>>>()
@@ -2364,7 +2555,7 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: &str) -> 
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -2420,7 +2611,7 @@ pub(crate) fn destination(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -2583,7 +2774,7 @@ fn rhumb_destination_point_array(
         };
         let point = require_point(geometry, "destination(path='rhumb')")?;
         let model = require_geographic_model(geometry.crs_str(), "destination(path='rhumb')")?;
-        let crs::MetricModel::Geodesic { crs, state } = model else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = model else {
             unreachable!("geographic model check succeeded");
         };
         let axes = CoordinateAxes::from_point(point);
@@ -2592,6 +2783,7 @@ fn rhumb_destination_point_array(
             for row in 0..len {
                 let shape = rhumb_destination_point(
                     &crs,
+                    frame,
                     point,
                     bearing.values[row],
                     distance.values[row],

@@ -1,35 +1,35 @@
 use crate::error::Result;
 use crate::geometry::distance::{
-    CapGroup, GEODESIC_CAP_GROUP, GeodesicScratchGuard, RowProbe, collect_point_only_into,
-    geodesic_ordered_rows_into, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
+    CapGroup, GEODESIC_CAP_GROUP, RowProbe, collect_point_only_into, geodesic_ordered_rows_into,
+    geodesic_scratch, geodesic_sweep_caps_into, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicPartsKey, GeodesicSegment, Point,
-    PreparedPlan, Shape,
+    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
+    GeodesicSegment, Point, PreparedPlan, Shape,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
 /// Filled polygon interiors need a geodesic point-in-polygon certificate;
 /// using planar containment here would manufacture a false zero distance.
-pub(crate) fn ensure_geodesic_linework(shape: &Shape) -> Result<()> {
+pub(crate) fn ensure_geodesic_linework(shape: &Shape, metric: &impl GeodesicMetric) -> Result<()> {
     match shape {
         Shape::Polygon(_) | Shape::MultiPolygon(_) => Err(crate::crs::CrsError::message(
             "geodesic distance for polygon interiors is unsupported",
         )),
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                ensure_geodesic_linework(geometry)?;
+                ensure_geodesic_linework(geometry, metric)?;
             }
             Ok(())
         },
-        _ => crate::crs::ensure_geographic_domain(shape),
+        _ => metric.ensure_shape(shape),
     }
 }
 pub(crate) fn geodesic_cap_streaming(
     shape: &Shape,
     metric: &impl GeodesicMetric,
 ) -> Result<Option<(Point, f64)>> {
-    ensure_geodesic_linework(shape)?;
+    ensure_geodesic_linework(shape, metric)?;
     let mut anchor = None;
     shape.for_each_point(|point| {
         if anchor.is_none() {
@@ -155,20 +155,10 @@ pub(crate) fn geodesic_distance_with_parts(
         return Ok(0.0);
     }
     if matches!(left, Shape::Point(_)) {
-        return geodesic_point_distance_with_parts(
-            left_parts.points[0],
-            right_parts,
-            metric,
-            &mut Vec::new(),
-        );
+        return geodesic_point_distance_with_parts(left_parts.points[0], right_parts, metric, None);
     }
     if matches!(right, Shape::Point(_)) {
-        return geodesic_point_distance_with_parts(
-            right_parts.points[0],
-            left_parts,
-            metric,
-            &mut Vec::new(),
-        );
+        return geodesic_point_distance_with_parts(right_parts.points[0], left_parts, metric, None);
     }
     let mut best = f64::INFINITY;
     best = geodesic_sweep_with_parts(&left_parts.points, right_parts, metric, best)?;
@@ -197,7 +187,7 @@ pub(crate) fn geodesic_dwithin_with_parts(
             right_parts,
             metric,
             distance,
-            &mut Vec::new(),
+            None,
         );
     }
     if matches!(right, Shape::Point(_)) {
@@ -206,7 +196,7 @@ pub(crate) fn geodesic_dwithin_with_parts(
             left_parts,
             metric,
             distance,
-            &mut Vec::new(),
+            None,
         );
     }
     Ok(
@@ -416,8 +406,8 @@ pub(crate) fn geodesic_sweep_with_parts(
     metric: &impl GeodesicMetric,
     mut best: f64,
 ) -> Result<f64> {
-    let mut scratch_guard = GeodesicScratchGuard::take();
-    let scratch = &mut scratch_guard.scratch;
+    let mut scratch = geodesic_scratch();
+    let scratch = &mut *scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         for &vertex in vertices {
             best = bvh
@@ -447,11 +437,30 @@ pub(crate) fn geodesic_point_distance_with_parts(
     point: Point,
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
-    stack: &mut Vec<u32>,
+    stack: Option<&mut Vec<u32>>,
 ) -> Result<f64> {
-    let mut scratch_guard = GeodesicScratchGuard::take();
-    let scratch = &mut scratch_guard.scratch;
-    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
+    let mut scratch = geodesic_scratch();
+    let bvh = target_parts.geodesic_bvh(metric);
+    geodesic_point_distance_with_parts_and_scratch(
+        point,
+        target_parts,
+        metric,
+        bvh,
+        &mut scratch,
+        stack,
+    )
+}
+
+pub(crate) fn geodesic_point_distance_with_parts_and_scratch(
+    point: Point,
+    target_parts: &GeodesicParts,
+    metric: &impl GeodesicMetric,
+    bvh: Option<&GeodesicFacetBvh>,
+    scratch: &mut crate::geometry::distance::GeodesicScratch,
+    stack: Option<&mut Vec<u32>>,
+) -> Result<f64> {
+    if let Some(bvh) = bvh {
+        let stack = stack.unwrap_or(&mut scratch.stack);
         bvh.min_point_distance(point, target_parts, metric, stack, f64::INFINITY)
             .and_then(|value| {
                 value.map_or_else(
@@ -543,8 +552,8 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
     metric: &impl GeodesicMetric,
     distance: f64,
 ) -> Result<bool> {
-    let mut scratch_guard = GeodesicScratchGuard::take();
-    let scratch = &mut scratch_guard.scratch;
+    let mut scratch = geodesic_scratch();
+    let scratch = &mut *scratch;
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         vertices.iter().try_fold(false, |found, &vertex| {
             if found {
@@ -583,11 +592,32 @@ pub(crate) fn geodesic_point_dwithin_with_parts(
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     distance: f64,
-    stack: &mut Vec<u32>,
+    stack: Option<&mut Vec<u32>>,
 ) -> Result<bool> {
-    let mut scratch_guard = GeodesicScratchGuard::take();
-    let scratch = &mut scratch_guard.scratch;
-    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
+    let mut scratch = geodesic_scratch();
+    let bvh = target_parts.geodesic_bvh(metric);
+    geodesic_point_dwithin_with_parts_and_scratch(
+        point,
+        target_parts,
+        metric,
+        distance,
+        bvh,
+        &mut scratch,
+        stack,
+    )
+}
+
+pub(crate) fn geodesic_point_dwithin_with_parts_and_scratch(
+    point: Point,
+    target_parts: &GeodesicParts,
+    metric: &impl GeodesicMetric,
+    distance: f64,
+    bvh: Option<&GeodesicFacetBvh>,
+    scratch: &mut crate::geometry::distance::GeodesicScratch,
+    stack: Option<&mut Vec<u32>>,
+) -> Result<bool> {
+    if let Some(bvh) = bvh {
+        let stack = stack.unwrap_or(&mut scratch.stack);
         bvh.dwithin_point(point, target_parts, metric, stack, distance)
             .and_then(|value| {
                 value.map_or_else(

@@ -59,7 +59,7 @@ impl GeodesicFacetBvh {
         // after build so we do not keep an ~8× over-allocation.
         let node_capacity = 2 * max_leaf_count - 1;
         let mut tree = Self {
-            anchors: vec![Point::new_unchecked_xy(0.0, 0.0); node_capacity].into_boxed_slice(),
+            anchors: vec![Point::new_raw_xy(0.0, 0.0); node_capacity].into_boxed_slice(),
             reaches: vec![0.0; node_capacity].into_boxed_slice(),
             codes: vec![0; node_capacity].into_boxed_slice(),
             leaves: Box::default(),
@@ -74,10 +74,10 @@ impl GeodesicFacetBvh {
             .map(|(index, segment)| {
                 let start_aux = *aux_cache
                     .entry(segment.start)
-                    .or_insert_with(|| aux_unit(segment.start));
+                    .or_insert_with(|| metric.auxiliary_unit(segment.start));
                 let end_aux = *aux_cache
                     .entry(segment.end)
-                    .or_insert_with(|| aux_unit(segment.end));
+                    .or_insert_with(|| metric.auxiliary_unit(segment.end));
                 SegmentBuild {
                     index: index as u32,
                     centroid: [
@@ -472,14 +472,4 @@ pub(super) fn geodesic_witness_is_better(
         candidate.distance < best.distance
             || (candidate.distance == best.distance && candidate.order < best.order)
     })
-}
-
-fn aux_unit(point: Point) -> [f64; 3] {
-    let lon = point.x.to_radians();
-    let lat = point.y.to_radians();
-    // WGS84-ish reduced latitude is enough for a split heuristic; the
-    // pruning proof uses the metric-provided lower bound, not this centroid.
-    let beta = f64::atan((1.0 - 1.0 / 298.257_223_563) * lat.tan())
-        .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
-    [beta.cos() * lon.cos(), beta.cos() * lon.sin(), beta.sin()]
 }

@@ -134,7 +134,7 @@ impl ProjectionKernel for Laea {
         let (sb, cb) = beta.sin_cos();
         let (x, y) = match s.mode {
             Mode::Oblique => {
-                // `1 + u dot v` as `|u + v|^2 / 2` avoids cancellation at
+                // `1 + u dot v` as `|u + v|² / 2` avoids cancellation at
                 // representable points immediately beside the antipode.
                 let d = 0.5
                     * ((s.cos_b1 + cb * cl).powi(2) + (cb * sl).powi(2) + (s.sin_b1 + sb).powi(2));

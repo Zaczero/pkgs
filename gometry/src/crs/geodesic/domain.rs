@@ -2,24 +2,67 @@ use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
 use crate::boundary::geographic::invalid_lonlat_error;
-use crate::crs::geodesic::{CrsError, ensure_geographic_degree_units};
-use crate::crs::{RuntimeState, info_with_state};
+use crate::crs::RuntimeState;
+use crate::crs::geodesic::{CrsError, geographic_metric_frame_at};
 use crate::error::Result;
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
 
-/// Validate that every coordinate of `shape` is usable for geodesic
-/// measurement: finite longitude and a latitude within `[-90, 90]`. Without
-/// this an out-of-domain latitude flows into `geographiclib` and surfaces as a
-/// silent `NaN` metric instead of a clear error.
-pub(crate) fn ensure_geographic_domain(shape: &Shape) -> Result<()> {
-    shape.try_for_each_point(|point| ensure_geographic_lonlat(point.x, point.y))
+/// Validate geometry coordinates in their CRS-native geographic frame. This
+/// is the metric admission boundary; the geodesic kernels receive converted
+/// coordinates only after this check succeeds.
+pub(crate) fn ensure_geographic_domain_in_frame(
+    frame: GeographicFrame,
+    shape: &Shape,
+) -> Result<()> {
+    ScalarGeographicView::try_new(frame, shape)
+        .map(|_| ())
+        .map_err(|error| {
+            let mut invalid = None;
+            shape.for_each_point(|point| {
+                if invalid.is_none()
+                    && (frame.longitude().canonicalize(point.x).is_err()
+                        || crate::geographic::Latitude::try_new(frame, point.y).is_err())
+                {
+                    invalid = Some(point);
+                }
+            });
+            invalid.map_or_else(
+                || crate::geometry::GeometryErrorKind::message(error.to_string()),
+                |point| crate::boundary::geographic::invalid_lonlat_error(point.x, point.y),
+            )
+        })
 }
 
-pub(crate) fn ensure_geographic_coordseq(line: &CoordSeq) -> Result<()> {
-    for (&x, &y) in std::iter::zip(line.xs(), line.ys()) {
-        ensure_geographic_lonlat(x, y)?;
+pub(crate) fn ensure_geographic_lonlat_in_frame(
+    frame: GeographicFrame,
+    lon: f64,
+    lat: f64,
+) -> Result<()> {
+    frame
+        .longitude()
+        .canonicalize(lon)
+        .and_then(|_| crate::geographic::Latitude::try_new(frame, lat))
+        .map(|_| ())
+        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(lon, lat))
+}
+
+pub(crate) fn ensure_geographic_columns_in_frame(
+    frame: GeographicFrame,
+    xs: &[f64],
+    ys: &[f64],
+) -> Result<()> {
+    for (&x, &y) in std::iter::zip(xs, ys) {
+        ensure_geographic_lonlat_in_frame(frame, x, y)?;
     }
     Ok(())
+}
+
+pub(crate) fn ensure_geographic_coordseq_in_frame(
+    frame: GeographicFrame,
+    line: &CoordSeq,
+) -> Result<()> {
+    ensure_geographic_columns_in_frame(frame, line.xs(), line.ys())
 }
 
 /// Validate one lon/lat coordinate for geodesic use: finite longitude and
@@ -71,13 +114,5 @@ pub(crate) fn ensure_latitudes_in_domain(latitudes: &[f64], radians: bool) -> Re
 }
 
 pub(crate) fn ensure_geodesic_lonlat_crs_at(crs: &str, state: &RuntimeState) -> Result<()> {
-    let info = info_with_state(crs, state)?;
-    if info.kind.starts_with("geographic") {
-        ensure_geographic_degree_units(crs, &info)?;
-        return Ok(());
-    }
-    Err(CrsError::invalid(format!(
-        "{} geodesic geometry measurements require a geographic longitude-latitude CRS",
-        info.crs
-    )))
+    geographic_metric_frame_at(crs, state).map(|_| ())
 }

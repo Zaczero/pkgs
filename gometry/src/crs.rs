@@ -49,6 +49,9 @@ mod transform;
 mod transformer;
 mod types;
 
+#[cfg(test)]
+pub(crate) static RUNTIME_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use cache::{
     CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CRS_CANONICAL_CACHE,
     CRS_CANONICAL_CACHE_CAPACITY, CRS_CATALOG_CACHE, CRS_CATALOG_CACHE_CAPACITY,
@@ -79,27 +82,27 @@ pub(crate) use error::CrsError;
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     AngleUnit, DistanceMode, EllipsoidMetric, EllipsoidShape, MetricModel, ResolvedMetric,
-    ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns, ensure_geographic_domain,
-    ensure_geographic_lonlat, geodesic_bearing, geodesic_bearing_crs_at,
-    geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,
-    geodesic_cross_track_with_radius, geodesic_destination, geodesic_destination_crs_at,
-    geodesic_direct, geodesic_direct_columns, geodesic_for_crs_at, geodesic_frechet_at,
-    geodesic_hausdorff_at, geodesic_interpolate_on_line_const, geodesic_interpolates,
-    geodesic_inverse, geodesic_inverses, geodesic_length_at, geodesic_line_interpolate,
-    geodesic_line_interpolate_coordseq, geodesic_line_length_columns, geodesic_line_locate,
-    geodesic_line_locate_coordseq, geodesic_line_solution_const, geodesic_line_substring,
-    geodesic_line_substring_coordseq, geodesic_point_between, geodesic_point_distances,
-    geodesic_point_pair_distances, geodesic_point_pair_dwithin, geodesic_ring_measure_columns,
-    geodesic_shape_area, geodesic_shape_length, interpolate_optional_ordinate, metric_model,
-    metric_model_meters, with_ellipsoid_metric_at, with_geodesic_cache_at,
-    with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
-    with_resolved_ellipsoid_metric_at,
+    ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
+    ensure_geographic_domain_in_frame, ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
+    geodesic_bearing, geodesic_bearing_crs_at, geodesic_cross_track_crs_at,
+    geodesic_cross_track_radius_crs_at, geodesic_cross_track_with_radius, geodesic_destination,
+    geodesic_destination_crs_at, geodesic_direct, geodesic_direct_columns, geodesic_for_crs_at,
+    geodesic_frechet_at, geodesic_hausdorff_at, geodesic_interpolate_on_line_const,
+    geodesic_interpolates, geodesic_inverse, geodesic_inverses, geodesic_length_at,
+    geodesic_line_interpolate, geodesic_line_interpolate_coordseq, geodesic_line_length_columns,
+    geodesic_line_locate, geodesic_line_locate_coordseq, geodesic_line_solution_const,
+    geodesic_line_substring, geodesic_line_substring_coordseq, geodesic_point_between,
+    geodesic_point_distances, geodesic_point_pair_distance, geodesic_point_pair_distances,
+    geodesic_point_pair_dwithin, geodesic_point_pair_dwithin_one, geodesic_ring_measure_columns,
+    geodesic_shape_area, geodesic_shape_length, geographic_metric_frame_at,
+    interpolate_optional_ordinate, metric_model, metric_model_meters, with_ellipsoid_metric_at,
+    with_geodesic_cache_at, with_geodesic_coordseq_collect_rows_at,
+    with_geodesic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use grids::grid_info;
 use in_core::{
-    InCoreTransform, in_core_xy_op, lonlat_to_web_mercator_xy, transform_in_core_bounds,
-    transform_in_core_bounds_3d, transform_in_core_xy_batch, try_in_core_transform_with_state,
-    utm_crs, web_mercator_to_lonlat_xy,
+    InCoreTransform, lonlat_to_web_mercator_xy, transform_in_core_xy_batch,
+    try_in_core_transform_with_state, utm_crs, web_mercator_to_lonlat_xy,
 };
 pub(crate) use info::{
     AngularUnit, engine_info_with_state, ensure_same_geodesic_len, factor_columns, factors,
@@ -108,11 +111,11 @@ pub(crate) use info::{
 };
 pub(crate) use introspect::Confidence;
 use introspect::{
-    area_of_use, authority_object_info, axes, axis_role, compound_axis_metadata,
-    coordinate_system_type, create_crs_transform_object, crs_type_name, datum_info, domain_infos,
-    ellipsoid_info, exported_owned_crs, id_authority, operation_info_from_pj,
-    owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
-    split_authority, sub_crs_infos, validate_min_confidence,
+    CompoundAxisMetadata, area_of_use, authority_object_info, axes, axis_role,
+    compound_axis_metadata, coordinate_system_type, create_crs_transform_object, crs_type_name,
+    datum_info, domain_infos, ellipsoid_info, exported_owned_crs, geographic_frame, id_authority,
+    operation_info_from_pj, owned_authority_object_info, owned_crs_coordinate_operation_info,
+    prime_meridian_info, split_authority, sub_crs_infos, validate_min_confidence,
 };
 pub(crate) use local::{
     LOCAL_SCALE_ERROR_LIMIT, estimate_local_crs, estimate_local_crs_at, local_crs_fits_at,

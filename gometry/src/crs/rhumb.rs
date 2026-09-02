@@ -197,9 +197,9 @@ impl RhumbEllipsoid {
             sin_k = sin_next;
         }
         // psi2 - psi1 via the subtraction identities:
-        // asinh a - asinh b = asinh(a sqrt(1+b^2) - b sqrt(1+a^2)), with the
-        // same-sign argument rewritten as (a-b)(a+b)/(a sqrt(1+b^2) +
-        // b sqrt(1+a^2)) and tan b - tan a = sin(dphi)/(cos a cos b);
+        // asinh a - asinh b = asinh(a sqrt(1+b²) - b sqrt(1+a²)), with the
+        // same-sign argument rewritten as (a-b)(a+b)/(a sqrt(1+b²) +
+        // b sqrt(1+a²)) and tan b - tan a = sin(dphi)/(cos a cos b);
         // atanh u2 - atanh u1 = atanh((u2-u1)/(1 - u1 u2)) with
         // sin b - sin a in product form.
         let (t1, t2) = (phi1.tan(), phi2.tan());

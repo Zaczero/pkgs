@@ -55,7 +55,8 @@ pub(crate) fn info_with_state(
             CRS_INFO_CACHE_CAPACITY,
             |item| item.crs == normalized,
             || {
-                let info = ProjObject::new_with_state(&normalized, state)?.info(normalized.clone());
+                let info =
+                    ProjObject::new_with_state(&normalized, state)?.info(normalized.clone())?;
                 Ok(CachedCrsInfo {
                     crs: normalized.clone(),
                     info: std::sync::Arc::new(info),
@@ -452,6 +453,182 @@ fn owned_proj_info_snapshot() -> OwnedProjInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crs::RUNTIME_STATE_TEST_LOCK;
+    use crate::geographic::Latitude;
+
+    fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "{actual} != {expected}"
+        );
+    }
+
+    fn ulp_distance(left: f64, right: f64) -> u64 {
+        left.to_bits().abs_diff(right.to_bits())
+    }
+
+    #[test]
+    fn geographic_frames_follow_axis_roles_units_and_prime_meridian() {
+        let epsg = info("EPSG:4326").unwrap();
+        let crs84 = info("OGC:CRS84").unwrap();
+        let epsg_frame = epsg.geographic_frame().unwrap();
+        let crs84_frame = crs84.geographic_frame().unwrap();
+        assert_eq!(epsg.axis_order, ["lat", "lon"]);
+        assert_eq!(crs84.axis_order, ["lon", "lat"]);
+        assert_eq!(epsg_frame, crs84_frame);
+        assert_eq!(epsg_frame.longitude().period(), 360.0);
+        assert_eq!(epsg_frame.pole(), 90.0);
+
+        // EPSG:4807 is NTF (Paris): both axes use grads while its prime
+        // meridian is independently encoded as 2.5969213 grads.
+        let paris = info("EPSG:4807").unwrap();
+        let frame = paris.geographic_frame().unwrap();
+        let grad_to_radian = paris.axes[0].unit_conversion_factor;
+        let prime = paris.prime_meridian.as_ref().unwrap();
+        assert_close(
+            frame.longitude().period(),
+            400.0,
+            8.0 * f64::EPSILON * 400.0,
+        );
+        assert_close(frame.pole(), 100.0, 8.0 * f64::EPSILON * 100.0);
+        assert_eq!(frame.longitude().unit().radians_per_unit(), grad_to_radian);
+        assert_eq!(frame.latitude_unit().radians_per_unit(), grad_to_radian);
+        assert_eq!(
+            frame.prime_meridian_radians(),
+            prime.longitude * prime.unit_conversion_factor
+        );
+        assert_eq!(frame.longitude().canonicalize(400.0).unwrap().get(), 0.0);
+        // Independent worked conversion: 2.5969213 grad * pi/200.
+        assert_close(
+            frame.prime_meridian_radians(),
+            2.596_921_3 * std::f64::consts::PI / 200.0,
+            2.0 * f64::EPSILON,
+        );
+    }
+
+    #[test]
+    fn geographic_frames_cover_compound_and_exclude_nonperiodic_crs() {
+        let horizontal = info("EPSG:4326").unwrap().geographic_frame().unwrap();
+        assert_eq!(
+            info("EPSG:9707").unwrap().geographic_frame(),
+            Some(horizontal)
+        );
+        for crs in ["EPSG:3857", "EPSG:4978"] {
+            assert_eq!(info(crs).unwrap().geographic_frame(), None, "{crs}");
+        }
+        let bound =
+            info("+proj=longlat +ellps=clrk80ign +pm=paris +towgs84=0,0,0 +type=crs").unwrap();
+        assert_ne!(
+            bound.geographic_frame().unwrap().prime_meridian_radians(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn geographic_frame_is_retained_by_the_info_cache() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let first = info("EPSG:4807").unwrap();
+        let second = info("EPSG:4807").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert_eq!(first.geographic_frame(), second.geographic_frame());
+
+        let current = runtime_state_snapshot().unwrap();
+        let next_generation = RuntimeState {
+            generation: current.generation.checked_add(1).unwrap(),
+            config: std::sync::Arc::clone(&current.config),
+        };
+        let refreshed = info_with_state("EPSG:4807", &next_generation).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first, &refreshed));
+        assert_eq!(first.geographic_frame(), refreshed.geographic_frame());
+    }
+
+    #[test]
+    fn geographic_frame_reads_axis_factors_independently() {
+        let wkt = r#"GEOGCRS["Mixed angular units",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.015707963267948967]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["grad",0.015707963267948967]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["radian",1]]]"#;
+        let metadata = info(wkt).unwrap();
+        let frame = metadata.geographic_frame().unwrap();
+        assert_eq!(frame.longitude().unit().radians_per_unit(), 1.0);
+        assert_eq!(
+            frame.latitude_unit().radians_per_unit(),
+            0.015_707_963_267_948_967
+        );
+        assert_eq!(frame.longitude().period(), std::f64::consts::TAU);
+        assert_close(frame.pole(), 100.0, 4.0 * f64::EPSILON * 100.0);
+    }
+
+    #[test]
+    fn malformed_geographic_axes_are_an_error_not_nongeographic() {
+        let wkt = r#"GEOGCRS["No longitude",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],CS[ellipsoidal,2],AXIS["latitude one",north,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],AXIS["latitude two",north,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"#;
+        let error = info(wkt).unwrap_err().to_string();
+        assert!(
+            error.contains("duplicate horizontal angular axes")
+                || error.contains("longitude and latitude angular axes")
+                || error.contains("cannot create CRS"),
+            "{error}",
+        );
+    }
+
+    #[test]
+    fn metadata_pole_round_trips_require_one_exterior_ulp_allowance() {
+        let radian_wkt = r#"GEOGCRS["Radian text round trip",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["radian",1]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["radian",1]]]"#;
+        let grad_wkt = r#"GEOGCRS["Grad text round trip",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.015707963267948967]],CS[ellipsoidal,2],AXIS["latitude",north,ORDER[1],ANGLEUNIT["grad",0.015707963267948967]],AXIS["longitude",east,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"#;
+        let cases = [
+            ("degree database", "EPSG:4326", 90.0, 0),
+            ("radian text", radian_wkt, std::f64::consts::FRAC_PI_2, 0),
+            ("grad Paris database", "EPSG:4807", 100.0, 7),
+            ("grad Paris text", grad_wkt, 100.0, 1),
+        ];
+        for (name, crs, nominal, expected_interior_distance) in cases {
+            let pole = info(crs).unwrap().geographic_frame().unwrap().pole();
+            assert_eq!(
+                ulp_distance(pole, nominal),
+                expected_interior_distance,
+                "{name}"
+            );
+            assert_eq!(
+                ulp_distance(-pole, -nominal),
+                expected_interior_distance,
+                "{name}"
+            );
+            let exterior_distance = if nominal > pole {
+                ulp_distance(pole, nominal)
+            } else {
+                0
+            };
+            assert!(exterior_distance <= 1, "{name} exceeded the one-ULP policy");
+            assert_eq!(
+                Latitude::try_new(info(crs).unwrap().geographic_frame().unwrap(), nominal)
+                    .unwrap()
+                    .get(),
+                if exterior_distance == 0 {
+                    nominal
+                } else {
+                    pole
+                },
+                "{name}",
+            );
+            let negative_exterior_distance = if -nominal < -pole {
+                ulp_distance(-pole, -nominal)
+            } else {
+                0
+            };
+            assert!(
+                negative_exterior_distance <= 1,
+                "{name} exceeded the negative one-ULP policy"
+            );
+            assert_eq!(
+                Latitude::try_new(info(crs).unwrap().geographic_frame().unwrap(), -nominal)
+                    .unwrap()
+                    .get(),
+                if negative_exterior_distance == 0 {
+                    -nominal
+                } else {
+                    -pole
+                },
+                "{name}",
+            );
+        }
+    }
 
     /// The epoch-through-`to_crs` classification: WGS84's explicitly handled
     /// ensemble and dynamic frames (ITRF2014) admit an epoch; a static frame

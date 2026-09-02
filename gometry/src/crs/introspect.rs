@@ -8,7 +8,8 @@ mod objects;
 mod operations;
 
 pub(super) use metadata::{
-    area_of_use, axes, axis_role, compound_axis_metadata, coordinate_system_type, domain_infos,
+    CompoundAxisMetadata, area_of_use, axes, axis_role, compound_axis_metadata,
+    coordinate_system_type, domain_infos, geographic_frame,
 };
 pub(crate) use objects::Confidence;
 pub(super) use objects::{
