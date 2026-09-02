@@ -66,10 +66,10 @@ impl PyGeometryArray {
                 .map(|row| match row {
                     ArrayRow::Missing { value, .. } => Ok(value),
                     ArrayRow::Present(row) => row.row().with_shape(|shape| {
-                        let shape = precision
-                            .map_or(std::borrow::Cow::Borrowed(shape), |precision| {
-                                std::borrow::Cow::Owned(shape.quantize(precision))
-                            });
+                        let shape = match precision {
+                            Some(precision) => std::borrow::Cow::Owned(shape.quantize(precision)?),
+                            None => std::borrow::Cow::Borrowed(shape),
+                        };
                         io::to_wkt_with_dimension(
                             &shape,
                             output_dimension,
@@ -137,12 +137,12 @@ impl PyGeometryArray {
                             if let ArrayRow::Present(view) = logical_row {
                                 let view = view.row();
                                 view.with_shape(|shape| {
-                                    let shape = precision.map_or_else(
-                                        || std::borrow::Cow::Borrowed(shape),
-                                        |precision| {
-                                            std::borrow::Cow::Owned(shape.quantize(precision))
+                                    let shape = match precision {
+                                        Some(precision) => {
+                                            std::borrow::Cow::Owned(shape.quantize(precision)?)
                                         },
-                                    );
+                                        None => std::borrow::Cow::Borrowed(shape),
+                                    };
                                     io::write_wkb_to_srid(&mut buffer, &shape, srid)
                                 })
                                 .map_err(|error| (row, error))?;

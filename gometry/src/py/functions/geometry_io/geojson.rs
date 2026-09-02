@@ -398,7 +398,8 @@ fn feature_row_from_meta(
             return Err(feature_parse_error("each feature must have a geometry"));
         },
         FeatureGeometryValue::Null => FeatureGeometryInput::Null,
-        FeatureGeometryValue::Value(value) => {
+        FeatureGeometryValue::Value(raw) => {
+            let value = crate::py::support::parse_geojson_text(raw.get())?;
             let mut nested = Vec::new();
             io::collect_geojson_legacy_crs(&value, &mut nested);
             for legacy in nested {
@@ -1006,7 +1007,7 @@ impl<'de> Visitor<'de> for FeatureRowMetaVisitor {
 enum FeatureGeometryValue {
     Missing,
     Null,
-    Value(Value),
+    Value(Box<RawValue>),
 }
 
 impl<'de> Deserialize<'de> for FeatureGeometryValue {
@@ -1014,12 +1015,12 @@ impl<'de> Deserialize<'de> for FeatureGeometryValue {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
-        if value.is_null() {
-            Ok(Self::Null)
-        } else {
-            Ok(Self::Value(value))
-        }
+        let value = Option::<Box<RawValue>>::deserialize(deserializer)?;
+        Ok(match value {
+            None => Self::Null,
+            Some(value) if value.get().trim() == "null" => Self::Null,
+            Some(value) => Self::Value(value),
+        })
     }
 }
 

@@ -177,7 +177,7 @@ pub(crate) fn build_overlay_shape(
     points: Vec<Point>,
     lines: Vec<CoordSeq>,
     polygons: Vec<Polygon>,
-) -> Shape {
+) -> crate::error::Result<Shape> {
     let polygon_bounds: Vec<Option<Bounds>> =
         polygons.iter().map(|polygon| polygon.bounds()).collect();
     let mut surviving: Vec<Point> = points
@@ -235,11 +235,11 @@ pub(crate) fn build_overlay_shape(
         .flatten()
         .collect();
     match <[Shape; 1]>::try_from(parts) {
-        Ok([single]) => single,
-        Err(parts) if parts.is_empty() => {
-            Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
-        },
-        Err(parts) => Shape::geometry_collection(parts)
-            .expect("overlay assembly preserves collection nesting"),
+        Ok([single]) => Ok(single),
+        Err(parts) if parts.is_empty() => Ok(Shape::typed_empty(
+            GeometryKind::GeometryCollection,
+            CoordinateAxes::XY,
+        )),
+        Err(parts) => Shape::geometry_collection(parts),
     }
 }

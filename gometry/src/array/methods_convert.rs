@@ -264,16 +264,16 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn reverse_unary_packed(&self) -> Self {
+    pub(crate) fn reverse_unary_packed(&self) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
-            return identity;
+            return Ok(identity);
         }
         match self.storage() {
             GeometryArrayStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => Self::from_result_storage(
+            } => Ok(Self::from_result_storage(
                 Arc::new(GeometryArrayStorage::Lines {
                     coords: Arc::new(reverse_coord_windows(coords, offsets)),
                     offsets: offsets.clone(),
@@ -283,13 +283,13 @@ impl PyGeometryArray {
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
-            ),
+            )),
             GeometryArrayStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => Self::from_result_storage(
+            } => Ok(Self::from_result_storage(
                 Arc::new(GeometryArrayStorage::Polygons {
                     coords: Arc::new(reverse_coord_windows(coords, ring_offsets)),
                     ring_offsets: ring_offsets.clone(),
@@ -300,14 +300,17 @@ impl PyGeometryArray {
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
-            ),
-            _ => self.map_shapes_infallible(Shape::reverse),
+            )),
+            _ => self.map_shapes(|shape| Ok(shape.reverse()?)),
         }
     }
 
-    pub(crate) fn swap_xy_unary_packed(&self) -> Self {
-        self.swap_xy_packed_storage()
-            .unwrap_or_else(|| self.map_shapes_infallible(Shape::swap_xy))
+    pub(crate) fn swap_xy_unary_packed(&self) -> PyResult<Self> {
+        if let Some(packed) = self.swap_xy_packed_storage() {
+            Ok(packed)
+        } else {
+            self.map_shapes(|shape| Ok(shape.swap_xy()?))
+        }
     }
 
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
@@ -316,8 +319,8 @@ impl PyGeometryArray {
         self.map_shapes_detached(py, |shape| Ok(shape.unique_points()))
     }
 
-    pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> Self {
-        self.map_shapes_infallible(|shape| shape.orient_polygons(!ccw))
+    pub(crate) fn orient_polygons_unary_packed(&self, ccw: bool) -> PyResult<Self> {
+        self.map_shapes(|shape| Ok(shape.orient_polygons(!ccw)?))
     }
 
     pub(crate) fn remove_repeated_points_unary_packed(
@@ -389,23 +392,22 @@ impl PyGeometryArray {
                 return Ok(array);
             }
             self.map_shapes_shared_detached(py, |shape| {
-                let forced = shape.force_2d();
+                let forced = shape.force_2d()?;
                 Ok((forced != *shape).then_some(forced))
             })
         })
     }
 
-    pub(crate) fn normalize_unary_packed(&self, _py: Python<'_>) -> Self {
+    pub(crate) fn normalize_unary_packed(&self, _py: Python<'_>) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
-            return identity;
+            return Ok(identity);
         }
         Python::attach(|py| {
             self.map_shapes_shared_detached(py, |shape| {
-                let normalized = shape.normalize();
+                let normalized = shape.normalize()?;
                 Ok((normalized != *shape).then_some(normalized))
             })
         })
-        .expect("normalize is infallible")
     }
 
     pub(crate) fn force_3d_unary_packed(&self, py: Python<'_>, z: f64) -> PyResult<Self> {
@@ -444,7 +446,7 @@ impl PyGeometryArray {
         }
         Python::attach(|py| {
             self.map_shapes_shared_detached(py, move |shape| {
-                let quantized = shape.quantize(precision);
+                let quantized = shape.quantize(precision)?;
                 Ok((quantized != *shape).then_some(quantized))
             })
         })

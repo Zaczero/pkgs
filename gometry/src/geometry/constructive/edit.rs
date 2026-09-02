@@ -2,8 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::convert::Infallible;
-
 use crate::NonNegative;
 use crate::geometry::constructive::{
     Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
@@ -280,7 +278,10 @@ impl Shape {
     pub fn map_xy_with<E>(
         &self,
         op: impl Fn(f64, f64) -> Result<(f64, f64), E> + Copy,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
         Ok(match self {
             Self::Point(point) => {
                 let (x, y) = op(point.x, point.y)?;
@@ -304,13 +305,9 @@ impl Shape {
                 polygons
                     .try_map_values(polygons.axes(), |polygon| polygon.map_rings_xy_with(op))?,
             ),
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.map_xy_with(op))
-                    .collect::<Result<_, _>>()?,
-            )
-            .expect("coordinate transform preserves collection nesting"),
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.map_xy_with(op))?,
+            ),
             Self::Empty(..) => self.clone(),
         })
     }
@@ -393,8 +390,8 @@ pub(crate) fn stable_affine_xy(
 }
 
 impl Shape {
-    pub fn quantize(&self, precision: i32) -> Self {
-        match self {
+    pub fn quantize(&self, precision: i32) -> Result<Self> {
+        Ok(match self {
             Self::Point(point) => Self::Point(point.quantize(precision)),
             Self::MultiPoint(points) => Self::MultiPoint(points.quantize(precision)),
             Self::LineString(points) => Self::LineString(
@@ -420,15 +417,11 @@ impl Shape {
                     })
                     .expect("quantize preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.quantize(precision))
-                    .collect(),
-            )
-            .expect("quantize preserves collection nesting"),
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.quantize(precision))?,
+            ),
             Self::Empty(..) => self.clone(),
-        }
+        })
     }
 
     /// Set or clear the Z ordinate. `value=None` removes Z (M is preserved);
@@ -498,12 +491,9 @@ impl Shape {
             }
         }
         if let Self::GeometryCollection(geometries) = self {
-            return Ok(Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.set_ordinate(axis, value, overwrite))
-                    .collect::<Result<_>>()?,
-            )?);
+            return Ok(Self::GeometryCollection(geometries.try_map_members(
+                |geometry| geometry.set_ordinate(axis, value, overwrite),
+            )?));
         }
         self.try_map_coordseqs(
             |seq| Ok(seq.set_ordinate(axis, value, overwrite)),
@@ -516,13 +506,13 @@ impl Shape {
         )
     }
 
-    pub fn force_2d(&self) -> Self {
+    pub fn force_2d(&self) -> Result<Self> {
         // Already-2D input shares its storage: has_z/has_m are O(parts)
         // column flags, so the defensive force_2d-on-2D pattern is free.
         if !self.has_z() && !self.has_m() {
-            return self.clone();
+            return Ok(self.clone());
         }
-        match self {
+        Ok(match self {
             Self::Point(point) => Self::Point(point.force_2d()),
             Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()),
             Self::LineString(points) => Self::LineString(
@@ -549,13 +539,12 @@ impl Shape {
                     .expect("force_2d preserves multipart members"),
             ),
             Self::GeometryCollection(geometries) => {
-                Self::geometry_collection(geometries.iter().map(Self::force_2d).collect())
-                    .expect("force_2d preserves collection nesting")
+                Self::GeometryCollection(geometries.try_map_members(Self::force_2d)?)
             },
             // A dimensional empty flattens to the canonical XY empty of its
             // kind (`POINT Z EMPTY` → `POINT EMPTY`).
             Self::Empty(kind, _) => Self::typed_empty(*kind, CoordinateAxes::XY),
-        }
+        })
     }
 
     /// Apply a 2D affine transform `(a, b, d, e, xoff, yoff)` to every
@@ -750,13 +739,9 @@ impl Shape {
                     .unwrap_or(polygons.axes());
                 Ok(Self::MultiPolygon(MultiPolygon::try_new(axes, members)?))
             },
-            Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| geometry.map_points(transform))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(Self::geometry_collection(parts)?)
-            },
+            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.map_points(transform))?,
+            )),
             Self::Empty(..) => Ok(self.clone()),
         }
     }
@@ -907,12 +892,9 @@ impl Shape {
                 "clip_by_rect",
                 drop,
             )?,
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.clip_by_rect(rect, drop))
-                    .collect::<Result<_, _>>()?,
-            )?,
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.clip_by_rect(rect, drop))?,
+            ),
             Self::Empty(..) => self.clone(),
         };
         // Normalize a vanished clip to the SUBJECT's typed empty (a clipped-away
@@ -951,8 +933,11 @@ impl Shape {
     /// Apply `transform` to every coordinate chain (lines and rings),
     /// keeping the structure; `None` from the transform reuses the
     /// original chain (cheap column clone, no re-materialization).
-    pub(crate) fn map_chains(&self, transform: &impl Fn(&CoordSeq) -> Option<Vec<Point>>) -> Self {
-        match self {
+    pub(crate) fn map_chains(
+        &self,
+        transform: &impl Fn(&CoordSeq) -> Option<Vec<Point>>,
+    ) -> Result<Self> {
+        Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
             Self::LineString(points) => Self::LineString(transform(points).map_or_else(
                 || points.clone(),
@@ -986,14 +971,10 @@ impl Shape {
                     })
                     .expect("chain transform preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.map_chains(transform))
-                    .collect(),
-            )
-            .expect("chain transform preserves collection nesting"),
-        }
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.map_chains(transform))?,
+            ),
+        })
     }
 
     pub fn remove_repeated_points(&self, tolerance: f64) -> Result<Self> {
@@ -1077,13 +1058,10 @@ impl Shape {
                     .collect();
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
-            Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| geometry.remove_repeated_points(tolerance))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)?
-            },
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries
+                    .try_map_members(|geometry| geometry.remove_repeated_points(tolerance))?,
+            ),
             Self::Empty(..) => self.clone(),
         })
     }
@@ -1137,13 +1115,9 @@ impl Shape {
                 })?)
             },
             Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| {
-                        geometry.densified_budgeted_with_placement(fraction, placement, budget)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)?
+                Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                    geometry.densified_budgeted_with_placement(fraction, placement, budget)
+                })?)
             },
         })
     }
@@ -1195,13 +1169,9 @@ impl Shape {
                 })?)
             },
             Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| {
-                        geometry.segmentize_budgeted(max_segment_length, placement, budget)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)?
+                Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                    geometry.segmentize_budgeted(max_segment_length, placement, budget)
+                })?)
             },
             Self::Empty(..) => self.clone(),
         })
@@ -1209,21 +1179,17 @@ impl Shape {
 
     /// Swap the X and Y ordinates of every coordinate (Z/M untouched) —
     /// the axis-order repair for latitude/longitude-ordered data.
-    pub fn swap_xy(&self) -> Self {
+    pub fn swap_xy(&self) -> Result<Self> {
         // O(1) column swap per sequence (Arc-pointer swap, no per-vertex copy);
         // same coordinates swapped, bit-identical to a `(x, y) → (y, x)` map.
-        // Infallible: the `Ok`/`?` wrapping collapses away in codegen.
-        match self.try_map_coordseqs(
-            |seq| Ok::<_, Infallible>(seq.swap_xy()),
+        self.try_map_coordseqs(
+            |seq| Ok(seq.swap_xy()),
             |point| Ok(point.with_xy_raw(point.y, point.x)),
-        ) {
-            Ok(shape) => shape,
-            Err(infallible) => match infallible {},
-        }
+        )
     }
 
-    pub fn reverse(&self) -> Self {
-        match self {
+    pub fn reverse(&self) -> Result<Self> {
+        Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             // Columnar reverse-copies — no AoS `Vec<Point>` round-trip.
@@ -1251,15 +1217,14 @@ impl Shape {
                     .expect("reverse preserves multipart members"),
             ),
             Self::GeometryCollection(geometries) => {
-                Self::geometry_collection(geometries.iter().map(Self::reverse).collect())
-                    .expect("reverse preserves collection nesting")
+                Self::GeometryCollection(geometries.try_map_members(Self::reverse)?)
             },
             Self::Empty(..) => self.clone(),
-        }
+        })
     }
 
-    pub fn orient_polygons(&self, exterior_cw: bool) -> Self {
-        match self {
+    pub fn orient_polygons(&self, exterior_cw: bool) -> Result<Self> {
+        Ok(match self {
             Self::Polygon(polygon) => Self::Polygon(polygon.orient(exterior_cw)),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons
@@ -1268,23 +1233,19 @@ impl Shape {
                     })
                     .expect("polygon orientation preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.orient_polygons(exterior_cw))
-                    .collect(),
-            )
-            .expect("polygon orientation preserves collection nesting"),
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.orient_polygons(exterior_cw))?,
+            ),
             Self::Point(_)
             | Self::MultiPoint(_)
             | Self::LineString(_)
             | Self::MultiLineString(_)
             | Self::Empty(..) => self.clone(),
-        }
+        })
     }
 
-    pub fn normalize(&self) -> Self {
-        match self {
+    pub fn normalize(&self) -> Result<Self> {
+        Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
                 let mut values = points.to_vec();
@@ -1349,12 +1310,14 @@ impl Shape {
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
             Self::GeometryCollection(geometries) => {
-                let mut geometries = geometries.iter().map(Self::normalize).collect::<Vec<_>>();
-                geometries.sort_by(compare_shapes);
-                Self::geometry_collection(geometries)
-                    .expect("normalize preserves collection nesting")
+                let mut members = geometries
+                    .iter()
+                    .map(Self::normalize)
+                    .collect::<Result<Vec<_>>>()?;
+                members.sort_by(compare_shapes);
+                Self::GeometryCollection(geometries.try_rebuild_members(members)?)
             },
             Self::Empty(..) => self.clone(),
-        }
+        })
     }
 }

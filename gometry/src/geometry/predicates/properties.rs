@@ -229,18 +229,16 @@ impl Shape {
                 let rebuilt = polygonal_repair(polygons, method)?;
                 carry_ordinates(rebuilt, &[self], "repair", drop)
             },
-            Self::GeometryCollection(geometries) => geometries
-                .iter()
-                .map(|geometry| {
+            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+                geometries.try_map_members(|geometry| {
                     // Per-member gate: valid members pass through untouched.
                     if geometry.validate().is_none() {
                         Ok(geometry.clone())
                     } else {
                         geometry.repair(method, drop)
                     }
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .and_then(Self::geometry_collection),
+                })?,
+            )),
         }
     }
 

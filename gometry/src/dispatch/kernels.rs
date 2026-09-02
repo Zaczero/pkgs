@@ -320,12 +320,8 @@ pub(crate) fn unary_minimum_rotated_rectangle(
 }
 
 /// Boundary kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    Ok(data.shape().boundary())
+    data.shape().boundary()
 }
 
 fn ensure_antimeridian_geographic_frame(ctx: &CachelessRowContext<'_>, op: &str) -> Result<()> {
@@ -630,46 +626,30 @@ pub(crate) fn unary_scale(
 }
 
 /// Reverse kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_reverse(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    Ok(data.shape().reverse())
+    data.shape().reverse()
 }
 
 /// Normalize kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_normalize(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    Ok(data.shape().normalize())
+    data.shape().normalize()
 }
 
 /// Swap-XY kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_swap_xy(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    Ok(data.shape().swap_xy())
+    data.shape().swap_xy()
 }
 
 /// Orient-polygons kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_orient_polygons(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,
     ccw: bool,
 ) -> Result<Shape> {
-    Ok(data.shape().orient_polygons(!ccw))
+    data.shape().orient_polygons(!ccw)
 }
 
 /// Unique-points kernel shared by the spine-routed free function.
@@ -710,12 +690,8 @@ pub(crate) fn unary_snap_to_grid(
 }
 
 /// Force-2D kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_force_2d(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    Ok(data.shape().force_2d())
+    data.shape().force_2d()
 }
 
 /// Force-3D kernel shared by the spine-routed free function.
@@ -748,16 +724,12 @@ pub(crate) fn unary_set_m(
 }
 
 /// Quantize kernel shared by the spine-routed free function.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "dispatch spine requires Result<Shape>"
-)]
 pub(crate) fn unary_quantize(
     data: &PreparedPlan,
     _ctx: &CachelessRowContext<'_>,
     precision: i32,
 ) -> Result<Shape> {
-    Ok(data.shape().quantize(precision))
+    data.shape().quantize(precision)
 }
 
 /// Clip-by-rect kernel shared by the spine-routed free function.

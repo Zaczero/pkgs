@@ -125,7 +125,7 @@ impl Shape {
         // non-positive distance annihilates them, matching the empty erosion
         // of a region with no interior. This is the principled native answer
         // for inputs GEOS itself flags `invalid` and resolves the same way.
-        let linework = degenerate_polygonal_as_linework(source);
+        let linework = degenerate_polygonal_as_linework(source)?;
         Ok(linework
             .winding_route(distance, cap_style, rule, quadrant_segments, budget)?
             .unwrap_or_else(Self::empty_polygon))
@@ -308,7 +308,7 @@ impl Shape {
         } else {
             Self::MultiPolygon(strips.into())
         };
-        let shape = shape.force_2d();
+        let shape = shape.force_2d()?;
         if strips_are_pairwise_strictly_disjoint(&shape) || shape.validate().is_none() {
             Ok(shape)
         } else {

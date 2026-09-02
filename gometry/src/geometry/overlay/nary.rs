@@ -75,10 +75,10 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             if let TopologyDomain::Geographic(frame) = domain
                 && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
             {
-                let normalized = shape.split_antimeridian_in_frame(frame)?.normalize();
+                let normalized = shape.split_antimeridian_in_frame(frame)?.normalize()?;
                 Ok(normalized)
             } else {
-                let normalized = shape.normalize();
+                let normalized = shape.normalize()?;
                 Ok(normalized)
             }
         })
@@ -119,7 +119,7 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         // Normalize before carrying ordinates: canonical geometry ordering is
         // XY-defined, while ordinate restoration is a separate provenance pass.
-        shape.normalize()
+        shape.normalize()?
     };
     carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
@@ -242,7 +242,7 @@ fn assemble_overlay(
         .collect();
     let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, op);
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
-    Ok(build_overlay_shape(points, lines, polygons))
+    build_overlay_shape(points, lines, polygons)
 }
 
 /// Assemble disconnected sources independently, then use the ordinary overlay
@@ -265,7 +265,7 @@ fn assemble_disjoint_overlay(
         let shape = assemble_overlay(&[*source], domain, op, raw_polygon_loops_eligible)?;
         append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
     }
-    Ok(build_overlay_shape(points, lines, polygons))
+    build_overlay_shape(points, lines, polygons)
 }
 
 fn append_overlay_parts(

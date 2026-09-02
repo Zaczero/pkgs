@@ -5,7 +5,7 @@ use crate::geometry::constructive::{
     WalkJoinRule, winding_buffer, winding_erosion, winding_stroke,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, LineSeq, Point, Polygon, Ring, Segment, Shape, XY,
+    BufferCapStyle, CoordSeq, LineSeq, MAX_NESTING, Point, Polygon, Ring, Segment, Shape, XY,
 };
 
 #[test]
@@ -51,6 +51,27 @@ mod winding_buffer_tests {
                 .map(|&(x, y)| Point::new(x, y).unwrap())
                 .collect::<Vec<_>>(),
         )
+    }
+
+    #[test]
+    fn degenerate_buffer_at_collection_limit_returns_an_error() {
+        let degenerate = Shape::MultiPolygon(
+            vec![Polygon::new(
+                ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
+                Vec::new(),
+            )]
+            .into(),
+        );
+        let mut nested = degenerate;
+        for _ in 0..MAX_NESTING {
+            nested = Shape::geometry_collection(vec![nested]).unwrap();
+        }
+        let error = nested.buffer(1.0).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("geometry collection nesting exceeds the limit of 128")
+        );
     }
 
     /// Full annihilation under erosion must yield the empty polygon even

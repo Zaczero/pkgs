@@ -439,13 +439,9 @@ impl Shape {
                 })?)
             },
             Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| {
-                        geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)?
+                Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                    geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
+                })?)
             },
             Self::Empty(..) => self.clone(),
         })

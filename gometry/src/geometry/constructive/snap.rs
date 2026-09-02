@@ -674,13 +674,9 @@ impl Shape {
                     })
                     .expect("snap preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| geometry.snap(reference, tolerance))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts).expect("snap preserves collection nesting")
-            },
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.snap(reference, tolerance))?,
+            ),
             Self::Empty(..) => self.clone(),
         })
     }
@@ -699,7 +695,7 @@ impl Shape {
         // coordinate's ULP (or the origin offset overflows) — snapping is
         // then meaningless, and silently emitting infinity would break the
         // finite-coordinate invariant.
-        Ok(self.snapped_to_grid(size, origin)?.collapse_snapped())
+        self.snapped_to_grid(size, origin)?.collapse_snapped()
     }
 
     /// The single columnar recursion behind every coordinate-rewriting
@@ -715,7 +711,10 @@ impl Shape {
         &self,
         seq_fn: impl Fn(&CoordSeq) -> Result<CoordSeq, E> + Copy,
         point_fn: impl Fn(&Point) -> Result<Point, E> + Copy,
-    ) -> Result<Self, E> {
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
         Ok(match self {
             Self::Point(point) => Self::Point(point_fn(point)?),
             Self::MultiPoint(points) => Self::MultiPoint(points.with_coords(seq_fn(points)?)),
@@ -765,14 +764,10 @@ impl Shape {
                     .unwrap_or(polygons.axes());
                 Self::MultiPolygon(MultiPolygon::from_values(axes, members))
             },
-            Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| geometry.try_map_coordseqs(seq_fn, point_fn))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
-                    .expect("coordinate transform preserves collection nesting")
-            },
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries
+                    .try_map_members(|geometry| geometry.try_map_coordseqs(seq_fn, point_fn))?,
+            ),
             Self::Empty(..) => self.clone(),
         })
     }
@@ -854,7 +849,7 @@ impl Shape {
     /// Post-snap structural cleanup: strip consecutive duplicate vertices,
     /// drop collapsed parts, and degrade below-minimum linework/rings to
     /// the representable empty.
-    fn collapse_snapped(self) -> Self {
+    fn collapse_snapped(self) -> Result<Self> {
         fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
             let mut vertices: Vec<Point> = points.iter_coords().collect();
             dedup_consecutive_points(&mut vertices);
@@ -871,7 +866,7 @@ impl Shape {
             // A ring needs three distinct vertices plus the closure.
             (vertices.len() >= 4).then(|| Ring::from_closed(vertices))
         }
-        match self {
+        Ok(match self {
             Self::LineString(points) => {
                 let vertices = dedup_line(&points);
                 if vertices.len() >= 2 {
@@ -927,15 +922,13 @@ impl Shape {
                     .collect();
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .into_iter()
-                    .map(Self::collapse_snapped)
-                    .filter(|geometry| !geometry.is_empty())
-                    .collect(),
-            )
-            .expect("snapped collection preserves collection nesting"),
+            Self::GeometryCollection(geometries) => {
+                return geometries.try_filter_map_owned_members(|geometry| {
+                    let geometry = geometry.collapse_snapped()?;
+                    Ok((!geometry.is_empty()).then_some(geometry))
+                });
+            },
             other => other,
-        }
+        })
     }
 }

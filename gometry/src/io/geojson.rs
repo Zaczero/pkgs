@@ -160,7 +160,7 @@ pub(crate) fn geojson_output_shape(
         prepared.as_ref(),
         Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
     ) {
-        Ok(Cow::Owned(prepared.orient_polygons(false)))
+        Ok(Cow::Owned(prepared.as_ref().orient_polygons(false)?))
     } else {
         Ok(prepared)
     }

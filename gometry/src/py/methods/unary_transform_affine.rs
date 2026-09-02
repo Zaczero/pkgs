@@ -203,7 +203,7 @@ impl PyGeometryArray {
     #[doc = doc_normalize!(array)]
     pub fn normalize(&self, py: Python<'_>) -> PyResult<Self> {
         if !matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
-            return Ok(self.normalize_unary_packed(py));
+            return self.normalize_unary_packed(py);
         }
         unary_spine_shapes!(
             array,

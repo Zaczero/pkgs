@@ -137,7 +137,7 @@ impl TransformPlan {
                         y,
                     )
                 })?;
-                Ok(output.finish(shapes))
+                output.finish(shapes)
             },
             TransformOperation::Proj {
                 source,

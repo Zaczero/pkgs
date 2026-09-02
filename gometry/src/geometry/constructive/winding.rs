@@ -59,8 +59,8 @@ fn ring_as_open_linework(ring: &CoordSeq) -> Option<LineSeq> {
 /// Reinterpret a shape's zero-area polygons as their boundary linework so the
 /// winding buffer engine can resolve them (see [`buffer_with_style`]).
 /// Non-degenerate polygons and non-polygonal parts pass through unchanged.
-pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
-    match shape {
+pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
+    Ok(match shape {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
             let lines = polygon
                 .rings()
@@ -77,21 +77,19 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
                 .members()
                 .map(|member| match member {
                     crate::geometry::MultiMember::Empty => {
-                        Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
+                        Ok(Shape::typed_empty(GeometryKind::Polygon, polygons.axes()))
                     },
                     crate::geometry::MultiMember::Value(index) => degenerate_polygonal_as_linework(
                         &Shape::Polygon(polygons.as_slice()[index].clone()),
                     ),
                 })
-                .collect(),
-        )
-        .expect("polygonal conversion preserves collection nesting"),
+                .collect::<Result<Vec<_>>>()?,
+        )?,
         Shape::GeometryCollection(parts) => {
-            Shape::geometry_collection(parts.iter().map(degenerate_polygonal_as_linework).collect())
-                .expect("linework conversion preserves collection nesting")
+            Shape::GeometryCollection(parts.try_map_members(degenerate_polygonal_as_linework)?)
         },
         other => other.clone(),
-    }
+    })
 }
 
 /// Convex hole-free polygonal buffer — constructive fast path for both

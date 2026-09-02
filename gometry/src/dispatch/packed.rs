@@ -264,10 +264,10 @@ pub(crate) fn try_unary_packed_array(
     // param-less lanes: the operation alone says everything
     match op {
         Operation::ConvexHull => return Some(array.convex_hull_unary_packed(py)),
-        Operation::Boundary => return Some(Ok(array.boundary_unary_packed())),
-        Operation::Reverse => return Some(Ok(array.reverse_unary_packed())),
-        Operation::Normalize => return Some(Ok(array.normalize_unary_packed(py))),
-        Operation::SwapXy => return Some(Ok(array.swap_xy_unary_packed())),
+        Operation::Boundary => return Some(array.boundary_unary_packed()),
+        Operation::Reverse => return Some(array.reverse_unary_packed()),
+        Operation::Normalize => return Some(array.normalize_unary_packed(py)),
+        Operation::SwapXy => return Some(array.swap_xy_unary_packed()),
         Operation::UniquePoints => return Some(array.unique_points_unary_packed(py)),
         Operation::Force2d => return Some(array.force_2d_unary_packed(py)),
         _ => {},
@@ -333,7 +333,7 @@ pub(crate) fn try_unary_packed_array(
             },
         ) => array.skew_unary_packed(*origin, *tan_x, *tan_y),
         (Operation::OrientPolygons, PackedUnary::OrientPolygons { ccw }) => {
-            Some(Ok(array.orient_polygons_unary_packed(*ccw)))
+            Some(array.orient_polygons_unary_packed(*ccw))
         },
         (Operation::RemoveRepeatedPoints, PackedUnary::RemoveRepeatedPoints { tolerance }) => {
             Some(array.remove_repeated_points_unary_packed(py, tolerance))

@@ -71,7 +71,9 @@ impl PyGeometry {
         let shape = self.shape.clone();
         let crs = self.crs_ref().cloned();
         py.detach(move || {
-            let quantized = precision.map(|precision| shape.quantize(precision));
+            let quantized = precision
+                .map(|precision| shape.quantize(precision))
+                .transpose()?;
             Ok(io::to_wkt_with_dimension(
                 quantized.as_ref().unwrap_or(&shape),
                 output_dimension,
@@ -90,7 +92,8 @@ impl PyGeometry {
         let quantized = precision
             .map(parse_precision)
             .transpose()?
-            .map(|precision| self.shape.quantize(precision));
+            .map(|precision| self.shape.quantize(precision))
+            .transpose()?;
         let shape = quantized.as_ref().unwrap_or(&self.shape);
         let crs = self.crs_str();
         // No coordinate-count gate (the R7 cliff was `coord_count() < 32`).

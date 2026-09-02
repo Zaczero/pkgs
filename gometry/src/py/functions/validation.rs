@@ -322,8 +322,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
             return parse_require_wkt(text.as_ref(), fallback);
         }
         // GeoJSON text: same shared coercer as mapping / interface / bytes.
-        let parsed: serde_json::Value = serde_json::from_str(text.as_ref())
-            .map_err(|error| crate::io::IoError::geojson(error.to_string()))?;
+        let parsed = crate::py::support::parse_geojson_text(text.as_ref())?;
         return parse_require_geojson_value(&parsed, fallback);
     }
     if is_one_byte_buffer(geom) {

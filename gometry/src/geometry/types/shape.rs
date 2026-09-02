@@ -1,3 +1,4 @@
+use std::num::NonZeroU8;
 use std::ops::Deref;
 
 use crate::HeapSize;
@@ -92,7 +93,7 @@ pub enum Shape {
     MultiLineString(MultiLineString),
     Polygon(Polygon),
     MultiPolygon(MultiPolygon),
-    GeometryCollection(NonEmptyVec<Self>),
+    GeometryCollection(GeometryCollection),
     /// A typed empty geometry carrying its declared coordinate axes, so
     /// `POINT Z EMPTY` round-trips distinct from `POINT EMPTY`.
     ///
@@ -111,38 +112,17 @@ impl Shape {
                 CoordinateAxes::XY,
             ));
         }
-        let depth = parts
-            .iter()
-            .map(Self::nesting_depth)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        if depth > MAX_NESTING {
-            return Err(GeometryErrorKind::message(format!(
-                "geometry collection nesting exceeds the limit of {MAX_NESTING}"
-            )));
-        }
-        Ok(Self::GeometryCollection(NonEmptyVec::from_vec(parts)))
+        Ok(Self::GeometryCollection(GeometryCollection::try_new(
+            parts,
+        )?))
     }
 
-    /// Maximum collection depth in this shape, calculated without recursion.
-    pub(crate) fn nesting_depth(&self) -> usize {
-        let mut max_depth = 0;
-        let mut pending = vec![(self, 0_usize)];
-        while let Some((shape, depth)) = pending.pop() {
-            let Self::GeometryCollection(parts) = shape else {
-                continue;
-            };
-            let child_depth = depth.saturating_add(1);
-            max_depth = max_depth.max(child_depth);
-            if max_depth > MAX_NESTING {
-                return max_depth;
-            }
-            for child in parts {
-                pending.push((child, child_depth));
-            }
+    /// Maximum collection depth in this shape.
+    pub(crate) const fn nesting_depth(&self) -> usize {
+        match self {
+            Self::GeometryCollection(collection) => collection.depth(),
+            _ => 0,
         }
-        max_depth
     }
 }
 
@@ -261,15 +241,11 @@ impl<T> NonEmptyVec<T> {
         Ok(Self(items))
     }
 
-    pub(crate) fn from_vec(items: Vec<T>) -> Self {
-        Self::try_from_vec(items).expect("shape payload must not be empty")
-    }
-
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.0.len()
     }
 
-    pub(crate) fn capacity(&self) -> usize {
+    pub(crate) const fn capacity(&self) -> usize {
         self.0.capacity()
     }
 }
@@ -298,6 +274,156 @@ impl<T> IntoIterator for NonEmptyVec<T> {
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
+}
+
+/// A checked, immutable collection payload carrying its exact nesting depth.
+/// The members stay behind this type so no operation can mutate them without
+/// rebuilding and rechecking the enclosing collection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GeometryCollection {
+    members: NonEmptyVec<Shape>,
+    depth: NonZeroU8,
+}
+
+impl GeometryCollection {
+    fn try_new(parts: Vec<Shape>) -> Result<Self> {
+        let members = NonEmptyVec::try_from_vec(parts)?;
+        Self::from_members(members, MAX_NESTING)
+    }
+
+    fn from_members(members: NonEmptyVec<Shape>, limit: usize) -> Result<Self> {
+        let depth = members
+            .iter()
+            .map(Shape::nesting_depth)
+            .max()
+            .expect("non-empty collection payload")
+            + 1;
+        if depth > MAX_NESTING || depth > limit {
+            return Err(collection_depth_error());
+        }
+        Ok(Self {
+            members,
+            depth: NonZeroU8::new(depth as u8).expect("collection depth is non-zero"),
+        })
+    }
+
+    /// Rebuild members while enforcing that the new collection is no deeper
+    /// than the source collection. This is the path for structure-preserving
+    /// transforms; arbitrary children use [`Shape::geometry_collection`].
+    pub(crate) fn try_map_members<E, F>(&self, mut map: F) -> std::result::Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+        F: FnMut(&Shape) -> std::result::Result<Shape, E>,
+    {
+        let members = self
+            .members
+            .iter()
+            .map(&mut map)
+            .collect::<std::result::Result<Vec<_>, E>>()?;
+        Self::from_members(
+            NonEmptyVec::try_from_vec(members).map_err(E::from)?,
+            self.depth.get() as usize,
+        )
+        .map_err(E::from)
+    }
+
+    pub(crate) fn try_map_owned_members<E, F>(self, mut map: F) -> std::result::Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+        F: FnMut(Shape) -> std::result::Result<Shape, E>,
+    {
+        let members = self
+            .members
+            .into_iter()
+            .map(&mut map)
+            .collect::<std::result::Result<Vec<_>, E>>()?;
+        Self::from_members(
+            NonEmptyVec::try_from_vec(members).map_err(E::from)?,
+            self.depth.get() as usize,
+        )
+        .map_err(E::from)
+    }
+
+    pub(crate) fn try_rebuild_members(&self, members: Vec<Shape>) -> Result<Self> {
+        Self::from_members(NonEmptyVec::try_from_vec(members)?, self.depth())
+    }
+
+    pub(crate) fn try_filter_map_owned_members<F>(self, mut map: F) -> Result<Shape>
+    where
+        F: FnMut(Shape) -> Result<Option<Shape>>,
+    {
+        let limit = self.depth();
+        let members = self
+            .members
+            .into_iter()
+            .map(&mut map)
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            return Ok(Shape::typed_empty(
+                GeometryKind::GeometryCollection,
+                CoordinateAxes::XY,
+            ));
+        }
+        Ok(Shape::GeometryCollection(Self::from_members(
+            NonEmptyVec::try_from_vec(members)?,
+            limit,
+        )?))
+    }
+
+    pub(crate) const fn depth(&self) -> usize {
+        self.depth.get() as usize
+    }
+
+    pub(crate) fn as_slice(&self) -> &[Shape] {
+        &self.members
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, Shape> {
+        self.members.iter()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.members.capacity()
+    }
+}
+
+impl Deref for GeometryCollection {
+    type Target = [Shape];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a GeometryCollection {
+    type Item = &'a Shape;
+    type IntoIter = std::slice::Iter<'a, Shape>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl IntoIterator for GeometryCollection {
+    type Item = Shape;
+    type IntoIter = std::vec::IntoIter<Shape>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.members.into_iter()
+    }
+}
+
+fn collection_depth_error() -> crate::error::Error {
+    GeometryErrorKind::message(format!(
+        "geometry collection nesting exceeds the limit of {MAX_NESTING}"
+    ))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1045,7 +1171,7 @@ impl Coordinates for MultiPoint {
     }
 }
 
-impl crate::HeapSize for NonEmptyVec<Shape> {
+impl crate::HeapSize for GeometryCollection {
     fn heap_bytes(&self) -> usize {
         self.capacity() * std::mem::size_of::<Shape>()
             + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
@@ -1065,7 +1191,14 @@ mod multipart_layout_tests {
     fn raw_nested(depth: usize) -> Shape {
         let mut shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
         for _ in 0..depth {
-            shape = Shape::GeometryCollection(NonEmptyVec::from_vec(vec![shape]));
+            shape = Shape::geometry_collection(vec![shape]).expect("test depth is within limit");
+        }
+        shape
+    }
+
+    fn nested_around(mut shape: Shape, depth: usize) -> Shape {
+        for _ in 0..depth {
+            shape = Shape::geometry_collection(vec![shape]).expect("test depth is within limit");
         }
         shape
     }
@@ -1117,6 +1250,39 @@ mod multipart_layout_tests {
         assert_eq!(raw_nested(MAX_NESTING).nesting_depth(), MAX_NESTING);
         assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING - 1)]).is_ok());
         assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING)]).is_err());
+    }
+
+    #[test]
+    fn collection_depth_uses_the_deepest_direct_child() {
+        let shallow = raw_nested(1);
+        let deep = raw_nested(3);
+        let collection = Shape::geometry_collection(vec![shallow, deep]).unwrap();
+        assert_eq!(collection.nesting_depth(), 4);
+    }
+
+    #[test]
+    fn structure_preserving_rebuild_recomputes_after_filtering() {
+        let source = Shape::geometry_collection(vec![raw_nested(3), Shape::empty_point()]).unwrap();
+        let Shape::GeometryCollection(collection) = &source else {
+            unreachable!("collection fixture")
+        };
+        let rebuilt = collection
+            .try_rebuild_members(vec![Shape::empty_point()])
+            .unwrap();
+        assert_eq!(Shape::GeometryCollection(rebuilt).nesting_depth(), 1);
+    }
+
+    #[test]
+    fn structure_preserving_rebuild_rejects_depth_growth() {
+        let source = nested_around(Shape::Point(Point::new_raw_xy(0.0, 0.0)), 2);
+        let Shape::GeometryCollection(collection) = &source else {
+            unreachable!("collection fixture")
+        };
+        assert!(
+            collection
+                .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2)))
+                .is_err()
+        );
     }
 }
 

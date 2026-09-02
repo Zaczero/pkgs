@@ -430,8 +430,8 @@ impl Shape {
         )
     }
 
-    pub fn boundary(&self) -> Self {
-        match self {
+    pub fn boundary(&self) -> Result<Self> {
+        Ok(match self {
             // Points have no boundary; a typed `POLYGON EMPTY` still boundaries
             // to linework (`MULTILINESTRING EMPTY`), per the polygon contract.
             Self::Point(_) | Self::MultiPoint(_) => empty_geometry(),
@@ -466,17 +466,18 @@ impl Shape {
             Self::GeometryCollection(geometries) => {
                 let boundaries: Vec<_> = geometries
                     .iter()
-                    .map(Self::boundary)
+                    .map(|geometry| geometry.boundary())
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
                     .filter(|boundary| !boundary.is_empty())
                     .collect();
                 if boundaries.is_empty() {
                     Self::typed_empty(GeometryKind::GeometryCollection, self.axes())
                 } else {
-                    Self::geometry_collection(boundaries)
-                        .expect("boundary preserves collection nesting")
+                    Self::GeometryCollection(geometries.try_rebuild_members(boundaries)?)
                 }
             },
-        }
+        })
     }
 
     pub fn polygonize(&self, strict: bool) -> Result<Vec<Self>> {

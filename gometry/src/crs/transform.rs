@@ -1056,7 +1056,7 @@ pub(crate) fn transform_proj_shapes(
             execution,
         )
     })?;
-    Ok(output.finish(shapes))
+    output.finish(shapes)
 }
 
 const TRANSFORM_CHUNK_BYTES: usize = 1024 * 1024;
@@ -1286,7 +1286,7 @@ impl TransformOutputPlan {
         execute_batch(columns, capacity, transform)
     }
 
-    pub(crate) fn finish(self, shapes: &[&Shape]) -> Vec<Shape> {
+    pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
         let Self { xy, xyz, sequences } = self;
         let xy_xs: Arc<[f64]> = xy.xs.into();
         let xy_ys: Arc<[f64]> = xy.ys.into();
@@ -1314,10 +1314,10 @@ impl TransformOutputPlan {
             sequences,
             offset: 0,
         };
-        shapes
+        Ok(shapes
             .iter()
             .map(|shape| rebuild_shape_columns(shape, &mut cursor))
-            .collect()
+            .collect::<Result<Vec<_>>>()?)
     }
 }
 
@@ -1372,10 +1372,10 @@ fn rebuild_point_columns(point: &Point, cursor: &mut TransformCursor) -> Point {
 }
 
 /// Rebuild one shape from the transformed batches — original axes are
-/// preserved (2D stays 2D; 3D gets the transformed Z lane). Infallible by
-/// construction.
-fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Shape {
-    match shape {
+/// preserved (2D stays 2D; 3D gets the transformed Z lane). Collection
+/// reconstruction remains checked against the source depth.
+fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Result<Shape> {
+    Ok(match shape {
         Shape::Point(point) => Shape::Point(rebuild_point_columns(point, cursor)),
         Shape::MultiPoint(points) => {
             Shape::MultiPoint(points.with_coords(rebuild_seq_columns(points, cursor)))
@@ -1402,15 +1402,11 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Shape {
                 })
                 .expect("transformed multipart preserves members"),
         ),
-        Shape::GeometryCollection(geometries) => Shape::geometry_collection(
-            geometries
-                .iter()
-                .map(|geometry| rebuild_shape_columns(geometry, cursor))
-                .collect::<Vec<_>>(),
-        )
-        .expect("coordinate transform preserves collection nesting"),
+        Shape::GeometryCollection(geometries) => Shape::GeometryCollection(
+            geometries.try_map_members(|geometry| rebuild_shape_columns(geometry, cursor))?,
+        ),
         Shape::Empty(..) => shape.clone(),
-    }
+    })
 }
 
 fn rebuild_polygon_columns(
@@ -1501,7 +1497,7 @@ mod lane_tests {
         assert!(plan.xyz.xs.capacity() >= 2);
         assert!(plan.xyz.ys.capacity() >= 2);
         assert!(plan.xyz.zs.as_ref().is_some_and(|zs| zs.capacity() >= 2));
-        let output = plan.finish(&refs);
+        let output = plan.finish(&refs).unwrap();
         let coordinates = output
             .iter()
             .map(|shape| match shape {
@@ -1594,7 +1590,7 @@ mod lane_tests {
         assert!(plan.xy.xs.capacity() >= plan.xy.xs.len());
         assert!(plan.xyz.xs.capacity() >= plan.xyz.xs.len());
 
-        let output = plan.finish(&refs);
+        let output = plan.finish(&refs).unwrap();
         let Shape::MultiPoint(output_xy) = &output[0] else {
             unreachable!()
         };
@@ -1662,7 +1658,7 @@ mod lane_tests {
             Ok(())
         })
         .unwrap();
-        let output = plan.finish(&refs);
+        let output = plan.finish(&refs).unwrap();
         let Shape::MultiPoint(first) = &output[0] else {
             unreachable!()
         };
@@ -1700,7 +1696,7 @@ mod lane_tests {
         plan.execute_with_capacities(1, 1, &mut |_, _, _| Ok(()))
             .unwrap();
         assert!(Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
-        let Shape::MultiPoint(output) = plan.finish(&refs).pop().unwrap() else {
+        let Shape::MultiPoint(output) = plan.finish(&refs).unwrap().pop().unwrap() else {
             unreachable!()
         };
         assert_eq!(output.axes(), CoordinateAxes::XYM);

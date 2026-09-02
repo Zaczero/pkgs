@@ -232,7 +232,7 @@ fn normalized_polylabel_frame(
     ) else {
         return Ok(None);
     };
-    let xy = shape.force_2d();
+    let xy = shape.force_2d()?;
     let normalized = xy.try_map_coordseqs(
         |seq| {
             let mut builder = CoordSeqBuilder::like_coords(seq, 0);

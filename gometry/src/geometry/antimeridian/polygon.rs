@@ -113,12 +113,9 @@ impl Shape {
                     split,
                 )?))
             },
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(Self::split_antimeridian_chart)
-                    .collect::<Result<_>>()?,
-            ),
+            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+                geometries.try_map_members(Self::split_antimeridian_chart)?,
+            )),
         }
     }
 
@@ -327,14 +324,9 @@ fn chart_shape(
             )?))
         },
         Shape::GeometryCollection(collection) => {
-            let mut result = Vec::new();
-            result
-                .try_reserve_exact(collection.len())
-                .map_err(|_| crate::error::ResourceError::Allocation)?;
-            for member in collection {
-                result.push(chart_shape(member, frame, longitude_scale, latitude_scale)?);
-            }
-            Ok(Shape::geometry_collection(result)?)
+            Ok(Shape::GeometryCollection(collection.try_map_members(
+                |member| chart_shape(member, frame, longitude_scale, latitude_scale),
+            )?))
         },
         _ => shape.map_xy_with(|x, y| {
             Ok((

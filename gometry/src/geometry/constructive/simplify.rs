@@ -447,7 +447,7 @@ impl Shape {
         // Drop collapsed areal rings so a vanished polygon is `POLYGON EMPTY`
         // (matching Shapely), never an invalid 2-vertex ring.
         if !preserve_topology {
-            return Ok(raw.dropping_collapsed_rings());
+            return raw.dropping_collapsed_rings();
         }
         // An unchanged output has, by identity, exactly the input's
         // topology — the validity branch-check only runs when vertices
@@ -456,7 +456,7 @@ impl Shape {
         if raw == *self || self.simplify_kept_topology(&raw) {
             return Ok(raw);
         }
-        Ok(self.simplify_guarded(tolerance))
+        self.simplify_guarded(tolerance)
     }
 
     /// Drop areal rings that simplification collapsed below three distinct
@@ -464,7 +464,7 @@ impl Shape {
     /// `POLYGON EMPTY`, a vanished hole is removed; lineal/puntal parts are
     /// untouched. Keeps `simplify`/`simplify_vw` with `preserve_topology=False`
     /// from leaking a degenerate invalid polygon.
-    fn dropping_collapsed_rings(self) -> Self {
+    fn dropping_collapsed_rings(self) -> Result<Self> {
         fn clean(polygon: &Polygon) -> Option<Polygon> {
             if unique_xy_points(&polygon.shell).len() < 3 {
                 return None;
@@ -479,7 +479,7 @@ impl Shape {
                     .collect(),
             ))
         }
-        match self {
+        Ok(match self {
             Self::Polygon(polygon) => clean(&polygon).map_or_else(
                 || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
                 Self::Polygon,
@@ -504,15 +504,11 @@ impl Shape {
                     Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
                 }
             },
-            Self::GeometryCollection(parts) => Self::geometry_collection(
-                parts
-                    .into_iter()
-                    .map(Self::dropping_collapsed_rings)
-                    .collect(),
-            )
-            .expect("ring cleanup preserves collection nesting"),
+            Self::GeometryCollection(parts) => Self::GeometryCollection(
+                parts.try_map_owned_members(Self::dropping_collapsed_rings)?,
+            ),
             other => other,
-        }
+        })
     }
 
     /// Whether raw DP output preserved what `preserve_topology` promises:
@@ -547,7 +543,7 @@ impl Shape {
     /// Guarded greedy simplification: per chain (line or ring), repeatedly
     /// remove the vertex with the smallest chord deviation `<= tolerance`
     /// whose removal the topology guard accepts.
-    fn simplify_guarded(&self, tolerance: f64) -> Self {
+    fn simplify_guarded(&self, tolerance: f64) -> Result<Self> {
         self.simplify_guarded_with(|prev, vertex, next| {
             let deviation = point_segment_distance(vertex, Segment {
                 start: prev.into(),
@@ -564,7 +560,7 @@ impl Shape {
     fn simplify_guarded_with(
         &self,
         candidate: impl Fn(Point, Point, Point) -> Option<f64>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut segments = Vec::new();
         self.for_each_segment_chain(|chain| segments.extend(line_segments(chain)));
         let guard = TopologyGuard::new(&segments, self.points_vec().iter().map(Point::xy));
@@ -599,7 +595,7 @@ impl Shape {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
             Self::LineString(_) | Self::MultiLineString(_) => {
-                self.map_chains(&|points: &CoordSeq| rdp_chain(points, tolerance))
+                self.map_chains(&|points: &CoordSeq| rdp_chain(points, tolerance))?
             },
             Self::Polygon(polygon) => simplify_polygon(polygon).map_or_else(
                 || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
@@ -617,12 +613,9 @@ impl Shape {
                     .collect();
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
-            Self::GeometryCollection(geometries) => Self::geometry_collection(
-                geometries
-                    .iter()
-                    .map(|geometry| geometry.simplify_dp_raw(tolerance))
-                    .collect::<Result<Vec<_>>>()?,
-            )?,
+            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+                geometries.try_map_members(|geometry| geometry.simplify_dp_raw(tolerance))?,
+            ),
         })
     }
 
@@ -636,16 +629,16 @@ impl Shape {
     pub fn simplify_vw(&self, tolerance: f64, preserve_topology: bool) -> Result<Self> {
         let raw = self.simplify_vw_raw(tolerance)?;
         if !preserve_topology {
-            return Ok(raw.dropping_collapsed_rings());
+            return raw.dropping_collapsed_rings();
         }
         if raw == *self || self.simplify_kept_topology(&raw) {
             return Ok(raw);
         }
         let area_tolerance = vw_area_tolerance(tolerance);
-        Ok(self.simplify_guarded_with(|prev, vertex, next| {
+        self.simplify_guarded_with(|prev, vertex, next| {
             let area = triangle_area(prev, vertex, next);
             (area < area_tolerance).then_some(area)
-        }))
+        })
     }
 
     pub fn simplify_vw_raw(&self, tolerance: f64) -> Result<Self> {
@@ -695,12 +688,9 @@ impl Shape {
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
             Self::GeometryCollection(geometries) => {
-                return Self::geometry_collection(
-                    geometries
-                        .iter()
-                        .map(|geometry| geometry.simplify_vw_raw(tolerance))
-                        .collect::<Result<_, _>>()?,
-                );
+                return Ok(Self::GeometryCollection(geometries.try_map_members(
+                    |geometry| geometry.simplify_vw_raw(tolerance),
+                )?));
             },
         };
         // Visvalingam-Whyatt also keeps a subset of the input vertices, so

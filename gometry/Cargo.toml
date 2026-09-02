@@ -74,6 +74,7 @@ serde_json = { version = "1.0", default-features = false, features = [
   "alloc",
   "float_roundtrip",
   "raw_value",
+  "unbounded_depth",
 ] }
 smol_str = { version = "0.3.6", default-features = false, features = ["std"] }
 spade = { version = "2.15", default-features = false, features = ["std"] }

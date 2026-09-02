@@ -12,8 +12,8 @@ use crate::geometry::{
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
     match domain {
-        TopologyDomain::Cartesian => Ok(shape.force_2d()),
-        TopologyDomain::Geographic(frame) => shape.force_2d().split_antimeridian_in_frame(frame),
+        TopologyDomain::Cartesian => shape.force_2d(),
+        TopologyDomain::Geographic(frame) => shape.force_2d()?.split_antimeridian_in_frame(frame),
     }
 }
 
@@ -194,7 +194,7 @@ pub(crate) fn validate_shape_in_frame(
     domain: TopologyDomain,
 ) -> Option<ValidationIssue> {
     if needs_topology_split(shape, domain) {
-        let planar = shape.force_2d();
+        let planar = shape.force_2d().ok()?;
         if let Some(issue) = crossing_hole_relationship_issue(&planar, "$", domain) {
             return Some(issue);
         }

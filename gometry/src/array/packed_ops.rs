@@ -832,9 +832,9 @@ impl PyGeometryArray {
         crate::py::vectors::Groups::from_point_builder(frame, builder)
     }
 
-    pub(crate) fn boundary_unary_packed(&self) -> Self {
+    pub(crate) fn boundary_unary_packed(&self) -> PyResult<Self> {
         if self.is_compact_nullable() {
-            return self.map_shapes_infallible(Shape::boundary);
+            return self.map_shapes(|shape| Ok(shape.boundary()?));
         }
         // Hole-free polygons (every polygon is exactly one shell ring): the
         // boundary IS that shell ring as a closed `LineString`. The shell
@@ -852,7 +852,7 @@ impl PyGeometryArray {
         } = self.storage()
             && ring_offsets.len() == polygon_offsets.len()
         {
-            return Self::from_storage(
+            return Ok(Self::from_storage(
                 GeometryArrayStorage::Lines {
                     coords: Arc::clone(coords),
                     offsets: ring_offsets.clone().cast_level::<()>(),
@@ -860,9 +860,9 @@ impl PyGeometryArray {
                 },
                 self.frame.clone(),
             )
-            .with_missing_mask(self.missing().cloned());
+            .with_missing_mask(self.missing().cloned()));
         }
-        self.map_shapes_infallible(Shape::boundary)
+        self.map_shapes(|shape| Ok(shape.boundary()?))
     }
 
     /// A packed point array's rows as ONE `Shape::MultiPoint` over the shared

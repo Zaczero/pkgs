@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 import struct
 import subprocess
@@ -27,6 +28,14 @@ def nested_wkb(depth: int) -> bytes:
     for _ in range(depth):
         value = struct.pack('<BII', 1, 7, 1) + value
     return value
+
+
+def nested_geojson(depth: int) -> str:
+    return (
+        '{"type":"GeometryCollection","geometries":[' * depth
+        + '{"type":"Point","coordinates":[0,0]}'
+        + ']}' * depth
+    )
 
 
 def test_constructor_accepts_127_and_128_and_rejects_129() -> None:
@@ -61,6 +70,47 @@ def test_pickle_accepts_boundary(depth: int) -> None:
     shape = nested_constructor(depth)
     restored = pickle.loads(pickle.dumps(shape))
     assert restored.to_wkt() == shape.to_wkt()
+
+
+@pytest.mark.parametrize('depth', [127, 128])
+def test_geojson_accepts_boundary(depth: int) -> None:
+    shape = nested_constructor(depth)
+    restored = gm.from_geojson(shape.to_geojson())
+    assert restored.to_wkt() == shape.to_wkt()
+
+
+def test_geojson_rejects_129() -> None:
+    with pytest.raises(gm.ParseError, match='nesting exceeds'):
+        gm.from_geojson(nested_geojson(129))
+
+
+def test_feature_geometry_accepts_boundary() -> None:
+    shape = nested_constructor(128)
+    feature = {
+        'type': 'Feature',
+        'geometry': json.loads(shape.to_geojson()),
+        'properties': {},
+    }
+    restored = gm.from_features(json.dumps(feature)).geometries[0]
+    assert restored.to_wkt() == shape.to_wkt()
+
+
+def test_structure_preserving_operations_accept_boundary() -> None:
+    shape = nested_constructor(128)
+    results = [
+        shape.affine_transform((1.0, 0.0, 0.0, 1.0, 1.0, 1.0)),
+        shape.force_2d(),
+        shape.normalize(),
+        shape.reverse(),
+        shape.snap_to_grid((1.0, 1.0)),
+        shape.orient_polygons(),
+        shape.set_z(None),
+        shape.boundary(),
+    ]
+    assert all(result.geometry_type == 'GeometryCollection' for result in results)
+    assert gm.from_wkt(shape.to_wkt(), crs=4326).to_crs(3857).geometry_type == (
+        'GeometryCollection'
+    )
 
 
 def test_pickle_reconstruction_rejects_129() -> None:

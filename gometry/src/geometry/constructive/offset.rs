@@ -529,21 +529,17 @@ impl Shape {
         if same_topological_coordinate(distance, 0.0) {
             return match self {
                 Self::LineString(_) | Self::MultiLineString(_) => Ok(self.clone()),
-                Self::GeometryCollection(geometries) => {
-                    let parts = geometries
-                        .iter()
-                        .map(|geometry| {
-                            geometry.offset_curve_budgeted(
-                                distance,
-                                join_style,
-                                quadrant_segments,
-                                miter_limit,
-                                budget,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(Self::geometry_collection(parts)?)
-                },
+                Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+                    geometries.try_map_members(|geometry| {
+                        geometry.offset_curve_budgeted(
+                            distance,
+                            join_style,
+                            quadrant_segments,
+                            miter_limit,
+                            budget,
+                        )
+                    })?,
+                )),
                 _ => Err(GeometryErrorKind::LinealRequired.into()),
             };
         }
@@ -590,19 +586,15 @@ impl Shape {
                 Self::MultiLineString(MultiLineString::try_new(lines.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {
-                let parts = geometries
-                    .iter()
-                    .map(|geometry| {
-                        geometry.offset_curve_budgeted(
-                            distance,
-                            join_style,
-                            quadrant_segments,
-                            miter_limit,
-                            budget,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)?
+                Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                    geometry.offset_curve_budgeted(
+                        distance,
+                        join_style,
+                        quadrant_segments,
+                        miter_limit,
+                        budget,
+                    )
+                })?)
             },
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
         })

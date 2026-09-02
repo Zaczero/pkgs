@@ -1,4 +1,5 @@
 use pyo3::types::{PyDict, PyFloat, PyList, PyString};
+use serde::Deserialize as _;
 
 use crate::py::support::{
     Bound, CRSError, Frame, GeometryError, Py, PyAny, PyAnyMethods as _, PyBool,
@@ -184,10 +185,13 @@ fn py_to_json_value_inner(
     projection: JsonProjection,
     depth: usize,
 ) -> PyResult<Value> {
-    if depth > crate::geometry::MAX_NESTING {
+    let max_depth = match projection {
+        JsonProjection::Full => crate::geometry::MAX_NESTING,
+        JsonProjection::Geometry => MAX_JSON_NESTING,
+    };
+    if depth > max_depth {
         return Err(crate::io::IoError::geojson(format!(
-            "JSON nesting exceeds the limit of {}",
-            crate::geometry::MAX_NESTING
+            "JSON nesting exceeds the limit of {max_depth}"
         ))
         .into());
     }
@@ -282,9 +286,73 @@ pub(crate) fn py_to_json_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     py_to_json_value_inner(value, JsonProjection::Full, 0)
 }
 
-pub(crate) fn parse_geojson_slice(bytes: &[u8]) -> PyResult<Value> {
-    Ok(serde_json::from_slice(bytes)
-        .map_err(|error| crate::io::IoError::geojson(error.to_string()))?)
+// Each GeometryCollection contributes an object and a `geometries` array to
+// JSON nesting, so serde_json's own 128-frame guard is below the geometry cap.
+// Keep a finite lexical envelope before disabling that parser guard.
+const MAX_JSON_NESTING: usize = crate::geometry::MAX_NESTING * 2 + 16;
+
+fn check_json_nesting(bytes: &[u8]) -> crate::error::Result<()> {
+    let mut depth = 0;
+    let mut escaped = false;
+    let mut in_string = false;
+    for &byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_JSON_NESTING {
+                    return Err(crate::io::IoError::geojson(format!(
+                        "GeoJSON JSON nesting exceeds the structural limit of {MAX_JSON_NESTING}"
+                    ))
+                    .into());
+                }
+            },
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {},
+        }
+    }
+    Ok(())
+}
+
+fn parse_json<'de, R>(mut deserializer: serde_json::Deserializer<R>) -> crate::error::Result<Value>
+where
+    R: serde_json::de::Read<'de>,
+{
+    deserializer.disable_recursion_limit();
+    let value = Value::deserialize(&mut deserializer)
+        .map_err(|error| crate::io::IoError::geojson(error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| crate::io::IoError::geojson(error.to_string()))?;
+    Ok(value)
+}
+
+fn parse_json_text(text: &str) -> crate::error::Result<Value> {
+    check_json_nesting(text.as_bytes())?;
+    parse_json(serde_json::Deserializer::from_str(text))
+}
+
+fn parse_json_bytes(bytes: &[u8]) -> crate::error::Result<Value> {
+    check_json_nesting(bytes)?;
+    parse_json(serde_json::Deserializer::from_slice(bytes))
+}
+
+pub(crate) fn parse_geojson_text(text: &str) -> crate::error::Result<Value> {
+    parse_json_text(text)
+}
+
+pub(crate) fn parse_geojson_slice(bytes: &[u8]) -> crate::error::Result<Value> {
+    parse_json_bytes(bytes)
 }
 
 pub(crate) fn is_py_bytes_or_bytearray(value: &Bound<'_, PyAny>) -> bool {
@@ -298,10 +366,9 @@ pub(crate) fn parse_geojson_bytes_like(value: &Bound<'_, PyAny>) -> PyResult<Opt
     if !crate::is_one_byte_buffer(value) {
         return Ok(None);
     }
-    Ok(Some(crate::with_one_byte_buffer(
-        value,
-        parse_geojson_slice,
-    )?))
+    Ok(Some(crate::with_one_byte_buffer(value, |bytes| {
+        parse_geojson_slice(bytes).map_err(pyo3::PyErr::from)
+    })?))
 }
 
 fn parse_geojson_input(
@@ -309,8 +376,7 @@ fn parse_geojson_input(
     parse_mapping: impl Fn(&Bound<'_, PyAny>) -> PyResult<Value>,
 ) -> PyResult<Value> {
     if let Ok(text) = value.cast::<PyString>() {
-        return Ok(serde_json::from_str(text.to_cow()?.as_ref())
-            .map_err(|error| crate::io::IoError::geojson(error.to_string()))?);
+        return Ok(parse_json_text(text.to_cow()?.as_ref())?);
     }
     if let Some(parsed) = parse_geojson_bytes_like(value)? {
         return Ok(parsed);
@@ -328,8 +394,7 @@ fn parse_geojson_geometry_mapping(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     let text = json_dumps(value.py())?
         .call1((value,))?
         .extract::<String>()?;
-    Ok(serde_json::from_str(&text)
-        .map_err(|error| crate::io::IoError::geojson(error.to_string()))?)
+    Ok(parse_json_text(&text)?)
 }
 
 pub(crate) fn parse_geojson_geometry_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {

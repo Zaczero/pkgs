@@ -381,14 +381,11 @@ fn carry_or_degrade(
 ) -> Result<Shape> {
     match output {
         Shape::Empty(kind, _) => Ok(Shape::typed_empty(*kind, declared_axes)),
-        Shape::GeometryCollection(geometries) => Shape::geometry_collection(
-            geometries
-                .iter()
-                .map(|geometry| {
-                    carry_or_degrade(geometry, source, declared_axes, operation, strict)
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ),
+        Shape::GeometryCollection(geometries) => {
+            Ok(Shape::GeometryCollection(geometries.try_map_members(
+                |geometry| carry_or_degrade(geometry, source, declared_axes, operation, strict),
+            )?))
+        },
         _ => {
             let axes = output_axes(output, source, declared_axes);
             if strict && axes != declared_axes && !output.is_empty() {

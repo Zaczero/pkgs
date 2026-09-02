@@ -239,7 +239,7 @@ mod tests {
                 // normalizes polygon winding to the RFC 7946 right-hand rule
                 // (shells CCW, holes CW), so the reference walks the same
                 // oriented view.
-                let oriented = shape.clone().orient_polygons(false);
+                let oriented = shape.clone().orient_polygons(false).unwrap();
                 assert_eq!(
                     serde_json::from_str::<serde_json::Value>(&direct).unwrap(),
                     reference_geojson_value(&oriented, include_z),
