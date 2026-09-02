@@ -34,6 +34,19 @@ impl std::fmt::Write for TryString {
     }
 }
 
+pub(crate) fn html_text_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 /// Pixel budget for the longest side of a rendered SVG.
 const SVG_MAX_PX: f64 = 300.0;
 
@@ -68,7 +81,7 @@ fn svg_bounds(shape: &Shape) -> Option<Bounds> {
         miny -= pad;
         maxy += pad;
     }
-    let out = Bounds::new_unchecked(minx, miny, maxx, maxy);
+    let out = Bounds::new_raw(minx, miny, maxx, maxy);
     let (min_x, min_y, max_x, max_y) = out.into_tuple();
     ([min_x, min_y, max_x, max_y].iter().all(|v| v.is_finite())
         && (max_x - min_x).is_finite()
@@ -79,17 +92,16 @@ fn svg_bounds(shape: &Shape) -> Option<Bounds> {
 /// Render a shape to a standalone SVG document. The Y axis is flipped (so geo
 /// north points up) via a `matrix(1 0 0 -1 0 dy)` transform on a wrapping `g`.
 /// HTML grid of inline SVG previews for a geometry array.
-pub(crate) fn geometry_array_svg_grid_html_masked(
-    rows: impl Iterator<Item = (bool, impl AsRef<Shape>)>,
+pub(crate) fn geometry_array_svg_grid_html_masked<'a>(
+    rows: impl Iterator<Item = crate::array::LogicalShapeRow<'a>>,
     n: usize,
     preview: usize,
 ) -> Result<String> {
     let mut cells = TryString::new();
-    for (missing, shape) in rows.take(preview) {
-        let svg = if missing {
-            missing_svg()?
-        } else {
-            render_shape_svg(shape.as_ref())?
+    for row in rows.take(preview) {
+        let svg = match row {
+            crate::array::LogicalShapeRow::Missing { .. } => missing_svg()?,
+            crate::array::LogicalShapeRow::Present { shape, .. } => render_shape_svg(&shape)?,
         };
         cells.write_fmt(format_args!(
             "<div style=\"display:inline-block;margin:2px\">{svg}</div>"
@@ -182,6 +194,7 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> Result<String> {
 
 pub(crate) fn render_shape_html(shape: &Shape, repr: &str) -> Result<String> {
     let svg = render_shape_svg(shape)?;
+    let repr = html_text_escape(repr);
     let mut output = TryString::new();
     output.write_fmt(format_args!(
         "<div class=\"gometry-geom-html\"><div>{repr}</div>{svg}</div>"
@@ -299,4 +312,26 @@ fn svg_elements_local(
         Shape::Empty(..) => {},
     }
     Ok(out.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPoint};
+
+    #[test]
+    fn multipoint_rendering_skips_embedded_empty_members() {
+        let shape = Shape::MultiPoint(
+            MultiPoint::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(Point::new_raw_xy(1.0, 2.0)),
+                MultiMember::Empty,
+                MultiMember::Value(Point::new_raw_xy(3.0, 4.0)),
+            ])
+            .expect("homogeneous multipoint members"),
+        );
+
+        let svg = render_shape_svg(&shape).expect("render valid multipoint");
+        assert_eq!(svg.matches("<circle ").count(), 2);
+    }
 }

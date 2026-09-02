@@ -52,9 +52,13 @@ mod compile_fail_gate;
 mod crs;
 mod curves;
 mod error;
+mod geographic;
 mod geometry;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: test_support::CountingAllocator = test_support::CountingAllocator;
 #[macro_use]
 mod heap_size;
 pub(crate) use heap_size::HeapSize;
@@ -83,8 +87,8 @@ use broadcast::{
     expected_geometry_or_array, lonlat_shape, lonlat_shape_under, metric_frechet_densified,
     metric_hausdorff_densified, metric_maximum_inscribed_radius, metric_minimum_clearance,
     metric_minimum_clearance_line, metric_nearest_points, metric_shortest_line,
-    multipoint_splitter_from_array, pair_distance_resolved, pair_distance_resolved_result,
-    pair_dwithin_resolved, pair_dwithin_resolved_result, paired_arrays, parse_wkb_geometry,
+    multipoint_splitter_from_array, pair_distance_geodesic, pair_distance_planar,
+    pair_dwithin_geodesic, pair_dwithin_planar, paired_arrays, parse_wkb_geometry,
     predicate_broadcast, push_ring_shapes, py_bool, relate_pattern_broadcast,
     relate_string_broadcast, require_point, resolve_metric, rows_err, validate_densify,
     xy_predicate,
@@ -104,9 +108,9 @@ use py::functions::{
     difference, f64_column_le_bytes, from_features, from_geojson, from_wkb, from_wkt,
     i32_column_le_bytes, intersection, intersection_all, osm_shortlink_encode,
     osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
-    pluscode_shorten, polygonize, polygonize_full, require, symmetric_difference,
+    pluscode_shorten, polygonize, polygonize_full, rebased_i32_offsets_le_bytes, require,
+    selected_f64_column_le_bytes, selected_f64_windows_le_bytes, symmetric_difference,
     symmetric_difference_all, to_feature, to_feature_collection, union, union_all,
-    usize_row_map_le_bytes,
 };
 mod grid;
 mod predicates;
@@ -119,6 +123,7 @@ pub(crate) use predicates::{
 };
 mod py;
 mod render;
+mod scratch_pool;
 use std::sync::Arc;
 
 use boundary::coordinates::CoordinateAxis;
@@ -142,8 +147,8 @@ use py::support::{
     deserialized_epoch, ensure_homogeneous_axes, extract_coordinate, extract_coordinate_or_empty,
     extract_lines, extract_points, extract_polygons, features_type,
     fixed_geometry_array_nearest_points, geometry_array_line_locate_point_geometry, geometry_items,
-    global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame, index_bounds,
-    index_envelope, is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs, is_wkt_string,
+    global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame, index_envelopes,
+    is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs, is_wkt_string,
     line_interpolate_coordseq, line_interpolate_points_coordseq, line_interpolate_points_shape,
     line_interpolate_shape, line_interpolate_shape_m, line_locate_coordseq, line_locate_shape,
     line_locate_shape_m, line_locate_shape_m_value, line_substring_coordseq, line_substring_shape,
@@ -154,12 +159,12 @@ use py::support::{
     parse_crs, parse_crs_epoch, parse_curve_bounds, parse_geojson_geometry_value,
     parse_geojson_slice, parse_interpolate_plan, parse_precision, parse_spatial_index_handle,
     parse_wkb_payload, parse_wkb_payload_bytes, parse_wkt_output_dimension, parts,
-    point_from_bounds, point_index_envelope, py_nearest_points, py_polygonize_full, py_text_borrow,
-    py_to_json_value, require_geojson_crs, require_locate_point, require_locate_points,
-    resolve_line_metric, rings, validate_buffer_miter_limit, validate_buffer_quadrant_segments,
-    validate_densify_fraction, validate_distance, validate_distance_arg,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
-    validate_smooth_iterations, voronoi_flatten, wrapped_box,
+    point_from_bounds, py_nearest_points, py_polygonize_full, py_text_borrow, py_to_json_value,
+    require_geojson_crs, require_locate_point, require_locate_points, resolve_line_metric, rings,
+    validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
+    validate_distance, validate_distance_arg, validate_equals_exact_tolerance,
+    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations, voronoi_flatten,
+    wrapped_box,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -168,7 +173,9 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyAny, PyBool, PyBytes, PyDict, PyDictMethods, PyInt, PyList, PyModule, PyTuple,
 };
-use render::{geometry_array_svg_grid_html_masked, render_shape_html, render_shape_svg};
+pub(crate) use render::{
+    geometry_array_svg_grid_html_masked, html_text_escape, render_shape_html, render_shape_svg,
+};
 use rstar::AABB;
 use serde_json::Value;
 
