@@ -471,17 +471,25 @@ pub(crate) fn metric_hausdorff(
         crs::ensure_geographic_domain_in_frame(*frame, a)?;
         crs::ensure_geographic_domain_in_frame(*frame, b)?;
     }
+    require_nonempty_hausdorff(a)?;
+    require_nonempty_hausdorff(b)?;
     if a == b {
-        return Ok(if a.is_empty() { f64::INFINITY } else { 0.0 });
-    }
-    if a.is_empty() || b.is_empty() {
-        return Ok(f64::INFINITY);
+        return Ok(0.0);
     }
     dispatch_metric_model(
         model,
         |to_metre| Ok(a.hausdorff_distance(b) * to_metre),
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
+}
+
+pub(crate) fn require_nonempty_hausdorff(shape: &Shape) -> crate::error::Result<()> {
+    if shape.is_empty() {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "hausdorff_distance requires non-empty geometries",
+        ));
+    }
+    Ok(())
 }
 
 /// CRS-aware discrete Fréchet distance (planar/native or explicit SI, or

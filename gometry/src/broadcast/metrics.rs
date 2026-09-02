@@ -41,6 +41,6 @@ pub(crate) use pair::{
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points, metric_shortest_line, pair_distance_geodesic, pair_distance_planar,
     pair_dwithin_geodesic, pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d,
-    same_storage_similarity_metric_zeros, validate_densify,
+    require_nonempty_hausdorff, same_storage_similarity_metric_zeros, validate_densify,
 };
 pub(crate) use similarity::array_crs_similarity_metric_per_densify;

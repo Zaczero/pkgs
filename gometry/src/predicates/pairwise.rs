@@ -316,6 +316,9 @@ pub(crate) fn distance_3d(
 ///     operand includes a filled polygon interior.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// InvalidGeometryError
+///     If either operand is empty; Hausdorff distance is undefined for an
+///     empty support.
 /// GeometryError
 ///     If ``densify`` is outside ``(0, 1]``, or ``unit='meters'`` is
 ///     requested for a CRS-free geometry.

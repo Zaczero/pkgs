@@ -504,7 +504,9 @@ print(figure(
 An empty operand is total, not an error: `distance` returns `inf`, while
 `nearest_points` and `shortest_line` return the output-type empty
 (`(POINT EMPTY, POINT EMPTY)` and `LINESTRING EMPTY`), so a single empty row never
-aborts a vectorized call. When operands differ in dimensionality (an `XYZM` line
+aborts a vectorized call. `hausdorff_distance` is a similarity metric over
+non-empty supports and raises `InvalidGeometryError` for an empty operand.
+When operands differ in dimensionality (an `XYZM` line
 and an `XY` point) the witnesses drop to the ordinates both carry.
 
 !!! note "Coordinate-space tolerances stay in raw units"

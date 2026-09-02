@@ -736,7 +736,8 @@ fn small_hausdorff_column_path_matches_forced_indexed() {
             &right_xs, &right_ys, &left_xs, &left_ys, true,
         ));
         assert_eq!(symmetric_small.to_bits(), symmetric_indexed.to_bits());
-        let column = hausdorff_distance_line_columns(&left_xs, &left_ys, &right_xs, &right_ys);
+        let column =
+            hausdorff_distance_line_columns(&left_xs, &left_ys, &right_xs, &right_ys).unwrap();
         assert_eq!(column.to_bits(), symmetric_small.sqrt().to_bits());
         let right_segments = right_xs.len().saturating_sub(1);
         if vertex_count <= HAUSDORFF_SMALL_TARGET_MAX_VERTICES {

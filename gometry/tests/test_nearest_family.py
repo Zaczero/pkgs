@@ -445,14 +445,11 @@ class TestCrossingWitnessIsCertified:
 
 
 class TestFrechetMatchesTheFamilyDegradePolicy:
-    """`frechet_distance` degrades on an empty operand like its siblings.
+    """Hausdorff rejects an empty support while the older metrics degrade.
 
-    An empty operand is *total*, not an error: `distance` and
-    `hausdorff_distance` both answer `inf`, and the columnar contract is that a
-    single bad row never fails the rest of a batch. `frechet_distance` raised
-    instead — on the scalar surface it disagreed with both siblings, and on the
-    array surface it aborted the whole call on `EmptyLinework`, the exact
-    condition the degrade policy names.
+    `distance` retains its documented ``inf`` result for an empty operand.
+    Fréchet retains its existing sentinel for compatibility; Hausdorff is
+    undefined for an empty support and raises a typed geometry error.
     """
 
     EMPTY = gm.from_wkt('LINESTRING EMPTY')
@@ -490,18 +487,27 @@ class TestFrechetMatchesTheFamilyDegradePolicy:
             ),
         ],
     )
-    def test_empty_operand_is_infinite_for_all_three(
+    def test_empty_operand_is_typed_for_hausdorff_and_infinite_for_distance(
         self, name: str, left: gm.Geometry, right: gm.Geometry
     ) -> None:
+        with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+            gm.hausdorff_distance(left, right)
         assert gm.frechet_distance(left, right) == math.inf, name
-        assert gm.hausdorff_distance(left, right) == math.inf, name
         assert gm.distance(left, right) == math.inf, name
 
-    def test_one_empty_row_never_aborts_the_batch(self) -> None:
+    def test_one_empty_row_is_typed_for_hausdorff_and_total_for_siblings(self) -> None:
         left = gm.GeometryArray([self.LINE, self.EMPTY, self.LINE])
         right = gm.GeometryArray([self.LINE, self.LINE, self.EMPTY])
-        for measure in (gm.frechet_distance, gm.hausdorff_distance, gm.distance):
-            assert measure(left, right).tolist() == [0.0, math.inf, math.inf]
+        with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+            gm.hausdorff_distance(left, right)
+        assert gm.frechet_distance(left, right).tolist() == [0.0, math.inf, math.inf]
+        assert gm.distance(left, right).tolist() == [0.0, math.inf, math.inf]
+
+    def test_missing_rows_keep_the_array_missing_result(self) -> None:
+        masked = gm.GeometryArray([self.LINE, None])
+        result = gm.hausdorff_distance(masked, self.LINE)
+        assert result[0] == 0.0
+        assert math.isnan(result[1])
 
     def test_identical_non_empty_is_zero_and_wrong_kind_still_raises(self) -> None:
         """Only the DATA condition degrades — a wrong kind is still an error."""

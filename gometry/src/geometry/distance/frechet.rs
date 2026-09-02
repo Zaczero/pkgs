@@ -16,9 +16,7 @@ pub(crate) fn frechet_distance_line_columns(
     right_xs: &[f64],
     right_ys: &[f64],
 ) -> f64 {
-    // Empty is total, matching `Shape::frechet_distance`, `hausdorff_*` and
-    // `distance` — never an error, so one empty row cannot abort a batch.
-    // Infallible for the same reason `hausdorff_distance_line_columns` is.
+    // Empty is total for Fréchet, so one empty row cannot abort a batch.
     if left_xs.is_empty() || right_xs.is_empty() {
         return f64::INFINITY;
     }

@@ -298,11 +298,7 @@ pub(crate) fn dispatch_hausdorff_distance(
         Operation::HausdorffDistance,
         kernels::binary_hausdorff_distance,
         crate::metric_hausdorff_densified,
-        |left_xs, left_ys, right_xs, right_ys| {
-            Ok(crate::geometry::hausdorff_distance_line_columns(
-                left_xs, left_ys, right_xs, right_ys,
-            ))
-        },
+        crate::geometry::hausdorff_distance_line_columns,
     )
 }
 

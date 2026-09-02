@@ -146,7 +146,9 @@ pub(crate) fn geodesic_hausdorff_at(
     state: &RuntimeState,
 ) -> Result<f64> {
     if a.is_empty() || b.is_empty() {
-        return Ok(f64::INFINITY);
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "hausdorff_distance requires non-empty geometries",
+        ));
     }
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         finite(

@@ -18,6 +18,7 @@ use crate::geometry::distance::hausdorff::{
     max_point_to_target_squared_on_segment_small_culled, small_line_target_distance_squared,
     small_line_target_features_slice,
 };
+use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::distance::hausdorff::{
     SmallHausdorffParams, collect_hausdorff_segment_params_small,
@@ -486,13 +487,18 @@ pub(crate) fn hausdorff_distance_line_columns(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-) -> f64 {
+) -> Result<f64> {
+    if left_xs.is_empty() || right_xs.is_empty() {
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "hausdorff_distance requires non-empty geometries",
+        ));
+    }
     let left = line_shape_from_columns(left_xs, left_ys);
     let right = line_shape_from_columns(right_xs, right_ys);
     let source_distance = left.hausdorff_distance(&right);
     let squared_distance =
         hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt();
-    if squared_distance.is_finite()
+    Ok(if squared_distance.is_finite()
         && squared_distance
             .to_bits()
             .abs_diff(source_distance.to_bits())
@@ -501,7 +507,7 @@ pub(crate) fn hausdorff_distance_line_columns(
         squared_distance
     } else {
         source_distance
-    }
+    })
 }
 
 fn line_shape_from_columns(xs: &[f64], ys: &[f64]) -> Shape {
@@ -522,7 +528,7 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
     left: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
     right: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
     out: &mut [f64],
-) {
+) -> Result<()> {
     let len = left.logical_len();
     debug_assert_eq!(len, right.logical_len());
     debug_assert_eq!(out.len(), len);
@@ -530,6 +536,11 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
     for (index, slot) in out.iter_mut().enumerate() {
         let (left_xs, left_ys) = left.row_xy(index);
         let (right_xs, right_ys) = right.row_xy(index);
+        if left_xs.is_empty() || right_xs.is_empty() {
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "hausdorff_distance requires non-empty geometries",
+            ));
+        }
         *slot = crate::geometry::packed_line_metrics::packed_line_same_window_value(
             left_xs,
             left_ys,
@@ -571,4 +582,5 @@ pub(crate) fn hausdorff_distance_line_columns_batch(
             source_distance
         });
     }
+    Ok(())
 }

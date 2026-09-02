@@ -660,7 +660,8 @@ def test_empty_geographic_distance_metrics_match_planar() -> None:
     empty = gm.from_wkt('LINESTRING EMPTY', crs=4326)
     line = gm.LineString([(0, 0), (1, 1)], crs=4326)
     assert gm.distance(empty, line) == math.inf
-    assert gm.hausdorff_distance(empty, line) == math.inf
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+        gm.hausdorff_distance(empty, line)
     # Fréchet used to be the one that diverged, contradicting this test's own
     # name; emptiness is total on the geodesic lane exactly as on the planar one.
     assert gm.frechet_distance(empty, line) == math.inf

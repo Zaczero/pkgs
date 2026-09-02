@@ -333,7 +333,8 @@ def test_exact_hausdorff_exceeds_discrete_vertex_metric_on_long_segment() -> Non
 
 
 def test_hausdorff_empty_and_degenerate_edges() -> None:
-    assert math.isinf(gm.hausdorff_distance(gm.Point(0, 0), gm.GeometryCollection([])))
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+        gm.hausdorff_distance(gm.Point(0, 0), gm.GeometryCollection([]))
     assert gm.hausdorff_distance(gm.Point(0, 0), gm.Point(0, 0)) == 0.0
 
 

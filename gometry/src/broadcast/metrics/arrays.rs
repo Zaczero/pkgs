@@ -172,6 +172,15 @@ pub(crate) fn array_crs_metric_float(
                     _ => crate::array::RowSelectionRef::Identity,
                 })
             {
+                for (row_index, row) in lefts.iter_rows().enumerate() {
+                    if missing
+                        .as_ref()
+                        .is_some_and(|mask| mask.is_missing(row_index))
+                    {
+                        continue;
+                    }
+                    row.with_shape(crate::broadcast::metrics::require_nonempty_hausdorff)?;
+                }
                 // Domain validation before the identity zeros path: out-of-
                 // domain latitudes must still raise under a geodesic model.
                 if let crs::MetricModel::Geodesic { frame, .. } = &model {
@@ -218,10 +227,10 @@ pub(crate) fn array_crs_metric_float(
                                 left_view,
                                 right_view,
                                 &mut values,
-                            );
+                            )?;
                             crate::geometry::scale_metric_values(&mut values, scale);
-                            values
-                        }),
+                            Ok::<_, crate::error::Error>(values)
+                        })?,
                     );
                 }
                 if operation == "frechet_distance" && missing.is_none() && !frechet_has_empty_line {
