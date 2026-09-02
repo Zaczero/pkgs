@@ -10,7 +10,7 @@ use crate::geometry::predicates::{
     shell_is_convex, validate_line, validate_point, validate_points,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
+    CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
     MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
     emit_from_original, finish_planar_squared_min, point_distance, unique_xy_points, witness_pair,
 };
@@ -94,41 +94,6 @@ impl Shape {
                 geometries.iter().any(Self::crosses_antimeridian)
             },
         }
-    }
-}
-
-/// Whether any ring/part's longitude values span the closed world band
-/// ``[-180, 180]`` (or an equivalent ≥360° extent). Catches full-longitude
-/// sources that neither enclose a pole nor cross the antimeridian as an edge
-/// (e.g. ``box(-180, -10, 180, 10)``).
-pub(crate) fn shape_spans_full_longitude(shape: &Shape) -> bool {
-    const EPS: f64 = 1e-9;
-    const FULL_SPAN: f64 = 360.0 - EPS;
-
-    fn coords_span_full_longitude(coords: &CoordSeq) -> bool {
-        if coords.is_empty() {
-            return false;
-        }
-        let mut min_lon = f64::INFINITY;
-        let mut max_lon = f64::NEG_INFINITY;
-        for point in coords.points() {
-            min_lon = min_lon.min(point.x);
-            max_lon = max_lon.max(point.x);
-        }
-        (min_lon <= -180.0 + EPS && max_lon >= 180.0 - EPS) || (max_lon - min_lon) >= FULL_SPAN
-    }
-
-    match shape {
-        Shape::LineString(coords) => coords_span_full_longitude(coords),
-        Shape::MultiLineString(lines) => lines
-            .iter()
-            .any(|line| coords_span_full_longitude(line.as_ref())),
-        Shape::Polygon(polygon) => polygon.rings().any(coords_span_full_longitude),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .any(|polygon| polygon.rings().any(coords_span_full_longitude)),
-        Shape::GeometryCollection(parts) => parts.iter().any(shape_spans_full_longitude),
-        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => false,
     }
 }
 

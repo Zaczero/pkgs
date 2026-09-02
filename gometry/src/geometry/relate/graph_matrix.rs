@@ -1661,6 +1661,51 @@ mod tests {
     }
 
     #[test]
+    fn rectangle_cover_certificate_rejects_an_exact_hole() {
+        let bounds = Bounds::new_raw(3.0, 3.0, 7.0, 7.0);
+        let source = Shape::Polygon(donut());
+        let cartesian = TopologyGraph::cartesian(&source);
+        assert_eq!(cartesian.covers_rectangle(bounds), Some(false));
+
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new_raw_xy(4.0, 5.0),
+                Point::new_raw_xy(6.0, 5.0),
+            ]))
+            .unwrap(),
+        );
+        let mixed = Shape::geometry_collection(vec![source.clone(), line]).unwrap();
+        let mixed = TopologyGraph::cartesian(&mixed);
+        assert_eq!(mixed.covers_rectangle(bounds), Some(false));
+
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let geographic = TopologyGraph::geographic(&source, frame);
+        assert_eq!(geographic.covers_rectangle(bounds), Some(false));
+    }
+
+    #[test]
+    fn rectangle_cover_certificate_fails_open_for_an_adjacent_float_midpoint() {
+        let minx: f64 = 1.0;
+        let maxx = minx.next_up();
+        let bounds = Bounds::new_raw(minx, 0.0, maxx, 1.0);
+        assert_eq!(f64::midpoint(minx, maxx), minx);
+
+        let source = Shape::Polygon(rectangle(minx, 0.0, maxx, 1.0));
+        let cartesian = TopologyGraph::cartesian(&source);
+        assert_eq!(cartesian.covers_rectangle(bounds), None);
+
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let geographic = TopologyGraph::geographic(&source, frame);
+        assert_eq!(geographic.covers_rectangle(bounds), None);
+    }
+
+    #[test]
     fn rectangle_cover_certificate_fails_open_at_geographic_singularities() {
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()

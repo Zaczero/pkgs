@@ -24,7 +24,6 @@ pub(crate) use pole::{
     ring_encloses_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame,
 };
-pub(crate) use properties::shape_spans_full_longitude;
 pub(in crate::geometry) use relate::LineworkChains;
 pub(crate) use repair::polygonal_repair;
 #[cfg(test)]

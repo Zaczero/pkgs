@@ -236,8 +236,7 @@ pub(crate) fn build_rect_coverage_ids<S>(
 where
     S: RectCoverSpec,
 {
-    let (membership, cover_shape, charted) =
-        coverage_factory_shapes(geometry, S::coverage_label())?;
+    let (membership, cover_shape) = coverage_factory_shapes(geometry, S::coverage_label())?;
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient();
     let authority_cache = membership.frame_cache();
@@ -253,7 +252,6 @@ where
                 &authority_plan,
                 &authority_cache,
                 frame,
-                charted,
                 S::roots(),
                 depth,
                 max_cells,
@@ -269,7 +267,6 @@ where
                 &authority_plan,
                 &authority_cache,
                 frame,
-                charted,
                 S::roots(),
                 depth,
                 max_cells,
@@ -285,7 +282,6 @@ where
                 &authority_plan,
                 &authority_cache,
                 frame,
-                charted,
                 S::roots(),
                 depth,
                 max_cells,
@@ -339,14 +335,14 @@ pub(crate) fn parse_max_cells(max_cells: Option<i64>) -> PyResult<Option<usize>>
 pub(crate) fn cover_working_shape(
     frame: &crate::boundary::metadata::Frame,
     lonlat: &Shape,
-) -> PyResult<(Shape, bool)> {
+) -> PyResult<Shape> {
     let domain = crate::geometry::topology_domain(frame)?;
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(lonlat, frame)
     {
-        Ok((lonlat.split_antimeridian_in_frame(frame)?, true))
+        Ok(lonlat.split_antimeridian_in_frame(frame)?)
     } else {
-        Ok((lonlat.clone(), false))
+        Ok(lonlat.clone())
     }
 }
 
@@ -374,19 +370,19 @@ pub(crate) fn coverage_factory_geometry(
 /// Prepare the historical planar cover lanes with caller-owned WGS84
 /// membership geometry (unsplit) plus their split-normalized working shape.
 ///
-/// Returns `(membership_geometry, cover_shape, cover_is_split)`.
+/// Returns the admitted membership geometry and its split working shape.
 pub(crate) fn coverage_factory_shapes(
     geometry: &PyGeometry,
     label: &str,
-) -> PyResult<(PyGeometry, Shape, bool)> {
+) -> PyResult<(PyGeometry, Shape)> {
     let membership_geometry = coverage_factory_geometry(geometry, label)?;
     let shape = membership_geometry.shape.as_ref();
     // `membership_geometry` is the admitted WGS84 source. Derive the working
     // image from that frame, never from the caller's pre-reprojection frame:
     // a projected source may become antimeridian-crossing only after this
     // conversion.
-    let (cover_shape, cover_is_split) = cover_working_shape(&membership_geometry.frame, shape)?;
-    Ok((membership_geometry, cover_shape, cover_is_split))
+    let cover_shape = cover_working_shape(&membership_geometry.frame, shape)?;
+    Ok((membership_geometry, cover_shape))
 }
 
 /// Build a `CellArray` from source cell ids through the public factory path.

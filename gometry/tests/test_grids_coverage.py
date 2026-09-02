@@ -120,6 +120,53 @@ def test_cover_cells_use_free_geometry_predicate() -> None:
     assert gm.disjoint(source, gm.Point(2, 2))
 
 
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_rectangular_within_retains_closed_source_edges(crs: int | None) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    source = gm.Polygon(
+        [(-50, 0), (50, 0), (50, 50), (0, 60), (-50, 50), (-50, 0)],
+        **kwargs,
+    )
+    cell = gm.Polygon([(-45, 0), (0, 0), (0, 45), (-45, 45), (-45, 0)], **kwargs)
+
+    assert gm.within(cell, source)
+    assert gm.covers(source, cell)
+    assert {
+        str(candidate)
+        for candidate in gm.geohash_cover(source, precision=1, cell_rule='within')
+    } == {
+        'e',
+        's',
+    }
+    assert {
+        str(candidate)
+        for candidate in gm.tile_cover(source, zoom=3, cell_rule='within')
+    } == {
+        '033',
+        '122',
+    }
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_rectangular_within_excludes_an_exact_hole_cell(crs: int | None) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    shell = [(-45, -45), (45, -45), (45, 45), (-45, 45), (-45, -45)]
+    hole = [(-45, -45), (0, -45), (0, 0), (-45, 0), (-45, -45)]
+    source = gm.Polygon(shell, holes=[hole], **kwargs)
+    hole_cell = gm.Polygon(hole, **kwargs)
+
+    assert not gm.within(hole_cell, source)
+    assert not gm.covers(source, hole_cell)
+    assert {
+        str(candidate)
+        for candidate in gm.geohash_cover(source, precision=1, cell_rule='within')
+    } == {
+        'e',
+        'k',
+        's',
+    }
+
+
 @pytest.mark.parametrize('name', ['h3', 's2', 'geohash', 'tile'])
 def test_bounding_cells_prove_the_full_region_not_only_vertices(name) -> None:
     first = (-4.0263, 11.4529)

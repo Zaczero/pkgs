@@ -1033,6 +1033,17 @@ impl TopologySupport {
         if !rectangle_query_supported(graph.domain, bounds) {
             return None;
         }
+        let center = XY::new(
+            f64::midpoint(bounds.minx(), bounds.maxx()),
+            f64::midpoint(bounds.miny(), bounds.maxy()),
+        );
+        if !(bounds.minx() < center.x
+            && center.x < bounds.maxx()
+            && bounds.miny() < center.y
+            && center.y < bounds.maxy())
+        {
+            return None;
+        }
         if !self.area.has_area() {
             return Some(false);
         }
@@ -1053,6 +1064,14 @@ impl TopologySupport {
             if edge.is_boundary && segment_vs_rect(edge.segment, bounds) == RectContact::Open {
                 return Some(false);
             }
+        }
+        // A line component can mark a point Interior while it lies in an
+        // areal hole; covering a two-dimensional rectangle needs area
+        // support, not merely generic point location.
+        if graph.locate_point(center) == TopologyLocation::Exterior
+            || !graph.contains_area_interior(center)
+        {
+            return Some(false);
         }
         Some(true)
     }

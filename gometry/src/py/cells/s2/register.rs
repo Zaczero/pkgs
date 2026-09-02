@@ -457,7 +457,7 @@ pub(crate) fn build_coverage(
         max_cells: parsed.max_cells,
         target_cells: parsed.target_cells,
     };
-    let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "S2")?;
+    let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
         // Cover each non-wrapped lon/lat window separately and deduplicate.
         // A multipolygon / multipartite seam band has full-world merged bounds

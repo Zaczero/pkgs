@@ -102,7 +102,7 @@ pub(super) fn tile_cover(
         GridKind::Tile,
         max_cells,
         |geometry, effective_max_cells| {
-            let (_, cover_shape, _) = coverage_factory_shapes(geometry, "Tile")?;
+            let (_, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
             if let Err(lat) = ensure_shape_in_tile_domain(&cover_shape) {
                 return Err(InvalidGeometryError::new_err(format!(
                     "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"

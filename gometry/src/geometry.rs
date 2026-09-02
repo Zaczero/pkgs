@@ -263,7 +263,6 @@ pub(crate) use predicates::{
     RingClass, RingEdgeMembership, line_crosses_antimeridian, line_is_ccw, line_is_closed,
     line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame,
     shape_has_polar_ring_in_frame, shape_reaches_geographic_pole_in_frame,
-    shape_spans_full_longitude,
 };
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,

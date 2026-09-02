@@ -97,7 +97,6 @@ pub(crate) struct NativeRectClassifier {
 struct GeographicCandidateClassifier<'a> {
     authority: GeographicCoverageSource,
     working: NativeRectClassifier,
-    exact: bool,
     authority_plan: &'a PreparedPlan,
     authority_cache: &'a crate::geometry::FrameDependentCaches,
     authority_graph: OnceLock<Arc<crate::geometry::TopologyGraph>>,
@@ -108,17 +107,10 @@ impl<'a> GeographicCandidateClassifier<'a> {
     fn new(
         authority: &Shape,
         working: &Shape,
-        charted: bool,
         authority_plan: &'a PreparedPlan,
         authority_cache: &'a crate::geometry::FrameDependentCaches,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self, crate::error::Error> {
-        let exact = crate::geometry::shape_reaches_geographic_pole_in_frame(authority, frame)
-            || crate::geometry::shape_spans_full_longitude(authority)
-            || (charted
-                && authority
-                    .bounds()
-                    .is_some_and(|bounds| bounds.maxx() - bounds.minx() <= 180.0));
         let authority =
             GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)
                 .map_err(|_| crate::error::ResourceError::Allocation)?;
@@ -126,7 +118,6 @@ impl<'a> GeographicCandidateClassifier<'a> {
         Ok(Self {
             authority,
             working,
-            exact,
             authority_plan,
             authority_cache,
             authority_graph: OnceLock::new(),
@@ -144,81 +135,59 @@ impl<'a> GeographicCandidateClassifier<'a> {
         }
     }
 
-    /// Refine a quotient-sensitive retained rectangle against the source-owned
-    /// geographic graph. The affine source and working chart admit ordinary
-    /// candidates without rebuilding the source graph.
-    fn exact_classify_bounds(&self, bounds: Bounds, proposed: RectClass) -> RectClass {
-        if !self.exact || proposed == RectClass::Interior {
-            return proposed;
-        }
-        if let Some(covers) = self
-            .authority_graph
-            .get_or_init(|| {
-                self.authority_cache
-                    .geographic_topology_graph(self.authority_plan, self.frame)
-            })
-            .covers_rectangle(bounds)
-        {
-            if covers {
-                return RectClass::Interior;
-            }
-            return if self.exact_intersects_bounds(bounds) {
-                RectClass::Boundary
-            } else {
-                RectClass::Outside
-            };
-        }
-        let candidate = bounds_to_shape(bounds);
-        let candidate_plan = PreparedPlan::transient(&candidate);
-        let candidate_cache = crate::geometry::FrameDependentCaches::default();
-        if !self.exact_intersects_bounds(bounds) {
-            return RectClass::Outside;
-        }
-        let operands = PreparedTopologyPair::for_domain(
-            self.authority_plan,
-            self.authority_cache,
-            &candidate_plan,
-            &candidate_cache,
-            crate::geometry::TopologyDomain::Geographic(self.frame),
-        );
-        if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
-            RectClass::Interior
-        } else {
-            RectClass::Boundary
+    /// Refine a provisional rectangle against the source-owned geographic
+    /// graph. A pre-certified interior remains on the fast path; every other
+    /// candidate reaches the cached authority graph.
+    fn refine_bounds(&self, bounds: Bounds) -> RectClass {
+        let graph = self.authority_graph();
+        match graph.covers_rectangle(bounds) {
+            Some(true) => RectClass::Interior,
+            Some(false) => {
+                let candidate = bounds_to_shape(bounds);
+                if graph_intersects_rectangle_data(
+                    self.authority_plan,
+                    Some(graph),
+                    None,
+                    &candidate,
+                )
+                .unwrap_or(true)
+                {
+                    RectClass::Boundary
+                } else {
+                    RectClass::Outside
+                }
+            },
+            None => {
+                let candidate = bounds_to_shape(bounds);
+                let candidate_plan = PreparedPlan::transient(&candidate);
+                let candidate_cache = crate::geometry::FrameDependentCaches::default();
+                let operands = PreparedTopologyPair::for_domain(
+                    self.authority_plan,
+                    self.authority_cache,
+                    &candidate_plan,
+                    &candidate_cache,
+                    crate::geometry::TopologyDomain::Geographic(self.frame),
+                );
+                if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
+                    RectClass::Interior
+                } else {
+                    RectClass::Boundary
+                }
+            },
         }
     }
 
-    fn exact_intersects_bounds(&self, bounds: Bounds) -> bool {
-        if !self.exact {
-            return true;
-        }
-        let candidate = bounds_to_shape(bounds);
-        graph_intersects_rectangle_data(
-            self.authority_plan,
-            Some(
-                self.authority_graph
-                    .get_or_init(|| {
-                        self.authority_cache
-                            .geographic_topology_graph(self.authority_plan, self.frame)
-                    })
-                    .as_ref(),
-            ),
-            None,
-            &candidate,
-        )
-        .unwrap_or(true)
-    }
-
-    fn exact_covers_point(&self, point: Point) -> bool {
-        if !self.exact {
-            return self.working.covers_point(point);
-        }
+    fn authority_graph(&self) -> &crate::geometry::TopologyGraph {
         self.authority_graph
             .get_or_init(|| {
                 self.authority_cache
                     .geographic_topology_graph(self.authority_plan, self.frame)
             })
-            .covers_point(point.xy())
+            .as_ref()
+    }
+
+    fn covers_point(&self, point: Point) -> bool {
+        self.authority_graph().covers_point(point.xy())
     }
 }
 
@@ -323,43 +292,6 @@ impl NativeRectClassifier {
                 && point.x <= bounds.maxx()
                 && point.y >= bounds.miny()
                 && point.y <= bounds.maxy()
-        })
-    }
-
-    /// Boundary-inclusive point membership against the classified source
-    /// components (areal tester + linework + points). Matches
-    /// [`Shape::covers_point`] for the parts collected at construction.
-    pub(crate) fn covers_point(&self, point: Point) -> bool {
-        if let Some(area) = &self.area
-            && area.tester.covers_point(point)
-        {
-            return true;
-        }
-        if self.line_covers_point(point) {
-            return true;
-        }
-        self.points.iter().any(|p| {
-            // Exact coordinate identity for discrete point components.
-            // Plain `==` so −0.0 and +0.0 match (to_bits would miss signed-zero
-            // centers under half-open / center-cover classification).
-            #[expect(clippy::float_cmp, reason = "signed-zero-aware point identity")]
-            {
-                p.x == point.x && p.y == point.y
-            }
-        })
-    }
-
-    fn line_covers_point(&self, point: Point) -> bool {
-        let Some(index) = &self.line_index else {
-            return false;
-        };
-        // Degenerate probe envelope around the point for candidate selection.
-        let probe = Segment {
-            start: XY::new(point.x, point.y),
-            end: XY::new(point.x, point.y),
-        };
-        index.intersecting_candidates(probe).any(|entry| {
-            crate::geometry::point_on_segment(point, entry.segment.start, entry.segment.end)
         })
     }
 }
@@ -494,8 +426,8 @@ const fn rect_probe(bounds: Bounds) -> Segment {
 
 /// Cover `source` with `roots`' descendants at `target_depth`.
 ///
-/// Candidate branches descend until their terminal refinement; quotient-
-/// sensitive retained candidates receive exact graph refinement before output.
+/// Candidate branches descend until their terminal refinement; provisional
+/// boundaries receive authority-graph refinement before output.
 /// `roots` must be DISJOINT cells (every caller passes
 /// the system's base cells), so each target-depth cell is classified exactly
 /// once and the outputs need ordering but never dedup.
@@ -513,7 +445,6 @@ pub(crate) fn cover<C: RectCell>(
     authority_plan: &PreparedPlan,
     authority_cache: &crate::geometry::FrameDependentCaches,
     frame: crate::geographic::GeographicFrame,
-    charted: bool,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
@@ -521,7 +452,6 @@ pub(crate) fn cover<C: RectCell>(
     let classifier = GeographicCandidateClassifier::new(
         authority,
         working,
-        charted,
         authority_plan,
         authority_cache,
         frame,
@@ -549,28 +479,15 @@ pub(crate) fn cover<C: RectCell>(
         match classifier.classify_bounds(bounds) {
             RectClass::Outside => {},
             RectClass::Interior => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
-                    RectClass::Outside => {},
-                    RectClass::Interior => {
-                        if cell.depth() >= target_depth {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push((cell, true));
-                        } else {
-                            interior.extend(cell.children());
-                        }
-                    },
-                    RectClass::Boundary => {
-                        if cell.depth() >= target_depth {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push((cell, false));
-                        } else {
-                            cell.push_children_bounds(bounds, &mut boundary);
-                        }
-                    },
+                if cell.depth() >= target_depth {
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                    cells.push((cell, true));
+                } else {
+                    interior.extend(cell.children());
                 }
             },
             RectClass::Boundary => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
+                match classifier.refine_bounds(bounds) {
                     RectClass::Outside => {},
                     RectClass::Interior => {
                         if cell.depth() >= target_depth {
@@ -618,7 +535,6 @@ pub(crate) fn cover_center<C: RectCell>(
     authority_plan: &PreparedPlan,
     authority_cache: &crate::geometry::FrameDependentCaches,
     frame: crate::geographic::GeographicFrame,
-    charted: bool,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
@@ -626,7 +542,6 @@ pub(crate) fn cover_center<C: RectCell>(
     let classifier = GeographicCandidateClassifier::new(
         authority,
         working,
-        charted,
         authority_plan,
         authority_cache,
         frame,
@@ -652,58 +567,37 @@ pub(crate) fn cover_center<C: RectCell>(
         match classifier.classify_bounds(bounds) {
             RectClass::Outside => {},
             RectClass::Interior => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
-                    RectClass::Outside => {},
-                    RectClass::Interior => {
-                        if cell.depth() >= target_depth {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push(cell);
-                        } else {
-                            interior.extend(cell.children());
-                        }
-                    },
-                    RectClass::Boundary => {
-                        if cell.depth() >= target_depth {
-                            let center = Point::new_raw_xy(
-                                f64::midpoint(bounds.minx(), bounds.maxx()),
-                                f64::midpoint(bounds.miny(), bounds.maxy()),
-                            );
-                            if classifier.exact_covers_point(center) {
-                                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                                cells.push(cell);
-                            }
-                        } else {
-                            cell.push_children_bounds(bounds, &mut boundary);
-                        }
-                    },
+                if cell.depth() >= target_depth {
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                    cells.push(cell);
+                } else {
+                    interior.extend(cell.children());
                 }
             },
-            RectClass::Boundary => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
-                    RectClass::Outside => {},
-                    RectClass::Interior => {
-                        if cell.depth() >= target_depth {
+            RectClass::Boundary => match classifier.refine_bounds(bounds) {
+                RectClass::Outside => {},
+                RectClass::Interior => {
+                    if cell.depth() >= target_depth {
+                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                        cells.push(cell);
+                    } else {
+                        interior.extend(cell.children());
+                    }
+                },
+                RectClass::Boundary => {
+                    if cell.depth() >= target_depth {
+                        let center = Point::new_raw_xy(
+                            f64::midpoint(bounds.minx(), bounds.maxx()),
+                            f64::midpoint(bounds.miny(), bounds.maxy()),
+                        );
+                        if classifier.covers_point(center) {
                             ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                             cells.push(cell);
-                        } else {
-                            interior.extend(cell.children());
                         }
-                    },
-                    RectClass::Boundary => {
-                        if cell.depth() >= target_depth {
-                            let center = Point::new_raw_xy(
-                                f64::midpoint(bounds.minx(), bounds.maxx()),
-                                f64::midpoint(bounds.miny(), bounds.maxy()),
-                            );
-                            if classifier.exact_covers_point(center) {
-                                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                                cells.push(cell);
-                            }
-                        } else {
-                            cell.push_children_bounds(bounds, &mut boundary);
-                        }
-                    },
-                }
+                    } else {
+                        cell.push_children_bounds(bounds, &mut boundary);
+                    }
+                },
             },
         }
     }
@@ -722,7 +616,6 @@ pub(crate) fn cover_within<C: RectCell>(
     authority_plan: &PreparedPlan,
     authority_cache: &crate::geometry::FrameDependentCaches,
     frame: crate::geographic::GeographicFrame,
-    charted: bool,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
@@ -730,7 +623,6 @@ pub(crate) fn cover_within<C: RectCell>(
     let classifier = GeographicCandidateClassifier::new(
         authority,
         working,
-        charted,
         authority_plan,
         authority_cache,
         frame,
@@ -756,31 +648,26 @@ pub(crate) fn cover_within<C: RectCell>(
         match classifier.classify_bounds(bounds) {
             RectClass::Outside => {},
             RectClass::Interior => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
-                    RectClass::Interior => {
-                        if cell.depth() >= target_depth {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push(cell);
-                        } else {
-                            interior.extend(cell.children());
-                        }
-                    },
-                    RectClass::Boundary if cell.depth() < target_depth => {
-                        cell.push_children_bounds(bounds, &mut boundary);
-                    },
-                    RectClass::Outside | RectClass::Boundary => {},
+                if cell.depth() >= target_depth {
+                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                    cells.push(cell);
+                } else {
+                    interior.extend(cell.children());
                 }
             },
-            RectClass::Boundary => {
-                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
-                    RectClass::Interior if cell.depth() < target_depth => {
+            RectClass::Boundary => match classifier.refine_bounds(bounds) {
+                RectClass::Interior => {
+                    if cell.depth() >= target_depth {
+                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                        cells.push(cell);
+                    } else {
                         interior.extend(cell.children());
-                    },
-                    RectClass::Boundary if cell.depth() < target_depth => {
-                        cell.push_children_bounds(bounds, &mut boundary);
-                    },
-                    RectClass::Outside | RectClass::Boundary | RectClass::Interior => {},
-                }
+                    }
+                },
+                RectClass::Boundary if cell.depth() < target_depth => {
+                    cell.push_children_bounds(bounds, &mut boundary);
+                },
+                RectClass::Outside | RectClass::Boundary => {},
             },
         }
     }
@@ -946,7 +833,6 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             geohash::roots(),
             1,
             None,
@@ -983,7 +869,6 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             vec![tile::root()],
             target,
             None,
@@ -1019,7 +904,6 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             geohash::roots(),
             10,
             Some(crate::grid::GRID_MAX_CELLS),
@@ -1055,7 +939,6 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             geohash::roots(),
             depth,
             None,
@@ -1067,13 +950,15 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             geohash::roots(),
             depth,
             None,
         )
         .expect("cover");
-        let classifier = NativeRectClassifier::new(&poly).expect("classifier");
+        let graph = authority_cache.geographic_topology_graph(
+            &authority_plan,
+            crate::geographic::GeographicFrame::crs84(),
+        );
         let filtered: Vec<_> = overlap
             .into_iter()
             .filter_map(|(cell, interior)| {
@@ -1085,14 +970,14 @@ mod tests {
                     f64::midpoint(bounds.minx(), bounds.maxx()),
                     f64::midpoint(bounds.miny(), bounds.maxy()),
                 );
-                classifier.covers_point(c).then_some(cell)
+                graph.covers_point(c.xy()).then_some(cell)
             })
             .collect();
         assert_eq!(center, filtered);
     }
 
     #[test]
-    fn exact_rectangle_refinement_reuses_one_authority_graph() {
+    fn rectangle_refinement_reuses_one_authority_graph() {
         use crate::geometry::Ring;
 
         let source = Shape::Polygon(Polygon::new(
@@ -1110,23 +995,106 @@ mod tests {
         let classifier = GeographicCandidateClassifier::new(
             &source,
             &source,
-            false,
             &plan,
             &cache,
             crate::geographic::GeographicFrame::crs84(),
         )
         .unwrap();
         let bounds = Bounds::new_raw(0.0, 81.0, 1.0, 82.0);
-        assert_eq!(
-            classifier.exact_classify_bounds(bounds, RectClass::Boundary),
-            RectClass::Interior
-        );
-        assert_eq!(
-            classifier.exact_classify_bounds(bounds, RectClass::Boundary),
-            RectClass::Interior
-        );
+        assert_eq!(classifier.refine_bounds(bounds), RectClass::Interior);
+        assert_eq!(classifier.refine_bounds(bounds), RectClass::Interior);
         assert_eq!(cache.geographic_topology_accesses(), 1);
         assert_eq!(cache.geographic_topology_builds(), 1);
+    }
+
+    #[test]
+    fn closed_edge_pentagon_cells_refine_to_interior() {
+        use crate::geometry::Ring;
+
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-50.0, 0.0),
+                Point::new_raw_xy(50.0, 0.0),
+                Point::new_raw_xy(50.0, 50.0),
+                Point::new_raw_xy(0.0, 60.0),
+                Point::new_raw_xy(-50.0, 50.0),
+                Point::new_raw_xy(-50.0, 0.0),
+            ]),
+            Vec::new(),
+        ));
+        let plan = PreparedPlan::new(source.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let classifier = GeographicCandidateClassifier::new(
+            &source,
+            &source,
+            &plan,
+            &cache,
+            crate::geographic::GeographicFrame::crs84(),
+        )
+        .unwrap();
+
+        for token in ["e", "s"] {
+            let cell = geohash::Geohash::parse(token).unwrap();
+            assert_eq!(
+                classifier.refine_bounds(cell.bounds()),
+                RectClass::Interior,
+                "cell {token}"
+            );
+        }
+        let cells = cover_within(
+            &source,
+            &source,
+            &plan,
+            &cache,
+            crate::geographic::GeographicFrame::crs84(),
+            geohash::roots(),
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(cells.iter().map(|cell| cell.token()).collect::<Vec<_>>(), [
+            "e", "s"
+        ]);
+    }
+
+    #[test]
+    fn exact_hole_cell_stays_outside_after_graph_refinement() {
+        use crate::geometry::Ring;
+
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-45.0, -45.0),
+                Point::new_raw_xy(45.0, -45.0),
+                Point::new_raw_xy(45.0, 45.0),
+                Point::new_raw_xy(-45.0, 45.0),
+                Point::new_raw_xy(-45.0, -45.0),
+            ]),
+            vec![Ring::from_closed(vec![
+                Point::new_raw_xy(-45.0, -45.0),
+                Point::new_raw_xy(0.0, -45.0),
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(-45.0, 0.0),
+                Point::new_raw_xy(-45.0, -45.0),
+            ])],
+        ));
+        let plan = PreparedPlan::new(source.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let classifier = GeographicCandidateClassifier::new(
+            &source,
+            &source,
+            &plan,
+            &cache,
+            crate::geographic::GeographicFrame::crs84(),
+        )
+        .unwrap();
+        let bounds = geohash::Geohash::parse("7").unwrap().bounds();
+
+        assert_eq!(classifier.classify_bounds(bounds), RectClass::Boundary);
+        assert_eq!(
+            classifier.authority_graph().covers_rectangle(bounds),
+            Some(false)
+        );
+        assert_eq!(classifier.refine_bounds(bounds), RectClass::Boundary);
     }
 
     #[test]
@@ -1154,7 +1122,6 @@ mod tests {
             &raw_plan,
             &raw_cache,
             crate::geographic::GeographicFrame::crs84(),
-            true,
             geohash::roots(),
             3,
             None,
@@ -1166,7 +1133,6 @@ mod tests {
             &chart_plan,
             &chart_cache,
             crate::geographic::GeographicFrame::crs84(),
-            false,
             geohash::roots(),
             3,
             None,

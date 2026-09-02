@@ -48,7 +48,7 @@ pub(super) fn build_coverage(
         // Center retains its specialized native tiler. The split shape is only
         // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
-            let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "H3")?;
+            let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "H3")?;
             let authority = membership_geometry.plan_or_transient();
             let crate::geometry::TopologyDomain::Geographic(frame) =
                 crate::geometry::topology_domain(&membership_geometry.frame)?
