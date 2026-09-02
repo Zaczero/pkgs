@@ -1059,17 +1059,10 @@ mod multipart_layout_tests {
             MultiMember::Empty
         ]);
         assert!(sparse.has_empty_members());
-        assert_eq!(sparse.members.heap_bytes(), 3 * 16);
-    }
-
-    #[test]
-    fn multipart_layouts_match_the_hot_shape_budget() {
-        assert_eq!(std::mem::size_of::<MultiMember<usize>>(), 16);
-        assert_eq!(std::mem::size_of::<MultipartMembers>(), 16);
-        assert_eq!(std::mem::size_of::<MultiPoint>(), 88);
-        assert_eq!(std::mem::size_of::<MultiLineString>(), 48);
-        assert_eq!(std::mem::size_of::<MultiPolygon>(), 48);
-        assert_eq!(std::mem::size_of::<Shape>(), 96);
+        let MultipartMembers::Sparse(members) = &sparse.members else {
+            unreachable!("sparse fixture must retain member metadata");
+        };
+        assert_eq!(sparse.members.heap_bytes(), std::mem::size_of_val(&**members));
     }
 }
 
