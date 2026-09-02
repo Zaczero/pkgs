@@ -4,10 +4,10 @@ use h3o::Resolution;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
-    DirectPreimages, ExactAuthorityEdge, ExactExpansion, ExactParentParameter, ExactPlanarPoint,
-    ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain,
-    ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass, SourceEdgeKey,
-    SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_exact_conversions,
+    CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactParentParameter,
+    ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass,
+    LiftKind, LiftedChain, ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass,
+    SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
     authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
     classify_lifted_ring_bucket, exact_affine_level, exact_axis_rectangle,
     exact_segment_touches_rectangle, integer_levels_between, lifted_step,
@@ -86,12 +86,10 @@ fn unpartitioned_symbolic_edge(points: &[(f64, f64)]) -> SymbolicAffineEdge {
         polygon: false,
         start: chain.vertices[0],
         end: chain.vertices[1],
-        exact: ExactAuthorityEdge::from_lifted(chain.vertices[0], chain.vertices[1]),
         parameters: vec![
             ExactParentParameter::start().unwrap(),
             ExactParentParameter::end().unwrap(),
-        ]
-        .into_boxed_slice(),
+        ],
     }
 }
 
@@ -158,6 +156,75 @@ fn exact_ratio_orders_the_two_stored_doubles_around_forty_over_three() {
     let ratio = |value| ExactRatio::new(&ExactExpansion::from_f64(value).unwrap(), &scale).unwrap();
     assert_eq!(ratio(lower).ordering(&third), Some(Ordering::Less));
     assert_eq!(ratio(upper).ordering(&third), Some(Ordering::Greater));
+}
+
+#[test]
+fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity() {
+    let mut backing = Vec::with_capacity(8);
+    backing.extend_from_slice(&[1.0, 2.0, 4.0, 8.0]);
+    let mut storage = CompactLimbs::Heap(backing);
+    storage.prepare(12).unwrap();
+    assert_eq!(&storage.as_slice()[..4], &[1.0, 2.0, 4.0, 8.0]);
+    assert_eq!(storage.as_slice().len(), 12);
+    storage.truncate(4).unwrap();
+    assert_eq!(storage.as_slice(), &[1.0, 2.0, 4.0, 8.0]);
+    assert!(storage.prepare(EXPANSION_LIMBS + 1).is_none());
+
+    let heap = ExactExpansion {
+        limbs: CompactLimbs::Heap(vec![
+            2.0_f64.powi(-60),
+            2.0_f64.powi(-40),
+            2.0_f64.powi(-20),
+            1.0,
+            2.0,
+        ]),
+    };
+    let heap_zero = heap.sub(&heap).unwrap();
+    let inline_zero = ExactExpansion::zero();
+    assert_eq!(heap_zero, inline_zero);
+    assert!(heap_zero.as_slice().is_empty());
+    assert_eq!(heap.ordering(), Ordering::Greater);
+    assert_eq!(
+        heap.add(&inline_zero).unwrap().ordering(),
+        Ordering::Greater
+    );
+}
+
+#[test]
+fn exact_ratio_equality_deduplicates_inline_and_heap_representations() {
+    let inline = ExactRatio::from_i64(1, 3).unwrap();
+    let heap = ExactRatio::from_parts(
+        ExactExpansion {
+            limbs: CompactLimbs::Heap(vec![1.0]),
+        },
+        ExactExpansion {
+            limbs: CompactLimbs::Heap(vec![3.0]),
+        },
+    )
+    .unwrap();
+    assert_eq!(inline, heap);
+
+    let mut edge = unpartitioned_symbolic_edge(&[(0.0, 0.0), (1.0, 1.0)]);
+    edge.insert_ratio(
+        ParentParameterKey::Partition(PartitionConstraint::FullEdgeMidpoint),
+        inline,
+    )
+    .unwrap();
+    let parameter_count = edge.parameters.len();
+    edge.insert_ratio(
+        ParentParameterKey::Partition(PartitionConstraint::LatitudeReflection),
+        heap,
+    )
+    .unwrap();
+    assert_eq!(edge.parameters.len(), parameter_count);
+    assert_eq!(
+        edge.parameters[1].key,
+        ParentParameterKey::Partition(PartitionConstraint::FullEdgeMidpoint)
+    );
+    assert_eq!(
+        edge.parameters[1].ratio,
+        ExactRatio::from_i64(1, 3).unwrap()
+    );
 }
 
 #[test]
@@ -233,7 +300,7 @@ fn geographic_coverage_source_canonicalizes_accepted_pole_rounding_before_wrappi
     assert!(!source.is_unknown());
     assert_eq!(source.authority_points.len(), 2);
     assert_eq!(source.selection_points.len(), 2);
-    let over_north = source.selection_points[0];
+    let over_north = &source.selection_points[0];
     assert_eq!(
         source.authority_points[0]
             .latitude
@@ -256,7 +323,7 @@ fn geographic_coverage_source_canonicalizes_accepted_pole_rounding_before_wrappi
         180.0_f64.to_bits()
     );
 
-    let over_east = source.selection_points[1];
+    let over_east = &source.selection_points[1];
     assert_eq!(
         over_east.longitude.checked_estimate().unwrap().to_bits(),
         (180.0_f64.next_up() - FULL_TURN_DEGREES).to_bits()
@@ -423,6 +490,7 @@ fn geographic_coverage_source_keeps_checked_degree_two_rings_available() {
     assert_eq!(fill.degree, 2);
     let roof = fill
         .roof
+        .as_ref()
         .expect("nonzero winding receives a finite pole roof");
     assert_eq!(roof.pole, PhysicalEndpointKey::NorthPole);
     assert_eq!(roof.turns, 2);
@@ -484,7 +552,10 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
         let fill = source.ring_fills().next().expect("one analytic shell");
         assert_eq!(fill.degree, degree);
         assert_eq!(
-            fill.roof.expect("physical polar ring has a pole roof").pole,
+            fill.roof
+                .as_ref()
+                .expect("physical polar ring has a pole roof")
+                .pole,
             pole
         );
         assert_eq!(
@@ -525,7 +596,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    let fill = source.ring_fills[0];
+    let fill = &source.ring_fills[0];
     assert_eq!(fill.degree, 2);
     assert!(!fill.periodic_exact);
     let query = ExactPlanarPoint::from_stored(0.0, 85.0).unwrap();
@@ -640,6 +711,7 @@ fn geographic_coverage_source_records_a_physical_south_finite_negative_winding_r
     assert_eq!(fill.degree, -2);
     let roof = fill
         .roof
+        .as_ref()
         .expect("southern ring receives a finite pole roof");
     assert_eq!(roof.pole, PhysicalEndpointKey::SouthPole);
     assert_eq!(roof.turns, -2);
@@ -1086,37 +1158,6 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
 }
 
 #[test]
-fn authority_edge_exact_values_are_built_once_and_reused() {
-    reset_authority_edge_exact_refinements();
-    let source = GeographicCoverageSource::new(
-        &Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new(0.0, 20.0).unwrap(),
-                Point::new(1.0, 20.1).unwrap(),
-                Point::new(2.0, 20.0).unwrap(),
-            ]))
-            .unwrap(),
-        ),
-        SphericalGridTarget::H3(Resolution::Two),
-    )
-    .unwrap();
-    let edge_count = source.authority_edges.len();
-    assert_eq!(authority_edge_exact_conversions(), edge_count);
-
-    reset_authority_edge_exact_refinements();
-    for _ in 0..8 {
-        assert_eq!(
-            source.classify_rect_window(
-                Bound::new(-1.0, 3.0).unwrap(),
-                Bound::new(19.9, 20.2).unwrap(),
-            ),
-            RectClass::Boundary,
-        );
-    }
-    assert_eq!(authority_edge_exact_conversions(), 0);
-}
-
-#[test]
 fn authority_edge_index_matches_polar_cap_interior() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(Polygon::new(
@@ -1238,7 +1279,6 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
     let mut edge = unpartitioned_symbolic_edge(&[(0.0, 0.0), (1.0, 1.0)]);
     edge.start.longitude.raw = f64::MAX;
     edge.end.longitude.raw = f64::MAX;
-    edge.exact = None;
     assert!(authority_edge_proxy_envelopes(&edge).is_none());
     assert!(
         build_authority_edge_index(std::slice::from_ref(&edge))
@@ -1251,13 +1291,13 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         exact_axis_rect: None,
         authority_latitude: None,
         chains: Vec::new().into_boxed_slice(),
-        ring_fills: Vec::new().into_boxed_slice(),
-        authority_points: Vec::new().into_boxed_slice(),
-        selection_points: Vec::new().into_boxed_slice(),
-        authority_edges: vec![edge].into_boxed_slice(),
+        ring_fills: Vec::new(),
+        authority_points: Vec::new(),
+        selection_points: Vec::new(),
+        authority_edges: vec![edge],
         authority_edge_index: None,
-        authority_pieces: Vec::new().into_boxed_slice(),
-        selection_edges: Vec::new().into_boxed_slice(),
+        authority_pieces: Vec::new(),
+        selection_edges: Vec::new(),
         unknown: false,
     };
     reset_authority_edge_exact_refinements();
