@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::dispatch::MetricOp;
 use crate::py::methods::unary_constructive_methods::{
     Bound, DefaultedF64Input, DistanceUnit, F64Param, Py, PyAny, PyErr, PyGeometry,
     PyGeometryArray, PyResult, Python, pymethods,
@@ -36,21 +37,21 @@ unary_shape_method!(
 );
 unary_shape_method!(
     polylabel,
-    Polylabel,
+    (Metric Polylabel),
     doc_polylabel,
     crate::dispatch::kernels::unary_polylabel,
     tolerance_unit
 );
 unary_shape_method!(
     maximum_inscribed_circle,
-    MaximumInscribedCircle,
+    (Metric MaximumInscribedCircle),
     doc_maximum_inscribed_circle,
     crate::dispatch::kernels::unary_maximum_inscribed_circle,
     tolerance_unit
 );
 unary_shape_method!(
     minimum_bounding_radius,
-    MinimumBoundingRadius,
+    (Metric MinimumBoundingRadius),
     doc_minimum_bounding_radius,
     crate::dispatch::kernels::unary_minimum_bounding_radius,
     f64_unit
@@ -63,14 +64,14 @@ unary_shape_method!(
 );
 unary_shape_method!(
     minimum_clearance,
-    MinimumClearance,
+    (Metric MinimumClearance),
     doc_minimum_clearance,
     crate::dispatch::kernels::unary_minimum_clearance,
     f64_unit
 );
 unary_shape_method!(
     minimum_clearance_line,
-    MinimumClearanceLine,
+    (Metric MinimumClearanceLine),
     doc_minimum_clearance_line,
     crate::dispatch::kernels::unary_minimum_clearance_line,
     unit_shape
@@ -107,7 +108,7 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::ConcaveHull,
+            crate::dispatch::Operation::Metric(MetricOp::ConcaveHull),
             unit,
             default,
             move |data, ctx| crate::dispatch::kernels::unary_concave_hull(
@@ -136,7 +137,7 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::MaximumInscribedRadius,
+            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
             unit,
             move |data, ctx| crate::dispatch::kernels::unary_maximum_inscribed_radius(
                 data,
@@ -156,7 +157,7 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::MinimumBoundingCircle,
+            crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
             default,
             crate::dispatch::kernels::unary_minimum_bounding_circle
@@ -207,7 +208,7 @@ impl PyGeometryArray {
             array,
             py,
             self,
-            crate::dispatch::Operation::ConcaveHull,
+            crate::dispatch::Operation::Metric(MetricOp::ConcaveHull),
             unit,
             default,
             move |data, ctx| crate::dispatch::kernels::unary_concave_hull(
@@ -236,7 +237,7 @@ impl PyGeometryArray {
             array,
             py,
             self,
-            crate::dispatch::Operation::MaximumInscribedRadius,
+            crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
             unit,
             move |data, ctx| crate::dispatch::kernels::unary_maximum_inscribed_radius(
                 data,
@@ -256,7 +257,7 @@ impl PyGeometryArray {
             array,
             py,
             self,
-            crate::dispatch::Operation::MinimumBoundingCircle,
+            crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
             default,
             crate::dispatch::kernels::unary_minimum_bounding_circle

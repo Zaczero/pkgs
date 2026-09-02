@@ -6,6 +6,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::dispatch::MetricOp;
 use crate::{
     DistanceUnit, PyGeometry, PyGeometryArray, exact_geometry, exact_geometry_array,
     finite_f64_required,
@@ -104,7 +105,7 @@ pub(crate) fn area(
         py,
         geom,
         unit,
-        crate::dispatch::Operation::Area,
+        crate::dispatch::Operation::Metric(MetricOp::Area),
         crate::dispatch::kernels::unary_area,
     )
 }
@@ -113,7 +114,7 @@ pub(crate) fn area_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResult
     crate::dispatch::unary_scalar(
         py,
         geom,
-        crate::dispatch::Operation::Area,
+        crate::dispatch::Operation::Metric(MetricOp::Area),
         None,
         crate::dispatch::kernels::unary_area,
     )
@@ -123,7 +124,7 @@ pub(crate) fn area_natural_array(py: Python<'_>, values: &PyGeometryArray) -> Py
     crate::dispatch::unary_array(
         py,
         values,
-        crate::dispatch::Operation::Area,
+        crate::dispatch::Operation::Metric(MetricOp::Area),
         None,
         None,
         crate::dispatch::kernels::unary_area,
@@ -205,7 +206,7 @@ pub(crate) fn length(
         py,
         geom,
         unit,
-        crate::dispatch::Operation::Length,
+        crate::dispatch::Operation::Metric(MetricOp::Length),
         crate::dispatch::kernels::unary_length,
     )
 }
@@ -257,7 +258,7 @@ pub(crate) fn length_3d(
         py,
         geom,
         unit,
-        crate::dispatch::Operation::Length3d,
+        crate::dispatch::Operation::Metric(MetricOp::Length3d),
         crate::dispatch::kernels::unary_length_3d,
     )
 }
@@ -266,7 +267,7 @@ pub(crate) fn length_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResu
     crate::dispatch::unary_scalar(
         py,
         geom,
-        crate::dispatch::Operation::Length,
+        crate::dispatch::Operation::Metric(MetricOp::Length),
         None,
         crate::dispatch::kernels::unary_length,
     )
@@ -279,7 +280,7 @@ pub(crate) fn length_natural_array(
     crate::dispatch::unary_array(
         py,
         values,
-        crate::dispatch::Operation::Length,
+        crate::dispatch::Operation::Metric(MetricOp::Length),
         None,
         None,
         crate::dispatch::kernels::unary_length,

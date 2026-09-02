@@ -836,7 +836,11 @@ impl PySpatialIndex {
             // Batch-local R-tree frontier heap reused across rows (clear+push;
             // free-threading: not a receiver cache / lock).
             self.ensure_frame_compatible(array.crs_ref(), array.epoch(), "spatial index nearest")?;
-            let metric = resolve_metric(self.metric_crs_str(array.crs_str()), unit, "nearest")?;
+            let metric = resolve_metric(
+                self.metric_crs_str(array.crs_str()),
+                unit,
+                crate::dispatch::MetricOp::Nearest,
+            )?;
             let (ids, offsets, distances) = py.detach(move || {
                 let row_count = array.len();
                 let row_capacity = k.min(self.__len__());

@@ -42,6 +42,23 @@ use crate::crs::geodesic::ensure_geographic_lonlat;
 use crate::crs::local::normalize_longitude;
 use crate::error::Result;
 
+#[derive(Clone, Copy)]
+enum RhumbCalculation {
+    Bearing,
+    Destination,
+    Distance,
+}
+
+impl RhumbCalculation {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Bearing => "rhumb bearing",
+            Self::Destination => "rhumb destination",
+            Self::Distance => "rhumb distance",
+        }
+    }
+}
+
 /// The rectifying series is GeographicLib's order-6 expansion, documented
 /// as full `f64` accuracy for `|f| <= 1/150` — far beyond every Earth
 /// ellipsoid. Steeper ellipsoids would need the exact elliptic-integral
@@ -343,7 +360,7 @@ pub(crate) fn rhumb_distance_crs_at(
                 mercator * (mu_diff / dpsi) * ellipsoid.radius
             }
         };
-        finite(distance, "rhumb distance")
+        finite(distance, RhumbCalculation::Distance)
     })
 }
 
@@ -402,7 +419,7 @@ pub(crate) fn rhumb_bearing_crs_at(
                 .1;
         }
         let azimuth = lambda12.atan2(dpsi).to_degrees();
-        finite(azimuth, "rhumb bearing")
+        finite(azimuth, RhumbCalculation::Bearing)
     })?;
     // atan2 degrees land in (-180, 180]; the branch normalize is
     // bit-identical to `rem_euclid(360)` there without the `fmod`.
@@ -467,8 +484,11 @@ pub(crate) fn rhumb_destination_crs_at(
             (east / ellipsoid.slope(phi1, phi2)).to_degrees()
         };
         // Series round-off can land an exact-pole arrival a few ULPs past 90.
-        let lat2 = finite(phi2.to_degrees(), "rhumb destination")?.clamp(-90.0, 90.0);
-        let lon2 = finite(normalize_longitude(lon + dlon), "rhumb destination")?;
+        let lat2 = finite(phi2.to_degrees(), RhumbCalculation::Destination)?.clamp(-90.0, 90.0);
+        let lon2 = finite(
+            normalize_longitude(lon + dlon),
+            RhumbCalculation::Destination,
+        )?;
         Ok(Some((lon2, lat2)))
     })
 }
@@ -485,11 +505,14 @@ pub(crate) fn rhumb_destination_crs(
     rhumb_destination_crs_at(crs, lon, lat, bearing, meters, &state)
 }
 
-fn finite(value: f64, operation: &str) -> Result<f64> {
+fn finite(value: f64, operation: RhumbCalculation) -> Result<f64> {
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(CrsError::invalid(format!("{operation} calculation failed")))
+        Err(CrsError::invalid(format!(
+            "{} calculation failed",
+            operation.name()
+        )))
     }
 }
 

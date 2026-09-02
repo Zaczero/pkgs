@@ -94,7 +94,7 @@ impl PyPoint {
                 unit,
             ),
             NavigationPath::Rhumb => {
-                crate::measures::reject_rhumb_unit(unit, "destination")?;
+                crate::measures::reject_rhumb_unit(unit, crate::dispatch::MetricOp::Destination)?;
                 crate::measures::rhumb_destination_point_receiver(
                     py,
                     slf.as_super(),

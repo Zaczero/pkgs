@@ -26,7 +26,7 @@ pub(crate) use linref::{
     line_interpolate_points_scalar, line_locate_point_input, line_locate_point_m_input,
 };
 pub(crate) use metric::{MetricResolver, MetricScratch, UnaryMeasureKernel};
-pub(crate) use operation::Operation;
+pub(crate) use operation::{MetricOp, Operation};
 pub(crate) use packed::PackedUnary;
 pub(crate) use unary::{
     dispatch_unary, unary_array, unary_array_linref_shapes, unary_array_shapes,

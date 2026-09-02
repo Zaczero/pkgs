@@ -272,13 +272,21 @@ impl PreparedIndexQuery {
             (None, None) => Ok(Self::Candidates),
             (None, Some(distance)) => Ok(Self::CandidatesDwithin {
                 distance,
-                metric: resolve_metric(metric_crs, unit, "spatial index distance query")?,
+                metric: resolve_metric(
+                    metric_crs,
+                    unit,
+                    crate::dispatch::MetricOp::SpatialIndexDistanceQuery,
+                )?,
             }),
             (Some(IndexPredicate::Topological(predicate)), None) => {
                 Ok(Self::Topological { predicate })
             },
             (Some(IndexPredicate::Dwithin), Some(distance)) => {
-                let metric = resolve_metric(metric_crs, unit, "spatial index distance query")?;
+                let metric = resolve_metric(
+                    metric_crs,
+                    unit,
+                    crate::dispatch::MetricOp::SpatialIndexDistanceQuery,
+                )?;
                 let resolved = crs::ResolvedMetric::from_model(&metric)?;
                 Ok(Self::Dwithin {
                     distance,

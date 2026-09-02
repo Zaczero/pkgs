@@ -10,6 +10,29 @@ pub(crate) fn geodesic_for_crs_at(crs: &str, state: &RuntimeState) -> Result<Geo
     with_geodesic_at(crs, state, |geodesic| Ok(*geodesic))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum GeodesicCalculation {
+    Bearing,
+    Destination,
+    Distance,
+    FrechetDistance,
+    HausdorffDistance,
+    Interpolate,
+}
+
+impl GeodesicCalculation {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Bearing => "geodesic bearing",
+            Self::Destination => "geodesic destination",
+            Self::Distance => "geodesic distance",
+            Self::FrechetDistance => "geodesic Fréchet distance",
+            Self::HausdorffDistance => "geodesic Hausdorff distance",
+            Self::Interpolate => "geodesic interpolate",
+        }
+    }
+}
+
 /// Initial geodesic bearing (degrees clockwise from north, `0..360`) on a
 /// resolved ellipsoid — azimuth-only inverse grade.
 pub(crate) fn geodesic_bearing(
@@ -24,25 +47,12 @@ pub(crate) fn geodesic_bearing(
     let (azimuth, _) = inverse_azimuths(geodesic, lon1, lat1, lon2, lat2);
     // geographiclib azimuths land in (-180, 180]; the branch normalize
     // is bit-identical to `rem_euclid(360)` there without the `fmod`.
-    finite(azimuth, "geodesic bearing").map(|azimuth| {
+    finite(azimuth, GeodesicCalculation::Bearing).map(|azimuth| {
         if azimuth < 0.0 {
             azimuth + 360.0
         } else {
             azimuth
         }
-    })
-}
-
-pub(crate) fn geodesic_bearing_crs_at(
-    crs: &str,
-    lon1: f64,
-    lat1: f64,
-    lon2: f64,
-    lat2: f64,
-    state: &RuntimeState,
-) -> Result<f64> {
-    with_geodesic_at(crs, state, |geodesic| {
-        geodesic_bearing(geodesic, lon1, lat1, lon2, lat2)
     })
 }
 
@@ -60,8 +70,8 @@ pub(crate) fn geodesic_destination(
         return Ok((lon, lat));
     }
     let (lat2, lon2): (f64, f64) = geodesic.direct(lat, lon, azimuth, meters);
-    finite(lon2, "geodesic destination")?;
-    finite(lat2, "geodesic destination")?;
+    finite(lon2, GeodesicCalculation::Destination)?;
+    finite(lat2, GeodesicCalculation::Destination)?;
     Ok((lon2, lat2))
 }
 
@@ -99,7 +109,7 @@ pub(crate) fn geodesic_point_between(
     // the forward azimuth for the direct step — never a separate distance-only
     // inverse first.
     let (total, azimuth, _) = inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
-    let total = finite(total, "geodesic distance")?;
+    let total = finite(total, GeodesicCalculation::Distance)?;
     let ratio = if normalized {
         distance
     } else if total == 0.0 {
@@ -115,16 +125,19 @@ pub(crate) fn geodesic_point_between(
         return Ok((lon2, lat2, ratio));
     }
     let (lat, lon): (f64, f64) = geodesic.direct(lat1, lon1, azimuth, total * ratio);
-    finite(lon, "geodesic interpolate")?;
-    finite(lat, "geodesic interpolate")?;
+    finite(lon, GeodesicCalculation::Interpolate)?;
+    finite(lat, GeodesicCalculation::Interpolate)?;
     Ok((lon, lat, ratio))
 }
 
-pub(crate) fn finite(value: f64, operation: &str) -> Result<f64> {
+pub(crate) fn finite(value: f64, operation: GeodesicCalculation) -> Result<f64> {
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(CrsError::invalid(format!("{operation} calculation failed")))
+        Err(CrsError::invalid(format!(
+            "{} calculation failed",
+            operation.name()
+        )))
     }
 }
 

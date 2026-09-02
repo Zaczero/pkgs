@@ -78,9 +78,13 @@ pub(crate) fn shortest_line(
                 geometry.epoch(),
                 array.crs_ref(),
                 array.epoch(),
-                "shortest_line",
+                crate::dispatch::MetricOp::ShortestLine.name(),
             )?;
-            let model = resolve_metric(geometry.crs_str(), unit, "shortest_line")?;
+            let model = resolve_metric(
+                geometry.crs_str(),
+                unit,
+                crate::dispatch::MetricOp::ShortestLine,
+            )?;
             // A crossing scalar can't share one prepared cache across the seam —
             // fall through to the split-normalizing broadcast below for it.
             if let crs::MetricModel::Geodesic { crs, frame, state } = model
@@ -138,7 +142,11 @@ pub(crate) fn shortest_line(
             }
         }
         if let Some(array) = exact_geometry_array(left) {
-            let model = resolve_metric(array.crs_str(), unit, "shortest_line")?;
+            let model = resolve_metric(
+                array.crs_str(),
+                unit,
+                crate::dispatch::MetricOp::ShortestLine,
+            )?;
             if let crs::MetricModel::Geodesic { .. } = model {
                 let result = array.shortest_line(right, unit)?;
                 return Ok(result.into_pyobject(py)?.unbind().into());
@@ -148,7 +156,7 @@ pub(crate) fn shortest_line(
             py,
             left,
             right,
-            "shortest_line",
+            crate::dispatch::MetricOp::ShortestLine,
             unit,
             metric_shortest_line,
         )
@@ -579,10 +587,20 @@ pub(crate) fn dwithin(
         // the other operand (scalar or array) as the broadcast partner.
         return match (left_array, right_array) {
             (Some(array), _) => crate::broadcast::array_crs_dwithin_per_element(
-                py, array, right, &distance, "dwithin", unit,
+                py,
+                array,
+                right,
+                &distance,
+                crate::dispatch::MetricOp::Dwithin,
+                unit,
             ),
             (None, Some(array)) => crate::broadcast::array_crs_dwithin_per_element(
-                py, array, left, &distance, "dwithin", unit,
+                py,
+                array,
+                left,
+                &distance,
+                crate::dispatch::MetricOp::Dwithin,
+                unit,
             ),
             (None, None) => unreachable!("the length came from an array operand"),
         };

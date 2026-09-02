@@ -10,7 +10,7 @@ use crate::broadcast::{
     CollectRows as _, GeometryInput, classify_required, degrade_linref_float, detach_collect_f64,
     paired_arrays,
 };
-use crate::dispatch::operation::Operation;
+use crate::dispatch::operation::{MetricOp, Operation};
 use crate::{
     DistanceUnit, GeometryArrayStorage, InterpolatePlan, PyGeometry, PyGeometryArray,
     crs_line_locate_point, geometry_array_line_locate_point_geometry,
@@ -24,8 +24,9 @@ fn line_locate_geometry_points(
     points: &PyGeometryArray,
     normalized: bool,
     unit: Option<DistanceUnit>,
-    op_name: &str,
+    operation: MetricOp,
 ) -> PyResult<Py<PyAny>> {
+    let op_name = operation.name();
     Frame::compatible_parts(
         geometry.crs_ref(),
         geometry.epoch(),
@@ -33,14 +34,13 @@ fn line_locate_geometry_points(
         points.epoch(),
         op_name,
     )?;
-    let model = Operation::LineLocate
+    let model = Operation::Metric(MetricOp::LineLocate)
         .resolver_with_line_unit(unit, normalized)
         .resolve_ctx(
             &geometry.frame,
-            op_name,
             &mut crate::dispatch::MetricScratch::default(),
         )?
-        .require_model(op_name)?
+        .require_model(MetricOp::LineLocate)?
         .clone();
     let line = geometry.plan_or_transient();
     if points.is_compact_nullable()
@@ -63,7 +63,7 @@ fn line_locate_geometry_points(
                 .collect_rows()
         });
     }
-    let queries = require_locate_points(points, op_name)?;
+    let queries = require_locate_points(points, MetricOp::LineLocate)?;
     let missing = points.missing().cloned();
     detach_collect_f64(py, move || {
         queries
@@ -86,7 +86,7 @@ pub(crate) fn line_locate_point_input(
     normalized: bool,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let op_name = Operation::LineLocate.name();
+    let op_name = Operation::Metric(MetricOp::LineLocate).name();
     let point = classify_required(point)?;
     match (geom, point) {
         (GeometryInput::One(geometry), GeometryInput::One(point_geometry)) => {
@@ -97,23 +97,24 @@ pub(crate) fn line_locate_point_input(
                     .into(),
             );
         },
-        (GeometryInput::One(geometry), GeometryInput::Many(points)) => {
-            line_locate_geometry_points(py, geometry, points, normalized, unit, op_name)
-        },
+        (GeometryInput::One(geometry), GeometryInput::Many(points)) => line_locate_geometry_points(
+            py,
+            geometry,
+            points,
+            normalized,
+            unit,
+            MetricOp::LineLocate,
+        ),
         (GeometryInput::Many(array), GeometryInput::One(point_geometry)) => {
             geometry_array_line_locate_point_geometry(py, array, point_geometry, normalized, unit)
         },
         (GeometryInput::Many(array), GeometryInput::Many(points)) => {
             paired_arrays(array, points, op_name)?;
-            let queries = require_locate_points(points, op_name)?;
-            let model = Operation::LineLocate
+            let queries = require_locate_points(points, MetricOp::LineLocate)?;
+            let model = Operation::Metric(MetricOp::LineLocate)
                 .resolver_with_line_unit(unit, normalized)
-                .resolve_ctx(
-                    &array.frame,
-                    op_name,
-                    &mut crate::dispatch::MetricScratch::default(),
-                )?
-                .require_model(op_name)?
+                .resolve_ctx(&array.frame, &mut crate::dispatch::MetricScratch::default())?
+                .require_model(MetricOp::LineLocate)?
                 .clone();
             let missing = union_pair(array.missing(), points.missing());
             if array.is_compact_nullable() || points.is_compact_nullable() {
@@ -200,7 +201,7 @@ pub(crate) fn line_locate_point_m_input(
     geom: GeometryInput<'_>,
     point: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let op_name = Operation::LineLocate.name();
+    let op_name = Operation::Metric(MetricOp::LineLocate).name();
     let point = classify_required(point)?;
     match (geom, point) {
         (GeometryInput::One(geometry), GeometryInput::One(point_geometry)) => {
@@ -211,8 +212,9 @@ pub(crate) fn line_locate_point_m_input(
                 point_geometry.epoch(),
                 op_name,
             )?;
-            let query = require_locate_point(point_geometry, op_name)?;
-            let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
+            let query = require_locate_point(point_geometry, MetricOp::LineLocate)?;
+            let model =
+                crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
             let line = geometry.plan_or_transient();
             return Ok(line_locate_shape_m(&model, &line, query)?
                 .into_pyobject(py)?
@@ -227,7 +229,8 @@ pub(crate) fn line_locate_point_m_input(
                 points.epoch(),
                 op_name,
             )?;
-            let model = crate::resolve_line_metric(geometry.crs_str(), None, false, op_name)?;
+            let model =
+                crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
             let line = geometry.plan_or_transient();
             if points.is_compact_nullable()
                 && matches!(points.storage(), GeometryArrayStorage::Points { .. })
@@ -249,7 +252,7 @@ pub(crate) fn line_locate_point_m_input(
                         .collect_rows()
                 });
             }
-            let queries = require_locate_points(points, op_name)?;
+            let queries = require_locate_points(points, MetricOp::LineLocate)?;
             let missing = points.missing().cloned();
             detach_collect_f64(py, move || {
                 queries
@@ -272,8 +275,9 @@ pub(crate) fn line_locate_point_m_input(
                 point_geometry.epoch(),
                 op_name,
             )?;
-            let query = require_locate_point(point_geometry, op_name)?;
-            let model = crate::resolve_line_metric(array.crs_str(), None, false, op_name)?;
+            let query = require_locate_point(point_geometry, MetricOp::LineLocate)?;
+            let model =
+                crate::resolve_line_metric(array.crs_str(), None, false, MetricOp::LineLocate)?;
             let array = array.clone();
             detach_collect_f64(py, move || {
                 array
@@ -290,8 +294,9 @@ pub(crate) fn line_locate_point_m_input(
         },
         (GeometryInput::Many(array), GeometryInput::Many(points)) => {
             paired_arrays(array, points, op_name)?;
-            require_locate_points(points, op_name)?;
-            let model = crate::resolve_line_metric(array.crs_str(), None, false, op_name)?;
+            require_locate_points(points, MetricOp::LineLocate)?;
+            let model =
+                crate::resolve_line_metric(array.crs_str(), None, false, MetricOp::LineLocate)?;
             let array = array.clone();
             let points = points.clone();
             detach_collect_f64(py, move || {
@@ -321,15 +326,13 @@ pub(crate) fn line_interpolate_points_scalar(
     plan: &InterpolatePlan,
     unit: Option<DistanceUnit>,
 ) -> PyResult<PyGeometryArray> {
-    let op_name = Operation::LineInterpolate.name();
-    let model = Operation::LineInterpolate
+    let model = Operation::Metric(MetricOp::LineInterpolate)
         .resolver_with_line_unit(unit, plan.is_fractional())
         .resolve_ctx(
             &geometry.frame,
-            op_name,
             &mut crate::dispatch::MetricScratch::default(),
         )?
-        .require_model(op_name)?
+        .require_model(MetricOp::LineInterpolate)?
         .clone();
     let line = geometry.plan_or_transient();
     let shapes = line_interpolate_points_shape(&model, &line, &geometry.frame_cache(), plan)?;

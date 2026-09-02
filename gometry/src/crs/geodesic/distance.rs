@@ -6,7 +6,8 @@ use geographiclib_rs::Geodesic;
 
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    EllipsoidMetric, Result, finite, normalize, with_ellipsoid_metric_at, with_geodesic_at,
+    EllipsoidMetric, GeodesicCalculation, Result, finite, normalize, with_ellipsoid_metric_at,
+    with_geodesic_at,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{Coordinates, GeodesicMetric as _, Point, Shape};
@@ -40,7 +41,7 @@ pub(crate) fn geodesic_point_pair_distances(
     .map(|((&lx, &ly), (&rx, &ry))| {
         finite(
             metric.segment_length(Point::new_raw_xy(lx, ly), Point::new_raw_xy(rx, ry)),
-            "geodesic distance",
+            GeodesicCalculation::Distance,
         )
     })
     .collect()
@@ -58,7 +59,10 @@ pub(crate) fn geodesic_point_pair_distance(
     crate::crs::ensure_geographic_lonlat_in_frame(frame, left.x, left.y)?;
     crate::crs::ensure_geographic_lonlat_in_frame(frame, right.x, right.y)?;
     let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
-    finite(metric.segment_length(left, right), "geodesic distance")
+    finite(
+        metric.segment_length(left, right),
+        GeodesicCalculation::Distance,
+    )
 }
 
 /// Element-wise geodesic `dwithin` over packed lon/lat columns (array × array
@@ -126,7 +130,7 @@ pub(crate) fn geodesic_point_distances(
             .map(|(&x, &y)| {
                 finite(
                     metric.segment_length(Point::new_raw_xy(x, y), target),
-                    "geodesic distance",
+                    GeodesicCalculation::Distance,
                 )
             })
             .collect()
@@ -153,7 +157,7 @@ pub(crate) fn geodesic_hausdorff_at(
     with_ellipsoid_metric_at(crs, &[a, b], state, |metric| {
         finite(
             a.geodesic_hausdorff_distance(b, metric)?,
-            "geodesic Hausdorff distance",
+            GeodesicCalculation::HausdorffDistance,
         )
     })
 }
@@ -181,7 +185,7 @@ pub(crate) fn geodesic_frechet_at(
         } else {
             geodesic_frechet_dp(metric, right, left)
         };
-        finite(distance, "geodesic Fréchet distance")
+        finite(distance, GeodesicCalculation::FrechetDistance)
     })
 }
 

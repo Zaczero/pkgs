@@ -10,6 +10,7 @@ use crate::broadcast::metrics::{
     GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
     crs, geometry_type_err, validate_lonlat_shape,
 };
+use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, witness_pair};
 use crate::py::errors::InvalidGeometryError;
@@ -100,16 +101,6 @@ fn metric_densified(
     )
 }
 
-pub(crate) fn finite_geodesic_value(value: f64, operation: &str) -> crate::error::Result<f64> {
-    if value.is_finite() {
-        Ok(value)
-    } else {
-        Err(crs::CrsError::invalid(format!(
-            "{operation} calculation failed"
-        )))
-    }
-}
-
 pub(crate) fn geodesic_point_columns_to_shape_values(
     crs: &str,
     xs: &[f64],
@@ -172,8 +163,9 @@ pub(crate) fn geodesic_point_columns_dwithin_shape_values(
 pub(crate) fn resolve_metric(
     crs: Option<&str>,
     unit: Option<DistanceUnit>,
-    operation: &str,
+    operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    let operation = operation.name();
     match unit {
         Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
         Some(DistanceUnit::Meters) if crs.is_none() => Err(GeometryError::new_err(format!(
@@ -198,8 +190,9 @@ pub(crate) fn resolve_metric(
 pub(crate) fn resolve_metric_3d(
     crs: Option<&str>,
     unit: Option<DistanceUnit>,
-    operation: &str,
+    operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    let operation = operation.name();
     // Validate 3D eligibility first, so an ineligible CRS reports the
     // dimensional problem rather than a unit one, whatever `unit=` says.
     let to_metre = crs::ensure_3d_metric(crs)?;
@@ -234,7 +227,8 @@ pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
 }
 
 /// Extract the single point of a `Point` geometry, or error.
-pub(crate) fn require_point(geometry: &PyGeometry, operation: &str) -> PyResult<Point> {
+pub(crate) fn require_point(geometry: &PyGeometry, operation: MetricOp) -> PyResult<Point> {
+    let operation = operation.name();
     match geometry.shape.shape() {
         Shape::Point(point) => Ok(*point),
         Shape::Empty(GeometryKind::Point, _) => Err(InvalidGeometryError::new_err(format!(
@@ -342,7 +336,7 @@ pub(crate) fn pair_distance_geodesic(
         metric.frame,
         metric.state.generation,
     )?;
-    finite_geodesic_value(
+    crs::finite(
         a.geodesic_distance_cached(
             a_cache,
             b,
@@ -352,7 +346,7 @@ pub(crate) fn pair_distance_geodesic(
             flattening,
             &ellipsoid,
         )?,
-        "geodesic distance",
+        crs::GeodesicCalculation::Distance,
     )
 }
 

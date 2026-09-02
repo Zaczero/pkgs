@@ -8,7 +8,7 @@ use crate::broadcast::{
     CollectRows as _, degrade_linref_linestring, degrade_linref_point_between, rows_err,
 };
 use crate::crs::MetricModel;
-use crate::dispatch::operation::Operation;
+use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, TopologyDomain,
 };
@@ -122,16 +122,21 @@ pub(crate) fn try_unary_packed_f64(
     array: &PyGeometryArray,
     op: Operation,
     unit: Option<DistanceUnit>,
-    op_name: &str,
 ) -> Option<PyResult<Py<PyAny>>> {
     match op {
-        Operation::Area => packed_f64_lane(py, array, array.area_unary_packed(py, unit, op_name)),
-        Operation::Length => {
-            packed_f64_lane(py, array, array.length_unary_packed(py, unit, op_name))
+        Operation::Metric(MetricOp::Area) => {
+            packed_f64_lane(py, array, array.area_unary_packed(py, unit, MetricOp::Area))
         },
-        Operation::Length3d => {
-            packed_f64_lane(py, array, array.length_3d_unary_packed(py, unit, op_name))
-        },
+        Operation::Metric(MetricOp::Length) => packed_f64_lane(
+            py,
+            array,
+            array.length_unary_packed(py, unit, MetricOp::Length),
+        ),
+        Operation::Metric(MetricOp::Length3d) => packed_f64_lane(
+            py,
+            array,
+            array.length_3d_unary_packed(py, unit, MetricOp::Length3d),
+        ),
         _ => None,
     }
 }
@@ -248,7 +253,12 @@ pub(crate) fn try_unary_packed_array(
     // constructive ops (affine, simplify, centroid, …) would need per-op
     // skip-or-scatter logic — not the same shape as bool mask overlay — and
     // stay bailed here.
-    if array.has_missing() && !matches!(op, Operation::Boundary | Operation::Segmentize) {
+    if array.has_missing()
+        && !matches!(
+            op,
+            Operation::Boundary | Operation::Metric(MetricOp::Segmentize)
+        )
+    {
         return None;
     }
     // param-less lanes: the operation alone says everything
@@ -268,7 +278,10 @@ pub(crate) fn try_unary_packed_array(
         (Operation::PointOnSurface, PackedUnary::Synthesized) => {
             Some(array.point_on_surface_unary_packed())
         },
-        (Operation::Segmentize, PackedUnary::Segmentize { max_segment_length }) => {
+        (
+            Operation::Metric(MetricOp::Segmentize),
+            PackedUnary::Segmentize { max_segment_length },
+        ) => {
             // `segmentize` measures and places under the array's metric, so
             // the ellipsoid is resolved ONCE here and cloned into the kernels
             // rather than re-derived per row.
@@ -279,7 +292,7 @@ pub(crate) fn try_unary_packed_array(
                 Err(error) => Some(Err(error)),
             }
         },
-        (Operation::Segmentize, PackedUnary::Densify { fraction }) => {
+        (Operation::Metric(MetricOp::Segmentize), PackedUnary::Densify { fraction }) => {
             match segmentize_metric(array, resolver) {
                 Ok((geodesic, _)) => Some(array.densify_unary_packed(fraction, geodesic)),
                 Err(error) => Some(Err(error)),
@@ -349,7 +362,7 @@ pub(crate) fn try_unary_packed_array(
             Some(array.clip_by_rect_unary_packed(py, *rect, false))
         },
         (
-            Operation::LineInterpolate,
+            Operation::Metric(MetricOp::LineInterpolate),
             PackedUnary::LineInterpolatePoint {
                 distance,
                 normalized,
@@ -379,7 +392,7 @@ pub(crate) fn try_unary_packed_array(
             )
         },
         (
-            Operation::LineSubstring,
+            Operation::Metric(MetricOp::LineSubstring),
             PackedUnary::LineSubstring {
                 start_distance,
                 end_distance,
@@ -563,10 +576,10 @@ fn segmentize_metric(
     )>,
     f64,
 )> {
-    let super::MetricResolver::Metric { unit } = resolver else {
+    let super::MetricResolver::Metric { op, unit } = resolver else {
         return Ok((None, 1.0));
     };
-    let model = crate::broadcast::resolve_metric(array.crs_str(), unit, "segmentize")?;
+    let model = crate::broadcast::resolve_metric(array.crs_str(), unit, op)?;
     match crate::crs::ResolvedMetric::from_model(&model)? {
         crate::crs::ResolvedMetric::Geodesic(metric) => {
             Ok((Some((*metric.geodesic, metric.frame)), 1.0))

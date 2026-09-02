@@ -14,6 +14,7 @@ use crate::broadcast::{
     paired_arrays_len, rows_err,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
+use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{
     CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
 };
@@ -77,9 +78,7 @@ where
     F: BinaryArrayFastPath<R>,
 {
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver
-        .resolve_ctx(frame, op_name, &mut metric_scratch)
-        .ok();
+    let metric = resolver.resolve_ctx(frame, &mut metric_scratch).ok();
     fast_path.try_dispatch(
         py,
         left,
@@ -225,7 +224,7 @@ where
     };
     let output_frame = frame.clone();
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     let fixed_plan = fixed.plan_or_transient();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
@@ -267,7 +266,7 @@ where
     )?;
     let output_frame = frame.clone();
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     // Prepared handles; frame caches derived from MetricCtx.
     let (values, missing) = run_paired_rows(
         py,
@@ -361,7 +360,7 @@ pub(crate) fn dispatch_typed_metric_binary<R>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    op_name: &str,
+    op: MetricOp,
     resolver: super::metric::MetricResolver,
     planar: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> Result<R> + Send + Sync,
     geodesic: impl Fn(&PreparedPlan, &PreparedPlan, &GeodesicBinaryRow<'_>) -> Result<R> + Send + Sync,
@@ -369,6 +368,7 @@ pub(crate) fn dispatch_typed_metric_binary<R>(
 where
     R: BulkElement,
 {
+    let op_name = op.name();
     use GeometryInput::{Many, One};
     let (left_input, right_input) = (classify_required(left)?, classify_required(right)?);
     let (left_crs, left_epoch) = match left_input {
@@ -381,8 +381,8 @@ where
     };
     let (frame, _domain) = binary_frame((left_crs, left_epoch), (right_crs, right_epoch), op_name)?;
     let mut scratch = MetricScratch::default();
-    let metric_ctx = resolver.resolve_ctx(&frame, op_name, &mut scratch)?;
-    let resolved = metric_ctx.require_resolved(op_name)?;
+    let metric_ctx = resolver.resolve_ctx(&frame, &mut scratch)?;
+    let resolved = metric_ctx.require_resolved(op)?;
 
     match (left_input, right_input, resolved) {
         (One(left), One(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
@@ -567,7 +567,7 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
         op_name,
     )?;
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     let ctx = CachelessRowContext {
         frame: &frame,
         domain,
@@ -760,7 +760,7 @@ where
                 op_name,
             )?;
             let mut metric_scratch = MetricScratch::default();
-            let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+            let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
             let ctx = CachelessRowContext {
                 frame: &frame,
                 domain,
@@ -797,7 +797,7 @@ where
             }
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
-            let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+            let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
             let left_fixed = split_operand_arc_for_topology(domain, left)?;
             // Overlay rows use transient plans only; MetricCtx is None so
             // no frame-dependent cache is retained.
@@ -889,7 +889,7 @@ where
     };
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     // Prefer already-warm bounds caches, but do NOT force-initialize them:
     // a pure overlay of two packed point arrays must not retain multi-MiB
     // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.

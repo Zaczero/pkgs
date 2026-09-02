@@ -34,7 +34,11 @@ impl PyGeometryArray {
         if !distance.is_finite() || distance <= 0.0 {
             return Ok(None);
         }
-        let model = crate::broadcast::resolve_metric(self.crs_str(), unit, "buffer")?;
+        let model = crate::broadcast::resolve_metric(
+            self.crs_str(),
+            unit,
+            crate::dispatch::MetricOp::Buffer,
+        )?;
         let MetricModel::Planar { to_metre } = model else {
             return Ok(None);
         };

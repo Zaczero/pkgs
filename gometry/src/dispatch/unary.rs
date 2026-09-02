@@ -25,12 +25,11 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     unit: Option<DistanceUnit>,
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
-    let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
     let frame = geometry.frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     let ctx = CachelessRowContext {
         frame: &frame,
         domain,
@@ -66,9 +65,8 @@ pub(crate) fn unary_array<R: BulkElement>(
     packed: Option<&PackedUnary>,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
-    let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
-    if let Some(result) = try_unary_packed_f64(py, array, op, unit, op_name) {
+    if let Some(result) = try_unary_packed_f64(py, array, op, unit) {
         return result;
     }
     if let Some(result) = try_unary_packed_bool(py, array, op) {
@@ -86,14 +84,10 @@ pub(crate) fn unary_array<R: BulkElement>(
     // repeats; distance-basis linref needs a frame cache; pure geometry
     // transforms use the Shape-only lane.
     let mode = unary_row_mode(op);
-    let (values, output_frame) = run_unary_rows(
-        py,
-        array,
-        resolver,
-        op_name,
-        mode,
-        move |data, ctx, _rows| kernel(data, ctx),
-    )?;
+    let (values, output_frame) =
+        run_unary_rows(py, array, resolver, mode, move |data, ctx, _rows| {
+            kernel(data, ctx)
+        })?;
     R::bulk_into_py_masked(values, py, &output_frame, array.missing())
 }
 
@@ -114,7 +108,6 @@ fn run_unary_rows<T: BulkElement>(
     py: Python<'_>,
     array: &PyGeometryArray,
     resolver: super::metric::MetricResolver,
-    op_name: &str,
     mode: UnaryRowMode,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>, &mut ArrayRowOperation<'_>) -> Result<T>
     + Send
@@ -124,7 +117,7 @@ fn run_unary_rows<T: BulkElement>(
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     let array = array.clone();
     let values = py
         .detach(move || {
@@ -197,7 +190,6 @@ pub(crate) fn unary_array_shapes(
         py,
         array,
         resolver,
-        op.name(),
         unary_row_mode(op),
         move |data, ctx, _rows| kernel(data, ctx),
     )?;
@@ -214,8 +206,11 @@ pub(crate) fn unary_scalar_linref_shape(
     let frame = geometry.frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
-    let model = metric.require_model(op.name())?;
+    let metric = resolver.resolve_ctx(&frame, &mut scratch)?;
+    let model = metric.require_model(
+        op.metric_op()
+            .expect("linear-reference operation must carry metric identity"),
+    )?;
     let row = LinearReferenceRow {
         op: CachelessRowContext {
             frame: &frame,
@@ -246,8 +241,11 @@ pub(crate) fn unary_array_linref_shapes(
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
-    let model = metric.require_model(op.name())?;
+    let metric = resolver.resolve_ctx(&frame, &mut scratch)?;
+    let model = metric.require_model(
+        op.metric_op()
+            .expect("linear-reference operation must carry metric identity"),
+    )?;
     let output_missing = array.missing().cloned();
     let array = array.clone();
     let shapes = py
@@ -302,7 +300,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     let output_frame = frame.clone();
     let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
-    let metric = resolver.resolve_ctx(&frame, op.name(), &mut metric_scratch)?;
+    let metric = resolver.resolve_ctx(&frame, &mut metric_scratch)?;
     let missing = array.missing().cloned();
     let array = array.clone();
     let shapes = py

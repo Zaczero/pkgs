@@ -118,7 +118,7 @@ mod segment;
 mod tests;
 
 pub(crate) use bearing::{
-    EllipsoidShape, ellipsoid_shape_at, finite, geodesic_bearing, geodesic_bearing_crs_at,
+    EllipsoidShape, GeodesicCalculation, ellipsoid_shape_at, finite, geodesic_bearing,
     geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,
     geodesic_cross_track_with_radius, geodesic_destination, geodesic_destination_crs_at,
     geodesic_for_crs_at, geodesic_point_between,

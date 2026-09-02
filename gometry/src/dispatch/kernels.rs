@@ -3,6 +3,7 @@ use std::num::NonZeroU32;
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
 use crate::crs::{CrsError, ResolvedMetric};
+use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
 use crate::geometry::{
@@ -94,7 +95,7 @@ pub(crate) fn unary_buffer(
             side => data.shape().buffer_sided(distance, side),
         };
     }
-    let model = ctx.metric.require_model("buffer")?;
+    let model = ctx.metric.require_model(MetricOp::Buffer)?;
     metric_constructive_shape(
         model,
         ctx.frame.crs_str(),
@@ -134,7 +135,7 @@ pub(crate) fn unary_buffer_budgeted(
             side => data.shape().buffer_sided(distance, side),
         };
     }
-    let model = ctx.metric.require_model("buffer")?;
+    let model = ctx.metric.require_model(MetricOp::Buffer)?;
     metric_constructive_shape_budgeted(
         model,
         ctx.frame.crs_str(),
@@ -170,7 +171,7 @@ pub(crate) fn unary_offset_curve(
             .shape()
             .offset_curve(distance, join_style, quadrant_segments, miter_limit);
     }
-    let model = ctx.metric.require_model("offset_curve")?;
+    let model = ctx.metric.require_model(MetricOp::OffsetCurve)?;
     metric_constructive_shape(
         model,
         ctx.frame.crs_str(),
@@ -199,7 +200,7 @@ pub(crate) fn unary_offset_curve_budgeted(
             budget,
         );
     }
-    let model = ctx.metric.require_model("offset_curve")?;
+    let model = ctx.metric.require_model(MetricOp::OffsetCurve)?;
     metric_constructive_shape_budgeted(
         model,
         ctx.frame.crs_str(),
@@ -232,7 +233,7 @@ pub(crate) fn unary_concave_hull(
     concavity: &F64Param,
     length_threshold: &F64Param,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("concave_hull")?;
+    let model = ctx.metric.require_model(MetricOp::ConcaveHull)?;
     let concavity = concavity.get(ctx.lane.row());
     metric_concave_hull(
         model,
@@ -249,7 +250,7 @@ pub(crate) fn unary_polylabel(
     ctx: &CachelessRowContext<'_>,
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("polylabel")?;
+    let model = ctx.metric.require_model(MetricOp::Polylabel)?;
     metric_optional_constructive_shape(
         model,
         ctx.frame.crs_str(),
@@ -265,7 +266,7 @@ pub(crate) fn unary_maximum_inscribed_circle(
     ctx: &CachelessRowContext<'_>,
     tolerance: Option<&F64Param>,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("maximum_inscribed_circle")?;
+    let model = ctx.metric.require_model(MetricOp::MaximumInscribedCircle)?;
     metric_optional_constructive_shape(
         model,
         ctx.frame.crs_str(),
@@ -283,7 +284,7 @@ pub(crate) fn unary_maximum_inscribed_radius(
     tolerance: Option<&F64Param>,
 ) -> Result<f64> {
     // geometry — there are no output vertices onto which Z/M could be carried,
-    let model = ctx.metric.require_model("maximum_inscribed_radius")?;
+    let model = ctx.metric.require_model(MetricOp::MaximumInscribedRadius)?;
     metric_maximum_inscribed_radius(
         model,
         ctx.frame.crs_str(),
@@ -297,7 +298,7 @@ pub(crate) fn unary_minimum_bounding_circle(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("minimum_bounding_circle")?;
+    let model = ctx.metric.require_model(MetricOp::MinimumBoundingCircle)?;
     metric_minimum_bounding_circle(model, ctx.frame.crs_str(), data.shape())
 }
 
@@ -306,7 +307,7 @@ pub(crate) fn unary_minimum_bounding_radius(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<f64> {
-    let model = ctx.metric.require_model("minimum_bounding_radius")?;
+    let model = ctx.metric.require_model(MetricOp::MinimumBoundingRadius)?;
     metric_minimum_bounding_radius(model, data.shape())
 }
 
@@ -488,7 +489,7 @@ pub(crate) fn unary_segmentize(
     ctx: &CachelessRowContext<'_>,
     max_segment_length: &F64Param,
 ) -> Result<Shape> {
-    let metric = ctx.metric.require_resolved("segmentize")?;
+    let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
     let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_segment_length");
     let length = max_segment_length.get(ctx.lane.row());
     match metric {
@@ -522,7 +523,7 @@ pub(crate) fn unary_densify(
     fraction: &F64Param,
 ) -> Result<Shape> {
     let fraction = fraction.get(ctx.lane.row());
-    match ctx.metric.require_resolved("segmentize")? {
+    match ctx.metric.require_resolved(MetricOp::Segmentize)? {
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
             let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
@@ -538,7 +539,7 @@ pub(crate) fn unary_densify(
 
 /// Area kernel shared by the spine-routed free function.
 pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
-    let metric = ctx.metric.require_resolved("area")?;
+    let metric = ctx.metric.require_resolved(MetricOp::Area)?;
     match metric {
         ResolvedMetric::Planar { to_metre } => Ok(scale_area(data.shape().area(), to_metre.get())),
         ResolvedMetric::Geodesic(metric) => {
@@ -554,7 +555,7 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
 
 /// Length kernel shared by the spine-routed free function.
 pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
-    let metric = ctx.metric.require_resolved("length")?;
+    let metric = ctx.metric.require_resolved(MetricOp::Length)?;
     match metric {
         ResolvedMetric::Planar { to_metre } => {
             Ok(scale_length(data.shape().length(), to_metre.get()))
@@ -572,7 +573,10 @@ pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -
 
 /// 3D length kernel shared by the spine-routed free function.
 pub(crate) fn unary_length_3d(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
-    let to_metre = ctx.metric.require_model("length_3d")?.coordinate_scale();
+    let to_metre = ctx
+        .metric
+        .require_model(MetricOp::Length3d)?
+        .coordinate_scale();
     if data.shape().is_empty() || data.shape().topological_dimension() == Dimension::Point {
         return Ok(0.0);
     }
@@ -800,7 +804,7 @@ pub(crate) fn unary_minimum_clearance(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<f64> {
-    let model = ctx.metric.require_model("minimum_clearance")?;
+    let model = ctx.metric.require_model(MetricOp::MinimumClearance)?;
     metric_minimum_clearance(model, ctx.frame.crs_str(), data.shape())
 }
 
@@ -809,7 +813,7 @@ pub(crate) fn unary_minimum_clearance_line(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("minimum_clearance_line")?;
+    let model = ctx.metric.require_model(MetricOp::MinimumClearanceLine)?;
     metric_minimum_clearance_line(model, ctx.frame.crs_str(), data.shape())
 }
 
@@ -851,7 +855,10 @@ pub(crate) fn binary_distance_3d(
     right: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<f64> {
-    let to_metre = ctx.metric.require_model("distance_3d")?.coordinate_scale();
+    let to_metre = ctx
+        .metric
+        .require_model(MetricOp::Distance3d)?
+        .coordinate_scale();
     if left.axes_all_z() && right.axes_all_z() {
         return Ok(scale_length(
             crate::geometry::distance_3d_with_parts(
@@ -874,7 +881,7 @@ pub(crate) fn binary_hausdorff_distance(
     ctx: &CachelessRowContext<'_>,
     densify: Option<f64>,
 ) -> Result<f64> {
-    let model = ctx.metric.require_model("hausdorff_distance")?;
+    let model = ctx.metric.require_model(MetricOp::HausdorffDistance)?;
     metric_hausdorff_densified(model, left.shape(), right.shape(), densify)
 }
 
@@ -885,7 +892,7 @@ pub(crate) fn binary_frechet_distance(
     ctx: &CachelessRowContext<'_>,
     densify: Option<f64>,
 ) -> Result<f64> {
-    let model = ctx.metric.require_model("frechet_distance")?;
+    let model = ctx.metric.require_model(MetricOp::FrechetDistance)?;
     metric_frechet_densified(model, left.shape(), right.shape(), densify)
 }
 
@@ -961,7 +968,7 @@ pub(crate) fn unary_line_interpolate_point_m(
 ) -> Result<Shape> {
     linref_point_lane(
         line_interpolate_shape_m(
-            ctx.metric.require_model("line_interpolate")?,
+            ctx.metric.require_model(MetricOp::LineInterpolate)?,
             data,
             m.get(ctx.lane.row()),
         ),
@@ -979,7 +986,11 @@ pub(crate) fn unary_line_substring_m(
     let range =
         MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
     linref_linestring_lane(
-        line_substring_shape_m(ctx.metric.require_model("line_substring")?, data, range),
+        line_substring_shape_m(
+            ctx.metric.require_model(MetricOp::LineSubstring)?,
+            data,
+            range,
+        ),
         ctx.lane.is_array(),
     )
 }
@@ -992,7 +1003,7 @@ pub(crate) fn unary_interpolate_m(
     end_m: &F64Param,
     overwrite: bool,
 ) -> Result<Shape> {
-    let model = ctx.metric.require_model("interpolate_m")?;
+    let model = ctx.metric.require_model(MetricOp::InterpolateM)?;
     let range =
         MeasureRange::interpolate_m(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
     metric_interpolate_m(model, data.shape(), range, overwrite)

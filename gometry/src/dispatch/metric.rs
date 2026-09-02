@@ -1,3 +1,4 @@
+use super::operation::MetricOp;
 use crate::DistanceUnit;
 use crate::boundary::metadata::Frame;
 use crate::broadcast::resolve_metric;
@@ -14,15 +15,22 @@ pub(crate) enum MetricResolver {
     /// not re-derive it for every geometry.
     Antimeridian,
     /// Distance/area/length/buffer and other CRS-aware measure/constructive ops.
-    Metric { unit: Option<DistanceUnit> },
+    Metric {
+        op: MetricOp,
+        unit: Option<DistanceUnit>,
+    },
     /// 3D Euclidean measures (`distance_3d`/`length_3d`). Same unit policy as
     /// [`Self::Metric`], but a geographic CRS is rejected rather than measured
     /// geodesically — see [`crate::broadcast::resolve_metric_3d`].
-    Metric3d { unit: Option<DistanceUnit> },
+    Metric3d {
+        op: MetricOp,
+        unit: Option<DistanceUnit>,
+    },
     /// Linear-referencing distances: CRS-aware like [`Self::Metric`], but a
     /// normalized call uses fractions of line length and therefore rejects
     /// `unit=`.
     LineMetric {
+        op: MetricOp,
         unit: Option<DistanceUnit>,
         normalized: bool,
     },
@@ -33,9 +41,13 @@ impl MetricResolver {
     /// [`crate::dispatch::Operation::resolver`].
     pub(crate) const fn with_unit(self, unit: Option<DistanceUnit>) -> Self {
         match self {
-            Self::Metric { .. } => Self::Metric { unit },
-            Self::Metric3d { .. } => Self::Metric3d { unit },
-            Self::LineMetric { normalized, .. } => Self::LineMetric { unit, normalized },
+            Self::Metric { op, .. } => Self::Metric { op, unit },
+            Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
+            Self::LineMetric { op, normalized, .. } => Self::LineMetric {
+                op,
+                unit,
+                normalized,
+            },
             Self::Antimeridian => Self::Antimeridian,
             other @ Self::None => other,
         }
@@ -43,9 +55,13 @@ impl MetricResolver {
 
     pub(crate) const fn with_line_unit(self, unit: Option<DistanceUnit>, normalized: bool) -> Self {
         match self {
-            Self::LineMetric { .. } => Self::LineMetric { unit, normalized },
-            Self::Metric { .. } => Self::Metric { unit },
-            Self::Metric3d { .. } => Self::Metric3d { unit },
+            Self::LineMetric { op, .. } => Self::LineMetric {
+                op,
+                unit,
+                normalized,
+            },
+            Self::Metric { op, .. } => Self::Metric { op, unit },
+            Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
             Self::Antimeridian => Self::Antimeridian,
             other @ Self::None => other,
         }
@@ -56,7 +72,6 @@ impl MetricResolver {
     pub(crate) fn resolve_ctx<'a>(
         self,
         frame: &Frame,
-        op: &str,
         scratch: &'a mut MetricScratch,
     ) -> pyo3::PyResult<MetricCtx<'a>> {
         scratch.model = None;
@@ -67,7 +82,7 @@ impl MetricResolver {
                 let model = scratch.model.insert(crs::metric_model(frame.crs_str())?);
                 Ok(MetricCtx::Antimeridian(model))
             },
-            Self::Metric { unit } => {
+            Self::Metric { op, unit } => {
                 let model = scratch
                     .model
                     .insert(resolve_metric(frame.crs_str(), unit, op)?);
@@ -76,7 +91,7 @@ impl MetricResolver {
                     .insert(crs::ResolvedMetric::from_model(model)?);
                 Ok(MetricCtx::Metric { model, metric })
             },
-            Self::Metric3d { unit } => {
+            Self::Metric3d { op, unit } => {
                 let model = scratch.model.insert(crate::broadcast::resolve_metric_3d(
                     frame.crs_str(),
                     unit,
@@ -87,7 +102,11 @@ impl MetricResolver {
                     .insert(crs::ResolvedMetric::from_model(model)?);
                 Ok(MetricCtx::Metric { model, metric })
             },
-            Self::LineMetric { unit, normalized } => {
+            Self::LineMetric {
+                op,
+                unit,
+                normalized,
+            } => {
                 let model = scratch.model.insert(crate::resolve_line_metric(
                     frame.crs_str(),
                     unit,
@@ -137,22 +156,24 @@ impl<'a> MetricCtx<'a> {
     /// The metric model a metric-resolved kernel is entitled to — the ONE
     /// spelling of the "registry said this op resolves a metric" invariant
     /// (14 kernels used to hand-roll this match with per-op error strings).
-    pub(crate) fn require_model(self, op: &str) -> crate::error::Result<&'a MetricModel> {
+    pub(crate) fn require_model(self, op: MetricOp) -> crate::error::Result<&'a MetricModel> {
         match self {
             Self::Metric { model, .. } => Ok(model),
             Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
-                "internal dispatch error: {op} missing metric context"
+                "internal dispatch error: {} missing metric context",
+                op.name()
             ))),
         }
     }
 
     /// The resolved metric a metric-resolved kernel is entitled to; the
     /// measure-kernel sibling of [`Self::require_model`].
-    pub(crate) fn require_resolved(self, op: &str) -> crate::error::Result<&'a ResolvedMetric> {
+    pub(crate) fn require_resolved(self, op: MetricOp) -> crate::error::Result<&'a ResolvedMetric> {
         match self {
             Self::Metric { metric, .. } => Ok(metric),
             Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
-                "internal dispatch error: {op} missing metric context"
+                "internal dispatch error: {} missing metric context",
+                op.name()
             ))),
         }
     }

@@ -135,7 +135,7 @@ pub(crate) fn line_interpolate_points_rows(
         array.crs_str(),
         unit,
         plan.is_fractional(),
-        "line_interpolate_points",
+        crate::dispatch::MetricOp::LineInterpolatePoints,
     )?;
     if let GeometryArrayStorage::Lines {
         coords,

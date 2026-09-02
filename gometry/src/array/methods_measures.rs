@@ -16,6 +16,7 @@ use crate::array::{
     polygon_measure_masked, pymethods, reduce_lines_or_polygons, resolve_metric,
     segmented_planar_lengths, segmented_planar_lengths_3d,
 };
+use crate::dispatch::MetricOp;
 
 #[pymethods]
 impl PyGeometryArray {
@@ -230,7 +231,7 @@ impl PyGeometryArray {
     ///     If the CRS lacks linear axis units for a metric result.
     #[getter]
     pub fn length_3d(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(mut values) = self.length_3d_unary_packed(py, None, "length_3d")? {
+        if let Some(mut values) = self.length_3d_unary_packed(py, None, MetricOp::Length3d)? {
             if let Some(mask) = self.missing() {
                 for (value, missing) in values.iter_mut().zip(mask.iter()) {
                     if missing {
@@ -243,7 +244,7 @@ impl PyGeometryArray {
         crate::dispatch::unary_array(
             py,
             self,
-            crate::dispatch::Operation::Length3d,
+            crate::dispatch::Operation::Metric(MetricOp::Length3d),
             None,
             None,
             crate::dispatch::kernels::unary_length_3d,
@@ -524,13 +525,13 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
-        op_name: &str,
+        op: MetricOp,
     ) -> PyResult<Option<Vec<f64>>> {
         if !matches!(self.storage(), GeometryArrayStorage::Polygons { .. }) {
             return Ok(None);
         }
         let missing = self.missing().cloned();
-        match resolve_metric(self.crs_str(), unit, op_name)? {
+        match resolve_metric(self.crs_str(), unit, op)? {
             crs::MetricModel::Planar { to_metre } => {
                 self.reduce_packed_columns_detached(py, move |columns| {
                     let PackedColumns::Polygons(polygon_columns) = columns else {
@@ -608,7 +609,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
-        op_name: &str,
+        op: MetricOp,
     ) -> PyResult<Option<Vec<f64>>> {
         if !matches!(
             self.storage(),
@@ -617,7 +618,7 @@ impl PyGeometryArray {
             return Ok(None);
         }
         let missing = self.missing().cloned();
-        match resolve_metric(self.crs_str(), unit, op_name)? {
+        match resolve_metric(self.crs_str(), unit, op)? {
             crs::MetricModel::Planar { to_metre } => {
                 self.reduce_packed_columns_detached(py, move |columns| {
                     let values = reduce_lines_or_polygons(
@@ -712,10 +713,10 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
-        op_name: &str,
+        op: MetricOp,
     ) -> PyResult<Option<Vec<f64>>> {
         let to_metre =
-            crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op_name)?.coordinate_scale();
+            crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op)?.coordinate_scale();
         if let GeometryArrayStorage::Points { .. } = self.storage() {
             let mut values = Vec::new();
             crate::boundary::try_reserve_vec(&mut values, self.len()).map_err(PyErr::from)?;

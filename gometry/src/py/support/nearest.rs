@@ -3,6 +3,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::array::{ArrayRow, ValidityMask};
+use crate::dispatch::MetricOp;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
     PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
@@ -52,8 +53,13 @@ pub(crate) fn py_nearest_points(
     right: &PyGeometry,
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Typed, Typed)> {
-    left.frame.compatible(&right.frame, "nearest_points")?;
-    let model = resolve_metric(left.crs_str(), unit, "nearest_points")?;
+    left.frame
+        .compatible(&right.frame, MetricOp::NearestPoints.name())?;
+    let model = resolve_metric(
+        left.crs_str(),
+        unit,
+        crate::dispatch::MetricOp::NearestPoints,
+    )?;
     let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
     let left_plan = left.plan_or_transient();
     let right_plan = right.plan_or_transient();
@@ -80,10 +86,10 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
         left.epoch(),
         point.crs_ref(),
         point.epoch(),
-        "line_locate_point",
+        MetricOp::LineLocatePoint.name(),
     )?;
-    let query = require_locate_point(point, "line_locate_point")?;
-    let model = resolve_line_metric(left.crs_str(), unit, normalized, "line_locate_point")?;
+    let query = require_locate_point(point, MetricOp::LineLocatePoint)?;
+    let model = resolve_line_metric(left.crs_str(), unit, normalized, MetricOp::LineLocatePoint)?;
     let left = left.clone();
     let result = py
         .detach(move || {
@@ -127,9 +133,13 @@ pub(crate) fn fixed_geometry_array_nearest_points(
         fixed.epoch(),
         array.crs_ref(),
         array.epoch(),
-        "nearest_points",
+        MetricOp::NearestPoints.name(),
     )?;
-    let model = resolve_metric(fixed.crs_str(), unit, "nearest_points")?;
+    let model = resolve_metric(
+        fixed.crs_str(),
+        unit,
+        crate::dispatch::MetricOp::NearestPoints,
+    )?;
     let fixed_plan = fixed.plan_or_transient();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
@@ -219,7 +229,8 @@ pub(crate) fn fixed_geometry_array_nearest_points(
 
 /// Extract the query `Point` for a linear-referencing locate, with the
 /// operation-tagged `TypeError` the scalar path raises.
-pub(crate) fn require_locate_point(point: &PyGeometry, operation: &str) -> PyResult<Point> {
+pub(crate) fn require_locate_point(point: &PyGeometry, operation: MetricOp) -> PyResult<Point> {
+    let operation = operation.name();
     match point.shape.shape() {
         Shape::Point(query) => Ok(*query),
         _ => Err(PyTypeError::new_err(format!(
@@ -232,8 +243,9 @@ pub(crate) fn require_locate_point(point: &PyGeometry, operation: &str) -> PyRes
 /// [`require_locate_point`], same error).
 pub(crate) fn require_locate_points<'a>(
     points: &'a PyGeometryArray,
-    operation: &str,
+    operation: MetricOp,
 ) -> PyResult<PointRows<'a>> {
+    let operation = operation.name();
     points
         .storage()
         .point_rows()

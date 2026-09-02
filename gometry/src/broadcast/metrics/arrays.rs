@@ -12,14 +12,14 @@ use crate::PackedColumnError;
 use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
-    Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryArrayStorage,
-    GeometryInput, Point, Py, PyGeometry, PyGeometryArray, PyResult, Python, Shape,
-    binary_frame_crs, bool_array, broadcast2_geometry, classify_required, crs,
-    finite_geodesic_value, float64_array, geodesic_point_columns_dwithin_shape_values,
-    geodesic_point_columns_to_shape_values, mask_missing, pair_distance_geodesic,
-    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, paired_arrays,
-    point_distance, resolve_metric, rows_err, same_storage_similarity_metric_zeros,
+    Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
+    PyGeometry, PyGeometryArray, PyResult, Python, Shape, SimilarityOp, binary_frame_crs,
+    bool_array, broadcast2_geometry, classify_required, crs, float64_array,
+    geodesic_point_columns_dwithin_shape_values, geodesic_point_columns_to_shape_values,
+    mask_missing, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
+    pair_dwithin_planar, paired_arrays, point_distance, resolve_metric, rows_err,
 };
+use crate::dispatch::MetricOp;
 use crate::geometry::packed_line_metrics::scale_metric_values;
 use crate::geometry::{
     PreparedPlan, ReduceSimd, bounds_distance_squared, pair_map4_guarded_f64, pair_select_mask,
@@ -39,18 +39,22 @@ fn float64_array_mask_missing(
     clippy::too_many_lines,
     reason = "scalar/array operand dispatch plus packed-line batch and per-pair lanes"
 )]
-pub(crate) fn array_crs_metric_float(
+pub(crate) fn array_crs_metric_float<M, P, K>(
     py: Python<'_>,
     array: &PyGeometryArray,
     other: &Bound<'_, PyAny>,
-    operation: &str,
+    operation: SimilarityOp,
     unit: Option<DistanceUnit>,
-    frechet_densify: Option<f64>,
-    packed_planar_lines: Option<
-        impl Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Send + Sync,
-    >,
-    kernel: impl Fn(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64> + Send + Sync,
-) -> PyResult<Py<PyAny>> {
+    packed_planar_lines: Option<P>,
+    kernel: K,
+) -> PyResult<Py<PyAny>>
+where
+    M: crate::broadcast::metrics::SimilarityMode,
+    P: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Send + Sync,
+    K: Fn(&crs::MetricModel, &Shape, &Shape) -> crate::error::Result<f64> + Send + Sync,
+{
+    let densify = operation.densify();
+    let operation_name = M::OP.name();
     use GeometryInput::{Many, One};
     match classify_required(other)? {
         One(right) => {
@@ -59,9 +63,9 @@ pub(crate) fn array_crs_metric_float(
                 array.epoch(),
                 right.crs_ref(),
                 right.epoch(),
-                operation,
+                operation_name,
             )?;
-            let model = resolve_metric(array.crs_str(), unit, operation)?;
+            let model = resolve_metric(array.crs_str(), unit, M::OP)?;
             if array.is_compact_nullable() {
                 let array = array.clone();
                 let right = Arc::clone(&right.shape);
@@ -74,19 +78,18 @@ pub(crate) fn array_crs_metric_float(
                             .rows_with_missing(|| f64::NAN)
                             .map(|row| match row {
                                 crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                                crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
-                                    if operation == "frechet_distance" {
-                                        crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                crate::array::ArrayRow::Present(row) => {
+                                    row.row().with_shape(|shape| {
+                                        M::eval(
                                             &model,
                                             shape,
                                             right.shape(),
-                                            frechet_densify,
+                                            densify,
                                             &mut frechet_scratch,
+                                            &kernel,
                                         )
-                                    } else {
-                                        kernel(&model, shape, right.shape())
-                                    }
-                                }),
+                                    })
+                                },
                             })
                             .collect_rows()
                     })
@@ -111,17 +114,14 @@ pub(crate) fn array_crs_metric_float(
                                 return Ok(f64::NAN);
                             }
                             row.with_shape(|left| {
-                                if operation == "frechet_distance" {
-                                    crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                                        &model,
-                                        left,
-                                        right.shape(),
-                                        frechet_densify,
-                                        &mut frechet_scratch,
-                                    )
-                                } else {
-                                    kernel(&model, left, right.shape())
-                                }
+                                M::eval(
+                                    &model,
+                                    left,
+                                    right.shape(),
+                                    densify,
+                                    &mut frechet_scratch,
+                                    &kernel,
+                                )
                             })
                         })
                         .collect_rows()
@@ -130,8 +130,8 @@ pub(crate) fn array_crs_metric_float(
             )
         },
         Many(right) => {
-            let (lefts, rights) = paired_arrays(array, right, operation)?;
-            let model = resolve_metric(array.crs_str(), unit, operation)?;
+            let (lefts, rights) = paired_arrays(array, right, operation_name)?;
+            let model = resolve_metric(array.crs_str(), unit, M::OP)?;
             let missing = crate::array::missing::union_pair(array.missing(), right.missing());
             if array.is_compact_nullable() || right.is_compact_nullable() {
                 let left = array.clone();
@@ -144,20 +144,21 @@ pub(crate) fn array_crs_metric_float(
                             .rows_with_missing(|| f64::NAN)
                             .zip(right.row_operation().rows_with_missing(|| f64::NAN))
                             .map(|(left, right)| match (left, right) {
-                                (crate::array::ArrayRow::Present(left), crate::array::ArrayRow::Present(right)) =>
-                                    left.row().with_shape(|left| right.row().with_shape(|right| {
-                                        if operation == "frechet_distance" {
-                                            crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                                                &model,
-                                                left,
-                                                right,
-                                                frechet_densify,
-                                                &mut frechet_scratch,
-                                            )
-                                        } else {
-                                            kernel(&model, left, right)
-                                        }
-                                    })),
+                                (
+                                    crate::array::ArrayRow::Present(left),
+                                    crate::array::ArrayRow::Present(right),
+                                ) => left.row().with_shape(|left| {
+                                    right.row().with_shape(|right| {
+                                        M::eval(
+                                            &model,
+                                            left,
+                                            right,
+                                            densify,
+                                            &mut frechet_scratch,
+                                            &kernel,
+                                        )
+                                    })
+                                }),
                                 _ => Ok(f64::NAN),
                             })
                             .collect_rows()
@@ -166,52 +167,18 @@ pub(crate) fn array_crs_metric_float(
                 );
             }
             if Arc::ptr_eq(&lefts, &rights)
-                && operation == "hausdorff_distance"
-                && crate::array::row_map_is_identity(match &*lefts {
-                    GeometryArrayStorage::Lines { row_map, .. } => row_map.as_deref(),
-                    _ => crate::array::RowSelectionRef::Identity,
-                })
+                && let Some(values) =
+                    M::try_same_storage_identity(&model, &lefts, missing.as_ref())?
             {
-                for (row_index, row) in lefts.iter_rows().enumerate() {
-                    if missing
-                        .as_ref()
-                        .is_some_and(|mask| mask.is_missing(row_index))
-                    {
-                        continue;
-                    }
-                    row.with_shape(crate::broadcast::metrics::require_nonempty_hausdorff)?;
-                }
-                // Domain validation before the identity zeros path: out-of-
-                // domain latitudes must still raise under a geodesic model.
-                if let crs::MetricModel::Geodesic { frame, .. } = &model {
-                    for (row_index, row) in lefts.iter_rows().enumerate() {
-                        if missing
-                            .as_ref()
-                            .is_some_and(|mask| mask.is_missing(row_index))
-                        {
-                            continue;
-                        }
-                        row.with_shape(|shape| {
-                            crs::ensure_geographic_domain_in_frame(*frame, shape)
-                        })?;
-                    }
-                }
-                return float64_array_mask_missing(
-                    py,
-                    same_storage_similarity_metric_zeros(&lefts),
-                    missing.as_ref(),
-                );
+                return float64_array_mask_missing(py, values, missing.as_ref());
             }
             if let crs::MetricModel::Planar { to_metre } = &model
                 && let (Some(left_lines), Some(right_lines)) =
                     (lefts.line_rows(), rights.line_rows())
                 && left_lines.is_packed_pair(&right_lines)
             {
-                let frechet_has_empty_line = operation == "frechet_distance"
-                    && (0..left_lines.len()).any(|row| {
-                        left_lines.row_xy(row).0.is_empty() || right_lines.row_xy(row).0.is_empty()
-                    });
-                if operation == "hausdorff_distance" && missing.is_none() {
+                let has_empty_line = M::has_empty_line(&left_lines, &right_lines);
+                if densify.is_none() && missing.is_none() && !has_empty_line {
                     let len = left_lines.len();
                     let scale = to_metre.get();
                     return float64_array(
@@ -222,38 +189,11 @@ pub(crate) fn array_crs_metric_float(
                             let left_view = left_lines.packed_column_view().expect("checked above");
                             let right_view =
                                 right_lines.packed_column_view().expect("checked above");
-                            let mut values = vec![0.0; len];
-                            crate::geometry::hausdorff_distance_line_columns_batch(
-                                left_view,
-                                right_view,
-                                &mut values,
-                            )?;
-                            crate::geometry::scale_metric_values(&mut values, scale);
-                            Ok::<_, crate::error::Error>(values)
+                            M::packed_batch(left_view, right_view, len, scale)
                         })?,
                     );
                 }
-                if operation == "frechet_distance" && missing.is_none() && !frechet_has_empty_line {
-                    let len = left_lines.len();
-                    let scale = to_metre.get();
-                    let values = py.detach(move || {
-                        let left_lines = lefts.line_rows().expect("checked above");
-                        let right_lines = rights.line_rows().expect("checked above");
-                        let left_view = left_lines.packed_column_view().expect("checked above");
-                        let right_view = right_lines.packed_column_view().expect("checked above");
-                        let mut values = vec![0.0; len];
-                        crate::geometry::frechet_distance_line_columns_batch(
-                            left_view,
-                            right_view,
-                            &mut values,
-                        );
-                        crate::geometry::scale_metric_values(&mut values, scale);
-                        values
-                    });
-                    return float64_array(py, values);
-                }
                 if let Some(line_kernel) = packed_planar_lines {
-                    let is_frechet = operation == "frechet_distance";
                     return float64_array(
                         py,
                         py.detach(move || {
@@ -270,11 +210,17 @@ pub(crate) fn array_crs_metric_float(
                                         && std::ptr::eq(left_ys.as_ptr(), right_ys.as_ptr())
                                         && left_xs.len() == right_xs.len()
                                     {
-                                        if left_xs.is_empty() && is_frechet {
-                                            return line_kernel(
-                                                left_xs, left_ys, right_xs, right_ys,
+                                        if left_xs.is_empty()
+                                            && let Some(value) = M::identical_empty(
+                                                &line_kernel,
+                                                left_xs,
+                                                left_ys,
+                                                right_xs,
+                                                right_ys,
+                                                to_metre.get(),
                                             )
-                                            .map(|value| value * to_metre.get());
+                                        {
+                                            return value;
                                         }
                                         return Ok(if left_xs.is_empty() {
                                             f64::INFINITY
@@ -303,17 +249,14 @@ pub(crate) fn array_crs_metric_float(
                             if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                                 return Ok(f64::NAN);
                             }
-                            if operation == "frechet_distance" {
-                                crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                                    &model,
-                                    &left,
-                                    &right,
-                                    frechet_densify,
-                                    &mut frechet_scratch,
-                                )
-                            } else {
-                                kernel(&model, &left, &right)
-                            }
+                            M::eval(
+                                &model,
+                                &left,
+                                &right,
+                                densify,
+                                &mut frechet_scratch,
+                                &kernel,
+                            )
                         })
                         .collect_rows()
                 })
@@ -328,14 +271,16 @@ pub(crate) fn crs_metric_binary_geometry_broadcast(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
-    operation: &str,
+    operation: MetricOp,
     unit: Option<DistanceUnit>,
     kernel: impl Fn(&crs::MetricModel, &PreparedPlan, &PreparedPlan) -> crate::error::Result<Shape>
     + Send
     + Sync,
 ) -> PyResult<Py<PyAny>> {
     let model = resolve_metric(binary_frame_crs(left, right).as_deref(), unit, operation)?;
-    broadcast2_geometry(py, left, right, operation, move |a, b| kernel(&model, a, b))
+    broadcast2_geometry(py, left, right, operation.name(), move |a, b| {
+        kernel(&model, a, b)
+    })
 }
 
 /// Element-wise lane ladder for array × array CRS-aware metrics, shared by
@@ -486,7 +431,7 @@ pub(crate) fn array_crs_distances(
     py: Python<'_>,
     array: &PyGeometryArray,
     other: &Bound<'_, PyAny>,
-    operation: &str,
+    operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     // Operand classification and structural checks (length, frame) come
@@ -500,7 +445,7 @@ pub(crate) fn array_crs_distances(
                 array.epoch(),
                 right.crs_ref(),
                 right.epoch(),
-                operation,
+                operation.name(),
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar scalar-vs-array: build the fixed operand's distance parts ONCE
@@ -650,7 +595,7 @@ pub(crate) fn array_crs_distances(
                                     let row_index = row.logical();
                                     let left = rows.prepared(row);
                                     let left_cache = rows.frame_cache(row_index);
-                                    finite_geodesic_value(
+                                    crs::finite(
                                         left.geodesic_distance_cached(
                                             &left_cache,
                                             &right_shape,
@@ -660,7 +605,7 @@ pub(crate) fn array_crs_distances(
                                             flattening,
                                             metric,
                                         )?,
-                                        "geodesic distance",
+                                        crs::GeodesicCalculation::Distance,
                                     )
                                 })
                                 .collect_rows())
@@ -672,7 +617,7 @@ pub(crate) fn array_crs_distances(
             unreachable!("metric model is Planar or Geodesic")
         },
         Many(right) => {
-            paired_arrays(array, right, operation)?;
+            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar packed × packed: pure column zip — one guarded-sqrt distance
             // per pair (`hypot` is a libm call at every x86-64 level), no
@@ -799,7 +744,7 @@ pub(crate) fn array_crs_dwithin(
     array: &PyGeometryArray,
     other: &Bound<'_, PyAny>,
     distance: f64,
-    operation: &str,
+    operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
@@ -808,7 +753,7 @@ pub(crate) fn array_crs_dwithin(
         Many(right) => {
             // Structural checks (length, frame) precede metric-model resolution
             // — see `array_crs_distances`.
-            paired_arrays(array, right, operation)?;
+            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Resolve the geodesic ellipsoid ONCE for the whole array pair.
             let resolved = crs::ResolvedMetric::from_model(&model)?;
@@ -955,7 +900,7 @@ pub(crate) fn array_crs_dwithin_per_element(
     array: &PyGeometryArray,
     other: &Bound<'_, PyAny>,
     distance: &F64Param,
-    operation: &str,
+    operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
@@ -966,7 +911,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                 array.epoch(),
                 right.crs_ref(),
                 right.epoch(),
-                operation,
+                operation.name(),
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
@@ -1031,7 +976,7 @@ pub(crate) fn array_crs_dwithin_per_element(
             bool_array(py, results)
         },
         Many(right) => {
-            paired_arrays(array, right, operation)?;
+            paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let results: Vec<bool> = match &resolved {
@@ -1126,15 +1071,16 @@ pub(crate) fn array_crs_dwithin_scalar(
     array: &PyGeometryArray,
     other: &PyGeometry,
     distance: f64,
-    operation: &str,
+    operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    let operation_name = operation.name();
     Frame::compatible_parts(
         array.crs_ref(),
         array.epoch(),
         other.crs_ref(),
         other.epoch(),
-        operation,
+        operation_name,
     )?;
     let model = resolve_metric(array.crs_str(), unit, operation)?;
     // The physical storage uses a finite NaN placeholder for missing rows.

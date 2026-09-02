@@ -6,6 +6,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::dispatch::MetricOp;
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_transform_methods::{
     Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
@@ -42,7 +43,7 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::Buffer,
+            crate::dispatch::Operation::Metric(MetricOp::Buffer),
             unit,
             default,
             move |data, ctx| {
@@ -82,7 +83,7 @@ impl PyGeometry {
             scalar,
             py,
             self,
-            crate::dispatch::Operation::OffsetCurve,
+            crate::dispatch::Operation::Metric(MetricOp::OffsetCurve),
             unit,
             default,
             move |data, ctx| {
@@ -255,7 +256,7 @@ impl PyGeometry {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::Segmentize,
+                    crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     unit,
                     default,
                     move |data, ctx| {
@@ -270,7 +271,7 @@ impl PyGeometry {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::Segmentize,
+                    crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     None,
                     default,
                     move |data, ctx| {
@@ -358,7 +359,7 @@ impl PyGeometryArray {
         crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
-            crate::dispatch::Operation::Buffer,
+            crate::dispatch::Operation::Metric(MetricOp::Buffer),
             unit,
             "quadrant_segments",
             move |data, ctx, budget| {
@@ -398,7 +399,7 @@ impl PyGeometryArray {
         crate::dispatch::unary_array_shapes_budgeted(
             py,
             self,
-            crate::dispatch::Operation::OffsetCurve,
+            crate::dispatch::Operation::Metric(MetricOp::OffsetCurve),
             unit,
             "quadrant_segments",
             move |data, ctx, budget| {
@@ -591,7 +592,7 @@ impl PyGeometryArray {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::Segmentize,
+                    crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     unit,
                     crate::dispatch::PackedUnary::Segmentize {
                         max_segment_length: max_length.clone()
@@ -610,7 +611,7 @@ impl PyGeometryArray {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::Segmentize,
+                    crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     None,
                     crate::dispatch::PackedUnary::Densify {
                         fraction: fraction.clone()

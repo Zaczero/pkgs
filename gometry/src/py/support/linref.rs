@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::dispatch::MetricOp;
 use crate::geometry::PreparedPlan;
 use crate::py::support::{
     Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
@@ -76,11 +77,12 @@ pub(crate) fn resolve_line_metric(
     crs: Option<&str>,
     unit: Option<DistanceUnit>,
     normalized: bool,
-    op: &str,
+    op: MetricOp,
 ) -> PyResult<crate::crs::MetricModel> {
+    let op_name = op.name();
     if normalized && unit.is_some() {
         return Err(GeometryError::new_err(format!(
-            "{op}: unit does not apply to normalized distances (they are fractions of \
+            "{op_name}: unit does not apply to normalized distances (they are fractions of \
              total length); drop unit= or set normalized=False"
         )));
     }
@@ -313,8 +315,8 @@ pub(crate) fn crs_line_locate_point(
     normalized: bool,
     unit: Option<DistanceUnit>,
 ) -> PyResult<f64> {
-    let query = require_locate_point(point, "line_locate_point")?;
-    let model = resolve_line_metric(line.crs_str(), unit, normalized, "line_locate_point")?;
+    let query = require_locate_point(point, MetricOp::LineLocatePoint)?;
+    let model = resolve_line_metric(line.crs_str(), unit, normalized, MetricOp::LineLocatePoint)?;
     let line_plan = line.plan_or_transient();
     Ok(line_locate_shape(
         &model,

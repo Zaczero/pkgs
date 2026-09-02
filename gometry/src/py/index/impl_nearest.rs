@@ -176,7 +176,11 @@ impl PySpatialIndex {
         options: NearestOptions,
     ) -> PyResult<Vec<NearestCandidate>> {
         self.ensure_query_compatible(geometry, "spatial index nearest")?;
-        let metric = resolve_metric(self.metric_crs_str(geometry.crs_str()), unit, "nearest")?;
+        let metric = resolve_metric(
+            self.metric_crs_str(geometry.crs_str()),
+            unit,
+            crate::dispatch::MetricOp::Nearest,
+        )?;
         let query_plan = geometry.plan_or_transient();
         let mut frontier = BinaryHeap::new();
         let mut leaf_frontier = Vec::new();

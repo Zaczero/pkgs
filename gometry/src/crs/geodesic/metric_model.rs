@@ -101,6 +101,23 @@ pub(crate) struct GeodesicMetric {
     pub(crate) state: Arc<crate::crs::RuntimeState>,
 }
 
+impl GeodesicMetric {
+    pub(crate) fn from_model(model: &MetricModel) -> Result<Self> {
+        let MetricModel::Geodesic { crs, frame, state } = model else {
+            return Err(CrsError::invalid("expected a geodesic metric model"));
+        };
+        ensure_geodesic_lonlat_crs_at(crs, state)?;
+        let crs = normalize(crs)?;
+        let geodesic = with_geodesic_cache_at(&crs, state, |error| error, |g| Ok(Box::new(*g)))?;
+        Ok(Self {
+            crs,
+            geodesic,
+            frame: *frame,
+            state: Arc::clone(state),
+        })
+    }
+}
+
 /// A [`MetricModel`] with its batch-invariant CRS resolution done once.
 #[derive(Clone)]
 pub(crate) enum ResolvedMetric {
@@ -117,24 +134,7 @@ impl ResolvedMetric {
             MetricModel::Planar { to_metre } => Self::Planar {
                 to_metre: *to_metre,
             },
-            MetricModel::Geodesic { crs, state, .. } => {
-                ensure_geodesic_lonlat_crs_at(crs, state)?;
-                // Normalize ONCE per batch (was once per pair), keeping the
-                // geodesic-cache key identical to the per-pair path.
-                let crs = normalize(crs)?;
-                let geodesic =
-                    with_geodesic_cache_at(&crs, state, |error| error, |g| Ok(Box::new(*g)))?;
-                let frame = match model {
-                    MetricModel::Geodesic { frame, .. } => *frame,
-                    MetricModel::Planar { .. } => unreachable!(),
-                };
-                Self::Geodesic(GeodesicMetric {
-                    crs,
-                    frame,
-                    geodesic,
-                    state: Arc::clone(state),
-                })
-            },
+            MetricModel::Geodesic { .. } => Self::Geodesic(GeodesicMetric::from_model(model)?),
         })
     }
 }

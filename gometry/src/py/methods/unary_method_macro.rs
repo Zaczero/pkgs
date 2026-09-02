@@ -94,8 +94,17 @@ macro_rules! unary_spine_shapes_extras {
 }
 
 /// Emit the identical scalar/`GeometryArray` PyO3 shells for simple unary methods.
+macro_rules! unary_operation {
+    ($op:ident) => {
+        crate::dispatch::Operation::$op
+    };
+    ((Metric $op:ident)) => {
+        crate::dispatch::Operation::Metric(crate::dispatch::MetricOp::$op)
+    };
+}
+
 macro_rules! unary_shape_method {
-    ($name:ident, $op:ident, $doc:ident, $kernel:path) => {
+    ($name:ident, $op:tt, $doc:ident, $kernel:path) => {
         #[pymethods]
         impl PyGeometry {
             #[doc = $doc!(scalar)]
@@ -104,7 +113,7 @@ macro_rules! unary_shape_method {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     None,
                     default,
                     $kernel
@@ -120,7 +129,7 @@ macro_rules! unary_shape_method {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     None,
                     default,
                     $kernel
@@ -128,7 +137,7 @@ macro_rules! unary_shape_method {
             }
         }
     };
-    ($name:ident, $op:ident, $doc:ident, $kernel:path, synthesized) => {
+    ($name:ident, $op:tt, $doc:ident, $kernel:path, synthesized) => {
         #[pymethods]
         impl PyGeometry {
             #[doc = $doc!(scalar)]
@@ -137,7 +146,7 @@ macro_rules! unary_shape_method {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     None,
                     default,
                     $kernel
@@ -153,7 +162,7 @@ macro_rules! unary_shape_method {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     None,
                     synthesized,
                     $kernel
@@ -161,7 +170,7 @@ macro_rules! unary_shape_method {
             }
         }
     };
-    ($name:ident, $op:ident, $doc:ident, $kernel:path, unit_shape) => {
+    ($name:ident, $op:tt, $doc:ident, $kernel:path, unit_shape) => {
         #[pymethods]
         impl PyGeometry {
             #[doc = $doc!(scalar)]
@@ -175,7 +184,7 @@ macro_rules! unary_shape_method {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     default,
                     $kernel
@@ -192,7 +201,7 @@ macro_rules! unary_shape_method {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     default,
                     $kernel
@@ -200,7 +209,7 @@ macro_rules! unary_shape_method {
             }
         }
     };
-    ($name:ident, $op:ident, $doc:ident, $kernel:path, f64_unit) => {
+    ($name:ident, $op:tt, $doc:ident, $kernel:path, f64_unit) => {
         #[pymethods]
         impl PyGeometry {
             #[doc = $doc!(scalar)]
@@ -210,7 +219,7 @@ macro_rules! unary_shape_method {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     $kernel
                 )
@@ -226,14 +235,14 @@ macro_rules! unary_shape_method {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     $kernel
                 )
             }
         }
     };
-    ($name:ident, $op:ident, $doc:ident, $kernel:path, tolerance_unit) => {
+    ($name:ident, $op:tt, $doc:ident, $kernel:path, tolerance_unit) => {
         #[pymethods]
         impl PyGeometry {
             #[doc = $doc!(scalar)]
@@ -258,7 +267,7 @@ macro_rules! unary_shape_method {
                     scalar,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     default,
                     move |data, ctx| $kernel(data, ctx, tolerance.as_ref())
@@ -290,7 +299,7 @@ macro_rules! unary_shape_method {
                     array,
                     py,
                     self,
-                    crate::dispatch::Operation::$op,
+                    unary_operation!($op),
                     unit,
                     synthesized,
                     move |data, ctx| $kernel(data, ctx, tolerance.as_ref())

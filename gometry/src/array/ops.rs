@@ -387,7 +387,11 @@ impl PyGeometryArray {
         other: &Bound<'_, PyAny>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
-        let model = resolve_metric(self.crs_str(), unit, "shortest_line")?;
+        let model = resolve_metric(
+            self.crs_str(),
+            unit,
+            crate::dispatch::MetricOp::ShortestLine,
+        )?;
         if let crs::MetricModel::Geodesic { crs, frame, state } = model {
             if let Some(geometry) = exact_geometry(other) {
                 Frame::compatible_parts(
@@ -454,7 +458,7 @@ impl PyGeometryArray {
                 return Ok(self.scatter_present_result(present));
             }
             if let Some(array) = exact_geometry_array(other) {
-                paired_arrays(self, array, "shortest_line")?;
+                paired_arrays(self, array, crate::dispatch::MetricOp::ShortestLine.name())?;
                 let (lefts, rights) = (self.clone(), array.clone());
                 let missing = crate::array::missing::union_pair(self.missing(), array.missing());
                 let rows = Python::attach(|py| {
@@ -507,9 +511,13 @@ impl PyGeometryArray {
             return Err(expected_geometry_or_array());
         }
         Python::attach(|py| {
-            array_binary_geometry(py, self, other, "shortest_line", move |left, right| {
-                metric_shortest_line(&model, left, right)
-            })
+            array_binary_geometry(
+                py,
+                self,
+                other,
+                crate::dispatch::MetricOp::ShortestLine.name(),
+                move |left, right| metric_shortest_line(&model, left, right),
+            )
         })
     }
 
@@ -523,9 +531,13 @@ impl PyGeometryArray {
             return fixed_geometry_array_nearest_points(py, geometry, self, false, unit);
         }
         if let Some(array) = exact_geometry_array(other) {
-            paired_arrays(self, array, "nearest_points")?;
+            paired_arrays(self, array, crate::dispatch::MetricOp::NearestPoints.name())?;
             let (lefts, rights) = (self.clone(), array.clone());
-            let model = resolve_metric(self.crs_str(), unit, "nearest_points")?;
+            let model = resolve_metric(
+                self.crs_str(),
+                unit,
+                crate::dispatch::MetricOp::NearestPoints,
+            )?;
             let missing = crate::array::missing::union_pair(self.missing(), array.missing());
             if let crs::MetricModel::Geodesic { crs, frame, state } = model {
                 let pairs = py

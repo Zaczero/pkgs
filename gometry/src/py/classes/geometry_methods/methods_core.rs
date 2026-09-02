@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::dispatch::MetricOp;
 use crate::geometry::Bounds3D;
 use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
@@ -420,7 +421,7 @@ impl PyGeometry {
             crate::dispatch::unary_scalar(
                 py,
                 self,
-                crate::dispatch::Operation::Length3d,
+                crate::dispatch::Operation::Metric(MetricOp::Length3d),
                 None,
                 crate::dispatch::kernels::unary_length_3d,
             )
