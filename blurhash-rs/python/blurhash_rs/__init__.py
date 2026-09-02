@@ -48,9 +48,14 @@ def blurhash_decode(
     *,
     punch: float = 1,
 ) -> Image.Image:
+    if width <= 0 or height <= 0:
+        raise BlurhashDecodeError(
+            blurhash,
+            f'Invalid image dimensions: expected positive width and height, got {width}x{height}',
+        )
     try:
         data = decode_rgb(blurhash, width, height, punch)
-    except ValueError as e:
+    except (OverflowError, ValueError) as e:
         raise BlurhashDecodeError(blurhash, str(e)) from e
     else:
         return Image.frombuffer('RGB', (width, height), data, 'raw', 'RGB', 0, 1)

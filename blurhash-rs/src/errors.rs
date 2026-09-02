@@ -4,6 +4,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(crate) enum BlurhashError {
+    #[error("Invalid image dimensions: expected positive width and height, got {width}x{height}")]
+    InvalidImageDimensions { width: usize, height: usize },
+    #[error("Image dimensions {width}x{height} exceed the supported storage size")]
+    ImageDimensionsTooLarge { width: usize, height: usize },
     #[error("Invalid RGB buffer length: expected {expected}, got {got}")]
     InvalidRGBBufferLength { expected: usize, got: usize },
     #[error("Invalid {axis} component count: expected 1..=9, got {got}")]

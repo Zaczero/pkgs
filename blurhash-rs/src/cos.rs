@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::f32::consts::PI;
+use std::mem::size_of;
 use std::rc::Rc;
 
 use arrayvec::ArrayVec;
@@ -9,6 +10,22 @@ use crate::color::{LANES, V4};
 type CacheKey = (usize, usize);
 type CosAxisCache = ArrayVec<(CacheKey, Rc<[f32]>), 32>;
 type CosAxisSimdCache = ArrayVec<(CacheKey, Rc<[V4]>), 32>;
+
+pub(crate) fn dimensions_fit(
+    width: usize,
+    height: usize,
+    x_components: usize,
+    y_components: usize,
+) -> bool {
+    allocation_fits::<f32>(height, y_components)
+        && allocation_fits::<V4>(width, x_components.div_ceil(LANES))
+}
+
+fn allocation_fits<T>(len: usize, components: usize) -> bool {
+    len.checked_mul(components)
+        .and_then(|elements| elements.checked_mul(size_of::<T>()))
+        .is_some_and(|bytes| isize::try_from(bytes).is_ok())
+}
 
 pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;

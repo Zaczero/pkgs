@@ -1,11 +1,10 @@
 use std::hint::unlikely;
-use std::num::NonZeroUsize;
 
 use crate::color::{
     BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
 };
 use crate::errors::BlurhashError;
-use crate::{base83, cos, srgb};
+use crate::{RgbDimensions, base83, cos, srgb};
 
 struct ComponentGrid {
     x_components: usize,
@@ -20,12 +19,11 @@ fn sign_pow_05(v: f32) -> f32 {
 
 pub(crate) fn encode_rgb(
     rgb: &[u8],
-    width: usize,
-    height: usize,
+    dimensions: &RgbDimensions,
     x_components: u8,
     y_components: u8,
 ) -> Result<String, BlurhashError> {
-    let rgb_len = width * height * 3;
+    let rgb_len = dimensions.rgb_len();
     if unlikely(rgb.len() != rgb_len) {
         return Err(BlurhashError::InvalidRGBBufferLength {
             expected: rgb_len,
@@ -33,23 +31,11 @@ pub(crate) fn encode_rgb(
         });
     }
 
-    let Some(width) = NonZeroUsize::new(width) else {
-        return Ok(String::new());
-    };
-    let Some(height) = NonZeroUsize::new(height) else {
-        return Ok(String::new());
-    };
-
     validate_component_count("x", x_components)?;
     validate_component_count("y", y_components)?;
+    dimensions.validate_working_storage(usize::from(x_components), usize::from(y_components))?;
 
-    Ok(encode_rgb_impl(
-        rgb,
-        width,
-        height,
-        x_components,
-        y_components,
-    ))
+    Ok(encode_rgb_impl(rgb, dimensions, x_components, y_components))
 }
 
 fn validate_component_count(axis: &'static str, count: u8) -> Result<(), BlurhashError> {
@@ -61,17 +47,16 @@ fn validate_component_count(axis: &'static str, count: u8) -> Result<(), Blurhas
 
 fn encode_rgb_impl(
     rgb: &[u8],
-    width: NonZeroUsize,
-    height: NonZeroUsize,
+    dimensions: &RgbDimensions,
     x_components: u8,
     y_components: u8,
 ) -> String {
-    let width = width.get();
-    let height = height.get();
+    let width = dimensions.width();
+    let height = dimensions.height();
     let x_components = x_components as usize;
     let y_components = y_components as usize;
     let mut factors = accumulate_factors(rgb, width, height, x_components, y_components);
-    scale_factors(&mut factors, width, height);
+    scale_factors(&mut factors, dimensions.pixels());
     encode_factors(&factors)
 }
 
@@ -153,8 +138,8 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     }
 }
 
-fn scale_factors(factors: &mut ComponentGrid, width: usize, height: usize) {
-    let inv_wh = 1.0_f32 / (width * height) as f32;
+fn scale_factors(factors: &mut ComponentGrid, pixel_count: usize) {
+    let inv_wh = 1.0_f32 / pixel_count as f32;
     let scale_ac = inv_wh * 2.0;
     for j in 0..factors.y_components {
         let base = j * factors.blocks;

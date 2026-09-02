@@ -5,7 +5,7 @@ use crate::color::{
     BLUE, ComponentVectors, GREEN, LANES, MAX_COMPONENTS, RED, V4, component_vectors, row_vectors,
 };
 use crate::errors::BlurhashError;
-use crate::{base83, cos, srgb};
+use crate::{RgbDimensions, base83, cos, srgb};
 
 const AC_QUANT_LEVELS: usize = 19;
 const AC_QUANT_LEVELS_U32: u32 = AC_QUANT_LEVELS as u32;
@@ -26,34 +26,34 @@ const AC_DECODE_SCALE: [f32; AC_QUANT_LEVELS] = {
     table
 };
 
-struct DecodeLayout {
-    num_x: usize,
-    num_y: usize,
+pub(crate) struct DecodeLayout {
+    pub(crate) num_x: usize,
+    pub(crate) num_y: usize,
     num_components: usize,
     max_value: f32,
 }
 
 pub(crate) fn decode_rgb_into(
     blurhash: &str,
-    width: usize,
-    height: usize,
-    punch: f32,
+    dimensions: &RgbDimensions,
+    layout: &DecodeLayout,
     out_pixels: &mut [u8],
 ) -> Result<(), BlurhashError> {
-    if unlikely(width == 0 || height == 0) {
-        return Ok(());
-    }
-
     let bytes = blurhash.as_bytes();
-    let layout = decode_layout(bytes, punch)?;
-    validate_output_buffer(width, height, out_pixels)?;
-    let colors = decode_component_vectors(bytes, &layout)?;
-    render_pixels(width, height, out_pixels, &layout, &colors);
+    validate_output_buffer(dimensions.rgb_len(), out_pixels)?;
+    let colors = decode_component_vectors(bytes, layout)?;
+    render_pixels(
+        dimensions.width(),
+        dimensions.height(),
+        out_pixels,
+        layout,
+        &colors,
+    );
 
     Ok(())
 }
 
-fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, BlurhashError> {
+pub(crate) fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, BlurhashError> {
     if unlikely(bytes.len() < 6) {
         return Err(BlurhashError::BlurhashLengthMismatch {
             expected: 6,
@@ -92,14 +92,12 @@ fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, BlurhashError
 }
 
 const fn validate_output_buffer(
-    width: usize,
-    height: usize,
+    expected_len: usize,
     out_pixels: &[u8],
 ) -> Result<(), BlurhashError> {
-    let out_len = width * height * 3;
-    if out_pixels.len() != out_len {
+    if out_pixels.len() != expected_len {
         return Err(BlurhashError::InvalidRGBBufferLength {
-            expected: out_len,
+            expected: expected_len,
             got: out_pixels.len(),
         });
     }

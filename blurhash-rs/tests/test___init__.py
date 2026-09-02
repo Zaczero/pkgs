@@ -1,7 +1,9 @@
+import sys
 from pathlib import Path
 
 import pytest
 from blurhash_rs import BlurhashDecodeError, blurhash_decode, blurhash_encode
+from blurhash_rs._lib import encode_rgb
 from PIL import Image
 
 
@@ -65,6 +67,30 @@ def test_encode_1x1_red_matches_reference() -> None:
     assert blurhash_encode(img, 1, 1) == '00TI:j'
 
 
+@pytest.mark.parametrize('size', [(0, 0), (0, 1), (1, 0)])
+def test_encode_rejects_zero_dimensions(size: tuple[int, int]) -> None:
+    with pytest.raises(
+        ValueError,
+        match=r'Invalid image dimensions: expected positive width and height',
+    ):
+        blurhash_encode(Image.new('RGB', size))
+
+
+def test_decode_1x1_round_trip() -> None:
+    img = Image.new('RGB', (1, 1), (255, 0, 0))
+    decoded = blurhash_decode(blurhash_encode(img), 1, 1)
+    assert decoded.mode == 'RGB'
+    assert decoded.size == (1, 1)
+    assert decoded.tobytes() == bytes((255, 0, 0))
+
+
+@pytest.mark.parametrize('size', [(1, 1), (1, 2), (2, 1)])
+def test_decode_accepts_positive_dimension_boundaries(size: tuple[int, int]) -> None:
+    img = blurhash_decode('00TI:j', *size)
+    assert img.mode == 'RGB'
+    assert img.size == size
+
+
 def test_encode_small_pattern_matches_reference() -> None:
     img = Image.frombytes('RGB', (4, 3), _SMALL_PATTERN_RGB)
     assert blurhash_encode(img, 4, 3) == 'LzJkWT?SSs?F~q$um-krE0vfmJ5t'
@@ -119,6 +145,57 @@ def test_decode_invalid_blurhash_raises() -> None:
     with pytest.raises(BlurhashDecodeError) as excinfo:
         blurhash_decode('not a blurhash', 8, 8)
     assert excinfo.value.blurhash == 'not a blurhash'
+
+
+@pytest.mark.parametrize('size', [(0, 0), (0, 1), (1, 0)])
+def test_decode_rejects_zero_dimensions(size: tuple[int, int]) -> None:
+    with pytest.raises(
+        BlurhashDecodeError,
+        match=r'Invalid image dimensions: expected positive width and height',
+    ):
+        blurhash_decode('00TI:j', *size)
+
+
+def test_decode_rejects_width_height_overflow() -> None:
+    with pytest.raises(BlurhashDecodeError, match='Image dimensions'):
+        blurhash_decode('00TI:j', sys.maxsize, 3)
+
+
+def test_decode_rejects_rgb_channel_overflow() -> None:
+    max_usize = sys.maxsize * 2 + 1
+    with pytest.raises(BlurhashDecodeError, match='Image dimensions'):
+        blurhash_decode('00TI:j', max_usize // 3 + 1, 1)
+
+
+def test_decode_rejects_unrepresentable_cosine_storage() -> None:
+    with pytest.raises(BlurhashDecodeError, match='supported storage size'):
+        blurhash_decode('=000000000000000000000', 1, sys.maxsize // 3)
+
+
+def test_native_encode_accepts_largest_representable_rgb_length() -> None:
+    width = sys.maxsize // 3
+    with pytest.raises(
+        ValueError,
+        match=rf'Invalid RGB buffer length: expected {width * 3}, got 0',
+    ):
+        encode_rgb(b'', width, 1, 1, 1)
+
+
+@pytest.mark.parametrize(
+    'size',
+    [(sys.maxsize, 3), ((sys.maxsize * 2 + 1) // 3 + 1, 1)],
+)
+def test_native_encode_rejects_dimension_overflow(size: tuple[int, int]) -> None:
+    with pytest.raises(ValueError, match='Image dimensions'):
+        encode_rgb(b'', *size, 1, 1)
+
+
+@pytest.mark.parametrize('size', [(-1, 1), (1, -1), (1 << 128, 1), (1, 1 << 128)])
+def test_decode_rejects_negative_and_huge_python_dimensions(
+    size: tuple[int, int],
+) -> None:
+    with pytest.raises(BlurhashDecodeError):
+        blurhash_decode('00TI:j', *size)
 
 
 def test_decode_rejects_out_of_range_ac_component() -> None:
