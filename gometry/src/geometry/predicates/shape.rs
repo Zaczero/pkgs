@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
-    Bounds, Coordinates as _, GeometryErrorKind, Point, Shape, graph_relate_shapes,
-    point_equals_exact, point_on_segment, points_equal_exact, relate_pattern, same_point,
+    Coordinates as _, GeometryErrorKind, Point, Shape, graph_relate_shapes, point_equals_exact,
+    point_on_segment, points_equal_exact, relate_pattern, same_point,
 };
 
 impl Shape {
@@ -94,60 +94,6 @@ impl Shape {
 
     pub fn intersects(&self, other: &Self) -> bool {
         graph_relate_shapes(self, other).is_intersects()
-    }
-
-    /// Whether this shape is an axis-aligned rectangle: a hole-free polygon
-    /// whose four distinct corners are exactly the corners of `bounds` (the
-    /// caller's already-computed envelope). Such a shape is identical to its
-    /// bounding box, so box tests answer predicates against it exactly. The
-    /// `bounds` argument avoids recomputing the envelope. Cheap and
-    /// early-outs (non-polygons, holed, or non-quad rings) so it never slows
-    /// the general path.
-    // Exact float equality is intentional and correct: `bounds` is the exact
-    // min/max of these very vertices, so a corner is bit-identical to the
-    // extreme it achieves. An epsilon would misclassify a near-rectangle and
-    // hand back a wrong fast-path answer.
-    #[expect(
-        clippy::float_cmp,
-        reason = "bounds are the exact min/max of these vertices"
-    )]
-    pub(crate) fn is_axis_aligned_rectangle(&self, bounds: Bounds) -> bool {
-        let Self::Polygon(polygon) = self else {
-            return false;
-        };
-        if !polygon.holes.is_empty() {
-            return false;
-        }
-        let shell = polygon.shell.coords();
-        // A closed rectangle ring is exactly 5 coords (4 corners + the repeat).
-        if shell.coord_count() != 5
-            || bounds.minx() == bounds.maxx()
-            || bounds.miny() == bounds.maxy()
-        {
-            return false;
-        }
-        // Each of the four corners must sit on a distinct bbox corner; once all
-        // four are present the ring is the rectangle. `bounds` is the exact min/
-        // max of these vertices, so the equality tests need no epsilon.
-        let mut seen = [false; 4];
-        for point in shell.points().take(4) {
-            let col = if point.x == bounds.minx() {
-                0
-            } else if point.x == bounds.maxx() {
-                1
-            } else {
-                return false;
-            };
-            let row = if point.y == bounds.miny() {
-                0
-            } else if point.y == bounds.maxy() {
-                1
-            } else {
-                return false;
-            };
-            seen[col * 2 + row] = true;
-        }
-        seen.iter().all(|&corner| corner)
     }
 
     /// Visit one representative vertex per connected 1D/2D component (first
@@ -275,7 +221,6 @@ impl Shape {
                     && multipoint_left.len() == multipoint_right.len()
                     && multipoint_left
                         .members()
-                        .iter()
                         .zip(multipoint_right.members())
                         .all(
                             |(left_member, right_member)| match (left_member, right_member) {
@@ -287,8 +232,8 @@ impl Shape {
                                     crate::geometry::MultiMember::Value(left_index),
                                     crate::geometry::MultiMember::Value(right_index),
                                 ) => point_equals_exact::<Z, M>(
-                                    multipoint_left.point_at(*left_index),
-                                    multipoint_right.point_at(*right_index),
+                                    multipoint_left.point_at(left_index),
+                                    multipoint_right.point_at(right_index),
                                     tolerance,
                                 ),
                                 _ => false,
@@ -302,27 +247,23 @@ impl Shape {
                 (!Z || multiline_left.axes().has_z() == multiline_right.axes().has_z())
                     && (!M || multiline_left.axes().has_m() == multiline_right.axes().has_m())
                     && multiline_left.len() == multiline_right.len()
-                    && multiline_left
-                        .members()
-                        .iter()
-                        .zip(multiline_right.members())
-                        .all(
-                            |(left_member, right_member)| match (left_member, right_member) {
-                                (
-                                    crate::geometry::MultiMember::Empty,
-                                    crate::geometry::MultiMember::Empty,
-                                ) => true,
-                                (
-                                    crate::geometry::MultiMember::Value(left_index),
-                                    crate::geometry::MultiMember::Value(right_index),
-                                ) => points_equal_exact::<Z, M, _, _>(
-                                    &multiline_left.as_slice()[*left_index],
-                                    &multiline_right.as_slice()[*right_index],
-                                    tolerance,
-                                ),
-                                _ => false,
-                            },
-                        )
+                    && multiline_left.members().zip(multiline_right.members()).all(
+                        |(left_member, right_member)| match (left_member, right_member) {
+                            (
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Empty,
+                            ) => true,
+                            (
+                                crate::geometry::MultiMember::Value(left_index),
+                                crate::geometry::MultiMember::Value(right_index),
+                            ) => points_equal_exact::<Z, M, _, _>(
+                                &multiline_left.as_slice()[left_index],
+                                &multiline_right.as_slice()[right_index],
+                                tolerance,
+                            ),
+                            _ => false,
+                        },
+                    )
             },
             (Self::Polygon(left), Self::Polygon(right)) => {
                 left.equals_exact_impl::<Z, M>(right, tolerance)
@@ -333,7 +274,6 @@ impl Shape {
                     && multipolygon_left.len() == multipolygon_right.len()
                     && multipolygon_left
                         .members()
-                        .iter()
                         .zip(multipolygon_right.members())
                         .all(
                             |(left_member, right_member)| match (left_member, right_member) {
@@ -344,9 +284,9 @@ impl Shape {
                                 (
                                     crate::geometry::MultiMember::Value(left_index),
                                     crate::geometry::MultiMember::Value(right_index),
-                                ) => multipolygon_left.as_slice()[*left_index]
+                                ) => multipolygon_left.as_slice()[left_index]
                                     .equals_exact_impl::<Z, M>(
-                                        &multipolygon_right.as_slice()[*right_index],
+                                        &multipolygon_right.as_slice()[right_index],
                                         tolerance,
                                     ),
                                 _ => false,

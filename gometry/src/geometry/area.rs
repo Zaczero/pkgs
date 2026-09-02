@@ -4,7 +4,11 @@
 use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
-use crate::geometry::tessellation::exact::two_sum;
+#[cfg(test)]
+use crate::geometry::expansion::two_sum;
+use crate::geometry::expansion::{
+    expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim, two_product,
+};
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
 
@@ -116,31 +120,6 @@ const fn area_sign_to_winding(sign: AreaSign) -> RingWinding {
 const EPSILON: f64 = f64::EPSILON;
 const ERRBOUND: f64 = (3.0 + 16.0 * EPSILON) * EPSILON;
 
-fn two_product(a: f64, b: f64) -> (f64, f64) {
-    let product = a * b;
-    // Dekker splitting multiplies a finite near-max operand by 2^27 before
-    // it can recover the tail. That intermediate overflows even when the
-    // final product is ordinary (e.g. 2^1022 * 2^-1022), turning the exact
-    // rescue into NaN. FMA computes the exact residual without that enlarged
-    // intermediary.
-    let tail = if product.is_finite() {
-        a.mul_add(b, -product)
-    } else {
-        0.0
-    };
-    (product, tail)
-}
-
-fn fast_two_sum(a: f64, b: f64) -> (f64, f64) {
-    let x = a + b;
-    (x, fast_two_sum_tail(a, b, x))
-}
-
-fn fast_two_sum_tail(a: f64, b: f64, x: f64) -> f64 {
-    let bvirt = x - a;
-    b - bvirt
-}
-
 fn estimate(e: &[f64]) -> f64 {
     let mut q = e[0];
     for cur in &e[1..] {
@@ -149,115 +128,24 @@ fn estimate(e: &[f64]) -> f64 {
     q
 }
 
-fn fast_expansion_sum_zeroelim(e: &[f64], f: &[f64], h: &mut [f64]) -> usize {
-    if f.is_empty() {
-        h[..e.len()].copy_from_slice(e);
-        return e.len();
-    }
-    if e.is_empty() {
-        h[..f.len()].copy_from_slice(f);
-        return f.len();
-    }
-    let mut enow = e[0];
-    let mut fnow = f[0];
-    let mut eindex = 0;
-    let mut findex = 0;
-    let mut q;
-    let mut hh;
-    if (fnow > enow) == (fnow > -enow) {
-        q = enow;
-        eindex += 1;
-    } else {
-        q = fnow;
-        findex += 1;
-    }
-
-    let mut hindex = 0;
-    if eindex < e.len() && findex < f.len() {
-        enow = e[eindex];
-        fnow = f[findex];
-        let (qnew, tail) = if (fnow > enow) == (fnow > -enow) {
-            eindex += 1;
-            fast_two_sum(enow, q)
-        } else {
-            findex += 1;
-            fast_two_sum(fnow, q)
-        };
-        q = qnew;
-        hh = tail;
-        if hh != 0.0 {
-            h[hindex] = hh;
-            hindex += 1;
-        }
-
-        while eindex < e.len() && findex < f.len() {
-            enow = e[eindex];
-            fnow = f[findex];
-            let (qnew, tail) = if (fnow > enow) == (fnow > -enow) {
-                eindex += 1;
-                two_sum(q, enow)
-            } else {
-                findex += 1;
-                two_sum(q, fnow)
-            };
-            q = qnew;
-            hh = tail;
-            if hh != 0.0 {
-                h[hindex] = hh;
-                hindex += 1;
-            }
-        }
-    }
-
-    while eindex < e.len() {
-        enow = e[eindex];
-        let (qnew, tail) = two_sum(q, enow);
-        q = qnew;
-        hh = tail;
-        eindex += 1;
-        if hh != 0.0 {
-            h[hindex] = hh;
-            hindex += 1;
-        }
-    }
-
-    while findex < f.len() {
-        fnow = f[findex];
-        let (qnew, tail) = two_sum(q, fnow);
-        q = qnew;
-        hh = tail;
-        findex += 1;
-        if hh != 0.0 {
-            h[hindex] = hh;
-            hindex += 1;
-        }
-    }
-
-    if q != 0.0 || hindex == 0 {
-        h[hindex] = q;
-        hindex += 1;
-    }
-    hindex
-}
-
 /// Add two non-overlapping expansions without exposing their scratch storage to
 /// callers.  The exact-measurement fallbacks are deliberately cold, so keeping
 /// the common arithmetic substrate here is clearer than teaching every caller
 /// its own partial-expansion representation.
 fn expansion_sum(left: &[f64], right: &[f64]) -> Vec<f64> {
     let mut output = vec![0.0; left.len() + right.len()];
-    let len = fast_expansion_sum_zeroelim(left, right, &mut output);
+    let len = fast_expansion_sum_zeroelim(left, right, &mut output, false)
+        .expect("output holds both inputs");
     output.truncate(len);
     output
 }
 
 fn exact_product_expansion(left: f64, right: f64) -> Vec<f64> {
-    let (head, tail) = two_product(left, right);
-    if tail == 0.0 {
-        vec![head]
-    } else {
-        vec![tail, head]
-    }
+    let mut output = [0.0; 3];
+    let mut scratch = [0.0; 3];
+    let len = scale_expansion_zeroelim(&[left], right, &mut output, &mut scratch, false)
+        .expect("single-product buffers hold the expansion");
+    output[..len].to_vec()
 }
 
 /// Exact expansion for the shared-frame residual `value * scale - origin *
@@ -398,10 +286,12 @@ fn expansion_cross_terms_edges(
         let axby = [axby0, axby1];
         let aybx = [-aybx0, -aybx1];
         let mut term = [0.0; 4];
-        let term_len = fast_expansion_sum_zeroelim(&axby, &aybx, &mut term);
+        let term_len = fast_expansion_sum_zeroelim(&axby, &aybx, &mut term, false)
+            .expect("cross-term buffer holds both products");
         scratch.clear();
         scratch.resize(live.len() + term_len, 0.0);
-        let hlen = fast_expansion_sum_zeroelim(&live, &term[..term_len], &mut scratch);
+        let hlen = fast_expansion_sum_zeroelim(&live, &term[..term_len], &mut scratch, false)
+            .expect("scratch holds both expansions");
         // Ping-pong: live expansion is `scratch[..hlen]`; swap so `live` holds
         // it and `scratch` keeps capacity for the next edge (no `to_vec`).
         std::mem::swap(&mut live, &mut scratch);

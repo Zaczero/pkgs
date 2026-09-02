@@ -5,15 +5,14 @@ use ahash::HashSetExt as _;
 use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
-    line_crosses_antimeridian, line_is_closed, line_is_simple, minimum_clearance_witness,
-    multiline_is_simple, polygonal_repair, shell_is_convex, validate_geo_multi_polygon,
-    validate_line, validate_point, validate_points,
+    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple,
+    minimum_clearance_witness, multi_polygon_members_issue, multiline_is_simple, polygonal_repair,
+    shell_is_convex, validate_line, validate_point, validate_points,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
     MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
-    emit_from_original, finish_planar_squared_min, point_distance, ring_winding, same_point,
-    unique_xy_points, witness_pair,
+    emit_from_original, finish_planar_squared_min, point_distance, unique_xy_points, witness_pair,
 };
 
 impl Shape {
@@ -192,7 +191,7 @@ impl Shape {
                         .validate("multi polygon member", "$")
                         .map(|issue| issue.with_path_prefix(&format!("$[{idx}]")))
                 })
-                .or_else(|| validate_geo_multi_polygon(polygons, "$")),
+                .or_else(|| multi_polygon_members_issue(polygons, "$")),
             Self::GeometryCollection(geometries) => {
                 geometries.iter().enumerate().find_map(|(idx, geometry)| {
                     geometry
@@ -236,13 +235,12 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 let repaired = lines
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
-                            let line = &lines.as_slice()[*index];
+                            let line = &lines.as_slice()[index];
                             validate_line(line, "multi line string member")
                                 .is_none()
                                 .then(|| crate::geometry::MultiMember::Value(line.clone()))
@@ -285,14 +283,7 @@ impl Shape {
     /// (`false` for open lines and non-lineal geometry).
     pub fn is_ccw(&self) -> bool {
         match self {
-            Self::LineString(points) => {
-                points.coord_count() >= 4
-                    && points
-                        .first_coord()
-                        .zip(points.last_coord())
-                        .is_some_and(|(first, last)| same_point(first, last))
-                    && ring_winding(points).is_ccw()
-            },
+            Self::LineString(points) => line_is_ccw(points),
             _ => false,
         }
     }

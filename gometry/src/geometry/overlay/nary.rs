@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::ops::ControlFlow;
 
 use crate::error::Result;
 use crate::geometry::overlay::{
@@ -6,21 +7,41 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
-    AreaSign, Arrangement, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
+    AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
     GeometryKind, Point, Segment, Shape, TopologyGraph, XY, carry_overlay_ordinates,
     point_on_segment, same_point, segment_midpoint,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
 ///
-/// The source order is normalized before noding. This is not a reduction: all
-/// operands participate in the same topology graph and every output bucket is
-/// assembled once from that graph.
+/// The source order is normalized before noding. Unless disjoint bounds settle
+/// the operation, all operands participate in the same topology graph and
+/// every output bucket is assembled once from that graph.
 pub(crate) fn overlay_all<S: Borrow<Shape>>(
     geometries: &[S],
-    geographic: bool,
+    geographic: Option<crate::geographic::GeographicFrame>,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
+) -> Result<Shape> {
+    overlay_all_with_bounds_certificates(geometries, geographic, op, strictness, true)
+}
+
+#[cfg(test)]
+pub(super) fn overlay_all_without_bounds_certificates<S: Borrow<Shape>>(
+    geometries: &[S],
+    geographic: Option<crate::geographic::GeographicFrame>,
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+) -> Result<Shape> {
+    overlay_all_with_bounds_certificates(geometries, geographic, op, strictness, false)
+}
+
+fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
+    geometries: &[S],
+    geographic: Option<crate::geographic::GeographicFrame>,
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+    bounds_certificates: bool,
 ) -> Result<Shape> {
     if geometries.is_empty() {
         return Err(GeometryErrorKind::EmptyGeometrySequence {
@@ -29,17 +50,36 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
         .into());
     }
 
+    let bounds_facts = overlay_bounds_facts(geometries, geographic, op);
+
+    if bounds_certificates
+        && geometries.len() > 1
+        && op == OverlayOp::Intersection
+        && bounds_facts.raw_coordinate_bounds_sound
+        && intersection_bounds_empty(&bounds_facts.bounds)
+    {
+        return Ok(empty_nary_overlay_shape(
+            &geometries
+                .iter()
+                .map(|geometry| geometry.borrow())
+                .collect::<Vec<_>>(),
+            op,
+        ));
+    }
+
     let mut sources: Vec<Shape> = geometries
         .iter()
         .map(|geometry| {
             let shape = geometry.borrow();
-            if geographic && shape.crosses_antimeridian() {
-                crate::geometry::topology_split(shape).normalize()
+            if let Some(frame) = geographic
+                && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
+            {
+                Ok(shape.split_antimeridian_in_frame(frame)?.normalize())
             } else {
-                shape.normalize()
+                Ok(shape.normalize())
             }
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     // The left operand remains first for the only non-commutative operation.
     // Every other operation gets a canonical source order before graph
@@ -55,11 +95,31 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     let refs: Vec<&Shape> = sources.iter().collect();
     if geometries.len() == 1
         && op == OverlayOp::Intersection
-        && !(geographic && geometries[0].borrow().crosses_antimeridian())
+        && !(geographic.is_some_and(|frame| {
+            crate::geometry::crosses_antimeridian_in_frame(geometries[0].borrow(), frame)
+        }))
     {
         return Ok(geometries[0].borrow().clone());
     }
-    let shape = assemble_overlay(&refs, op)?;
+    let shape = if bounds_certificates
+        && geometries.len() > 1
+        && bounds_facts.raw_coordinate_bounds_sound
+        && disjoint_bounds_certify(&bounds_facts.bounds, op)
+    {
+        assemble_disjoint_overlay(
+            &refs,
+            geographic,
+            op,
+            bounds_facts.raw_polygon_loops_eligible,
+        )?
+    } else {
+        assemble_overlay(
+            &refs,
+            geographic,
+            op,
+            bounds_facts.raw_polygon_loops_eligible,
+        )?
+    };
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
     } else {
@@ -70,47 +130,205 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
 
-fn assemble_overlay(inputs: &[&Shape], op: OverlayOp) -> Result<Shape> {
-    let graph = TopologyGraph::cartesian_many(inputs);
+struct OverlayBoundsFacts {
+    bounds: Vec<Option<Bounds>>,
+    raw_coordinate_bounds_sound: bool,
+    raw_polygon_loops_eligible: bool,
+}
+
+fn overlay_bounds_facts<S: Borrow<Shape>>(
+    inputs: &[S],
+    geographic: Option<crate::geographic::GeographicFrame>,
+    op: OverlayOp,
+) -> OverlayBoundsFacts {
+    let bounds = inputs
+        .iter()
+        .map(|input| input.borrow().bounds())
+        .collect::<Vec<_>>();
+    let raw_coordinate_bounds_sound = geographic.is_none_or(|frame| {
+        inputs.iter().zip(&bounds).all(|(input, bounds)| {
+            bounds.is_some_and(|bounds| {
+                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(input.borrow()),
+                    bounds,
+                    frame,
+                )
+            })
+        })
+    });
+    let raw_polygon_loops_eligible = op == OverlayOp::Union
+        && raw_coordinate_bounds_sound
+        && !inputs
+            .iter()
+            .any(|input| has_nonempty_point_or_line_support(input.borrow()));
+    OverlayBoundsFacts {
+        bounds,
+        raw_coordinate_bounds_sound,
+        raw_polygon_loops_eligible,
+    }
+}
+
+fn disjoint_bounds_certify(bounds: &[Option<Bounds>], op: OverlayOp) -> bool {
+    match op {
+        OverlayOp::Difference => bounds
+            .first()
+            .and_then(|bounds| *bounds)
+            .is_some_and(|left| {
+                bounds[1..]
+                    .iter()
+                    .filter_map(|right| *right)
+                    .all(|right| bounds_strictly_disjoint(left, right))
+            }),
+        OverlayOp::Union | OverlayOp::SymmetricDifference => {
+            crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |_, _| {
+                ControlFlow::Break(())
+            })
+            .is_continue()
+        },
+        OverlayOp::Intersection => false,
+    }
+}
+
+fn bounds_strictly_disjoint(left: Bounds, right: Bounds) -> bool {
+    left.maxx() < right.minx()
+        || right.maxx() < left.minx()
+        || left.maxy() < right.miny()
+        || right.maxy() < left.miny()
+}
+
+fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
+    let Some((first, rest)) = bounds.split_first() else {
+        return false;
+    };
+    let Some(mut bounds) = *first else {
+        return true;
+    };
+    for next in rest {
+        let Some(next) = *next else {
+            return true;
+        };
+        if !bounds.intersects(next) {
+            return true;
+        }
+        bounds = Bounds::new_raw(
+            bounds.minx().max(next.minx()),
+            bounds.miny().max(next.miny()),
+            bounds.maxx().min(next.maxx()),
+            bounds.maxy().min(next.maxy()),
+        );
+    }
+    false
+}
+
+fn assemble_overlay(
+    inputs: &[&Shape],
+    geographic: Option<crate::geographic::GeographicFrame>,
+    op: OverlayOp,
+    raw_polygon_loops_eligible: bool,
+) -> Result<Shape> {
+    let graph = if let Some(frame) = geographic {
+        TopologyGraph::geographic_many(inputs, frame)
+    } else {
+        TopologyGraph::cartesian_many(inputs)
+    };
     let source_graphs: Vec<TopologyGraph> = inputs
         .iter()
-        .map(|shape| TopologyGraph::cartesian(shape))
+        .map(|shape| {
+            geographic.map_or_else(
+                || TopologyGraph::cartesian(shape),
+                |frame| TopologyGraph::geographic(shape, frame),
+            )
+        })
         .collect();
-    let polygons = overlay_polygons(&graph, &source_graphs, op);
+    let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
     let lines = overlay_lines(&graph, &source_graphs, &polygons, op);
     let points = overlay_points(&graph, &source_graphs, &polygons, &lines, op);
     Ok(build_overlay_shape(points, lines, polygons))
+}
+
+/// Assemble disconnected sources independently, then use the ordinary overlay
+/// sink so result narrowing and mixed-dimension ordering stay graph-identical.
+fn assemble_disjoint_overlay(
+    inputs: &[&Shape],
+    geographic: Option<crate::geographic::GeographicFrame>,
+    op: OverlayOp,
+    raw_polygon_loops_eligible: bool,
+) -> Result<Shape> {
+    let sources = if op == OverlayOp::Difference {
+        &inputs[..1]
+    } else {
+        inputs
+    };
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    let mut polygons = Vec::new();
+    for source in sources {
+        let shape = assemble_overlay(&[*source], geographic, op, raw_polygon_loops_eligible)?;
+        append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
+    }
+    Ok(build_overlay_shape(points, lines, polygons))
+}
+
+fn append_overlay_parts(
+    shape: Shape,
+    points: &mut Vec<Point>,
+    lines: &mut Vec<crate::geometry::CoordSeq>,
+    polygons: &mut Vec<crate::geometry::Polygon>,
+) {
+    match shape {
+        Shape::Point(point) => points.push(point),
+        Shape::MultiPoint(multi) => points.extend(multi.iter()),
+        Shape::LineString(line) => lines.push(line.as_coords().clone()),
+        Shape::MultiLineString(multi) => {
+            lines.extend(multi.iter().map(|line| line.as_coords().clone()));
+        },
+        Shape::Polygon(polygon) => polygons.push(polygon),
+        Shape::MultiPolygon(multi) => polygons.extend(multi.iter().cloned()),
+        Shape::GeometryCollection(geometries) => {
+            for geometry in &geometries {
+                append_overlay_parts(geometry.clone(), points, lines, polygons);
+            }
+        },
+        Shape::Empty(..) => {},
+    }
 }
 
 fn overlay_polygons(
     graph: &TopologyGraph,
     sources: &[TopologyGraph],
     op: OverlayOp,
+    raw_polygon_loops_eligible: bool,
 ) -> Vec<crate::geometry::Polygon> {
-    if op == OverlayOp::Union
-        && graph.source_points.is_empty()
-        && !graph
-            .edges
-            .iter()
-            .any(|edge| graph.edge_has_line_source(edge))
-    {
+    if raw_polygon_loops_eligible {
         let loops = source_polygon_loops(sources);
         if !loops.is_empty() {
             return crate::geometry::winding_region(&loops, |winding| winding >= 1)
                 .into_iter()
-                .map(canonicalize_polygon)
+                .map(|polygon| canonicalize_polygon(polygon, graph.domain.frame()))
                 .collect();
         }
     }
-    let segments: Vec<Segment> = graph
+    let area_edges: Vec<(usize, Segment)> = graph
         .edges
         .iter()
-        .filter(|edge| graph.edge_has_area_source(edge))
-        .map(|edge| edge.segment)
+        .enumerate()
+        .filter(|(_, edge)| graph.edge_has_area_source(edge))
+        .map(|(index, edge)| (index, edge.segment))
         .collect();
-    if segments.is_empty() {
+    if area_edges.is_empty() {
         return Vec::new();
     }
+    let arranged_edges = if let Some(frame) = graph.domain.frame()
+        && !graph
+            .nodes
+            .iter()
+            .any(|node| node.point.y.abs() == frame.pole())
+    {
+        unwrap_geographic_area_edges(graph, frame, &area_edges)
+    } else {
+        area_edges.clone()
+    };
+    let segments: Vec<Segment> = arranged_edges.iter().map(|(_, segment)| *segment).collect();
 
     // The joint graph already split every area edge at every source contact.
     // The arrangement below is therefore the one and only face assembly for
@@ -127,7 +345,7 @@ fn overlay_polygons(
                 .iter()
                 .enumerate()
                 .map(|(source_row, source)| {
-                    face_area_side(&face.ring, graph, source_row as u32)
+                    face_area_side(&face.ring, graph, source_row as u32, &arranged_edges)
                         .unwrap_or_else(|| source.contains_area_interior(probe))
                 })
                 .collect();
@@ -140,7 +358,91 @@ fn overlay_polygons(
         .collect();
     crate::geometry::assemble_region_polygons(arrangement.region_rings(&selected, |keep| keep != 0))
         .into_iter()
-        .map(canonicalize_polygon)
+        .map(|polygon| canonicalize_polygon(polygon, graph.domain.frame()))
+        .collect()
+}
+
+fn has_nonempty_point_or_line_support(shape: &Shape) -> bool {
+    match shape {
+        Shape::Point(_) | Shape::LineString(_) => !shape.is_empty(),
+        Shape::MultiPoint(points) => !points.is_empty(),
+        Shape::MultiLineString(lines) => lines.iter().any(|line| !line.is_empty()),
+        Shape::GeometryCollection(geometries) => {
+            geometries.iter().any(has_nonempty_point_or_line_support)
+        },
+        Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::Empty(..) => false,
+    }
+}
+
+fn unwrap_geographic_area_edges(
+    graph: &TopologyGraph,
+    frame: crate::geographic::GeographicFrame,
+    edges: &[(usize, Segment)],
+) -> Vec<(usize, Segment)> {
+    let axis = frame.longitude();
+    let mut adjacency = vec![Vec::<(usize, f64)>::new(); graph.nodes.len()];
+    for &(_, segment) in edges {
+        let start = graph
+            .node_for(segment.start)
+            .expect("area edge start has a graph node")
+            .index();
+        let end = graph
+            .node_for(segment.end)
+            .expect("area edge end has a graph node")
+            .index();
+        let mut delta = axis
+            .shortest_edge(segment.start.x, segment.end.x)
+            .expect("validated geographic longitude")
+            .delta(axis);
+        if delta == 0.0
+            && let Some(full_turn) = axis.full_turn_delta(segment.start.x, segment.end.x)
+        {
+            delta = full_turn;
+        }
+        adjacency[start].push((end, delta));
+        adjacency[end].push((start, -delta));
+    }
+
+    let mut longitudes = vec![None; graph.nodes.len()];
+    for seed in 0..graph.nodes.len() {
+        if longitudes[seed].is_some() {
+            continue;
+        }
+        longitudes[seed] = Some(graph.nodes[seed].point.x);
+        let mut stack = vec![seed];
+        while let Some(node) = stack.pop() {
+            let longitude = longitudes[node].expect("assigned chart longitude");
+            for &(neighbor, delta) in &adjacency[node] {
+                if longitudes[neighbor].is_none() {
+                    longitudes[neighbor] = Some(longitude + delta);
+                    stack.push(neighbor);
+                }
+            }
+        }
+    }
+
+    edges
+        .iter()
+        .map(|&(index, segment)| {
+            let start = graph
+                .node_for(segment.start)
+                .expect("area edge start has a graph node")
+                .index();
+            let end = graph
+                .node_for(segment.end)
+                .expect("area edge end has a graph node")
+                .index();
+            (index, Segment {
+                start: XY::new(
+                    longitudes[start].expect("area edge start has a chart longitude"),
+                    segment.start.y,
+                ),
+                end: XY::new(
+                    longitudes[end].expect("area edge end has a chart longitude"),
+                    segment.end.y,
+                ),
+            })
+        })
         .collect()
 }
 
@@ -148,7 +450,7 @@ fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> 
     sources
         .iter()
         .flat_map(|source| source.area_support.iter())
-        .flat_map(|support| support.source.rings())
+        .flat_map(|support| support.source().rings())
         .filter_map(|ring| {
             let mut points: Vec<Point> = ring.iter_coords().collect();
             if points.len() > 1 && same_point(points[0], *points.last().expect("non-empty ring")) {
@@ -159,35 +461,67 @@ fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> 
         .collect()
 }
 
-fn face_area_side(ring: &[XY], graph: &TopologyGraph, source_row: u32) -> Option<bool> {
+fn face_area_side(
+    ring: &[XY],
+    graph: &TopologyGraph,
+    source_row: u32,
+    arranged_edges: &[(usize, Segment)],
+) -> Option<bool> {
     ring.array_windows::<2>().find_map(|[start, end]| {
-        graph.edges.iter().find_map(|edge| {
-            let same_edge = (same_point(edge.segment.start, *start)
-                && same_point(edge.segment.end, *end))
-                || (same_point(edge.segment.start, *end) && same_point(edge.segment.end, *start));
-            same_edge.then(|| graph.area_source_side_for_row(edge, *start, *end, source_row))?
+        arranged_edges.iter().find_map(|&(edge_index, segment)| {
+            let same_edge = (same_point(segment.start, *start) && same_point(segment.end, *end))
+                || (same_point(segment.start, *end) && same_point(segment.end, *start));
+            same_edge.then(|| {
+                graph.area_source_side_for_row(&graph.edges[edge_index], *start, *end, source_row)
+            })?
         })
     })
 }
 
-fn canonicalize_polygon(polygon: crate::geometry::Polygon) -> crate::geometry::Polygon {
-    let shell = crate::geometry::Ring::from_trusted_closed(crate::geometry::CoordSeq::from(
-        drop_collinear_vertices(polygon.shell.coords()),
+fn canonicalize_polygon(
+    polygon: crate::geometry::Polygon,
+    frame: Option<crate::geographic::GeographicFrame>,
+) -> crate::geometry::Polygon {
+    let canonicalize_point = |point: Point| {
+        frame.map_or(point, |frame| {
+            Point::new_raw_xy(
+                frame
+                    .longitude()
+                    .canonicalize(point.x)
+                    .expect("derived geographic longitude is finite")
+                    .get(),
+                point.y,
+            )
+        })
+    };
+    let shell = crate::geometry::Ring::from_closed(crate::geometry::CoordSeq::from(
+        drop_collinear_vertices(
+            polygon
+                .shell
+                .coords()
+                .iter_coords()
+                .map(canonicalize_point)
+                .collect(),
+        ),
     ));
     let holes = polygon
         .holes
         .iter()
         .map(|hole| {
-            crate::geometry::Ring::from_trusted_closed(crate::geometry::CoordSeq::from(
-                drop_collinear_vertices(hole.coords()),
+            crate::geometry::Ring::from_closed(crate::geometry::CoordSeq::from(
+                drop_collinear_vertices(
+                    hole.coords()
+                        .iter_coords()
+                        .map(canonicalize_point)
+                        .collect(),
+                ),
             ))
         })
         .collect();
     crate::geometry::Polygon::new(shell, holes)
 }
 
-fn drop_collinear_vertices(coords: &crate::geometry::CoordSeq) -> Vec<Point> {
-    let mut vertices: Vec<Point> = coords.iter_coords().collect();
+fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     if vertices.len() <= 4 {
         return vertices;
     }

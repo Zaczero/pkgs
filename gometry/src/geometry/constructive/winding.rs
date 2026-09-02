@@ -2,14 +2,17 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use ahash::HashSetExt as _;
+
 use crate::geometry::constructive::{
     Result, WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop,
     emit_cap, extend_cleaned, raw_offset_loop, strict_cycle, winding_region,
 };
 use crate::geometry::{
     BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq,
-    Orientation, Point, Polygon, Ring, Shape, column_all_finite, dedup_consecutive_points,
-    line_is_simple, orientation, polygon_parts_to_shape, ring_winding, shell_is_convex,
+    HashSet, MultiPoint, Orientation, Point, Polygon, Ring, Shape, canonical_f64_bits,
+    column_all_finite, dedup_consecutive_points, line_is_simple, orientation,
+    polygon_parts_to_shape, ring_winding, shell_is_convex,
 };
 
 /// A polygon encloses no interior when every ring has zero signed area — it
@@ -72,13 +75,12 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
         Shape::MultiPolygon(polygons) => Shape::geometry_collection(
             polygons
                 .members()
-                .iter()
                 .map(|member| match member {
                     crate::geometry::MultiMember::Empty => {
                         Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                     },
                     crate::geometry::MultiMember::Value(index) => degenerate_polygonal_as_linework(
-                        &Shape::Polygon(polygons.as_slice()[*index].clone()),
+                        &Shape::Polygon(polygons.as_slice()[index].clone()),
                     ),
                 })
                 .collect(),
@@ -134,7 +136,7 @@ pub(crate) fn convex_buffer_budgeted(
             return Ok(None);
         };
         return Ok(Some(Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(seq),
+            Ring::from_closed(seq),
             Vec::new(),
         ))));
     }
@@ -199,10 +201,7 @@ fn simple_erosion_polygon(
     if !line_is_simple(&ring) {
         return Ok(None);
     }
-    Ok(Some(Polygon::new(
-        Ring::from_trusted_closed(ring),
-        Vec::new(),
-    )))
+    Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())))
 }
 
 /// General positive round-join polygonal buffer — the own winding-number
@@ -360,9 +359,13 @@ fn simple_stroke_polygon(
     ring_ys.push(ys[0]);
     let ring = CoordSeq::from_columns(ring_xs.into(), ring_ys.into(), None, None);
     Ok((ring_winding(&ring).is_ccw()
-        && Shape::LineString(LineSeq::from_trusted(ring.clone())).is_simple())
+        && Shape::LineString(
+            LineSeq::try_new(ring.clone())
+                .expect("line coordinate sequence must contain at least two vertices"),
+        )
+        .is_simple())
     .then(|| Polygon {
-        shell: Ring::from_trusted_closed(ring),
+        shell: Ring::from_closed(ring),
         holes: Vec::new().into(),
     }))
 }
@@ -570,14 +573,12 @@ pub(crate) fn stroke_loops(
     // Reused per-thread gather: the second of the two per-row emitter
     // allocations (the reversed-side scratch is the other).
     thread_local! {
-        static GATHER: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
+        static GATHER: crate::scratch_pool::ScratchPool<Vec<Point>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut points = GATHER.with(|cell| {
-        let mut scratch = cell.take();
-        scratch.clear();
-        scratch.extend(chain.iter_coords());
-        scratch
-    });
+    let mut points = crate::scratch_pool::ScratchPool::checkout(&GATHER);
+    points.extend(chain.iter_coords());
     dedup_consecutive_points(&mut points);
     let result = match points.as_slice() {
         [] => Ok(Some(true)),
@@ -613,7 +614,6 @@ pub(crate) fn stroke_loops(
             Ok(Some(clean))
         },
     };
-    GATHER.with(|cell| cell.replace(points));
     result
 }
 
@@ -651,6 +651,33 @@ pub(crate) fn circle_loop(
     Ok(Some((xs, ys)))
 }
 
+/// Append one circle for every distinct topological X/Y coordinate, retaining
+/// the first member's ordinates as the disk center provenance.
+pub(crate) fn multipoint_loops(
+    loops: &mut Vec<LoopColumns>,
+    points: &MultiPoint,
+    distance: f64,
+    quadrant_segments: std::num::NonZeroU32,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<()>> {
+    let mut seen = HashSet::with_capacity(points.len());
+    for point in points.iter_coords() {
+        // `canonical_f64_bits` matches `same_topological_coordinate`: ±0.0
+        // share one key while every other finite coordinate remains bit-exact.
+        if !seen.insert((
+            canonical_f64_bits(point.x),
+            canonical_f64_bits(point.y),
+        )) {
+            continue;
+        }
+        let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)? else {
+            return Ok(None);
+        };
+        loops.push(circle);
+    }
+    Ok(Some(()))
+}
+
 /// The buffer of a single point: the inscribed-circle polygon directly —
 /// no arrangement work at all.
 pub(crate) fn point_buffer(
@@ -676,7 +703,7 @@ pub(crate) fn point_buffer(
         return Ok(None);
     };
     Ok(Some(Shape::Polygon(Polygon::new(
-        Ring::from_trusted_closed(seq),
+        Ring::from_closed(seq),
         Vec::new(),
     ))))
 }
@@ -700,12 +727,8 @@ pub(crate) fn collection_loops(
                 loops.push(circle);
             },
             Shape::MultiPoint(points) => {
-                for point in points.iter_coords() {
-                    let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)?
-                    else {
-                        return Ok(None);
-                    };
-                    loops.push(circle);
+                if multipoint_loops(loops, points, distance, quadrant_segments, budget)?.is_none() {
+                    return Ok(None);
                 }
             },
             Shape::LineString(chain) => {
@@ -1023,17 +1046,16 @@ pub(crate) fn stroke_side<S: WalkSink>(
     // Reused per-thread scratch: bulk buffers stroke thousands of rows,
     // and the reversed-side gather was one of two allocations per row.
     thread_local! {
-        static BACKWARD: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
+        static BACKWARD: crate::scratch_pool::ScratchPool<Vec<Point>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
     let backward = reversed.then(|| {
-        BACKWARD.with(|cell| {
-            let mut scratch = cell.take();
-            scratch.clear();
-            scratch.extend(chain.iter().rev().copied());
-            scratch
-        })
+        let mut scratch = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
+        scratch.extend(chain.iter().rev().copied());
+        scratch
     });
-    let walk: &[Point] = backward.as_deref().unwrap_or(chain);
+    let walk: &[Point] = backward.as_deref().map_or(chain, Vec::as_slice);
     let Some(plan) = WalkPlan::new(walk, false, distance, rule, step_angle) else {
         return Ok(None);
     };
@@ -1042,8 +1064,5 @@ pub(crate) fn stroke_side<S: WalkSink>(
         .iter()
         .all(|join| !matches!(join, WalkJoin::Excursion));
     plan.emit_into(step_angle, sink)?;
-    if let Some(scratch) = backward {
-        BACKWARD.with(|cell| cell.replace(scratch));
-    }
     Ok(Some(excursion_free))
 }

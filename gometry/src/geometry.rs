@@ -21,8 +21,9 @@ pub(crate) use frame::{
     scale_by_power_of_two, scaled_residual, unscale_area,
 };
 mod area;
+pub(crate) mod expansion;
 pub(crate) use access::{
-    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, ShapePart, canonicalize_zero, centroid_ring_sums,
+    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero, centroid_ring_sums,
     centroid_ring_sums_local, column_all_finite, column_mean2, column_minmax,
     line_length_3d_columns, line_length_columns, pair_map4_guarded_f64, pair_select_mask,
     shape_axes_all_z, simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all,
@@ -52,10 +53,10 @@ pub(crate) use types::{
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, geographic_crossing, geographic_crossing_bounds,
-    geographic_crossing_bounds_for_shapes, is_geographic_frame, is_ring_data_in_frame,
-    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
-    self_intersections_in_frame, topology_split, unary_antimeridian_derived,
+    DerivedPointStrategy, crosses_antimeridian_in_frame, geographic_crossing,
+    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes, geographic_frame,
+    is_geographic_frame, is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame,
+    repair_shape_in_frame, self_intersections_in_frame, unary_antimeridian_derived,
     validate_data_in_frame, validate_shape_in_frame,
 };
 mod arrangement;
@@ -67,7 +68,7 @@ mod coverage;
 #[doc(hidden)]
 pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
-pub(crate) use dimension::{DimMode, Dimension, dimension};
+pub(crate) use dimension::{Dimension, dimension};
 mod derived;
 pub(crate) use derived::{
     centroid_line_row_columns, centroid_polygon_row_columns, native_concave_hull,
@@ -82,6 +83,7 @@ mod line_index;
 mod linear;
 mod ordinates;
 mod overlay;
+pub(crate) use overlay::overlay_all;
 pub(crate) mod packed_line_metrics;
 mod point_location;
 mod predicates;
@@ -116,7 +118,7 @@ use constructive::{
 };
 pub(crate) use constructive::{
     DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about, densify_points_budgeted_with_placement,
-    rdp_keep, segmentize_points_budgeted,
+    rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, RTreeObject, coverage_clean, coverage_invalid_edges,
@@ -124,7 +126,7 @@ pub(crate) use coverage::{
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use distance::{
-    Distance3dParts, bounds_distance_squared, distance_3d_with_parts,
+    Distance3dParts, FrechetDpScratch, bounds_distance_squared, distance_3d_with_parts,
     frechet_distance_line_columns_batch, hausdorff_distance_line_columns_batch,
 };
 use distance::{GeodesicSweepCaps, line_length_3d};
@@ -154,23 +156,48 @@ pub(crate) use packed_line_metrics::PackedLineColumnView;
 pub(crate) use packed_line_metrics::scale_metric_values;
 pub(crate) use point_location::PointBatchTester;
 use predicates::{
-    LineworkChains, TouchDirections, classify_ring_pair, face_interior_point,
-    multi_polygon_members_issue, polygon_rings_issue, ring_classify_point, ring_contains_interior,
-    ring_encloses_pole, ring_label, ring_probe_point, segment_intersection_is_simple,
-    segments_are_adjacent, settle_touches, shell_is_convex, simplified_polygon_delta_is_simple,
-    validate_ring, visit_interacting_pairs,
+    LineworkChains, TouchDirections, classify_ring_pair, face_interior_point, polygon_rings_issue,
+    ring_classify_point, ring_contains_interior, ring_edge_membership, ring_encloses_pole,
+    ring_label, ring_probe_point, segment_intersection_is_simple, segments_are_adjacent,
+    settle_touches, shell_is_convex, simplified_polygon_delta_is_simple, validate_ring,
+    visit_interacting_pairs,
 };
 pub(crate) use predicates::{
-    PolePosition, RingClass, line_crosses_antimeridian, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, point_is_geographic_pole, pole_position, polygon_is_valid,
-    shape_encloses_pole, shape_has_polar_ring, shape_reaches_geographic_pole,
-    shape_spans_full_longitude,
+    RingClass, RingEdgeMembership, line_crosses_antimeridian, line_is_ccw, line_is_closed,
+    line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole, shape_has_polar_ring,
+    shape_reaches_geographic_pole_in_frame, shape_spans_full_longitude,
 };
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
-    empty_geometry, point_equals_exact, points_equal_exact, same_active_position, same_point,
-    same_topological_coordinate, topology_coordinate_bits_simd, unique_xy_points, wrap_index,
+    empty_geometry, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
+    same_active_position, same_point, same_topological_coordinate, topology_coordinate_bits_simd,
+    unique_xy_points, wrap_index,
 };
+
+/// Whether raw coordinate bounds can represent an operand in a geographic frame.
+///
+/// Longitude spellings cannot be compared as Cartesian coordinates across the
+/// seam, at a pole, or when the frame would canonicalize either bound edge.
+/// A rectangle supplies no shape, so it only needs the latter check.
+pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
+    shape: Option<&Shape>,
+    bounds: Bounds,
+    frame: crate::geographic::GeographicFrame,
+) -> bool {
+    shape.is_none_or(|shape| {
+        !crosses_antimeridian_in_frame(shape, frame)
+            && !shape_reaches_geographic_pole_in_frame(shape, frame)
+    })
+        && {
+            let unmoved = |x: f64| {
+                frame
+                    .longitude()
+                    .canonicalize(x)
+                    .is_ok_and(|canonical| canonical.get().to_bits() == x.to_bits())
+            };
+            unmoved(bounds.minx()) && unmoved(bounds.maxx())
+        }
+}
 
 /// Re-export seam: `pub(super)` kernel in the private `predicates` child.
 pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
@@ -182,12 +209,16 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
     predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
 }
 pub(crate) use relate::{
-    De9im, graph_intersects_rectangle_data, graph_relate_data, graph_relate_data_geographic,
-    graph_relate_shapes,
+    De9im, GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
+    is_axis_aligned_rectangle,
+    graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
+    graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
+    graph_relate_data_with_right_graph, graph_relate_shapes,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,
-    for_each_candidate_pair, for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
+    for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;
@@ -505,14 +536,14 @@ impl Polygon {
 
     /// Apply a per-ring coordinate transform to the shell and every hole. The
     /// transform preserves ring validity by construction (it operates on an
-    /// already-valid ring), so results are wrapped with [`Ring::from_trusted_closed`].
+    /// already-valid ring), so results are wrapped with [`Ring::from_closed`].
     fn map_rings(&self, transform: impl Fn(&CoordSeq) -> Vec<Point>) -> Self {
         Self {
-            shell: Ring::from_trusted_closed(transform(self.shell.coords())),
+            shell: Ring::from_closed(transform(self.shell.coords())),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| Ring::from_trusted_closed(transform(hole.coords())))
+                .map(|hole| Ring::from_closed(transform(hole.coords())))
                 .collect(),
         }
     }
@@ -523,11 +554,11 @@ impl Polygon {
         transform: impl Fn(&CoordSeq) -> Result<Vec<Point>, E>,
     ) -> Result<Self, E> {
         Ok(Self {
-            shell: Ring::from_trusted_closed(transform(self.shell.coords())?),
+            shell: Ring::from_closed(transform(self.shell.coords())?),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| transform(hole.coords()).map(Ring::from_trusted_closed))
+                .map(|hole| transform(hole.coords()).map(Ring::from_closed))
                 .collect::<Result<_, _>>()?,
         })
     }
@@ -598,15 +629,11 @@ impl Polygon {
         op: impl Fn(f64, f64) -> Result<(f64, f64), E> + Copy,
     ) -> Result<Self, E> {
         Ok(Self {
-            shell: Ring::from_trusted_closed(self.shell.coords().try_map_xy_with(op)?),
+            shell: Ring::from_closed(self.shell.coords().try_map_xy_with(op)?),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| {
-                    Ok(Ring::from_trusted_closed(
-                        hole.coords().try_map_xy_with(op)?,
-                    ))
-                })
+                .map(|hole| Ok(Ring::from_closed(hole.coords().try_map_xy_with(op)?)))
                 .collect::<Result<_, E>>()?,
         })
     }
@@ -622,11 +649,11 @@ impl Polygon {
         mut transform: impl FnMut(&CoordSeq) -> Result<CoordSeq, E>,
     ) -> Result<Self, E> {
         Ok(Self {
-            shell: Ring::from_trusted_closed(transform(self.shell.coords())?),
+            shell: Ring::from_closed(transform(self.shell.coords())?),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| Ok(Ring::from_trusted_closed(transform(hole.coords())?)))
+                .map(|hole| Ok(Ring::from_closed(transform(hole.coords())?)))
                 .collect::<Result<_, E>>()?,
         })
     }
@@ -661,22 +688,22 @@ impl Polygon {
     /// validity (closure and length) — no `AoS` `Vec<Point>` round-trip.
     fn map_ring_seqs(&self, transform: impl Fn(&CoordSeq) -> CoordSeq) -> Self {
         Self {
-            shell: Ring::from_trusted_closed(transform(self.shell.coords())),
+            shell: Ring::from_closed(transform(self.shell.coords())),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| Ring::from_trusted_closed(transform(hole.coords())))
+                .map(|hole| Ring::from_closed(transform(hole.coords())))
                 .collect(),
         }
     }
 
     fn orient(&self, exterior_cw: bool) -> Self {
         Self {
-            shell: Ring::from_trusted_closed(orient_ring(self.shell.coords(), exterior_cw)),
+            shell: Ring::from_closed(orient_ring(self.shell.coords(), exterior_cw)),
             holes: self
                 .holes
                 .iter()
-                .map(|hole| Ring::from_trusted_closed(orient_ring(hole.coords(), !exterior_cw)))
+                .map(|hole| Ring::from_closed(orient_ring(hole.coords(), !exterior_cw)))
                 .collect(),
         }
     }
@@ -689,11 +716,11 @@ impl Polygon {
         let mut holes = self
             .holes
             .iter()
-            .map(|hole| Ring::from_trusted_closed(canonical_ring_seq(hole.coords(), true)))
+            .map(|hole| Ring::from_closed(canonical_ring_seq(hole.coords(), true)))
             .collect::<Vec<_>>();
         holes.sort_by(compare_point_slices);
         Self {
-            shell: Ring::from_trusted_closed(canonical_ring_seq(self.shell.coords(), false)),
+            shell: Ring::from_closed(canonical_ring_seq(self.shell.coords(), false)),
             holes: holes.into(),
         }
     }
@@ -747,7 +774,7 @@ impl Bounds {
             && minx <= maxx
             && miny <= maxy
         {
-            Ok(Self::new_unchecked(minx, miny, maxx, maxy))
+            Ok(Self::new_raw(minx, miny, maxx, maxy))
         } else {
             Err(GeometryErrorKind::InvalidRectangle.into())
         }
@@ -762,7 +789,7 @@ impl Bounds {
             && maxy.is_finite()
             && miny <= maxy
         {
-            Ok(Self::new_unchecked(minx, miny, maxx, maxy))
+            Ok(Self::new_raw(minx, miny, maxx, maxy))
         } else {
             Err(GeometryErrorKind::InvalidRectangle.into())
         }
@@ -793,7 +820,7 @@ impl Bounds {
     }
 
     pub fn expand(self, distance: f64) -> Self {
-        Self::new_unchecked(
+        Self::new_raw(
             self.minx() - distance,
             self.miny() - distance,
             self.maxx() + distance,
@@ -802,11 +829,11 @@ impl Bounds {
     }
 
     pub const fn from_point(point: Point) -> Self {
-        Self::new_unchecked(point.x, point.y, point.x, point.y)
+        Self::new_raw(point.x, point.y, point.x, point.y)
     }
 
     pub const fn from_xy(point: XY) -> Self {
-        Self::new_unchecked(point.x, point.y, point.x, point.y)
+        Self::new_raw(point.x, point.y, point.x, point.y)
     }
 
     pub fn from_xy_iter<I: IntoIterator<Item = XY>>(points: I) -> Self {
@@ -820,7 +847,7 @@ impl Bounds {
             maxx = maxx.max(point.x);
             maxy = maxy.max(point.y);
         }
-        Self::new_unchecked(minx, miny, maxx, maxy)
+        Self::new_raw(minx, miny, maxx, maxy)
     }
 
     pub fn from_points<I: IntoIterator<Item = Point>>(points: I) -> Self {
@@ -833,7 +860,7 @@ impl Bounds {
 
     pub fn pad_by_span(self, factor: f64) -> Self {
         let pad = (self.maxx() - self.minx()).max(self.maxy() - self.miny()) * factor;
-        Self::new_unchecked(
+        Self::new_raw(
             self.minx() - pad,
             self.miny() - pad,
             self.maxx() + pad,

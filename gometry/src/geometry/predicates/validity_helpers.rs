@@ -395,7 +395,7 @@ pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
 /// `LineString` CCW test (the `Shape::is_ccw` line arm): a closed ring
 /// (≥4 vertices, coincident endpoints) with positive signed area. Column-native
 /// so the packed-`Lines` array path runs it per window with no per-row `Shape`.
-pub(crate) fn line_is_ccw(points: &CoordSeq) -> bool {
+pub(crate) fn line_is_ccw<C: Coordinates + ?Sized>(points: &C) -> bool {
     points.coord_count() >= 4
         && points
             .first_coord()

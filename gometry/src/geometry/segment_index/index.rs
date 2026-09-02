@@ -41,6 +41,22 @@ pub(crate) struct SegmentIndex {
     tree: BulkRTree<SegmentEntry>,
 }
 
+impl HeapSize for SegmentIndex {
+    fn heap_bytes(&self) -> usize {
+        fn node_bytes(node: &RTreeNode<SegmentEntry>) -> usize {
+            match node {
+                RTreeNode::Leaf(_) => std::mem::size_of::<RTreeNode<SegmentEntry>>(),
+                RTreeNode::Parent(parent) => {
+                    std::mem::size_of::<RTreeNode<SegmentEntry>>()
+                        + parent.children().iter().map(node_bytes).sum::<usize>()
+                },
+            }
+        }
+
+        self.tree.root().children().iter().map(node_bytes).sum()
+    }
+}
+
 impl SegmentIndex {
     pub(crate) fn build(segments: &[Segment]) -> Self {
         Self::build_from_iter(segments.iter().copied())
@@ -161,7 +177,7 @@ impl PointSetIndex {
     pub(crate) fn nearest(&self, point: Point) -> Option<(Point, f64)> {
         self.tree
             .nearest_neighbor_with_distance_2([point.x, point.y])
-            .map(|(coords, distance)| (Point::new_unchecked_xy(coords[0], coords[1]), distance))
+            .map(|(coords, distance)| (Point::new_raw_xy(coords[0], coords[1]), distance))
     }
 
     /// The nearest indexed point that is not bit-identical to `point`, with
@@ -175,9 +191,9 @@ impl PointSetIndex {
         self.tree
             .nearest_neighbor_iter_with_distance_2([point.x, point.y])
             .find(|&(coords, _distance)| {
-                !same_point(point, Point::new_unchecked_xy(coords[0], coords[1]))
+                !same_point(point, Point::new_raw_xy(coords[0], coords[1]))
             })
-            .map(|(coords, distance)| (Point::new_unchecked_xy(coords[0], coords[1]), distance))
+            .map(|(coords, distance)| (Point::new_raw_xy(coords[0], coords[1]), distance))
     }
 }
 

@@ -2,12 +2,15 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use rstar::AABB;
+use rstar::primitives::{GeomWithData, Rectangle};
+
 use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
 use crate::geometry::{
-    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, ExpansionBudget, Ordering,
-    Orientation, Point, Polygon, Ring, Segment, SegmentProjection, XY, open_xy_cycle_decision,
-    orientation, ring_contains_interior, same_point, segment_cross_point, segment_projection,
-    segments_intersect, wrap_index,
+    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, CoordSeq,
+    ExpansionBudget, LineSeq, Ordering, Orientation, Point, Polygon, PreparedPlan, Ring, Segment,
+    SegmentProjection, Shape, XY, graph_relate_data, open_xy_cycle_decision, orientation,
+    same_point, segment_cross_point, segment_projection, segments_intersect, wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset
@@ -130,10 +133,10 @@ pub(crate) fn convex_miter(
     // The full miter point sits on the corner's exterior bisector; clip
     // the spike with the bisector's perpendicular at the allowed reach.
     let scale = allowed / reach.sqrt();
-    let mid = Point::new_unchecked_xy(vertex.x + dx * scale, vertex.y + dy * scale);
+    let mid = Point::new_raw_xy(vertex.x + dx * scale, vertex.y + dy * scale);
     let clip = Segment {
         start: mid.into(),
-        end: Point::new_unchecked_xy(mid.x - dy, mid.y + dx).into(),
+        end: Point::new_raw_xy(mid.x - dy, mid.y + dx).into(),
     };
     let Some(entry) = line_intersection(incoming, clip) else {
         return WalkJoin::Straight;
@@ -343,8 +346,8 @@ impl<'a> WalkPlan<'a> {
             .map(|edge| unit_right_normal(points[edge], points[wrap_index(edge + 1, count)]))
             .collect::<Option<_>>()?;
         let offset_edge = |from: Point, to: Point, (nx, ny): (f64, f64)| Segment {
-            start: Point::new_unchecked_xy(from.x + distance * nx, from.y + distance * ny).into(),
-            end: Point::new_unchecked_xy(to.x + distance * nx, to.y + distance * ny).into(),
+            start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
+            end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
         };
         // Two offset endpoints within the separation tolerance carry no
         // usable join geometry: snap to the incoming endpoint (the GEOS
@@ -624,8 +627,8 @@ pub(in crate::geometry) fn winding_region(
         let before = segments.len();
         for index in 0..xs.len() {
             let next = wrap_index(index + 1, xs.len());
-            let start = Point::new_unchecked_xy(xs[index], ys[index]);
-            let end = Point::new_unchecked_xy(xs[next], ys[next]);
+            let start = Point::new_raw_xy(xs[index], ys[index]);
+            let end = Point::new_raw_xy(xs[next], ys[next]);
             if !same_point(start, end) {
                 segments.push(Segment {
                     start: start.xy(),
@@ -646,7 +649,7 @@ pub(in crate::geometry) fn winding_region(
     // bit-identical to the general build below, which stays the exact
     // oracle and owns every bail (overlaps, T-junctions, repeats).
     if loop_anchor.len() == 1
-        && let Some(arrangement) = Arrangement::from_single_loop(&segments)
+        && let Some(mut arrangement) = Arrangement::from_single_loop(&segments)
     {
         let windings = arrangement.face_windings(&[0]);
         return assemble_region_polygons(arrangement.region_rings(&windings, keep));
@@ -655,7 +658,7 @@ pub(in crate::geometry) fn winding_region(
     // structure repair): the same positional win across K clean loops,
     // with the general build as the bail oracle. Seeds resolve through
     // the shared outside-winding logic below either way.
-    let arrangement = Arrangement::<i32>::from_loops(&segments, &loop_ranges, |_| 1)
+    let mut arrangement = Arrangement::<i32>::from_loops(&segments, &loop_ranges, |_| 1)
         .unwrap_or_else(|| {
             Arrangement::new(&crate::geometry::overlay::self_node_segments(&segments))
         });
@@ -711,23 +714,73 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         }
     }
     shells.sort_by(|left, right| left.1.total_cmp(&right.1));
+    let shell_plans: Vec<PreparedPlan> = if holes.is_empty() {
+        Vec::new()
+    } else {
+        shells
+            .iter()
+            .map(|(shell, ..)| {
+                PreparedPlan::new(Shape::Polygon(Polygon::new(
+                    Ring::from_closed(shell.clone()),
+                    Vec::new(),
+                )))
+            })
+            .collect()
+    };
+    let shell_tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>> =
+        BulkRTree::bulk_load_with_params(
+            shells
+                .iter()
+                .enumerate()
+                .map(|(index, (_, _, bounds))| {
+                    GeomWithData::new(
+                        Rectangle::from_corners([bounds.minx(), bounds.miny()], [
+                            bounds.maxx(),
+                            bounds.maxy(),
+                        ]),
+                        index,
+                    )
+                })
+                .collect(),
+        );
     let mut assigned: Vec<Vec<Ring>> = vec![Vec::new(); shells.len()];
     for hole in holes {
-        // A pinch vertex (a hole touching its shell at a point) lies ON
-        // the shell and fails the strict-interior test; any other vertex
-        // of the hole decides ownership, so probe until one answers.
-        let owner = shells.iter().position(|(shell, _, bounds)| {
-            hole.iter()
-                .any(|probe| bounds.contains_xy(*probe) && ring_contains_interior(shell, *probe))
-        });
+        // R-tree traversal has no shell-area order. Restore the sorted position
+        // before the exact test so the first result remains the smallest shell.
+        let mut candidates: Vec<usize> = hole
+            .iter()
+            .flat_map(|probe| {
+                shell_tree
+                    .locate_in_envelope_intersecting(AABB::from_point([probe.x, probe.y]))
+                    .map(|entry| entry.data)
+            })
+            .collect();
+        candidates.sort_unstable();
+        candidates.dedup();
+        // Covers is boundary-inclusive, so a pinch vertex may lie on the shell.
+        // The complete line relation also rejects a hole edge that leaves and
+        // re-enters a concave shell between two covered vertices.
+        let owner = if candidates.is_empty() {
+            None
+        } else {
+            let hole_line = Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(hole.clone())).expect("hole has linework"),
+            );
+            let hole_plan = PreparedPlan::transient(&hole_line);
+            candidates.into_iter().find(|&index| {
+                let (_, _, bounds) = &shells[index];
+                hole.iter().all(|probe| bounds.contains_xy(*probe))
+                    && graph_relate_data(&shell_plans[index], &hole_plan).is_covers()
+            })
+        };
         if let Some(owner) = owner {
-            assigned[owner].push(Ring::from_trusted_closed(hole));
+            assigned[owner].push(Ring::from_closed(hole));
         }
     }
     shells
         .into_iter()
         .zip(assigned)
-        .map(|((shell, ..), holes)| Polygon::new(Ring::from_trusted_closed(shell), holes))
+        .map(|((shell, ..), holes)| Polygon::new(Ring::from_closed(shell), holes))
         .collect()
 }
 
@@ -735,6 +788,20 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
 mod tests {
     use super::*;
     use crate::geometry::GENERATED_ITEM_LIMIT;
+
+    fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64, clockwise: bool) -> Vec<XY> {
+        let mut ring = vec![
+            XY::new(minx, miny),
+            XY::new(maxx, miny),
+            XY::new(maxx, maxy),
+            XY::new(minx, maxy),
+            XY::new(minx, miny),
+        ];
+        if clockwise {
+            ring.reverse();
+        }
+        ring
+    }
 
     #[test]
     fn loop_closure_charges_before_appending_the_public_coordinate() {
@@ -750,14 +817,88 @@ mod tests {
     #[test]
     fn walk_count_is_admitted_before_materializing_the_arc() {
         let points = [
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(1.0, 0.0),
-            Point::new_unchecked_xy(1.0, 1.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
         ];
         let plan = WalkPlan::new(&points, false, 1.0, WalkJoinRule::Arc, 0.1).unwrap();
         let mut budget = ExpansionBudget::new("test", "count");
         budget.add(GENERATED_ITEM_LIMIT).unwrap();
 
         assert!(materialize_walk(&plan, 0.1, false, &mut budget).is_err());
+    }
+
+    #[test]
+    fn region_assembly_assigns_holes_to_smallest_shell_after_envelope_filtering() {
+        let l_shell = vec![
+            XY::new(30.0, 30.0),
+            XY::new(70.0, 30.0),
+            XY::new(70.0, 40.0),
+            XY::new(40.0, 40.0),
+            XY::new(40.0, 70.0),
+            XY::new(30.0, 70.0),
+            XY::new(30.0, 30.0),
+        ];
+        let pinch_hole = vec![
+            XY::new(120.0, 20.0),
+            XY::new(130.0, 25.0),
+            XY::new(130.0, 15.0),
+            XY::new(120.0, 20.0),
+        ];
+        let polygons = assemble_region_polygons(vec![
+            rectangle(0.0, 0.0, 100.0, 100.0, false),
+            rectangle(10.0, 10.0, 90.0, 90.0, true),
+            rectangle(20.0, 20.0, 80.0, 80.0, false),
+            rectangle(30.0, 30.0, 70.0, 70.0, true),
+            rectangle(40.0, 40.0, 60.0, 60.0, false),
+            rectangle(45.0, 45.0, 55.0, 55.0, true),
+            l_shell,
+            rectangle(120.0, 0.0, 160.0, 40.0, false),
+            pinch_hole,
+        ]);
+
+        let assignments: Vec<((f64, f64), usize)> = polygons
+            .iter()
+            .map(|polygon| {
+                let first = polygon.shell.first().unwrap();
+                ((first.x, first.y), polygon.holes.len())
+            })
+            .collect();
+        assert_eq!(assignments, vec![
+            ((40.0, 40.0), 1),
+            ((30.0, 30.0), 0),
+            ((120.0, 0.0), 1),
+            ((20.0, 20.0), 1),
+            ((0.0, 0.0), 1),
+        ]);
+    }
+
+    #[test]
+    fn region_assembly_rejects_hole_edges_leaving_a_concave_shell() {
+        let shell = vec![
+            XY::new(0.0, 0.0),
+            XY::new(6.0, 0.0),
+            XY::new(6.0, 2.0),
+            XY::new(2.0, 2.0),
+            XY::new(2.0, 6.0),
+            XY::new(0.0, 6.0),
+            XY::new(0.0, 0.0),
+        ];
+        let hole = vec![
+            XY::new(5.0, 1.0),
+            XY::new(1.0, 5.0),
+            XY::new(5.5, 1.0),
+            XY::new(5.0, 1.0),
+        ];
+        let shell_shape =
+            Shape::Polygon(Polygon::new(Ring::from_closed(shell.clone()), Vec::new()));
+        assert!(
+            hole.iter()
+                .all(|point| { shell_shape.covers_point(Point::new_raw_xy(point.x, point.y)) })
+        );
+        let polygon = assemble_region_polygons(vec![shell, hole]);
+
+        assert_eq!(polygon.len(), 1);
+        assert!(polygon[0].holes.is_empty());
     }
 }

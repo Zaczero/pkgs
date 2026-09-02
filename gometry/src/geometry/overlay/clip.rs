@@ -160,11 +160,10 @@ pub(crate) fn window_clipped_parts<P: AsRef<Polygon>>(
             .iter()
             .map(|hole| {
                 let ring = window_clip_ring(hole.coords(), rect)?;
-                (ring.coord_count() >= Ring::MIN_VERTICES_CLOSED)
-                    .then(|| Ring::from_trusted_closed(ring))
+                (ring.coord_count() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(ring))
             })
             .collect::<Option<Vec<_>>>()?;
-        clipped.push(Polygon::new(Ring::from_trusted_closed(shell), holes));
+        clipped.push(Polygon::new(Ring::from_closed(shell), holes));
     }
     Some(clipped)
 }
@@ -347,7 +346,7 @@ pub(crate) fn window_clip_ring(ring: &CoordSeq, rect: Bounds) -> Option<CoordSeq
         return Some(CoordSeq::empty(CoordinateAxes::XY));
     }
     // Close positionally and hand the columns over as-is — no `Point`
-    // staging, no re-packing in `Ring::from_trusted_closed`.
+    // staging, no re-packing in `Ring::from_closed`.
     xs.push(xs[0]);
     ys.push(ys[0]);
     Some(CoordSeq::from_columns(xs.into(), ys.into(), None, None))

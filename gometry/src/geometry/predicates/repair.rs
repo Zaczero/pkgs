@@ -29,7 +29,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             // plus the joint re-noding pass below.
             if let [polygon] = polygons
                 && polygon.holes.is_empty()
-                && let Some(arrangement) = single_ring_arrangement(&polygon.shell)?
+                && let Some(mut arrangement) = single_ring_arrangement(&polygon.shell)?
             {
                 let windings = arrangement.face_windings(&[0]);
                 assemble_region_polygons(
@@ -178,7 +178,7 @@ fn linework_area(polygons: &[Polygon]) -> Result<Vec<Polygon>> {
     if atomic.is_empty() {
         return Ok(Vec::new());
     }
-    let arrangement = Arrangement::new(&atomic);
+    let mut arrangement = Arrangement::new(&atomic);
     drop(atomic);
     let all_source_vertices_survive = segments.iter().all(|segment| {
         arrangement.ids.contains_key(&PointKey::new(segment.start))
@@ -312,7 +312,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Vec<Ring> {
         .map(|mut points| {
             let first = points[0];
             points.push(first);
-            Ring::from_trusted_closed(points)
+            Ring::from_closed(points)
         })
         .collect()
 }
@@ -384,7 +384,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Option<Ring> {
     }
     let first = points[0];
     points.push(first);
-    Some(Ring::from_trusted_closed(points))
+    Some(Ring::from_closed(points))
 }
 
 /// The even-odd enclosed area of one closed ring, as geo polygons ready for

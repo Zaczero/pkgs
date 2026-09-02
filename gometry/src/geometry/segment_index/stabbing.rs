@@ -199,6 +199,24 @@ impl EdgeYIndex {
         }
     }
 
+    /// Build over an open ring, including its closing edge from the last point
+    /// back to the first. Chart rings use this representation so seam lifting
+    /// does not need to repeat the first coordinate.
+    pub(crate) fn build_closed(ys: &[f64]) -> Self {
+        let edge_count = ys.len();
+        let spans: Box<[(f64, f64)]> = (0..edge_count)
+            .map(|edge| {
+                let next = if edge + 1 < edge_count { edge + 1 } else { 0 };
+                let (a, b) = (ys[edge], ys[next]);
+                (a.min(b), a.max(b))
+            })
+            .collect();
+        Self {
+            edge_count,
+            plan: choose_plan(&spans),
+        }
+    }
+
     /// Borrow the dense CSR candidates for probe `y` without exposing the
     /// coordinate columns owned by the caller.
     pub(crate) fn dense_band_edges(&self, y: f64) -> Option<&[EdgeId]> {

@@ -11,6 +11,7 @@ use crate::geometry::{
     Arrangement, Bounds, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
     assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
 };
+use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
 pub(in crate::geometry) fn binary_areal_overlay<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
     left: &[P],
@@ -59,6 +60,59 @@ impl ArealArrangement {
 pub(in crate::geometry) struct ArealArrangement {
     pub arrangement: Arrangement<[i32; 2]>,
     pub windings: Vec<[i32; 2]>,
+}
+
+#[derive(Default)]
+struct ArealScratch {
+    segments: Vec<Segment>,
+    tags: Vec<u32>,
+    segment_loop: Vec<u32>,
+    loop_anchor: Vec<XY>,
+    loop_ranges: Vec<(u32, u32)>,
+    loop_operand: Vec<u32>,
+    loop_component: Vec<u32>,
+    probes: Vec<XY>,
+    probe_slots: Vec<Option<XY>>,
+    ranges: Vec<(u32, u32)>,
+    boxes: Vec<Bounds>,
+}
+
+impl RetainScratch for ArealScratch {
+    fn clear_for_reuse(&mut self) {
+        self.segments.clear();
+        self.tags.clear();
+        self.segment_loop.clear();
+        self.loop_anchor.clear();
+        self.loop_ranges.clear();
+        self.loop_operand.clear();
+        self.loop_component.clear();
+        self.probes.clear();
+        self.probe_slots.clear();
+        self.ranges.clear();
+        self.boxes.clear();
+    }
+
+    fn retained_bytes(&self) -> usize {
+        flat_vec_retained_bytes(&self.segments)
+            .saturating_add(flat_vec_retained_bytes(&self.tags))
+            .saturating_add(flat_vec_retained_bytes(&self.segment_loop))
+            .saturating_add(flat_vec_retained_bytes(&self.loop_anchor))
+            .saturating_add(flat_vec_retained_bytes(&self.loop_ranges))
+            .saturating_add(flat_vec_retained_bytes(&self.loop_operand))
+            .saturating_add(flat_vec_retained_bytes(&self.loop_component))
+            .saturating_add(flat_vec_retained_bytes(&self.probes))
+            .saturating_add(flat_vec_retained_bytes(&self.probe_slots))
+            .saturating_add(flat_vec_retained_bytes(&self.ranges))
+            .saturating_add(flat_vec_retained_bytes(&self.boxes))
+    }
+}
+
+thread_local! {
+    static AREAL_SCRATCH: ScratchPool<ArealScratch> = ScratchPool::new(ArealScratch {
+        segments: Vec::new(), tags: Vec::new(), segment_loop: Vec::new(), loop_anchor: Vec::new(),
+        loop_ranges: Vec::new(), loop_operand: Vec::new(), loop_component: Vec::new(),
+        probes: Vec::new(), probe_slots: Vec::new(), ranges: Vec::new(), boxes: Vec::new(),
+    });
 }
 
 fn areal_operand_inventory<P: AsRef<Polygon>>(polygons: &[P]) -> (usize, usize) {
@@ -126,14 +180,19 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     // yields at most `n` segments and exactly one anchor.
     let (left_segments, left_rings) = areal_operand_inventory(left);
     let (right_segments, right_rings) = areal_operand_inventory(right);
-    let mut segments: Vec<Segment> =
-        Vec::with_capacity(left_segments.saturating_add(right_segments));
-    let mut tags: Vec<u32> = Vec::with_capacity(left_segments.saturating_add(right_segments));
-    let mut segment_loop: Vec<u32> =
-        Vec::with_capacity(left_segments.saturating_add(right_segments));
+    let mut scratch = ScratchPool::checkout(&AREAL_SCRATCH);
+    let segment_capacity = left_segments.saturating_add(right_segments);
+    let ring_capacity = left_rings.saturating_add(right_rings);
+    scratch.segments.reserve(segment_capacity);
+    scratch.tags.reserve(segment_capacity);
+    scratch.segment_loop.reserve(segment_capacity);
+    scratch.loop_anchor.reserve(ring_capacity);
+    let mut segments = std::mem::take(&mut scratch.segments);
+    let mut tags = std::mem::take(&mut scratch.tags);
+    let mut segment_loop = std::mem::take(&mut scratch.segment_loop);
     // One anchor vertex per loop — locates the loop's component after
     // noding.
-    let mut loop_anchor: Vec<XY> = Vec::with_capacity(left_rings.saturating_add(right_rings));
+    let mut loop_anchor = std::mem::take(&mut scratch.loop_anchor);
     stage_areal_operand(
         0,
         left,
@@ -152,9 +211,8 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     );
     // Per-loop contiguous ranges + operand (segment_loop is non-decreasing
     // by construction) for the positional fast path.
-    let mut loop_ranges: Vec<(u32, u32)> =
-        Vec::with_capacity(left_rings.saturating_add(right_rings));
-    let mut loop_operand: Vec<u32> = Vec::new();
+    let mut loop_ranges = std::mem::take(&mut scratch.loop_ranges);
+    let mut loop_operand = std::mem::take(&mut scratch.loop_operand);
     for (index, &loop_id) in segment_loop.iter().enumerate() {
         if loop_id as usize == loop_ranges.len() {
             loop_ranges.push((index as u32, index as u32 + 1));
@@ -168,7 +226,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     // and the global edge sort the general path pays. `None` (repeats,
     // T-junctions, collinear overlaps, cross-loop vertex coincidence)
     // falls back to the exact general oracle.
-    let arrangement = Arrangement::<[i32; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
+    let mut arrangement = Arrangement::<[i32; 2]>::from_loops(&segments, &loop_ranges, |loop_id| {
         if loop_operand[loop_id] == 0 {
             [1, 0]
         } else {
@@ -176,7 +234,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         }
     })
     .unwrap_or_else(|| {
-        let (atomic, sources) = self_node_segments_sourced(&segments);
+        let (atomic, sources) = self_node_segments_sourced(segments.iter().copied());
         // Multi-source provenance: sum every original ordinal's unit weight,
         // flipping sign when that ordinal owned the reverse of the noded
         // representative. Exact undirected dedup keeps `atomic` unique-sized
@@ -203,18 +261,36 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     // Outside-winding seed per component and per operand: every loop
     // lives in exactly one component, and loops of other components
     // cannot pass through it (see `winding_region`).
-    let loop_component: Vec<u32> = loop_anchor
-        .iter()
-        .map(|&anchor| arrangement.component_of_point(anchor))
-        .collect();
-    let seeds = outside_winding_seeds(
+    let mut loop_component = std::mem::take(&mut scratch.loop_component);
+    loop_component.extend(
+        loop_anchor
+            .iter()
+            .map(|&anchor| arrangement.component_of_point(anchor)),
+    );
+    let mut probes = std::mem::take(&mut scratch.probes);
+    arrangement.component_probes_from_slots(&mut probes, &mut scratch.probe_slots);
+    let mut ranges = std::mem::take(&mut scratch.ranges);
+    let mut boxes = std::mem::take(&mut scratch.boxes);
+    let seeds = outside_winding_seeds_with_scratch(
         &segments,
         &tags,
         &segment_loop,
         &loop_component,
-        &arrangement.component_probes(),
+        &probes,
+        &mut ranges,
+        &mut boxes,
     );
     let windings = arrangement.face_windings(&seeds);
+    scratch.segments = segments;
+    scratch.tags = tags;
+    scratch.segment_loop = segment_loop;
+    scratch.loop_anchor = loop_anchor;
+    scratch.loop_ranges = loop_ranges;
+    scratch.loop_operand = loop_operand;
+    scratch.loop_component = loop_component;
+    scratch.probes = probes;
+    scratch.ranges = ranges;
+    scratch.boxes = boxes;
     ArealArrangement {
         arrangement,
         windings,
@@ -239,11 +315,35 @@ pub(in crate::geometry) fn outside_winding_seeds(
     loop_component: &[u32],
     probes: &[XY],
 ) -> Vec<[i32; 2]> {
+    let mut ranges = Vec::new();
+    let mut boxes = Vec::new();
+    outside_winding_seeds_with_scratch(
+        segments,
+        segment_operand,
+        segment_loop,
+        loop_component,
+        probes,
+        &mut ranges,
+        &mut boxes,
+    )
+}
+
+fn outside_winding_seeds_with_scratch(
+    segments: &[Segment],
+    segment_operand: &[u32],
+    segment_loop: &[u32],
+    loop_component: &[u32],
+    probes: &[XY],
+    ranges: &mut Vec<(u32, u32)>,
+    boxes: &mut Vec<Bounds>,
+) -> Vec<[i32; 2]> {
     // Loops are contiguous runs of the soup: recover each loop's segment
     // range and bbox in one pass (the arm choice needs the longest run).
     let loop_count = loop_component.len();
-    let mut ranges = vec![(u32::MAX, 0_u32); loop_count];
-    let mut boxes = vec![Bounds::from_xy_iter(std::iter::empty()); loop_count];
+    ranges.clear();
+    ranges.resize(loop_count, (u32::MAX, 0_u32));
+    boxes.clear();
+    boxes.resize(loop_count, Bounds::from_xy_iter(std::iter::empty()));
     for (ordinal, (&segment, &index)) in segments.iter().zip(segment_loop).enumerate() {
         let range = &mut ranges[index as usize];
         range.0 = range.0.min(ordinal as u32);

@@ -11,7 +11,7 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::{
     Borrow, Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HashSet, LineSeq, Point,
-    PointKey, REDUCE_LANES, ReduceSimd, Shape, XY, rect_polygon,
+    PointKey, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, XY, rect_polygon,
 };
 
 pub(crate) const fn empty_geometry() -> Shape {
@@ -22,20 +22,73 @@ pub(crate) fn bounds_to_shape(bounds: Bounds) -> Shape {
     if same_topological_coordinate(bounds.minx(), bounds.maxx())
         && same_topological_coordinate(bounds.miny(), bounds.maxy())
     {
-        return Shape::Point(Point::new_unchecked_xy(bounds.minx(), bounds.miny()));
+        return Shape::Point(Point::new_raw_xy(bounds.minx(), bounds.miny()));
     }
     if same_topological_coordinate(bounds.minx(), bounds.maxx())
         || same_topological_coordinate(bounds.miny(), bounds.maxy())
     {
         return Shape::LineString(
             LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_unchecked_xy(bounds.minx(), bounds.miny()),
-                Point::new_unchecked_xy(bounds.maxx(), bounds.maxy()),
+                Point::new_raw_xy(bounds.minx(), bounds.miny()),
+                Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
             ]))
             .expect("degenerate rectangle line has two vertices"),
         );
     }
     Shape::Polygon(rect_polygon(bounds))
+}
+
+/// Build a geographic rectangle whose horizontal sides follow parallels.
+pub(crate) fn geographic_bounds_to_shape(
+    bounds: Bounds,
+    frame: crate::geographic::GeographicFrame,
+) -> crate::error::Result<Shape> {
+    if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
+        return Ok(bounds_to_shape(bounds));
+    }
+    const MAX_CHORD_RADIANS: f64 = 0.247;
+    let segments = ((bounds.maxx() - bounds.minx())
+        * frame.longitude().unit().radians_per_unit()
+        / MAX_CHORD_RADIANS)
+        .ceil()
+        .max(1.0) as usize;
+    let capacity = if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
+        segments.checked_add(1)
+    } else {
+        segments.checked_mul(2).and_then(|value| value.checked_add(3))
+    }
+    .ok_or(crate::error::ResourceError::Allocation)?;
+    let mut points = Vec::new();
+    points
+        .try_reserve_exact(capacity)
+        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    let span = bounds.maxx() - bounds.minx();
+    points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
+    for index in 1..segments {
+        points.push(Point::new_raw_xy(
+            bounds.minx() + span * index as f64 / segments as f64,
+            bounds.miny(),
+        ));
+    }
+    points.push(Point::new_raw_xy(bounds.maxx(), bounds.miny()));
+    if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
+        return Ok(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(points)).expect("geographic rectangle edge is lineal"),
+        ));
+    }
+    points.push(Point::new_raw_xy(bounds.maxx(), bounds.maxy()));
+    for index in (1..segments).rev() {
+        points.push(Point::new_raw_xy(
+            bounds.minx() + span * index as f64 / segments as f64,
+            bounds.maxy(),
+        ));
+    }
+    points.push(Point::new_raw_xy(bounds.minx(), bounds.maxy()));
+    points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
+    Ok(Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::from(points)),
+        Vec::new(),
+    )))
 }
 
 impl Shape {

@@ -15,7 +15,7 @@ use std::ops::ControlFlow;
 use crate::HeapSize;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, Orientation, Point, Polygon, RingClass, Shape, orientation_xy, ray_crossing_is_right,
+    Bounds, Point, Polygon, RingClass, RingEdgeMembership, Shape, ring_edge_membership,
     xy_bounds_columns,
 };
 
@@ -34,7 +34,7 @@ impl RingPointIndex {
         let n = xs.len();
         debug_assert_eq!(n, ys.len());
         let bounds = if n == 0 {
-            Bounds::new_unchecked(
+            Bounds::new_raw(
                 f64::INFINITY,
                 f64::INFINITY,
                 f64::NEG_INFINITY,
@@ -42,7 +42,7 @@ impl RingPointIndex {
             )
         } else {
             let [minx, miny, maxx, maxy] = xy_bounds_columns(xs, ys);
-            Bounds::new_unchecked(minx, miny, maxx, maxy)
+            Bounds::new_raw(minx, miny, maxx, maxy)
         };
         Self {
             bounds,
@@ -83,19 +83,10 @@ impl RingPointIndex {
             let mut inside = false;
             for &edge in edges {
                 let (ax, ay, bx, by) = self.edge_xy(edge);
-                let in_bbox =
-                    x >= ax.min(bx) && x <= ax.max(bx) && y >= ay.min(by) && y <= ay.max(by);
-                let orientation = in_bbox.then(|| orientation_xy(ax, ay, bx, by, x, y));
-                if orientation == Some(Orientation::Collinear) {
-                    return RingClass::Boundary;
-                }
-                if (ay > y) != (by > y)
-                    && orientation.map_or_else(
-                        || ray_crossing_is_right(ax, ay, bx, by, x, y),
-                        |orientation| (orientation == Orientation::CounterClockwise) == (by > ay),
-                    )
-                {
-                    inside = !inside;
+                match ring_edge_membership(ax, ay, bx, by, x, y) {
+                    RingEdgeMembership::Boundary => return RingClass::Boundary,
+                    RingEdgeMembership::Crossing => inside = !inside,
+                    RingEdgeMembership::None => {},
                 }
             }
             return if inside {
@@ -108,18 +99,10 @@ impl RingPointIndex {
         let mut inside = false;
         if self.edges.for_each_edge(y, |edge| {
             let (ax, ay, bx, by) = self.edge_xy(edge);
-            let in_bbox = x >= ax.min(bx) && x <= ax.max(bx) && y >= ay.min(by) && y <= ay.max(by);
-            let orientation = in_bbox.then(|| orientation_xy(ax, ay, bx, by, x, y));
-            if orientation == Some(Orientation::Collinear) {
-                return ControlFlow::Break(RingClass::Boundary);
-            }
-            if (ay > y) != (by > y)
-                && orientation.map_or_else(
-                    || ray_crossing_is_right(ax, ay, bx, by, x, y),
-                    |orientation| (orientation == Orientation::CounterClockwise) == (by > ay),
-                )
-            {
-                inside = !inside;
+            match ring_edge_membership(ax, ay, bx, by, x, y) {
+                RingEdgeMembership::Boundary => return ControlFlow::Break(RingClass::Boundary),
+                RingEdgeMembership::Crossing => inside = !inside,
+                RingEdgeMembership::None => {},
             }
             ControlFlow::Continue(())
         }) == Some(RingClass::Boundary)
@@ -148,7 +131,7 @@ pub(crate) struct PolygonPointIndex {
 }
 
 impl PolygonPointIndex {
-    fn build(polygon: &Polygon) -> Self {
+    pub(crate) fn build(polygon: &Polygon) -> Self {
         let shell = RingPointIndex::build(polygon.shell.coords().xs(), polygon.shell.coords().ys());
         let hole_rings: Vec<RingPointIndex> = polygon
             .holes
@@ -170,8 +153,12 @@ impl PolygonPointIndex {
         })
     }
 
-    #[cfg(test)]
-    fn contains_xy(&self, x: f64, y: f64) -> bool {
+    pub(crate) fn y_span(&self) -> Option<(f64, f64)> {
+        self.bounds.map(|bounds| (bounds.miny(), bounds.maxy()))
+    }
+
+    /// Strict membership after the envelope candidate gate.
+    pub(crate) fn contains_xy(&self, x: f64, y: f64) -> bool {
         if !self.in_bounds_xy(x, y) {
             return false;
         }
@@ -444,7 +431,7 @@ mod tests {
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
         let xy: Vec<XY> = pts.iter().map(|&(x, y)| XY::new(x, y)).collect();
-        Ring::from_trusted_closed(CoordSeq::from_xy(&xy))
+        Ring::from_closed(CoordSeq::from_xy(&xy))
     }
 
     fn unit_square() -> Polygon {
@@ -544,7 +531,7 @@ mod tests {
             (5.0, 1.0),
         ];
         for &(x, y) in &probes {
-            let p = Point::new_unchecked_xy(x, y);
+            let p = Point::new_raw_xy(x, y);
             assert_eq!(
                 tester.contains_point(p),
                 shape.contains_point(p),
@@ -576,13 +563,13 @@ mod tests {
         };
         let shape = Shape::MultiPolygon(vec![a, b].into());
         let tester = PointBatchTester::new(&shape);
-        let overlap = Point::new_unchecked_xy(0.75, 0.75);
+        let overlap = Point::new_raw_xy(0.75, 0.75);
         assert!(tester.contains_point(overlap));
         assert_eq!(
             tester.classify_area_point(overlap),
             Some(RingClass::Interior)
         );
-        let out = Point::new_unchecked_xy(3.0, 3.0);
+        let out = Point::new_raw_xy(3.0, 3.0);
         assert!(!tester.contains_point(out));
         assert_eq!(tester.classify_area_point(out), Some(RingClass::Exterior));
     }
@@ -591,7 +578,7 @@ mod tests {
     fn hole_envelope_skips_non_covering_holes() {
         let poly = square_with_hole();
         let tester = PointBatchTester::new(&Shape::Polygon(poly));
-        let p = Point::new_unchecked_xy(1.0, 9.0);
+        let p = Point::new_raw_xy(1.0, 9.0);
         assert!(tester.contains_point(p));
         assert_eq!(tester.classify_area_point(p), Some(RingClass::Interior));
     }
@@ -609,13 +596,13 @@ mod tests {
         }
         pts.push(XY::new(0.0, 0.0));
         let poly = Polygon {
-            shell: Ring::from_trusted_closed(CoordSeq::from_xy(&pts)),
+            shell: Ring::from_closed(CoordSeq::from_xy(&pts)),
             holes: Arc::from([]),
         };
         let shape = Shape::Polygon(poly);
         let tester = PointBatchTester::new(&shape);
-        assert!(tester.contains_point(Point::new_unchecked_xy(0.5, n_side as f64 * 0.5)));
-        assert!(!tester.contains_point(Point::new_unchecked_xy(-1.0, n_side as f64 * 0.5)));
+        assert!(tester.contains_point(Point::new_raw_xy(0.5, n_side as f64 * 0.5)));
+        assert!(!tester.contains_point(Point::new_raw_xy(-1.0, n_side as f64 * 0.5)));
         let bytes = tester.heap_bytes();
         let verts = pts.len();
         assert!(
@@ -655,7 +642,7 @@ mod tests {
         for i in 0..200_i32 {
             let x = f64::from(i * 37 + 13) % 1000.0;
             let y = f64::from(i * 53 + 7) % 1000.0;
-            let p = Point::new_unchecked_xy(x, y);
+            let p = Point::new_raw_xy(x, y);
             assert_eq!(
                 tester.contains_point(p),
                 shape.contains_point(p),
@@ -677,9 +664,9 @@ mod tests {
         });
         let tester = PointBatchTester::new(&shape);
         for point in [
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(1.0, 1.0),
-            Point::new_unchecked_xy(-1.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(-1.0, 0.0),
         ] {
             assert_eq!(tester.contains_point(point), shape.contains_point(point));
             assert_eq!(tester.covers_point(point), shape.covers_point(point));

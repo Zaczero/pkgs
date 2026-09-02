@@ -63,7 +63,7 @@ impl Shape {
         op: OverlayOp,
         strictness: Strictness,
     ) -> Result<Self> {
-        overlay_all(&[self, other], false, op, strictness)
+        overlay_all(&[self, other], None, op, strictness)
     }
 
     /// Dissolve every geometry into one mixed-dimension union.
@@ -80,13 +80,13 @@ impl Shape {
         geometries: &[S],
         strictness: Strictness,
     ) -> Result<Self> {
-        Self::union_all_topo(geometries, false, strictness)
+        Self::union_all_topo(geometries, None, strictness)
     }
 
     /// Frame-aware n-ary union. All operands are assembled in one arrangement.
     pub(crate) fn union_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
-        geographic: bool,
+        geographic: Option<crate::geographic::GeographicFrame>,
         strictness: Strictness,
     ) -> Result<Self> {
         if geometries.is_empty() {
@@ -102,7 +102,7 @@ impl Shape {
     /// arrangement.
     pub(crate) fn intersection_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
-        geographic: bool,
+        geographic: Option<crate::geographic::GeographicFrame>,
         strictness: Strictness,
     ) -> Result<Self> {
         if geometries.is_empty() {
@@ -118,7 +118,7 @@ impl Shape {
     /// one arrangement.
     pub(crate) fn symmetric_difference_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
-        geographic: bool,
+        geographic: Option<crate::geographic::GeographicFrame>,
         strictness: Strictness,
     ) -> Result<Self> {
         if geometries.is_empty() {

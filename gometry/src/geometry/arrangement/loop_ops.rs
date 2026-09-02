@@ -4,7 +4,7 @@
 )]
 use ahash::HashSetExt as _;
 
-use crate::geometry::arrangement::{WindingWeight, departure_angle, departure_scales};
+use crate::geometry::arrangement::{WindingWeight, compare_departures};
 use crate::geometry::{PointKey, Segment, XY, same_point};
 
 #[derive(Clone, Copy)]
@@ -267,10 +267,9 @@ pub(crate) fn positional_loop_pieces(
 }
 
 /// Order every CSR row of a single-loop build to match the general path:
-/// ascending target for degree 2 (what the global edge sort produces),
-/// pseudo-angle then target for crossings (`sort_rows_counterclockwise`'s
-/// comparator — a total order over distinct targets, so fill order is
-/// irrelevant). Returns `false` on a duplicate target inside any row — a
+/// ascending target for degree 2 (what the global edge sort produces), and
+/// the same certified angular comparator as the general path for crossings.
+/// Returns `false` on a duplicate target inside any row — a
 /// duplicate undirected edge the general path would MERGE (numerically
 /// squeezed near-collinear linework).
 pub(crate) fn order_single_loop_rows<W: WindingWeight>(
@@ -292,27 +291,28 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
             }
         } else {
             let origin = points[vertex];
-            let (scale_x, scale_y) =
-                departure_scales(points, origin, row.clone().map(|slot| targets[slot]));
-            let mut entries = [(0.0_f64, 0_u32, W::UNSET); 4];
+            let mut entries = [(0_u32, W::UNSET); 4];
             for (entry, slot) in std::iter::zip(&mut entries, row.clone()) {
-                let to = points[targets[slot] as usize];
-                *entry = (
-                    departure_angle(origin, to, scale_x, scale_y),
-                    targets[slot],
-                    multiplicities[slot],
-                );
+                *entry = (targets[slot], multiplicities[slot]);
             }
+            let entries = &mut entries[..row.len()];
             entries.sort_unstable_by(|left, right| {
-                left.0.total_cmp(&right.0).then(left.1.cmp(&right.1))
+                compare_departures(
+                    origin,
+                    points[left.0 as usize],
+                    left.0,
+                    points[right.0 as usize],
+                    right.0,
+                )
             });
             if entries
                 .array_windows::<2>()
-                .any(|[left, right]| left.1 == right.1)
+                .any(|[left, right]| left.0 == right.0)
             {
                 return false;
             }
-            for (slot, &(_, target, multiplicity)) in std::iter::zip(row, &entries) {
+            for (slot, entry) in std::iter::zip(row, entries) {
+                let (target, multiplicity) = *entry;
                 targets[slot] = target;
                 multiplicities[slot] = multiplicity;
             }

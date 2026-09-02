@@ -10,8 +10,10 @@ mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
 pub(crate) use graph_matrix::{
-    graph_intersects_rectangle_data, graph_relate_data, graph_relate_data_geographic,
-    graph_relate_shapes,
+    GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
+    graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
+    graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
+    graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
 };
 pub(crate) use operands::{
     line_has_nonzero_segment, multiline_has_nonzero_segment, polygon_has_nondegenerate_area,

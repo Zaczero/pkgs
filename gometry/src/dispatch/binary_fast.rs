@@ -14,10 +14,10 @@ use crate::dispatch::binary::{
     BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
 };
 use crate::dispatch::kernels;
-use crate::dispatch::metric::OpCtx;
+use crate::dispatch::metric::CachelessRowContext;
 use crate::dispatch::operation::Operation;
-use crate::geometry::{PreparedPlan, is_geographic_frame};
-use crate::predicates::engine::{Predicate, topology_scalar_pair};
+use crate::geometry::PreparedPlan;
+use crate::predicates::engine::Predicate;
 use crate::{DistanceUnit, NonNegative, OverlayOp};
 
 /// Predicate array-lane fast path using the shared batch engine.
@@ -82,8 +82,31 @@ pub(crate) fn dispatch_predicate(
     right: &Bound<'_, PyAny>,
     predicate: Predicate,
 ) -> PyResult<Py<PyAny>> {
-    let spec = predicate.spec();
     let operation = Operation::Predicate(predicate);
+    if let (Some(GeometryInput::One(left)), Some(GeometryInput::One(right))) =
+        (classify_input(left), classify_input(right))
+    {
+        left.frame.compatible(&right.frame, operation.name())?;
+        let left_plan = left.plan_or_transient();
+        let right_plan = right.plan_or_transient();
+        let left_cache = left.frame_cache();
+        let right_cache = right.frame_cache();
+        let frame = crate::geometry::geographic_frame(&left.frame)?;
+        let spec = predicate.spec();
+        let value = py.detach(move || {
+            crate::predicates::engine::topology_scalar_pair(
+                &spec,
+                crate::predicates::engine::PreparedTopologyPair::for_frame(
+                    &left_plan,
+                    &left_cache,
+                    &right_plan,
+                    &right_cache,
+                    frame,
+                ),
+            )
+        });
+        return Ok(crate::broadcast::py_bool(py, value));
+    }
     dispatch_binary(
         py,
         left,
@@ -91,13 +114,7 @@ pub(crate) fn dispatch_predicate(
         operation.name(),
         super::MetricResolver::None,
         &PredicateFastPath::new(predicate, left),
-        move |left, right, ctx| {
-            debug_assert!(
-                is_geographic_frame(ctx.frame) == ctx.geographic,
-                "geographic flag matches the resolved frame"
-            );
-            Ok(topology_scalar_pair(&spec, left, right, ctx.geographic))
-        },
+        |_left, _right, _ctx| unreachable!("predicate array fast path handles every array lane"),
     )
 }
 
@@ -148,7 +165,15 @@ fn dispatch_metric_binary<R>(
     right: &Bound<'_, PyAny>,
     op: Operation,
     unit: Option<DistanceUnit>,
-    scalar_kernel: impl Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>) -> crate::error::Result<R>
+    planar_kernel: impl Fn(f64, &PreparedPlan, &PreparedPlan) -> crate::error::Result<R>
+    + Copy
+    + Send
+    + Sync,
+    geodesic_kernel: impl Fn(
+        &PreparedPlan,
+        &PreparedPlan,
+        &crate::dispatch::metric::GeodesicBinaryRow<'_>,
+    ) -> crate::error::Result<R>
     + Copy
     + Send
     + Sync,
@@ -174,14 +199,14 @@ where
             (Some(GeometryInput::One(_)), Some(GeometryInput::One(_)))
         )
     {
-        return dispatch_binary(
+        return super::dispatch_typed_metric_binary(
             py,
             left,
             right,
             op_name,
             op.resolver_with_unit(unit),
-            &NoBinaryFastPath,
-            scalar_kernel,
+            planar_kernel,
+            geodesic_kernel,
         );
     }
     match (left_in, right_in) {
@@ -206,6 +231,7 @@ pub(crate) fn dispatch_distance(
         right,
         Operation::Distance,
         unit,
+        crate::broadcast::pair_distance_planar,
         kernels::binary_distance,
         array_crs_distances,
     )
@@ -226,6 +252,9 @@ pub(crate) fn dispatch_dwithin(
         right,
         Operation::Dwithin,
         unit,
+        move |scale, left, right| {
+            crate::broadcast::pair_dwithin_planar(scale, left, right, distance.get())
+        },
         move |left, right, ctx| kernels::binary_dwithin(left, right, ctx, distance.get()),
         move |py, array, other, op_name, unit| {
             array_crs_dwithin(py, array, other, distance.get(), op_name, unit)
@@ -314,7 +343,12 @@ fn dispatch_similarity_metric<ScalarKernel, PerDensifyKernel, PackedLineKernel>(
     packed_line_kernel: PackedLineKernel,
 ) -> PyResult<Py<PyAny>>
 where
-    ScalarKernel: Fn(&PreparedPlan, &PreparedPlan, &OpCtx<'_>, Option<f64>) -> crate::error::Result<f64>
+    ScalarKernel: Fn(
+            &PreparedPlan,
+            &PreparedPlan,
+            &CachelessRowContext<'_>,
+            Option<f64>,
+        ) -> crate::error::Result<f64>
         + Copy
         + Send
         + Sync,
@@ -392,11 +426,9 @@ fn similarity_array_side<'a>(
     right: Option<&'a crate::PyGeometryArray>,
 ) -> Option<(usize, SimilarityArraySide<'a>)> {
     match (left, right) {
-        (Some(left), Some(right)) => {
-            Some((left.storage().len(), SimilarityArraySide::Both(left, right)))
-        },
-        (Some(left), None) => Some((left.storage().len(), SimilarityArraySide::Left(left))),
-        (None, Some(right)) => Some((right.storage().len(), SimilarityArraySide::Right(right))),
+        (Some(left), Some(right)) => Some((left.len(), SimilarityArraySide::Both(left, right))),
+        (Some(left), None) => Some((left.len(), SimilarityArraySide::Left(left))),
+        (None, Some(right)) => Some((right.len(), SimilarityArraySide::Right(right))),
         (None, None) => None,
     }
 }
@@ -444,7 +476,7 @@ fn dispatch_similarity_array_lane(
                 )
             },
             SimilarityArraySide::Both(array, other) => {
-                let _ = other.storage().len();
+                let _ = other.len();
                 crate::broadcast::array_crs_similarity_metric_per_densify(
                     py,
                     array,
@@ -472,7 +504,7 @@ fn dispatch_similarity_array_lane(
     match side {
         SimilarityArraySide::Left(array) => scalar_lane(py, array, right, scalar_densify, unit),
         SimilarityArraySide::Both(array, other) => {
-            let _ = other.storage().len();
+            let _ = other.len();
             scalar_lane(py, array, right, scalar_densify, unit)
         },
         SimilarityArraySide::Right(array) => scalar_lane(py, array, left, scalar_densify, unit),
@@ -506,6 +538,7 @@ where
         other,
         op.name(),
         unit,
+        densify,
         packed_planar_lines,
         move |model, a, b| kernel(model, a, b, densify),
     )

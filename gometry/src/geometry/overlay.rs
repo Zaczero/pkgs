@@ -2,7 +2,7 @@
 //! all-input variants) and linework set-ops (`line_merge`/`shared_paths`) on
 //! `Shape`, plus the shared noding/assembly kernel behind them.
 
-use crate::geometry::{CoordinateAxes, PreparedPlan, Shape};
+use crate::geometry::{CoordinateAxes, Shape};
 
 /// Whether synthesized overlay output must source Z/M from inputs (`Strict`)
 /// or may degrade to plain XY (`Lenient`).
@@ -59,6 +59,19 @@ impl OverlayOp {
             Self::SymmetricDifference => left.symmetric_difference(right, strictness),
         }
     }
+
+    pub(crate) fn apply_in_frame(
+        self,
+        left: &super::Shape,
+        right: &super::Shape,
+        frame: Option<crate::geographic::GeographicFrame>,
+        strictness: Strictness,
+    ) -> crate::error::Result<super::Shape> {
+        if frame.is_none() {
+            return self.apply(left, right, strictness);
+        }
+        super::overlay_all(&[left, right], frame, self, strictness)
+    }
 }
 
 /// Coordinate axes an empty overlay declares. Non-empty results resolve each
@@ -96,17 +109,5 @@ pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
 pub(in crate::geometry) use noding::full_noding_events;
 pub(crate) use noding::{self_node_segments, self_node_segments_sourced};
 pub(crate) use rect::rect_polygon;
-impl OverlayOp {
-    /// The pure shape kernel shared by the array and free broadcast paths
-    /// (frame resolution lives in the broadcast engine, once per pair-set).
-    pub(crate) fn kernel(
-        self,
-        strictness: Strictness,
-    ) -> impl Fn(&PreparedPlan, &PreparedPlan) -> crate::error::Result<super::Shape> + Copy + Send + Sync
-    {
-        move |left, right| self.apply(left.shape(), right.shape(), strictness)
-    }
-}
-
 #[cfg(test)]
 mod tests;

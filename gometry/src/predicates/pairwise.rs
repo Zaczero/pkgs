@@ -2,19 +2,20 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
 use crate::{
-    Arc, Bound, CollectRows as _, DistanceUnit, Frame, IntoPyObject as _, Py, PyGeometryArray,
-    PyResult, Python, crs, crs_metric_binary_geometry_broadcast, exact_geometry,
-    exact_geometry_array, expected_geometry_or_array, fixed_geometry_array_nearest_points,
-    metric_shortest_line, py_nearest_points, pyfunction, resolve_metric, rows_err,
-    validate_distance_arg,
+    Bound, CollectRows as _, DistanceUnit, Frame, IntoPyObject as _, Py, PyGeometryArray, PyResult,
+    Python, crs, crs_metric_binary_geometry_broadcast, exact_geometry, exact_geometry_array,
+    expected_geometry_or_array, fixed_geometry_array_nearest_points, metric_shortest_line,
+    py_nearest_points, pyfunction, resolve_metric, rows_err, validate_distance_arg,
 };
 
 /// Return the shortest connecting line between two geometries (CRS-aware).
 ///
 /// ``nearest_points`` as a ``LineString`` — degenerate when the geometries
-/// touch. Accepts any geometry pair (point/line/polygon/multi/collection), not
-/// only points, and the witness is the true closest approach, so an endpoint
-/// may land on an edge interior rather than a vertex. An empty operand yields
+/// touch. Planar and projected metrics accept any geometry pair, not only
+/// points, and the witness is the true closest approach, so an endpoint may
+/// land on an edge interior rather than a vertex. Geographic metrics support
+/// point and linework operands only; filled polygon interiors require
+/// ``unit='planar'`` or a projected CRS. An empty operand yields
 /// ``LINESTRING EMPTY`` (the output-type sentinel, like ``distance``'s ``inf``).
 /// Output ordinates are the operands' common axes (an XYZM line versus an XY
 /// point gives an XY line). See `nearest_points` (the endpoints) and `distance`
@@ -28,7 +29,7 @@ use crate::{
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -41,6 +42,8 @@ use crate::{
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// CRSError
+///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------
@@ -80,14 +83,15 @@ pub(crate) fn shortest_line(
             let model = resolve_metric(geometry.crs_str(), unit, "shortest_line")?;
             // A crossing scalar can't share one prepared cache across the seam —
             // fall through to the split-normalizing broadcast below for it.
-            if let crs::MetricModel::Geodesic { crs, state } = model
-                && !geometry.shape.shape().crosses_antimeridian()
+            if let crs::MetricModel::Geodesic { crs, frame, state } = model
+                && !crate::geometry::crosses_antimeridian_in_frame(geometry.shape.shape(), frame)
                 && !array.has_missing()
             {
                 let scalar = geometry.plan_or_transient();
-                let scalar_cache = Arc::clone(&geometry.frame_cache);
+                let scalar_cache = geometry.frame_cache();
                 let array = array.clone();
                 let rows = py.detach(move || {
+                    let mut products = array.row_products.operation();
                     crs::with_resolved_ellipsoid_metric_at(
                         &crs,
                         &[scalar.shape()],
@@ -106,8 +110,9 @@ pub(crate) fn shortest_line(
                                 .iter_rows()
                                 .enumerate()
                                 .map(|(row_index, row)| {
-                                    let element = array.prepared_row(row_index, row);
-                                    let element_cache = array.row_frame_cache(row_index);
+                                    let element =
+                                        array.prepared_row_with(&mut products, row_index, row);
+                                    let element_cache = products.frame_cache(row_index);
                                     Ok(crate::geometry::nearest_line(
                                         scalar.geodesic_nearest_points_cached_split(
                                             &scalar_cache,
@@ -117,6 +122,7 @@ pub(crate) fn shortest_line(
                                             semi_major,
                                             flattening,
                                             metric,
+                                            frame,
                                         )?,
                                         crate::geometry::common_axes(
                                             scalar.shape(),
@@ -154,7 +160,9 @@ pub(crate) fn shortest_line(
 /// Compute the minimum distance between ``left`` and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-/// projected CRS, coordinate units when CRS-free.
+/// projected CRS, coordinate units when CRS-free. Geographic distance supports
+/// point and linework operands only; filled polygon interiors require
+/// ``unit='planar'`` or a projected CRS.
 ///
 /// Parameters
 /// ----------
@@ -164,7 +172,7 @@ pub(crate) fn shortest_line(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -176,7 +184,8 @@ pub(crate) fn shortest_line(
 /// Raises
 /// ------
 /// CRSError
-///     If the CRS lacks linear axis units for a metric result.
+///     If the CRS lacks linear axis units for a metric result, or a geographic
+///     operand includes a filled polygon interior.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
@@ -274,7 +283,9 @@ pub(crate) fn distance_3d(
 /// and ``right``.
 ///
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
-/// projected CRS, coordinate units when CRS-free.
+/// projected CRS, coordinate units when CRS-free. Geographic Hausdorff
+/// distance supports point and linework operands only; filled polygon
+/// interiors require ``unit='planar'`` or a projected CRS.
 ///
 /// Parameters
 /// ----------
@@ -289,7 +300,7 @@ pub(crate) fn distance_3d(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -301,7 +312,8 @@ pub(crate) fn distance_3d(
 /// Raises
 /// ------
 /// CRSError
-///     If the CRS lacks linear axis units for a metric result.
+///     If the CRS lacks linear axis units for a metric result, or a geographic
+///     operand includes a filled polygon interior.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
@@ -352,7 +364,7 @@ pub(crate) fn hausdorff_distance(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -403,9 +415,11 @@ pub(crate) fn frechet_distance(
 ///
 /// Realizes the same minimizer as ``distance``: the geodesically closest pair
 /// on a geographic CRS, the planar-closest pair on a projected one, and the
-/// coordinate-space closest pair when CRS-free. Accepts any geometry pair, not
-/// only points (the witness on a polygon/line may be an edge-interior point);
-/// the connecting line is ``shortest_line``. An empty operand yields
+/// coordinate-space closest pair when CRS-free. Planar and projected metrics
+/// accept any geometry pair, not only points (the witness on a polygon/line may
+/// be an edge-interior point). Geographic metrics support point and linework
+/// operands only; filled polygon interiors require ``unit='planar'`` or a
+/// projected CRS. The connecting line is ``shortest_line``. An empty operand yields
 /// ``(POINT EMPTY, POINT EMPTY)``, and the pair is dropped to the operands'
 /// common axes so it matches ``shortest_line``'s endpoints exactly.
 ///
@@ -417,7 +431,7 @@ pub(crate) fn frechet_distance(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -432,6 +446,8 @@ pub(crate) fn frechet_distance(
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// CRSError
+///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------
@@ -458,7 +474,7 @@ pub(crate) fn nearest_points(
 ) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(left) {
         if let Some(right_geometry) = exact_geometry(right) {
-            return Ok(py_nearest_points(geometry, right_geometry, unit)?
+            return Ok(py_nearest_points(py, geometry, right_geometry, unit)?
                 .into_pyobject(py)?
                 .unbind()
                 .into());
@@ -476,6 +492,9 @@ pub(crate) fn nearest_points(
 
 /// Test whether ``left`` and ``right`` are within ``distance`` of each other.
 ///
+/// Geographic metrics support point and linework operands only; filled polygon
+/// interiors require ``unit='planar'`` or a projected CRS.
+///
 /// Parameters
 /// ----------
 /// left, right : Geometry or GeometryArray
@@ -489,7 +508,7 @@ pub(crate) fn nearest_points(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -505,6 +524,8 @@ pub(crate) fn nearest_points(
 /// GeometryError
 ///     If ``distance`` is negative or non-finite, or ``unit='meters'`` is
 ///     requested for a CRS-free geometry.
+/// CRSError
+///     If a geographic operand includes a filled polygon interior.
 ///
 /// See Also
 /// --------
@@ -545,10 +566,7 @@ pub(crate) fn dwithin(
     // bool per row); the broadcast length comes from that operand.
     let left_array = crate::broadcast::exact_geometry_array(left);
     let right_array = crate::broadcast::exact_geometry_array(right);
-    let Some(len) = left_array
-        .or(right_array)
-        .map(|array| array.storage().len())
-    else {
+    let Some(len) = left_array.or(right_array).map(|array| array.len()) else {
         // Two scalars: a single bool, so the distance must be scalar too.
         let distance = validate_distance_arg(distance)?.get();
         return crate::dispatch::dispatch_dwithin(py, left, right, distance, unit);

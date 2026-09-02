@@ -65,6 +65,42 @@ pub(crate) enum RingClass {
     Interior,
 }
 
+/// One edge's contribution to even-odd ring membership.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RingEdgeMembership {
+    None,
+    Boundary,
+    Crossing,
+}
+
+/// Classify one ring edge against a point. Boundary requires both closed-box
+/// containment and robust collinearity; otherwise a half-open ray crossing
+/// contributes one parity toggle.
+pub(crate) fn ring_edge_membership(
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+    px: f64,
+    py: f64,
+) -> RingEdgeMembership {
+    let in_bbox = px >= ax.min(bx) && px <= ax.max(bx) && py >= ay.min(by) && py <= ay.max(by);
+    let orientation = in_bbox.then(|| orientation_xy(ax, ay, bx, by, px, py));
+    if orientation == Some(Orientation::Collinear) {
+        return RingEdgeMembership::Boundary;
+    }
+    if (ay > py) != (by > py)
+        && orientation.map_or_else(
+            || ray_crossing_is_right(ax, ay, bx, by, px, py),
+            |orientation| (orientation == Orientation::CounterClockwise) == (by > ay),
+        )
+    {
+        RingEdgeMembership::Crossing
+    } else {
+        RingEdgeMembership::None
+    }
+}
+
 /// Classify `point` against `ring` in ONE pass: the boundary test (envelope
 /// gate first, exact robust orientation only for the few segments whose box
 /// contains the probe) and the crossing parity accumulate together, instead of
@@ -78,13 +114,10 @@ pub(crate) fn ring_classify_point<C: Coordinates + ?Sized>(ring: &C, point: Poin
     }
     let mut inside = false;
     for [a, b] in ring.segment_pairs() {
-        if point_on_segment(point, a, b) {
-            return RingClass::Boundary;
-        }
-        if (a.y > point.y) != (b.y > point.y)
-            && ray_crossing_is_right(a.x, a.y, b.x, b.y, point.x, point.y)
-        {
-            inside = !inside;
+        match ring_edge_membership(a.x, a.y, b.x, b.y, point.x, point.y) {
+            RingEdgeMembership::Boundary => return RingClass::Boundary,
+            RingEdgeMembership::Crossing => inside = !inside,
+            RingEdgeMembership::None => {},
         }
     }
     if inside {
@@ -145,18 +178,10 @@ pub(crate) fn ring_classify_point_columns_exact(xs: &[f64], ys: &[f64], point: P
     let mut inside = false;
     for ([ax, bx], [ay, by]) in std::iter::zip(xs.array_windows::<2>(), ys.array_windows::<2>()) {
         let (ax, ay, bx, by) = (*ax, *ay, *bx, *by);
-        if point.x >= ax.min(bx)
-            && point.x <= ax.max(bx)
-            && point.y >= ay.min(by)
-            && point.y <= ay.max(by)
-            && orientation_xy(ax, ay, bx, by, point.x, point.y) == Orientation::Collinear
-        {
-            return RingClass::Boundary;
-        }
-        if (ay > point.y) != (by > point.y)
-            && ray_crossing_is_right(ax, ay, bx, by, point.x, point.y)
-        {
-            inside = !inside;
+        match ring_edge_membership(ax, ay, bx, by, point.x, point.y) {
+            RingEdgeMembership::Boundary => return RingClass::Boundary,
+            RingEdgeMembership::Crossing => inside = !inside,
+            RingEdgeMembership::None => {},
         }
     }
     if inside {
@@ -278,7 +303,7 @@ pub(in crate::geometry) fn polygon_rings_issue(
         // sweep never pairs them. Degenerate rings already failed earlier
         // gates in practice; this is a defensive alignment skip.
         hole_bounds.push(Bounds::from_coords(hole.coords()).unwrap_or_else(|| {
-            Bounds::new_unchecked(
+            Bounds::new_raw(
                 f64::INFINITY,
                 f64::INFINITY,
                 f64::NEG_INFINITY,
@@ -373,7 +398,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
         .iter()
         .map(|polygon| {
             Bounds::from_coords(polygon.shell.coords()).unwrap_or_else(|| {
-                Bounds::new_unchecked(
+                Bounds::new_raw(
                     f64::INFINITY,
                     f64::INFINITY,
                     f64::NEG_INFINITY,

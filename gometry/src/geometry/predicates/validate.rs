@@ -1,7 +1,6 @@
 use crate::geometry::{
-    Coordinates, Orientation, Point, Polygon, ValidationIssue, XY, column_all_finite,
-    multi_polygon_members_issue, orientation_xy, same_point, same_topological_coordinate,
-    wrap_index,
+    Coordinates, Orientation, Point, ValidationIssue, XY, column_all_finite, orientation_xy,
+    same_point, same_topological_coordinate, wrap_index,
 };
 
 const SMALL_RING_FUSED_LIMIT: usize = 16;
@@ -167,13 +166,6 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
             path,
         )
     })
-}
-
-pub(crate) fn validate_geo_multi_polygon(
-    polygons: &[Polygon],
-    path: &str,
-) -> Option<ValidationIssue> {
-    multi_polygon_members_issue(polygons, path)
 }
 
 /// Convexity fold over a shell ring (closing duplicate skipped): robust

@@ -486,12 +486,10 @@ impl Shape {
             } else {
                 part.zs().map(Into::into)
             };
-            measured.push(LineSeq::from_trusted(CoordSeq::from_columns(
-                xs,
-                ys,
-                zs,
-                Some(measures.into()),
-            )));
+            measured.push(
+                LineSeq::try_new(CoordSeq::from_columns(xs, ys, zs, Some(measures.into())))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            );
         }
         if measured.is_empty() {
             return Ok(Shape::typed_empty(GeometryKind::of(self), self.axes()));
@@ -503,7 +501,6 @@ impl Shape {
                 let mut measured = measured.into_iter();
                 let members = lines
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)

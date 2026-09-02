@@ -322,7 +322,7 @@ pub(crate) fn snap(
 ) -> PyResult<Py<PyAny>> {
     let geom_array = crate::broadcast::exact_geometry_array(geom);
     let ref_array = crate::broadcast::exact_geometry_array(reference);
-    let Some(len) = geom_array.or(ref_array).map(|array| array.storage().len()) else {
+    let Some(len) = geom_array.or(ref_array).map(PyGeometryArray::len) else {
         let tolerance = finite_f64_required("tolerance", tolerance)?;
         return Python::attach(|py| {
             crate::dispatch::dispatch_binary(

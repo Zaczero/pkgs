@@ -1,5 +1,28 @@
 use crate::geometry::predicates::*;
 use crate::geometry::*;
+
+#[test]
+fn touching_diagonal_polygons_keep_their_de9im_matrix() {
+    let high = f64::from_bits(1.0_f64.to_bits() + 1);
+    let polygon = |points: &[(f64, f64)]| {
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                points
+                    .iter()
+                    .map(|&(x, y)| Point::new(x, y).unwrap())
+                    .collect::<Vec<_>>(),
+            ),
+            Vec::new(),
+        ))
+    };
+    // The upper polygon is encountered first, so its ray gets the lower
+    // target id despite being geometrically second around the shared vertex.
+    let upper = polygon(&[(0.0, 0.0), (1.0, high), (2.0, 3.0), (0.0, 0.0)]);
+    let lower = polygon(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (0.0, 0.0)]);
+
+    assert_eq!(upper.relate(&lower), "FF2F01212");
+}
+
 mod convex_tests {
     use super::*;
 
@@ -35,7 +58,7 @@ mod convex_tests {
     /// representative general-position rings of each admitted class.
     #[test]
     fn convexity_matches_oracle_on_curated_rings() {
-        let p = |x, y| Point::new_unchecked_xy(x, y);
+        let p = |x, y| Point::new_raw_xy(x, y);
         let cases = [
             ("convex_cw_triangle", vec![
                 p(-3.0, 3.0),
@@ -103,7 +126,7 @@ mod convex_tests {
     /// Collinear and degenerate cases excluded from the general-position table.
     #[test]
     fn collinear_and_degenerate_cases() {
-        let p = |x: f64, y: f64| Point::new_unchecked_xy(x, y);
+        let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
         let convex: &[&[Point]] = &[
             &[p(0.0, 0.0), p(2.0, 0.0), p(1.0, 2.0)], // triangle
             &[p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0), p(0.0, 2.0)], // square
@@ -154,10 +177,10 @@ mod convex_tests {
 
     #[test]
     fn axis_rectangle_detection_and_intersects_fast_path() {
-        let p = |x: f64, y: f64| Point::new_unchecked_xy(x, y);
+        let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
         let rect = |minx, miny, maxx, maxy| {
             Shape::Polygon(Polygon::new(
-                Ring::from_trusted_closed(vec![
+                Ring::from_closed(vec![
                     p(minx, miny),
                     p(maxx, miny),
                     p(maxx, maxy),
@@ -172,16 +195,16 @@ mod convex_tests {
         // A box from any corner order is detected; degenerate / holed / non-axis
         // polygons are not.
         let r = rect(0.0, 0.0, 10.0, 10.0);
-        assert!(r.is_axis_aligned_rectangle(bounds(&r)));
+        assert!(is_axis_aligned_rectangle(&r, bounds(&r)));
         let line_box = rect(0.0, 0.0, 10.0, 0.0); // zero height → not a rectangle
-        assert!(!line_box.is_axis_aligned_rectangle(bounds(&line_box)));
+        assert!(!is_axis_aligned_rectangle(&line_box, bounds(&line_box)));
         let triangle = Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(vec![p(0.0, 0.0), p(10.0, 0.0), p(5.0, 10.0), p(0.0, 0.0)]),
+            Ring::from_closed(vec![p(0.0, 0.0), p(10.0, 0.0), p(5.0, 10.0), p(0.0, 0.0)]),
             Vec::new(),
         ));
-        assert!(!triangle.is_axis_aligned_rectangle(bounds(&triangle)));
+        assert!(!is_axis_aligned_rectangle(&triangle, bounds(&triangle)));
         let diamond = Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(vec![
+            Ring::from_closed(vec![
                 p(5.0, 0.0),
                 p(10.0, 5.0),
                 p(5.0, 10.0),
@@ -190,7 +213,25 @@ mod convex_tests {
             ]),
             Vec::new(),
         ));
-        assert!(!diamond.is_axis_aligned_rectangle(bounds(&diamond)));
+        assert!(!is_axis_aligned_rectangle(&diamond, bounds(&diamond)));
+
+        let densified = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                p(0.0, 0.0),
+                p(5.0, 0.0),
+                p(10.0, 0.0),
+                p(10.0, 10.0),
+                p(5.0, 10.0),
+                p(0.0, 10.0),
+                p(0.0, 0.0),
+            ]),
+            Vec::new(),
+        ));
+        assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
+        assert!(
+            PreparedPlan::transient(&densified).intersects(&PreparedPlan::transient(&r)),
+            "cached planar intersects recognizes a densified rectangle"
+        );
 
         // The fast path must agree with the general kernel on every box relation:
         // overlap, crossing (no corner of one inside the other), edge-touch,

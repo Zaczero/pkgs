@@ -288,7 +288,10 @@ pub(crate) fn snap_column_simd(
 /// Algebra: `k = round((v - origin) / size)`, result = `origin + k * size`.
 /// Scale `v` and `origin` together before the subtraction so the difference
 /// does not overflow; `size` stays in world units for the final multiply.
-fn stable_snap_ordinate(value: f64, origin: f64, size: f64) -> f64 {
+pub(crate) fn stable_snap_ordinate(value: f64, origin: f64, size: f64) -> f64 {
+    if value == origin {
+        return value;
+    }
     let classic = ((value - origin) / size).round() * size + origin;
     if classic.is_finite() {
         return classic;
@@ -354,7 +357,7 @@ fn vw_frame_columns(
         return (None, None, world_area_tol);
     }
     let Some(frame) =
-        AxisFrame::from_origin_extents(Point::new_unchecked_xy(ox, oy), max_abs_x, max_abs_y)
+        AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), max_abs_x, max_abs_y)
     else {
         return (None, None, world_area_tol);
     };

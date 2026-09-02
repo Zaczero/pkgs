@@ -5,7 +5,7 @@ mod binary_areal_overlay_tests {
 
     fn polygon(points: &[(f64, f64)]) -> Polygon {
         Polygon::new(
-            Ring::from_trusted_closed(
+            Ring::from_closed(
                 points
                     .iter()
                     .map(|&(x, y)| Point::new(x, y).unwrap())
@@ -44,7 +44,54 @@ mod binary_areal_overlay_tests {
         })
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_trusted_closed(points), Vec::new()))
+        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+    }
+
+    fn m_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
+        let points = [
+            (minx, miny),
+            (maxx, miny),
+            (maxx, maxy),
+            (minx, maxy),
+            (minx, miny),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(None), MOrdinate(Some(offset + x + y))))
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+    }
+
+    fn zm_line(start: (f64, f64), end: (f64, f64)) -> Shape {
+        let points = [start, end]
+            .into_iter()
+            .map(|(x, y)| {
+                Point::new_axes(
+                    x,
+                    y,
+                    ZOrdinate(Some(x + y + 10.0)),
+                    MOrdinate(Some(y - x + 10.0)),
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("test line is valid"))
+    }
+
+    fn invalid_zm_bowtie() -> Shape {
+        let points = [(0.0, 0.0), (2.0, 2.0), (0.0, 2.0), (2.0, 0.0), (0.0, 0.0)]
+            .into_iter()
+            .map(|(x, y)| {
+                Point::new_axes(
+                    x,
+                    y,
+                    ZOrdinate(Some(x + y + 10.0)),
+                    MOrdinate(Some(y - x + 10.0)),
+                )
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
     }
 
     fn z_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -59,7 +106,7 @@ mod binary_areal_overlay_tests {
         .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(Some(offset + x + y)), MOrdinate(None)))
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_trusted_closed(points), Vec::new()))
+        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
     }
 
     fn line(points: &[(f64, f64)]) -> Shape {
@@ -107,6 +154,23 @@ mod binary_areal_overlay_tests {
         crate::io::to_wkb(shape, None, false).expect("overlay WKB")
     }
 
+    fn assert_disjoint_certificate_matches_graph(inputs: &[&Shape], op: OverlayOp) {
+        let certified = overlay_all(inputs, None, op, Strictness::Strict).unwrap();
+        let graph = super::super::nary::overlay_all_without_bounds_certificates(
+            inputs,
+            None,
+            op,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            wkb(&certified),
+            wkb(&graph),
+            "{}: {certified:?} != {graph:?}",
+            op.name()
+        );
+    }
+
     /// The overlay engine preserves INPUT VERTICES bit-exactly — the wart
     /// the `i_overlay` path had (it snapped every coordinate to its grid,
     /// perturbing untouched vertices in the 8th decimal).
@@ -145,6 +209,28 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    fn assert_disjoint_results_match(inputs: &[&Shape], op: OverlayOp) {
+        let certified = overlay_all(inputs, None, op, Strictness::Strict);
+        let forced = super::super::nary::overlay_all_without_bounds_certificates(
+            inputs,
+            None,
+            op,
+            Strictness::Strict,
+        );
+        match (certified, forced) {
+            (Ok(certified), Ok(forced)) => {
+                assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name())
+            },
+            (Err(certified), Err(forced)) => {
+                assert_eq!(certified.to_string(), forced.to_string(), "{}", op.name());
+            },
+            (certified, forced) => panic!(
+                "{} diverged: certified={certified:?}, forced={forced:?}",
+                op.name()
+            ),
+        }
+    }
+
     /// Pinch resolution: corner-touching squares union into a VALID
     /// `MultiPolygon` of two simple lobes (never one figure-eight ring),
     /// and the maximal walk's split classifies a shell-touching hole
@@ -172,11 +258,13 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn intersection_all_typed_empty_uses_global_min_dimension() {
-        let area = square(0.0, 0.0, 2.0, 2.0);
-        let later_disjoint_point = point(10.0, 10.0);
+        let area = z_square(0.0, 0.0, 2.0, 2.0, 3.0);
+        let later_disjoint_point = Shape::Point(
+            Point::new_axes(10.0, 10.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
+        );
         let result = overlay_all(
             &[&area, &later_disjoint_point],
-            false,
+            None,
             OverlayOp::Intersection,
             Strictness::Strict,
         )
@@ -185,6 +273,7 @@ mod binary_areal_overlay_tests {
             matches!(result, Shape::Empty(GeometryKind::Point, _)),
             "{result:?}"
         );
+        assert!(result.has_z() && result.has_m(), "{result:?}");
     }
 
     #[test]
@@ -235,7 +324,7 @@ mod binary_areal_overlay_tests {
                 .map(|&index| &shapes[index])
                 .collect::<Vec<_>>();
             let canonical =
-                overlay_all(&inputs, false, OverlayOp::Intersection, Strictness::Strict).unwrap();
+                overlay_all(&inputs, None, OverlayOp::Intersection, Strictness::Strict).unwrap();
             let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
             assert_topologically_equal(&canonical, &folded);
         }
@@ -248,7 +337,7 @@ mod binary_areal_overlay_tests {
         let marker = point(2.0, 2.0);
         let inputs = [&area, &crossing, &marker];
         let canonical =
-            overlay_all(&inputs, false, OverlayOp::Intersection, Strictness::Strict).unwrap();
+            overlay_all(&inputs, None, OverlayOp::Intersection, Strictness::Strict).unwrap();
         let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
         assert!(matches!(canonical, Shape::Point(_)), "{canonical:?}");
         assert_topologically_equal(&canonical, &folded);
@@ -270,7 +359,7 @@ mod binary_areal_overlay_tests {
         // A single operand intersects to itself — faithful, so both policies
         // keep Z/M (force_2d is the way to flatten).
         for strictness in [Strictness::Lenient, Strictness::Strict] {
-            let kept = overlay_all(&[&input], false, OverlayOp::Intersection, strictness).unwrap();
+            let kept = overlay_all(&[&input], None, OverlayOp::Intersection, strictness).unwrap();
             assert_eq!(kept, input);
             assert!(kept.has_z() && kept.has_m(), "{kept:?}");
         }
@@ -283,7 +372,7 @@ mod binary_areal_overlay_tests {
         let third = z_square(2.0, 1.0, 6.0, 5.0, 10.0);
         let result = overlay_all(
             &[&first, &second, &third],
-            false,
+            None,
             OverlayOp::Intersection,
             Strictness::Lenient,
         )
@@ -300,7 +389,7 @@ mod binary_areal_overlay_tests {
         // the result degrades to 2D rather than raising.
         let auto = overlay_all(
             &[&source, &interior],
-            false,
+            None,
             OverlayOp::Intersection,
             Strictness::Lenient,
         )
@@ -310,7 +399,7 @@ mod binary_areal_overlay_tests {
         // 'error' (strict=true) raises on the unsourceable survivor.
         let error = overlay_all(
             &[&source, &interior],
-            false,
+            None,
             OverlayOp::Intersection,
             Strictness::Strict,
         );
@@ -326,7 +415,7 @@ mod binary_areal_overlay_tests {
         ];
         let baseline = overlay_all(
             &[&shapes[0], &shapes[1], &shapes[2]],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -338,7 +427,7 @@ mod binary_areal_overlay_tests {
                 .collect::<Vec<_>>();
             let canonical = overlay_all(
                 &inputs,
-                false,
+                None,
                 OverlayOp::SymmetricDifference,
                 Strictness::Strict,
             )
@@ -355,7 +444,7 @@ mod binary_areal_overlay_tests {
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
         let result = overlay_all(
             &[&polygon, &polygon, &contained_line],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -371,7 +460,7 @@ mod binary_areal_overlay_tests {
             Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()].into());
         let result = overlay_all(
             &[&polygon, &polygon, &collection],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -385,7 +474,7 @@ mod binary_areal_overlay_tests {
         let point_on_line = point(0.0, 0.0);
         let result = overlay_all(
             &[&line, &line, &point_on_line],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -404,7 +493,7 @@ mod binary_areal_overlay_tests {
         let inputs = [&shapes[0], &shapes[1], &shapes[2], &shapes[3]];
         let result = overlay_all(
             &inputs,
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -427,7 +516,7 @@ mod binary_areal_overlay_tests {
         );
         let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -440,7 +529,7 @@ mod binary_areal_overlay_tests {
         let polygon = square(0.0, 0.0, 2.0, 2.0);
         let result = overlay_all(
             &[&polygon, &polygon],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -457,7 +546,7 @@ mod binary_areal_overlay_tests {
         let survivor = square(1.0, 1.0, 3.0, 3.0);
         let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -470,13 +559,127 @@ mod binary_areal_overlay_tests {
         let shapes = [square(0.0, 0.0, 1.0, 1.0), square(3.0, 3.0, 4.0, 4.0)];
         let canonical = overlay_all(
             &[&shapes[0], &shapes[1]],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
         .unwrap();
         let union = Shape::union_all(&shapes, Strictness::Strict).unwrap();
         assert_topologically_equal(&canonical, &union);
+    }
+
+    #[test]
+    fn disjoint_bounds_certificates_match_joint_graph_assembly() {
+        let polygons = [square(0.0, 0.0, 1.0, 1.0), square(3.0, 3.0, 4.0, 4.0)];
+        let mixed = [
+            square(0.0, 0.0, 1.0, 1.0),
+            line(&[(3.0, 3.0), (4.0, 3.0)]),
+            point(6.0, 6.0),
+        ];
+        let multipart = Shape::GeometryCollection(
+            vec![
+                Shape::MultiPolygon(
+                    vec![polygon(&[
+                        (0.0, 0.0),
+                        (1.0, 0.0),
+                        (1.0, 1.0),
+                        (0.0, 1.0),
+                        (0.0, 0.0),
+                    ])]
+                    .into(),
+                ),
+                Shape::MultiLineString(
+                    vec![
+                        LineSeq::try_new(CoordSeq::from(vec![
+                            Point::new(2.0, 2.0).unwrap(),
+                            Point::new(3.0, 2.0).unwrap(),
+                        ]))
+                        .unwrap(),
+                    ]
+                    .into(),
+                ),
+            ]
+            .into(),
+        );
+        let remote = square(6.0, 6.0, 7.0, 7.0);
+        let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
+
+        for op in [
+            OverlayOp::Union,
+            OverlayOp::Difference,
+            OverlayOp::SymmetricDifference,
+        ] {
+            assert_disjoint_certificate_matches_graph(&[&polygons[0], &polygons[1]], op);
+            assert_disjoint_certificate_matches_graph(&[&mixed[0], &mixed[1], &mixed[2]], op);
+            assert_disjoint_certificate_matches_graph(&[&multipart, &remote], op);
+            assert_disjoint_results_match(&[&polygons[0], &empty_z, &polygons[1]], op);
+        }
+    }
+
+    #[test]
+    fn disjoint_ordinate_axes_match_forced_graph_wkb() {
+        let inputs = [
+            (
+                "XYZ",
+                z_square(0.0, 0.0, 1.0, 1.0, 10.0),
+                z_square(3.0, 3.0, 4.0, 4.0, 20.0),
+            ),
+            (
+                "XYM",
+                m_square(0.0, 0.0, 1.0, 1.0, 10.0),
+                m_square(3.0, 3.0, 4.0, 4.0, 20.0),
+            ),
+            (
+                "XYZM",
+                zm_square(0.0, 0.0, 1.0, 1.0, 10.0),
+                zm_square(3.0, 3.0, 4.0, 4.0, 20.0),
+            ),
+        ];
+        for (axes, left, right) in inputs {
+            assert_eq!(left.coordinate_axes(), axes);
+            assert_eq!(right.coordinate_axes(), axes);
+            for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+                assert_disjoint_certificate_matches_graph(&[&left, &right], op);
+            }
+        }
+    }
+
+    #[test]
+    fn disjoint_invalid_zm_area_and_line_use_the_same_ordinate_path() {
+        let polygon = invalid_zm_bowtie();
+        let line = zm_line((10.0, 0.0), (11.0, 1.0));
+        for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+            let certified = overlay_all(&[&polygon, &line], None, op, Strictness::Strict)
+                .expect("certified mixed ZM overlay");
+            let forced = super::super::nary::overlay_all_without_bounds_certificates(
+                &[&polygon, &line],
+                None,
+                op,
+                Strictness::Strict,
+            )
+            .expect("forced mixed ZM overlay");
+            assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name());
+        }
+    }
+
+    #[test]
+    fn empty_ordinate_disjoint_paths_return_the_same_error() {
+        let polygon = square(0.0, 0.0, 1.0, 1.0);
+        let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
+        let remote = square(3.0, 3.0, 4.0, 4.0);
+        for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+            let certified =
+                overlay_all(&[&polygon, &empty_z, &remote], None, op, Strictness::Strict);
+            let forced = super::super::nary::overlay_all_without_bounds_certificates(
+                &[&polygon, &empty_z, &remote],
+                None,
+                op,
+                Strictness::Strict,
+            );
+            let (certified, forced) = (certified.unwrap_err(), forced.unwrap_err());
+            assert_eq!(certified.to_string(), forced.to_string(), "{}", op.name());
+            assert!(certified.to_string().contains("cannot represent Z/M"));
+        }
     }
 
     #[test]
@@ -487,7 +690,7 @@ mod binary_areal_overlay_tests {
         for strictness in [Strictness::Lenient, Strictness::Strict] {
             let kept = overlay_all(
                 &[&first, &second],
-                false,
+                None,
                 OverlayOp::SymmetricDifference,
                 strictness,
             )
@@ -499,7 +702,7 @@ mod binary_areal_overlay_tests {
         let overlap = zm_square(0.5, 0.5, 1.5, 1.5, 10.0);
         let carried = overlay_all(
             &[&first, &overlap],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Lenient,
         )
@@ -511,14 +714,20 @@ mod binary_areal_overlay_tests {
     fn overlay_resolves_conflicting_z_and_equal_m_independently() {
         let point =
             |z, m| Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap();
-        let left = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            point(1.0, 7.0),
-            Point::new_axes(2.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(9.0))).unwrap(),
-        ])));
-        let right = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            point(11.0, 7.0),
-            Point::new_axes(2.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(9.0))).unwrap(),
-        ])));
+        let left = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                point(1.0, 7.0),
+                Point::new_axes(2.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(Some(9.0))).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
+        let right = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                point(11.0, 7.0),
+                Point::new_axes(2.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(9.0))).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
 
         let result = left.union(&right, Strictness::Lenient).unwrap();
         assert_eq!(result.coordinate_axes(), "XYM");
@@ -530,24 +739,33 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn overlay_preserves_signed_zero_and_drops_absent_difference_axis() {
-        let left = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            Point::new_axes(0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(None)).unwrap(),
-            Point::new_axes(4.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
-        ])));
-        let xy = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            Point::new(0.0, 0.0).unwrap(),
-            Point::new(4.0, 0.0).unwrap(),
-        ])));
+        let left = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new_axes(0.0, 0.0, ZOrdinate(Some(-0.0)), MOrdinate(None)).unwrap(),
+                Point::new_axes(4.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
+        let xy = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new(0.0, 0.0).unwrap(),
+                Point::new(4.0, 0.0).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
         let intersection = left.intersection(&xy, Strictness::Lenient).unwrap();
         assert_eq!(intersection.coordinate_axes(), "XYZ");
         let first = intersection.points_vec().into_iter().next().unwrap();
         assert_eq!(first.z().unwrap().to_bits(), (-0.0_f64).to_bits());
         assert!(first.m().is_none());
 
-        let measured = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            Point::new_axes(2.0, -1.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
-            Point::new_axes(2.0, 1.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
-        ])));
+        let measured = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new_axes(2.0, -1.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+                Point::new_axes(2.0, 1.0, ZOrdinate(None), MOrdinate(Some(4.0))).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        );
         let difference = left.difference(&measured, Strictness::Lenient).unwrap();
         assert_eq!(difference.coordinate_axes(), "XYZ");
         difference.for_each_point(|point| assert!(point.m().is_none()));
@@ -599,18 +817,24 @@ mod binary_areal_overlay_tests {
     #[test]
     fn line_merge_drops_only_conflicting_shared_node_axes() {
         let line = |z, m, end| {
-            LineSeq::from_trusted(CoordSeq::from(vec![
+            LineSeq::try_new(CoordSeq::from(vec![
                 Point::new_axes(0.0, 0.0, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap(),
                 Point::new_axes(end, 0.0, ZOrdinate(Some(z + 1.0)), MOrdinate(Some(m + 1.0)))
                     .unwrap(),
             ]))
+            .expect("line coordinate sequence must contain at least two vertices")
         };
         let lines = MultiLineString::from_values(CoordinateAxes::XYZM, vec![
             MultiMember::Value(line(1.0, 10.0, 1.0)),
-            MultiMember::Value(LineSeq::from_trusted(CoordSeq::from(vec![
-                Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0))).unwrap(),
-                Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0))).unwrap(),
-            ]))),
+            MultiMember::Value(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(11.0)))
+                        .unwrap(),
+                    Point::new_axes(2.0, 0.0, ZOrdinate(Some(100.0)), MOrdinate(Some(12.0)))
+                        .unwrap(),
+                ]))
+                .expect("fixture line has two vertices"),
+            ),
         ]);
         let merged = Shape::MultiLineString(lines).line_merge().unwrap();
         assert_eq!(merged.coordinate_axes(), "XYM");
@@ -632,7 +856,7 @@ mod binary_areal_overlay_tests {
         ] {
             let baseline = wkb(&overlay_all(
                 &[&shapes[0], &shapes[1], &shapes[2]],
-                false,
+                None,
                 op,
                 Strictness::Strict,
             )
@@ -643,7 +867,7 @@ mod binary_areal_overlay_tests {
                     .map(|&index| &shapes[index])
                     .collect::<Vec<_>>();
                 assert_eq!(
-                    wkb(&overlay_all(&inputs, false, op, Strictness::Strict).unwrap()),
+                    wkb(&overlay_all(&inputs, None, op, Strictness::Strict).unwrap()),
                     baseline,
                     "{} order={order:?}",
                     op.name()
@@ -659,7 +883,7 @@ mod binary_areal_overlay_tests {
         let area = square(0.0, 0.0, 4.0, 4.0);
         let direct = overlay_all(
             &[&point, &line, &area],
-            false,
+            None,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )

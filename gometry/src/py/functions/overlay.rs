@@ -36,13 +36,12 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
     };
     let frame = array.frame.clone();
     let shapes = array
-        .masked_shape_rows()
-        .map(|(missing, shape)| {
-            if missing {
+        .logical_shape_rows()
+        .map(|row| match row {
+            crate::array::LogicalShapeRow::Missing { .. } => {
                 Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
-            } else {
-                shape.into_owned()
-            }
+            },
+            crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
         })
         .collect();
     Ok((frame, shapes))
@@ -51,24 +50,24 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
 /// The shared tail of the all-input overlays (`union_all`, `intersection_all`,
 /// `symmetric_difference_all`): collect the input shapes under one shared frame
 /// and assemble them with `kernel` (GIL released). Aggregates are always lenient
-/// (missing rows skipped; SQL/pandas semantics). Geographic frames pass
-/// `geographic=true` so antimeridian-crossing operands are split first —
-/// the same gate binary overlay uses.
+/// (missing rows skipped; SQL/pandas semantics). Geographic frames pass their
+/// native topology frame so seam crossing and pole equivalence match binary
+/// overlay.
 fn apply_overlay_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
-    kernel: impl FnOnce(&[Shape], bool, crate::geometry::Strictness) -> crate::error::Result<Shape>
+    kernel: impl FnOnce(
+        &[Shape],
+        Option<crate::geographic::GeographicFrame>,
+        crate::geometry::Strictness,
+    ) -> crate::error::Result<Shape>
     + Send,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let geographic = crate::geometry::is_geographic_frame(&metadata);
+    let geographic = crate::geometry::geographic_frame(&metadata)?;
     let shape =
         py.detach(move || kernel(&shapes, geographic, crate::geometry::Strictness::Lenient))?;
-    Ok(PyGeometry::typed_with_epoch(
-        shape,
-        metadata.crs_owned(),
-        metadata.epoch(),
-    ))
+    Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
 /// The `&`/`|`/`-`/`^` operator entry shared by the `Geometry` and
@@ -89,8 +88,9 @@ pub(crate) fn overlay_operator(
 
 /// Compute the set-theoretic intersection of ``left`` and ``right``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+/// longitude aliases, seam spellings, and pole longitudes in the CRS-native
+/// frame; seam-crossing inputs are split into chart pieces before construction.
 ///
 /// Parameters
 /// ----------
@@ -127,8 +127,9 @@ pub(crate) fn intersection(
 
 /// Compute the set-theoretic union of ``left`` and ``right``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+/// longitude aliases, seam spellings, and pole longitudes in the CRS-native
+/// frame; seam-crossing inputs are split into chart pieces before construction.
 ///
 /// Parameters
 /// ----------
@@ -168,8 +169,9 @@ pub(crate) fn union(
 
 /// Compute the set-theoretic difference ``left - right``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+/// longitude aliases, seam spellings, and pole longitudes in the CRS-native
+/// frame; seam-crossing inputs are split into chart pieces before construction.
 ///
 /// Parameters
 /// ----------
@@ -208,8 +210,9 @@ pub(crate) fn difference(
 /// Compute the set-theoretic symmetric difference of ``left`` and
 /// ``right``.
 ///
-/// Evaluated in the coordinate plane; geographic inputs crossing the
-/// antimeridian are split-normalized first.
+/// Evaluated in the coordinate plane. In a geographic CRS, topology resolves
+/// longitude aliases, seam spellings, and pole longitudes in the CRS-native
+/// frame; seam-crossing inputs are split into chart pieces before construction.
 ///
 /// Parameters
 /// ----------
@@ -244,7 +247,11 @@ pub(crate) fn symmetric_difference(
     crate::dispatch::dispatch_overlay(py, left, right, OverlayOp::SymmetricDifference)
 }
 
-/// Union of many geometries into one (planar overlay).
+/// Union of many geometries into one.
+///
+/// Strictly disjoint inputs are assembled independently; inputs that can meet
+/// use one joint arrangement. In a geographic CRS, topology resolves longitude
+/// aliases and seam and pole equivalence in the native frame.
 ///
 /// Parameters
 /// ----------
@@ -284,10 +291,14 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// coverage** — polygons that tile a region edge-to-edge with no overlaps and
 /// no T-junctions (see ``coverage_is_valid``). It
 /// cancels the interior edges shared between adjacent polygons rather than
-/// noding and classifying every intersection, so it is dramatically faster on
-/// tilings (grids, parcels, administrative boundaries). On overlapping or
-/// badly-noded input raises before the specialized dissolve runs; use
+/// general noding and classification. On overlapping or badly-noded input it
+/// raises before the specialized dissolve runs; use
 /// `union_all` there.
+///
+/// In a geographic CRS, rows whose raw bounds are unsound at the periodic seam,
+/// a pole, or a non-canonical longitude are split into chart-safe pieces before
+/// dissolve. Canonical seam-free and pole-free rows retain the direct path. The
+/// result preserves the shared CRS and coordinate epoch.
 ///
 /// Parameters
 /// ----------
@@ -330,13 +341,9 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
             .into(),
         );
     }
-    let geographic = crate::geometry::is_geographic_frame(&metadata);
+    let geographic = crate::geometry::geographic_frame(&metadata)?;
     let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, geographic))?;
-    Ok(PyGeometry::typed_with_epoch(
-        shape,
-        metadata.crs_owned(),
-        metadata.epoch(),
-    ))
+    Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
 /// Build polygons from the pooled linework of many geometries.
@@ -431,11 +438,14 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
     crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
 }
 
-/// Common intersection of many geometries (planar overlay).
+/// Common intersection of many geometries.
 ///
-/// The region inside every input, assembled from one joint arrangement. Mixed
-/// dimensions narrow to the lowest shared dimension and an empty result keeps
-/// that dimension's typed empty.
+/// The region inside every input. When sound coordinate bounds prove operands
+/// disjoint, returns the typed empty directly; in a geographic CRS this requires
+/// every operand to be seam-free, pole-free, and canonically spelled. Otherwise,
+/// the result is assembled from one joint arrangement. Mixed dimensions narrow
+/// to the lowest shared dimension and an empty result keeps that dimension's
+/// typed empty.
 ///
 /// Parameters
 /// ----------
@@ -465,11 +475,13 @@ pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyR
     apply_overlay_all(py, values, Shape::intersection_all_topo)
 }
 
-/// Symmetric difference of many geometries (planar overlay).
+/// Symmetric difference of many geometries.
 ///
-/// The region covered by an odd number of inputs, assembled from one joint
-/// arrangement. The result is order-independent (`▵` is associative and
-/// commutative).
+/// The region covered by an odd number of inputs. Strictly disjoint inputs are
+/// assembled independently; inputs that can meet use one joint arrangement. In
+/// a geographic CRS, topology resolves longitude aliases and seam and pole
+/// equivalence in the native frame. The result is order-independent (`▵` is
+/// associative and commutative).
 ///
 /// Parameters
 /// ----------
@@ -546,9 +558,13 @@ pub(crate) fn symmetric_difference_all(
 /// False
 #[pyfunction]
 #[pyo3(signature = (values, *, gap_width = 0.0))]
-pub(crate) fn coverage_is_valid(values: &Bound<'_, PyAny>, gap_width: f64) -> PyResult<bool> {
+pub(crate) fn coverage_is_valid(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    gap_width: f64,
+) -> PyResult<bool> {
     let (shapes, ..) = coverage_values(values)?;
-    Ok(geometry::coverage_is_valid(&shapes, gap_width)?)
+    Ok(py.detach(move || geometry::coverage_is_valid(&shapes, gap_width))?)
 }
 
 /// Per-row invalid coverage boundary linework.
@@ -592,11 +608,12 @@ pub(crate) fn coverage_is_valid(values: &Bound<'_, PyAny>, gap_width: f64) -> Py
 /// ...     [gm.box(0, 0, 1, 1), gm.box(0.5, 0, 1.5, 1)]))
 /// 2
 pub(crate) fn coverage_invalid_edges(
+    py: Python<'_>,
     values: &Bound<'_, PyAny>,
     gap_width: f64,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let edges = geometry::coverage_invalid_edges(&shapes, gap_width)?;
+    let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;
     let result = PyGeometryArray::from_shapes(edges, metadata);
     Ok(match source {
         None => result,
@@ -664,13 +681,16 @@ pub(crate) fn coverage_invalid_edges(
     text_signature = "(values, tolerance, *, method='vw', simplify_boundary=True)"
 )]
 pub(crate) fn coverage_simplify(
+    py: Python<'_>,
     values: &Bound<'_, PyAny>,
     tolerance: f64,
     method: SimplifyMethod,
     simplify_boundary: bool,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let rows = geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)?;
+    let rows = py.detach(move || {
+        geometry::coverage_simplify(&shapes, tolerance, method, simplify_boundary)
+    })?;
     let result = PyGeometryArray::from_shapes(rows, metadata);
     Ok(match source {
         None => result,
@@ -740,13 +760,15 @@ pub(crate) fn coverage_simplify(
     text_signature = "(values, *, grid_size=0.0, gap_width=0.0, overlap_rule='longest_border')"
 )]
 pub(crate) fn coverage_clean(
+    py: Python<'_>,
     values: &Bound<'_, PyAny>,
     grid_size: f64,
     gap_width: f64,
     overlap_rule: geometry::CoverageOverlapRule,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let rows = geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule)?;
+    let rows =
+        py.detach(move || geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule))?;
     let result = PyGeometryArray::from_shapes(rows, metadata);
     Ok(match source {
         None => result,

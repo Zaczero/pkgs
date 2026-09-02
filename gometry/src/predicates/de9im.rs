@@ -184,11 +184,11 @@ pub(crate) fn equals_identical(
             crate::broadcast::exact_geometry_array(right),
         ) {
             (Some(l), Some(r)) => {
-                crate::broadcast::ensure_same_len(l.storage().len(), r.storage().len())?;
-                crate::py::numpy::false_bool_array(py, l.storage().len())
+                crate::broadcast::ensure_same_len(l.len(), r.len())?;
+                crate::py::numpy::false_bool_array(py, l.len())
             },
-            (Some(l), None) => crate::py::numpy::false_bool_array(py, l.storage().len()),
-            (None, Some(r)) => crate::py::numpy::false_bool_array(py, r.storage().len()),
+            (Some(l), None) => crate::py::numpy::false_bool_array(py, l.len()),
+            (None, Some(r)) => crate::py::numpy::false_bool_array(py, r.len()),
             (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
         };
     }

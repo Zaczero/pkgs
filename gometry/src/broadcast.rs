@@ -44,9 +44,8 @@ pub(crate) use metrics::{
     crs_metric_binary_geometry_broadcast, lonlat_shape, lonlat_shape_under,
     metric_frechet_densified, metric_hausdorff_densified, metric_maximum_inscribed_radius,
     metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points,
-    metric_shortest_line, pair_distance_resolved, pair_distance_resolved_result,
-    pair_dwithin_resolved, pair_dwithin_resolved_result, require_point, resolve_metric,
-    resolve_metric_3d, validate_densify,
+    metric_shortest_line, pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic,
+    pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d, validate_densify,
 };
 mod predicates;
 pub(crate) use predicates::{
@@ -130,11 +129,11 @@ pub(crate) fn rows_err((row, error): (usize, crate::error::Error)) -> PyErr {
 
 pub(crate) fn mask_missing<T: Copy>(
     values: &mut [T],
-    missing: Option<&crate::array::MissingMask>,
+    missing: Option<&crate::array::ValidityMask>,
     sentinel: T,
 ) {
     if let Some(mask) = missing {
-        for (value, &is_missing) in values.iter_mut().zip(mask.iter()) {
+        for (value, is_missing) in values.iter_mut().zip(mask.iter()) {
             if is_missing {
                 *value = sentinel;
             }
@@ -287,7 +286,9 @@ pub(crate) fn push_ring_shapes(shape: &Shape, rings: &mut Vec<Shape>) -> PyResul
         ));
     }
     shape.for_each_ring(|ring| {
-        rings.push(Shape::LineString(LineSeq::from_trusted(ring.clone())));
+        rings.push(Shape::LineString(LineSeq::try_new(ring.clone()).expect(
+            "line coordinate sequence must contain at least two vertices",
+        )));
     });
     Ok(())
 }

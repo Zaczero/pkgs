@@ -2,10 +2,14 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::geometry::segments::{
+    PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
+    segment_envelopes_disjoint,
+};
 use crate::geometry::{
     CHAIN_MIN_SEGMENTS, HashMap, HashMapExt as _, Orientation, PointKey, RUN_NODING_MIN, Segment,
-    XY, dedup_consecutive_xy, for_each_candidate_pair, orientation, point_on_segment, same_point,
-    segment_cross_point, segment_envelopes_disjoint, single_chain, undirected_segment_edge_key,
+    XY, dedup_consecutive_xy, for_each_candidate_pair, same_point, single_chain,
+    undirected_segment_edge_key,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -74,16 +78,16 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// Two-pass CSR build: assign unique indices, count multiplicity, place
 /// `(ordinal, reversed)` into a single flat `entries` vector. Unique input
 /// pays HashMap inserts + two flat vecs — never N tiny heap `Vec`s.
-fn dedup_undirected_segments_sourced(segments: &[Segment]) -> (Vec<Segment>, SegmentProvenance) {
-    let n = segments.len();
-    if n == 0 {
-        return (Vec::new(), SegmentProvenance::empty());
-    }
-    let mut index_of: HashMap<(PointKey, PointKey), u32> = HashMap::with_capacity(n);
-    let mut unique: Vec<Segment> = Vec::with_capacity(n);
+fn dedup_undirected_segments_sourced(
+    segments: impl IntoIterator<Item = Segment>,
+) -> (Vec<Segment>, SegmentProvenance) {
+    let segments = segments.into_iter();
+    let capacity = segments.size_hint().0;
+    let mut index_of: HashMap<(PointKey, PointKey), u32> = HashMap::with_capacity(capacity);
+    let mut unique: Vec<Segment> = Vec::with_capacity(capacity);
     // Per original ordinal: (unique_index, reversed).
-    let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(n);
-    for &segment in segments {
+    let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(capacity);
+    for segment in segments {
         let key = undirected_segment_edge_key(segment);
         if let Some(&unique_index) = index_of.get(&key) {
             let rep = unique[unique_index as usize];
@@ -101,6 +105,9 @@ fn dedup_undirected_segments_sourced(segments: &[Segment]) -> (Vec<Segment>, Seg
             assignment.push((unique_index, false));
         }
     }
+    if unique.is_empty() {
+        return (Vec::new(), SegmentProvenance::empty());
+    }
     let unique_count = unique.len();
     let mut counts = vec![0_u32; unique_count];
     for &(unique_index, _) in &assignment {
@@ -111,7 +118,7 @@ fn dedup_undirected_segments_sourced(segments: &[Segment]) -> (Vec<Segment>, Seg
     for &count in &counts {
         offsets.push(offsets[offsets.len() - 1] + count);
     }
-    let mut entries = vec![(0_u32, false); n];
+    let mut entries = vec![(0_u32, false); assignment.len()];
     let mut cursor = offsets[..unique_count].to_vec();
     for (ordinal, &(unique_index, reversed)) in assignment.iter().enumerate() {
         let slot = cursor[unique_index as usize] as usize;
@@ -184,7 +191,7 @@ pub(crate) fn self_node_segments(segments: &[Segment]) -> Vec<Segment> {
     if segments.is_empty() {
         return Vec::new();
     }
-    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments.iter().copied());
     if provenance.all_single_forward() {
         // Unique (or pure forward 1:1 after collapse of identical copies that
         // still leave single forward — actually identical dups make len>1).
@@ -228,12 +235,12 @@ fn self_node_segments_unique(segments: &[Segment]) -> Vec<Segment> {
 /// into weights rather than re-expanding E copies of each piece. One uniform
 /// path (no size threshold, no probe-vs-no-probe fork).
 pub(crate) fn self_node_segments_sourced(
-    segments: &[Segment],
+    segments: impl IntoIterator<Item = Segment>,
 ) -> (Vec<Segment>, SegmentProvenance) {
-    if segments.is_empty() {
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
+    if unique.is_empty() {
         return (Vec::new(), SegmentProvenance::empty());
     }
-    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
     let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
     let multi = expand_provenance_to_atoms(&unique_sources, &provenance);
     (atomic, multi)
@@ -265,10 +272,11 @@ pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Vec<(u32, XY)> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let _ = for_each_candidate_pair::<CHAIN_MIN_SEGMENTS>(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
-        if orientation(a.start, a.end, b.start) == Orientation::Collinear
-            && orientation(a.start, a.end, b.end) == Orientation::Collinear
+        let orientations = PairOrientations::new(a, b);
+        if orientations.right_start == Orientation::Collinear
+            && orientations.right_end == Orientation::Collinear
         {
-            push_collinear_overlap_cuts(segments, left, right, &mut events);
+            push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
         }
         std::ops::ControlFlow::Continue(())
     });
@@ -279,19 +287,40 @@ fn push_collinear_overlap_cuts(
     segments: &[Segment],
     left: usize,
     right: usize,
+    orientations: PairOrientations,
     events: &mut Vec<(u32, XY)>,
 ) -> bool {
     let mut cut_any = false;
-    for (target, other) in [(left, right), (right, left)] {
-        let segment = segments[target];
-        for point in [segments[other].start, segments[other].end] {
-            if point_on_segment(point, segment.start, segment.end)
-                && !same_point(point, segment.start)
-                && !same_point(point, segment.end)
-            {
-                events.push((target as u32, point));
-                cut_any = true;
+    let (a, b) = (segments[left], segments[right]);
+    let mut push_if_interior = |target: usize, point: XY, segment: Segment| {
+        if point_in_segment_envelope(point, segment)
+            && !same_point(point, segment.start)
+            && !same_point(point, segment.end)
+        {
+            events.push((target as u32, point));
+            cut_any = true;
+        }
+    };
+
+    // Both endpoints of b are already known to be on a's carrier. For a
+    // non-degenerate a, that also establishes the common carrier, so closed
+    // envelopes decide all four endpoint cuts. A degenerate a has no carrier;
+    // its endpoints still need b's precomputed orientation signs.
+    for point in [b.start, b.end] {
+        push_if_interior(left, point, a);
+    }
+    if same_point(a.start, a.end) {
+        for (point, orientation) in [
+            (a.start, orientations.left_start),
+            (a.end, orientations.left_end),
+        ] {
+            if orientation == Orientation::Collinear {
+                push_if_interior(right, point, b);
             }
+        }
+    } else {
+        for point in [a.start, a.end] {
+            push_if_interior(right, point, b);
         }
     }
     cut_any
@@ -319,21 +348,23 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32
     let _ = for_each_candidate_pair::<RUN_NODING_MIN>(segments, single_chain, |left, right| {
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
-        // produce are collinear-overlap endpoints, decided by two robust
-        // orientations. Skipping the exact crossing solver here removes
+        // produce are collinear-overlap endpoints, decided by the robust
+        // orientations below. Skipping the exact crossing solver here removes
         // the dominant cost of self-noding closed loops.
         let (a, b) = (segments[left], segments[right]);
         // Envelope reject FIRST: the sweep prunes only its own axis, so
-        // cross-axis-disjoint candidates land here — four compares beat
-        // the two robust orientations they'd otherwise always pay (a
+        // cross-axis-disjoint candidates land here — four compares beat the
+        // robust orientation work they'd otherwise pay (a
         // disjoint-envelope pair shares no point: no cuts of any kind).
         if segment_envelopes_disjoint(a, b) {
             return std::ops::ControlFlow::Continue(());
         }
-        let collinear = orientation(a.start, a.end, b.start) == Orientation::Collinear
-            && orientation(a.start, a.end, b.end) == Orientation::Collinear;
+        let orientations = PairOrientations::new(a, b);
+        let collinear = orientations.right_start == Orientation::Collinear
+            && orientations.right_end == Orientation::Collinear;
         if collinear {
-            overlaps_found |= push_collinear_overlap_cuts(segments, left, right, &mut events);
+            overlaps_found |=
+                push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
             return std::ops::ControlFlow::Continue(());
         }
         if same_point(a.start, b.start)
@@ -343,15 +374,12 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32
         {
             return std::ops::ControlFlow::Continue(());
         }
-        // `for_each_segment_overlap_point` reports the points splitting its
-        // FIRST operand, so each candidate pair contributes both ways.
-        for (target, other) in [(left, right), (right, left)] {
-            let segment = segments[target];
-            for_each_segment_overlap_point(segment, segments[other], |point| {
+        if let Some(point) = segment_cross_point_with_orientations(a, b, orientations) {
+            for (target, segment) in [(left, a), (right, b)] {
                 if !same_point(point, segment.start) && !same_point(point, segment.end) {
                     events.push((target as u32, point));
                 }
-            });
+            }
         }
         std::ops::ControlFlow::Continue(())
     });
@@ -397,23 +425,6 @@ pub(crate) fn split_by_events_sourced(
         sources.resize(atomic.len(), index as u32);
     }
     (atomic, sources)
-}
-
-/// Visit the points at which `a` is split by `b`: a transversal crossing
-/// within both segments, or the interior endpoints of a collinear overlap.
-/// At most two points — visited, never allocated.
-fn for_each_segment_overlap_point(a: Segment, b: Segment, mut visit: impl FnMut(XY)) {
-    let collinear = orientation(a.start, a.end, b.start) == Orientation::Collinear
-        && orientation(a.start, a.end, b.end) == Orientation::Collinear;
-    if collinear {
-        for point in [b.start, b.end] {
-            if point_on_segment(point, a.start, a.end) {
-                visit(point);
-            }
-        }
-    } else if let Some(point) = segment_cross_point(a, b) {
-        visit(point);
-    }
 }
 
 /// Split `segment` at `cuts` (ordered along the segment, deduped) into atomic

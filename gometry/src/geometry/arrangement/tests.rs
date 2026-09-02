@@ -21,7 +21,7 @@ fn general(segments: &[Segment]) -> Arrangement<i32> {
 /// Bit-exact equality over every derived structure the consumers read:
 /// topology columns, faces (rings, areas, components), and the kept
 /// region's boundary rings.
-fn assert_bit_parity(fast: &Arrangement<i32>, slow: &Arrangement<i32>) {
+fn assert_bit_parity(fast: &mut Arrangement<i32>, slow: &mut Arrangement<i32>) {
     let bits = |points: &[XY]| -> Vec<(u64, u64)> {
         points
             .iter()
@@ -33,7 +33,7 @@ fn assert_bit_parity(fast: &Arrangement<i32>, slow: &Arrangement<i32>) {
     assert_eq!(fast.targets, slow.targets, "targets diverge");
     assert_eq!(fast.owners, slow.owners, "owners diverge");
     assert_eq!(
-        fast.multiplicities, slow.multiplicities,
+        fast.typed.multiplicities, slow.typed.multiplicities,
         "multiplicities diverge"
     );
     assert_eq!(fast.face_of, slow.face_of, "face_of diverges");
@@ -64,7 +64,7 @@ fn assert_bit_parity(fast: &Arrangement<i32>, slow: &Arrangement<i32>) {
 
 fn assert_parity(points: &[(f64, f64)], expect_cuts: bool) {
     let segments = loop_segments(points);
-    let fast = Arrangement::from_single_loop(&segments)
+    let mut fast = Arrangement::from_single_loop(&segments)
         .expect("single-loop fast path must accept this loop");
     if expect_cuts {
         assert!(
@@ -72,7 +72,8 @@ fn assert_parity(points: &[(f64, f64)], expect_cuts: bool) {
             "fixture was meant to self-intersect"
         );
     }
-    assert_bit_parity(&fast, &general(&segments));
+    let mut slow = general(&segments);
+    assert_bit_parity(&mut fast, &mut slow);
 }
 
 #[test]
@@ -254,4 +255,62 @@ fn positional_fan_order_survives_opposite_finite_extremes() {
     ));
     assert_eq!(targets[..4], [1, 2, 4, 3]);
     assert_eq!(multiplicities[..4], [1, 2, 4, 3]);
+}
+
+#[test]
+fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
+    let high = f64::from_bits(1.0_f64.to_bits() + 1);
+    assert_eq!(
+        crate::geometry::predicates::pseudo_angle(1.0, 1.0),
+        crate::geometry::predicates::pseudo_angle(1.0, high),
+        "adjacent diagonal rays collide after pseudo-angle rounding"
+    );
+
+    // Target 1 is geometrically above target 2, but an identifier tie-break
+    // put it first before the certified angular comparator.
+    let points = [
+        XY::new(0.0, 0.0),
+        XY::new(1.0, high),
+        XY::new(1.0, 1.0),
+        XY::new(-1.0, 0.0),
+    ];
+    let starts = [0, 3, 4, 5, 6];
+    let mut targets = [1, 2, 3, 0, 0, 0];
+    let mut multiplicities = [1_i32, 2, 3, 4, 5, 6];
+
+    sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities);
+
+    assert_eq!(targets[..3], [2, 1, 3]);
+    assert_eq!(multiplicities[..3], [2, 1, 3]);
+}
+
+#[test]
+fn nested_arrangements_keep_the_last_dropped_outer_scratch() {
+    let small = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
+    let large = loop_segments(&[
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (5.0, 2.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (-1.0, 2.0),
+    ]);
+    let outer = Arrangement::new(&small);
+    let outer_capacity = outer.points.capacity();
+    let inner = Arrangement::new(&large);
+    assert_ne!(outer.points.as_ptr(), inner.points.as_ptr());
+    drop(inner);
+    drop(outer);
+    assert_eq!(arrangement_spares().points.capacity(), outer_capacity);
+}
+
+#[test]
+fn panicking_weight_callback_returns_cleared_leases() {
+    let segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
+    let result = std::panic::catch_unwind(|| {
+        Arrangement::<i32>::weighted(&segments, |_| panic!("weight failed"));
+    });
+    assert!(result.is_err());
+    assert!(arrangement_spares().points.is_empty());
+    assert!(typed_spares::<i32>().edges.is_empty());
 }

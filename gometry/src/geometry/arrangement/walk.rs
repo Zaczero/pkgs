@@ -2,10 +2,12 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::cmp::Ordering;
+
 use crate::geometry::arrangement::{Face, WindingWeight};
 use crate::geometry::{
-    HashMap, PointKey, Segment, XY, axis_pow2_scale, open_xy_cycle_decision, same_point,
-    scaled_residual, wrap_index,
+    HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_decision, orientation, same_point,
+    wrap_index,
 };
 
 pub(crate) fn split_ring_at_pinches(
@@ -54,16 +56,11 @@ pub(crate) fn walk_faces<const RINGS: bool>(
     starts: &[u32],
     targets: &[u32],
     owners: &[u32],
+    twins: &[u32],
     component_of: &[u32],
     // Recycled buffer (cleared/refilled here).
     face_of: Vec<u32>,
 ) -> (Vec<u32>, Vec<Face>) {
-    let slot_of = |from: u32, to: u32| -> usize {
-        let mut range = starts[from as usize] as usize..starts[from as usize + 1] as usize;
-        range
-            .find(|&slot| targets[slot] == to)
-            .expect("twin half-edge exists")
-    };
     let mut face_of = face_of;
     face_of.clear();
     face_of.resize(targets.len(), u32::MAX);
@@ -91,7 +88,7 @@ pub(crate) fn walk_faces<const RINGS: bool>(
             let to = points[targets[slot] as usize];
             cycle.push(to);
             // Continue clockwise of the reversal at `to`.
-            let reverse = slot_of(targets[slot], owners[slot]);
+            let reverse = twins[slot] as usize;
             let range = starts[targets[slot] as usize] as usize
                 ..starts[targets[slot] as usize + 1] as usize;
             let row_len = range.end - range.start;
@@ -233,8 +230,7 @@ pub(crate) fn build_csr<W: WindingWeight>(
     (starts, targets, owners, multiplicities)
 }
 
-/// Sort every CSR row counter-clockwise by departure angle (ties by target
-/// id; noded input never produces two distinct neighbors at one angle).
+/// Sort every CSR row counter-clockwise by departure angle.
 pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
     points: &[XY],
     starts: &[u32],
@@ -243,7 +239,7 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
 ) {
     // One scratch row reused across every vertex (rows are tiny; per-row
     // allocations dominated this pass).
-    let mut row: Vec<(f64, u32, W)> = Vec::new();
+    let mut row: Vec<(u32, W)> = Vec::new();
     for vertex in 0..starts.len() - 1 {
         let range = starts[vertex] as usize..starts[vertex + 1] as usize;
         // Degree <= 2 needs NO ordering work at all: a two-neighbor fan has
@@ -252,49 +248,51 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
         if range.len() <= 2 {
             continue;
         }
-        let origin = points[vertex];
-        let (scale_x, scale_y) =
-            departure_scales(points, origin, range.clone().map(|slot| targets[slot]));
         row.clear();
-        // Pseudo-angle (monotonic in true angle, no libm `atan2` call):
-        // only the CYCLIC order matters to the face walk, so the rotated
-        // starting point is irrelevant.
-        row.extend(range.clone().map(|slot| {
-            let to = points[targets[slot] as usize];
-            (
-                departure_angle(origin, to, scale_x, scale_y),
-                targets[slot],
-                multiplicities[slot],
+        row.extend(
+            range
+                .clone()
+                .map(|slot| (targets[slot], multiplicities[slot])),
+        );
+        let origin = points[vertex];
+        row.sort_unstable_by(|left, right| {
+            compare_departures(
+                origin,
+                points[left.0 as usize],
+                left.0,
+                points[right.0 as usize],
+                right.0,
             )
-        }));
-        row.sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
-        for (offset, &(_, target, multiplicity)) in range.zip(&row) {
+        });
+        for (offset, &(target, multiplicity)) in range.zip(&row) {
             targets[offset] = target;
             multiplicities[offset] = multiplicity;
         }
     }
 }
 
-/// One common positive diagonal frame for a vertex fan. Applying the same
-/// frame to every departure preserves its cyclic order, while scaling before
-/// subtraction keeps opposite finite extremes finite.
-pub(crate) fn departure_scales(
-    points: &[XY],
+/// Counter-clockwise order starting at the positive x axis. Quadrants first
+/// restrict the certified orientation to an angle smaller than pi, making its
+/// sign transitive. Collinear rays are then an equivalence class, ordered by
+/// target solely to make the comparator total.
+pub(crate) fn compare_departures(
     origin: XY,
-    targets: impl IntoIterator<Item = u32>,
-) -> (f64, f64) {
-    let (mut max_x, mut max_y) = (origin.x.abs(), origin.y.abs());
-    for target in targets {
-        let point = points[target as usize];
-        max_x = max_x.max(point.x.abs());
-        max_y = max_y.max(point.y.abs());
-    }
-    (axis_pow2_scale(max_x), axis_pow2_scale(max_y))
-}
-
-pub(crate) fn departure_angle(origin: XY, target: XY, scale_x: f64, scale_y: f64) -> f64 {
-    crate::geometry::predicates::pseudo_angle(
-        scaled_residual(target.x, origin.x, scale_x),
-        scaled_residual(target.y, origin.y, scale_y),
-    )
+    left: XY,
+    left_target: u32,
+    right: XY,
+    right_target: u32,
+) -> Ordering {
+    let quadrant = |point: XY| match (point.y >= origin.y, point.x >= origin.x) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, false) => 2,
+        (false, true) => 3,
+    };
+    quadrant(left)
+        .cmp(&quadrant(right))
+        .then_with(|| match orientation(origin, left, right) {
+            Orientation::CounterClockwise => Ordering::Less,
+            Orientation::Clockwise => Ordering::Greater,
+            Orientation::Collinear => left_target.cmp(&right_target),
+        })
 }

@@ -1,9 +1,10 @@
 use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
-    CHAIN_MIN_SEGMENTS, RUN_NODING_MIN, for_each_candidate_pair, single_chain,
+    CHAIN_MIN_SEGMENTS, RUN_NODING_MIN, for_each_candidate_pair,
+    for_each_indexed_overlapping_bounds_pair, single_chain,
 };
-use crate::geometry::{Segment, XY, segments_intersect};
+use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 
 #[cfg(test)]
 mod sweep_characterization {
@@ -115,7 +116,7 @@ mod sweep_characterization {
             let pool = structured_pool(n);
             // `segments_intersect` is the exact orientation predicate, with an
             // interval filter and a stored-dyadic fallback behind it. Running
-            // it on all n^2 pairs makes the oracle cost far more than the sweep
+            // it on all n² pairs makes the oracle cost far more than the sweep
             // it checks, so separated envelopes — which prove non-intersection
             // outright — screen the pairs first.
             let envelopes = pool
@@ -154,6 +155,112 @@ mod sweep_characterization {
                     );
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod indexed_bounds_characterization {
+    use super::*;
+
+    fn bounds(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Option<Bounds> {
+        Some(Bounds::new_raw(minx, miny, maxx, maxy))
+    }
+
+    fn brute_pairs(rows: &[Option<Bounds>]) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for left in 0..rows.len() {
+            for right in (left + 1)..rows.len() {
+                if rows[left]
+                    .is_some_and(|left| rows[right].is_some_and(|right| left.intersects(right)))
+                {
+                    pairs.push((left, right));
+                }
+            }
+        }
+        pairs
+    }
+
+    fn indexed_pairs(rows: &[Option<Bounds>]) -> (Vec<(usize, usize)>, usize) {
+        let mut pairs = Vec::new();
+        let mut work = 0;
+        let _ = for_each_indexed_overlapping_bounds_pair(rows, |left, right| {
+            work += 1;
+            pairs.push((left, right));
+            ControlFlow::Continue(())
+        });
+        pairs.sort_unstable();
+        (pairs, work)
+    }
+
+    #[test]
+    fn indexed_bounds_match_inclusive_brute_oracle() {
+        let rows = [
+            bounds(0.0, 0.0, 1.0, 1.0),
+            bounds(1.0, 0.0, 2.0, 1.0),
+            bounds(1.0_f64.next_up(), 0.0, 2.0, 1.0),
+            bounds(-0.0, -1.0, 0.0, 1.0),
+            bounds(0.0, -1.0, 1.0, 1.0),
+            None,
+        ];
+        let (mut indexed, _) = indexed_pairs(&rows);
+        let mut expected = brute_pairs(&rows);
+        indexed.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(indexed, expected);
+        assert_eq!(indexed.windows(2).find(|pair| pair[0] == pair[1]), None);
+    }
+
+    #[test]
+    fn indexed_bounds_short_circuit_on_first_touch() {
+        let rows = (0..4096)
+            .map(|_| bounds(0.0, 0.0, 1.0, 1.0))
+            .collect::<Vec<_>>();
+        let mut work = 0;
+        let result = for_each_indexed_overlapping_bounds_pair(&rows, |_, _| {
+            work += 1;
+            ControlFlow::Break(())
+        });
+        assert!(result.is_break());
+        assert_eq!(work, 1);
+    }
+
+    #[test]
+    fn indexed_bounds_work_stays_sparse_across_shapes() {
+        for &count in &[64_usize, 256, 1024, 4096] {
+            let separated = (0..count)
+                .map(|index| {
+                    let x = index as f64 * 2.0;
+                    bounds(x, 0.0, x + 0.5, 1.0)
+                })
+                .collect::<Vec<_>>();
+            let diagonal = (0..count)
+                .map(|index| {
+                    let position = index as f64 * 2.0;
+                    bounds(position, position, position + 0.5, position + 0.5)
+                })
+                .collect::<Vec<_>>();
+            let cross_axis = (0..count)
+                .map(|index| {
+                    let y = index as f64 * 2.0;
+                    bounds(0.0, y, count as f64, y + 0.5)
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(indexed_pairs(&separated).1, 0, "separated n={count}");
+            assert_eq!(indexed_pairs(&diagonal).1, 0, "diagonal n={count}");
+            assert_eq!(indexed_pairs(&cross_axis).1, 0, "cross-axis n={count}");
+
+            let dense = (0..count)
+                .map(|_| bounds(0.0, 0.0, 1.0, 1.0))
+                .collect::<Vec<_>>();
+            let mut first_hit_work = 0;
+            let result = for_each_indexed_overlapping_bounds_pair(&dense, |_, _| {
+                first_hit_work += 1;
+                ControlFlow::Break(())
+            });
+            assert!(result.is_break(), "dense n={count}");
+            assert_eq!(first_hit_work, 1, "dense n={count}");
         }
     }
 }

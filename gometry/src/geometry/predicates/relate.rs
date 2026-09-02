@@ -48,8 +48,8 @@ impl LineworkChains {
         let (xs, ys) = (points.xs(), points.ys());
         let closed = count >= 1
             && same_point(
-                Point::new_unchecked_xy(xs[0], ys[0]),
-                Point::new_unchecked_xy(xs[count], ys[count]),
+                Point::new_raw_xy(xs[0], ys[0]),
+                Point::new_raw_xy(xs[count], ys[count]),
             );
         if self.segments.is_empty() {
             self.bounds = Bounds::from_xy_iter(std::iter::empty());
@@ -83,8 +83,8 @@ impl LineworkChains {
             self.bounds.include_xy(XY::new(x0, y0));
             self.bounds.include_xy(XY::new(x1, y1));
             self.segments.push(Segment {
-                start: Point::new_unchecked_xy(x0, y0).into(),
-                end: Point::new_unchecked_xy(x1, y1).into(),
+                start: Point::new_raw_xy(x0, y0).into(),
+                end: Point::new_raw_xy(x1, y1).into(),
             });
             self.line_of.push(line);
             let ordinal = first + staged;
