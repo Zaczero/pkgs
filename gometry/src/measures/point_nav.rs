@@ -1002,7 +1002,10 @@ trait PointBinaryGeometryKernel: Copy + Send + Sync {
                 .map_err(|err| crate::note_array_row(err, row))?;
             builder.push(point_from_point_nav_shape(&shape));
         }
-        Ok(builder.finish_infallible())
+        Ok(match missing {
+            Some(_) => builder.finish_with_missing_placeholders(),
+            None => builder.finish_infallible(),
+        })
     }
 }
 
@@ -1099,7 +1102,10 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
             .map_err(|err| crate::note_array_row(err.into(), row))?;
             builder.push(point);
         }
-        Ok(builder.finish_infallible())
+        Ok(match missing {
+            Some(_) => builder.finish_with_missing_placeholders(),
+            None => builder.finish_infallible(),
+        })
     }
 }
 
