@@ -177,7 +177,7 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
 }
 
 pub(crate) fn validate_hole_inside_shell(shell: &[Point], hole: &[Point]) -> Result<()> {
-    if !ring_contains_interior(&closed_ring_unchecked(shell), hole[0]) {
+    if !ring_contains_interior(&closed_ring(shell), hole[0]) {
         return Err(GeometryErrorKind::triangulation(
             "polygon hole is not strictly inside the shell",
         ));
@@ -257,7 +257,7 @@ fn validate_holes_disjoint(holes: &[Vec<Point>]) -> Result<()> {
     let preps: Vec<HoleContainmentPrep> = holes
         .iter()
         .map(|hole| {
-            let closed = closed_ring_unchecked(hole);
+            let closed = closed_ring(hole);
             let bounds = Bounds::from_xy_iter(closed.iter().map(Point::xy));
             HoleContainmentPrep {
                 closed,
@@ -594,7 +594,7 @@ impl ZScale {
             maxx = maxx.max(point.x);
             maxy = maxy.max(point.y);
         }
-        let bounds = Bounds::new_unchecked(minx, miny, maxx, maxy);
+        let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
         let width = bounds.maxx() - bounds.minx();
         let height = bounds.maxy() - bounds.miny();
         (width.is_finite()
@@ -629,18 +629,18 @@ impl ZScale {
         if self.width == 0.0 {
             let min_y = a.y.min(b.y).min(c.y);
             let max_y = a.y.max(b.y).max(c.y);
-            let min = Point::new_unchecked_xy(a.x, min_y);
-            let max = Point::new_unchecked_xy(a.x, max_y);
+            let min = Point::new_raw_xy(a.x, min_y);
+            let max = Point::new_raw_xy(a.x, max_y);
             (self.key(min), self.key(max))
         } else if self.height == 0.0 {
             let min_x = a.x.min(b.x).min(c.x);
             let max_x = a.x.max(b.x).max(c.x);
-            let min = Point::new_unchecked_xy(min_x, a.y);
-            let max = Point::new_unchecked_xy(max_x, a.y);
+            let min = Point::new_raw_xy(min_x, a.y);
+            let max = Point::new_raw_xy(max_x, a.y);
             (self.key(min), self.key(max))
         } else {
-            let min = Point::new_unchecked_xy(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y));
-            let max = Point::new_unchecked_xy(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y));
+            let min = Point::new_raw_xy(a.x.min(b.x).min(c.x), a.y.min(b.y).min(c.y));
+            let max = Point::new_raw_xy(a.x.max(b.x).max(c.x), a.y.max(b.y).max(c.y));
             (self.key(min), self.key(max))
         }
     }
@@ -723,7 +723,7 @@ pub(crate) fn ear_contains_vertex(
         // `z_order` is sorted by `node.z`, so the candidates in the ear's
         // z-range are a CONTIGUOUS slice — binary-search its bounds and scan
         // only that window (mapbox earcut's O(log n + k) hashing) instead of
-        // the whole list, which made every ear test O(n) (overall O(n^2)).
+        // the whole list, which made every ear test O(n) (overall O(n²)).
         let lo = arena
             .z_order
             .partition_point(|&candidate| arena.nodes[candidate].z < min_z);
@@ -771,7 +771,7 @@ pub(crate) fn open_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
         .collect()
 }
 
-pub(crate) fn closed_ring_unchecked<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
+pub(crate) fn closed_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     let mut ring = points.iter_coords().collect::<Vec<_>>();
     if let Some(first) = ring.first().copied() {
         ring.push(first);
@@ -781,7 +781,7 @@ pub(crate) fn closed_ring_unchecked<C: Coordinates + ?Sized>(points: &C) -> Vec<
 
 pub(crate) fn triangle_shape(a: Point, b: Point, c: Point) -> Shape {
     Shape::Polygon(Polygon::new(
-        Ring::from_trusted_closed(vec![a, b, c, a]),
+        Ring::from_closed(vec![a, b, c, a]),
         Vec::new(),
     ))
 }

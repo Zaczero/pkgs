@@ -22,6 +22,8 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
+use rstar::AABB;
+
 use crate::error::Result;
 use crate::geometry::tessellation::{
     CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, Site, certified_delaunay,
@@ -164,6 +166,58 @@ struct ValidatedExactCycles {
 
 fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     GeometryErrorKind::voronoi(message.into())
+}
+
+struct IndexedExactEnvelope {
+    index: usize,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl crate::geometry::RTreeObject for IndexedExactEnvelope {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+/// A one-ULP outward expansion of the nearest binary64 projection contains the
+/// exact coordinate. Points which cannot produce such an envelope stay in the
+/// unindexed fallback candidate set.
+fn exact_envelope(points: &[exact::ExactPoint]) -> Option<AABB<[f64; 2]>> {
+    let mut minimum = [f64::INFINITY; 2];
+    let mut maximum = [f64::NEG_INFINITY; 2];
+    for point in points {
+        let point = point.round_nearest_even().ok()?;
+        let lower = [point.x.next_down(), point.y.next_down()];
+        let upper = [point.x.next_up(), point.y.next_up()];
+        if !lower.into_iter().chain(upper).all(f64::is_finite) {
+            return None;
+        }
+        for axis in 0..2 {
+            minimum[axis] = minimum[axis].min(lower[axis]);
+            maximum[axis] = maximum[axis].max(upper[axis]);
+        }
+    }
+    Some(AABB::from_corners(minimum, maximum))
+}
+
+fn exact_envelope_candidates(
+    tree: &BulkRTree<IndexedExactEnvelope>,
+    unindexed: &[usize],
+    query: Option<AABB<[f64; 2]>>,
+    count: usize,
+) -> Vec<bool> {
+    let mut candidates = vec![query.is_none(); count];
+    if let Some(query) = query {
+        for entry in tree.locate_in_envelope_intersecting(query) {
+            candidates[entry.index] = true;
+        }
+        for &index in unindexed {
+            candidates[index] = true;
+        }
+    }
+    candidates
 }
 
 fn reserve_exact<T>(values: &mut Vec<T>, additional: usize) -> Result<()> {
@@ -1386,24 +1440,14 @@ fn build_local_dcel(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<L
             parents[right] = left;
         }
     }
-    let mut roots: Vec<_> = (0..vertices.len())
-        .map(|vertex| uf_root(&mut parents, vertex))
+    let mut root_ids = HashMap::with_capacity(vertices.len());
+    let roots: Vec<_> = (0..vertices.len())
+        .map(|vertex| {
+            let root = uf_root(&mut parents, vertex);
+            let next = root_ids.len();
+            *root_ids.entry(root).or_insert(next)
+        })
         .collect();
-    let mut unique = roots.clone();
-    unique.sort_unstable();
-    unique.dedup();
-    unique.sort_by_key(|root| {
-        roots
-            .iter()
-            .position(|candidate| candidate == root)
-            .unwrap()
-    });
-    for root in &mut roots {
-        *root = unique
-            .iter()
-            .position(|candidate| candidate == root)
-            .unwrap();
-    }
     let mut temporary_orbit = vec![None; half_edges.len()];
     let mut cycles = Vec::new();
     for seed in 0..half_edges.len() {
@@ -1432,7 +1476,7 @@ fn build_local_dcel(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<L
     cycles.sort_by_key(|cycle| cycle.iter().min().copied().unwrap());
     let mut orbit_by_halfedge = vec![OrbitId(u32::MAX); half_edges.len()];
     let mut orbits = Vec::new();
-    let mut exterior = vec![None; unique.len()];
+    let mut exterior = vec![None; root_ids.len()];
     for (orbit_index, mut cycle) in cycles.into_iter().enumerate() {
         let least = cycle
             .iter()
@@ -1656,6 +1700,8 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
     let component_count = local.exterior_orbit.len();
     let mut orbit_point_cache = Vec::new();
     reserve_exact(&mut orbit_point_cache, local.orbits.len())?;
+    let mut orbit_envelopes = Vec::new();
+    reserve_exact(&mut orbit_envelopes, local.orbits.len())?;
     for orbit in 0..local.orbits.len() {
         let edge_count = local.orbits[orbit].half_edges.len();
         budget.add(edge_count)?;
@@ -1666,19 +1712,20 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
                 .point
                 .clone()
         }));
+        orbit_envelopes.push(exact_envelope(&points));
         orbit_point_cache.push(points);
     }
-    let component_min: Vec<_> = (0..component_count)
-        .map(|component| {
-            local
-                .half_edges
-                .iter()
-                .filter(|half_edge| half_edge.component.0 as usize == component)
-                .map(|half_edge| half_edge.origin)
-                .min()
-                .expect("component has an edge")
-        })
-        .collect();
+    let mut component_min = vec![None; component_count];
+    for half_edge in &local.half_edges {
+        let minimum = &mut component_min[half_edge.component.0 as usize];
+        if minimum.is_none_or(|current| half_edge.origin < current) {
+            *minimum = Some(half_edge.origin);
+        }
+    }
+    let component_min = component_min
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .expect("component has an edge");
     let positive: Vec<Vec<OrbitId>> = (0..component_count)
         .map(|component| {
             local
@@ -1693,18 +1740,40 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
                 .collect()
         })
         .collect();
+    let mut indexed_positive = Vec::new();
+    let mut unindexed_positive = Vec::new();
+    for orbit in positive.iter().flatten().copied() {
+        if let Some(envelope) = orbit_envelopes[orbit.0 as usize] {
+            indexed_positive.push(IndexedExactEnvelope {
+                index: orbit.0 as usize,
+                envelope,
+            });
+        } else {
+            unindexed_positive.push(orbit.0 as usize);
+        }
+    }
+    let positive_tree = BulkRTree::bulk_load_with_params(indexed_positive);
     let mut parent_orbit = vec![None; component_count];
     for component in 0..component_count {
         if component == local.frame_component.0 as usize {
             continue;
         }
         let probe = &local.vertices[component_min[component].0 as usize].point;
+        let candidate_orbits = exact_envelope_candidates(
+            &positive_tree,
+            &unindexed_positive,
+            exact_envelope(std::slice::from_ref(probe)),
+            local.orbits.len(),
+        );
         let mut candidates = Vec::new();
         for other in 0..component_count {
             if other == component {
                 continue;
             }
             for &orbit in &positive[other] {
+                if !candidate_orbits[orbit.0 as usize] {
+                    continue;
+                }
                 budget.add(orbit_point_cache[orbit.0 as usize].len())?;
                 match exact::point_in_cycle(&orbit_point_cache[orbit.0 as usize], probe) {
                     exact::PointInCycle::Inside => candidates.push(orbit),
@@ -1722,37 +1791,34 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
                 .iter()
                 .map(|orbit| orbit_point_cache[orbit.0 as usize].len())
                 .sum::<usize>()
-                .saturating_mul(candidates.len()),
+                .saturating_mul(2),
         )?;
-        let parent = candidates
-            .iter()
-            .copied()
-            .find(|candidate| {
-                let candidate_probe = &local.vertices[local.half_edges
-                    [local.orbits[candidate.0 as usize].seed.0 as usize]
-                    .origin
-                    .0 as usize]
-                    .point;
-                candidates.iter().all(|other| {
-                    candidate == other
-                        || exact::point_in_cycle(
-                            &orbit_point_cache[other.0 as usize],
-                            candidate_probe,
-                        ) == exact::PointInCycle::Inside
-                })
-            })
-            .ok_or_else(|| {
-                voronoi_error("exact component containment is non-laminar or parentless")
-            })?;
-        if candidates
-            .iter()
-            .filter(|candidate| **candidate == parent)
-            .count()
-            != 1
-        {
-            return Err(voronoi_error(
-                "exact component has no unique containing parent face",
-            ));
+        let mut candidates = candidates.into_iter();
+        let mut parent = candidates.next().expect("nonempty component candidates");
+        for candidate in candidates {
+            let parent_probe = &local.vertices[local.half_edges
+                [local.orbits[parent.0 as usize].seed.0 as usize]
+                .origin
+                .0 as usize]
+                .point;
+            if exact::point_in_cycle(&orbit_point_cache[candidate.0 as usize], parent_probe)
+                == exact::PointInCycle::Inside
+            {
+                continue;
+            }
+            let candidate_probe = &local.vertices[local.half_edges
+                [local.orbits[candidate.0 as usize].seed.0 as usize]
+                .origin
+                .0 as usize]
+                .point;
+            if exact::point_in_cycle(&orbit_point_cache[parent.0 as usize], candidate_probe)
+                != exact::PointInCycle::Inside
+            {
+                return Err(voronoi_error(
+                    "exact component containment is non-laminar or parentless",
+                ));
+            }
+            parent = candidate;
         }
         parent_orbit[component] = Some(parent);
     }
@@ -2070,9 +2136,25 @@ fn assemble_cells(
             );
             ring_points.push(points);
         }
+        let mut indexed_rings = Vec::new();
+        let mut unindexed_rings = Vec::new();
+        for (index, points) in ring_points.iter().enumerate() {
+            if let Some(envelope) = exact_envelope(points) {
+                indexed_rings.push(IndexedExactEnvelope { index, envelope });
+            } else {
+                unindexed_rings.push(index);
+            }
+        }
+        let ring_tree = BulkRTree::bulk_load_with_params(indexed_rings);
         for &positive in &positives {
+            let candidates = exact_envelope_candidates(
+                &ring_tree,
+                &unindexed_rings,
+                exact_envelope(std::slice::from_ref(&ring_points[positive][0])),
+                rings.len(),
+            );
             for other in 0..rings.len() {
-                if other == positive {
+                if other == positive || !candidates[other] {
                     continue;
                 }
                 budget.add(
@@ -2095,9 +2177,16 @@ fn assemble_cells(
         }
         let mut holes_by_shell = vec![Vec::new(); positives.len()];
         for negative in negatives {
+            let candidate_rings = exact_envelope_candidates(
+                &ring_tree,
+                &unindexed_rings,
+                exact_envelope(std::slice::from_ref(&ring_points[negative][0])),
+                rings.len(),
+            );
             budget.add(
                 positives
                     .iter()
+                    .filter(|positive| candidate_rings[**positive])
                     .map(|positive| {
                         ring_points[negative]
                             .len()
@@ -2108,6 +2197,7 @@ fn assemble_cells(
             let candidates: Vec<_> = positives
                 .iter()
                 .enumerate()
+                .filter(|(_, positive)| candidate_rings[**positive])
                 .filter(|(_, positive)| {
                     let classifications: Vec<_> = ring_points[negative]
                         .iter()
@@ -2128,24 +2218,27 @@ fn assemble_cells(
                     .iter()
                     .map(|slot| ring_points[positives[*slot]].len())
                     .sum::<usize>()
-                    .saturating_mul(candidates.len()),
+                    .saturating_mul(2),
             )?;
-            let parent = candidates
-                .iter()
-                .copied()
-                .find(|candidate| {
-                    let candidate_point = &subdivision.vertices
-                        [rings[positives[*candidate]].vertices[0].0 as usize]
-                        .point;
-                    candidates.iter().all(|other| {
-                        candidate == other
-                            || exact::point_in_cycle(
-                                &ring_points[positives[*other]],
-                                candidate_point,
-                            ) == exact::PointInCycle::Inside
-                    })
-                })
-                .ok_or_else(|| voronoi_error("exact face ring forest is non-laminar"))?;
+            let mut candidates = candidates.into_iter();
+            let mut parent = candidates.next().expect("nonempty ring candidates");
+            for candidate in candidates {
+                let parent_point =
+                    &subdivision.vertices[rings[positives[parent]].vertices[0].0 as usize].point;
+                if exact::point_in_cycle(&ring_points[positives[candidate]], parent_point)
+                    == exact::PointInCycle::Inside
+                {
+                    continue;
+                }
+                let candidate_point =
+                    &subdivision.vertices[rings[positives[candidate]].vertices[0].0 as usize].point;
+                if exact::point_in_cycle(&ring_points[positives[parent]], candidate_point)
+                    != exact::PointInCycle::Inside
+                {
+                    return Err(voronoi_error("exact face ring forest is non-laminar"));
+                }
+                parent = candidate;
+            }
             holes_by_shell[parent].push(negative);
         }
         let owner = face.label.owner.expect("kept face owner");
@@ -2660,7 +2753,7 @@ fn embed(
                 let embedded = exact_to_embedded[vertex.0 as usize]
                     .ok_or_else(|| voronoi_error("non-live exact vertex was rendered"))?;
                 let point = points[embedded.0 as usize];
-                Ok(Point::new_unchecked_xy(point.x, point.y))
+                Ok(Point::new_raw_xy(point.x, point.y))
             })
             .collect()
     };
@@ -2721,7 +2814,7 @@ fn embed(
                 let embedded = exact_to_embedded[vertex]
                     .ok_or_else(|| voronoi_error("generated clip vertex is not embedded"))?;
                 let xy = points[embedded.0 as usize];
-                Ok(Point::new_unchecked_xy(xy.x, xy.y))
+                Ok(Point::new_raw_xy(xy.x, xy.y))
             })
             .collect::<Result<Vec<_>>>()?;
         coordinates.push(coordinates[0].clone());
@@ -3190,11 +3283,11 @@ mod tests {
     #[test]
     fn embedded_clip_admission_rejects_crossed_polygon() {
         let ring = Ring::closed(vec![
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(2.0, 2.0),
-            Point::new_unchecked_xy(0.0, 2.0),
-            Point::new_unchecked_xy(2.0, 0.0),
-            Point::new_unchecked_xy(0.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
         ])
         .unwrap();
         assert!(admit_embedded_clip(&Polygon::new(ring, Vec::new())).is_err());
@@ -3325,7 +3418,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
@@ -3349,7 +3442,7 @@ mod tests {
         .enumerate()
         .map(|(id, (x, y))| Site {
             id,
-            point: Point::new_unchecked_xy(offset + x, offset + y),
+            point: Point::new_raw_xy(offset + x, offset + y),
         })
         .collect();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
@@ -3374,7 +3467,7 @@ mod tests {
                 (min_x, min_y),
             ]
             .into_iter()
-            .map(|(x, y)| Point::new_unchecked_xy(x, y))
+            .map(|(x, y)| Point::new_raw_xy(x, y))
             .collect(),
         )
         .unwrap()
@@ -3387,7 +3480,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
@@ -3432,7 +3525,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
@@ -3475,7 +3568,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let clip = Polygon::new(rectangle(-3.0, -3.0, 3.0, 3.0), vec![rectangle(
@@ -3513,7 +3606,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let point = exact::ExactPoint::from_xy(XY::new(0.0, 10.0));
@@ -3529,7 +3622,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
@@ -3547,7 +3640,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
@@ -3563,7 +3656,7 @@ mod tests {
         let sites = super::shape::canonical_voronoi_sites(
             [(0.0, 0.0), (0.09, 0.0), (0.18, 0.0), (0.0, 1.0), (1.0, 0.0)]
                 .into_iter()
-                .map(|(x, y)| Point::new_unchecked_xy(x, y))
+                .map(|(x, y)| Point::new_raw_xy(x, y))
                 .collect(),
             0.1,
         );
@@ -3634,7 +3727,7 @@ mod tests {
             Ring::closed(
                 [(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (4.0, 0.0), (0.0, 0.0)]
                     .into_iter()
-                    .map(|(x, y)| Point::new_unchecked_xy(x, y))
+                    .map(|(x, y)| Point::new_raw_xy(x, y))
                     .collect(),
             )
             .unwrap(),
@@ -3712,7 +3805,7 @@ mod tests {
             .enumerate()
             .map(|(id, (x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect();
         let mut construction_budget = ExpansionBudget::new("test", "dual completeness");
@@ -4168,7 +4261,7 @@ fn dual_embed(
         rounded.rotate_left(start);
         let mut coordinates: Vec<Point> = rounded
             .iter()
-            .map(|xy| Point::new_unchecked_xy(xy.x, xy.y))
+            .map(|xy| Point::new_raw_xy(xy.x, xy.y))
             .collect();
         let rounded_ring: Vec<_> = coordinates
             .iter()
@@ -4312,15 +4405,15 @@ fn dual_embed(
         .into_iter()
         .map(|key| {
             LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_unchecked_xy(key[0].xy().x, key[0].xy().y),
-                Point::new_unchecked_xy(key[1].xy().x, key[1].xy().y),
+                Point::new_raw_xy(key[0].xy().x, key[0].xy().y),
+                Point::new_raw_xy(key[1].xy().x, key[1].xy().y),
             ]))
         })
         .collect::<Result<Vec<_>>>()?;
     let clip_coordinates: Vec<Point> = clip.fixed[0]
         .iter()
-        .map(|xy| Point::new_unchecked_xy(xy.x, xy.y))
-        .chain(std::iter::once(Point::new_unchecked_xy(
+        .map(|xy| Point::new_raw_xy(xy.x, xy.y))
+        .chain(std::iter::once(Point::new_raw_xy(
             clip.fixed[0][0].x,
             clip.fixed[0][0].y,
         )))

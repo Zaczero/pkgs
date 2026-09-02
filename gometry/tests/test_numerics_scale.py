@@ -245,7 +245,14 @@ def _reciprocal_pentagon(
     return [(y, x) for x, y in points] if swap_axes else points
 
 
-@pytest.mark.parametrize('exponent', [77, 159, 200, 300])
+@pytest.mark.parametrize(
+    'exponent',
+    [
+        pytest.param(22, id='framed-normal-below-spade-floor'),
+        pytest.param(154, id='framed-subnormal'),
+        pytest.param(162, id='framed-zero-after-underflow'),
+    ],
+)
 @pytest.mark.parametrize('swap_axes', [False, True])
 def test_reciprocal_tessellation_family_has_no_similarity_axis_loss(
     exponent: int,
@@ -613,14 +620,16 @@ def test_reciprocal_voronoi_polygon_clip_and_unsnapped_tolerance_share_metric_pa
     """Equivalent clip syntax and a no-op tolerance cannot change Voronoi cells.
 
     The envelope equality and pair-distance proof are independent of the
-    tessellator.  Point has one unique site and therefore correctly produces
-    no cells; every other public geometry carrier reaches the same five-site
-    result in scalar, packed, and one-member-wrapper form.
+    tessellator. Point has one unique site and therefore correctly produces no
+    cells; the representative polygon reaches the same five-site result in
+    scalar, packed, and one-member-wrapper form.
     """
-    points = _reciprocal_pentagon(77, swap_axes=swap_axes)
+    # Exponent 40 keeps an 1e80 axis ratio and the exact certified fallback
+    # while avoiding the needless 1e154 magnitude of the original corpus.
+    points = _reciprocal_pentagon(40, swap_axes=swap_axes)
     xs, ys = zip(*points, strict=True)
     clip = gm.box(min(xs), min(ys), max(xs), max(ys))
-    tolerance = 1e71
+    tolerance = 1e34
     assert (
         min(
             math.hypot(x1 - x2, y1 - y2)
@@ -629,15 +638,10 @@ def test_reciprocal_voronoi_polygon_clip_and_unsnapped_tolerance_share_metric_pa
         > tolerance
     )
     polygon = gm.Polygon(points)
-    family = (
-        gm.MultiPoint(points),
-        gm.LineString(points),
-        gm.MultiLineString([points]),
-        polygon,
-        gm.MultiPolygon([polygon]),
-        gm.GeometryCollection([gm.Point(*point) for point in points]),
-    )
-    for source in (gm.Point(*points[0]), *family):
+    # The broad carrier extraction matrix is covered by the neighboring
+    # reciprocal tessellation tests. This representative retains the explicit
+    # polygon clip, a unique-site empty result, and the scalar/packed wrapper.
+    for source in (gm.Point(*points[0]), polygon):
         expected = 0 if isinstance(source, gm.Point) else 5
         for carrier in (source, gm.GeometryCollection([source])):
             for kwargs in (

@@ -250,9 +250,9 @@ fn reciprocal_delaunay_legalizes_with_the_source_incircle() {
         for swap_axes in [false, true] {
             let point = |x, y| {
                 if swap_axes {
-                    Point::new_unchecked_xy(y, x)
+                    Point::new_raw_xy(y, x)
                 } else {
-                    Point::new_unchecked_xy(x, y)
+                    Point::new_raw_xy(x, y)
                 }
             };
             let points = [
@@ -349,7 +349,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
                 "triangle vertex {corner:?} was not an input vertex"
             );
         }
-        let centroid_point = Point::new_unchecked_xy(
+        let centroid_point = Point::new_raw_xy(
             (corners[0].x + corners[1].x + corners[2].x) / 3.0,
             (corners[0].y + corners[1].y + corners[2].y) / 3.0,
         );

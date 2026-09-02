@@ -76,7 +76,7 @@ impl Shape {
             .map(|ring| {
                 let ring = ring.map(Point::to_xy);
                 Self::Polygon(Polygon::new(
-                    Ring::from_trusted_closed(CoordSeq::from_points(&ring)),
+                    Ring::from_closed(CoordSeq::from_points(&ring)),
                     Vec::new(),
                 ))
             })
@@ -195,7 +195,7 @@ impl Shape {
             .map(|ring| {
                 let ring = ring.map(Point::to_xy);
                 Self::Polygon(Polygon::new(
-                    Ring::from_trusted_closed(CoordSeq::from_points(&ring)),
+                    Ring::from_closed(CoordSeq::from_points(&ring)),
                     Vec::new(),
                 ))
             })

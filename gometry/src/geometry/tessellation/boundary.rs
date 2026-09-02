@@ -16,8 +16,18 @@ pub(crate) fn rings_to_boundary(mut rings: Vec<CoordSeq>) -> Shape {
         // EMPTY`, keeping the type contract stable instead of collapsing to an
         // untyped collection.
         0 => Shape::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
-        1 => Shape::LineString(LineSeq::from_trusted(rings.remove(0))),
-        _ => Shape::MultiLineString(rings.into_iter().map(LineSeq::from_trusted).collect()),
+        1 => Shape::LineString(
+            LineSeq::try_new(rings.remove(0))
+                .expect("line coordinate sequence must contain at least two vertices"),
+        ),
+        _ => Shape::MultiLineString(
+            rings
+                .into_iter()
+                .map(|coords| {
+                    LineSeq::try_new(coords).expect("ring boundary has at least two vertices")
+                })
+                .collect(),
+        ),
     }
 }
 

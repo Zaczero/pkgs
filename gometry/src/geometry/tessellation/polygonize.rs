@@ -146,10 +146,10 @@ pub(crate) fn polygonize_lines(graph: &TopologyGraph) -> Vec<Polygon> {
     let children = children_of(&parents);
     (0..faces.len())
         .map(|index| {
-            let shell = Ring::from_trusted_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
             let holes = children[index]
                 .iter()
-                .map(|&child| Ring::from_trusted_closed(orient_ring(&faces[child].0, true)))
+                .map(|&child| Ring::from_closed(orient_ring(&faces[child].0, true)))
                 .collect();
             Polygon::new(shell, holes)
         })
@@ -191,10 +191,10 @@ pub(crate) fn build_area_lines(graph: &TopologyGraph) -> Vec<Polygon> {
     (0..faces.len())
         .filter(|&index| depths[index].is_multiple_of(2))
         .map(|index| {
-            let shell = Ring::from_trusted_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
             let holes = children[index]
                 .iter()
-                .map(|&hole| Ring::from_trusted_closed(orient_ring(&faces[hole].0, true)))
+                .map(|&hole| Ring::from_closed(orient_ring(&faces[hole].0, true)))
                 .collect();
             Polygon::new(shell, holes)
         })
@@ -207,10 +207,10 @@ pub(crate) fn polygonize_full(graph: &TopologyGraph, source_row_count: usize) ->
     let children = children_of(&parents);
     let polygons: Vec<Polygon> = (0..faces.len())
         .map(|index| {
-            let shell = Ring::from_trusted_closed(orient_ring(&faces[index].0, false));
+            let shell = Ring::from_closed(orient_ring(&faces[index].0, false));
             let holes = children[index]
                 .iter()
-                .map(|&child| Ring::from_trusted_closed(orient_ring(&faces[child].0, true)))
+                .map(|&child| Ring::from_closed(orient_ring(&faces[child].0, true)))
                 .collect();
             Polygon::new(shell, holes)
         })

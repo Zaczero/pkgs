@@ -270,8 +270,8 @@ impl Basis {
             dx = end.x * scale - start.x * scale;
             dy = end.y * scale - start.y * scale;
             length = point_distance(
-                Point::new_unchecked_xy(start.x * scale, start.y * scale),
-                Point::new_unchecked_xy(end.x * scale, end.y * scale),
+                Point::new_raw_xy(start.x * scale, start.y * scale),
+                Point::new_raw_xy(end.x * scale, end.y * scale),
             );
         }
         (length.is_finite() && length != 0.0).then(|| {
@@ -392,7 +392,9 @@ fn select_minimum_candidate(hull: &[Point]) -> Candidate {
     // order the remaining directions follow `-v, u, v, -u`; advancing those
     // unwrapped pointers from their predecessor crosses each first-edge
     // normal cone once, rather than paying four independent full scans.
-    let mut outward_min = exact_argmax(hull, (-first_basis.outward.0, -first_basis.outward.1));
+    let outward_direction = (-first_basis.outward.0, -first_basis.outward.1);
+    let initial_outward_min = exact_argmax(hull, outward_direction);
+    let mut outward_min = advance_max(hull, outward_direction, initial_outward_min);
     let mut along_max = advance_max(hull, first_basis.along, outward_min);
     let mut outward_max = advance_max(hull, first_basis.outward, along_max);
     let mut along_min = advance_max(
@@ -400,6 +402,11 @@ fn select_minimum_candidate(hull: &[Point]) -> Candidate {
         (-first_basis.along.0, -first_basis.along.1),
         outward_max,
     );
+    // The advanced pointer is the strict certificate and progression state.
+    // Keep its exact-argmax representative for the first candidate: equal
+    // support points are geometrically interchangeable, but their dot-product
+    // rounding is part of the established byte-level output.
+    let mut candidate_outward_min = initial_outward_min;
     let mut best: Option<RankedCandidate> = None;
     for edge in 0..count {
         let basis = Basis::from_edge(hull[edge], hull[(edge + 1) % count])
@@ -407,39 +414,28 @@ fn select_minimum_candidate(hull: &[Point]) -> Candidate {
         if edge != 0 {
             along_max = advance_max(hull, basis.along, along_max);
             outward_min = advance_max(hull, (-basis.outward.0, -basis.outward.1), outward_min);
+            candidate_outward_min = outward_min;
             outward_max = advance_max(hull, basis.outward, outward_max);
             along_min = advance_max(hull, (-basis.along.0, -basis.along.1), along_min);
         }
-        debug_assert!(same_projection(
-            hull,
-            basis.along,
-            along_max % count,
-            exact_argmax(hull, basis.along)
-        ));
-        debug_assert!(same_projection(
+        debug_assert!(support_stops_here(hull, basis.along, along_max));
+        debug_assert!(support_stops_here(
             hull,
             (-basis.outward.0, -basis.outward.1),
-            outward_min % count,
-            exact_argmax(hull, (-basis.outward.0, -basis.outward.1))
+            outward_min
         ));
-        debug_assert!(same_projection(
-            hull,
-            basis.outward,
-            outward_max % count,
-            exact_argmax(hull, basis.outward)
-        ));
-        debug_assert!(same_projection(
+        debug_assert!(support_stops_here(hull, basis.outward, outward_max));
+        debug_assert!(support_stops_here(
             hull,
             (-basis.along.0, -basis.along.1),
-            along_min % count,
-            exact_argmax(hull, (-basis.along.0, -basis.along.1))
+            along_min
         ));
         let mut candidate = RankedCandidate::new(hull, Candidate {
             basis,
             supports: Supports {
                 along_min: along_min % count,
                 along_max: along_max % count,
-                outward_min: outward_min % count,
+                outward_min: candidate_outward_min % count,
                 outward_max: outward_max % count,
             },
         });
@@ -454,8 +450,10 @@ fn select_minimum_candidate(hull: &[Point]) -> Candidate {
         .candidate
 }
 
-fn same_projection(hull: &[Point], direction: (f64, f64), left: usize, right: usize) -> bool {
-    projection_delta_order(direction, hull[left], hull[right]) == Ordering::Equal
+fn support_stops_here(hull: &[Point], direction: (f64, f64), index: usize) -> bool {
+    let current = index % hull.len();
+    let next = (current + 1) % hull.len();
+    projection_delta_order(direction, hull[current], hull[next]).is_lt()
 }
 
 fn exact_argmax(hull: &[Point], direction: (f64, f64)) -> usize {
@@ -508,11 +506,11 @@ fn axis_aligned_hull_rectangle(hull: &[Point]) -> Option<[Point; 5]> {
             },
         );
         [
-            Point::new_unchecked_xy(min_x, min_y),
-            Point::new_unchecked_xy(max_x, min_y),
-            Point::new_unchecked_xy(max_x, max_y),
-            Point::new_unchecked_xy(min_x, max_y),
-            Point::new_unchecked_xy(min_x, min_y),
+            Point::new_raw_xy(min_x, min_y),
+            Point::new_raw_xy(max_x, min_y),
+            Point::new_raw_xy(max_x, max_y),
+            Point::new_raw_xy(min_x, max_y),
+            Point::new_raw_xy(min_x, min_y),
         ]
     })
 }
@@ -991,7 +989,7 @@ impl Candidate {
     fn legacy_corners(self, hull: &[Point]) -> Option<[Point; 4]> {
         let (minimum, maximum, base, ceiling) = self.projection_scalars(hull)?;
         let corner = |along: f64, outward: f64| {
-            Point::new_unchecked_xy(
+            Point::new_raw_xy(
                 self.basis.along.0 * along + self.basis.outward.0 * outward,
                 self.basis.along.1 * along + self.basis.outward.1 * outward,
             )
@@ -1106,7 +1104,7 @@ impl Candidate {
                 .all(|value| value.is_finite() && value > 0.0)
         );
         PreferredCorner {
-            point: Point::new_unchecked_xy(x_value, y_value),
+            point: Point::new_raw_xy(x_value, y_value),
             numerator: [x_numerator, y_numerator],
             denominator,
             anisotropic_frame: !equal_scales,
@@ -1296,9 +1294,9 @@ fn axis_corner(first: SupportHalfplane, second: SupportHalfplane) -> Option<Poin
         (second, first)
     };
     if along.gradient.1 == 0.0 && outward.gradient.0 == 0.0 {
-        Some(Point::new_unchecked_xy(along.support.x, outward.support.y))
+        Some(Point::new_raw_xy(along.support.x, outward.support.y))
     } else if along.gradient.0 == 0.0 && outward.gradient.1 == 0.0 {
-        Some(Point::new_unchecked_xy(outward.support.x, along.support.y))
+        Some(Point::new_raw_xy(outward.support.x, along.support.y))
     } else {
         None
     }
@@ -1352,8 +1350,8 @@ fn directed_axis_repair(
             continue;
         }
         let candidate = match axis {
-            Axis::X => Point::new_unchecked_xy(shifted, preferred.point.y),
-            Axis::Y => Point::new_unchecked_xy(preferred.point.x, shifted),
+            Axis::X => Point::new_raw_xy(shifted, preferred.point.y),
+            Axis::Y => Point::new_raw_xy(preferred.point.x, shifted),
         };
         if !support_margin(first, candidate).ordering().is_lt()
             && !support_margin(second, candidate).ordering().is_lt()
@@ -1578,8 +1576,8 @@ fn finite_point_on_edge(
         upper,
     );
     let candidate = match fixed_axis {
-        Axis::X => Point::new_unchecked_xy(fixed, free),
-        Axis::Y => Point::new_unchecked_xy(free, fixed),
+        Axis::X => Point::new_raw_xy(fixed, free),
+        Axis::Y => Point::new_raw_xy(free, fixed),
     };
     (!support_margin(first, candidate).ordering().is_lt()
         && !support_margin(second, candidate).ordering().is_lt())
@@ -1672,7 +1670,7 @@ mod tests {
     use super::*;
 
     fn point(x: f64, y: f64) -> Point {
-        Point::new_unchecked_xy(x, y)
+        Point::new_raw_xy(x, y)
     }
 
     #[test]

@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use spade::Triangulation as _;
 
@@ -18,6 +19,48 @@ use crate::geometry::{
 #[cfg(test)]
 thread_local! {
     static CONSTRAINED_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EXACT_METRIC_WORK: std::cell::Cell<ExactMetricWork> =
+        const { std::cell::Cell::new(ExactMetricWork::ZERO) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ExactMetricWork {
+    map_rebuilds: usize,
+    initial_interior_owners: usize,
+    successful_flips: usize,
+    edge_inspections: usize,
+    queue_pops: usize,
+}
+
+#[cfg(test)]
+impl ExactMetricWork {
+    const ZERO: Self = Self {
+        map_rebuilds: 0,
+        initial_interior_owners: 0,
+        successful_flips: 0,
+        edge_inspections: 0,
+        queue_pops: 0,
+    };
+}
+
+#[cfg(test)]
+fn take_exact_metric_work() -> ExactMetricWork {
+    EXACT_METRIC_WORK.with(|work| work.replace(ExactMetricWork::ZERO))
+}
+
+#[cfg(test)]
+fn reset_exact_metric_work() {
+    EXACT_METRIC_WORK.with(|work| work.set(ExactMetricWork::ZERO));
+}
+
+#[cfg(test)]
+fn note_exact_metric_work(update: impl FnOnce(&mut ExactMetricWork)) {
+    EXACT_METRIC_WORK.with(|work| {
+        let mut current = work.get();
+        update(&mut current);
+        work.set(current);
+    });
 }
 
 #[cfg(test)]
@@ -614,7 +657,7 @@ fn scale_only_proposal(points: &[Point]) -> Option<CandidateTriangulation> {
     }
     let mapped_points: Vec<_> = mapped
         .iter()
-        .map(|point| Point::new_unchecked_xy(point.x, point.y))
+        .map(|point| Point::new_raw_xy(point.x, point.y))
         .collect();
     let topology = positive_topology(try_spade_delaunay(&mapped_points)?, points)?;
     Some(CandidateTriangulation {
@@ -939,58 +982,168 @@ fn exact_metric_delaunay(
     points: &[Point],
     initial: &delaunator::Triangulation,
 ) -> Option<delaunator::Triangulation> {
-    if !delaunay_euler_complete(points.len(), initial) {
+    #[cfg(test)]
+    reset_exact_metric_work();
+    if !exact_metric_seed_is_valid(points, initial) {
         return None;
     }
-    let mut triangles: Vec<[usize; 3]> = initial.triangles.as_chunks::<3>().0.to_vec();
-    loop {
-        let mut edges: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
-        for (triangle_index, &[a, b, c]) in triangles.iter().enumerate() {
-            for (left, right, opposite) in [(a, b, c), (b, c, a), (c, a, b)] {
-                let key = (left.min(right), left.max(right));
-                edges
-                    .entry(key)
-                    .or_default()
-                    .push((triangle_index, opposite));
-            }
+    let mut triangles = initial.triangles.clone();
+    let mut halfedges = initial.halfedges.clone();
+    let mut pending = BinaryHeap::with_capacity(halfedges.len() / 2);
+    for edge in 0..halfedges.len() {
+        if halfedges[edge] != delaunator::EMPTY && edge < halfedges[edge] {
+            #[cfg(test)]
+            note_exact_metric_work(|work| work.initial_interior_owners += 1);
+            enqueue_delaunay_edge(&mut pending, &triangles, &halfedges, edge);
+        }
+    }
+    while let Some(Reverse((a, b, edge))) = pending.pop() {
+        #[cfg(test)]
+        note_exact_metric_work(|work| {
+            work.edge_inspections += 1;
+            work.queue_pops += 1;
+        });
+        let Some(reverse) = queued_delaunay_edge((a, b), edge, &triangles, &halfedges) else {
+            continue;
+        };
+
+        let e = edge;
+        let n = delaunator::next_halfedge(e);
+        let p = delaunator::prev_halfedge(e);
+        let r = reverse;
+        let rn = delaunator::next_halfedge(r);
+        let rp = delaunator::prev_halfedge(r);
+        let Some(n_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, n) else {
+            continue;
+        };
+        let Some(p_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, p) else {
+            continue;
+        };
+        let Some(rn_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, rn) else {
+            continue;
+        };
+        let Some(rp_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, rp) else {
+            continue;
+        };
+        let a = triangles[e];
+        let b = triangles[n];
+        let c = triangles[p];
+        let d = triangles[rp];
+        if !flippable_quad(points, a, b, c, d) || !source_incircle_contains(points, a, b, c, d) {
+            continue;
         }
 
-        let mut candidates: Vec<_> = edges.iter().collect();
-        candidates.sort_unstable_by_key(|(edge, _)| **edge);
-        let mut flipped = false;
-        for (&(a, b), adjacent) in candidates {
-            let [(first_triangle, c), (second_triangle, d)] = adjacent.as_slice() else {
-                continue;
-            };
-            if !flippable_quad(points, a, b, *c, *d)
-                || !source_incircle_contains(points, a, b, *c, *d)
-            {
-                continue;
-            }
-            triangles[*first_triangle] = [*c, *d, a];
-            triangles[*second_triangle] = [*d, *c, b];
-            flipped = true;
-            break;
-        }
-        if !flipped {
-            break;
+        // Capture every unchanged boundary twin before any slot is rewritten.
+        // The directed slots, rather than the sorted queue key, own the
+        // orientation of the replacement faces.
+        triangles[e] = d;
+        triangles[n] = c;
+        triangles[p] = a;
+        triangles[r] = c;
+        triangles[rn] = d;
+        triangles[rp] = b;
+        link_delaunay_halfedges(&mut halfedges, e, r);
+        link_delaunay_halfedges(&mut halfedges, n, p_reverse);
+        link_delaunay_halfedges(&mut halfedges, p, rn_reverse);
+        link_delaunay_halfedges(&mut halfedges, rn, rp_reverse);
+        link_delaunay_halfedges(&mut halfedges, rp, n_reverse);
+
+        #[cfg(test)]
+        note_exact_metric_work(|work| work.successful_flips += 1);
+        for affected in [e, n, p, rn, rp] {
+            enqueue_delaunay_edge(&mut pending, &triangles, &halfedges, affected);
         }
     }
 
-    let mut output = Vec::with_capacity(triangles.len() * 3);
-    for [a, b, c] in triangles {
-        match exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy()) {
-            exact::ExactSign::Positive => output.extend([a, b, c]),
-            exact::ExactSign::Negative => output.extend([a, c, b]),
-            exact::ExactSign::Zero => return None,
+    for &[a, b, c] in triangles.as_chunks::<3>().0 {
+        if exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy()) == exact::ExactSign::Zero
+        {
+            return None;
         }
     }
-    let halfedges = delaunay_halfedges(&output);
     Some(delaunator::Triangulation {
-        triangles: output,
         halfedges,
+        triangles,
         hull: Vec::new(),
     })
+}
+
+fn exact_metric_seed_is_valid(points: &[Point], initial: &delaunator::Triangulation) -> bool {
+    initial.triangles.len() == initial.halfedges.len()
+        && initial.triangles.len().is_multiple_of(3)
+        && delaunay_euler_complete(points.len(), initial)
+        && initial.triangles.iter().all(|&site| site < points.len())
+        && initial
+            .halfedges
+            .iter()
+            .enumerate()
+            .all(|(edge, &reverse)| {
+                reverse == delaunator::EMPTY
+                    || reciprocal_delaunay_halfedge(&initial.triangles, &initial.halfedges, edge)
+                        == Some(reverse)
+            })
+}
+
+fn reciprocal_delaunay_halfedge(
+    triangles: &[usize],
+    halfedges: &[usize],
+    edge: usize,
+) -> Option<usize> {
+    let reverse = *halfedges.get(edge)?;
+    if reverse == delaunator::EMPTY {
+        return Some(reverse);
+    }
+    if reverse == edge || reverse >= halfedges.len() || halfedges[reverse] != edge {
+        return None;
+    }
+    let next = delaunator::next_halfedge(edge);
+    let reverse_next = delaunator::next_halfedge(reverse);
+    if next >= triangles.len() || reverse_next >= triangles.len() {
+        return None;
+    }
+    (triangles.get(edge) == triangles.get(reverse_next)
+        && triangles.get(next) == triangles.get(reverse))
+    .then_some(reverse)
+}
+
+fn queued_delaunay_edge(
+    key: (usize, usize),
+    edge: usize,
+    triangles: &[usize],
+    halfedges: &[usize],
+) -> Option<usize> {
+    let reverse = reciprocal_delaunay_halfedge(triangles, halfedges, edge)?;
+    if reverse == delaunator::EMPTY {
+        return None;
+    }
+    let start = *triangles.get(edge)?;
+    let end = *triangles.get(delaunator::next_halfedge(edge))?;
+    ((start.min(end), start.max(end)) == key).then_some(reverse)
+}
+
+fn enqueue_delaunay_edge(
+    pending: &mut BinaryHeap<Reverse<(usize, usize, usize)>>,
+    triangles: &[usize],
+    halfedges: &[usize],
+    edge: usize,
+) {
+    let Some(reverse) = reciprocal_delaunay_halfedge(triangles, halfedges, edge) else {
+        return;
+    };
+    if reverse == delaunator::EMPTY {
+        return;
+    }
+    let owner = edge.min(reverse);
+    let start = triangles[owner];
+    let end = triangles[delaunator::next_halfedge(owner)];
+    pending.push(Reverse((start.min(end), start.max(end), owner)));
+}
+
+fn link_delaunay_halfedges(halfedges: &mut [usize], left: usize, right: usize) {
+    halfedges[left] = right;
+    if right != delaunator::EMPTY {
+        halfedges[right] = left;
+    }
 }
 
 fn flippable_quad(points: &[Point], a: usize, b: usize, c: usize, d: usize) -> bool {
@@ -1226,7 +1379,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
 
     let source_vertices: Vec<Point> = vertices
         .iter()
-        .map(|point| Point::new_unchecked_xy(point.x, point.y))
+        .map(|point| Point::new_raw_xy(point.x, point.y))
         .collect();
     let constraint_edges: HashSet<_> = edges
         .iter()
@@ -1286,10 +1439,10 @@ pub(crate) fn constrained_triangle_vertices<'a>(
                 return source;
             }
             frame.map_or_else(
-                || Point::new_unchecked_xy(point.x, point.y),
+                || Point::new_raw_xy(point.x, point.y),
                 |frame| {
                     let point = frame.unframe_xy(XY::new(point.x, point.y));
-                    Point::new_unchecked_xy(point.x, point.y)
+                    Point::new_raw_xy(point.x, point.y)
                 },
             )
         };
@@ -1367,8 +1520,8 @@ fn exact_metric_constrained_triangles(
             {
                 continue;
             }
-            triangles[*first_triangle] = [*c, *d, Point::new_unchecked_xy(a.x, a.y)];
-            triangles[*second_triangle] = [*d, *c, Point::new_unchecked_xy(b.x, b.y)];
+            triangles[*first_triangle] = [*c, *d, Point::new_raw_xy(a.x, a.y)];
+            triangles[*second_triangle] = [*d, *c, Point::new_raw_xy(b.x, b.y)];
             flipped = true;
             break;
         }
@@ -1522,13 +1675,131 @@ mod exact_metric_cdt_tests {
     use super::*;
 
     #[test]
+    fn queue_owner_follows_twin_when_changed_slot_is_larger() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+        ];
+        let seed = exact_incremental_seed(&points).expect("complete exact seed");
+        let edge = seed
+            .halfedges
+            .iter()
+            .enumerate()
+            .find_map(|(edge, &reverse)| {
+                (reverse != delaunator::EMPTY).then_some(edge.max(reverse))
+            })
+            .expect("interior diagonal");
+        let reverse = seed.halfedges[edge];
+        assert!(edge > reverse);
+
+        let mut pending = BinaryHeap::new();
+        enqueue_delaunay_edge(&mut pending, &seed.triangles, &seed.halfedges, edge);
+        let owner = edge.min(reverse);
+        let start = seed.triangles[owner];
+        let end = seed.triangles[delaunator::next_halfedge(owner)];
+        let key = (start.min(end), start.max(end));
+        assert_eq!(
+            queued_delaunay_edge(key, edge, &seed.triangles, &seed.halfedges),
+            Some(reverse)
+        );
+        assert_eq!(
+            queued_delaunay_edge(
+                (usize::MAX, usize::MAX),
+                edge,
+                &seed.triangles,
+                &seed.halfedges,
+            ),
+            None
+        );
+        assert_eq!(pending.pop(), Some(Reverse((key.0, key.1, owner))));
+
+        let boundary = seed
+            .halfedges
+            .iter()
+            .position(|&reverse| reverse == delaunator::EMPTY)
+            .expect("boundary edge");
+        assert_eq!(
+            queued_delaunay_edge(key, boundary, &seed.triangles, &seed.halfedges),
+            None
+        );
+
+        let mut malformed = seed.clone();
+        malformed.halfedges[reverse] = delaunator::EMPTY;
+        assert_eq!(
+            queued_delaunay_edge(key, edge, &malformed.triangles, &malformed.halfedges),
+            None
+        );
+    }
+
+    #[test]
+    fn exact_queue_accepts_boundary_empty_and_rejects_malformed_seed() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+        ];
+        let seed = exact_incremental_seed(&points).expect("complete exact seed");
+        assert!(exact_metric_delaunay(&points, &seed).is_some());
+
+        let mut missing_slot = seed.clone();
+        let interior = missing_slot
+            .halfedges
+            .iter()
+            .position(|&reverse| reverse != delaunator::EMPTY)
+            .expect("interior diagonal");
+        missing_slot.halfedges[interior] = delaunator::EMPTY;
+        assert!(exact_metric_delaunay(&points, &missing_slot).is_none());
+
+        let mut truncated = seed.clone();
+        truncated.halfedges.pop();
+        assert!(exact_metric_delaunay(&points, &truncated).is_none());
+    }
+
+    #[test]
+    fn cocircular_quad_is_certified_without_a_zero_flip() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
+        ];
+        let seed = exact_incremental_seed(&points).expect("complete exact seed");
+        let legalized = exact_metric_delaunay(&points, &seed).expect("exact legalization");
+        let work = take_exact_metric_work();
+        assert_eq!(work.successful_flips, 0);
+        assert!(
+            legalized
+                .halfedges
+                .iter()
+                .enumerate()
+                .all(|(edge, &reverse)| {
+                    reverse == delaunator::EMPTY || legalized.halfedges[reverse] == edge
+                })
+        );
+    }
+
+    #[test]
+    fn nonconvex_quad_is_not_a_flip_candidate() {
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(0.0, 2.0),
+        ];
+        assert!(!flippable_quad(&points, 0, 1, 2, 3));
+    }
+
+    #[test]
     fn reciprocal_quad_flips_the_spade_diagonal_in_source_metric() {
         let large = 1e159;
         let tiny = 1e-159;
-        let left = Point::new_unchecked_xy(-large, 0.0);
-        let bottom = Point::new_unchecked_xy(0.0, -tiny);
-        let right = Point::new_unchecked_xy(large, 0.0);
-        let top = Point::new_unchecked_xy(0.0, 2.0 * tiny);
+        let left = Point::new_raw_xy(-large, 0.0);
+        let bottom = Point::new_raw_xy(0.0, -tiny);
+        let right = Point::new_raw_xy(large, 0.0);
+        let top = Point::new_raw_xy(0.0, 2.0 * tiny);
         assert!(
             AxisFrame::from_points(&[left, bottom, right, top])
                 .is_some_and(AxisFrame::has_reciprocal_axes)
@@ -1574,7 +1845,7 @@ mod certified_tests {
             .enumerate()
             .map(|(id, &(x, y))| Site {
                 id,
-                point: Point::new_unchecked_xy(x, y),
+                point: Point::new_raw_xy(x, y),
             })
             .collect()
     }
@@ -1625,9 +1896,9 @@ mod certified_tests {
     #[test]
     fn positive_topology_canonicalizes_face_orientation_once() {
         let points = [
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(2.0, 0.0),
-            Point::new_unchecked_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(0.0, 2.0),
         ];
         let reversed = delaunator::Triangulation {
             triangles: vec![0, 2, 1],
@@ -1679,10 +1950,10 @@ mod certified_tests {
     #[test]
     fn crossing_and_wrong_boundary_mutations_differ_from_restored() {
         let restored_points = vec![
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(2.0, 0.0),
-            Point::new_unchecked_xy(2.0, 2.0),
-            Point::new_unchecked_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 2.0),
         ];
         let restored_topology = candidate(&[[0, 1, 2], [0, 2, 3]]).topology;
         let restored_crossing =
@@ -1843,7 +2114,7 @@ mod certified_tests {
 
     #[test]
     fn proposal_mapping_requires_forward_identity_not_only_inverse_roundtrip() {
-        let points = vec![Point::new_unchecked_xy(f64::MAX, 0.0)];
+        let points = vec![Point::new_raw_xy(f64::MAX, 0.0)];
         let scale = axis_pow2_scale(f64::MAX);
         let expected = points[0].x * scale;
         let mapped = vec![XY::new(expected, 0.0)];
@@ -1859,11 +2130,11 @@ mod certified_tests {
     #[test]
     fn exact_fallback_seed_keeps_ccw_hull_for_interior_insertion() {
         let points = vec![
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(2.0, 0.0),
-            Point::new_unchecked_xy(1.0, 1.0),
-            Point::new_unchecked_xy(0.0, 2.0),
-            Point::new_unchecked_xy(2.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(2.0, 2.0),
         ];
         let seed = exact_incremental_seed(&points).expect("forced exact fallback seed");
         let restored = candidate_has_crossing_edges(&points, &seed);
@@ -1876,5 +2147,109 @@ mod certified_tests {
         );
         assert_eq!(mutated, exact::ExactSign::Negative);
         assert!(!restored, "restored crossing value was {restored}");
+    }
+
+    #[test]
+    fn exact_legalization_certifies_reciprocal_extreme_witnesses() {
+        fn is_reciprocal(topology: &delaunator::Triangulation) -> bool {
+            topology.triangles.len() == topology.halfedges.len()
+                && topology
+                    .halfedges
+                    .iter()
+                    .enumerate()
+                    .all(|(edge, &reverse)| {
+                        reverse == delaunator::EMPTY
+                            || (topology.halfedges[reverse] == edge
+                                && topology.triangles[edge]
+                                    == topology.triangles[delaunator::next_halfedge(reverse)]
+                                && topology.triangles[delaunator::next_halfedge(edge)]
+                                    == topology.triangles[reverse])
+                    })
+        }
+
+        let mut cases = vec![
+            vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(2.0, 0.0),
+                Point::new_raw_xy(2.0, 2.0),
+                Point::new_raw_xy(0.0, 2.0),
+            ],
+            vec![
+                Point::new_raw_xy(-5.0, 0.0),
+                Point::new_raw_xy(-3.0, -4.0),
+                Point::new_raw_xy(0.0, -5.0),
+                Point::new_raw_xy(3.0, -4.0),
+                Point::new_raw_xy(5.0, 0.0),
+                Point::new_raw_xy(3.0, 4.0),
+                Point::new_raw_xy(0.0, 5.0),
+                Point::new_raw_xy(-3.0, 4.0),
+            ],
+        ];
+        let mut state = 0xE4D9_58D1_2A77_3B49_u64;
+        for _ in 0..16 {
+            cases.push(
+                (0..12)
+                    .map(|index| {
+                        state = state
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1);
+                        Point::new_raw_xy(
+                            index as f64,
+                            (state >> 16) as f64 / (u64::MAX >> 16) as f64,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        for exponent in [22, 154, 162, 300] {
+            let large = 10.0_f64.powi(exponent);
+            let tiny = 10.0_f64.powi(-exponent);
+            for swap_axes in [false, true] {
+                let mut reciprocal = vec![
+                    (-large, 0.0),
+                    (-0.5 * large, -tiny),
+                    (0.5 * large, -tiny),
+                    (large, 0.0),
+                    (0.0, tiny),
+                ];
+                if swap_axes {
+                    reciprocal
+                        .iter_mut()
+                        .for_each(|point| *point = (point.1, point.0));
+                }
+                cases.push(
+                    reciprocal
+                        .into_iter()
+                        .map(|(x, y)| Point::new_raw_xy(x, y))
+                        .collect(),
+                );
+            }
+        }
+        for points in cases {
+            let seed = exact_incremental_seed(&points).expect("complete exact seed");
+            let legalized = exact_metric_delaunay(&points, &seed).expect("exact legalization");
+            let work = take_exact_metric_work();
+            assert_eq!(work.map_rebuilds, 0);
+            assert_eq!(work.edge_inspections, work.queue_pops);
+            assert!(
+                work.queue_pops <= work.initial_interior_owners + 5 * work.successful_flips,
+                "queue work exceeded local owner budget"
+            );
+            assert!(is_reciprocal(&legalized));
+            let sites = points
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(id, point)| Site { id, point })
+                .collect::<Vec<_>>();
+            assert!(
+                CandidateTriangulation {
+                    topology: PositiveTopology(legalized),
+                    mapped_sites: None,
+                }
+                .try_certify(&sites)
+                .is_ok()
+            );
+        }
     }
 }
