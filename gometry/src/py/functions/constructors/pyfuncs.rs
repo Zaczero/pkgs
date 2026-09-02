@@ -151,9 +151,14 @@ pub(super) fn points(
     for (name, value) in [("x", x), ("y", y)] {
         crate::reject_multidimensional_coordinate_array(value, name)?;
     }
-    for (name, value) in [("z", z), ("m", m)].into_iter().filter_map(|(name, value)| {
-        value.filter(|value| !value.is_none()).map(|value| (name, value))
-    }) {
+    for (name, value) in [("z", z), ("m", m)]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            value
+                .filter(|value| !value.is_none())
+                .map(|value| (name, value))
+        })
+    {
         crate::reject_multidimensional_coordinate_array(value, name)?;
     }
     // Contiguous non-scalar buffers → final Arc columns (Item 12). Scalar

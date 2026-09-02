@@ -58,10 +58,7 @@ pub(crate) fn py_nearest_points(
     let left_plan = left.plan_or_transient();
     let right_plan = right.plan_or_transient();
     let pair = py.detach(move || metric_nearest_points(&model, &left_plan, &right_plan))?;
-    let (left_shape, right_shape) = crate::geometry::nearest_point_pair(
-        pair,
-        common,
-    );
+    let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
     Ok((
         Typed(PyGeometry::with_frame(left_shape, left.frame.clone())),
         Typed(PyGeometry::with_frame(right_shape, right.frame.clone())),

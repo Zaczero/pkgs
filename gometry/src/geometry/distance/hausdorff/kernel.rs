@@ -11,6 +11,7 @@ use super::{
     directed_hausdorff_distance_squared_with_target_pruned_with_scratch,
     directed_hausdorff_vertex_lower_bound_squared_with_scratch, hausdorff_scratch,
 };
+use crate::error::Result;
 use crate::geometry::distance::hausdorff::{
     HAUSDORFF_SMALL_TARGET_MAX_VERTICES, HausdorffFeature, HausdorffProbeResult, HausdorffTarget,
     SmallLineTarget, directed_hausdorff_distance_squared_with_target_pruned,
@@ -18,7 +19,6 @@ use crate::geometry::distance::hausdorff::{
     max_point_to_target_squared_on_segment_small_culled, small_line_target_distance_squared,
     small_line_target_features_slice,
 };
-use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::distance::hausdorff::{
     SmallHausdorffParams, collect_hausdorff_segment_params_small,
@@ -498,16 +498,18 @@ pub(crate) fn hausdorff_distance_line_columns(
     let source_distance = left.hausdorff_distance(&right);
     let squared_distance =
         hausdorff_distance_squared_line_columns(left_xs, left_ys, right_xs, right_ys).sqrt();
-    Ok(if squared_distance.is_finite()
-        && squared_distance
-            .to_bits()
-            .abs_diff(source_distance.to_bits())
-            <= 1
-    {
-        squared_distance
-    } else {
-        source_distance
-    })
+    Ok(
+        if squared_distance.is_finite()
+            && squared_distance
+                .to_bits()
+                .abs_diff(source_distance.to_bits())
+                <= 1
+        {
+            squared_distance
+        } else {
+            source_distance
+        },
+    )
 }
 
 fn line_shape_from_columns(xs: &[f64], ys: &[f64]) -> Shape {

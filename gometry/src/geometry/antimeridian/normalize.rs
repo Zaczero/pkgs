@@ -354,9 +354,7 @@ pub(crate) fn derived_point_unwrapped(
                 || shape_encloses_pole_in_frame(shape, frame, false)
         },
     };
-    if matches!(strategy, DerivedPointStrategy::Interior)
-        || encloses_pole
-    {
+    if matches!(strategy, DerivedPointStrategy::Interior) || encloses_pole {
         return kernel(&try_topology_split(shape, domain)?);
     }
     let unwrapped = unwrap_longitude(shape)?;
@@ -409,7 +407,9 @@ pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
     for shape in shapes {
         let shape = shape.borrow();
         shape.for_each_point(|point| {
-            let longitude = axis.canonicalize(point.x).map_or(point.x, |value| value.get());
+            let longitude = axis
+                .canonicalize(point.x)
+                .map_or(point.x, |value| value.get());
             if longitude >= 0.0 {
                 eastern_min = Some(eastern_min.map_or(longitude, |min| min.min(longitude)));
             } else {

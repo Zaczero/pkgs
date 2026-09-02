@@ -414,13 +414,13 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
         (
             "geometry_collection",
             Shape::geometry_collection(vec![
-                    Shape::Point(p(-6.0, 1.0)),
-                    line(vec![p(-5.0, -1.0), p(-5.0, 1.0)]),
+                Shape::Point(p(-6.0, 1.0)),
+                line(vec![p(-5.0, -1.0), p(-5.0, 1.0)]),
             ])
             .expect("test collection is valid"),
             Shape::geometry_collection(vec![
-                    multipoint(vec![p(6.0, 2.0), p(7.0, 3.0)]),
-                    line(vec![p(3.0, -1.0), p(3.0, 1.0)]),
+                multipoint(vec![p(6.0, 2.0), p(7.0, 3.0)]),
+                line(vec![p(3.0, -1.0), p(3.0, 1.0)]),
             ])
             .expect("test collection is valid"),
         ),
@@ -913,8 +913,8 @@ fn distance_3d_with_parts_matches_brute_oracle() {
 #[test]
 fn distance_3d_rejects_mixed_z_collection() {
     let mixed = Shape::geometry_collection(vec![
-            Shape::Point(p(0.0, 0.0)),
-            with_z(line(vec![p(0.0, 0.0), p(1.0, 1.0)]), 0.0),
+        Shape::Point(p(0.0, 0.0)),
+        with_z(line(vec![p(0.0, 0.0), p(1.0, 1.0)]), 0.0),
     ])
     .expect("test collection is valid");
     let target = with_z(Shape::Point(p(1.0, 1.0)), 1.0);

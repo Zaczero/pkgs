@@ -47,15 +47,16 @@ pub(crate) fn geographic_bounds_to_shape(
         return Ok(bounds_to_shape(bounds));
     }
     const MAX_CHORD_RADIANS: f64 = 0.247;
-    let segments = ((bounds.maxx() - bounds.minx())
-        * frame.longitude().unit().radians_per_unit()
+    let segments = ((bounds.maxx() - bounds.minx()) * frame.longitude().unit().radians_per_unit()
         / MAX_CHORD_RADIANS)
         .ceil()
         .max(1.0) as usize;
     let capacity = if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
         segments.checked_add(1)
     } else {
-        segments.checked_mul(2).and_then(|value| value.checked_add(3))
+        segments
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(3))
     }
     .ok_or(crate::error::ResourceError::Allocation)?;
     let mut points = Vec::new();

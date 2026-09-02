@@ -599,26 +599,26 @@ mod binary_areal_overlay_tests {
             point(6.0, 6.0),
         ];
         let multipart = Shape::geometry_collection(vec![
-                Shape::MultiPolygon(
-                    vec![polygon(&[
-                        (0.0, 0.0),
-                        (1.0, 0.0),
-                        (1.0, 1.0),
-                        (0.0, 1.0),
-                        (0.0, 0.0),
-                    ])]
-                    .into(),
-                ),
-                Shape::MultiLineString(
-                    vec![
-                        LineSeq::try_new(CoordSeq::from(vec![
-                            Point::new(2.0, 2.0).unwrap(),
-                            Point::new(3.0, 2.0).unwrap(),
-                        ]))
-                        .unwrap(),
-                    ]
-                    .into(),
-                ),
+            Shape::MultiPolygon(
+                vec![polygon(&[
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 1.0),
+                    (0.0, 1.0),
+                    (0.0, 0.0),
+                ])]
+                .into(),
+            ),
+            Shape::MultiLineString(
+                vec![
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new(2.0, 2.0).unwrap(),
+                        Point::new(3.0, 2.0).unwrap(),
+                    ]))
+                    .unwrap(),
+                ]
+                .into(),
+            ),
         ])
         .expect("test collection is valid");
         let remote = square(6.0, 6.0, 7.0, 7.0);

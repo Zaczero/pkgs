@@ -54,11 +54,9 @@ pub(crate) use types::{
 mod antimeridian;
 pub(crate) use antimeridian::{
     DerivedPointStrategy, crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame,
-    geographic_crossing,
-    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes_in_frame,
-    geographic_crossing_bounds_in_frame,
-    is_ring_data_in_frame,
-    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    geographic_crossing, geographic_crossing_bounds,
+    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
+    is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
     self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
     validate_data_in_frame, validate_shape_in_frame,
 };
@@ -168,8 +166,8 @@ use predicates::{
 pub(crate) use predicates::{
     RingClass, RingEdgeMembership, line_crosses_antimeridian, line_is_ccw, line_is_closed,
     line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame,
-    shape_has_polar_ring_in_frame,
-    shape_reaches_geographic_pole_in_frame, shape_spans_full_longitude,
+    shape_has_polar_ring_in_frame, shape_reaches_geographic_pole_in_frame,
+    shape_spans_full_longitude,
 };
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
@@ -191,16 +189,15 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
     shape.is_none_or(|shape| {
         !crosses_antimeridian_in_frame(shape, frame)
             && !shape_reaches_geographic_pole_in_frame(shape, frame)
-    })
-        && {
-            let unmoved = |x: f64| {
-                frame
-                    .longitude()
-                    .canonicalize(x)
-                    .is_ok_and(|canonical| canonical.get().to_bits() == x.to_bits())
-            };
-            unmoved(bounds.minx()) && unmoved(bounds.maxx())
-        }
+    }) && {
+        let unmoved = |x: f64| {
+            frame
+                .longitude()
+                .canonicalize(x)
+                .is_ok_and(|canonical| canonical.get().to_bits() == x.to_bits())
+        };
+        unmoved(bounds.minx()) && unmoved(bounds.maxx())
+    }
 }
 
 /// Re-export seam: `pub(super)` kernel in the private `predicates` child.
@@ -214,10 +211,9 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
 }
 pub(crate) use relate::{
     De9im, GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
-    is_axis_aligned_rectangle,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
-    graph_relate_data_with_right_graph, graph_relate_shapes,
+    graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,
@@ -241,8 +237,9 @@ use segments::{
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
 pub(crate) use segments::{
-    finish_planar_squared_min, lerp_point, line_segments, point_distance, point_distance_squared,
-    point_on_segment, points_dwithin, squared_norm_is_trustworthy,
+    RectContact, finish_planar_squared_min, lerp_point, line_segments, point_distance,
+    point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
+    squared_norm_is_trustworthy,
 };
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation_spade, point_in_ccw_triangle};

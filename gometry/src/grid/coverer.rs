@@ -12,12 +12,12 @@
 //! bulk-emits fully-covered branches, so it never enumerates the whole
 //! target grid for a small geometry.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::geometry::{
-    Bounds, CoordSeq, GeographicPrepared, Point, PointBatchTester, Polygon, PreparedPlan, Segment,
+    Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment,
     SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_rectangle_data,
-    line_segments,
+    line_segments, segment_vs_rect,
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
@@ -100,6 +100,7 @@ struct GeographicCandidateClassifier<'a> {
     exact: bool,
     authority_plan: &'a PreparedPlan,
     authority_cache: &'a crate::geometry::FrameDependentCaches,
+    authority_graph: OnceLock<Arc<crate::geometry::TopologyGraph>>,
     frame: crate::geographic::GeographicFrame,
 }
 
@@ -112,21 +113,23 @@ impl<'a> GeographicCandidateClassifier<'a> {
         authority_cache: &'a crate::geometry::FrameDependentCaches,
         frame: crate::geographic::GeographicFrame,
     ) -> Result<Self, crate::error::Error> {
+        let exact = crate::geometry::shape_reaches_geographic_pole_in_frame(authority, frame)
+            || crate::geometry::shape_spans_full_longitude(authority)
+            || (charted
+                && authority
+                    .bounds()
+                    .is_some_and(|bounds| bounds.maxx() - bounds.minx() <= 180.0));
+        let authority =
+            GeographicCoverageSource::from_validated(authority, SphericalGridTarget::Rectangular)
+                .map_err(|_| crate::error::ResourceError::Allocation)?;
+        let working = NativeRectClassifier::new(working)?;
         Ok(Self {
-            authority: GeographicCoverageSource::from_validated(
-                authority,
-                SphericalGridTarget::Rectangular,
-            )
-            .map_err(|_| crate::error::ResourceError::Allocation)?,
-            working: NativeRectClassifier::new(working)?,
-            exact: crate::geometry::shape_reaches_geographic_pole_in_frame(authority, frame)
-                || crate::geometry::shape_spans_full_longitude(authority)
-                || (charted
-                    && authority
-                        .bounds()
-                        .is_some_and(|bounds| bounds.maxx() - bounds.minx() <= 180.0)),
+            authority,
+            working,
+            exact,
             authority_plan,
             authority_cache,
+            authority_graph: OnceLock::new(),
             frame,
         })
     }
@@ -148,10 +151,27 @@ impl<'a> GeographicCandidateClassifier<'a> {
         if !self.exact || proposed == RectClass::Interior {
             return proposed;
         }
+        if let Some(covers) = self
+            .authority_graph
+            .get_or_init(|| {
+                self.authority_cache
+                    .geographic_topology_graph(self.authority_plan, self.frame)
+            })
+            .covers_rectangle(bounds)
+        {
+            if covers {
+                return RectClass::Interior;
+            }
+            return if self.exact_intersects_bounds(bounds) {
+                RectClass::Boundary
+            } else {
+                RectClass::Outside
+            };
+        }
         let candidate = bounds_to_shape(bounds);
         let candidate_plan = PreparedPlan::transient(&candidate);
         let candidate_cache = crate::geometry::FrameDependentCaches::default();
-        if !self.exact_intersects_bounds(&candidate, proposed) {
+        if !self.exact_intersects_bounds(bounds) {
             return RectClass::Outside;
         }
         let operands = PreparedTopologyPair::for_domain(
@@ -168,19 +188,23 @@ impl<'a> GeographicCandidateClassifier<'a> {
         }
     }
 
-    fn exact_intersects_bounds(&self, candidate: &Shape, proposed: RectClass) -> bool {
-        if !self.exact || proposed == RectClass::Interior {
+    fn exact_intersects_bounds(&self, bounds: Bounds) -> bool {
+        if !self.exact {
             return true;
         }
+        let candidate = bounds_to_shape(bounds);
         graph_intersects_rectangle_data(
             self.authority_plan,
+            Some(
+                self.authority_graph
+                    .get_or_init(|| {
+                        self.authority_cache
+                            .geographic_topology_graph(self.authority_plan, self.frame)
+                    })
+                    .as_ref(),
+            ),
             None,
-            Some(GeographicPrepared::new(
-                self.authority_plan,
-                self.authority_cache,
-                self.frame,
-            )),
-            candidate,
+            &candidate,
         )
         .unwrap_or(true)
     }
@@ -189,18 +213,12 @@ impl<'a> GeographicCandidateClassifier<'a> {
         if !self.exact {
             return self.working.covers_point(point);
         }
-        let candidate = PreparedPlan::transient(&Shape::Point(point));
-        let candidate_cache = crate::geometry::FrameDependentCaches::default();
-        topology_scalar_pair(
-            &Predicate::Covers.spec(),
-            PreparedTopologyPair::for_domain(
-                self.authority_plan,
-                self.authority_cache,
-                &candidate,
-                &candidate_cache,
-                crate::geometry::TopologyDomain::Geographic(self.frame),
-            ),
-        )
+        self.authority_graph
+            .get_or_init(|| {
+                self.authority_cache
+                    .geographic_topology_graph(self.authority_plan, self.frame)
+            })
+            .covers_point(point.xy())
     }
 }
 
@@ -474,87 +492,6 @@ const fn rect_probe(bounds: Bounds) -> Segment {
     }
 }
 
-/// How a segment meets a rectangle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RectContact {
-    /// Enters the rectangle's interior.
-    Open,
-    /// Touches the closed rectangle (edge/corner contact only).
-    Closed,
-    /// No contact.
-    None,
-}
-
-/// Exact segment-vs-rectangle contact via the separating-axis test on
-/// ROBUST orientations: the segment misses the open rect when its envelope
-/// does not strictly overlap it, or when all four rect corners sit weakly
-/// on one side of the segment's carrier line; closed contact then
-/// distinguishes touch from miss with the weak forms.
-pub(crate) fn segment_vs_rect(segment: Segment, rect: Bounds) -> RectContact {
-    use crate::geometry::{Orientation, orientation};
-    let (sx, ex) = (segment.start.x, segment.end.x);
-    let (sy, ey) = (segment.start.y, segment.end.y);
-    let (lo_x, hi_x) = (sx.min(ex), sx.max(ex));
-    let (lo_y, hi_y) = (sy.min(ey), sy.max(ey));
-    // Closed-envelope separation: no contact at all.
-    if hi_x < rect.minx() || lo_x > rect.maxx() || hi_y < rect.miny() || lo_y > rect.maxy() {
-        return RectContact::None;
-    }
-    // A degenerate segment (repeated ring vertex) is a point: every corner
-    // orientation is Collinear, so decide it directly — inside the open
-    // rect is Open, on the closed boundary (all that survives the envelope
-    // rejection) is Closed. Numeric equality on purpose: it matches when
-    // `orientation` degenerates (orient2d reads -0.0 as 0.0).
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact coordinate identity is required to classify a repeated segment endpoint"
-    )]
-    let degenerate = sx == ex && sy == ey;
-    if degenerate {
-        return if sx > rect.minx() && sx < rect.maxx() && sy > rect.miny() && sy < rect.maxy() {
-            RectContact::Open
-        } else {
-            RectContact::Closed
-        };
-    }
-    let corners = [
-        XY::new(rect.minx(), rect.miny()),
-        XY::new(rect.maxx(), rect.miny()),
-        XY::new(rect.maxx(), rect.maxy()),
-        XY::new(rect.minx(), rect.maxy()),
-    ];
-    let mut strict_positive = false;
-    let mut strict_negative = false;
-    let mut collinear = false;
-    for corner in corners {
-        match orientation(segment.start, segment.end, corner) {
-            Orientation::CounterClockwise => strict_positive = true,
-            Orientation::Clockwise => strict_negative = true,
-            Orientation::Collinear => collinear = true,
-        }
-    }
-    // All corners weakly on one side: the carrier never enters the open
-    // rect. A collinear corner means the carrier SUPPORTS the rect there
-    // (corner or whole edge), and the surviving closed-envelope overlap
-    // pins the segment to that contact set — a closed touch. With every
-    // corner strictly one side the carrier is a separating line.
-    if !(strict_positive && strict_negative) {
-        return if collinear {
-            RectContact::Closed
-        } else {
-            RectContact::None
-        };
-    }
-    // The carrier separates the corners; the open rect is entered iff the
-    // SEGMENT EXTENT strictly overlaps the rect on both axes (a corner-only
-    // or edge-only reach has a degenerate strict overlap).
-    if hi_x > rect.minx() && lo_x < rect.maxx() && hi_y > rect.miny() && lo_y < rect.maxy() {
-        RectContact::Open
-    } else {
-        RectContact::Closed
-    }
-}
-
 /// Cover `source` with `roots`' descendants at `target_depth`.
 ///
 /// Candidate branches descend until their terminal refinement; quotient-
@@ -633,24 +570,29 @@ pub(crate) fn cover<C: RectCell>(
                 }
             },
             RectClass::Boundary => {
-                if cell.depth() >= target_depth {
-                    if !classifier
-                        .exact_intersects_bounds(&bounds_to_shape(bounds), RectClass::Boundary)
-                    {
-                        continue;
-                    }
-                    // A boundary cell at the target depth intersects but is
-                    // not fully covered.
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push((cell, false));
-                } else {
-                    // Expand in place onto `boundary` — avoid a side buffer
-                    // that copies twice. Children derived from parent edges
-                    // (Tile: one shared mid-lat) rather than full recompute.
-                    let start = boundary.len();
-                    cell.push_children_bounds(bounds, &mut boundary);
-                    // push_children_bounds appends; nothing else to do.
-                    let _ = start;
+                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
+                    RectClass::Outside => {},
+                    RectClass::Interior => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push((cell, true));
+                        } else {
+                            interior.extend(cell.children());
+                        }
+                    },
+                    RectClass::Boundary => {
+                        if cell.depth() >= target_depth {
+                            // A boundary cell at the target depth intersects but is
+                            // not fully covered.
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push((cell, false));
+                        } else {
+                            // Expand in place onto `boundary` — avoid a side buffer
+                            // that copies twice. Children derived from parent edges
+                            // (Tile: one shared mid-lat) rather than full recompute.
+                            cell.push_children_bounds(bounds, &mut boundary);
+                        }
+                    },
                 }
             },
         }
@@ -737,17 +679,30 @@ pub(crate) fn cover_center<C: RectCell>(
                 }
             },
             RectClass::Boundary => {
-                if cell.depth() >= target_depth {
-                    let center = Point::new_raw_xy(
-                        f64::midpoint(bounds.minx(), bounds.maxx()),
-                        f64::midpoint(bounds.miny(), bounds.maxy()),
-                    );
-                    if classifier.exact_covers_point(center) {
-                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                        cells.push(cell);
-                    }
-                } else {
-                    cell.push_children_bounds(bounds, &mut boundary);
+                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
+                    RectClass::Outside => {},
+                    RectClass::Interior => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push(cell);
+                        } else {
+                            interior.extend(cell.children());
+                        }
+                    },
+                    RectClass::Boundary => {
+                        if cell.depth() >= target_depth {
+                            let center = Point::new_raw_xy(
+                                f64::midpoint(bounds.minx(), bounds.maxx()),
+                                f64::midpoint(bounds.miny(), bounds.maxy()),
+                            );
+                            if classifier.exact_covers_point(center) {
+                                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                                cells.push(cell);
+                            }
+                        } else {
+                            cell.push_children_bounds(bounds, &mut boundary);
+                        }
+                    },
                 }
             },
         }
@@ -799,6 +754,7 @@ pub(crate) fn cover_within<C: RectCell>(
             break;
         };
         match classifier.classify_bounds(bounds) {
+            RectClass::Outside => {},
             RectClass::Interior => {
                 match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
                     RectClass::Interior => {
@@ -815,10 +771,17 @@ pub(crate) fn cover_within<C: RectCell>(
                     RectClass::Outside | RectClass::Boundary => {},
                 }
             },
-            RectClass::Boundary if cell.depth() < target_depth => {
-                cell.push_children_bounds(bounds, &mut boundary);
+            RectClass::Boundary => {
+                match classifier.exact_classify_bounds(bounds, RectClass::Boundary) {
+                    RectClass::Interior if cell.depth() < target_depth => {
+                        interior.extend(cell.children());
+                    },
+                    RectClass::Boundary if cell.depth() < target_depth => {
+                        cell.push_children_bounds(bounds, &mut boundary);
+                    },
+                    RectClass::Outside | RectClass::Boundary | RectClass::Interior => {},
+                }
             },
-            RectClass::Outside | RectClass::Boundary => {},
         }
     }
     cells.sort_unstable();
@@ -1126,6 +1089,44 @@ mod tests {
             })
             .collect();
         assert_eq!(center, filtered);
+    }
+
+    #[test]
+    fn exact_rectangle_refinement_reuses_one_authority_graph() {
+        use crate::geometry::Ring;
+
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-10.0, 80.0),
+                Point::new_raw_xy(10.0, 80.0),
+                Point::new_raw_xy(10.0, 90.0),
+                Point::new_raw_xy(-10.0, 90.0),
+                Point::new_raw_xy(-10.0, 80.0),
+            ]),
+            Vec::new(),
+        ));
+        let plan = PreparedPlan::new(source.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let classifier = GeographicCandidateClassifier::new(
+            &source,
+            &source,
+            false,
+            &plan,
+            &cache,
+            crate::geographic::GeographicFrame::crs84(),
+        )
+        .unwrap();
+        let bounds = Bounds::new_raw(0.0, 81.0, 1.0, 82.0);
+        assert_eq!(
+            classifier.exact_classify_bounds(bounds, RectClass::Boundary),
+            RectClass::Interior
+        );
+        assert_eq!(
+            classifier.exact_classify_bounds(bounds, RectClass::Boundary),
+            RectClass::Interior
+        );
+        assert_eq!(cache.geographic_topology_accesses(), 1);
+        assert_eq!(cache.geographic_topology_builds(), 1);
     }
 
     #[test]

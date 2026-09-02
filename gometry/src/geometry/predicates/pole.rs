@@ -32,11 +32,7 @@ fn ring_encloses_pole_in_frame(ring: &Ring, frame: GeographicFrame, north: bool)
     }
 }
 
-fn polygon_encloses_pole_in_frame(
-    polygon: &Polygon,
-    frame: GeographicFrame,
-    north: bool,
-) -> bool {
+fn polygon_encloses_pole_in_frame(polygon: &Polygon, frame: GeographicFrame, north: bool) -> bool {
     if !ring_encloses_pole_in_frame(&polygon.shell, frame, north) {
         return false;
     }
@@ -56,11 +52,9 @@ pub(crate) fn shape_encloses_pole_in_frame(
         Shape::MultiPolygon(polygons) => polygons
             .iter()
             .any(|polygon| polygon_encloses_pole_in_frame(polygon, frame, north)),
-        Shape::GeometryCollection(parts) => {
-            parts
-                .iter()
-                .any(|part| shape_encloses_pole_in_frame(part, frame, north))
-        },
+        Shape::GeometryCollection(parts) => parts
+            .iter()
+            .any(|part| shape_encloses_pole_in_frame(part, frame, north)),
         _ => false,
     }
 }

@@ -201,16 +201,16 @@ impl Shape {
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
         let result = Self::geometry_collection(vec![
-                if same.is_empty() {
-                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
-                } else {
-                    Self::MultiLineString(same.into())
-                },
-                if opposite.is_empty() {
-                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
-                } else {
-                    Self::MultiLineString(opposite.into())
-                },
+            if same.is_empty() {
+                Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+            } else {
+                Self::MultiLineString(same.into())
+            },
+            if opposite.is_empty() {
+                Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+            } else {
+                Self::MultiLineString(opposite.into())
+            },
         ])?;
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }

@@ -25,8 +25,7 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     let source = offset_source(points);
     let Some(strip) = sided_strip(points, signed) else {
         let offset_failed = source.as_ref().is_some_and(|source| {
-            offset_segments(&source.vertices, source.closed, signed).len()
-                != source.segment_count()
+            offset_segments(&source.vertices, source.closed, signed).len() != source.segment_count()
         });
         if offset_failed {
             return Err(GeometryErrorKind::message(

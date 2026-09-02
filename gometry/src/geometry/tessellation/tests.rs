@@ -200,10 +200,10 @@ fn triangulation_budgets_reject_before_reserving_generated_vertices() {
 #[test]
 fn delaunay_triangles_accept_mixed_axis_collection_without_panicking() {
     let shape = Shape::geometry_collection(vec![
-            Shape::Point(xy(0.0, 0.0)),
-            Shape::Point(xyz(1.0, 0.0, 1.0)),
-            Shape::Point(xy(0.0, 1.0)),
-            Shape::Point(xyz(1.0, 1.0, 2.0)),
+        Shape::Point(xy(0.0, 0.0)),
+        Shape::Point(xyz(1.0, 0.0, 1.0)),
+        Shape::Point(xy(0.0, 1.0)),
+        Shape::Point(xyz(1.0, 1.0, 2.0)),
     ])
     .expect("test collection is valid");
     let triangles = shape

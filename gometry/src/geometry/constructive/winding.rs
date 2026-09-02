@@ -9,10 +9,10 @@ use crate::geometry::constructive::{
     emit_cap, extend_cleaned, raw_offset_loop, strict_cycle, winding_region,
 };
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq,
-    HashSet, MultiPoint, Orientation, Point, Polygon, Ring, Shape, canonical_f64_bits,
-    column_all_finite, dedup_consecutive_points, line_is_simple, orientation,
-    polygon_parts_to_shape, ring_winding, shell_is_convex,
+    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, HashSet, LineSeq,
+    MultiPoint, Orientation, Point, Polygon, Ring, Shape, canonical_f64_bits, column_all_finite,
+    dedup_consecutive_points, line_is_simple, orientation, polygon_parts_to_shape, ring_winding,
+    shell_is_convex,
 };
 
 /// A polygon encloses no interior when every ring has zero signed area — it
@@ -669,10 +669,7 @@ pub(crate) fn multipoint_loops(
     for point in points.iter_coords() {
         // `canonical_f64_bits` matches `same_topological_coordinate`: ±0.0
         // share one key while every other finite coordinate remains bit-exact.
-        if !seen.insert((
-            canonical_f64_bits(point.x),
-            canonical_f64_bits(point.y),
-        )) {
+        if !seen.insert((canonical_f64_bits(point.x), canonical_f64_bits(point.y))) {
             continue;
         }
         let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)? else {

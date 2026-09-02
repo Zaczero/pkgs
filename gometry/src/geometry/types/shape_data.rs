@@ -25,6 +25,8 @@ pub(crate) struct FrameDependentCaches {
     geographic_topology: Mutex<GeographicTopologySlot>,
     #[cfg(test)]
     geographic_topology_accesses: AtomicUsize,
+    #[cfg(test)]
+    geographic_topology_builds: AtomicUsize,
 }
 
 impl fmt::Debug for FrameDependentCaches {
@@ -115,6 +117,9 @@ impl FrameDependentCaches {
             }
         };
 
+        #[cfg(test)]
+        self.geographic_topology_builds
+            .fetch_add(1, Ordering::Relaxed);
         let built = Arc::new(crate::geometry::topology::TopologyGraph::geographic(
             plan.shape(),
             frame,
@@ -135,6 +140,11 @@ impl FrameDependentCaches {
     #[cfg(test)]
     pub(crate) fn geographic_topology_accesses(&self) -> usize {
         self.geographic_topology_accesses.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn geographic_topology_builds(&self) -> usize {
+        self.geographic_topology_builds.load(Ordering::Relaxed)
     }
 
     fn get(&self, key: &GeodesicPartsKey) -> Option<FrameDependentEntry> {

@@ -39,12 +39,12 @@ pub(crate) use walk::{
     extend_cleaned, materialize_walk,
 };
 pub(in crate::geometry) use walk::{assemble_region_polygons, winding_region};
+#[cfg(test)]
+pub(crate) use winding::{convex_buffer, winding_buffer, winding_erosion, winding_stroke};
 pub(crate) use winding::{
     convex_buffer_budgeted, degenerate_polygonal_as_linework, emit_arc, multipoint_loops,
     point_buffer, unit_right_normal,
 };
-#[cfg(test)]
-pub(crate) use winding::{convex_buffer, winding_buffer, winding_erosion, winding_stroke};
 pub(in crate::geometry) use winding::{
     winding_buffer_budgeted, winding_collection_budgeted, winding_erosion_budgeted,
     winding_stroke_budgeted,

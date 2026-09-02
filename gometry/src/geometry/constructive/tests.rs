@@ -420,18 +420,18 @@ mod winding_buffer_tests {
         }
 
         let collection = Shape::geometry_collection(vec![
-                Shape::Point(Point::new(12.0, 3.0).unwrap()),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new(0.0, 0.0).unwrap(),
-                        Point::new(4.0, 0.0).unwrap(),
-                    ]))
-                    .expect("test line is valid"),
-                ),
-                Shape::Polygon(Polygon::new(
-                    ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
-                    Vec::new(),
-                )),
+            Shape::Point(Point::new(12.0, 3.0).unwrap()),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new(0.0, 0.0).unwrap(),
+                    Point::new(4.0, 0.0).unwrap(),
+                ]))
+                .expect("test line is valid"),
+            ),
+            Shape::Polygon(Polygon::new(
+                ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
+                Vec::new(),
+            )),
         ])
         .expect("test collection is valid");
         let buffered = collection.buffer(0.5).unwrap();

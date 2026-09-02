@@ -2,14 +2,13 @@ use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{
     BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, Result, WalkJoinRule,
-    convex_buffer_budgeted, degenerate_polygonal_as_linework, point_buffer, sided_strip_parts,
-    multipoint_loops, validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
+    convex_buffer_budgeted, degenerate_polygonal_as_linework, multipoint_loops, point_buffer,
+    sided_strip_parts, validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
     winding_erosion_budgeted, winding_region, winding_stroke_budgeted,
 };
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget,
-    GeometryErrorKind, LineSeq, RepairMethod, Shape,
-    for_each_overlapping_bounds_pair,
+    GeometryErrorKind, LineSeq, RepairMethod, Shape, for_each_overlapping_bounds_pair,
     polygon_parts_to_shape, same_topological_coordinate,
 };
 use crate::{Finite, Positive};
@@ -325,14 +324,10 @@ fn buffer_edge_delta_overflows(shape: &Shape) -> bool {
         Shape::MultiLineString(lines) => lines
             .iter()
             .any(|line| edge_delta_overflows(line.as_coords(), false)),
-        Shape::Polygon(polygon) => polygon
-            .rings()
-            .any(|ring| edge_delta_overflows(ring, true)),
-        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
-            polygon
-                .rings()
-                .any(|ring| edge_delta_overflows(ring, true))
-        }),
+        Shape::Polygon(polygon) => polygon.rings().any(|ring| edge_delta_overflows(ring, true)),
+        Shape::MultiPolygon(polygons) => polygons
+            .iter()
+            .any(|polygon| polygon.rings().any(|ring| edge_delta_overflows(ring, true))),
         Shape::GeometryCollection(parts) => parts.iter().any(buffer_edge_delta_overflows),
     }
 }
@@ -349,8 +344,7 @@ fn edge_delta_overflows(coords: &CoordSeq, cyclic: bool) -> bool {
         .any(|(x, y)| !(x[1] - x[0]).is_finite() || !(y[1] - y[0]).is_finite());
     adjacent
         || (cyclic
-            && (!(xs[0] - xs[xs.len() - 1]).is_finite()
-                || !(ys[0] - ys[ys.len() - 1]).is_finite()))
+            && (!(xs[0] - xs[xs.len() - 1]).is_finite() || !(ys[0] - ys[ys.len() - 1]).is_finite()))
 }
 
 /// Individually valid strips with pairwise non-intersecting closed envelopes

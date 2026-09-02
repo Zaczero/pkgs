@@ -9,8 +9,8 @@ use crate::geometry::{
 use crate::py::errors::parameter_error;
 use crate::py::functions::constructors::{
     Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind,
-    InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr,
-    PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
+    InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
+    PyGeometryArray, PyResult, PyTypeError, Ring, Shape, ShapeData, box_polygon,
     coordinate_arc_values, coordinate_arc_values_exact, coordinate_epoch_option,
     coordinate_sequence_len_hint, crs, ensure_homogeneous_axes, exact_geometry, extract_coordinate,
     extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons,
@@ -639,8 +639,11 @@ pub(super) fn build_box_shape(
                         .map_err(PyErr::from)?
                         .geographic_frame()
                         .expect("EPSG:4326 has a geographic frame");
-                    return geographic_bounds_to_shape(Bounds::new(-180.0, miny, 180.0, maxy)?, frame)
-                        .map_err(PyErr::from);
+                    return geographic_bounds_to_shape(
+                        Bounds::new(-180.0, miny, 180.0, maxy)?,
+                        frame,
+                    )
+                    .map_err(PyErr::from);
                 }
             }
             wrapped_box(minx, miny, maxx, maxy)

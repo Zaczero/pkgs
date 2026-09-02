@@ -1679,11 +1679,11 @@ mod tests {
     #[test]
     fn collection_flattens_in_declaration_order() {
         let collection = Shape::geometry_collection(vec![
-                Shape::Point(pt(9.0, 9.0)),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
-                        .expect("test line is valid"),
-                ),
+            Shape::Point(pt(9.0, 9.0)),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
+                    .expect("test line is valid"),
+            ),
         ])
         .expect("test collection is valid");
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
@@ -1702,17 +1702,17 @@ mod tests {
         // while NumPy maps both to NaN at the boundary.
         use crate::geometry::{MOrdinate, ZOrdinate};
         let collection = Shape::geometry_collection(vec![
-                Shape::Point(pt(0.0, 0.0)),
-                Shape::Point(Point::new_raw_axes(
-                    1.0,
-                    1.0,
-                    ZOrdinate(Some(f64::NAN)),
-                    MOrdinate(None),
-                )),
-                Shape::Point(
-                    Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None))
-                        .expect("finite test Z"),
-                ),
+            Shape::Point(pt(0.0, 0.0)),
+            Shape::Point(Point::new_raw_axes(
+                1.0,
+                1.0,
+                ZOrdinate(Some(f64::NAN)),
+                MOrdinate(None),
+            )),
+            Shape::Point(
+                Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None))
+                    .expect("finite test Z"),
+            ),
         ])
         .expect("test collection is valid");
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));

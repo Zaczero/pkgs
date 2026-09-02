@@ -206,8 +206,8 @@ mod tests {
             Shape::Polygon(polygon.clone()),
             Shape::MultiPolygon(vec![polygon.clone()].into()),
             Shape::geometry_collection(vec![
-                    Shape::Point(Point::new(1.0, 2.0).unwrap()),
-                    Shape::Polygon(polygon),
+                Shape::Point(Point::new(1.0, 2.0).unwrap()),
+                Shape::Polygon(polygon),
             ])
             .expect("test collection is valid"),
         ];

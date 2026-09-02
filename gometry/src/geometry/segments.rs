@@ -2075,6 +2075,71 @@ pub(super) fn segments_intersect(left: Segment, right: Segment) -> bool {
     segment_contact(left, right) != SegmentContact::None
 }
 
+/// How a segment meets a rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RectContact {
+    /// Enters the rectangle's interior.
+    Open,
+    /// Touches the closed rectangle (edge/corner contact only).
+    Closed,
+    /// No contact.
+    None,
+}
+
+/// Exact segment-vs-rectangle contact via the separating-axis test on robust
+/// orientations. The closed contact result is kept distinct from entering the
+/// open rectangle so a source boundary coincident with a covered cell edge
+/// does not demote that cell to a partial result.
+pub(crate) fn segment_vs_rect(segment: Segment, rect: Bounds) -> RectContact {
+    let (sx, ex) = (segment.start.x, segment.end.x);
+    let (sy, ey) = (segment.start.y, segment.end.y);
+    let (lo_x, hi_x) = (sx.min(ex), sx.max(ex));
+    let (lo_y, hi_y) = (sy.min(ey), sy.max(ey));
+    if hi_x < rect.minx() || lo_x > rect.maxx() || hi_y < rect.miny() || lo_y > rect.maxy() {
+        return RectContact::None;
+    }
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact coordinate identity is required to classify a repeated segment endpoint"
+    )]
+    let degenerate = sx == ex && sy == ey;
+    if degenerate {
+        return if sx > rect.minx() && sx < rect.maxx() && sy > rect.miny() && sy < rect.maxy() {
+            RectContact::Open
+        } else {
+            RectContact::Closed
+        };
+    }
+    let corners = [
+        XY::new(rect.minx(), rect.miny()),
+        XY::new(rect.maxx(), rect.miny()),
+        XY::new(rect.maxx(), rect.maxy()),
+        XY::new(rect.minx(), rect.maxy()),
+    ];
+    let mut strict_positive = false;
+    let mut strict_negative = false;
+    let mut collinear = false;
+    for corner in corners {
+        match orientation(segment.start, segment.end, corner) {
+            Orientation::CounterClockwise => strict_positive = true,
+            Orientation::Clockwise => strict_negative = true,
+            Orientation::Collinear => collinear = true,
+        }
+    }
+    if !(strict_positive && strict_negative) {
+        return if collinear {
+            RectContact::Closed
+        } else {
+            RectContact::None
+        };
+    }
+    if hi_x > rect.minx() && lo_x < rect.maxx() && hi_y > rect.miny() && lo_y < rect.maxy() {
+        RectContact::Open
+    } else {
+        RectContact::Closed
+    }
+}
+
 /// Closed-envelope disjointness — the cheap reject before the robust
 /// orientation work in brute-force pair scans (the indexed paths already
 /// prune by envelope).

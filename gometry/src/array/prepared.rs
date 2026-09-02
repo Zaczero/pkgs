@@ -164,10 +164,7 @@ impl RowProductsHandle {
             .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK)))
     }
 
-    fn existing_cell(
-        &mut self,
-        logical: usize,
-    ) -> Option<(&Arc<RowProductChunk>, usize)> {
+    fn existing_cell(&mut self, logical: usize) -> Option<(&Arc<RowProductChunk>, usize)> {
         let physical = self.selection.as_deref().physical(logical);
         let has_aliases = !self.owner.aliases.is_empty();
         let cached = self.current.as_ref().is_some_and(|current| {

@@ -1,9 +1,10 @@
+use rstar::Envelope as _;
+
 use crate::geographic::{
     CircularInterval, GeographicFrame, GeographicRing, LongitudeWindows, RingDomain, RingSummary,
     RingTurn, ScalarGeographicView, SeamIdentity, union_circular_intervals,
 };
 use crate::geometry::TopologyDomain;
-use rstar::Envelope as _;
 use crate::predicates::engine::IndexEnvelope;
 use crate::py::errors::InvalidGeometryError;
 use crate::py::support::{AABB, Bounds, Point, Shape};
@@ -107,10 +108,7 @@ pub(crate) fn index_envelopes(
 }
 
 /// A cover of `shape`'s parts, or `None` where splitting it up buys nothing.
-fn part_cover(
-    shape: &Shape,
-    whole: AABB<[f64; 2]>,
-) -> pyo3::PyResult<Option<Vec<AABB<[f64; 2]>>>> {
+fn part_cover(shape: &Shape, whole: AABB<[f64; 2]>) -> pyo3::PyResult<Option<Vec<AABB<[f64; 2]>>>> {
     if !matches!(
         shape,
         Shape::MultiPoint(_)

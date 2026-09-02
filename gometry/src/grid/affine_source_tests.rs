@@ -4,14 +4,14 @@ use h3o::Resolution;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
-    DirectPreimages, ExactExpansion, ExactParentParameter, ExactPlanarPoint, ExactRatio,
-    FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain,
+    DirectPreimages, ExactAuthorityEdge, ExactExpansion, ExactParentParameter, ExactPlanarPoint,
+    ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain,
     ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass, SourceEdgeKey,
-    SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_exact_refinements,
-    authority_edge_proxy_envelopes, build_authority_edge_index, classify_lifted_ring_bucket,
-    exact_affine_level, exact_axis_rectangle, exact_segment_touches_rectangle,
-    integer_levels_between, lifted_step, reset_authority_edge_exact_refinements,
-    subdivided_axis_aligned_rectangle,
+    SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge, authority_edge_exact_conversions,
+    authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
+    classify_lifted_ring_bucket, exact_affine_level, exact_axis_rectangle,
+    exact_segment_touches_rectangle, integer_levels_between, lifted_step,
+    reset_authority_edge_exact_refinements, subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
@@ -86,6 +86,7 @@ fn unpartitioned_symbolic_edge(points: &[(f64, f64)]) -> SymbolicAffineEdge {
         polygon: false,
         start: chain.vertices[0],
         end: chain.vertices[1],
+        exact: ExactAuthorityEdge::from_lifted(chain.vertices[0], chain.vertices[1]),
         parameters: vec![
             ExactParentParameter::start().unwrap(),
             ExactParentParameter::end().unwrap(),
@@ -1085,6 +1086,37 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
 }
 
 #[test]
+fn authority_edge_exact_values_are_built_once_and_reused() {
+    reset_authority_edge_exact_refinements();
+    let source = GeographicCoverageSource::new(
+        &Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new(0.0, 20.0).unwrap(),
+                Point::new(1.0, 20.1).unwrap(),
+                Point::new(2.0, 20.0).unwrap(),
+            ]))
+            .unwrap(),
+        ),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap();
+    let edge_count = source.authority_edges.len();
+    assert_eq!(authority_edge_exact_conversions(), edge_count);
+
+    reset_authority_edge_exact_refinements();
+    for _ in 0..8 {
+        assert_eq!(
+            source.classify_rect_window(
+                Bound::new(-1.0, 3.0).unwrap(),
+                Bound::new(19.9, 20.2).unwrap(),
+            ),
+            RectClass::Boundary,
+        );
+    }
+    assert_eq!(authority_edge_exact_conversions(), 0);
+}
+
+#[test]
 fn authority_edge_index_matches_polar_cap_interior() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(Polygon::new(
@@ -1206,6 +1238,7 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
     let mut edge = unpartitioned_symbolic_edge(&[(0.0, 0.0), (1.0, 1.0)]);
     edge.start.longitude.raw = f64::MAX;
     edge.end.longitude.raw = f64::MAX;
+    edge.exact = None;
     assert!(authority_edge_proxy_envelopes(&edge).is_none());
     assert!(
         build_authority_edge_index(std::slice::from_ref(&edge))

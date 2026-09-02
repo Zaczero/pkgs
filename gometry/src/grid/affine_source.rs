@@ -66,16 +66,23 @@ const ORIENTATION_ERRBOUND: f64 = 128.0 * f64::EPSILON;
 #[cfg(test)]
 std::thread_local! {
     static AUTHORITY_EDGE_EXACT_REFINEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static AUTHORITY_EDGE_EXACT_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 fn reset_authority_edge_exact_refinements() {
     AUTHORITY_EDGE_EXACT_REFINEMENTS.set(0);
+    AUTHORITY_EDGE_EXACT_CONVERSIONS.set(0);
 }
 
 #[cfg(test)]
 fn authority_edge_exact_refinements() -> usize {
     AUTHORITY_EDGE_EXACT_REFINEMENTS.get()
+}
+
+#[cfg(test)]
+fn authority_edge_exact_conversions() -> usize {
+    AUTHORITY_EDGE_EXACT_CONVERSIONS.get()
 }
 
 /// Canonical grid-topology spelling of a geographically admitted source.
@@ -658,10 +665,11 @@ fn exact_authority_edge_touches_rectangle(
 ) -> Option<bool> {
     #[cfg(test)]
     AUTHORITY_EDGE_EXACT_REFINEMENTS.set(AUTHORITY_EDGE_EXACT_REFINEMENTS.get().saturating_add(1));
-    let start = ExactPlanarPoint::from_lifted(edge.start)?;
-    let end = ExactPlanarPoint::from_lifted(edge.end)?;
-    let start_latitude = degree_expansion_bound(&start.latitude)?;
-    let end_latitude = degree_expansion_bound(&end.latitude)?;
+    let exact = edge.exact.as_ref()?;
+    let start = &exact.start;
+    let end = &exact.end;
+    let start_latitude = exact.start_latitude;
+    let end_latitude = exact.end_latitude;
     if !(-90.0..=90.0).contains(&start_latitude.lo)
         || !(-90.0..=90.0).contains(&start_latitude.hi)
         || !(-90.0..=90.0).contains(&end_latitude.lo)
@@ -669,12 +677,12 @@ fn exact_authority_edge_touches_rectangle(
     {
         return Some(true);
     }
-    if exact_point_touches_rectangle(&start, longitude, latitude)?
-        || exact_point_touches_rectangle(&end, longitude, latitude)?
+    if exact_point_touches_rectangle(start, longitude, latitude)?
+        || exact_point_touches_rectangle(end, longitude, latitude)?
     {
         return Some(true);
     }
-    exact_segment_touches_rectangle(&start, &end, longitude, latitude)
+    exact_segment_touches_rectangle(start, end, longitude, latitude)
 }
 
 /// Private identity of one source vertex.  These ids only preserve source
@@ -1441,6 +1449,16 @@ struct ExactPlanarPoint {
     latitude: ExactExpansion,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ExactAuthorityEdge {
+    start: ExactPlanarPoint,
+    end: ExactPlanarPoint,
+    start_longitude: Bound,
+    end_longitude: Bound,
+    start_latitude: Bound,
+    end_latitude: Bound,
+}
+
 /// A selection-image endpoint can be a rational strip/reflection split.  It
 /// stays rational until the exact PIP determinant consumes it; collapsing it
 /// to a double would lose the t=1/3 identity this carrier was built to retain.
@@ -1472,6 +1490,24 @@ impl ExactPlanarPoint {
                 .longitude
                 .add(ExactExpansion::exact_degree_turns(turns)?)?,
             latitude: self.latitude,
+        })
+    }
+}
+
+impl ExactAuthorityEdge {
+    fn from_lifted(start: LiftedVertex, end: LiftedVertex) -> Option<Self> {
+        #[cfg(test)]
+        AUTHORITY_EDGE_EXACT_CONVERSIONS
+            .set(AUTHORITY_EDGE_EXACT_CONVERSIONS.get().saturating_add(1));
+        let start = ExactPlanarPoint::from_lifted(start)?;
+        let end = ExactPlanarPoint::from_lifted(end)?;
+        Some(Self {
+            start,
+            end,
+            start_longitude: degree_expansion_bound(&start.longitude)?,
+            end_longitude: degree_expansion_bound(&end.longitude)?,
+            start_latitude: degree_expansion_bound(&start.latitude)?,
+            end_latitude: degree_expansion_bound(&end.latitude)?,
         })
     }
 }
@@ -2143,6 +2179,8 @@ struct SymbolicAffineEdge {
     polygon: bool,
     start: LiftedVertex,
     end: LiftedVertex,
+    // Exact edge values are shared by the broad-phase proxy and every query.
+    exact: Option<ExactAuthorityEdge>,
     parameters: Box<[ExactParentParameter]>,
 }
 
@@ -2203,6 +2241,7 @@ impl SymbolicAffineEdge {
             polygon,
             start,
             end,
+            exact: ExactAuthorityEdge::from_lifted(start, end),
             parameters: parameters.into_boxed_slice(),
         };
         if matches!(kind, LiftKind::FullPositive | LiftKind::FullNegative) {
@@ -2842,16 +2881,15 @@ fn shifted_degree_bound(value: Bound, turns: i64) -> Option<Bound> {
 /// source edge that cannot produce all three finite envelopes is left to the
 /// source-wide exhaustive path.
 fn authority_edge_proxy_envelopes(edge: &SymbolicAffineEdge) -> Option<[AABB<[f64; 2]>; 3]> {
-    let start = ExactPlanarPoint::from_lifted(edge.start)?;
-    let end = ExactPlanarPoint::from_lifted(edge.end)?;
-    let start_longitude = degree_expansion_bound(&start.longitude)?;
-    let end_longitude = degree_expansion_bound(&end.longitude)?;
+    let exact = edge.exact.as_ref()?;
+    let start_longitude = exact.start_longitude;
+    let end_longitude = exact.end_longitude;
     let longitude = Bound::new(
         start_longitude.lo.min(end_longitude.lo),
         start_longitude.hi.max(end_longitude.hi),
     )?;
-    let start_latitude = degree_expansion_bound(&start.latitude)?;
-    let end_latitude = degree_expansion_bound(&end.latitude)?;
+    let start_latitude = exact.start_latitude;
+    let end_latitude = exact.end_latitude;
     let latitude = Bound::new(
         start_latitude.lo.min(end_latitude.lo),
         start_latitude.hi.max(end_latitude.hi),

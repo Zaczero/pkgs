@@ -1106,7 +1106,10 @@ mod multipart_layout_tests {
         let MultipartMembers::Sparse(members) = &sparse.members else {
             unreachable!("sparse fixture must retain member metadata");
         };
-        assert_eq!(sparse.members.heap_bytes(), std::mem::size_of_val(&**members));
+        assert_eq!(
+            sparse.members.heap_bytes(),
+            std::mem::size_of_val(&**members)
+        );
     }
 
     #[test]

@@ -19,9 +19,9 @@ use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use crate::geometry::point_location::PolygonPointIndex;
 use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, SEGMENT_INDEX_MIN_PAIRS,
-    Segment, SegmentIndex, Shape, XY, canonical_f64_bits, dimension, point_on_segment, same_point,
-    segment_projection, shared_segment_part,
+    CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, dimension,
+    point_on_segment, same_point, segment_projection, segment_vs_rect, shared_segment_part,
 };
 use crate::heap_size::HeapSize;
 
@@ -333,6 +333,18 @@ impl TopologyGraph {
         self.support.area.has_area()
     }
 
+    /// Decide whether a supported nondegenerate rectangle is covered by this
+    /// graph. The corners establish closed-set membership; an indexed source
+    /// boundary entering the open rectangle is the only remaining way for the
+    /// rectangle to include exterior area.
+    pub(crate) fn covers_rectangle(&self, bounds: crate::geometry::Bounds) -> Option<bool> {
+        self.support.covers_rectangle(self, bounds)
+    }
+
+    pub(crate) fn covers_point(&self, point: XY) -> bool {
+        self.locate_point(point) != TopologyLocation::Exterior
+    }
+
     pub(super) fn has_point_support(&self, point: XY) -> bool {
         self.support.point_support.contains(&self.key(point))
     }
@@ -397,8 +409,7 @@ impl TopologyGraph {
 
     pub(crate) fn has_boundary_support_other_than(&self, point: XY) -> bool {
         let key = self.key(point);
-        self.support.boundary_support.len() > 1
-            || !self.support.boundary_support.contains(&key)
+        self.support.boundary_support.len() > 1 || !self.support.boundary_support.contains(&key)
     }
 
     pub(crate) fn has_line_support(&self, point: XY) -> bool {
@@ -991,6 +1002,38 @@ impl TopologySupport {
         self.area.for_each_area_interior(areas, point, visit)
     }
 
+    fn covers_rectangle(
+        &self,
+        graph: &TopologyGraph,
+        bounds: crate::geometry::Bounds,
+    ) -> Option<bool> {
+        if !rectangle_query_supported(graph.domain, bounds) {
+            return None;
+        }
+        if !self.area.has_area() {
+            return Some(false);
+        }
+        if bounds
+            .corners()
+            .into_iter()
+            .map(|[x, y]| XY::new(x, y))
+            .any(|point| graph.locate_point(point) == TopologyLocation::Exterior)
+        {
+            return Some(false);
+        }
+        let probe = Segment {
+            start: XY::new(bounds.minx(), bounds.miny()),
+            end: XY::new(bounds.maxx(), bounds.maxy()),
+        };
+        for candidate in self.edge_index.intersecting_candidates(probe) {
+            let edge = graph.edges.get(candidate.ordinal)?;
+            if edge.is_boundary && segment_vs_rect(edge.segment, bounds) == RectContact::Open {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     fn note_edge_refinement(&self) {
         #[cfg(test)]
         self.counters
@@ -1015,6 +1058,35 @@ impl TopologySupport {
             self.counters.polygon_visits.load(AtomicOrdering::Relaxed),
         )
     }
+}
+
+fn rectangle_query_supported(domain: TopologyDomain, bounds: crate::geometry::Bounds) -> bool {
+    if !bounds.minx().is_finite()
+        || !bounds.maxx().is_finite()
+        || !bounds.miny().is_finite()
+        || !bounds.maxy().is_finite()
+        || bounds.minx() >= bounds.maxx()
+        || bounds.miny() >= bounds.maxy()
+    {
+        return false;
+    }
+    let TopologyDomain::Geographic(frame) = domain else {
+        return true;
+    };
+    // A geographic rectangle touching the seam or a pole is not one planar
+    // disk; leave those quotient singularities to the authoritative relation.
+    let axis = frame.longitude();
+    let canonical = |value: f64| {
+        axis.canonicalize(value)
+            .is_ok_and(|canonical| canonical.get().to_bits() == value.to_bits())
+    };
+    bounds.maxx() - bounds.minx() < axis.period()
+        && bounds.minx() > -axis.half_period()
+        && bounds.maxx() < axis.half_period()
+        && bounds.miny() > -frame.pole()
+        && bounds.maxy() < frame.pole()
+        && canonical(bounds.minx())
+        && canonical(bounds.maxx())
 }
 
 impl HeapSize for TopologySupport {
@@ -2488,20 +2560,18 @@ mod tests {
 
     fn edge_ordinals_at(graph: &TopologyGraph, point: XY) -> Vec<usize> {
         let mut ordinals = Vec::new();
-        let _: Option<()> = graph.support.for_each_edge_at(
-            graph.domain,
-            &graph.edges,
-            point,
-            |edge| {
-                let ordinal = graph
-                    .edges
-                    .iter()
-                    .position(|candidate| std::ptr::eq(candidate, edge))
-                    .expect("edge callback points into the graph edge slice");
-                ordinals.push(ordinal);
-                std::ops::ControlFlow::Continue(())
-            },
-        );
+        let _: Option<()> =
+            graph
+                .support
+                .for_each_edge_at(graph.domain, &graph.edges, point, |edge| {
+                    let ordinal = graph
+                        .edges
+                        .iter()
+                        .position(|candidate| std::ptr::eq(candidate, edge))
+                        .expect("edge callback points into the graph edge slice");
+                    ordinals.push(ordinal);
+                    std::ops::ControlFlow::Continue(())
+                });
         ordinals.sort_unstable();
         ordinals
     }
@@ -2717,10 +2787,7 @@ mod tests {
         let lines = (0..64)
             .map(|index| {
                 let offset = (index as f64 + 0.5) / 64.0 - 0.5;
-                Shape::LineString(line(&[
-                    (-1.0, -1.0 + offset),
-                    (1.0, 1.0 + offset),
-                ]))
+                Shape::LineString(line(&[(-1.0, -1.0 + offset), (1.0, 1.0 + offset)]))
             })
             .collect();
         let graph = TopologyGraph::geographic(&collection(lines), degrees());

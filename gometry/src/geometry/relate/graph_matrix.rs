@@ -1346,27 +1346,27 @@ mod tests {
             vec![rectangle(0.0, 0.0, 3.0, 3.0), rectangle(0.0, 0.0, 3.0, 3.0)].into(),
         );
         let pinched = Shape::geometry_collection(vec![
-                Shape::Polygon(polygon(&[[0.0, 0.0], [-2.0, -1.0], [-2.0, 1.0], [
-                    0.0, 0.0,
-                ]])),
-                Shape::Polygon(polygon(&[[0.0, 0.0], [2.0, 1.0], [2.0, -1.0], [0.0, 0.0]])),
+            Shape::Polygon(polygon(&[[0.0, 0.0], [-2.0, -1.0], [-2.0, 1.0], [
+                0.0, 0.0,
+            ]])),
+            Shape::Polygon(polygon(&[[0.0, 0.0], [2.0, 1.0], [2.0, -1.0], [0.0, 0.0]])),
         ])
         .expect("test collection is valid");
         let polygon_only_collection = Shape::geometry_collection(vec![
-                Shape::Polygon(rectangle(10.0, 0.0, 12.0, 2.0)),
-                Shape::Polygon(rectangle(12.0, 0.0, 14.0, 2.0)),
-                Shape::Polygon(rectangle(20.0, 0.0, 23.0, 3.0)),
-                Shape::Polygon(rectangle(21.0, 1.0, 24.0, 4.0)),
-                Shape::Polygon(rectangle(30.0, 0.0, 35.0, 5.0)),
-                Shape::Polygon(rectangle(31.0, 1.0, 32.0, 2.0)),
-                Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
-                Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
-                Shape::Polygon(polygon(&[[50.0, 0.0], [48.0, -1.0], [48.0, 1.0], [
-                    50.0, 0.0,
-                ]])),
-                Shape::Polygon(polygon(&[[50.0, 0.0], [52.0, 1.0], [52.0, -1.0], [
-                    50.0, 0.0,
-                ]])),
+            Shape::Polygon(rectangle(10.0, 0.0, 12.0, 2.0)),
+            Shape::Polygon(rectangle(12.0, 0.0, 14.0, 2.0)),
+            Shape::Polygon(rectangle(20.0, 0.0, 23.0, 3.0)),
+            Shape::Polygon(rectangle(21.0, 1.0, 24.0, 4.0)),
+            Shape::Polygon(rectangle(30.0, 0.0, 35.0, 5.0)),
+            Shape::Polygon(rectangle(31.0, 1.0, 32.0, 2.0)),
+            Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
+            Shape::Polygon(rectangle(40.0, 0.0, 43.0, 3.0)),
+            Shape::Polygon(polygon(&[[50.0, 0.0], [48.0, -1.0], [48.0, 1.0], [
+                50.0, 0.0,
+            ]])),
+            Shape::Polygon(polygon(&[[50.0, 0.0], [52.0, 1.0], [52.0, -1.0], [
+                50.0, 0.0,
+            ]])),
         ])
         .expect("test collection is valid");
         for (name, left, right) in [
@@ -1518,6 +1518,169 @@ mod tests {
         let left = GeographicPrepared::new(&left, &left_cache, frame).graph();
         let right = GeographicPrepared::new(&right, &right_cache, frame).graph();
         graph_relate(&left, &right)
+    }
+
+    fn assert_rectangle_cover_certificate(
+        name: &str,
+        source: &Shape,
+        bounds: Bounds,
+        frame: Option<crate::geographic::GeographicFrame>,
+    ) {
+        let source_graph = frame.map_or_else(
+            || TopologyGraph::cartesian(source),
+            |frame| TopologyGraph::geographic(source, frame),
+        );
+        let candidate = Shape::Polygon(rectangle(
+            bounds.minx(),
+            bounds.miny(),
+            bounds.maxx(),
+            bounds.maxy(),
+        ));
+        let candidate_graph = frame.map_or_else(
+            || TopologyGraph::cartesian(&candidate),
+            |frame| TopologyGraph::geographic(&candidate, frame),
+        );
+        let expected = graph_relate(&source_graph, &candidate_graph).is_covers();
+        assert_eq!(
+            source_graph.covers_rectangle(bounds),
+            Some(expected),
+            "{name}"
+        );
+    }
+
+    #[test]
+    fn rectangle_cover_certificate_matches_graph_relation() {
+        let outer = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
+        let donut = Shape::Polygon(donut());
+        let line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(10.0, 10.0),
+            ]))
+            .unwrap(),
+        );
+        for (name, source, bounds) in [
+            (
+                "cartesian interior",
+                &outer,
+                Bounds::new_raw(2.0, 2.0, 8.0, 8.0),
+            ),
+            (
+                "cartesian boundary aligned",
+                &outer,
+                Bounds::new_raw(0.0, 2.0, 8.0, 8.0),
+            ),
+            (
+                "cartesian crossing",
+                &outer,
+                Bounds::new_raw(8.0, 2.0, 12.0, 8.0),
+            ),
+            (
+                "cartesian disjoint",
+                &outer,
+                Bounds::new_raw(12.0, 12.0, 14.0, 14.0),
+            ),
+            (
+                "cartesian hole",
+                &donut,
+                Bounds::new_raw(4.0, 4.0, 6.0, 6.0),
+            ),
+            (
+                "cartesian hole crossing",
+                &donut,
+                Bounds::new_raw(2.0, 2.0, 5.0, 5.0),
+            ),
+            ("cartesian line", &line, Bounds::new_raw(2.0, 2.0, 8.0, 8.0)),
+        ] {
+            assert_rectangle_cover_certificate(name, source, bounds, None);
+        }
+    }
+
+    #[test]
+    fn geographic_rectangle_cover_certificate_matches_graph_relation() {
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let outer = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
+        let donut = Shape::Polygon(donut());
+        let seam = Shape::Polygon(polygon(&[
+            [170.0, -10.0],
+            [-170.0, -10.0],
+            [-170.0, 10.0],
+            [170.0, 10.0],
+            [170.0, -10.0],
+        ]));
+        let polar = Shape::Polygon(polygon(&[
+            [-10.0, 80.0],
+            [10.0, 80.0],
+            [10.0, 90.0],
+            [-10.0, 90.0],
+            [-10.0, 80.0],
+        ]));
+        for (name, source, bounds) in [
+            (
+                "geographic interior",
+                &outer,
+                Bounds::new_raw(2.0, 2.0, 8.0, 8.0),
+            ),
+            (
+                "geographic boundary aligned",
+                &outer,
+                Bounds::new_raw(0.0, 2.0, 8.0, 8.0),
+            ),
+            (
+                "geographic hole",
+                &donut,
+                Bounds::new_raw(4.0, 4.0, 6.0, 6.0),
+            ),
+            (
+                "geographic hole crossing",
+                &donut,
+                Bounds::new_raw(2.0, 2.0, 5.0, 5.0),
+            ),
+            (
+                "geographic seam interior",
+                &seam,
+                Bounds::new_raw(175.0, -5.0, 179.0, 5.0),
+            ),
+            (
+                "geographic seam exterior",
+                &seam,
+                Bounds::new_raw(-5.0, -5.0, 5.0, 5.0),
+            ),
+        ] {
+            assert_rectangle_cover_certificate(name, source, bounds, Some(frame));
+        }
+        assert_rectangle_cover_certificate(
+            "geographic polar interior",
+            &polar,
+            Bounds::new_raw(0.0, 81.0, 1.0, 82.0),
+            Some(frame),
+        );
+    }
+
+    #[test]
+    fn rectangle_cover_certificate_fails_open_at_geographic_singularities() {
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let source = Shape::Polygon(polygon(&[
+            [-10.0, 80.0],
+            [10.0, 80.0],
+            [10.0, 90.0],
+            [-10.0, 90.0],
+            [-10.0, 80.0],
+        ]));
+        let graph = TopologyGraph::geographic(&source, frame);
+        for bounds in [
+            Bounds::new_raw(-180.0, 81.0, -179.0, 85.0),
+            Bounds::new_raw(0.0, 85.0, 10.0, 90.0),
+            Bounds::new_raw(-180.0, -1.0, 180.0, 1.0),
+        ] {
+            assert_eq!(graph.covers_rectangle(bounds), None);
+        }
     }
 
     #[test]
@@ -1737,29 +1900,29 @@ mod tests {
     #[test]
     fn geographic_aggregate_contacts_use_quotient_face_locations() {
         let adjacent = Shape::geometry_collection(vec![
-                Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0)),
-                Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0)),
+            Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0)),
+            Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0)),
         ])
         .expect("test collection is valid");
         let pinch = Shape::geometry_collection(vec![
-                Shape::Polygon(Polygon::new(
-                    Ring::from_closed(vec![
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(-2.0, -1.0),
-                        Point::new_raw_xy(-2.0, 1.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                    ]),
-                    Vec::new(),
-                )),
-                Shape::Polygon(Polygon::new(
-                    Ring::from_closed(vec![
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(2.0, 1.0),
-                        Point::new_raw_xy(2.0, -1.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                    ]),
-                    Vec::new(),
-                )),
+            Shape::Polygon(Polygon::new(
+                Ring::from_closed(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(-2.0, -1.0),
+                    Point::new_raw_xy(-2.0, 1.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ]),
+                Vec::new(),
+            )),
+            Shape::Polygon(Polygon::new(
+                Ring::from_closed(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(2.0, 1.0),
+                    Point::new_raw_xy(2.0, -1.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ]),
+                Vec::new(),
+            )),
         ])
         .expect("test collection is valid");
         let frame = crate::crs::info("EPSG:4326")
@@ -1818,27 +1981,27 @@ mod tests {
     #[test]
     fn mixed_relation_node_locations_match_full_location_oracle() {
         let left = Shape::geometry_collection(vec![
-                Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new_raw_xy(-1.0, 1.0),
-                        Point::new_raw_xy(1.0, 1.0),
-                        Point::new_raw_xy(3.0, 1.0),
-                    ]))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-                ),
-                Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+            Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_raw_xy(-1.0, 1.0),
+                    Point::new_raw_xy(1.0, 1.0),
+                    Point::new_raw_xy(3.0, 1.0),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
+            Shape::Point(Point::new_raw_xy(1.0, 1.0)),
         ])
         .expect("test collection is valid");
         let right = Shape::geometry_collection(vec![
-                Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new_raw_xy(1.0, 1.0),
-                        Point::new_raw_xy(1.0, 3.0),
-                    ]))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-                ),
+            Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_raw_xy(1.0, 1.0),
+                    Point::new_raw_xy(1.0, 3.0),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
         ])
         .expect("test collection is valid");
         let left_graph = TopologyGraph::cartesian(&left);
@@ -1849,33 +2012,33 @@ mod tests {
         );
 
         let geographic_left = Shape::geometry_collection(vec![
-                Shape::Polygon(polygon(&[
-                    [170.0, 0.0],
-                    [-170.0, 0.0],
-                    [-170.0, 10.0],
-                    [170.0, 10.0],
-                    [170.0, 0.0],
-                ])),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new_raw_xy(175.0, 5.0),
-                        Point::new_raw_xy(180.0, 5.0),
-                        Point::new_raw_xy(-175.0, 5.0),
-                    ]))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-                ),
-                Shape::Point(Point::new_raw_xy(180.0, 5.0)),
+            Shape::Polygon(polygon(&[
+                [170.0, 0.0],
+                [-170.0, 0.0],
+                [-170.0, 10.0],
+                [170.0, 10.0],
+                [170.0, 0.0],
+            ])),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_raw_xy(175.0, 5.0),
+                    Point::new_raw_xy(180.0, 5.0),
+                    Point::new_raw_xy(-175.0, 5.0),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
+            Shape::Point(Point::new_raw_xy(180.0, 5.0)),
         ])
         .expect("test collection is valid");
         let geographic_right = Shape::geometry_collection(vec![
-                Shape::Polygon(rectangle(175.0, -5.0, 179.0, 5.0)),
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::from(vec![
-                        Point::new_raw_xy(180.0, 5.0),
-                        Point::new_raw_xy(180.0, 15.0),
-                    ]))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-                ),
+            Shape::Polygon(rectangle(175.0, -5.0, 179.0, 5.0)),
+            Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_raw_xy(180.0, 5.0),
+                    Point::new_raw_xy(180.0, 15.0),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
         ])
         .expect("test collection is valid");
         let frame = crate::crs::info("EPSG:4326")

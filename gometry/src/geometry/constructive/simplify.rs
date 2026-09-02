@@ -10,8 +10,8 @@ use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiMember, MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Segment,
-    Shape, TopologyGuard, XY, carry_ordinates, dedup_consecutive_points, line_segments,
+    MultiMember, MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring,
+    Segment, Shape, TopologyGuard, XY, carry_ordinates, dedup_consecutive_points, line_segments,
     open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
     same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
     unique_xy_points, vw_area_tolerance, wrap_index,
