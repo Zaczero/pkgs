@@ -212,10 +212,6 @@ impl<'py> PyConfig<'py> {
         Ok(fields)
     }
 
-    fn websocket_message_size_limit(&self) -> PyResult<Option<NonZeroUsize>> {
-        Ok(NonZeroUsize::new(self.get("websocket_max_message_size")?))
-    }
-
     fn binds(&self) -> PyResult<Box<[BindTarget]>> {
         let raw_binds = self.get::<Vec<String>>("bind")?;
         raw_binds
@@ -262,7 +258,7 @@ impl<'py> PyConfig<'py> {
             }),
         };
         Ok(WebSocketConfig {
-            max_message_size: self.websocket_message_size_limit()?,
+            max_message_size: self.nonzero_usize("websocket_max_message_size")?,
             per_message_deflate: self.get("websocket_per_message_deflate")?,
             keep_alive,
         })
