@@ -84,10 +84,6 @@ pub(crate) fn walk_faces<const RINGS: bool>(
         cycle.push(points[owners[seed] as usize]);
         let mut slot = seed;
         loop {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::ArrangementTraversal,
-                1,
-            );
             face_of[slot] = face_id;
             let to = points[targets[slot] as usize];
             cycle.push(to);
@@ -260,10 +256,6 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
         );
         let origin = points[vertex];
         row.sort_unstable_by(|left, right| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::ArrangementSortComparison,
-                1,
-            );
             compare_departures(
                 origin,
                 points[left.0 as usize],

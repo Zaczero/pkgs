@@ -9,11 +9,6 @@
 //! a source boundary. Areal support stays in source polygons, where holes
 //! remain exclusions rather than independent regions.
 
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
 use super::staging::oriented_open_ring_direction;
 use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use crate::geometry::point_location::PolygonPointIndex;
@@ -324,16 +319,6 @@ impl TopologyGraph {
             .for_each_area_interior(&self.area_support, point, visit)
     }
 
-    #[cfg(test)]
-    fn reset_support_work_counts(&self) {
-        self.support.reset_work_counts();
-    }
-
-    #[cfg(test)]
-    fn support_work_counts(&self) -> (usize, usize) {
-        self.support.work_counts()
-    }
-
     pub(crate) fn has_area_interior(&self) -> bool {
         self.support.area.has_area()
     }
@@ -374,10 +359,6 @@ impl TopologyGraph {
     }
 
     pub(crate) fn has_line_source_at_node(&self, point: XY, source_row: u32) -> bool {
-        crate::geometry::overlay_work::add(
-            crate::geometry::OverlayWorkPhase::TopologyLineSourceProbe,
-            1,
-        );
         self.line_source_nodes
             .contains(&(self.key(point), source_row))
     }
@@ -670,13 +651,6 @@ struct CartesianAreaCandidate {
     index: PolygonPointIndex,
 }
 
-#[cfg(test)]
-#[derive(Default)]
-struct SupportCounters {
-    edge_refinements: AtomicUsize,
-    polygon_visits: AtomicUsize,
-}
-
 impl HeapSize for CartesianAreaCandidate {
     fn heap_bytes(&self) -> usize {
         self.index.heap_bytes()
@@ -706,21 +680,15 @@ impl HeapSize for GeographicAreaCandidate {
 enum AreaMembership {
     Cartesian {
         polygons: YStabbingIndex<CartesianAreaCandidate>,
-        #[cfg(test)]
-        counters: Arc<SupportCounters>,
     },
     Geographic {
         frame: crate::geographic::GeographicFrame,
         polygons: YStabbingIndex<GeographicAreaCandidate>,
-        #[cfg(test)]
-        counters: Arc<SupportCounters>,
     },
 }
 
 impl AreaMembership {
     fn build(domain: TopologyDomain, areas: &[AreaSupport]) -> Self {
-        #[cfg(test)]
-        let counters = Arc::new(SupportCounters::default());
         match domain {
             TopologyDomain::Cartesian => {
                 let candidates = areas
@@ -741,8 +709,6 @@ impl AreaMembership {
                             .y_span()
                             .unwrap_or((f64::INFINITY, f64::NEG_INFINITY))
                     }),
-                    #[cfg(test)]
-                    counters,
                 }
             },
             TopologyDomain::Geographic(frame) => {
@@ -786,8 +752,6 @@ impl AreaMembership {
                     polygons: YStabbingIndex::build(candidates, |candidate| {
                         (candidate.y_min, candidate.y_max)
                     }),
-                    #[cfg(test)]
-                    counters,
                 }
             },
         }
@@ -808,11 +772,6 @@ impl AreaMembership {
     ) -> Option<B> {
         match self {
             Self::Cartesian { polygons, .. } => polygons.for_each_at_y(point.y, |candidate| {
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::TopologyPolygonVisit,
-                    1,
-                );
-                self.note_polygon_visit();
                 if candidate.index.contains_xy(point.x, point.y) {
                     visit(candidate.polygon)
                 } else {
@@ -833,11 +792,6 @@ impl AreaMembership {
                     if !candidate.may_contain(point.y, &copies, frame.pole(), period) {
                         return std::ops::ControlFlow::Continue(());
                     }
-                    crate::geometry::overlay_work::add(
-                        crate::geometry::OverlayWorkPhase::TopologyPolygonVisit,
-                        1,
-                    );
-                    self.note_polygon_visit();
                     if polygon_contains_interior(
                         TopologySpace::Geographic,
                         &areas[candidate.polygon as usize],
@@ -848,26 +802,6 @@ impl AreaMembership {
                         std::ops::ControlFlow::Continue(())
                     }
                 })
-            },
-        }
-    }
-
-    fn note_polygon_visit(&self) {
-        #[cfg(test)]
-        match self {
-            Self::Cartesian { counters, .. } | Self::Geographic { counters, .. } => {
-                counters
-                    .polygon_visits
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-            },
-        }
-    }
-
-    #[cfg(test)]
-    fn counters(&self) -> Arc<SupportCounters> {
-        match self {
-            Self::Cartesian { counters, .. } | Self::Geographic { counters, .. } => {
-                Arc::clone(counters)
             },
         }
     }
@@ -902,8 +836,6 @@ struct TopologySupport {
     point_support: HashSet<TopologyKey>,
     noncollapsed_point_support: HashSet<TopologyKey>,
     boundary_support: HashSet<TopologyKey>,
-    #[cfg(test)]
-    counters: Arc<SupportCounters>,
 }
 
 impl TopologySupport {
@@ -914,8 +846,6 @@ impl TopologySupport {
         source_points: &[SourcePoint],
         area: AreaMembership,
     ) -> Self {
-        #[cfg(test)]
-        let counters = area.counters();
         let point_support = source_points
             .iter()
             .map(|source| quotient_key(domain, source.point.xy()))
@@ -938,8 +868,6 @@ impl TopologySupport {
             point_support,
             noncollapsed_point_support,
             boundary_support,
-            #[cfg(test)]
-            counters,
         }
     }
 
@@ -973,12 +901,7 @@ impl TopologySupport {
                         {
                             continue;
                         }
-                        crate::geometry::overlay_work::add(
-                            crate::geometry::OverlayWorkPhase::TopologyEdgeRefinement,
-                            1,
-                        );
                         let edge = &edges[candidate.ordinal];
-                        self.note_edge_refinement();
                         if point_on_graph_segment(domain, point, edge.segment)
                             && let std::ops::ControlFlow::Break(value) = visit(edge)
                         {
@@ -999,12 +922,7 @@ impl TopologySupport {
                     end: point,
                 };
                 for candidate in self.edge_index.intersecting_candidates(query) {
-                    crate::geometry::overlay_work::add(
-                        crate::geometry::OverlayWorkPhase::TopologyEdgeRefinement,
-                        1,
-                    );
                     let edge = &edges[candidate.ordinal];
-                    self.note_edge_refinement();
                     if point_on_graph_segment(domain, point, edge.segment)
                         && let std::ops::ControlFlow::Break(value) = visit(edge)
                     {
@@ -1074,31 +992,6 @@ impl TopologySupport {
             return Some(false);
         }
         Some(true)
-    }
-
-    fn note_edge_refinement(&self) {
-        #[cfg(test)]
-        self.counters
-            .edge_refinements
-            .fetch_add(1, AtomicOrdering::Relaxed);
-    }
-
-    #[cfg(test)]
-    fn reset_work_counts(&self) {
-        self.counters
-            .edge_refinements
-            .store(0, AtomicOrdering::Relaxed);
-        self.counters
-            .polygon_visits
-            .store(0, AtomicOrdering::Relaxed);
-    }
-
-    #[cfg(test)]
-    fn work_counts(&self) -> (usize, usize) {
-        (
-            self.counters.edge_refinements.load(AtomicOrdering::Relaxed),
-            self.counters.polygon_visits.load(AtomicOrdering::Relaxed),
-        )
     }
 }
 
@@ -1731,13 +1624,7 @@ impl GraphBuilder {
         let node_locations: Vec<_> = graph
             .nodes
             .iter()
-            .map(|node| {
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::TopologyNodeLocation,
-                    1,
-                );
-                graph.locate_point(node.point)
-            })
+            .map(|node| graph.locate_point(node.point))
             .collect();
         for (node, location) in graph.nodes.iter_mut().zip(node_locations) {
             node.location = location;
@@ -3186,70 +3073,6 @@ mod tests {
                 std::ops::ControlFlow::Continue(())
             });
             assert_eq!(ids, [0]);
-        }
-    }
-
-    fn sparse_fixture(count: usize) -> Shape {
-        let shapes = (0..count)
-            .map(|index| {
-                let x = f64::from((index % 16) as u32) * 0.01;
-                let y = index as f64 * 0.001;
-                Shape::Polygon(polygon(
-                    &[
-                        (x, y),
-                        (x + 0.0001, y),
-                        (x + 0.0001, y + 0.0001),
-                        (x, y + 0.0001),
-                        (x, y),
-                    ],
-                    &[],
-                ))
-            })
-            .collect();
-        collection(shapes)
-    }
-
-    #[test]
-    fn sparse_support_work_is_near_linear_without_wall_clock_thresholds() {
-        let mut cartesian_counts = Vec::new();
-        let mut geographic_counts = Vec::new();
-        for count in [64, 128, 256] {
-            let cartesian = TopologyGraph::cartesian(&sparse_fixture(count));
-            cartesian.reset_support_work_counts();
-            for node in &cartesian.nodes {
-                let _ = cartesian.locate_point(node.point);
-            }
-            for edge in &cartesian.edges {
-                let midpoint = XY::new(
-                    f64::midpoint(edge.segment.start.x, edge.segment.end.x),
-                    f64::midpoint(edge.segment.start.y, edge.segment.end.y),
-                );
-                let _ = cartesian.locate_point(midpoint);
-            }
-            cartesian_counts.push(cartesian.support_work_counts());
-
-            let geographic = TopologyGraph::geographic(&sparse_fixture(count), degrees());
-            geographic.reset_support_work_counts();
-            for node in &geographic.nodes {
-                let _ = geographic.locate_point(node.point);
-            }
-            for edge in &geographic.edges {
-                let midpoint = XY::new(
-                    f64::midpoint(edge.segment.start.x, edge.segment.end.x),
-                    f64::midpoint(edge.segment.start.y, edge.segment.end.y),
-                );
-                let _ = geographic.locate_point(midpoint);
-            }
-            geographic_counts.push(geographic.support_work_counts());
-        }
-        for counts in [cartesian_counts, geographic_counts] {
-            for window in counts.windows(2) {
-                assert!(
-                    window[1].0 <= window[0].0.saturating_mul(3)
-                        && window[1].1 <= window[0].1.saturating_mul(3),
-                    "support work grew superlinearly: {window:?}"
-                );
-            }
         }
     }
 

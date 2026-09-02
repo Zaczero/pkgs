@@ -730,13 +730,7 @@ impl ShellCoverageIndex {
         if points.len() < 2 {
             return true;
         }
-        if points.iter().any(|point| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::ContainmentPoint,
-                1,
-            );
-            !self.covers_xy(point.x, point.y)
-        }) {
+        if points.iter().any(|point| !self.covers_xy(point.x, point.y)) {
             return false;
         }
         points.array_windows::<2>().all(|[start, end]| {
@@ -746,10 +740,6 @@ impl ShellCoverageIndex {
             };
             let mut contacts = Vec::new();
             for entry in self.boundary.intersecting_candidates(segment) {
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::ContainmentRefinement,
-                    1,
-                );
                 match crate::geometry::segment_contact_exact(segment, entry.segment) {
                     Contact::Disjoint => {},
                     Contact::Cross { .. } => return false,
@@ -776,10 +766,6 @@ impl ShellCoverageIndex {
                     start: previous_point,
                     end: *point,
                 });
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::ContainmentPoint,
-                    1,
-                );
                 if !self.covers_xy(midpoint.x, midpoint.y) {
                     return false;
                 }
@@ -798,7 +784,6 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
     let mut shells: Vec<(Ring, f64, Bounds)> = Vec::new();
     let mut holes: Vec<Vec<XY>> = Vec::new();
     for ring in rings {
-        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::RegionRing, 1);
         let decision = open_xy_cycle_decision(&ring);
         let (sign, magnitude) = (decision.sign(), decision.magnitude());
         match sign {
@@ -838,13 +823,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
             .flat_map(|probe| {
                 shell_tree
                     .locate_in_envelope_intersecting(AABB::from_point([probe.x, probe.y]))
-                    .map(|entry| {
-                        crate::geometry::overlay_work::add(
-                            crate::geometry::OverlayWorkPhase::ShellCandidate,
-                            1,
-                        );
-                        entry.data
-                    })
+                    .map(|entry| entry.data)
             })
             .collect();
         candidates.sort_unstable();

@@ -82,10 +82,6 @@ impl RingPointIndex {
         if let Some(edges) = self.edges.dense_band_edges(y) {
             let mut inside = false;
             for &edge in edges {
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::PointEdgeCandidate,
-                    1,
-                );
                 let (ax, ay, bx, by) = self.edge_xy(edge);
                 match ring_edge_membership(ax, ay, bx, by, x, y) {
                     RingEdgeMembership::Boundary => return RingClass::Boundary,
@@ -102,10 +98,6 @@ impl RingPointIndex {
 
         let mut inside = false;
         if self.edges.for_each_edge(y, |edge| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::PointEdgeCandidate,
-                1,
-            );
             let (ax, ay, bx, by) = self.edge_xy(edge);
             match ring_edge_membership(ax, ay, bx, by, x, y) {
                 RingEdgeMembership::Boundary => return ControlFlow::Break(RingClass::Boundary),

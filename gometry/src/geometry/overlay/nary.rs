@@ -76,17 +76,9 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
                 && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
             {
                 let normalized = shape.split_antimeridian_in_frame(frame)?.normalize();
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::InputNormalize,
-                    normalized.coord_count(),
-                );
                 Ok(normalized)
             } else {
                 let normalized = shape.normalize();
-                crate::geometry::overlay_work::add(
-                    crate::geometry::OverlayWorkPhase::InputNormalize,
-                    normalized.coord_count(),
-                );
                 Ok(normalized)
             }
         })
@@ -127,12 +119,7 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         // Normalize before carrying ordinates: canonical geometry ordering is
         // XY-defined, while ordinate restoration is a separate provenance pass.
-        let normalized = shape.normalize();
-        crate::geometry::overlay_work::add(
-            crate::geometry::OverlayWorkPhase::OutputNormalize,
-            normalized.coord_count(),
-        );
-        normalized
+        shape.normalize()
     };
     carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
@@ -251,13 +238,7 @@ fn assemble_overlay(
     // every output ring for each candidate.
     let polygon_indexes: Vec<crate::geometry::PolygonPointIndex> = polygons
         .iter()
-        .map(|polygon| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::OutputPolygonIndexBuild,
-                1,
-            );
-            crate::geometry::PolygonPointIndex::build(polygon)
-        })
+        .map(crate::geometry::PolygonPointIndex::build)
         .collect();
     let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, op);
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
@@ -351,22 +332,13 @@ fn overlay_polygons(
     let segments: Vec<Segment> = arranged_edges.iter().map(|(_, segment)| *segment).collect();
     let mut edge_by_endpoints: HashMap<(PointKey, PointKey), usize> =
         HashMap::with_capacity(arranged_edges.len());
-    #[cfg(test)]
-    let mut edge_position_by_graph_edge: HashMap<usize, usize> =
-        HashMap::with_capacity(arranged_edges.len());
-    for (position, &(edge_index, segment)) in arranged_edges.iter().enumerate() {
-        #[cfg(not(test))]
-        let _ = position;
+    for &(edge_index, segment) in &arranged_edges {
         edge_by_endpoints
             .entry(ordered_edge(
                 PointKey::new(segment.start),
                 PointKey::new(segment.end),
             ))
             .or_insert(edge_index);
-        #[cfg(test)]
-        edge_position_by_graph_edge
-            .entry(edge_index)
-            .or_insert(position);
     }
 
     // The joint graph already split every area edge at every source contact.
@@ -384,21 +356,8 @@ fn overlay_polygons(
                 .iter()
                 .enumerate()
                 .map(|(source_row, source)| {
-                    face_area_side(
-                        &face.ring,
-                        graph,
-                        source_row as u32,
-                        &edge_by_endpoints,
-                        #[cfg(test)]
-                        &edge_position_by_graph_edge,
-                    )
-                    .unwrap_or_else(|| {
-                        crate::geometry::overlay_work::add(
-                            crate::geometry::OverlayWorkPhase::FaceMembershipFallback,
-                            1,
-                        );
-                        source.contains_area_interior(probe)
-                    })
+                    face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
+                        .unwrap_or_else(|| source.contains_area_interior(probe))
                 })
                 .collect();
             if keep_area_face(&area_membership, op) {
@@ -518,22 +477,10 @@ fn face_area_side(
     graph: &TopologyGraph,
     source_row: u32,
     edge_by_endpoints: &HashMap<(PointKey, PointKey), usize>,
-    #[cfg(test)] edge_position_by_graph_edge: &HashMap<usize, usize>,
 ) -> Option<bool> {
     ring.array_windows::<2>().find_map(|[start, end]| {
-        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::FaceEndpointProbe, 1);
         let key = ordered_edge(PointKey::new(*start), PointKey::new(*end));
         let edge_index = *edge_by_endpoints.get(&key)?;
-        #[cfg(test)]
-        crate::geometry::overlay_work::add(
-            crate::geometry::OverlayWorkPhase::FaceLegacyProbe,
-            edge_position_by_graph_edge
-                .get(&edge_index)
-                .copied()
-                .unwrap_or_default()
-                + 1,
-        );
-        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::FaceEndpointHit, 1);
         graph.area_source_side_for_row(&graph.edges[edge_index], *start, *end, source_row)
     })
 }
@@ -670,7 +617,6 @@ fn overlay_lines(
 ) -> Vec<crate::geometry::CoordSeq> {
     let mut lines = Vec::new();
     for edge in &graph.edges {
-        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::OverlayLineEdge, 1);
         let line_source = graph.edge_has_line_source(edge);
         if !line_source && op != OverlayOp::Intersection {
             continue;
@@ -692,13 +638,9 @@ fn overlay_lines(
                     || graph.edge_has_line_source_for_row(edge, source_row as u32)
             })
             .collect();
-        let result_covers = polygon_indexes.iter().any(|polygon| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::OutputPolygonPoint,
-                1,
-            );
-            polygon.covers_point(midpoint)
-        });
+        let result_covers = polygon_indexes
+            .iter()
+            .any(|polygon| polygon.covers_point(midpoint));
         let keep = match op {
             OverlayOp::Intersection => covered.iter().all(|&present| present) && !result_covers,
             OverlayOp::Union => line_membership.iter().any(|&present| present) && !result_covers,
@@ -739,10 +681,6 @@ fn overlay_points(
         candidates.extend(graph.nodes.iter().map(|node| node.point.point()));
     }
     candidates.retain(|point| {
-        crate::geometry::overlay_work::add(
-            crate::geometry::OverlayWorkPhase::OverlayPointCandidate,
-            1,
-        );
         let membership: Vec<bool> = sources
             .iter()
             .enumerate()
@@ -765,16 +703,13 @@ fn overlay_points(
                 membership.iter().filter(|&&present| present).count() % 2 == 1
             },
         };
-        keep && !polygon_indexes.iter().any(|polygon| {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::OutputPolygonPoint,
-                1,
-            );
-            polygon.covers_point(*point)
-        }) && !lines.iter().any(|line| {
-            line.segment_pairs()
-                .any(|[start, end]| point_on_segment(*point, start, end))
-        })
+        keep && !polygon_indexes
+            .iter()
+            .any(|polygon| polygon.covers_point(*point))
+            && !lines.iter().any(|line| {
+                line.segment_pairs()
+                    .any(|[start, end]| point_on_segment(*point, start, end))
+            })
     });
     dedup_points(&mut candidates);
     candidates

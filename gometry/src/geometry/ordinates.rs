@@ -125,7 +125,6 @@ impl OrdinateSource {
     /// and distinct bit patterns (including signed zero) are conflicting
     /// values rather than an arbitrary first-source winner.
     fn resolve(&self, point: Point) -> (Option<f64>, Option<f64>) {
-        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::OrdinatePoint, 1);
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
         if let Some(candidates) = self.vertices.get(&PointKey::new(point)) {
@@ -143,10 +142,6 @@ impl OrdinateSource {
             point.y + pad,
         ]);
         for entry in self.segment_tree().locate_in_envelope_intersecting(query) {
-            crate::geometry::overlay_work::add(
-                crate::geometry::OverlayWorkPhase::OrdinateRefinement,
-                1,
-            );
             let (start, end) = self.segments[entry.index];
             if let Some(resolved) = segment_ordinate_at(start, end, point, self.tolerance) {
                 // Exact endpoint candidates are already represented by the
