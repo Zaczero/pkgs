@@ -137,6 +137,9 @@ pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f6
             Orientation::Clockwise
         };
     }
+    if (ax == bx && ax == cx) || (ay == by && ay == cy) {
+        return Orientation::Collinear;
+    }
     let exact = Interval::exact;
     let (bax, bay) = (exact(bx).sub(exact(ax)), exact(by).sub(exact(ay)));
     let (cax, cay) = (exact(cx).sub(exact(ax)), exact(cy).sub(exact(ay)));
@@ -187,6 +190,37 @@ mod tests {
         let max = f64::MAX;
         assert_eq!(
             orientation_xy(-max, -max, max, max, max, -max),
+            Orientation::Clockwise
+        );
+    }
+
+    #[test]
+    fn axis_aligned_ties_are_collinear() {
+        let subnormal = f64::from_bits(1);
+        let max = f64::MAX;
+        for (a, b, c) in [
+            ((-0.0, -0.0), (1.0, -0.0), (-1.0, 0.0)),
+            ((-0.0, -1.0), (0.0, 0.0), (0.0, 1.0)),
+            (
+                (subnormal, subnormal),
+                (2.0 * subnormal, subnormal),
+                (3.0 * subnormal, subnormal),
+            ),
+            ((max, -max), (max, 0.0), (max, max)),
+        ] {
+            assert_eq!(
+                orientation_xy(a.0, a.1, b.0, b.1, c.0, c.1),
+                Orientation::Collinear
+            );
+        }
+    }
+
+    #[test]
+    fn one_ulp_axis_near_tie_remains_noncollinear() {
+        let ay = 1.0_f64;
+        let by = f64::from_bits(ay.to_bits() + 1);
+        assert_eq!(
+            orientation_xy(0.0, ay, 1.0, by, 2.0, ay),
             Orientation::Clockwise
         );
     }

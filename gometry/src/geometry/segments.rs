@@ -496,10 +496,6 @@ fn nearest_point_with_segments(
         })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "axis-aligned clamp + diagonal edge-bisection share one clip contract"
-)]
 pub(crate) fn clip_segment(
     start: impl Into<XY>,
     end: impl Into<XY>,
@@ -1886,7 +1882,7 @@ pub(super) fn segment_cross_point(a: Segment, b: Segment) -> Option<XY> {
     }
 }
 
-fn segment_cross_point_with_orientations(
+pub(crate) fn segment_cross_point_with_orientations(
     a: Segment,
     b: Segment,
     orientations: PairOrientations,
@@ -1919,12 +1915,11 @@ fn segment_cross_point_with_orientations(
     if orientations.left_end == Orientation::Collinear {
         return Some(a.end);
     }
-    // Placement is solved parametrically ALONG the first segment, so it is
-    // not symmetric in argument order at the last ULP. Noding computes the
-    // same crossing once per side — canonicalize segment direction and pair
-    // order so both sides place the bitwise-identical point, or the segment
-    // graph grows ULP-twin nodes whose hairline slivers leak invalid rings
-    // out of repair/polygonize.
+    // Placement is solved parametrically along the first segment, so it is
+    // not symmetric in argument order at the last ULP. Canonicalize segment
+    // direction and pair order so each pair's shared noding point is stable,
+    // avoiding ULP-twin nodes whose hairline slivers leak invalid rings out of
+    // repair/polygonize.
     let canonical = |segment: Segment| {
         if (segment.start.x, segment.start.y) <= (segment.end.x, segment.end.y) {
             segment
@@ -2106,15 +2101,15 @@ pub(crate) enum SegmentContact {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PairOrientations {
-    pub right_start: Orientation,
-    pub right_end: Orientation,
-    pub left_start: Orientation,
-    pub left_end: Orientation,
+pub(crate) struct PairOrientations {
+    pub(crate) right_start: Orientation,
+    pub(crate) right_end: Orientation,
+    pub(crate) left_start: Orientation,
+    pub(crate) left_end: Orientation,
 }
 
 impl PairOrientations {
-    fn new(left: Segment, right: Segment) -> Self {
+    pub(crate) fn new(left: Segment, right: Segment) -> Self {
         Self {
             right_start: orientation(left.start, left.end, right.start),
             right_end: orientation(left.start, left.end, right.end),
@@ -2326,7 +2321,7 @@ fn endpoint_order_key_matches(candidate: f64, target: f64) -> bool {
     candidate == target
 }
 
-fn point_in_segment_envelope(point: XY, segment: Segment) -> bool {
+pub(crate) fn point_in_segment_envelope(point: XY, segment: Segment) -> bool {
     point.x >= segment.start.x.min(segment.end.x)
         && point.x <= segment.start.x.max(segment.end.x)
         && point.y >= segment.start.y.min(segment.end.y)

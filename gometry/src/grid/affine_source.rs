@@ -39,11 +39,16 @@ use std::cmp::Ordering;
 use std::collections::TryReserveError;
 
 use h3o::Resolution;
+use rstar::{AABB, RTreeObject};
 
 use crate::boundary::geographic::{
     normalize_accepted_geographic_latitudes, normalized_geographic_pole,
 };
-use crate::geometry::{Bounds, CoordSeq, Coordinates as _, Shape};
+use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
+use crate::geometry::expansion::{
+    expansion_sign, expansion_sum_zeroelim, scale_expansion_zeroelim,
+};
+use crate::geometry::{Bounds, BulkRTree, CoordSeq, Coordinates as _, Shape};
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
@@ -56,6 +61,22 @@ use crate::grid::spherical_arc::{
 const EXPANSION_LIMBS: usize = 64;
 const FULL_TURN_DEGREES: f64 = 360.0;
 const HALF_TURN_DEGREES: f64 = 180.0;
+const ORIENTATION_ERRBOUND: f64 = 128.0 * f64::EPSILON;
+
+#[cfg(test)]
+std::thread_local! {
+    static AUTHORITY_EDGE_EXACT_REFINEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_authority_edge_exact_refinements() {
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.set(0);
+}
+
+#[cfg(test)]
+fn authority_edge_exact_refinements() -> usize {
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.get()
+}
 
 /// Canonical grid-topology spelling of a geographically admitted source.
 ///
@@ -110,6 +131,7 @@ pub(crate) fn visit_grid_cover_components<E>(
 /// raw-owner witnesses differ later in traversal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SphericalGridTarget {
+    Rectangular,
     H3(Resolution),
     S2,
 }
@@ -401,12 +423,27 @@ fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> bool {
 }
 
 fn exact_axis_rectangle(source: &Shape, bounds: Bounds) -> bool {
-    // `Shape::is_axis_aligned_rectangle` checks a corner set, which is useful
-    // for generic geometry predicates but cannot certify source traversal: a
-    // bow-tie visits all four corners while leaving the rectangle. The
-    // side-walk above owns the stronger cap certificate for both four-vertex
-    // and geographic-densified rings.
+    // The generic rectangle certificate is sufficient for topology shortcuts,
+    // but does not verify an ordered, directed source traversal or geographic
+    // shortest lifts. The side-walk above owns the stronger cap certificate
+    // for both four-vertex and geographic-densified rings.
     subdivided_axis_aligned_rectangle(source, bounds)
+}
+
+fn exact_world_band(source: &Shape) -> Option<Bounds> {
+    let Shape::Polygon(polygon) = source else {
+        return None;
+    };
+    if !polygon.holes.is_empty() {
+        return None;
+    }
+    let summary = RingSummary::try_new(
+        GeographicFrame::crs84(),
+        &GeographicRing::from_ring(&polygon.shell),
+    )
+    .ok()?;
+    (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
+        .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get()))
 }
 
 /// A bounds rectangle is a complete source model only on the canonical
@@ -501,10 +538,10 @@ fn closed_segment_intersects(
     other_start: &ExactPlanarPoint,
     other_end: &ExactPlanarPoint,
 ) -> Option<bool> {
-    let first = planar_orientation(start, end, other_start)?.ordering();
-    let second = planar_orientation(start, end, other_end)?.ordering();
-    let third = planar_orientation(other_start, other_end, start)?.ordering();
-    let fourth = planar_orientation(other_start, other_end, end)?.ordering();
+    let first = planar_orientation_ordering(start, end, other_start)?;
+    let second = planar_orientation_ordering(start, end, other_end)?;
+    let third = planar_orientation_ordering(other_start, other_end, start)?;
+    let fourth = planar_orientation_ordering(other_start, other_end, end)?;
     let crosses = |left: Ordering, right: Ordering| {
         left == Ordering::Equal || right == Ordering::Equal || left != right
     };
@@ -614,6 +651,32 @@ fn exact_point_touches_rectangle(
     Some(false)
 }
 
+fn exact_authority_edge_touches_rectangle(
+    edge: &SymbolicAffineEdge,
+    longitude: Bound,
+    latitude: Bound,
+) -> Option<bool> {
+    #[cfg(test)]
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.set(AUTHORITY_EDGE_EXACT_REFINEMENTS.get().saturating_add(1));
+    let start = ExactPlanarPoint::from_lifted(edge.start)?;
+    let end = ExactPlanarPoint::from_lifted(edge.end)?;
+    let start_latitude = degree_expansion_bound(&start.latitude)?;
+    let end_latitude = degree_expansion_bound(&end.latitude)?;
+    if !(-90.0..=90.0).contains(&start_latitude.lo)
+        || !(-90.0..=90.0).contains(&start_latitude.hi)
+        || !(-90.0..=90.0).contains(&end_latitude.lo)
+        || !(-90.0..=90.0).contains(&end_latitude.hi)
+    {
+        return Some(true);
+    }
+    if exact_point_touches_rectangle(&start, longitude, latitude)?
+        || exact_point_touches_rectangle(&end, longitude, latitude)?
+    {
+        return Some(true);
+    }
+    exact_segment_touches_rectangle(&start, &end, longitude, latitude)
+}
+
 /// Private identity of one source vertex.  These ids only preserve source
 /// topology; they are never physical cell endpoint identities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -681,6 +744,14 @@ impl ExactExpansion {
         &self.limbs[..self.len as usize]
     }
 
+    fn as_f64(&self) -> Option<f64> {
+        match self.as_slice() {
+            [] => Some(0.0),
+            [value] => Some(*value),
+            _ => None,
+        }
+    }
+
     fn neg(mut self) -> Self {
         for limb in &mut self.limbs[..self.len as usize] {
             *limb = -*limb;
@@ -695,7 +766,7 @@ impl ExactExpansion {
             return None;
         }
         let mut limbs = [0.0; EXPANSION_LIMBS];
-        let len = expansion_sum_zeroelim(left, right, &mut limbs)?;
+        let len = expansion_sum_zeroelim(left, right, &mut limbs, true)?;
         Some(Self {
             limbs,
             len: u8::try_from(len).ok()?,
@@ -718,11 +789,7 @@ impl ExactExpansion {
     }
 
     fn ordering(self) -> Ordering {
-        self.as_slice()
-            .iter()
-            .rev()
-            .find(|&&limb| limb != 0.0)
-            .map_or(Ordering::Equal, |limb| limb.total_cmp(&0.0))
+        expansion_sign(self.as_slice())
     }
 
     fn is_exact(self, value: f64) -> Option<bool> {
@@ -1044,10 +1111,11 @@ struct LiftedChain {
 
 /// The finite lifted authority for one polygon ring.  A nonzero longitude
 /// degree cannot be treated as an unknown or a world-sized source: its two
-/// physical end vertices are joined through the sign-selected pole, with the
-/// signed number of turns retained symbolically.  Later PIP consumes this
-/// plan over every direct periodic preimage; it must never reconstruct a
-/// shortest-period closure from the raw endpoint doubles.
+/// physical end vertices are joined through the pole selected by the ring's
+/// geographic latitude extrema, with the signed number of turns retained
+/// symbolically.  Later PIP consumes this plan over every direct periodic
+/// preimage; it must never reconstruct a shortest-period closure from the raw
+/// endpoint doubles.
 #[derive(Clone, Copy, Debug)]
 struct PeriodicPoleRoof {
     pole: PhysicalEndpointKey,
@@ -1061,6 +1129,26 @@ struct PeriodicPoleRoof {
         expect(dead_code, reason = "retained for exact roof-state unit certificates")
     )]
     span: ExactExpansion,
+}
+
+/// Select the physical pole enclosed by a full-longitude ring.
+///
+/// The direction of the longitude walk is not a geographic pole signal: it
+/// changes when a valid ring is reversed. As in `ring_encloses_pole`, a ring
+/// strictly in the northern or southern latitude hemisphere has one
+/// unambiguous pole; a mixed or equatorial ring has no certified pole roof.
+fn physical_pole_for_chain(chain: &LiftedChain) -> Option<PhysicalEndpointKey> {
+    let (minimum, maximum) = chain.vertices.iter().map(|vertex| vertex.latitude).fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(minimum, maximum), latitude| (minimum.min(latitude), maximum.max(latitude)),
+    );
+    if minimum > 0.0 {
+        Some(PhysicalEndpointKey::NorthPole)
+    } else if maximum < 0.0 {
+        Some(PhysicalEndpointKey::SouthPole)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1085,18 +1173,20 @@ impl LiftedRingFill {
         chain: &LiftedChain,
     ) -> Option<Self> {
         let degree = chain.degree?;
-        let roof = match degree.cmp(&0) {
-            Ordering::Equal => None,
-            Ordering::Greater => Some(PeriodicPoleRoof {
-                pole: PhysicalEndpointKey::NorthPole,
+        // An ambiguous full-turn ring cannot certify a pole closure; returning
+        // `None` makes the owning source explicitly fail open.
+        let pole = if degree == 0 {
+            None
+        } else {
+            Some(physical_pole_for_chain(chain)?)
+        };
+        let roof = match pole {
+            Some(pole) => Some(PeriodicPoleRoof {
+                pole,
                 turns: degree,
                 span: ExactExpansion::exact_degree_turns(degree)?,
             }),
-            Ordering::Less => Some(PeriodicPoleRoof {
-                pole: PhysicalEndpointKey::SouthPole,
-                turns: degree,
-                span: ExactExpansion::exact_degree_turns(degree)?,
-            }),
+            None => None,
         };
         Some(Self {
             chain_index,
@@ -1516,7 +1606,8 @@ fn bucket_lifted_edge(
                     let Some(shifted) = query.shifted(copy) else {
                         return BucketEdge::Uncertain;
                     };
-                    let Some(orientation) = planar_orientation(start, end, &shifted) else {
+                    let Some(orientation) = planar_orientation_ordering(start, end, &shifted)
+                    else {
                         return BucketEdge::Uncertain;
                     };
                     let Some(on_longitude) = closed_between_expansion(
@@ -1526,7 +1617,7 @@ fn bucket_lifted_edge(
                     ) else {
                         return BucketEdge::Uncertain;
                     };
-                    if orientation.ordering() == Ordering::Equal && on_longitude {
+                    if orientation == Ordering::Equal && on_longitude {
                         return BucketEdge::Decisive(if artificial {
                             GridPointClass::Unknown
                         } else {
@@ -1762,7 +1853,7 @@ fn classify_lifted_edge(
     artificial: bool,
     parity: &mut bool,
 ) -> GridPointClass {
-    let Some(orientation) = planar_orientation(start, end, query) else {
+    let Some(orientation) = planar_orientation_ordering(start, end, query) else {
         return GridPointClass::Unknown;
     };
     let (Some(start_y), Some(end_y)) = (
@@ -1771,7 +1862,7 @@ fn classify_lifted_edge(
     ) else {
         return GridPointClass::Unknown;
     };
-    if orientation.ordering() == Ordering::Equal
+    if orientation == Ordering::Equal
         && closed_between_expansion(&start.longitude, &query.longitude, &end.longitude)
             .unwrap_or(false)
         && closed_between_expansion(&start.latitude, &query.latitude, &end.latitude)
@@ -1798,7 +1889,7 @@ fn classify_lifted_edge(
     }
     // x_cross - qx is orientation / (end.y - start.y).  Cross only when the
     // two exact signs agree; no division or rounded ray intersection exists.
-    if orientation.ordering() == delta_y.ordering() {
+    if orientation == delta_y.ordering() {
         *parity = !*parity;
     }
     GridPointClass::Exterior
@@ -1831,6 +1922,49 @@ fn planar_orientation(
     dx.product(qy)?.sub(dy.product(qx)?)
 }
 
+/// Certify the ordinary one-limb case before constructing expansion products.
+/// Every arithmetic result must be normal and finite, so neither overflow nor
+/// underflow can invalidate the binary64 relative-error bound.
+fn filtered_planar_orientation(
+    start: &ExactPlanarPoint,
+    end: &ExactPlanarPoint,
+    query: &ExactPlanarPoint,
+) -> Option<Ordering> {
+    let (start_x, start_y, end_x, end_y, query_x, query_y) = (
+        start.longitude.as_f64()?,
+        start.latitude.as_f64()?,
+        end.longitude.as_f64()?,
+        end.latitude.as_f64()?,
+        query.longitude.as_f64()?,
+        query.latitude.as_f64()?,
+    );
+    let dx = end_x - start_x;
+    let dy = end_y - start_y;
+    let qx = query_x - start_x;
+    let qy = query_y - start_y;
+    let left = dx * qy;
+    let right = dy * qx;
+    let determinant = left - right;
+    let magnitude = left.abs() + right.abs();
+    if ![dx, dy, qx, qy, left, right, determinant, magnitude]
+        .into_iter()
+        .all(|value| value == 0.0 || value.is_normal())
+    {
+        return None;
+    }
+    let bound = (magnitude * ORIENTATION_ERRBOUND).next_up();
+    (determinant.abs() > bound).then(|| determinant.total_cmp(&0.0))
+}
+
+fn planar_orientation_ordering(
+    start: &ExactPlanarPoint,
+    end: &ExactPlanarPoint,
+    query: &ExactPlanarPoint,
+) -> Option<Ordering> {
+    filtered_planar_orientation(start, end, query)
+        .or_else(|| planar_orientation(start, end, query).map(ExactExpansion::ordering))
+}
+
 impl LiftedChain {
     fn from_points(points: &[(f64, f64)], closed: bool) -> Option<Self> {
         let minimum = if closed { 4 } else { 2 };
@@ -1860,6 +1994,21 @@ impl LiftedChain {
                 latitude,
             });
             edges.push(step.kind);
+            while vertices.len() > minimum {
+                let last = vertices.len().checked_sub(1)?;
+                let previous = *vertices.get(last.checked_sub(2)?)?;
+                let current = *vertices.get(last.checked_sub(1)?)?;
+                let next = *vertices.get(last)?;
+                if !can_coalesce(previous, current, next)? {
+                    break;
+                }
+                // `can_coalesce` has already certified this exact direct lift;
+                // retain its edge kind while removing the middle vertex.
+                let direct = lifted_step(previous.longitude.raw, next.longitude.raw)?;
+                vertices.remove(last - 1);
+                edges.remove(last - 1);
+                *edges.get_mut(last - 2)? = direct.kind;
+            }
         }
         let mut result = Self {
             vertices: vertices.into_boxed_slice(),
@@ -1871,7 +2020,7 @@ impl LiftedChain {
             result.degree = result.closure_degree();
             result.degree?;
         }
-        result.canonicalized()
+        Some(result)
     }
 
     fn closure_degree(&self) -> Option<i64> {
@@ -1889,45 +2038,6 @@ impl LiftedChain {
                 .and_then(|expected| total.sub(expected))
                 .is_some_and(|difference| difference.ordering() == Ordering::Equal)
         })
-    }
-
-    fn canonicalized(mut self) -> Option<Self> {
-        // R15-S disposition: splitting a linear source at a collinear point
-        // preserves its visible cells. Public H3 and S2 all-rule fixtures
-        // retain that invariant; disabling exact coalescing was observed
-        // green, so the proposed mutation was deleted as unobservable. The
-        // direct lift-identity tests below remain the structural guard.
-        let minimum = if self.closed { 4 } else { 2 };
-        loop {
-            let mut removed = false;
-            let stop = self.vertices.len().saturating_sub(1);
-            for middle in 1..stop {
-                if self.vertices.len() <= minimum {
-                    return Some(self);
-                }
-                let previous = self.vertices[middle - 1];
-                let current = self.vertices[middle];
-                let next = self.vertices[middle + 1];
-                if !can_coalesce(previous, current, next)? {
-                    continue;
-                }
-                let mut points = Vec::new();
-                points
-                    .try_reserve(self.vertices.len().saturating_sub(1))
-                    .ok()?;
-                for (index, vertex) in self.vertices.iter().enumerate() {
-                    if index != middle {
-                        points.push((vertex.longitude.raw, vertex.latitude));
-                    }
-                }
-                self = Self::from_points(&points, self.closed)?;
-                removed = true;
-                break;
-            }
-            if !removed {
-                return Some(self);
-            }
-        }
     }
 
     #[cfg_attr(
@@ -2705,6 +2815,89 @@ fn degree_expansion_bound(value: &ExactExpansion) -> Option<Bound> {
     ExactRatio::from_expansion(value)?.certified_bound()
 }
 
+/// Choose the nearby longitude sheet used only by the proxy broad phase.
+/// Exact source coordinates can be unwrapped, so the sheet is derived from an
+/// outward endpoint envelope rather than from either raw endpoint double.
+fn nearby_longitude_sheet(value: Bound) -> Option<i64> {
+    let proposal = (f64::midpoint(value.lo, value.hi) / FULL_TURN_DEGREES).round();
+    if !proposal.is_finite() || proposal < i64::MIN as f64 || proposal > i64::MAX as f64 {
+        return None;
+    }
+    Some(proposal as i64)
+}
+
+/// Shift an outward degree bound by an exact number of full longitude turns.
+/// Rebuilding both endpoints through the expansion carrier keeps the proxy
+/// conservative even when the integer turn is not exactly representable as a
+/// binary64 value.
+fn shifted_degree_bound(value: Bound, turns: i64) -> Option<Bound> {
+    let offset = ExactExpansion::exact_degree_turns(turns)?;
+    let lower = degree_expansion_bound(&ExactExpansion::from_f64(value.lo)?.add(offset)?)?;
+    let upper = degree_expansion_bound(&ExactExpansion::from_f64(value.hi)?.add(offset)?)?;
+    Bound::new(lower.lo, upper.hi)
+}
+
+/// The proxy coordinate for a source edge is normalized to its nearby sheet,
+/// then copied onto the closed preceding, current, and following sheets. Any
+/// source edge that cannot produce all three finite envelopes is left to the
+/// source-wide exhaustive path.
+fn authority_edge_proxy_envelopes(edge: &SymbolicAffineEdge) -> Option<[AABB<[f64; 2]>; 3]> {
+    let start = ExactPlanarPoint::from_lifted(edge.start)?;
+    let end = ExactPlanarPoint::from_lifted(edge.end)?;
+    let start_longitude = degree_expansion_bound(&start.longitude)?;
+    let end_longitude = degree_expansion_bound(&end.longitude)?;
+    let longitude = Bound::new(
+        start_longitude.lo.min(end_longitude.lo),
+        start_longitude.hi.max(end_longitude.hi),
+    )?;
+    let start_latitude = degree_expansion_bound(&start.latitude)?;
+    let end_latitude = degree_expansion_bound(&end.latitude)?;
+    let latitude = Bound::new(
+        start_latitude.lo.min(end_latitude.lo),
+        start_latitude.hi.max(end_latitude.hi),
+    )?;
+    let sheet = nearby_longitude_sheet(longitude)?;
+    let canonical_sheet = sheet.checked_neg()?;
+    let preceding = shifted_degree_bound(longitude, canonical_sheet.checked_sub(1)?)?;
+    let current = shifted_degree_bound(longitude, canonical_sheet)?;
+    let following = shifted_degree_bound(longitude, canonical_sheet.checked_add(1)?)?;
+    Some([
+        AABB::from_corners([preceding.lo, latitude.lo], [preceding.hi, latitude.hi]),
+        AABB::from_corners([current.lo, latitude.lo], [current.hi, latitude.hi]),
+        AABB::from_corners([following.lo, latitude.lo], [following.hi, latitude.hi]),
+    ])
+}
+
+/// Build the authority-edge broad phase. `None` is an intentional source-wide
+/// fallback: a single unindexable edge must not be omitted from an otherwise
+/// useful index.
+fn build_authority_edge_index(
+    edges: &[SymbolicAffineEdge],
+) -> Result<Option<BulkRTree<AuthorityEdgeProxy>>, TryReserveError> {
+    let Some(capacity) = edges.len().checked_mul(3) else {
+        return Ok(None);
+    };
+    let mut entries = Vec::new();
+    entries.try_reserve(capacity)?;
+    for (edge, authority_edge) in edges.iter().enumerate() {
+        let Some(envelopes) = authority_edge_proxy_envelopes(authority_edge) else {
+            return Ok(None);
+        };
+        for envelope in envelopes {
+            entries.push(AuthorityEdgeProxy { edge, envelope });
+        }
+    }
+    Ok(Some(BulkRTree::bulk_load_with_params(entries)))
+}
+
+/// Normalize a query window into the same nearby sheet used by the proxy
+/// envelopes. The exact authority refinement still receives the original
+/// window, including its original longitude alias.
+fn canonical_proxy_window(longitude: Bound) -> Option<Bound> {
+    let sheet = nearby_longitude_sheet(longitude)?;
+    shifted_degree_bound(longitude, sheet.checked_neg()?)
+}
+
 const fn endpoint_role(key: ParentParameterKey) -> SourceEndpointRole {
     match key {
         ParentParameterKey::Start => SourceEndpointRole::ParentStart,
@@ -2994,11 +3187,26 @@ fn selection_image_point(point: &SourcePoint) -> Option<SelectionPoint> {
     })
 }
 
-/// Private source lift.  This step owns only topology and selection-image
-/// preparation; authority PIP/rectangle classification is added with the H3
-/// traversal rather than duplicated in an early proxy path.
+/// A conservative closed envelope for one authority edge on one longitude
+/// sheet.  The source edge itself remains the exact refinement witness; this
+/// leaf only supplies its position to the broad phase.
 #[derive(Debug)]
-pub(crate) struct GridAffineSource {
+struct AuthorityEdgeProxy {
+    edge: usize,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for AuthorityEdgeProxy {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+/// Shared periodic source lift and conservative candidate authority.
+#[derive(Debug)]
+pub(crate) struct GeographicCoverageSource {
     target: SphericalGridTarget,
     // An exact canonical lon/lat rectangle is a complete source model for
     // cap classification.  Keep this separate from the lifted general
@@ -3020,12 +3228,21 @@ pub(crate) struct GridAffineSource {
     // its deferred mutation was deleted rather than left as a vacuous claim.
     // The two images stay structurally separate for private fail-open paths.
     authority_edges: Box<[SymbolicAffineEdge]>,
+    authority_edge_index: Option<BulkRTree<AuthorityEdgeProxy>>,
     authority_pieces: Box<[AuthorityAffinePiece]>,
     selection_edges: Box<[SelectionAffinePiece]>,
     unknown: bool,
 }
 
-impl GridAffineSource {
+impl GeographicCoverageSource {
+    pub(crate) fn from_validated(
+        source: &Shape,
+        target: SphericalGridTarget,
+    ) -> Result<Self, TryReserveError> {
+        Self::build(source, target)
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         source: &Shape,
         target: SphericalGridTarget,
@@ -3035,14 +3252,19 @@ impl GridAffineSource {
         // state is derived: bounds, rectangle recognition, chains, and point
         // witnesses must agree on the one physical-pole topology.
         let normalized_source = normalize_grid_source(source);
-        let source = &normalized_source;
-        let exact_axis_rect = source.bounds().filter(|bounds| {
-            exact_axis_rectangle(source, *bounds)
-                && canonical_axis_rectangle_longitude(*bounds)
-                && (-180.0..=180.0).contains(&bounds.minx())
-                && (-180.0..=180.0).contains(&bounds.maxx())
-                && (-90.0..=90.0).contains(&bounds.miny())
-                && (-90.0..=90.0).contains(&bounds.maxy())
+        Self::build(&normalized_source, target)
+    }
+
+    fn build(source: &Shape, target: SphericalGridTarget) -> Result<Self, TryReserveError> {
+        let exact_axis_rect = exact_world_band(source).or_else(|| {
+            source.bounds().filter(|bounds| {
+                exact_axis_rectangle(source, *bounds)
+                    && canonical_axis_rectangle_longitude(*bounds)
+                    && (-180.0..=180.0).contains(&bounds.minx())
+                    && (-180.0..=180.0).contains(&bounds.maxx())
+                    && (-90.0..=90.0).contains(&bounds.miny())
+                    && (-90.0..=90.0).contains(&bounds.maxy())
+            })
         });
         let authority_latitude = source
             .bounds()
@@ -3095,6 +3317,7 @@ impl GridAffineSource {
             authority_points.push(point);
             append_source_point(&point, &mut selection_points, &mut unknown);
         }
+        let authority_edge_index = build_authority_edge_index(&authority_edges)?;
         Ok(Self {
             target,
             exact_axis_rect,
@@ -3104,6 +3327,7 @@ impl GridAffineSource {
             authority_points: authority_points.into_boxed_slice(),
             selection_points: selection_points.into_boxed_slice(),
             authority_edges: authority_edges.into_boxed_slice(),
+            authority_edge_index,
             authority_pieces: authority_pieces.into_boxed_slice(),
             selection_edges: selection_edges.into_boxed_slice(),
             unknown,
@@ -3232,10 +3456,10 @@ impl GridAffineSource {
         // This is a proof over the authoritative *linear* source, not a
         // working-image bound.  Every segment and every zero-degree polygon
         // fill is bounded by its endpoint latitudes.  A nonzero ring degree,
-        // however, has a signed pole roof: its raw vertices at (say) lat 60
-        // enclose the north cap through lat 90.  Those rings must take the
-        // exact periodic PIP below rather than turn a raw-latitude shortcut
-        // into an unsound negative.
+        // however, has a physical pole roof: its raw vertices at (say) lat 60
+        // enclose the north cap through lat 90 regardless of longitude
+        // direction. Those rings must take the exact periodic PIP below rather
+        // than turn a raw-latitude shortcut into an unsound negative.
         if !self.has_periodic_polygon_fill()
             && self
                 .authority_latitude
@@ -3264,6 +3488,20 @@ impl GridAffineSource {
     }
 
     fn classify_rect_window(&self, longitude: Bound, latitude: Bound) -> RectClass {
+        self.classify_rect_window_with_index(longitude, latitude, true)
+    }
+
+    #[cfg(test)]
+    fn classify_rect_window_exhaustive(&self, longitude: Bound, latitude: Bound) -> RectClass {
+        self.classify_rect_window_with_index(longitude, latitude, false)
+    }
+
+    fn classify_rect_window_with_index(
+        &self,
+        longitude: Bound,
+        latitude: Bound,
+        use_index: bool,
+    ) -> RectClass {
         for point in self.authority_points() {
             let Some(point) = point else {
                 return RectClass::Boundary;
@@ -3282,33 +3520,38 @@ impl GridAffineSource {
                 return RectClass::Boundary;
             }
         }
-        for edge in &self.authority_edges {
-            let (Some(start), Some(end)) = (
-                ExactPlanarPoint::from_lifted(edge.start),
-                ExactPlanarPoint::from_lifted(edge.end),
-            ) else {
-                return RectClass::Boundary;
-            };
-            let (Some(start_latitude), Some(end_latitude)) = (
-                degree_expansion_bound(&start.latitude),
-                degree_expansion_bound(&end.latitude),
-            ) else {
-                return RectClass::Boundary;
-            };
-            if !(-90.0..=90.0).contains(&start_latitude.lo)
-                || !(-90.0..=90.0).contains(&start_latitude.hi)
-                || !(-90.0..=90.0).contains(&end_latitude.lo)
-                || !(-90.0..=90.0).contains(&end_latitude.hi)
-            {
-                return RectClass::Boundary;
+        let edge_ordinals = if use_index {
+            self.authority_edge_index.as_ref().and_then(|index| {
+                let longitude = canonical_proxy_window(longitude)?;
+                let query =
+                    AABB::from_corners([longitude.lo, latitude.lo], [longitude.hi, latitude.hi]);
+                let mut ordinals = Vec::new();
+                for proxy in index.locate_in_envelope_intersecting(query) {
+                    ordinals.push(proxy.edge);
+                }
+                ordinals.sort_unstable();
+                ordinals.dedup();
+                Some(ordinals)
+            })
+        } else {
+            None
+        };
+        if let Some(edge_ordinals) = edge_ordinals {
+            for ordinal in edge_ordinals {
+                let Some(edge) = self.authority_edges.get(ordinal) else {
+                    return RectClass::Boundary;
+                };
+                if exact_authority_edge_touches_rectangle(edge, longitude, latitude).unwrap_or(true)
+                {
+                    return RectClass::Boundary;
+                }
             }
-            if exact_point_touches_rectangle(&start, longitude, latitude).unwrap_or(true)
-                || exact_point_touches_rectangle(&end, longitude, latitude).unwrap_or(true)
-            {
-                return RectClass::Boundary;
-            }
-            if exact_segment_touches_rectangle(&start, &end, longitude, latitude).unwrap_or(true) {
-                return RectClass::Boundary;
+        } else {
+            for edge in &self.authority_edges {
+                if exact_authority_edge_touches_rectangle(edge, longitude, latitude).unwrap_or(true)
+                {
+                    return RectClass::Boundary;
+                }
             }
         }
         if !self.has_polygon() {
@@ -3882,7 +4125,7 @@ fn physical_pole_chain(coords: &CoordSeq) -> Option<crate::geometry::Point> {
         .ys()
         .iter()
         .all(|&candidate| normalized_geographic_pole(candidate) == Some(north))
-        .then(|| crate::geometry::Point::new_unchecked_xy(0.0, if north { 90.0 } else { -90.0 }))
+        .then(|| crate::geometry::Point::new_raw_xy(0.0, if north { 90.0 } else { -90.0 }))
 }
 
 fn push_point(
@@ -3922,125 +4165,16 @@ fn push_chain(
 }
 
 fn product_expansion(left: f64, right: f64) -> Option<ExactExpansion> {
-    let product = left * right;
-    if !product.is_finite() {
-        return None;
+    let mut limbs = [0.0; EXPANSION_LIMBS];
+    let mut scratch = [0.0; EXPANSION_LIMBS];
+    let len = scale_expansion_zeroelim(&[left], right, &mut limbs, &mut scratch, true)?;
+    if len == 1 && limbs[0] == 0.0 {
+        return Some(ExactExpansion::zero());
     }
-    let error = left.mul_add(right, -product);
-    if !error.is_finite() {
-        return None;
-    }
-    let mut result = ExactExpansion::zero();
-    if error != 0.0 {
-        result.limbs[0] = error;
-        result.len = 1;
-    }
-    if product != 0.0 {
-        result.limbs[result.len as usize] = product;
-        result.len += 1;
-    }
-    Some(result)
-}
-
-fn two_sum(left: f64, right: f64) -> Option<(f64, f64)> {
-    let sum = left + right;
-    if !sum.is_finite() {
-        return None;
-    }
-    let right_virtual = sum - left;
-    Some((
-        sum,
-        (left - (sum - right_virtual)) + (right - right_virtual),
-    ))
-}
-
-fn fast_two_sum(left: f64, right: f64) -> Option<(f64, f64)> {
-    let sum = left + right;
-    sum.is_finite().then_some((sum, right - (sum - left)))
-}
-
-fn expansion_sum_zeroelim(left: &[f64], right: &[f64], output: &mut [f64]) -> Option<usize> {
-    if left.len() + right.len() > output.len() {
-        return None;
-    }
-    if left.is_empty() {
-        output[..right.len()].copy_from_slice(right);
-        return Some(right.len());
-    }
-    if right.is_empty() {
-        output[..left.len()].copy_from_slice(left);
-        return Some(left.len());
-    }
-    let mut left_index = 0;
-    let mut right_index = 0;
-    let mut left_now = left[left_index];
-    let mut right_now = right[right_index];
-    let mut accumulator;
-    if (right_now > left_now) == (right_now > -left_now) {
-        accumulator = left_now;
-        left_index += 1;
-    } else {
-        accumulator = right_now;
-        right_index += 1;
-    }
-    let mut output_len = 0;
-    if left_index < left.len() && right_index < right.len() {
-        left_now = left[left_index];
-        right_now = right[right_index];
-        let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
-            left_index += 1;
-            fast_two_sum(left_now, accumulator)?
-        } else {
-            right_index += 1;
-            fast_two_sum(right_now, accumulator)?
-        };
-        accumulator = sum;
-        if tail != 0.0 {
-            output[output_len] = tail;
-            output_len += 1;
-        }
-        while left_index < left.len() && right_index < right.len() {
-            left_now = left[left_index];
-            right_now = right[right_index];
-            let (sum, tail) = if (right_now > left_now) == (right_now > -left_now) {
-                left_index += 1;
-                two_sum(accumulator, left_now)?
-            } else {
-                right_index += 1;
-                two_sum(accumulator, right_now)?
-            };
-            accumulator = sum;
-            if tail != 0.0 {
-                output[output_len] = tail;
-                output_len += 1;
-            }
-        }
-    }
-    while left_index < left.len() {
-        left_now = left[left_index];
-        let (sum, tail) = two_sum(accumulator, left_now)?;
-        accumulator = sum;
-        left_index += 1;
-        if tail != 0.0 {
-            output[output_len] = tail;
-            output_len += 1;
-        }
-    }
-    while right_index < right.len() {
-        right_now = right[right_index];
-        let (sum, tail) = two_sum(accumulator, right_now)?;
-        accumulator = sum;
-        right_index += 1;
-        if tail != 0.0 {
-            output[output_len] = tail;
-            output_len += 1;
-        }
-    }
-    if accumulator != 0.0 || output_len == 0 {
-        output[output_len] = accumulator;
-        output_len += 1;
-    }
-    Some(output_len)
+    Some(ExactExpansion {
+        limbs,
+        len: u8::try_from(len).ok()?,
+    })
 }
 
 #[cfg(test)]

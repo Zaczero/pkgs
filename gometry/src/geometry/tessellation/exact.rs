@@ -1111,7 +1111,7 @@ pub(super) fn point_in_cycle(open_cycle: &[ExactPoint], point: &ExactPoint) -> P
 
 /// V11: the same filter for "which stored site is nearer this exact point".
 /// Comparing the two affine squared distances is equivalent to the exact
-/// homogeneous form (both are scaled by the same positive `w^2`).
+/// homogeneous form (both are scaled by the same positive `w²`).
 fn squared_distance_cmp_point_filtered(
     origin: &ExactPoint,
     left: XY,
@@ -1467,7 +1467,55 @@ pub(in crate::geometry) fn compare_ratios(
     order
 }
 
+const SQUARED_DISTANCE_ERRBOUND: f64 = 128.0 * f64::EPSILON;
+
+fn normal_or_zero(value: f64) -> bool {
+    value == 0.0 || value.is_normal()
+}
+
+/// Certifies a squared-distance comparison only while every floating operation
+/// stays finite and either normal or exact zero. The error bound covers the two
+/// rounded subtractions, squares, sums, and final subtraction.
+fn squared_distance_cmp_filtered(origin: XY, left: XY, right: XY) -> Option<Ordering> {
+    let squared = |point: XY| {
+        let dx = point.x - origin.x;
+        let dy = point.y - origin.y;
+        let x_squared = dx * dx;
+        let y_squared = dy * dy;
+        let sum = x_squared + y_squared;
+        (normal_or_zero(dx)
+            && normal_or_zero(dy)
+            && normal_or_zero(x_squared)
+            && normal_or_zero(y_squared)
+            && normal_or_zero(sum))
+        .then_some(sum)
+    };
+    let left = squared(left)?;
+    let right = squared(right)?;
+    let difference = left - right;
+    let magnitude = left + right;
+    if !(normal_or_zero(difference) && normal_or_zero(magnitude)) {
+        return None;
+    }
+    let bound = (magnitude * SQUARED_DISTANCE_ERRBOUND).next_up();
+    (difference.abs() > bound).then(|| difference.total_cmp(&0.0))
+}
+
 pub(super) fn squared_distance_cmp(origin: XY, left: XY, right: XY) -> Ordering {
+    if let Some(order) = squared_distance_cmp_filtered(origin, left, right) {
+        if VERIFY_INTERVALS {
+            assert_eq!(
+                order,
+                squared_distance_cmp_exact(origin, left, right),
+                "filtered squared-distance comparison disagrees"
+            );
+        }
+        return order;
+    }
+    squared_distance_cmp_exact(origin, left, right)
+}
+
+fn squared_distance_cmp_exact(origin: XY, left: XY, right: XY) -> Ordering {
     let squared = |point: XY| {
         let dx = difference(point.x, origin.x);
         let dy = difference(point.y, origin.y);
@@ -1476,7 +1524,55 @@ pub(super) fn squared_distance_cmp(origin: XY, left: XY, right: XY) -> Ordering 
     squared(left).cmp(&squared(right))
 }
 
+fn distance_within_filtered(origin: XY, point: XY, radius: f64) -> Option<bool> {
+    let dx = point.x - origin.x;
+    let dy = point.y - origin.y;
+    let x_squared = dx * dx;
+    let y_squared = dy * dy;
+    let distance_squared = x_squared + y_squared;
+    let radius_squared = radius * radius;
+    let difference = distance_squared - radius_squared;
+    let magnitude = distance_squared + radius_squared;
+    if ![
+        dx,
+        dy,
+        x_squared,
+        y_squared,
+        distance_squared,
+        radius_squared,
+        difference,
+        magnitude,
+    ]
+    .into_iter()
+    .all(normal_or_zero)
+    {
+        return None;
+    }
+    let bound = (magnitude * SQUARED_DISTANCE_ERRBOUND).next_up();
+    if difference > bound {
+        Some(false)
+    } else if difference < -bound {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 pub(super) fn distance_within(origin: XY, point: XY, radius: f64) -> bool {
+    if let Some(within) = distance_within_filtered(origin, point, radius) {
+        if VERIFY_INTERVALS {
+            assert_eq!(
+                within,
+                distance_within_exact(origin, point, radius),
+                "filtered distance inclusion disagrees"
+            );
+        }
+        return within;
+    }
+    distance_within_exact(origin, point, radius)
+}
+
+fn distance_within_exact(origin: XY, point: XY, radius: f64) -> bool {
     let dx = difference(point.x, origin.x);
     let dy = difference(point.y, origin.y);
     dx.square()
