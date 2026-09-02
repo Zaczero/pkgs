@@ -481,7 +481,7 @@ impl PySpatialIndex {
                             builder.push_end(end).map_err(pyo3::PyErr::from)?;
                         }
                     },
-                    crate::crs::ResolvedMetric::Geodesic { .. } => {
+                    crate::crs::ResolvedMetric::Geodesic(metric) => {
                         for logical_row in array.logical_storage_rows() {
                             if let crate::array::LogicalRow::Present {
                                 logical: row_index,
@@ -491,6 +491,7 @@ impl PySpatialIndex {
                                 let mut query_cache = || products.frame_cache(row_index);
                                 self.geodesic_dwithin_query_row_matches_append(
                                     row,
+                                    metric,
                                     &mut query_cache,
                                     &plan,
                                     builder.values_mut(),
@@ -905,7 +906,7 @@ impl PySpatialIndex {
                             builder.push_end(end).map_err(pyo3::PyErr::from)?;
                         }
                     },
-                    crate::crs::ResolvedMetric::Geodesic { .. } => {
+                    crate::crs::ResolvedMetric::Geodesic(geodesic) => {
                         for logical_row in array.logical_storage_rows() {
                             if let crate::array::LogicalRow::Present {
                                 logical: row_index,
@@ -916,7 +917,7 @@ impl PySpatialIndex {
                                 let mut query_cache = || products.frame_cache(row_index);
                                 let candidates = self.geodesic_nearest_core_ties(
                                     &metric,
-                                    &resolved,
+                                    geodesic,
                                     &query,
                                     &mut query_cache,
                                     k,

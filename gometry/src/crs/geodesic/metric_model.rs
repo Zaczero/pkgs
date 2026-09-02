@@ -86,25 +86,26 @@ impl MetricModel {
     }
 }
 
-/// A [`MetricModel`] with its batch-invariant CRS resolution done ONCE: the
-/// geodesic ellipsoid object is resolved (CRS-kind check, thread-cache refresh,
-/// normalization, geodesic-cache lookup) a single time and carried by value, so
-/// a per-row/per-pair loop pays zero CRS-resolution cost (the per-pair
-/// `with_resolved_ellipsoid_metric` re-ran all of that for every element). The
-/// owned [`Geodesic`] is a handful of `f64` ellipsoid constants — cheap to clone
-/// once per batch and trivially `Send`, sidestepping the thread-local cache
-/// borrow that a borrowed metric would hold across a GIL-released loop.
+/// Batch-resolved geodesic payload owned by [`ResolvedMetric`]. The geodesic
+/// ellipsoid object is resolved (CRS-kind check, thread-cache refresh,
+/// normalization, geodesic-cache lookup) once and carried by value, so a
+/// per-row/per-pair loop pays zero CRS-resolution cost. The owned [`Geodesic`]
+/// is a handful of `f64` ellipsoid constants, cheap to clone once per batch and
+/// trivially `Send`, sidestepping the thread-local cache borrow that a borrowed
+/// metric would hold across a GIL-released loop.
+#[derive(Clone)]
+pub(crate) struct GeodesicMetric {
+    pub(crate) crs: String,
+    pub(crate) geodesic: Box<Geodesic>,
+    pub(crate) frame: GeographicFrame,
+    pub(crate) state: Arc<crate::crs::RuntimeState>,
+}
+
+/// A [`MetricModel`] with its batch-invariant CRS resolution done once.
 #[derive(Clone)]
 pub(crate) enum ResolvedMetric {
-    Planar {
-        to_metre: PositiveFiniteScale,
-    },
-    Geodesic {
-        crs: String,
-        frame: GeographicFrame,
-        geodesic: Box<Geodesic>,
-        state: Arc<crate::crs::RuntimeState>,
-    },
+    Planar { to_metre: PositiveFiniteScale },
+    Geodesic(GeodesicMetric),
 }
 
 impl ResolvedMetric {
@@ -127,12 +128,12 @@ impl ResolvedMetric {
                     MetricModel::Geodesic { frame, .. } => *frame,
                     MetricModel::Planar { .. } => unreachable!(),
                 };
-                Self::Geodesic {
+                Self::Geodesic(GeodesicMetric {
                     crs,
                     frame,
                     geodesic,
                     state: Arc::clone(state),
-                }
+                })
             },
         })
     }

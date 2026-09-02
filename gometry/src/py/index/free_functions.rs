@@ -252,7 +252,7 @@ pub(crate) fn join_pair_columns(
                     }
                 }
             },
-            crate::crs::ResolvedMetric::Geodesic { .. } => {
+            crate::crs::ResolvedMetric::Geodesic(metric) => {
                 for logical_row in array.logical_storage_rows() {
                     let crate::array::LogicalRow::Present { logical, row } = logical_row else {
                         continue;
@@ -261,6 +261,7 @@ pub(crate) fn join_pair_columns(
                     let mut query_cache = || products.frame_cache(logical);
                     index.geodesic_dwithin_query_row_matches_append(
                         row,
+                        metric,
                         &mut query_cache,
                         &plan,
                         &mut scratch,

@@ -194,9 +194,9 @@ impl PySpatialIndex {
                 &mut leaf_frontier,
                 &mut visited,
             ),
-            crs::ResolvedMetric::Geodesic { .. } => self.geodesic_nearest_core_ties(
+            crs::ResolvedMetric::Geodesic(geodesic) => self.geodesic_nearest_core_ties(
                 &metric,
-                &resolved,
+                geodesic,
                 &query_plan,
                 &mut query_cache,
                 k,
@@ -329,7 +329,7 @@ impl PySpatialIndex {
     pub(crate) fn geodesic_nearest_core_ties<'a>(
         &'a self,
         metric: &crs::MetricModel,
-        resolved: &crs::ResolvedMetric,
+        resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
         query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
@@ -373,7 +373,7 @@ impl PySpatialIndex {
     pub(crate) fn geodesic_nearest_core<'a>(
         &'a self,
         metric: &crs::MetricModel,
-        resolved: &crs::ResolvedMetric,
+        resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
         query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
@@ -397,20 +397,8 @@ impl PySpatialIndex {
                     |envelope| pruner.envelope_lower_bound(envelope),
                     |idx| {
                         let data = self.rows.prepared_row_with(idx, &mut products);
-                        let crs::ResolvedMetric::Geodesic {
-                            crs,
-                            geodesic,
-                            frame,
-                            state,
-                        } = resolved
-                        else {
-                            unreachable!("geodesic nearest branch")
-                        };
                         pair_distance_geodesic(
-                            crs,
-                            geodesic,
-                            *frame,
-                            state,
+                            resolved,
                             &data,
                             &self.rows.frame_cache_with(idx, &mut products),
                             query,
@@ -430,20 +418,8 @@ impl PySpatialIndex {
                 |envelope| pruner.envelope_lower_bound(envelope),
                 |idx| {
                     let data = self.rows.prepared_row_with(idx, &mut products);
-                    let crs::ResolvedMetric::Geodesic {
-                        crs,
-                        geodesic,
-                        frame,
-                        state,
-                    } = resolved
-                    else {
-                        unreachable!("geodesic nearest branch")
-                    };
                     pair_distance_geodesic(
-                        crs,
-                        geodesic,
-                        *frame,
-                        state,
+                        resolved,
                         &data,
                         &self.rows.frame_cache_with(idx, &mut products),
                         query,
@@ -462,15 +438,9 @@ impl PySpatialIndex {
         // Geodesic metric without a sound envelope bound (non-point shapes
         // realize edge points outside their planar envelope): cap-ordered
         // scan when the per-row cap table holds, exact full scan otherwise.
-        if let Some(result) = self.geodesic_capped_nearest(
-            metric,
-            resolved,
-            query,
-            query_cache,
-            k,
-            max_distance,
-            exclude,
-        )? {
+        if let Some(result) =
+            self.geodesic_capped_nearest(resolved, query, query_cache, k, max_distance, exclude)?
+        {
             return Ok(result);
         }
         let mut nearest: BinaryHeap<NearestCandidate> = BinaryHeap::new();
@@ -487,20 +457,8 @@ impl PySpatialIndex {
                 continue;
             }
             let data = self.rows.prepared_row_with(entry.idx, &mut products);
-            let crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic,
-                frame,
-                state,
-            } = resolved
-            else {
-                unreachable!("geodesic nearest branch")
-            };
             let distance = pair_distance_geodesic(
-                crs,
-                geodesic,
-                *frame,
-                state,
+                resolved,
                 &data,
                 &self.rows.frame_cache_with(entry.idx, &mut products),
                 query,

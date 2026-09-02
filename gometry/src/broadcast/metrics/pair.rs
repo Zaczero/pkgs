@@ -30,21 +30,11 @@ fn dispatch_metric_model<R>(
 fn dispatch_resolved_metric<R>(
     metric: &crs::ResolvedMetric,
     planar: impl FnOnce(f64) -> crate::error::Result<R>,
-    run_geodesic: impl FnOnce(
-        &str,
-        &geographiclib_rs::Geodesic,
-        GeographicFrame,
-        &crs::RuntimeState,
-    ) -> crate::error::Result<R>,
+    run_geodesic: impl FnOnce(&crs::GeodesicMetric) -> crate::error::Result<R>,
 ) -> crate::error::Result<R> {
     match metric {
         crs::ResolvedMetric::Planar { to_metre } => planar(to_metre.get()),
-        crs::ResolvedMetric::Geodesic {
-            crs,
-            geodesic,
-            frame,
-            state,
-        } => run_geodesic(crs, geodesic, *frame, state),
+        crs::ResolvedMetric::Geodesic(metric) => run_geodesic(metric),
     }
 }
 
@@ -271,8 +261,8 @@ pub(crate) fn geodesic_split_operands(
     a: &PreparedPlan,
     b: &PreparedPlan,
 ) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
-    if let crs::ResolvedMetric::Geodesic { frame, .. } = metric {
-        return split_geodesic_operands(*frame, a, b);
+    if let crs::ResolvedMetric::Geodesic(metric) = metric {
+        return split_geodesic_operands(metric.frame, a, b);
     }
     Ok(None)
 }
@@ -327,21 +317,15 @@ pub(crate) fn pair_distance_planar(
 }
 
 pub(crate) fn pair_distance_geodesic(
-    crs: &str,
-    geodesic: &geographiclib_rs::Geodesic,
-    frame: GeographicFrame,
-    state: &crs::RuntimeState,
+    metric: &crs::GeodesicMetric,
     a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<f64> {
-    if let Some((a, b)) = split_geodesic_operands(frame, a, b)? {
+    if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
         return pair_distance_geodesic(
-            crs,
-            geodesic,
-            frame,
-            state,
+            metric,
             &a,
             &FrameDependentCaches::default(),
             &b,
@@ -351,10 +335,23 @@ pub(crate) fn pair_distance_geodesic(
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(f64::INFINITY);
     }
-    let (ellipsoid, semi_major, flattening) =
-        prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
+    let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
+        &metric.geodesic,
+        a,
+        b,
+        metric.frame,
+        metric.state.generation,
+    )?;
     finite_geodesic_value(
-        a.geodesic_distance_cached(a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid)?,
+        a.geodesic_distance_cached(
+            a_cache,
+            b,
+            b_cache,
+            &metric.crs,
+            semi_major,
+            flattening,
+            &ellipsoid,
+        )?,
         "geodesic distance",
     )
 }
@@ -370,10 +367,7 @@ pub(crate) fn pair_dwithin_planar(
 }
 
 pub(crate) fn pair_dwithin_geodesic(
-    crs: &str,
-    geodesic: &geographiclib_rs::Geodesic,
-    frame: GeographicFrame,
-    state: &crs::RuntimeState,
+    metric: &crs::GeodesicMetric,
     a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
@@ -381,12 +375,9 @@ pub(crate) fn pair_dwithin_geodesic(
     distance: f64,
 ) -> crate::error::Result<bool> {
     let distance = NonNegative::try_new("distance", distance)?.get();
-    if let Some((a, b)) = split_geodesic_operands(frame, a, b)? {
+    if let Some((a, b)) = split_geodesic_operands(metric.frame, a, b)? {
         return pair_dwithin_geodesic(
-            crs,
-            geodesic,
-            frame,
-            state,
+            metric,
             &a,
             &FrameDependentCaches::default(),
             &b,
@@ -397,10 +388,22 @@ pub(crate) fn pair_dwithin_geodesic(
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(false);
     }
-    let (ellipsoid, semi_major, flattening) =
-        prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
+    let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
+        &metric.geodesic,
+        a,
+        b,
+        metric.frame,
+        metric.state.generation,
+    )?;
     a.geodesic_dwithin_cached(
-        a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid, distance,
+        a_cache,
+        b,
+        b_cache,
+        &metric.crs,
+        semi_major,
+        flattening,
+        &ellipsoid,
+        distance,
     )
 }
 
@@ -678,11 +681,22 @@ pub(crate) fn metric_nearest_points_resolved(
     dispatch_resolved_metric(
         metric,
         |_| Ok(a.nearest_points(b)),
-        |crs, geodesic, frame, state| {
-            let (ellipsoid, semi_major, flattening) =
-                prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
+        |metric| {
+            let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
+                &metric.geodesic,
+                a,
+                b,
+                metric.frame,
+                metric.state.generation,
+            )?;
             a.geodesic_nearest_points_cached(
-                a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid,
+                a_cache,
+                b,
+                b_cache,
+                &metric.crs,
+                semi_major,
+                flattening,
+                &ellipsoid,
             )
         },
     )

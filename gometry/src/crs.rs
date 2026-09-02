@@ -81,8 +81,8 @@ pub(crate) use error::CrsError;
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
-    AngleUnit, DistanceMode, EllipsoidMetric, EllipsoidShape, MetricModel, ResolvedMetric,
-    ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
+    AngleUnit, DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicMetric, MetricModel,
+    ResolvedMetric, ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
     geodesic_bearing, geodesic_bearing_crs_at, geodesic_cross_track_crs_at,
     geodesic_cross_track_radius_crs_at, geodesic_cross_track_with_radius, geodesic_destination,

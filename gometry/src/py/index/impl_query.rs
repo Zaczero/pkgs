@@ -180,20 +180,12 @@ impl PySpatialIndex {
                                     .map_err(Into::into)
                             })?
                         },
-                        crs::ResolvedMetric::Geodesic {
-                            crs,
-                            geodesic,
-                            frame,
-                            state,
-                        } => {
+                        crs::ResolvedMetric::Geodesic(metric) => {
                             let query_cache = self.rows.frame_cache_with(i, &mut products);
                             retain_row(&mut candidates, 0, |idx| {
                                 let data = self.rows.prepared_row_with(idx, &mut products);
                                 pair_dwithin_geodesic(
-                                    crs,
-                                    geodesic,
-                                    *frame,
-                                    state,
+                                    metric,
                                     &data,
                                     &self.rows.frame_cache_with(idx, &mut products),
                                     &query,
@@ -303,24 +295,22 @@ impl PySpatialIndex {
         &self,
         metric: &crs::MetricModel,
     ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
-        let crs::MetricModel::Geodesic { frame, state, .. } = metric else {
+        let crs::MetricModel::Geodesic { crs, frame, state } = metric else {
             return Ok(None);
         };
         if *frame != crate::geographic::GeographicFrame::crs84() {
             return Ok(None);
         }
-        self.geodesic_row_caps_at(metric, state)
+        self.geodesic_row_caps_at(crs, *frame, state)
     }
 
     fn geodesic_row_caps_at(
         &self,
-        metric: &crs::MetricModel,
+        crs: &str,
+        frame: crate::geographic::GeographicFrame,
         runtime_state: &crs::RuntimeState,
     ) -> PyResult<Option<Arc<GeodesicRowCaps>>> {
-        let crs::MetricModel::Geodesic { crs, frame, .. } = metric else {
-            return Ok(None);
-        };
-        if *frame != crate::geographic::GeographicFrame::crs84() {
+        if frame != crate::geographic::GeographicFrame::crs84() {
             return Ok(None);
         }
         let runtime_gen = runtime_state.generation;
@@ -393,38 +383,28 @@ impl PySpatialIndex {
     /// full scan owns those (including their domain errors).
     pub(crate) fn geodesic_capped_nearest(
         &self,
-        metric: &crs::MetricModel,
-        resolved: &crs::ResolvedMetric,
+        metric: &crs::GeodesicMetric,
         query: &PreparedPlan,
         query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
     ) -> PyResult<Option<Vec<NearestCandidate>>> {
-        let crs::MetricModel::Geodesic {
-            state: runtime_state,
-            ..
-        } = metric
+        let Some(caps) = self.geodesic_row_caps_at(&metric.crs, metric.frame, &metric.state)?
         else {
             return Ok(None);
         };
-        let Some(caps) = self.geodesic_row_caps_at(metric, runtime_state)? else {
-            return Ok(None);
-        };
         let query_cache_owner = query_cache();
-        let crs::MetricModel::Geodesic { crs, .. } = metric else {
-            return Ok(None);
-        };
         let Some((anchor, reach)) =
-            crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
+            crs::with_ellipsoid_metric_at(&metric.crs, &[], &metric.state, |ellipsoid| {
                 let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
                 query.geodesic_cap_cached(
                     &query_cache_owner,
-                    crs,
+                    &metric.crs,
                     semi_major,
                     flattening,
                     ellipsoid,
-                    &runtime_state,
+                    &metric.state,
                 )
             })
             .ok()
@@ -468,20 +448,8 @@ impl PySpatialIndex {
                 continue;
             }
             let data = self.rows.prepared_row_with(idx, &mut products);
-            let crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic,
-                frame,
-                state,
-            } = resolved
-            else {
-                unreachable!("geodesic capped nearest")
-            };
             let distance = pair_distance_geodesic(
-                crs,
-                geodesic,
-                *frame,
-                state,
+                metric,
                 &data,
                 &self.rows.frame_cache_with(idx, &mut products),
                 query,
@@ -715,14 +683,14 @@ impl PySpatialIndex {
     ) -> PyResult<()> {
         let row_start = matches.len();
         let prepared = plan.row(self, row, seeded_bounds);
-        let (predicate, candidate_distance, metric) = plan.candidate_parts();
+        let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
             prepared.pruner_point,
             prepared.cap,
             predicate,
             candidate_distance,
-            metric,
+            candidate_metric,
             matches,
         )?;
         let PreparedIndexQuery::Dwithin {
@@ -753,6 +721,7 @@ impl PySpatialIndex {
     pub(crate) fn geodesic_dwithin_query_row_matches_append(
         &self,
         row: ShapeRow<'_>,
+        metric: &crs::GeodesicMetric,
         query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
@@ -760,30 +729,18 @@ impl PySpatialIndex {
     ) -> PyResult<()> {
         let row_start = matches.len();
         let prepared = plan.row(self, row, seeded_bounds);
-        let (predicate, candidate_distance, metric) = plan.candidate_parts();
+        let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
             prepared.pruner_point,
             prepared.cap,
             predicate,
             candidate_distance,
-            metric,
+            candidate_metric,
             matches,
         )?;
-        let PreparedIndexQuery::Dwithin {
-            resolved, distance, ..
-        } = plan
-        else {
+        let PreparedIndexQuery::Dwithin { distance, .. } = plan else {
             unreachable!("dwithin matcher is called only with a dwithin plan")
-        };
-        let crs::ResolvedMetric::Geodesic {
-            crs,
-            geodesic,
-            frame,
-            state,
-        } = resolved
-        else {
-            unreachable!("geodesic dwithin runner receives a geodesic query")
         };
         let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds);
         let query_cache = query_cache();
@@ -791,10 +748,7 @@ impl PySpatialIndex {
         retain_row(matches, row_start, |idx| {
             let data = self.rows.prepared_row_with(idx, &mut products);
             pair_dwithin_geodesic(
-                crs,
-                geodesic,
-                *frame,
-                state,
+                metric,
                 &data,
                 &self.rows.frame_cache_with(idx, &mut products),
                 &query,
@@ -1018,18 +972,10 @@ impl PySpatialIndex {
                                 .map_err(Into::into)
                         })?
                     },
-                    crs::ResolvedMetric::Geodesic {
-                        crs,
-                        geodesic,
-                        frame,
-                        state,
-                    } => retain_row(&mut matches, 0, |idx| {
+                    crs::ResolvedMetric::Geodesic(metric) => retain_row(&mut matches, 0, |idx| {
                         let data = self.rows.prepared_row_with(idx, &mut products);
                         pair_dwithin_geodesic(
-                            crs,
-                            geodesic,
-                            *frame,
-                            state,
+                            metric,
                             &data,
                             &self.rows.frame_cache_with(idx, &mut products),
                             &query_plan,
@@ -1185,12 +1131,7 @@ impl PySpatialIndex {
                         })
                     },
                 ),
-                crs::ResolvedMetric::Geodesic {
-                    crs,
-                    geodesic,
-                    frame,
-                    state,
-                } => self.point_rows_dwithin(
+                crs::ResolvedMetric::Geodesic(geodesic) => self.point_rows_dwithin(
                     points,
                     missing,
                     *distance,
@@ -1200,10 +1141,7 @@ impl PySpatialIndex {
                         retain_row(ids, row_start, |idx| {
                             let data = self.rows.prepared_row_with(idx, products);
                             pair_dwithin_geodesic(
-                                crs,
                                 geodesic,
-                                *frame,
-                                state,
                                 query,
                                 &query_cache,
                                 &data,

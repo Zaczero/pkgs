@@ -927,23 +927,14 @@ mod frame_cache_row_tests {
         let probe_cache = FrameDependentCaches::default();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
         let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
-        let crate::crs::ResolvedMetric::Geodesic {
-            crs,
-            geodesic,
-            frame,
-            state,
-        } = &resolved
-        else {
+        let crate::crs::ResolvedMetric::Geodesic(metric) = &resolved else {
             panic!("EPSG:4326 resolves geodesically")
         };
 
         for row in [0, 1] {
             let data = PreparedRow::transient(array.storage().row(row));
             crate::broadcast::pair_distance_geodesic(
-                crs,
-                geodesic,
-                *frame,
-                state,
+                metric,
                 &data,
                 &array.row_products.frame_cache(row),
                 &probe,

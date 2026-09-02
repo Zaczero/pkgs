@@ -154,8 +154,8 @@ pub(crate) use measure::{
     with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use metric_model::{
-    MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at, metric_model,
-    metric_model_meters,
+    GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
+    metric_model, metric_model_meters,
 };
 pub(crate) use nearest_lrs::{
     geodesic_line_interpolate, geodesic_line_interpolate_coordseq, geodesic_line_locate,

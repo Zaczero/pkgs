@@ -196,10 +196,7 @@ pub(crate) struct LinearReferenceRow<'a> {
 }
 
 pub(crate) struct GeodesicBinaryRow<'a> {
-    pub crs: &'a str,
-    pub geodesic: &'a geographiclib_rs::Geodesic,
-    pub frame: crate::geographic::GeographicFrame,
-    pub state: &'a crate::crs::RuntimeState,
+    pub metric: &'a crate::crs::GeodesicMetric,
     pub left_cache: &'a crate::geometry::FrameDependentCaches,
     pub right_cache: &'a crate::geometry::FrameDependentCaches,
 }

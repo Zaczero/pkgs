@@ -564,9 +564,9 @@ fn segmentize_metric(
     };
     let model = crate::broadcast::resolve_metric(array.crs_str(), unit, "segmentize")?;
     match crate::crs::ResolvedMetric::from_model(&model)? {
-        crate::crs::ResolvedMetric::Geodesic {
-            geodesic, frame, ..
-        } => Ok((Some((*geodesic, frame)), 1.0)),
+        crate::crs::ResolvedMetric::Geodesic(metric) => {
+            Ok((Some((*metric.geodesic, metric.frame)), 1.0))
+        },
         crate::crs::ResolvedMetric::Planar { to_metre } => Ok((None, to_metre.get())),
     }
 }

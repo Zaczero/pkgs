@@ -738,24 +738,26 @@ pub(crate) fn array_crs_distances(
                         )?,
                     )
                 },
-                crs::ResolvedMetric::Geodesic {
-                    crs,
-                    geodesic,
-                    frame,
-                    state,
-                } => {
-                    let geodesic = **geodesic;
+                crs::ResolvedMetric::Geodesic(metric) => {
+                    let geodesic = *metric.geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            crs::geodesic_point_pair_distances(&geodesic, lx, ly, rx, ry, *frame)
+                            crs::geodesic_point_pair_distances(
+                                &geodesic,
+                                lx,
+                                ly,
+                                rx,
+                                ry,
+                                metric.frame,
+                            )
                         });
                     let packed_planar = Some(move |left, right| {
                         crs::geodesic_point_pair_distance(
                             &geodesic,
                             left,
                             right,
-                            *frame,
-                            state.generation,
+                            metric.frame,
+                            metric.state.generation,
                         )
                     });
                     float64_array(
@@ -770,10 +772,7 @@ pub(crate) fn array_crs_distances(
                             f64::NAN,
                             |row, left, right_data, left_products, right_products| {
                                 pair_distance_geodesic(
-                                    crs,
-                                    &geodesic,
-                                    *frame,
-                                    state,
+                                    metric,
                                     left,
                                     &left_products.frame_cache(row),
                                     right_data,
@@ -884,17 +883,18 @@ pub(crate) fn array_crs_dwithin(
                         )?,
                     )
                 },
-                crs::ResolvedMetric::Geodesic {
-                    crs,
-                    geodesic,
-                    frame,
-                    state,
-                } => {
-                    let geodesic = **geodesic;
+                crs::ResolvedMetric::Geodesic(metric) => {
+                    let geodesic = *metric.geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             crs::geodesic_point_pair_dwithin(
-                                &geodesic, lx, ly, rx, ry, distance, *frame,
+                                &geodesic,
+                                lx,
+                                ly,
+                                rx,
+                                ry,
+                                distance,
+                                metric.frame,
                             )
                         });
                     let packed_planar = Some(move |left, right| {
@@ -903,8 +903,8 @@ pub(crate) fn array_crs_dwithin(
                             left,
                             right,
                             distance,
-                            *frame,
-                            state.generation,
+                            metric.frame,
+                            metric.state.generation,
                         )
                     });
                     bool_array(
@@ -919,10 +919,7 @@ pub(crate) fn array_crs_dwithin(
                             false,
                             |row, left, right_data, left_products, right_products| {
                                 pair_dwithin_geodesic(
-                                    crs,
-                                    &geodesic,
-                                    *frame,
-                                    state,
+                                    metric,
                                     left,
                                     &left_products.frame_cache(row),
                                     right_data,
@@ -1014,12 +1011,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                         })
                         .collect::<PyResult<_>>()?
                 },
-                crs::ResolvedMetric::Geodesic {
-                    crs,
-                    geodesic,
-                    frame,
-                    state,
-                } => array
+                crs::ResolvedMetric::Geodesic(metric) => array
                     .logical_storage_rows()
                     .map(|left| {
                         let crate::array::LogicalRow::Present {
@@ -1032,10 +1024,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                         let left = array.prepared_row_with(&mut products, row, left);
                         let left_cache = products.frame_cache(row);
                         pair_dwithin_geodesic(
-                            crs,
-                            geodesic,
-                            *frame,
-                            state,
+                            metric,
                             &left,
                             &left_cache,
                             &right_plan,
@@ -1098,12 +1087,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                         })
                         .collect::<PyResult<_>>()?
                 },
-                crs::ResolvedMetric::Geodesic {
-                    crs,
-                    geodesic,
-                    frame,
-                    state,
-                } => array
+                crs::ResolvedMetric::Geodesic(metric) => array
                     .logical_storage_rows()
                     .zip(right.logical_storage_rows())
                     .map(|(left, right_row)| {
@@ -1123,10 +1107,7 @@ pub(crate) fn array_crs_dwithin_per_element(
                         let left_cache = left_products.frame_cache(row);
                         let right_cache = right_products.frame_cache(row);
                         pair_dwithin_geodesic(
-                            crs,
-                            geodesic,
-                            *frame,
-                            state,
+                            metric,
                             &left,
                             &left_cache,
                             &right_data,
@@ -1191,12 +1172,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                         .map_err(Into::into)
                 })
                 .collect::<PyResult<Vec<_>>>()?,
-            crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic,
-                frame,
-                state,
-            } => array_owned
+            crs::ResolvedMetric::Geodesic(metric) => array_owned
                 .logical_storage_rows()
                 .map(|row| {
                     let crate::array::LogicalRow::Present {
@@ -1209,10 +1185,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                     let left = array_owned.prepared_row_with(&mut products, row_index, row);
                     let left_cache = products.frame_cache(row_index);
                     pair_dwithin_geodesic(
-                        crs,
-                        geodesic,
-                        *frame,
-                        state,
+                        metric,
                         &left,
                         &left_cache,
                         &other_shape,

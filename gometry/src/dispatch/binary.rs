@@ -400,23 +400,11 @@ where
             let value = py.detach(|| planar(to_metre.get(), &left, &right))?;
             R::into_py(value, py, &frame)
         },
-        (
-            One(left),
-            One(right),
-            crate::crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic: metric,
-                frame: geographic_frame,
-                state,
-            },
-        ) => {
+        (One(left), One(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
             let left_plan = left.plan_or_transient();
             let right_plan = right.plan_or_transient();
             let row = GeodesicBinaryRow {
-                crs,
-                geodesic: metric,
-                frame: *geographic_frame,
-                state,
+                metric,
                 left_cache: &left.frame_cache(),
                 right_cache: &right.frame_cache(),
             };
@@ -454,26 +442,8 @@ where
                 .map_err(rows_err)?;
             R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
         },
-        (
-            Many(array),
-            One(fixed),
-            crate::crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic: metric,
-                frame: geographic_frame,
-                state,
-            },
-        )
-        | (
-            One(fixed),
-            Many(array),
-            crate::crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic: metric,
-                frame: geographic_frame,
-                state,
-            },
-        ) => {
+        (Many(array), One(fixed), crate::crs::ResolvedMetric::Geodesic(metric))
+        | (One(fixed), Many(array), crate::crs::ResolvedMetric::Geodesic(metric)) => {
             let scalar_left = matches!(left_input, One(_));
             let fixed_plan = fixed.plan_or_transient();
             let fixed_cache = fixed.frame_cache();
@@ -496,19 +466,13 @@ where
                             let row_cache = products.frame_cache(row_index);
                             let row = if scalar_left {
                                 GeodesicBinaryRow {
-                                    crs,
-                                    geodesic: metric,
-                                    frame: *geographic_frame,
-                                    state,
+                                    metric,
                                     left_cache: &fixed_cache,
                                     right_cache: &row_cache,
                                 }
                             } else {
                                 GeodesicBinaryRow {
-                                    crs,
-                                    geodesic: metric,
-                                    frame: *geographic_frame,
-                                    state,
+                                    metric,
                                     left_cache: &row_cache,
                                     right_cache: &fixed_cache,
                                 }
@@ -556,16 +520,7 @@ where
                 .map_err(rows_err)?;
             R::bulk_into_py_masked(values, py, &frame, output_missing.as_ref())
         },
-        (
-            Many(left),
-            Many(right),
-            crate::crs::ResolvedMetric::Geodesic {
-                crs,
-                geodesic: metric,
-                frame: geographic_frame,
-                state,
-            },
-        ) => {
+        (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
             paired_arrays(left, right, op_name)?;
             let missing = crate::array::missing::union_pair(left.missing(), right.missing());
             let output_missing = missing.clone();
@@ -593,10 +548,7 @@ where
                             let left_cache = left_products.frame_cache(row_index);
                             let right_cache = right_products.frame_cache(row_index);
                             let row = GeodesicBinaryRow {
-                                crs,
-                                geodesic: metric,
-                                frame: *geographic_frame,
-                                state,
+                                metric,
                                 left_cache: &left_cache,
                                 right_cache: &right_cache,
                             };

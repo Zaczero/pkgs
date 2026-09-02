@@ -562,11 +562,12 @@ impl PyGeometryArray {
                 })
             },
             model @ crs::MetricModel::Geodesic { frame, .. } => {
-                let crs::ResolvedMetric::Geodesic { geodesic, .. } =
+                let crs::ResolvedMetric::Geodesic(metric) =
                     crs::ResolvedMetric::from_model(&model)?
                 else {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };
+                let geodesic = metric.geodesic;
                 self.reduce_packed_columns_detached(py, move |columns| {
                     ensure_geographic_columns_present(&columns, missing.as_ref(), frame)
                         .map_err(PackedColumnError::Batch)?;
@@ -645,11 +646,12 @@ impl PyGeometryArray {
                 })
             },
             model @ crs::MetricModel::Geodesic { frame, .. } => {
-                let crs::ResolvedMetric::Geodesic { geodesic, .. } =
+                let crs::ResolvedMetric::Geodesic(metric) =
                     crs::ResolvedMetric::from_model(&model)?
                 else {
                     unreachable!("geodesic model resolves to a geodesic metric");
                 };
+                let geodesic = metric.geodesic;
                 self.reduce_packed_columns_detached(py, move |columns| {
                     ensure_geographic_columns_present(&columns, missing.as_ref(), frame)
                         .map_err(PackedColumnError::Batch)?;

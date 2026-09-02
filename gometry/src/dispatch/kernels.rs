@@ -499,13 +499,11 @@ pub(crate) fn unary_segmentize(
         // distance the caller named is a real-world one, exactly as it is for
         // `length`. `segmentize` only INSERTS vertices, so every original
         // survives bit-exactly under either placement.
-        ResolvedMetric::Geodesic {
-            geodesic, frame, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+        ResolvedMetric::Geodesic(metric) => {
+            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
             data.shape().segmentize_budgeted(
                 length,
-                crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame),
+                crate::geometry::SegmentPlacement::Geodesic(&metric.geodesic, metric.frame),
                 &mut budget,
             )
         },
@@ -528,14 +526,12 @@ pub(crate) fn unary_densify(
 ) -> Result<Shape> {
     let fraction = fraction.get(ctx.lane.row());
     match ctx.metric.require_resolved("segmentize")? {
-        ResolvedMetric::Geodesic {
-            geodesic, frame, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+        ResolvedMetric::Geodesic(metric) => {
+            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
             let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
             data.shape().densified_budgeted_with_placement(
                 fraction,
-                crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame),
+                crate::geometry::SegmentPlacement::Geodesic(&metric.geodesic, metric.frame),
                 &mut budget,
             )
         },
@@ -548,14 +544,12 @@ pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> 
     let metric = ctx.metric.require_resolved("area")?;
     match metric {
         ResolvedMetric::Planar { to_metre } => Ok(scale_area(data.shape().area(), to_metre.get())),
-        ResolvedMetric::Geodesic {
-            geodesic, frame, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+        ResolvedMetric::Geodesic(metric) => {
+            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
             Ok(crate::crs::geodesic_shape_area(
-                geodesic,
+                &metric.geodesic,
                 data.shape(),
-                *frame,
+                metric.frame,
             ))
         },
     }
@@ -568,14 +562,12 @@ pub(crate) fn unary_length(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -
         ResolvedMetric::Planar { to_metre } => {
             Ok(scale_length(data.shape().length(), to_metre.get()))
         },
-        ResolvedMetric::Geodesic {
-            geodesic, frame, ..
-        } => {
-            crate::crs::ensure_geographic_domain_in_frame(*frame, data.shape())?;
+        ResolvedMetric::Geodesic(metric) => {
+            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
             Ok(crate::crs::geodesic_shape_length(
-                geodesic,
+                &metric.geodesic,
                 data.shape(),
-                *frame,
+                metric.frame,
             ))
         },
     }
@@ -826,10 +818,7 @@ pub(crate) fn binary_distance(
     ctx: &GeodesicBinaryRow<'_>,
 ) -> Result<f64> {
     crate::broadcast::pair_distance_geodesic(
-        ctx.crs,
-        ctx.geodesic,
-        ctx.frame,
-        ctx.state,
+        ctx.metric,
         left,
         ctx.left_cache,
         right,
@@ -845,10 +834,7 @@ pub(crate) fn binary_dwithin(
     distance: f64,
 ) -> Result<bool> {
     crate::broadcast::pair_dwithin_geodesic(
-        ctx.crs,
-        ctx.geodesic,
-        ctx.frame,
-        ctx.state,
+        ctx.metric,
         left,
         ctx.left_cache,
         right,
