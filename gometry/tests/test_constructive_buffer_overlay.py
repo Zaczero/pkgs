@@ -308,6 +308,31 @@ def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
     assert sorted(forward[0].coords.to_nested()) == sorted(reverse[0].coords.to_nested())
 
 
+def test_buffer_rejects_nonfinite_derived_coordinates_without_empty_fallback() -> None:
+    polygon = gm.Polygon([
+        (-1e308, -1e308),
+        (1e308, -1e308),
+        (1e308, 1e308),
+        (-1e308, 1e308),
+        (-1e308, -1e308),
+    ])
+    with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
+        polygon.buffer(1e300)
+    with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
+        gm.GeometryArray([polygon]).buffer(1e300)
+    assert polygon.buffer(0).to_wkt() == polygon.to_wkt()
+
+    line = gm.LineString([(1e308, 0.0), (1e308, 1.0)])
+    with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
+        line.buffer(1e308, side='right')
+    with pytest.raises(gm.InvalidGeometryError, match='non-finite'):
+        gm.GeometryArray([line]).buffer(1e308, side='right')
+
+    ordinary = gm.Point(1e150, -1e150).buffer(1e150)
+    assert not ordinary.is_empty
+    assert all(np.isfinite(value) for point in ordinary.coords for value in point[:2])
+
+
 def test_snap_dedups_only_identical_projected_positions() -> None:
     # Two reference points 5e-13 apart on the unit segment both lie exactly on
     # it; even at tolerance 0 they insert as distinct vertices rather than

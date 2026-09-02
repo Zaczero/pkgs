@@ -86,7 +86,8 @@ unit : {'planar', 'meters'}, default None
 Raises
 ------
 InvalidGeometryError
-    If coordinates are non-finite.
+    If coordinates are non-finite or buffer arithmetic produces a non-finite
+    derived coordinate.
 GeometryError
     If ``distance``/``quadrant_segments``/style parameters are invalid, or
     ``unit=meters`` is requested for a CRS-free geometry.

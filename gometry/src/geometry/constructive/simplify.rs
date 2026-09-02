@@ -9,9 +9,9 @@ use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_filter};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryKind, LineSeq, MultiMember,
-    MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Segment, Shape,
-    TopologyGuard, XY, carry_ordinates, dedup_consecutive_points, line_segments,
+    Bounds, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind, LineSeq,
+    MultiMember, MultiPolygon, Orientation, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Segment,
+    Shape, TopologyGuard, XY, carry_ordinates, dedup_consecutive_points, line_segments,
     open_point_cycle_winding, orientation, point_segment_distance, point_segment_distance_squared,
     same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
     unique_xy_points, vw_area_tolerance, wrap_index,
@@ -265,6 +265,17 @@ pub(crate) fn raw_offset_loop(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
+    // A finite endpoint pair can still produce an infinite delta before the
+    // normal is computed. This is a failed derived calculation, not a
+    // geometric fallback: the public buffer must not turn it into EMPTY.
+    if strict.iter().enumerate().any(|(index, from)| {
+        let to = strict[(index + 1) % strict.len()];
+        !(to.x - from.x).is_finite() || !(to.y - from.y).is_finite()
+    }) {
+        return Err(GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
+    }
     let quadrant_segments = quadrant_segments.get();
     let step_angle = std::f64::consts::FRAC_PI_2 / f64::from(quadrant_segments);
     let Some(plan) = WalkPlan::new(strict, true, distance, rule, step_angle) else {
@@ -272,7 +283,7 @@ pub(crate) fn raw_offset_loop(
     };
     // Capacity: two offset points per edge, up to one reflex insert per
     // vertex, and one full turn (4 quadrants) of arc steps.
-    let Some(columns) = materialize_walk(&plan, step_angle, false, budget)? else {
+    let Some(columns) = materialize_walk(&plan, step_angle, false, budget, true)? else {
         return Ok(None);
     };
     let (xs, ys, _) = columns.into_columns();

@@ -22,7 +22,17 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     points: &C,
     signed: f64,
 ) -> Result<Vec<Polygon>> {
+    let source = offset_source(points);
     let Some(strip) = sided_strip(points, signed) else {
+        let offset_failed = source.as_ref().is_some_and(|source| {
+            offset_segments(&source.vertices, source.closed, signed).len()
+                != source.segment_count()
+        });
+        if offset_failed {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
+        }
         return Ok(Vec::new());
     };
     let strip = Shape::Polygon(strip);
@@ -217,7 +227,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     let Some(plan) = WalkPlan::new(&walk, source.closed, distance.abs(), rule, step_angle) else {
         return Ok(None);
     };
-    let Some(columns) = materialize_walk(&plan, step_angle, true, budget)? else {
+    let Some(columns) = materialize_walk(&plan, step_angle, true, budget, false)? else {
         return Ok(None);
     };
     let (xs, ys, sources) = columns.into_columns();

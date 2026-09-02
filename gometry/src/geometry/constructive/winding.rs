@@ -218,7 +218,8 @@ fn simple_erosion_polygon(
 ///    expanding into another part's shrunk hole fills it through plain winding
 ///    algebra.
 ///
-/// `None` falls back to the geo engine (degenerate shells, overflow).
+/// `None` means the winding route has no usable loop; non-finite emitted
+/// coordinates are returned as typed errors instead.
 pub(in crate::geometry) fn winding_buffer_budgeted(
     polygons: &[Polygon],
     distance: f64,
@@ -648,7 +649,9 @@ pub(crate) fn circle_loop(
         ys.push(center.y + distance * sin_theta);
     }
     if !column_all_finite(&xs) || !column_all_finite(&ys) {
-        return Ok(None);
+        return Err(crate::geometry::GeometryErrorKind::message(
+            "buffer calculation produced non-finite coordinates",
+        ));
     }
     Ok(Some((xs, ys)))
 }
@@ -914,7 +917,9 @@ pub(crate) fn raw_stroke_loop(
             return Ok(None);
         };
         if !count_only.all_finite() {
-            return Ok(None);
+            return Err(crate::geometry::GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
         }
         (clean, count_only.len())
     };

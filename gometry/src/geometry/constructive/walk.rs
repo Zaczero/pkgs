@@ -284,11 +284,17 @@ pub(crate) fn materialize_walk(
     step_angle: f64,
     track_sources: bool,
     budget: &mut ExpansionBudget,
+    reject_nonfinite: bool,
 ) -> Result<Option<WalkColumns>> {
     let count_len = {
         let mut count = WalkCount::budgeted(budget);
         plan.emit_into(step_angle, &mut count)?;
         if !count.all_finite() {
+            if reject_nonfinite {
+                return Err(crate::geometry::GeometryErrorKind::message(
+                    "buffer calculation produced non-finite coordinates",
+                ));
+            }
             return Ok(None);
         }
         count.len()
@@ -825,7 +831,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "count");
         budget.add(GENERATED_ITEM_LIMIT).unwrap();
 
-        assert!(materialize_walk(&plan, 0.1, false, &mut budget).is_err());
+        assert!(materialize_walk(&plan, 0.1, false, &mut budget, false).is_err());
     }
 
     #[test]

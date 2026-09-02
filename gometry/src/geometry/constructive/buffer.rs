@@ -8,7 +8,8 @@ use crate::geometry::constructive::{
 };
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget,
-    GeometryErrorKind, LineSeq, RepairMethod, Shape, for_each_overlapping_bounds_pair,
+    GeometryErrorKind, LineSeq, RepairMethod, Shape,
+    for_each_overlapping_bounds_pair,
     polygon_parts_to_shape, same_topological_coordinate,
 };
 use crate::{Finite, Positive};
@@ -66,6 +67,11 @@ impl Shape {
             && self.validate().is_none()
         {
             return Ok(self.clone());
+        }
+        if distance != 0.0 && buffer_edge_delta_overflows(self) {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
         }
         // GEOS-style input reduction (matches `BufferInputLineSimplifier`):
         // an input vertex whose deviation is a tiny fraction of the buffer
@@ -127,8 +133,8 @@ impl Shape {
     }
 
     /// Route one shape through the winding buffer engine (see
-    /// [`buffer_with_style`](Self::buffer_with_style); `None` falls back
-    /// to the geo engine).
+    /// [`buffer_with_style`](Self::buffer_with_style)); `None` means the
+    /// constructive route has no usable loop.
     pub(crate) fn winding_route(
         &self,
         distance: f64,
@@ -251,6 +257,11 @@ impl Shape {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
+        if distance != 0.0 && buffer_edge_delta_overflows(self) {
+            return Err(GeometryErrorKind::message(
+                "buffer calculation produced non-finite coordinates",
+            ));
+        }
         // Positive offsets fall on the left of the line direction (the
         // `offset_curve` convention); the right side mirrors the sign.
         let signed = match side {
@@ -305,6 +316,41 @@ impl Shape {
             shape.repair(RepairMethod::Structure, false)
         }
     }
+}
+
+fn buffer_edge_delta_overflows(shape: &Shape) -> bool {
+    match shape {
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => false,
+        Shape::LineString(line) => edge_delta_overflows(line.as_coords(), false),
+        Shape::MultiLineString(lines) => lines
+            .iter()
+            .any(|line| edge_delta_overflows(line.as_coords(), false)),
+        Shape::Polygon(polygon) => polygon
+            .rings()
+            .any(|ring| edge_delta_overflows(ring, true)),
+        Shape::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+            polygon
+                .rings()
+                .any(|ring| edge_delta_overflows(ring, true))
+        }),
+        Shape::GeometryCollection(parts) => parts.iter().any(buffer_edge_delta_overflows),
+    }
+}
+
+fn edge_delta_overflows(coords: &CoordSeq, cyclic: bool) -> bool {
+    let xs = coords.xs();
+    let ys = coords.ys();
+    if xs.len() < 2 {
+        return false;
+    }
+    let adjacent = xs
+        .windows(2)
+        .zip(ys.windows(2))
+        .any(|(x, y)| !(x[1] - x[0]).is_finite() || !(y[1] - y[0]).is_finite());
+    adjacent
+        || (cyclic
+            && (!(xs[0] - xs[xs.len() - 1]).is_finite()
+                || !(ys[0] - ys[ys.len() - 1]).is_finite()))
 }
 
 /// Individually valid strips with pairwise non-intersecting closed envelopes
