@@ -30,8 +30,10 @@ impl GeodesicScratch {
             stack: Vec::new(),
         }
     }
+}
 
-    fn clear(&mut self) {
+impl crate::scratch_pool::RetainScratch for GeodesicScratch {
+    fn clear_for_reuse(&mut self) {
         self.left_points.clear();
         self.right_points.clear();
         self.left_edges.clear();
@@ -43,30 +45,42 @@ impl GeodesicScratch {
         self.rows.clear();
         self.stack.clear();
     }
+
+    fn retained_bytes(&self) -> usize {
+        crate::scratch_pool::flat_vec_retained_bytes(&self.left_points)
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.right_points,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.left_edges,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.right_edges,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.left_point_only,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.right_point_only,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.cap_lengths,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(
+                &self.cap_groups,
+            ))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.rows))
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.stack))
+    }
 }
 
 thread_local! {
-    static GEODESIC_SCRATCH: std::cell::RefCell<GeodesicScratch> =
-        const { std::cell::RefCell::new(GeodesicScratch::new()) };
+    static GEODESIC_SCRATCH: crate::scratch_pool::ScratchPool<GeodesicScratch> =
+        const { crate::scratch_pool::ScratchPool::new(GeodesicScratch::new()) };
 }
 
-pub(crate) struct GeodesicScratchGuard {
-    pub(crate) scratch: GeodesicScratch,
-}
-
-impl GeodesicScratchGuard {
-    pub(crate) fn take() -> Self {
-        Self {
-            scratch: GEODESIC_SCRATCH.with(|scratch| std::mem::take(&mut *scratch.borrow_mut())),
-        }
-    }
-}
-
-impl Drop for GeodesicScratchGuard {
-    fn drop(&mut self) {
-        self.scratch.clear();
-        GEODESIC_SCRATCH.with(|scratch| *scratch.borrow_mut() = std::mem::take(&mut self.scratch));
-    }
+pub(crate) fn geodesic_scratch() -> crate::scratch_pool::ScratchLease<GeodesicScratch> {
+    crate::scratch_pool::ScratchPool::checkout(&GEODESIC_SCRATCH)
 }
 
 pub(crate) fn collect_geodesic_segments_into(

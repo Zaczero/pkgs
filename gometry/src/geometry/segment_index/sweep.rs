@@ -4,6 +4,8 @@
 )]
 use std::ops::ControlFlow;
 
+use rstar::{AABB, RTreeObject};
+
 use crate::geometry::{Bounds, PointKey, Segment, XY};
 
 /// Below this many candidate *pairs* the brute-force double loop wins: the
@@ -22,6 +24,62 @@ const SWEEP_MIN_ITEMS: usize = 6;
 /// band count derives from (`count / grain`, capped at 64 bands).
 const SWEEP_BAND_MIN: usize = 4096;
 const SWEEP_BAND_GRAIN: usize = 2048;
+
+struct IndexedBounds {
+    ordinal: usize,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for IndexedBounds {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+fn bounds_envelope(bounds: Bounds) -> AABB<[f64; 2]> {
+    AABB::from_bounds([bounds.minx(), bounds.miny()], [
+        bounds.maxx(),
+        bounds.maxy(),
+    ])
+}
+
+/// Visit every unordered pair of inclusive-overlapping row bounds once. The
+/// R-tree query is restricted by ordinal, so separated rows cost O(n log n)
+/// and a dense set can stop on its first touching pair.
+pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair(
+    bounds: &[Option<Bounds>],
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    if bounds.len() < 2 {
+        return ControlFlow::Continue(());
+    }
+    let entries = bounds
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, bounds)| {
+            bounds.map(|bounds| IndexedBounds {
+                ordinal,
+                envelope: bounds_envelope(bounds),
+            })
+        })
+        .collect::<Vec<_>>();
+    let tree = crate::geometry::BulkRTree::bulk_load_with_params(entries);
+    for (left, bounds) in bounds
+        .iter()
+        .enumerate()
+        .filter_map(|(left, bounds)| bounds.map(|bounds| (left, bounds)))
+    {
+        for right in tree
+            .locate_in_envelope_intersecting(bounds_envelope(bounds))
+            .filter(|right| right.ordinal > left)
+        {
+            visit(left, right.ordinal)?;
+        }
+    }
+    ControlFlow::Continue(())
+}
 
 /// Segment count from which the MONOTONE-CHAIN strategy pays: below it
 /// the flat per-segment sweep's forward windows are already short and
@@ -103,11 +161,11 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
         return ControlFlow::Continue(());
     }
     thread_local! {
-        static BOUNDS_SCRATCH: std::cell::Cell<Vec<SweepEntry>> =
-            const { std::cell::Cell::new(Vec::new()) };
+        static BOUNDS_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut entries = BOUNDS_SCRATCH.take();
-    entries.clear();
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&BOUNDS_SCRATCH);
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -128,7 +186,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
     finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
     // Dense-enough sets take the banded windows; otherwise the plain
     // forward window (same split the segment sweep uses for large pools).
-    let flow = if count >= SWEEP_BAND_MIN {
+    if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
         let cross_lo = entries
             .iter()
@@ -142,9 +200,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
         banded_windows(&entries, bands, cross_lo, band_height, &mut visit)
     } else {
         plain_windows(&entries, &mut visit)
-    };
-    BOUNDS_SCRATCH.set(entries);
-    flow
+    }
 }
 
 /// Visit a superset of the pairs of one segment set that can interact
@@ -194,14 +250,13 @@ pub(in crate::geometry) fn for_each_candidate_pair<const RUN_MIN: usize>(
     // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
     // this run buffer was their only allocation.
     thread_local! {
-        static RUNS: std::cell::Cell<Vec<MonotoneRun>> = const { std::cell::Cell::new(Vec::new()) };
+        static RUNS: crate::scratch_pool::ScratchPool<Vec<MonotoneRun>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut runs = RUNS.take();
-    runs.clear();
+    let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
     monotone_runs(pool, &chain_of, &mut runs);
-    let flow = candidate_pairs_over_runs(pool, &runs, bounds, &mut visit);
-    RUNS.set(runs);
-    flow
+    candidate_pairs_over_runs(pool, &runs, bounds, &mut visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -220,11 +275,11 @@ pub(in crate::geometry) fn flat_segment_sweep(
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     thread_local! {
-        static FLAT_SCRATCH: std::cell::Cell<Vec<SweepEntry>> =
-            const { std::cell::Cell::new(Vec::new()) };
+        static FLAT_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut entries = FLAT_SCRATCH.take();
-    entries.clear();
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&FLAT_SCRATCH);
     entries.reserve(pool.len());
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -250,9 +305,7 @@ pub(in crate::geometry) fn flat_segment_sweep(
         });
     }
     finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
-    let flow = plain_windows(&entries, visit);
-    FLAT_SCRATCH.set(entries);
-    flow
+    plain_windows(&entries, visit)
 }
 
 /// [`for_each_candidate_pair`] over PRE-STAGED runs and bounds (built
@@ -268,11 +321,11 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     thread_local! {
-        static SWEEP_SCRATCH: std::cell::Cell<Vec<SweepEntry>> =
-            const { std::cell::Cell::new(Vec::new()) };
+        static SWEEP_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut entries = SWEEP_SCRATCH.take();
-    entries.clear();
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
     entries.reserve(runs.len());
     for (ordinal, run) in runs.iter().enumerate() {
         // Length-exact run window: first/last via slice pattern (elision).
@@ -311,13 +364,11 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
     let mut run_visit = |left: usize, right: usize| -> ControlFlow<()> {
         run_pair_join(pool, &runs[left], &runs[right], swapped, visit)
     };
-    let flow = if bands > 1 && band_height > 0.0 {
+    if bands > 1 && band_height > 0.0 {
         banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
     } else {
         plain_windows(&entries, &mut run_visit)
-    };
-    SWEEP_SCRATCH.set(entries);
-    flow
+    }
 }
 
 /// Pool size at or above which the noding hot paths route through the

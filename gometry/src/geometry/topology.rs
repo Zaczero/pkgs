@@ -11,11 +11,12 @@ use crate::geometry::{
     CCW_ERRBOUND_A, CoordSeq, PointKey, Polygon, REDUCE_LANES, ReduceSimd, Segment, XY,
     ray_crossing_is_right, simd_reduce_f64, wrap_index,
 };
+use crate::scratch_pool::{RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes};
 
 mod graph;
 mod sections;
 mod staging;
-pub(crate) use graph::TopologyGraph;
+pub(crate) use graph::{AreaSupport, TopologyGraph, TopologyKey};
 pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace};
 pub(super) use sections::{
     compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,
@@ -58,6 +59,74 @@ pub(super) fn add_cut(cuts: &mut Vec<Cut>, point: XY, cross: bool) {
     });
 }
 
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn reserve(segment_capacity: usize, ring_capacity: usize) {
+        let _ = OperandPool::with_scratch(segment_capacity, ring_capacity);
+    }
+
+    #[test]
+    fn topology_scratch_is_aggregate_bounded_and_reuses_medium_columns() {
+        reserve(1024, 32);
+        let (_, allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        assert_eq!(allocations, 0);
+
+        reserve(
+            crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<Segment>() + 1,
+            0,
+        );
+        let empty = OperandPool::with_scratch(0, 0);
+        assert_eq!(empty.segments.capacity(), 0);
+        assert_eq!(empty.operands.capacity(), 0);
+        assert_eq!(empty.ring_of.capacity(), 0);
+        assert_eq!(empty.rings.capacity(), 0);
+        drop(empty);
+
+        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        assert!(first_allocations > 0);
+        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        assert_eq!(repeat_allocations, 0);
+    }
+
+    #[test]
+    fn topology_scratch_drops_live_ring_sources_before_retention() {
+        let source: std::sync::Arc<[XY]> = vec![XY::new(0.0, 0.0)].into();
+        let weak = std::sync::Arc::downgrade(&source);
+        {
+            let mut pool = OperandPool::with_scratch(0, 1);
+            pool.rings.push(OrientedRing {
+                operand: Operand::Left,
+                polygon: 0,
+                ring: 0,
+                is_hole: false,
+                points: source.clone(),
+                segments: 0..0,
+            });
+            drop(source);
+        }
+        assert!(weak.upgrade().is_none());
+        assert!(OperandPool::with_scratch(0, 1).rings.is_empty());
+    }
+
+    #[test]
+    fn topology_scratch_clears_and_returns_during_unwind() {
+        let unwind = std::panic::catch_unwind(|| {
+            let mut pool = OperandPool::with_scratch(16, 0);
+            pool.segments.push(Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(1.0, 1.0),
+            });
+            panic!("representative topology failure");
+        });
+        assert!(unwind.is_err());
+        let pool = OperandPool::with_scratch(16, 0);
+        assert!(pool.segments.is_empty());
+        assert!(pool.segments.capacity() >= 16);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct OrientedRing {
     pub operand: Operand,
@@ -68,56 +137,70 @@ pub(super) struct OrientedRing {
     pub segments: Range<usize>,
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct OperandPool {
+#[derive(Default)]
+pub(super) struct TopologyScratch {
     pub segments: Vec<Segment>,
     pub operands: Vec<Operand>,
     pub ring_of: Vec<u32>,
     pub rings: Vec<OrientedRing>,
+}
+
+impl RetainScratch for TopologyScratch {
+    fn clear_for_reuse(&mut self) {
+        self.segments.clear();
+        self.operands.clear();
+        self.ring_of.clear();
+        self.rings.clear();
+    }
+
+    fn retained_bytes(&self) -> usize {
+        flat_vec_retained_bytes(&self.segments)
+            .saturating_add(flat_vec_retained_bytes(&self.operands))
+            .saturating_add(flat_vec_retained_bytes(&self.ring_of))
+            .saturating_add(flat_vec_retained_bytes(&self.rings))
+    }
+}
+
+pub(super) struct OperandPool {
+    scratch: ScratchLease<TopologyScratch>,
     pub split: usize,
 }
 
 thread_local! {
     // Reuse the column buffers per-thread so overlay staging does not allocate
     // a fresh set of parallel provenance vectors for every operation.
-    static POOL_SEGMENTS: std::cell::Cell<Vec<Segment>> = const { std::cell::Cell::new(Vec::new()) };
-    static POOL_OPERANDS: std::cell::Cell<Vec<Operand>> = const { std::cell::Cell::new(Vec::new()) };
-    static POOL_RING_OF: std::cell::Cell<Vec<u32>> = const { std::cell::Cell::new(Vec::new()) };
-    static POOL_RINGS: std::cell::Cell<Vec<OrientedRing>> = const { std::cell::Cell::new(Vec::new()) };
+    static TOPOLOGY_SCRATCH: ScratchPool<TopologyScratch> = ScratchPool::new(TopologyScratch {
+        segments: Vec::new(),
+        operands: Vec::new(),
+        ring_of: Vec::new(),
+        rings: Vec::new(),
+    });
+}
+
+impl std::ops::Deref for OperandPool {
+    type Target = TopologyScratch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scratch
+    }
+}
+
+impl std::ops::DerefMut for OperandPool {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.scratch
+    }
 }
 
 impl OperandPool {
     /// An empty pool reusing the per-thread scratch buffers, pre-sized for
     /// `segment_capacity` edges and `ring_capacity` rings.
     fn with_scratch(segment_capacity: usize, ring_capacity: usize) -> Self {
-        let mut segments = POOL_SEGMENTS.with(std::cell::Cell::take);
-        let mut operands = POOL_OPERANDS.with(std::cell::Cell::take);
-        let mut ring_of = POOL_RING_OF.with(std::cell::Cell::take);
-        let mut rings = POOL_RINGS.with(std::cell::Cell::take);
-        segments.clear();
-        segments.reserve(segment_capacity);
-        operands.clear();
-        operands.reserve(segment_capacity);
-        ring_of.clear();
-        ring_of.reserve(segment_capacity);
-        rings.clear();
-        rings.reserve(ring_capacity);
-        Self {
-            segments,
-            operands,
-            ring_of,
-            rings,
-            split: 0,
-        }
-    }
-}
-
-impl Drop for OperandPool {
-    fn drop(&mut self) {
-        POOL_SEGMENTS.with(|cell| cell.set(std::mem::take(&mut self.segments)));
-        POOL_OPERANDS.with(|cell| cell.set(std::mem::take(&mut self.operands)));
-        POOL_RING_OF.with(|cell| cell.set(std::mem::take(&mut self.ring_of)));
-        POOL_RINGS.with(|cell| cell.set(std::mem::take(&mut self.rings)));
+        let mut scratch = ScratchPool::checkout(&TOPOLOGY_SCRATCH);
+        scratch.segments.reserve(segment_capacity);
+        scratch.operands.reserve(segment_capacity);
+        scratch.ring_of.reserve(segment_capacity);
+        scratch.rings.reserve(ring_capacity);
+        Self { scratch, split: 0 }
     }
 }
 

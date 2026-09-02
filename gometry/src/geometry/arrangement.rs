@@ -10,8 +10,8 @@
 //! across twin half-edges (`w(right) = w(left) − multiplicity(a→b)`).
 //!
 //! Consumers classify faces by winding and extract the kept region's
-//! boundary — every cost is a flat array pass; the only hash map is the
-//! vertex dedup at construction.
+//! boundary — every cost is a flat array pass; the retained map is the vertex
+//! dedup, while construction uses a transient reciprocal-edge index.
 
 mod build;
 mod loop_ops;
@@ -23,12 +23,12 @@ pub(crate) use loop_ops::{
     single_loop_pieces,
 };
 pub(crate) use walk::{
-    build_csr, dedup_vertices_and_edges, departure_angle, departure_scales,
-    sort_rows_counterclockwise, split_ring_at_pinches, walk_faces,
+    build_csr, compare_departures, dedup_vertices_and_edges, sort_rows_counterclockwise,
+    split_ring_at_pinches, walk_faces,
 };
 pub(crate) use winding::{
-    Arrangement, Columns, Face, FinishSpares, RegionSpares, TypedSpares, WindingWeight,
-    arrangement_spares_with, region_spares_with, restore_typed_spares, take_typed_spares,
+    Arrangement, ArrangementSpares, Columns, Face, FinishSpares, TypedSpares, WindingWeight,
+    arrangement_spares, region_spares, typed_spares,
 };
 
 #[cfg(test)]

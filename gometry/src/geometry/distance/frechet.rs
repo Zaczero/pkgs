@@ -90,10 +90,34 @@ pub(crate) fn discrete_frechet_distance<A: Coordinates + ?Sized, B: Coordinates 
     }
 }
 
+pub(crate) fn discrete_frechet_distance_with_scratch<
+    A: Coordinates + ?Sized,
+    B: Coordinates + ?Sized,
+>(
+    left: &A,
+    right: &B,
+    scratch: &mut FrechetDpScratch,
+) -> f64 {
+    if left.coord_count() <= right.coord_count() {
+        frechet_dp_with_scratch(left, right, scratch)
+    } else {
+        frechet_dp_with_scratch(right, left, scratch)
+    }
+}
+
 /// The discrete-Fréchet DP with `short` as the row dimension.
 pub(crate) fn frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     short: &S,
     long: &L,
+) -> f64 {
+    let mut scratch = FrechetDpScratch::default();
+    frechet_dp_with_scratch(short, long, &mut scratch)
+}
+
+fn frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
+    short: &S,
+    long: &L,
+    scratch: &mut FrechetDpScratch,
 ) -> f64 {
     debug_assert!(short.coord_count() > 0 && long.coord_count() > 0);
     // SoA lane: the O(n·m) inner loop reads raw coordinate columns —
@@ -101,7 +125,7 @@ pub(crate) fn frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     if let (Some((short_xs, short_ys)), Some((long_xs, long_ys))) =
         (short.xy_columns(), long.xy_columns())
     {
-        return frechet_dp_columns(short_xs, short_ys, long_xs, long_ys);
+        return frechet_dp_columns_with_dp_scratch(short_xs, short_ys, long_xs, long_ys, scratch);
     }
 
     // First DP row initialized separately, then a branch-free inner loop:
@@ -240,30 +264,21 @@ impl FrechetDpScratch {
     }
 }
 
+impl crate::scratch_pool::RetainScratch for FrechetDpScratch {
+    fn clear_for_reuse(&mut self) {
+        self.previous.clear();
+        self.current.clear();
+    }
+
+    fn retained_bytes(&self) -> usize {
+        crate::scratch_pool::flat_vec_retained_bytes(&self.previous)
+            .saturating_add(crate::scratch_pool::flat_vec_retained_bytes(&self.current))
+    }
+}
+
 thread_local! {
-    static FRECHET_DP_SCRATCH: std::cell::RefCell<FrechetDpScratch> =
-        const { std::cell::RefCell::new(FrechetDpScratch::new()) };
-}
-
-pub(crate) struct FrechetDpScratchGuard {
-    scratch: FrechetDpScratch,
-}
-
-impl FrechetDpScratchGuard {
-    fn take() -> Self {
-        Self {
-            scratch: FRECHET_DP_SCRATCH.with(|scratch| std::mem::take(&mut *scratch.borrow_mut())),
-        }
-    }
-}
-
-impl Drop for FrechetDpScratchGuard {
-    fn drop(&mut self) {
-        self.scratch.previous.clear();
-        self.scratch.current.clear();
-        FRECHET_DP_SCRATCH
-            .with(|scratch| *scratch.borrow_mut() = std::mem::take(&mut self.scratch));
-    }
+    static FRECHET_DP_SCRATCH: crate::scratch_pool::ScratchPool<FrechetDpScratch> =
+        const { crate::scratch_pool::ScratchPool::new(FrechetDpScratch::new()) };
 }
 
 /// [`frechet_dp`] over raw `SoA` columns, with EXACT band pruning. The full
@@ -287,16 +302,27 @@ pub(crate) fn frechet_dp_columns(
     long_xs: &[f64],
     long_ys: &[f64],
 ) -> f64 {
+    let mut scratch = crate::scratch_pool::ScratchPool::checkout(&FRECHET_DP_SCRATCH);
+    frechet_dp_columns_with_dp_scratch(short_xs, short_ys, long_xs, long_ys, &mut scratch)
+}
+
+pub(crate) fn frechet_dp_columns_with_dp_scratch(
+    short_xs: &[f64],
+    short_ys: &[f64],
+    long_xs: &[f64],
+    long_ys: &[f64],
+    scratch: &mut FrechetDpScratch,
+) -> f64 {
     let width = short_xs.len();
-    let mut scratch_guard = FrechetDpScratchGuard::take();
-    scratch_guard.scratch.ensure_capacity(width);
+    scratch.ensure_capacity(width);
+    let FrechetDpScratch { previous, current } = scratch;
     frechet_dp_columns_with_scratch(
         short_xs,
         short_ys,
         long_xs,
         long_ys,
-        &mut scratch_guard.scratch.previous[..width],
-        &mut scratch_guard.scratch.current[..width],
+        &mut previous[..width],
+        &mut current[..width],
     )
 }
 
@@ -504,8 +530,8 @@ fn frechet_dp_columns_distance(
     let mut running = 0.0_f64;
     for (cell, (&sx, &sy)) in std::iter::zip(&mut previous, std::iter::zip(short_xs, short_ys)) {
         running = running.max(point_distance(
-            Point::new_unchecked_xy(first_x, first_y),
-            Point::new_unchecked_xy(sx, sy),
+            Point::new_raw_xy(first_x, first_y),
+            Point::new_raw_xy(sx, sy),
         ));
         *cell = running;
     }
@@ -513,10 +539,8 @@ fn frechet_dp_columns_distance(
         let mut first = true;
         let mut left_value = 0.0;
         for (short_index, (&sx, &sy)) in short_xs.iter().zip(short_ys).enumerate() {
-            let distance = point_distance(
-                Point::new_unchecked_xy(long_x, long_y),
-                Point::new_unchecked_xy(sx, sy),
-            );
+            let distance =
+                point_distance(Point::new_raw_xy(long_x, long_y), Point::new_raw_xy(sx, sy));
             let reach = if first {
                 first = false;
                 previous[0]

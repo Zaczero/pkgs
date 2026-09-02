@@ -73,7 +73,7 @@ impl Ord for SegmentBoundEntry {
 
 /// Reusable work buffers for one directed Hausdorff pass — avoids SoA→AoS
 /// probe reallocations and per-call midpoint/result vectors.
-struct HausdorffScratch {
+pub(crate) struct HausdorffScratch {
     probes: Vec<(f64, f64)>,
     probe_results: Vec<HausdorffProbeResult>,
     vertex_dist_sq: Vec<f64>,
@@ -86,6 +86,43 @@ struct HausdorffScratch {
     stack: Vec<u32>,
     /// Staging vector for O(n) heapify via `BinaryHeap::from`.
     order_entries: Vec<SegmentBoundEntry>,
+}
+
+impl Default for HausdorffScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::scratch_pool::RetainScratch for HausdorffScratch {
+    fn clear_for_reuse(&mut self) {
+        self.probes.clear();
+        self.probe_results.clear();
+        self.vertex_dist_sq.clear();
+        self.vertex_witness.clear();
+        self.midpoint_dist_sq.clear();
+        self.midpoint_witness.clear();
+        self.midpoint_probes.clear();
+        self.midpoint_indices.clear();
+        self.mid_results.clear();
+        self.stack.clear();
+        self.order_entries.clear();
+    }
+
+    fn retained_bytes(&self) -> usize {
+        use crate::scratch_pool::flat_vec_retained_bytes;
+        flat_vec_retained_bytes(&self.probes)
+            .saturating_add(flat_vec_retained_bytes(&self.probe_results))
+            .saturating_add(flat_vec_retained_bytes(&self.vertex_dist_sq))
+            .saturating_add(flat_vec_retained_bytes(&self.vertex_witness))
+            .saturating_add(flat_vec_retained_bytes(&self.midpoint_dist_sq))
+            .saturating_add(flat_vec_retained_bytes(&self.midpoint_witness))
+            .saturating_add(flat_vec_retained_bytes(&self.midpoint_probes))
+            .saturating_add(flat_vec_retained_bytes(&self.midpoint_indices))
+            .saturating_add(flat_vec_retained_bytes(&self.mid_results))
+            .saturating_add(flat_vec_retained_bytes(&self.stack))
+            .saturating_add(flat_vec_retained_bytes(&self.order_entries))
+    }
 }
 
 impl HausdorffScratch {
@@ -148,8 +185,51 @@ impl HausdorffScratch {
 }
 
 thread_local! {
-    static HAUSDORFF_SCRATCH: std::cell::RefCell<HausdorffScratch> =
-        const { std::cell::RefCell::new(HausdorffScratch::new()) };
+    static HAUSDORFF_SCRATCH: crate::scratch_pool::ScratchPool<HausdorffScratch> =
+        crate::scratch_pool::ScratchPool::new(HausdorffScratch::new());
+}
+
+pub(crate) fn hausdorff_scratch() -> crate::scratch_pool::ScratchLease<HausdorffScratch> {
+    crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH)
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn reserve(len: usize) {
+        let mut scratch = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
+        scratch.probes.reserve(len);
+        scratch.probe_results.reserve(len);
+        scratch.vertex_dist_sq.reserve(len);
+        scratch.vertex_witness.reserve(len);
+        scratch.midpoint_dist_sq.reserve(len);
+        scratch.midpoint_witness.reserve(len);
+        scratch.midpoint_probes.reserve(len);
+        scratch.midpoint_indices.reserve(len);
+        scratch.mid_results.reserve(len);
+        scratch.stack.reserve(len);
+        scratch.order_entries.reserve(len);
+    }
+
+    #[test]
+    fn algorithm_columns_are_aggregate_bounded_and_reused() {
+        reserve(256);
+        let (_, allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert_eq!(allocations, 0);
+
+        reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<(f64, f64)>() + 1);
+        let empty = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
+        assert_eq!(empty.probes.capacity(), 0);
+        assert_eq!(empty.probe_results.capacity(), 0);
+        assert_eq!(empty.order_entries.capacity(), 0);
+        drop(empty);
+
+        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert!(first_allocations > 0);
+        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert_eq!(repeat_allocations, 0);
+    }
 }
 
 /// Branch-and-bound directed Hausdorff²: batch facet/SIMD vertex seeding,
@@ -160,20 +240,46 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned<T: Hausdorf
     left_ys: &[f64],
     target: &T,
 ) -> f64 {
-    directed_hausdorff_distance_squared_with_target_pruned_initial(left_xs, left_ys, target, 0.0)
+    let mut scratch = hausdorff_scratch();
+    directed_hausdorff_distance_squared_with_target_pruned_with_scratch(
+        left_xs,
+        left_ys,
+        target,
+        0.0,
+        &mut scratch,
+    )
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "batch seeding, tight bounds, coverage cert, ordering"
-)]
-pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial<
+pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_with_scratch<
     T: HausdorffTargetLike,
 >(
     left_xs: &[f64],
     left_ys: &[f64],
     target: &T,
     initial_cmax_sq: f64,
+    scratch: &mut HausdorffScratch,
+) -> f64 {
+    directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch(
+        left_xs,
+        left_ys,
+        target,
+        initial_cmax_sq,
+        scratch,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "batch seeding, tight bounds, coverage cert, ordering"
+)]
+pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch<
+    T: HausdorffTargetLike,
+>(
+    left_xs: &[f64],
+    left_ys: &[f64],
+    target: &T,
+    initial_cmax_sq: f64,
+    scratch: &mut HausdorffScratch,
 ) -> f64 {
     let vertex_count = left_xs.len();
     debug_assert_eq!(vertex_count, left_ys.len());
@@ -185,8 +291,7 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial<
     let left_ys = &left_ys[..vertex_count];
     let left_xs = &left_xs[..vertex_count];
 
-    HAUSDORFF_SCRATCH.with(|cell| {
-        let mut scratch = cell.borrow_mut();
+    {
         scratch.prepare_vertices(left_xs, left_ys);
         scratch.run_batch_probe(target);
         stats::inc_vertex_probes(vertex_count);
@@ -366,25 +471,23 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_pruned_initial<
         scratch.midpoint_dist_sq = midpoint_dist_sq_buf;
         scratch.midpoint_witness = midpoint_witness_buf;
         cmax
-    })
+    }
 }
 
 /// Cheap discrete lower bound: max vertex distance (valid LB for directed H).
-pub(crate) fn directed_hausdorff_vertex_lower_bound_squared<T: HausdorffTargetLike>(
+pub(crate) fn directed_hausdorff_vertex_lower_bound_squared_with_scratch<T: HausdorffTargetLike>(
     left_xs: &[f64],
     left_ys: &[f64],
     target: &T,
+    scratch: &mut HausdorffScratch,
 ) -> f64 {
-    HAUSDORFF_SCRATCH.with(|cell| {
-        let mut scratch = cell.borrow_mut();
-        scratch.prepare_vertices(left_xs, left_ys);
-        scratch.run_batch_probe(target);
-        scratch
-            .probe_results
-            .iter()
-            .map(|result| result.distance_squared)
-            .fold(0.0_f64, f64::max)
-    })
+    scratch.prepare_vertices(left_xs, left_ys);
+    scratch.run_batch_probe(target);
+    scratch
+        .probe_results
+        .iter()
+        .map(|result| result.distance_squared)
+        .fold(0.0_f64, f64::max)
 }
 
 #[cfg(test)]

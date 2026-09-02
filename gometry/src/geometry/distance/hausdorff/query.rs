@@ -2,6 +2,85 @@ use crate::geometry::distance::SQUARED_SPACE_MAX_MAGNITUDE;
 use crate::geometry::distance::hausdorff::{HausdorffFeature, sqrt_distance_squared};
 use crate::geometry::facet_bvh::{BVH_MIN_INDEXED_SEGMENTS, FacetBvh, PreparedLinework};
 use crate::geometry::{Shape, XY, point_distance_squared, point_segment_distance_squared};
+use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
+
+#[derive(Default)]
+struct QueryScratch {
+    dist: Vec<f64>,
+    witness: Vec<u32>,
+}
+
+impl RetainScratch for QueryScratch {
+    fn clear_for_reuse(&mut self) {
+        self.dist.clear();
+        self.witness.clear();
+    }
+
+    fn retained_bytes(&self) -> usize {
+        flat_vec_retained_bytes(&self.dist).saturating_add(flat_vec_retained_bytes(&self.witness))
+    }
+}
+
+thread_local! {
+    static QUERY_SCRATCH: ScratchPool<QueryScratch> = ScratchPool::new(QueryScratch {
+        dist: Vec::new(),
+        witness: Vec::new(),
+    });
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn reserve(len: usize) {
+        let mut scratch = ScratchPool::checkout(&QUERY_SCRATCH);
+        scratch.dist.reserve(len);
+        scratch.witness.reserve(len);
+    }
+
+    #[test]
+    fn query_columns_are_aggregate_bounded_and_reentrant() {
+        reserve(1024);
+        let (_, allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        assert_eq!(allocations, 0);
+
+        let held = ScratchPool::checkout(&QUERY_SCRATCH);
+        let query = HausdorffLineworkQuery::from_open_xy_columns(&[0.0, 1.0], &[0.0, 0.0], false);
+        assert_eq!(query.distance_squared(XY::new(0.5, 1.0)), 1.0);
+        drop(held);
+
+        reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<f64>() + 1);
+        let empty = ScratchPool::checkout(&QUERY_SCRATCH);
+        assert_eq!(empty.dist.capacity(), 0);
+        assert_eq!(empty.witness.capacity(), 0);
+        drop(empty);
+
+        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        assert!(first_allocations > 0);
+        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        assert_eq!(repeat_allocations, 0);
+    }
+
+    #[test]
+    fn witness_indices_span_every_facet_in_flat_and_bvh_queries() {
+        let segment_count = crate::geometry::facet_bvh::FACET_SEGMENTS * 3 + 1;
+        let xs: Vec<f64> = (0..=segment_count).map(|index| index as f64).collect();
+        let ys = vec![0.0; xs.len()];
+        let probe = [(segment_count as f64 - 0.5, 1.0)];
+
+        for force_bvh in [false, true] {
+            let query = HausdorffLineworkQuery::from_open_xy_columns(&xs, &ys, force_bvh);
+            let mut result = [HausdorffProbeResult::default()];
+            query.batch_probe(&probe, &mut result, &mut Vec::new());
+            assert_eq!(result[0].distance_squared, 1.0, "force_bvh={force_bvh}");
+            assert_eq!(
+                result[0].feature_id,
+                (segment_count - 1) as u32,
+                "force_bvh={force_bvh}"
+            );
+        }
+    }
+}
 
 /// Per-probe exact squared distance and nearest target-feature index.
 #[derive(Clone, Copy, Debug, Default)]
@@ -75,33 +154,21 @@ impl HausdorffLineworkQuery {
         if probes.is_empty() {
             return;
         }
-        // Thread-local dist/witness columns so nested midpoint + vertex
-        // batches reuse capacity instead of allocating per batch_probe call.
-        thread_local! {
-            static DIST: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
-            static WITNESS: std::cell::RefCell<Vec<u32>> =
-                const { std::cell::RefCell::new(Vec::new()) };
+        let mut scratch = ScratchPool::checkout(&QUERY_SCRATCH);
+        // An empty linework target contributes no zero-distance
+        // feature.  Point-only targets are folded by
+        // `HausdorffTarget::distance_squared` afterwards; starting
+        // this lane at zero silently made every probe coincide with
+        // a Point target and sent the extreme fallback a false zero.
+        scratch.dist.resize(probes.len(), f64::INFINITY);
+        scratch.witness.resize(probes.len(), u32::MAX);
+        if self.squared_safe {
+            let QueryScratch { dist, witness } = &mut *scratch;
+            self.batch_probe_inner::<true>(probes, out, stack, dist, witness);
+        } else {
+            let QueryScratch { dist, witness } = &mut *scratch;
+            self.batch_probe_inner::<false>(probes, out, stack, dist, witness);
         }
-        DIST.with(|dist_cell| {
-            WITNESS.with(|witness_cell| {
-                let mut dist = dist_cell.borrow_mut();
-                let mut witness = witness_cell.borrow_mut();
-                // An empty linework target contributes no zero-distance
-                // feature.  Point-only targets are folded by
-                // `HausdorffTarget::distance_squared` afterwards; starting
-                // this lane at zero silently made every probe coincide with
-                // a Point target and sent the extreme fallback a false zero.
-                dist.clear();
-                dist.resize(probes.len(), f64::INFINITY);
-                witness.clear();
-                witness.resize(probes.len(), u32::MAX);
-                if self.squared_safe {
-                    self.batch_probe_inner::<true>(probes, out, stack, &mut dist, &mut witness);
-                } else {
-                    self.batch_probe_inner::<false>(probes, out, stack, &mut dist, &mut witness);
-                }
-            });
-        });
     }
 
     fn batch_probe_inner<const SQUARED: bool>(
