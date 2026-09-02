@@ -7,6 +7,9 @@ use crate::geometry::types::{
     CoordIter, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon, XY,
 };
 
+/// Maximum number of nested `GeometryCollection` containers in one shape.
+pub(crate) const MAX_NESTING: usize = 128;
+
 #[derive(Clone, Copy, Debug)]
 pub enum VoronoiBoundary<'a> {
     Padded,
@@ -96,6 +99,51 @@ pub enum Shape {
     /// Every top-level empty has its OGC kind and coordinate axes. Empty
     /// multipart members are represented inside their owning multipart value.
     Empty(GeometryKind, CoordinateAxes),
+}
+
+impl Shape {
+    /// Admit collection children after checking the complete subtree without
+    /// recursion. Empty input uses the typed empty collection representation.
+    pub(crate) fn geometry_collection(parts: Vec<Self>) -> Result<Self> {
+        if parts.is_empty() {
+            return Ok(Self::Empty(
+                GeometryKind::GeometryCollection,
+                CoordinateAxes::XY,
+            ));
+        }
+        let depth = parts
+            .iter()
+            .map(Self::nesting_depth)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        if depth > MAX_NESTING {
+            return Err(GeometryErrorKind::message(format!(
+                "geometry collection nesting exceeds the limit of {MAX_NESTING}"
+            )));
+        }
+        Ok(Self::GeometryCollection(NonEmptyVec::from_vec(parts)))
+    }
+
+    /// Maximum collection depth in this shape, calculated without recursion.
+    pub(crate) fn nesting_depth(&self) -> usize {
+        let mut max_depth = 0;
+        let mut pending = vec![(self, 0_usize)];
+        while let Some((shape, depth)) = pending.pop() {
+            let Self::GeometryCollection(parts) = shape else {
+                continue;
+            };
+            let child_depth = depth.saturating_add(1);
+            max_depth = max_depth.max(child_depth);
+            if max_depth > MAX_NESTING {
+                return max_depth;
+            }
+            for child in parts {
+                pending.push((child, child_depth));
+            }
+        }
+        max_depth
+    }
 }
 
 // `Shape` is the widest hot type and the one whose width multiplies: mixed
@@ -862,18 +910,6 @@ impl From<Vec<Polygon>> for MultiPolygon {
     }
 }
 
-impl From<Vec<Shape>> for NonEmptyVec<Shape> {
-    fn from(shapes: Vec<Shape>) -> Self {
-        Self::from_vec(shapes)
-    }
-}
-
-impl<T> FromIterator<T> for NonEmptyVec<T> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::from_vec(iter.into_iter().collect())
-    }
-}
-
 impl crate::HeapSize for MultiPoint {
     fn heap_bytes(&self) -> usize {
         self.coords.coordinate_bytes() + self.members.heap_bytes()
@@ -1026,6 +1062,14 @@ impl Point {
 mod multipart_layout_tests {
     use super::*;
 
+    fn raw_nested(depth: usize) -> Shape {
+        let mut shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        for _ in 0..depth {
+            shape = Shape::GeometryCollection(NonEmptyVec::from_vec(vec![shape]));
+        }
+        shape
+    }
+
     #[test]
     fn dense_and_sparse_members_are_canonical() {
         assert!(matches!(
@@ -1063,6 +1107,13 @@ mod multipart_layout_tests {
             unreachable!("sparse fixture must retain member metadata");
         };
         assert_eq!(sparse.members.heap_bytes(), std::mem::size_of_val(&**members));
+    }
+
+    #[test]
+    fn collection_admission_has_one_inclusive_depth_boundary() {
+        assert_eq!(raw_nested(MAX_NESTING).nesting_depth(), MAX_NESTING);
+        assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING - 1)]).is_ok());
+        assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING)]).is_err());
     }
 }
 

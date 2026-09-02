@@ -221,12 +221,11 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
         MultiMember::Empty,
         MultiMember::Value(polygon),
     ]);
-    let nested = Shape::GeometryCollection(
-        vec![Shape::GeometryCollection(
-            vec![Shape::MultiPolygon(multipart)].into(),
-        )]
-        .into(),
-    );
+    let nested = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiPolygon(multipart)])
+            .expect("test collection is valid"),
+    ])
+    .expect("test collection is valid");
     let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));
@@ -244,7 +243,7 @@ fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Shape {
         .unwrap(),
     );
     (0..5).fold(line, |shape, _| {
-        Shape::GeometryCollection(vec![shape].into())
+        Shape::geometry_collection(vec![shape]).expect("test collection is valid")
     })
 }
 
@@ -280,12 +279,11 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
         MultiMember::Empty,
         MultiMember::Value(polygon),
     ]);
-    let nested = Shape::GeometryCollection(
-        vec![Shape::GeometryCollection(
-            vec![Shape::MultiPolygon(multipart)].into(),
-        )]
-        .into(),
-    );
+    let nested = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiPolygon(multipart)])
+            .expect("test collection is valid"),
+    ])
+    .expect("test collection is valid");
     let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));

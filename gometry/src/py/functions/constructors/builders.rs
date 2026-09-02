@@ -948,7 +948,7 @@ pub(crate) fn build_geometry_collection(
         })
     }))?;
     Ok(PyGeometry::with_epoch(
-        Shape::geometry_collection(items),
+        Shape::geometry_collection(items)?,
         frame.crs_owned(),
         frame.epoch(),
     )?)

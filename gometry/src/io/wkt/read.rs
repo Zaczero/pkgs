@@ -6,7 +6,7 @@ use crate::geometry::{
     CoordSeqBuilder, HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
 };
 use crate::io::wkt::{
-    CoordSeq, CoordinateAxes, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_PARSE_DEPTH,
+    CoordSeq, CoordinateAxes, GeometryKind, IoError, IoGeometryKind, LineSeq, MAX_NESTING,
     ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, parse_content,
 };
 
@@ -33,9 +33,9 @@ fn parse_wkt_inner(
     depth: usize,
     inherited_axes: Option<CoordinateAxes>,
 ) -> Result<Shape> {
-    if depth >= MAX_PARSE_DEPTH {
+    if depth > MAX_NESTING {
         return Err(IoError::wkt(format!(
-            "WKT geometry nesting exceeds the limit of {MAX_PARSE_DEPTH}"
+            "WKT geometry nesting exceeds the limit of {MAX_NESTING}"
         )));
     }
     let text = value.trim();
@@ -65,7 +65,7 @@ fn parse_wkt_inner(
                 .into_iter()
                 .map(|value| parse_wkt_inner(value, depth + 1, child_axes))
                 .collect::<Result<Vec<_>>>()?;
-            Ok(Shape::geometry_collection(members))
+            Ok(Shape::geometry_collection(members)?)
         },
         IoGeometryKind::MultiPoint => {
             let Some(body) = header.body else {

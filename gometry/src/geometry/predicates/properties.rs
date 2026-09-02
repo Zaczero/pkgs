@@ -275,7 +275,7 @@ impl Shape {
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()
-                .map(|items| Self::GeometryCollection(items.into())),
+                .and_then(Self::geometry_collection),
         }
     }
 

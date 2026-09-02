@@ -1678,16 +1678,14 @@ mod tests {
 
     #[test]
     fn collection_flattens_in_declaration_order() {
-        let collection = Shape::GeometryCollection(
-            vec![
+        let collection = Shape::geometry_collection(vec![
                 Shape::Point(pt(9.0, 9.0)),
                 Shape::LineString(
                     LineSeq::try_new(CoordSeq::from(vec![pt(0.0, 0.0), pt(1.0, 1.0)]))
                         .expect("test line is valid"),
                 ),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
         assert_eq!(view.len(), 3);
         let points = view.collect_points();
@@ -1703,8 +1701,7 @@ mod tests {
         // Some(NaN) for a measured NaN — the list path needs the distinction,
         // while NumPy maps both to NaN at the boundary.
         use crate::geometry::{MOrdinate, ZOrdinate};
-        let collection = Shape::GeometryCollection(
-            vec![
+        let collection = Shape::geometry_collection(vec![
                 Shape::Point(pt(0.0, 0.0)),
                 Shape::Point(Point::new_raw_axes(
                     1.0,
@@ -1716,9 +1713,8 @@ mod tests {
                     Point::new_axes(2.0, 2.0, ZOrdinate(Some(9.0)), MOrdinate(None))
                         .expect("finite test Z"),
                 ),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
         match view.column(CoordinateAxis::Z).unwrap() {
             CoordinateColumnRef::Nullable(values) => {

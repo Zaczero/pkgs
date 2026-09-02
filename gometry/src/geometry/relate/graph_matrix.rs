@@ -1345,17 +1345,14 @@ mod tests {
         let duplicate = Shape::MultiPolygon(
             vec![rectangle(0.0, 0.0, 3.0, 3.0), rectangle(0.0, 0.0, 3.0, 3.0)].into(),
         );
-        let pinched = Shape::GeometryCollection(
-            vec![
+        let pinched = Shape::geometry_collection(vec![
                 Shape::Polygon(polygon(&[[0.0, 0.0], [-2.0, -1.0], [-2.0, 1.0], [
                     0.0, 0.0,
                 ]])),
                 Shape::Polygon(polygon(&[[0.0, 0.0], [2.0, 1.0], [2.0, -1.0], [0.0, 0.0]])),
-            ]
-            .into(),
-        );
-        let polygon_only_collection = Shape::GeometryCollection(
-            vec![
+        ])
+        .expect("test collection is valid");
+        let polygon_only_collection = Shape::geometry_collection(vec![
                 Shape::Polygon(rectangle(10.0, 0.0, 12.0, 2.0)),
                 Shape::Polygon(rectangle(12.0, 0.0, 14.0, 2.0)),
                 Shape::Polygon(rectangle(20.0, 0.0, 23.0, 3.0)),
@@ -1370,9 +1367,8 @@ mod tests {
                 Shape::Polygon(polygon(&[[50.0, 0.0], [52.0, 1.0], [52.0, -1.0], [
                     50.0, 0.0,
                 ]])),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         for (name, left, right) in [
             (
                 "adjacent multipolygon",
@@ -1740,15 +1736,12 @@ mod tests {
 
     #[test]
     fn geographic_aggregate_contacts_use_quotient_face_locations() {
-        let adjacent = Shape::GeometryCollection(
-            vec![
+        let adjacent = Shape::geometry_collection(vec![
                 Shape::Polygon(rectangle(0.0, 0.0, 1.0, 1.0)),
                 Shape::Polygon(rectangle(1.0, 0.0, 2.0, 1.0)),
-            ]
-            .into(),
-        );
-        let pinch = Shape::GeometryCollection(
-            vec![
+        ])
+        .expect("test collection is valid");
+        let pinch = Shape::geometry_collection(vec![
                 Shape::Polygon(Polygon::new(
                     Ring::from_closed(vec![
                         Point::new_raw_xy(0.0, 0.0),
@@ -1767,9 +1760,8 @@ mod tests {
                     ]),
                     Vec::new(),
                 )),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()
             .geographic_frame()
@@ -1825,8 +1817,7 @@ mod tests {
 
     #[test]
     fn mixed_relation_node_locations_match_full_location_oracle() {
-        let left = Shape::GeometryCollection(
-            vec![
+        let left = Shape::geometry_collection(vec![
                 Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0)),
                 Shape::LineString(
                     LineSeq::try_new(CoordSeq::from(vec![
@@ -1837,11 +1828,9 @@ mod tests {
                     .expect("line coordinate sequence must contain at least two vertices"),
                 ),
                 Shape::Point(Point::new_raw_xy(1.0, 1.0)),
-            ]
-            .into(),
-        );
-        let right = Shape::GeometryCollection(
-            vec![
+        ])
+        .expect("test collection is valid");
+        let right = Shape::geometry_collection(vec![
                 Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
                 Shape::LineString(
                     LineSeq::try_new(CoordSeq::from(vec![
@@ -1850,9 +1839,8 @@ mod tests {
                     ]))
                     .expect("line coordinate sequence must contain at least two vertices"),
                 ),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let left_graph = TopologyGraph::cartesian(&left);
         let right_graph = TopologyGraph::cartesian(&right);
         assert_eq!(
@@ -1860,8 +1848,7 @@ mod tests {
             graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),
         );
 
-        let geographic_left = Shape::GeometryCollection(
-            vec![
+        let geographic_left = Shape::geometry_collection(vec![
                 Shape::Polygon(polygon(&[
                     [170.0, 0.0],
                     [-170.0, 0.0],
@@ -1878,11 +1865,9 @@ mod tests {
                     .expect("line coordinate sequence must contain at least two vertices"),
                 ),
                 Shape::Point(Point::new_raw_xy(180.0, 5.0)),
-            ]
-            .into(),
-        );
-        let geographic_right = Shape::GeometryCollection(
-            vec![
+        ])
+        .expect("test collection is valid");
+        let geographic_right = Shape::geometry_collection(vec![
                 Shape::Polygon(rectangle(175.0, -5.0, 179.0, 5.0)),
                 Shape::LineString(
                     LineSeq::try_new(CoordSeq::from(vec![
@@ -1891,9 +1876,8 @@ mod tests {
                     ]))
                     .expect("line coordinate sequence must contain at least two vertices"),
                 ),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let frame = crate::crs::info("EPSG:4326")
             .expect("EPSG:4326 must be available")
             .geographic_frame()

@@ -445,7 +445,7 @@ impl Shape {
                         geometry.smooth_budgeted(iterations, method, keep_endpoints, budget)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts)?
             },
             Self::Empty(..) => self.clone(),
         })

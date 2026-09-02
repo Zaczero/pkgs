@@ -387,7 +387,7 @@ pub(super) fn cover_s2_components(
     let canonical_source = match components.len() {
         0 => return Ok(Vec::new()),
         1 => components.pop().expect("one canonical S2 component"),
-        _ => Shape::GeometryCollection(components.into()),
+        _ => Shape::geometry_collection(components).map_err(S2ComponentCoverError::Preparation)?,
     };
     cover_s2_component(
         &canonical_source,

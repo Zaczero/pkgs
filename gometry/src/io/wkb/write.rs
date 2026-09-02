@@ -727,15 +727,15 @@ mod tests {
 
     #[test]
     fn mixed_axes_collection_classifies_every_nested_header_once() {
-        assert_exact_mixed_nested_round_trip(&Shape::GeometryCollection(
-            vec![
+        assert_exact_mixed_nested_round_trip(
+            &Shape::geometry_collection(vec![
                 Shape::Point(xy(0.0, 0.0)),
                 Shape::Point(xym(1.0, 1.0, 7.0)),
                 Shape::LineString(line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)])),
                 Shape::empty_polygon(),
-            ]
-            .into(),
-        ));
+            ])
+            .expect("test collection is valid"),
+        );
     }
 
     #[test]

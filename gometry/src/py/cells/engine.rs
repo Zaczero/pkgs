@@ -114,7 +114,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
                 ));
             },
             1 => shapes.pop().expect("one shape"),
-            _ => Shape::GeometryCollection(shapes.into()),
+            _ => Shape::geometry_collection(shapes)?,
         };
         let bounds = if shape.crosses_antimeridian() {
             crate::geometry::geographic_crossing_bounds(&shape)

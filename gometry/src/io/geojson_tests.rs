@@ -104,8 +104,8 @@ fn multipolygon_and_collection_rings_are_right_handed() {
     let out = written(&multi, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["coordinates"][0][0]) > 0.0);
 
-    let collection =
-        Shape::GeometryCollection(vec![Shape::Polygon(Polygon::new(cw, vec![]))].into());
+    let collection = Shape::geometry_collection(vec![Shape::Polygon(Polygon::new(cw, vec![]))])
+        .expect("test collection is valid");
     let out = written(&collection, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["geometries"][0]["coordinates"][0]) > 0.0);
 }

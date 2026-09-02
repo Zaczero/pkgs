@@ -31,8 +31,9 @@ pub(crate) use primitives::{
 };
 pub(crate) use ring::{Coordinates, Ring};
 pub(crate) use shape::{
-    BufferCapStyle, BufferJoinStyle, BufferSide, LineSeq, MultiLineString, MultiMember, MultiPoint,
-    MultiPolygon, RepairMethod, Shape, SimplifyMethod, SmoothMethod, VoronoiBoundary,
+    BufferCapStyle, BufferJoinStyle, BufferSide, LineSeq, MAX_NESTING, MultiLineString,
+    MultiMember, MultiPoint, MultiPolygon, RepairMethod, Shape, SimplifyMethod, SmoothMethod,
+    VoronoiBoundary,
 };
 pub(crate) use shape_data::{
     FrameDependentCaches, GeodesicMetric, GeodesicSegmentWitness, IndexedSegment, PointKey,

@@ -768,12 +768,18 @@ impl JsonPath {
 }
 
 fn parse_geojson_inner(value: &Value, path: &JsonPath) -> Result<Shape> {
-    parse_geojson_inner_impl(value, path)
+    parse_geojson_inner_impl(value, path, 0)
         .map_err(|error| parse_content(ParseFormat::GeoJson, error))
         .map_err(|error| error.with_parse_path(path.as_str()))
 }
 
-fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
+fn parse_geojson_inner_impl(value: &Value, path: &JsonPath, depth: usize) -> Result<Shape> {
+    if depth > crate::io::MAX_NESTING {
+        return Err(IoError::geojson(format!(
+            "GeoJSON geometry nesting exceeds the limit of {}",
+            crate::io::MAX_NESTING
+        )));
+    }
     let object = value
         .as_object()
         .ok_or_else(|| IoError::geojson("GeoJSON geometry must be an object"))?;
@@ -819,10 +825,14 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath) -> Result<Shape> {
             for (index, geometry) in geometries.iter().enumerate() {
                 crate::boundary::try_push_vec(
                     &mut parsed,
-                    parse_geojson_inner(geometry, &geometries_path.index(index))?,
+                    parse_geojson_inner_impl(
+                        geometry,
+                        &geometries_path.index(index),
+                        depth.saturating_add(1),
+                    )?,
                 )?;
             }
-            Ok(Shape::geometry_collection(parsed))
+            Ok(Shape::geometry_collection(parsed)?)
         },
         "Point" => {
             let coords = coordinates()?;

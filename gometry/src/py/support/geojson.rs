@@ -184,10 +184,10 @@ fn py_to_json_value_inner(
     projection: JsonProjection,
     depth: usize,
 ) -> PyResult<Value> {
-    if depth >= crate::io::MAX_PARSE_DEPTH {
+    if depth > crate::geometry::MAX_NESTING {
         return Err(crate::io::IoError::geojson(format!(
             "JSON nesting exceeds the limit of {}",
-            crate::io::MAX_PARSE_DEPTH
+            crate::geometry::MAX_NESTING
         ))
         .into());
     }

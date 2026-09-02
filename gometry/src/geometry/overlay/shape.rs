@@ -200,8 +200,7 @@ impl Shape {
             .into_iter()
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
-        let result = Self::GeometryCollection(
-            vec![
+        let result = Self::geometry_collection(vec![
                 if same.is_empty() {
                     Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
                 } else {
@@ -212,9 +211,7 @@ impl Shape {
                 } else {
                     Self::MultiLineString(opposite.into())
                 },
-            ]
-            .into(),
-        );
+        ])?;
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }
 }

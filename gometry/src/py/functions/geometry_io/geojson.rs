@@ -1117,9 +1117,12 @@ impl RawJsonToPy<'_, '_> {
     }
 
     fn parse_value(&mut self, depth: usize) -> PyResult<Py<PyAny>> {
-        if depth >= crate::io::MAX_PARSE_DEPTH {
+        if depth > crate::geometry::MAX_NESTING {
             return Err(crate::py::errors::parse_error(
-                "GeoJSON Feature side data exceeds nesting depth 128",
+                format!(
+                    "GeoJSON Feature side data exceeds nesting depth {}",
+                    crate::geometry::MAX_NESTING
+                ),
                 crate::error::ParseFormat::GeoJson,
             ));
         }

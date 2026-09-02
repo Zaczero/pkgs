@@ -1369,13 +1369,13 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Shape {
                 })
                 .expect("transformed multipart preserves members"),
         ),
-        Shape::GeometryCollection(geometries) => Shape::GeometryCollection(
+        Shape::GeometryCollection(geometries) => Shape::geometry_collection(
             geometries
                 .iter()
                 .map(|geometry| rebuild_shape_columns(geometry, cursor))
-                .collect::<Vec<_>>()
-                .into(),
-        ),
+                .collect::<Vec<_>>(),
+        )
+        .expect("coordinate transform preserves collection nesting"),
         Shape::Empty(..) => shape.clone(),
     }
 }

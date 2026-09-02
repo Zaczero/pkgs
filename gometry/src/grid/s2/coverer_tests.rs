@@ -365,38 +365,31 @@ fn assert_relate_oracle_parity(name: &str, source: &Shape, levels: &[u8]) {
 }
 
 fn adjacent_areal_collection() -> Shape {
-    Shape::GeometryCollection(
-        vec![
+    Shape::geometry_collection(vec![
             box_shape(-1.0, -1.0, 0.03, 1.0),
             box_shape(0.03, -1.0, 1.0, 1.0),
-        ]
-        .into(),
-    )
+    ])
+    .expect("test collection is valid")
 }
 
 fn overlapping_areal_collection() -> Shape {
-    Shape::GeometryCollection(
-        vec![
+    Shape::geometry_collection(vec![
             box_shape(-1.0, -1.0, 0.25, 1.0),
             box_shape(-0.25, -1.0, 1.0, 1.0),
-        ]
-        .into(),
-    )
+    ])
+    .expect("test collection is valid")
 }
 
 fn nested_areal_collection() -> Shape {
-    Shape::GeometryCollection(
-        vec![
+    Shape::geometry_collection(vec![
             box_shape(2.0, 2.0, 3.0, 3.0),
             box_shape(2.51, 2.45, 2.55, 2.56),
-        ]
-        .into(),
-    )
+    ])
+    .expect("test collection is valid")
 }
 
 fn mixed_dimension_collection() -> Shape {
-    Shape::GeometryCollection(
-        vec![
+    Shape::geometry_collection(vec![
             box_shape(-2.0, -2.0, 2.0, 2.0),
             Shape::LineString(
                 LineSeq::try_new(CoordSeq::from(vec![
@@ -412,9 +405,8 @@ fn mixed_dimension_collection() -> Shape {
                 ])
                 .into(),
             ),
-        ]
-        .into(),
-    )
+    ])
+    .expect("test collection is valid")
 }
 
 fn antimeridian_seam_source() -> Shape {
@@ -485,13 +477,11 @@ fn native_coverer_matches_relate_oracle_across_the_antimeridian() {
 
 #[test]
 fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
-    let adjacent = Shape::GeometryCollection(
-        vec![
+    let adjacent = Shape::geometry_collection(vec![
             box_shape(-1.0, -1.0, 0.03, 1.0),
             box_shape(0.03, -1.0, 1.0, 1.0),
-        ]
-        .into(),
-    );
+    ])
+    .expect("test collection is valid");
     let seam_cell = CellId::from_lonlat(0.03, 0.0).parent(12).expect("level 12");
     assert_eq!(
         classify_with_native(&adjacent, seam_cell),
@@ -500,13 +490,11 @@ fn multi_areal_collection_internal_rings_do_not_block_interior_certificates() {
         seam_cell.token()
     );
 
-    let nested = Shape::GeometryCollection(
-        vec![
+    let nested = Shape::geometry_collection(vec![
             box_shape(2.0, 2.0, 3.0, 3.0),
             box_shape(2.51, 2.45, 2.55, 2.56),
-        ]
-        .into(),
-    );
+    ])
+    .expect("test collection is valid");
     let nested_cell = CellId::from_token("1010011").expect("reviewer repro token");
     assert_eq!(nested_cell.level(), 12);
     assert_eq!(

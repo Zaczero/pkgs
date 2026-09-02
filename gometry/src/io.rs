@@ -20,10 +20,8 @@ const EWKB_Z_FLAG: u32 = 0x8000_0000;
 const EWKB_M_FLAG: u32 = 0x4000_0000;
 const EWKB_SRID_FLAG: u32 = 0x2000_0000;
 
-/// Maximum nesting accepted by recursive geometry decoders. This matches
-/// serde_json's default recursion boundary while keeping WKT, WKB, and Python
-/// mapping ingestion from exhausting the native stack on adversarial input.
-pub(crate) const MAX_PARSE_DEPTH: usize = 128;
+/// The serialization readers use the same admission limit as `Shape`.
+pub(crate) use crate::geometry::MAX_NESTING;
 
 /// A parse failure for serialized geometry input. Surfaces as
 /// `gometry.ParseError`. Constructors return the crate-wide

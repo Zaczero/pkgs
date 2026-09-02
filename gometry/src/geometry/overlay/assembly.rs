@@ -239,6 +239,7 @@ pub(crate) fn build_overlay_shape(
         Err(parts) if parts.is_empty() => {
             Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
         },
-        Err(parts) => Shape::GeometryCollection(parts.into()),
+        Err(parts) => Shape::geometry_collection(parts)
+            .expect("overlay assembly preserves collection nesting"),
     }
 }

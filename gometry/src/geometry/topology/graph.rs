@@ -2479,7 +2479,7 @@ mod tests {
     }
 
     fn collection(shapes: Vec<Shape>) -> Shape {
-        Shape::GeometryCollection(shapes.into())
+        Shape::geometry_collection(shapes).expect("test collection is valid")
     }
 
     #[test]
@@ -2835,50 +2835,44 @@ mod tests {
 
     #[test]
     fn indexed_support_matches_brute_locations_at_source_noded_and_aliased_points() {
-        let cartesian = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
-                    &[&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]],
-                )),
-                Shape::LineString(line(&[(-1.0, 2.0), (2.0, 2.0), (5.0, 2.0)])),
-                Shape::Point(point(8.0, 8.0)),
-            ]
-            .into(),
-        );
-        let geographic = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[
-                        (170.0, 0.0),
-                        (-170.0, 0.0),
-                        (-170.0, 12.0),
-                        (170.0, 12.0),
-                        (170.0, 0.0),
-                    ],
-                    &[&[
-                        (175.0, 3.0),
-                        (-175.0, 3.0),
-                        (-175.0, 8.0),
-                        (175.0, 8.0),
-                        (175.0, 3.0),
-                    ]],
-                )),
-                Shape::Polygon(polygon(
-                    &[
-                        (-180.0, 80.0),
-                        (-90.0, 80.0),
-                        (0.0, 80.0),
-                        (90.0, 80.0),
-                        (180.0, 80.0),
-                        (-180.0, 80.0),
-                    ],
-                    &[],
-                )),
-                Shape::LineString(line(&[(175.0, 6.0), (180.0, 6.0), (-175.0, 6.0)])),
-            ]
-            .into(),
-        );
+        let cartesian = collection(vec![
+            Shape::Polygon(polygon(
+                &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+                &[&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]],
+            )),
+            Shape::LineString(line(&[(-1.0, 2.0), (2.0, 2.0), (5.0, 2.0)])),
+            Shape::Point(point(8.0, 8.0)),
+        ]);
+        let geographic = collection(vec![
+            Shape::Polygon(polygon(
+                &[
+                    (170.0, 0.0),
+                    (-170.0, 0.0),
+                    (-170.0, 12.0),
+                    (170.0, 12.0),
+                    (170.0, 0.0),
+                ],
+                &[&[
+                    (175.0, 3.0),
+                    (-175.0, 3.0),
+                    (-175.0, 8.0),
+                    (175.0, 8.0),
+                    (175.0, 3.0),
+                ]],
+            )),
+            Shape::Polygon(polygon(
+                &[
+                    (-180.0, 80.0),
+                    (-90.0, 80.0),
+                    (0.0, 80.0),
+                    (90.0, 80.0),
+                    (180.0, 80.0),
+                    (-180.0, 80.0),
+                ],
+                &[],
+            )),
+            Shape::LineString(line(&[(175.0, 6.0), (180.0, 6.0), (-175.0, 6.0)])),
+        ]);
         for graph in [
             TopologyGraph::cartesian(&cartesian),
             TopologyGraph::geographic(&geographic, degrees()),
@@ -3026,32 +3020,26 @@ mod tests {
 
     #[test]
     fn resolved_node_locations_match_full_point_location() {
-        let cartesian = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)],
-                    &[],
-                )),
-                Shape::LineString(line(&[(-1.0, 1.0), (1.0, 1.0), (3.0, 1.0)])),
-            ]
-            .into(),
-        );
-        let geographic = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[
-                        (170.0, 0.0),
-                        (-170.0, 0.0),
-                        (-170.0, 10.0),
-                        (170.0, 10.0),
-                        (170.0, 0.0),
-                    ],
-                    &[],
-                )),
-                Shape::LineString(line(&[(175.0, 5.0), (180.0, 5.0), (-175.0, 5.0)])),
-            ]
-            .into(),
-        );
+        let cartesian = collection(vec![
+            Shape::Polygon(polygon(
+                &[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)],
+                &[],
+            )),
+            Shape::LineString(line(&[(-1.0, 1.0), (1.0, 1.0), (3.0, 1.0)])),
+        ]);
+        let geographic = collection(vec![
+            Shape::Polygon(polygon(
+                &[
+                    (170.0, 0.0),
+                    (-170.0, 0.0),
+                    (-170.0, 10.0),
+                    (170.0, 10.0),
+                    (170.0, 0.0),
+                ],
+                &[],
+            )),
+            Shape::LineString(line(&[(175.0, 5.0), (180.0, 5.0), (-175.0, 5.0)])),
+        ]);
         for graph in [
             TopologyGraph::cartesian(&cartesian),
             TopologyGraph::geographic(&geographic, degrees()),
@@ -3064,14 +3052,11 @@ mod tests {
 
     #[test]
     fn overlapping_line_members_keep_shared_support_and_cancel_duplicate_boundary() {
-        let collection = Shape::GeometryCollection(
-            vec![
-                Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
-                Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
-                Shape::Point(point(4.0, 4.0)),
-            ]
-            .into(),
-        );
+        let collection = collection(vec![
+            Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
+            Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
+            Shape::Point(point(4.0, 4.0)),
+        ]);
         let graph = TopologyGraph::cartesian(&collection);
         assert_eq!(graph.effective_dimension, Some(Dimension::Curve));
         assert!(graph.line_boundary.is_empty());
@@ -3082,13 +3067,10 @@ mod tests {
 
     #[test]
     fn noding_preserves_one_source_record_on_each_atomic_piece() {
-        let collection = Shape::GeometryCollection(
-            vec![
-                Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
-                Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
-            ]
-            .into(),
-        );
+        let collection = collection(vec![
+            Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
+            Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
+        ]);
         let graph = TopologyGraph::cartesian(&collection);
         assert_eq!(graph.edges.len(), 4);
         assert!(graph.edges.iter().all(|edge| edge.sources.len() == 1));
@@ -3117,13 +3099,10 @@ mod tests {
 
     #[test]
     fn cartesian_noded_bundles_keep_endpoint_provenance() {
-        let shape = Shape::GeometryCollection(
-            vec![
-                Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
-                Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
-            ]
-            .into(),
-        );
+        let shape = collection(vec![
+            Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
+            Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
+        ]);
         let graph = TopologyGraph::cartesian(&shape);
         assert_eq!(graph.edges.len(), 4);
         assert_edge_endpoints_and_provenance(&graph);
@@ -3228,48 +3207,42 @@ mod tests {
 
     #[test]
     fn mixed_collection_keeps_highest_nonempty_dimension() {
-        let collection = Shape::GeometryCollection(
-            vec![
-                Shape::Empty(GeometryKind::Point, CoordinateAxes::XYZ),
-                Shape::LineString(line(&[(0.0, 0.0), (1.0, 0.0)])),
-                Shape::Polygon(polygon(
-                    &[(2.0, 0.0), (4.0, 0.0), (4.0, 2.0), (2.0, 2.0), (2.0, 0.0)],
-                    &[],
-                )),
-            ]
-            .into(),
-        );
+        let collection = collection(vec![
+            Shape::Empty(GeometryKind::Point, CoordinateAxes::XYZ),
+            Shape::LineString(line(&[(0.0, 0.0), (1.0, 0.0)])),
+            Shape::Polygon(polygon(
+                &[(2.0, 0.0), (4.0, 0.0), (4.0, 2.0), (2.0, 2.0), (2.0, 0.0)],
+                &[],
+            )),
+        ]);
         let graph = TopologyGraph::cartesian(&collection);
         assert_eq!(graph.effective_dimension, Some(Dimension::Surface));
     }
 
     #[test]
     fn aggregate_face_support_does_not_bridge_nearby_components() {
-        let shape = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[
-                        (-1.01e-7, -1e-9),
-                        (-9.9e-8, -1e-9),
-                        (-9.9e-8, 1e-9),
-                        (-1.01e-7, 1e-9),
-                        (-1.01e-7, -1e-9),
-                    ],
-                    &[],
-                )),
-                Shape::Polygon(polygon(
-                    &[
-                        (9.9e-8, -1e-9),
-                        (1.01e-7, -1e-9),
-                        (1.01e-7, 1e-9),
-                        (9.9e-8, 1e-9),
-                        (9.9e-8, -1e-9),
-                    ],
-                    &[],
-                )),
-            ]
-            .into(),
-        );
+        let shape = collection(vec![
+            Shape::Polygon(polygon(
+                &[
+                    (-1.01e-7, -1e-9),
+                    (-9.9e-8, -1e-9),
+                    (-9.9e-8, 1e-9),
+                    (-1.01e-7, 1e-9),
+                    (-1.01e-7, -1e-9),
+                ],
+                &[],
+            )),
+            Shape::Polygon(polygon(
+                &[
+                    (9.9e-8, -1e-9),
+                    (1.01e-7, -1e-9),
+                    (1.01e-7, 1e-9),
+                    (9.9e-8, 1e-9),
+                    (9.9e-8, -1e-9),
+                ],
+                &[],
+            )),
+        ]);
         let graph = TopologyGraph::cartesian(&shape);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
@@ -3279,19 +3252,16 @@ mod tests {
 
     #[test]
     fn aggregate_face_support_absorbs_shared_edges_but_not_point_pinches() {
-        let adjacent = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)],
-                    &[],
-                )),
-                Shape::Polygon(polygon(
-                    &[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
-                    &[],
-                )),
-            ]
-            .into(),
-        );
+        let adjacent = collection(vec![
+            Shape::Polygon(polygon(
+                &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)],
+                &[],
+            )),
+            Shape::Polygon(polygon(
+                &[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
+                &[],
+            )),
+        ]);
         let graph = TopologyGraph::cartesian(&adjacent);
         assert_eq!(
             graph.locate_point(XY::new(1.0, 0.5)),
@@ -3310,26 +3280,23 @@ mod tests {
             &[(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
             &[],
         ));
-        let duplicates =
-            Shape::GeometryCollection(vec![left.clone(), left.clone(), left, right].into());
+        let duplicates = Shape::geometry_collection(vec![left.clone(), left.clone(), left, right])
+            .expect("test collection is valid");
         assert_eq!(
             TopologyGraph::cartesian(&duplicates).locate_point(XY::new(1.0, 0.5)),
             TopologyLocation::Interior
         );
 
-        let pinch = Shape::GeometryCollection(
-            vec![
-                Shape::Polygon(polygon(
-                    &[(0.0, 0.0), (-2.0, -1.0), (-2.0, 1.0), (0.0, 0.0)],
-                    &[],
-                )),
-                Shape::Polygon(polygon(
-                    &[(0.0, 0.0), (2.0, 1.0), (2.0, -1.0), (0.0, 0.0)],
-                    &[],
-                )),
-            ]
-            .into(),
-        );
+        let pinch = collection(vec![
+            Shape::Polygon(polygon(
+                &[(0.0, 0.0), (-2.0, -1.0), (-2.0, 1.0), (0.0, 0.0)],
+                &[],
+            )),
+            Shape::Polygon(polygon(
+                &[(0.0, 0.0), (2.0, 1.0), (2.0, -1.0), (0.0, 0.0)],
+                &[],
+            )),
+        ]);
         let graph = TopologyGraph::cartesian(&pinch);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),

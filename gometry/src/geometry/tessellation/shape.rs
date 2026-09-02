@@ -472,7 +472,8 @@ impl Shape {
                 if boundaries.is_empty() {
                     Self::typed_empty(GeometryKind::GeometryCollection, self.axes())
                 } else {
-                    Self::GeometryCollection(boundaries.into())
+                    Self::geometry_collection(boundaries)
+                        .expect("boundary preserves collection nesting")
                 }
             },
         }

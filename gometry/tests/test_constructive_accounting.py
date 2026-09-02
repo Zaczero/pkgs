@@ -140,8 +140,8 @@ def test_point_buffer_counts_its_closing_coordinate_before_circle_allocation() -
 
 
 def test_deep_single_member_collection_buffer_reaches_the_real_member_once() -> None:
-    """One-child collection wrappers flatten iteratively before the point path."""
+    """One-child collection wrappers reach the member at the nesting boundary."""
     nested: gm.Geometry = gm.Point(0.0, 0.0)
-    for _ in range(1024):
+    for _ in range(128):
         nested = gm.GeometryCollection([nested])
     assert nested.buffer(1.0).to_wkb() == gm.Point(0.0, 0.0).buffer(1.0).to_wkb()

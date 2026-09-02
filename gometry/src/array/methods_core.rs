@@ -220,7 +220,7 @@ impl PyGeometryArray {
                 "estimate_local_crs requires at least one present, non-empty geometry",
             ));
         }
-        let collection = Shape::GeometryCollection(shapes.into());
+        let collection = Shape::geometry_collection(shapes)?;
         Ok(PyCrs::from_canonical(crs_arc(crs::estimate_local_crs(
             &collection,
             source,

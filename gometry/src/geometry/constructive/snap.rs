@@ -679,7 +679,7 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.snap(reference, tolerance))
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts).expect("snap preserves collection nesting")
             },
             Self::Empty(..) => self.clone(),
         })
@@ -771,6 +771,7 @@ impl Shape {
                     .map(|geometry| geometry.try_map_coordseqs(seq_fn, point_fn))
                     .collect::<Result<Vec<_>, _>>()?;
                 Self::geometry_collection(parts)
+                    .expect("coordinate transform preserves collection nesting")
             },
             Self::Empty(..) => self.clone(),
         })
@@ -932,7 +933,8 @@ impl Shape {
                     .map(Self::collapse_snapped)
                     .filter(|geometry| !geometry.is_empty())
                     .collect(),
-            ),
+            )
+            .expect("snapped collection preserves collection nesting"),
             other => other,
         }
     }

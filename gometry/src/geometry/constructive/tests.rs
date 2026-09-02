@@ -419,8 +419,7 @@ mod winding_buffer_tests {
             assert!(annihilated.is_empty(), "{annihilated:?}");
         }
 
-        let collection = Shape::GeometryCollection(
-            vec![
+        let collection = Shape::geometry_collection(vec![
                 Shape::Point(Point::new(12.0, 3.0).unwrap()),
                 Shape::LineString(
                     LineSeq::try_new(CoordSeq::from(vec![
@@ -433,9 +432,8 @@ mod winding_buffer_tests {
                     ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
                     Vec::new(),
                 )),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let buffered = collection.buffer(0.5).unwrap();
         assert!(buffered.validate().is_none(), "{:?}", buffered.validate());
         for part in match &collection {
@@ -741,8 +739,8 @@ mod expansion_budget_threading_tests {
     fn buffer_and_offset_collection_children_use_the_callers_budget() {
         let style = Positive::try_new("miter_limit", 5.0).unwrap();
         let mut buffer_budget = exhausted("buffer", "quadrant_segments");
-        let buffer =
-            Shape::GeometryCollection(vec![Shape::Point(Point::new(0.0, 0.0).unwrap())].into());
+        let buffer = Shape::geometry_collection(vec![Shape::Point(Point::new(0.0, 0.0).unwrap())])
+            .expect("test collection is valid");
         buffer
             .buffer_with_style_budgeted(
                 1.0,
@@ -755,7 +753,8 @@ mod expansion_budget_threading_tests {
             .unwrap_err();
 
         let mut offset_budget = exhausted("offset_curve", "quadrant_segments");
-        Shape::GeometryCollection(vec![bent_line()].into())
+        Shape::geometry_collection(vec![bent_line()])
+            .expect("test collection is valid")
             .offset_curve_budgeted(
                 1.0,
                 BufferJoinStyle::Round,
@@ -769,7 +768,8 @@ mod expansion_budget_threading_tests {
     #[test]
     fn smooth_children_and_triangle_emission_use_the_callers_budget() {
         let mut smooth_budget = exhausted("smooth", "iterations");
-        Shape::GeometryCollection(vec![bent_line()].into())
+        Shape::geometry_collection(vec![bent_line()])
+            .expect("test collection is valid")
             .smooth_budgeted(1, SmoothMethod::CatmullRom, true, &mut smooth_budget)
             .unwrap_err();
 

@@ -84,9 +84,11 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Shape {
                     ),
                 })
                 .collect(),
-        ),
+        )
+        .expect("polygonal conversion preserves collection nesting"),
         Shape::GeometryCollection(parts) => {
-            Shape::GeometryCollection(parts.iter().map(degenerate_polygonal_as_linework).collect())
+            Shape::geometry_collection(parts.iter().map(degenerate_polygonal_as_linework).collect())
+                .expect("linework conversion preserves collection nesting")
         },
         other => other.clone(),
     }

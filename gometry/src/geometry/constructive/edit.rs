@@ -304,12 +304,13 @@ impl Shape {
                 polygons
                     .try_map_values(polygons.axes(), |polygon| polygon.map_rings_xy_with(op))?,
             ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
                 geometries
                     .iter()
                     .map(|geometry| geometry.map_xy_with(op))
                     .collect::<Result<_, _>>()?,
-            ),
+            )
+            .expect("coordinate transform preserves collection nesting"),
             Self::Empty(..) => self.clone(),
         })
     }
@@ -419,12 +420,13 @@ impl Shape {
                     })
                     .expect("quantize preserves multipart members"),
             ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
                 geometries
                     .iter()
                     .map(|geometry| geometry.quantize(precision))
                     .collect(),
-            ),
+            )
+            .expect("quantize preserves collection nesting"),
             Self::Empty(..) => self.clone(),
         }
     }
@@ -496,12 +498,12 @@ impl Shape {
             }
         }
         if let Self::GeometryCollection(geometries) = self {
-            return Ok(Self::GeometryCollection(
+            return Ok(Self::geometry_collection(
                 geometries
                     .iter()
                     .map(|geometry| geometry.set_ordinate(axis, value, overwrite))
                     .collect::<Result<_>>()?,
-            ));
+            )?);
         }
         self.try_map_coordseqs(
             |seq| Ok(seq.set_ordinate(axis, value, overwrite)),
@@ -547,7 +549,8 @@ impl Shape {
                     .expect("force_2d preserves multipart members"),
             ),
             Self::GeometryCollection(geometries) => {
-                Self::GeometryCollection(geometries.iter().map(Self::force_2d).collect())
+                Self::geometry_collection(geometries.iter().map(Self::force_2d).collect())
+                    .expect("force_2d preserves collection nesting")
             },
             // A dimensional empty flattens to the canonical XY empty of its
             // kind (`POINT Z EMPTY` → `POINT EMPTY`).
@@ -752,7 +755,7 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.map_points(transform))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Self::geometry_collection(parts))
+                Ok(Self::geometry_collection(parts)?)
             },
             Self::Empty(..) => Ok(self.clone()),
         }
@@ -808,13 +811,10 @@ impl Shape {
                 rect.maxx(),
                 rect.maxy(),
             )?;
-            Self::GeometryCollection(
-                vec![
-                    crate::geometry::geographic_bounds_to_shape(west, frame)?,
-                    crate::geometry::geographic_bounds_to_shape(east, frame)?,
-                ]
-                .into(),
-            )
+            Self::geometry_collection(vec![
+                crate::geometry::geographic_bounds_to_shape(west, frame)?,
+                crate::geometry::geographic_bounds_to_shape(east, frame)?,
+            ])?
         } else {
             crate::geometry::geographic_bounds_to_shape(rect, frame)?
         };
@@ -907,12 +907,12 @@ impl Shape {
                 "clip_by_rect",
                 drop,
             )?,
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
                 geometries
                     .iter()
                     .map(|geometry| geometry.clip_by_rect(rect, drop))
                     .collect::<Result<_, _>>()?,
-            ),
+            )?,
             Self::Empty(..) => self.clone(),
         };
         // Normalize a vanished clip to the SUBJECT's typed empty (a clipped-away
@@ -991,7 +991,8 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.map_chains(transform))
                     .collect(),
-            ),
+            )
+            .expect("chain transform preserves collection nesting"),
         }
     }
 
@@ -1081,7 +1082,7 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.remove_repeated_points(tolerance))
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts)?
             },
             Self::Empty(..) => self.clone(),
         })
@@ -1142,7 +1143,7 @@ impl Shape {
                         geometry.densified_budgeted_with_placement(fraction, placement, budget)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts)?
             },
         })
     }
@@ -1200,7 +1201,7 @@ impl Shape {
                         geometry.segmentize_budgeted(max_segment_length, placement, budget)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts)?
             },
             Self::Empty(..) => self.clone(),
         })
@@ -1251,6 +1252,7 @@ impl Shape {
             ),
             Self::GeometryCollection(geometries) => {
                 Self::geometry_collection(geometries.iter().map(Self::reverse).collect())
+                    .expect("reverse preserves collection nesting")
             },
             Self::Empty(..) => self.clone(),
         }
@@ -1271,7 +1273,8 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.orient_polygons(exterior_cw))
                     .collect(),
-            ),
+            )
+            .expect("polygon orientation preserves collection nesting"),
             Self::Point(_)
             | Self::MultiPoint(_)
             | Self::LineString(_)
@@ -1348,7 +1351,8 @@ impl Shape {
             Self::GeometryCollection(geometries) => {
                 let mut geometries = geometries.iter().map(Self::normalize).collect::<Vec<_>>();
                 geometries.sort_by(compare_shapes);
-                Self::GeometryCollection(geometries.into())
+                Self::geometry_collection(geometries)
+                    .expect("normalize preserves collection nesting")
             },
             Self::Empty(..) => self.clone(),
         }

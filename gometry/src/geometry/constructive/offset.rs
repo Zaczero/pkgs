@@ -533,7 +533,7 @@ impl Shape {
                             )
                         })
                         .collect::<Result<Vec<_>, _>>()?;
-                    Ok(Self::geometry_collection(parts))
+                    Ok(Self::geometry_collection(parts)?)
                 },
                 _ => Err(GeometryErrorKind::LinealRequired.into()),
             };
@@ -593,7 +593,7 @@ impl Shape {
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Self::geometry_collection(parts)
+                Self::geometry_collection(parts)?
             },
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
         })

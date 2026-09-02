@@ -366,17 +366,11 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn intersection_all_singleton_is_faithful_and_keeps_ordinates() {
-        let input = Shape::GeometryCollection(
-            vec![
-                Shape::Point(
-                    Point::new_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap(),
-                ),
-                Shape::Point(
-                    Point::new_axes(4.0, 5.0, ZOrdinate(None), MOrdinate(Some(6.0))).unwrap(),
-                ),
-            ]
-            .into(),
-        );
+        let input = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap()),
+            Shape::Point(Point::new_axes(4.0, 5.0, ZOrdinate(None), MOrdinate(Some(6.0))).unwrap()),
+        ])
+        .expect("test collection is valid");
         // A single operand intersects to itself — faithful, so both policies
         // keep Z/M (force_2d is the way to flatten).
         for strictness in [Strictness::Lenient, Strictness::Strict] {
@@ -484,7 +478,8 @@ mod binary_areal_overlay_tests {
         let polygon = square(0.0, 0.0, 4.0, 4.0);
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
         let collection =
-            Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()].into());
+            Shape::geometry_collection(vec![contained_line.clone(), Shape::empty_polygon()])
+                .expect("test collection is valid");
         let result = overlay_all(
             &[&polygon, &polygon, &collection],
             crate::geometry::TopologyDomain::Cartesian,
@@ -535,12 +530,12 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn symmetric_difference_all_same_dimension_collections_are_canonical() {
-        let duplicate = Shape::GeometryCollection(
-            vec![square(0.0, 0.0, 2.0, 2.0), Shape::empty_polygon()].into(),
-        );
-        let survivor = Shape::GeometryCollection(
-            vec![square(3.0, 3.0, 5.0, 5.0), Shape::empty_polygon()].into(),
-        );
+        let duplicate =
+            Shape::geometry_collection(vec![square(0.0, 0.0, 2.0, 2.0), Shape::empty_polygon()])
+                .expect("test collection is valid");
+        let survivor =
+            Shape::geometry_collection(vec![square(3.0, 3.0, 5.0, 5.0), Shape::empty_polygon()])
+                .expect("test collection is valid");
         let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
             crate::geometry::TopologyDomain::Cartesian,
@@ -603,8 +598,7 @@ mod binary_areal_overlay_tests {
             line(&[(3.0, 3.0), (4.0, 3.0)]),
             point(6.0, 6.0),
         ];
-        let multipart = Shape::GeometryCollection(
-            vec![
+        let multipart = Shape::geometry_collection(vec![
                 Shape::MultiPolygon(
                     vec![polygon(&[
                         (0.0, 0.0),
@@ -625,9 +619,8 @@ mod binary_areal_overlay_tests {
                     ]
                     .into(),
                 ),
-            ]
-            .into(),
-        );
+        ])
+        .expect("test collection is valid");
         let remote = square(6.0, 6.0, 7.0, 7.0);
         let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
 

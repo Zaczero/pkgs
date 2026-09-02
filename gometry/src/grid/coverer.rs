@@ -971,9 +971,9 @@ mod tests {
             ]),
             Vec::new(),
         );
-        let source = Shape::GeometryCollection(
-            vec![Shape::Polygon(z_square), Shape::Polygon(square)].into(),
-        );
+        let source =
+            Shape::geometry_collection(vec![Shape::Polygon(z_square), Shape::Polygon(square)])
+                .expect("test collection is valid");
         let authority_plan = PreparedPlan::new(source.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
 

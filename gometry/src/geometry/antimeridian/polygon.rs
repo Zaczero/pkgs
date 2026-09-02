@@ -113,12 +113,12 @@ impl Shape {
                     split,
                 )?))
             },
-            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
+            Self::GeometryCollection(geometries) => Self::geometry_collection(
                 geometries
                     .iter()
                     .map(Self::split_antimeridian_chart)
                     .collect::<Result<_>>()?,
-            )),
+            ),
         }
     }
 
@@ -334,7 +334,7 @@ fn chart_shape(
             for member in collection {
                 result.push(chart_shape(member, frame, longitude_scale, latitude_scale)?);
             }
-            Ok(Shape::GeometryCollection(result.into()))
+            Ok(Shape::geometry_collection(result)?)
         },
         _ => shape.map_xy_with(|x, y| {
             Ok((

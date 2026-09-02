@@ -493,12 +493,13 @@ impl Shape {
                     Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
                 }
             },
-            Self::GeometryCollection(parts) => Self::GeometryCollection(
+            Self::GeometryCollection(parts) => Self::geometry_collection(
                 parts
                     .into_iter()
                     .map(Self::dropping_collapsed_rings)
                     .collect(),
-            ),
+            )
+            .expect("ring cleanup preserves collection nesting"),
             other => other,
         }
     }
@@ -610,7 +611,7 @@ impl Shape {
                     .iter()
                     .map(|geometry| geometry.simplify_dp_raw(tolerance))
                     .collect::<Result<Vec<_>>>()?,
-            ),
+            )?,
         })
     }
 
@@ -683,12 +684,12 @@ impl Shape {
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
             },
             Self::GeometryCollection(geometries) => {
-                return Ok(Self::GeometryCollection(
+                return Self::geometry_collection(
                     geometries
                         .iter()
                         .map(|geometry| geometry.simplify_vw_raw(tolerance))
                         .collect::<Result<_, _>>()?,
-                ));
+                );
             },
         };
         // Visvalingam-Whyatt also keeps a subset of the input vertices, so

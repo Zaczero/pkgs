@@ -5,7 +5,7 @@ use crate::geometry::{
 };
 use crate::io::wkb::{
     CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, GeometryErrorKind, GeometryKind,
-    ISO_DIM_OFFSET, IoError, LineSeq, MAX_PARSE_DEPTH, ParseFormat, Point, Polygon, Result, Ring,
+    ISO_DIM_OFFSET, IoError, LineSeq, MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring,
     Shape, WKB_COUNT, WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING,
     WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbAxes, WkbGeometry, parse_content,
     wkb_dimension,
@@ -342,9 +342,9 @@ impl WkbReader<'_> {
         path: Option<&WkbMemberPath<'_>>,
         depth: usize,
     ) -> Result<(Shape, Option<u32>)> {
-        if depth >= MAX_PARSE_DEPTH {
+        if depth > MAX_NESTING {
             return Err(IoError::wkb(format!(
-                "WKB geometry nesting exceeds the limit of {MAX_PARSE_DEPTH}"
+                "WKB geometry nesting exceeds the limit of {MAX_NESTING}"
             )));
         }
         let byte_order = match self.read_u8()? {
@@ -483,7 +483,7 @@ impl WkbReader<'_> {
                 if members.is_empty() {
                     Shape::typed_empty(GeometryKind::GeometryCollection, axes.coordinate_axes())
                 } else {
-                    Shape::GeometryCollection(members.into())
+                    Shape::geometry_collection(members)?
                 }
             },
             value => {

@@ -136,9 +136,10 @@ fn area_mixed_and_lower_dimensional_witnesses_obey_leaf_ordering() {
         H3LeafClass::Boundary
     );
     assert_eq!(
-        classify(&Shape::GeometryCollection(
-            vec![Shape::Polygon(big), line, point].into()
-        )),
+        classify(
+            &Shape::geometry_collection(vec![Shape::Polygon(big), line, point])
+                .expect("test collection is valid")
+        ),
         H3LeafClass::Interior
     );
 }
@@ -554,8 +555,8 @@ fn globally_fail_open_components_merge_duplicate_ids_before_budgeting() {
         })
         .expect("partial and full caps share a boundary/interior cell");
 
-    let mixed =
-        Shape::GeometryCollection(vec![Shape::Polygon(partial), Shape::Polygon(full)].into());
+    let mixed = Shape::geometry_collection(vec![Shape::Polygon(partial), Shape::Polygon(full)])
+        .expect("test collection is valid");
     assert!(
         GeographicCoverageSource::new(&mixed, SphericalGridTarget::H3(TARGET))
             .unwrap()
@@ -600,7 +601,8 @@ fn globally_fail_open_duplicate_components_merge_before_their_global_budget() {
     .unwrap();
 
     let duplicate =
-        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)].into());
+        Shape::geometry_collection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)])
+            .expect("test collection is valid");
     assert!(
         GeographicCoverageSource::new(&duplicate, SphericalGridTarget::H3(TARGET))
             .unwrap()
@@ -620,7 +622,8 @@ fn globally_fail_open_duplicate_budget_applies_after_the_merge() {
     let full = polygon(-180.0, 85.0, 180.0, 90.0);
     let plan = H3CoverPlan::new(TARGET);
     let duplicate =
-        Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)].into());
+        Shape::geometry_collection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)])
+            .expect("test collection is valid");
     let deduplicated = h3_cover_shape(&duplicate, &plan, H3TraversalRule::Overlap, None)
         .expect("duplicate components merge before their global budget");
     h3_cover_shape(
@@ -814,7 +817,7 @@ fn within_discards_non_areal_members_before_traversal() {
     .unwrap();
     let area_nodes = TEST_DIAGNOSTIC_NODES.get();
 
-    let mixed = Shape::GeometryCollection(vec![area, line].into());
+    let mixed = Shape::geometry_collection(vec![area, line]).expect("test collection is valid");
     let mixed_cover = h3_cover_shape(
         &mixed,
         &H3CoverPlan::new(Resolution::Three),

@@ -1,7 +1,7 @@
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryKind, IoError, IoGeometryKind, LineSeq,
-    MAX_PARSE_DEPTH, ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader,
-    extended_srid_code, parse_content, require_serializable_axes,
+    MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, extended_srid_code,
+    parse_content, require_serializable_axes,
 };
 
 mod read;
@@ -205,13 +205,11 @@ mod tests {
             ),
             Shape::Polygon(polygon.clone()),
             Shape::MultiPolygon(vec![polygon.clone()].into()),
-            Shape::GeometryCollection(
-                vec![
+            Shape::geometry_collection(vec![
                     Shape::Point(Point::new(1.0, 2.0).unwrap()),
                     Shape::Polygon(polygon),
-                ]
-                .into(),
-            ),
+            ])
+            .expect("test collection is valid"),
         ];
 
         for shape in cases {

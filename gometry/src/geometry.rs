@@ -44,7 +44,7 @@ pub(crate) use types::{
     Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
     FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
-    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq, MOrdinate,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, LineSeq, MAX_NESTING, MOrdinate,
     MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey, Polygon, PolygonLevel,
     PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape,
     ShapeData, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
@@ -327,14 +327,6 @@ impl Shape {
     /// always this representation.
     pub(crate) const fn typed_empty(kind: GeometryKind, axes: CoordinateAxes) -> Self {
         Self::Empty(kind, axes)
-    }
-
-    pub(crate) fn geometry_collection(parts: Vec<Self>) -> Self {
-        if parts.is_empty() {
-            Self::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY)
-        } else {
-            Self::GeometryCollection(parts.into())
-        }
     }
 
     /// Visit every line segment — linework edges of (multi)linestrings, ring
