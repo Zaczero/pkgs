@@ -292,13 +292,13 @@ pub(crate) const fn axis_halves(bounds: Bounds, split_x: bool, cut: f64) -> [Bou
     let (minx, miny, maxx, maxy) = bounds.into_tuple();
     if split_x {
         [
-            Bounds::new_unchecked(minx, miny, cut, maxy),
-            Bounds::new_unchecked(cut, miny, maxx, maxy),
+            Bounds::new_raw(minx, miny, cut, maxy),
+            Bounds::new_raw(cut, miny, maxx, maxy),
         ]
     } else {
         [
-            Bounds::new_unchecked(minx, miny, maxx, cut),
-            Bounds::new_unchecked(minx, cut, maxx, maxy),
+            Bounds::new_raw(minx, miny, maxx, cut),
+            Bounds::new_raw(minx, cut, maxx, maxy),
         ]
     }
 }
@@ -476,13 +476,12 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
-                            clean(&polygons.as_slice()[*index])
+                            clean(&polygons.as_slice()[index])
                                 .map(crate::geometry::MultiMember::Value)
                                 .or(Some(crate::geometry::MultiMember::Empty))
                         },
@@ -577,7 +576,7 @@ impl Shape {
         let simplify_ring = |ring: &Ring| -> Option<Ring> {
             let coords = rdp_chain(ring.coords(), tolerance)
                 .map_or_else(|| ring.coords().clone(), CoordSeq::from);
-            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_trusted_closed(coords))
+            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(coords))
         };
         let simplify_polygon = |polygon: &Polygon| -> Option<Polygon> {
             Some(Polygon::new(
@@ -597,10 +596,9 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => simplify_polygon(&polygons.as_slice()[*index])
+                        MultiMember::Value(index) => simplify_polygon(&polygons.as_slice()[index])
                             .map(MultiMember::Value)
                             .unwrap_or(MultiMember::Empty),
                     })
@@ -619,7 +617,7 @@ impl Shape {
     /// Visvalingam-Whyatt simplification with the same topology contract
     /// as `simplify`: raw VW is the fast path; a guarded greedy pass only
     /// kicks in when it broke validity or simplicity. `tolerance` is
-    /// distance-scale — the effective-area threshold is `tolerance^2 / 2`,
+    /// distance-scale — the effective-area threshold is `tolerance² / 2`,
     /// the same conversion `coverage_simplify` (and GEOS) uses — so the
     /// same value is directly comparable between `simplify`, `simplify_vw`,
     /// and `coverage_simplify`.
@@ -646,7 +644,7 @@ impl Shape {
         let vw_line = |points: &CoordSeq| -> CoordSeq { vw_filter(points, tolerance) };
         let vw_ring = |ring: &Ring| -> Option<Ring> {
             let coords = vw_filter(ring.coords(), tolerance);
-            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_trusted_closed(coords))
+            (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(coords))
         };
         let vw_polygon = |polygon: &Polygon| -> Option<Polygon> {
             Some(Polygon::new(
@@ -675,10 +673,9 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => vw_polygon(&polygons.as_slice()[*index])
+                        MultiMember::Value(index) => vw_polygon(&polygons.as_slice()[index])
                             .map(MultiMember::Value)
                             .unwrap_or(MultiMember::Empty),
                     })

@@ -10,6 +10,7 @@ use crate::broadcast::metrics::{
     GeometryKind, Point, PyAnyMethods as _, PyGeometry, PyResult, Shape, ShapeData, classify_input,
     crs, geometry_type_err, validate_lonlat_shape,
 };
+use crate::geographic::GeographicFrame;
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, witness_pair};
 use crate::py::errors::InvalidGeometryError;
 
@@ -17,11 +18,11 @@ use crate::py::errors::InvalidGeometryError;
 fn dispatch_metric_model<R>(
     model: &crs::MetricModel,
     planar: impl FnOnce(f64) -> crate::error::Result<R>,
-    geodesic: impl FnOnce(&str, &crs::RuntimeState) -> crate::error::Result<R>,
+    geodesic: impl FnOnce(&str, GeographicFrame, &crs::RuntimeState) -> crate::error::Result<R>,
 ) -> crate::error::Result<R> {
     match model {
         crs::MetricModel::Planar { to_metre } => planar(to_metre.get()),
-        crs::MetricModel::Geodesic { crs, state } => geodesic(crs, state),
+        crs::MetricModel::Geodesic { crs, frame, state } => geodesic(crs, *frame, state),
     }
 }
 
@@ -32,6 +33,7 @@ fn dispatch_resolved_metric<R>(
     run_geodesic: impl FnOnce(
         &str,
         &geographiclib_rs::Geodesic,
+        GeographicFrame,
         &crs::RuntimeState,
     ) -> crate::error::Result<R>,
 ) -> crate::error::Result<R> {
@@ -40,8 +42,9 @@ fn dispatch_resolved_metric<R>(
         crs::ResolvedMetric::Geodesic {
             crs,
             geodesic,
+            frame,
             state,
-        } => run_geodesic(crs, geodesic, state),
+        } => run_geodesic(crs, geodesic, *frame, state),
     }
 }
 
@@ -50,11 +53,12 @@ fn prepare_geodesic_pair<'a>(
     geodesic: &'a geographiclib_rs::Geodesic,
     a: &PreparedPlan,
     b: &PreparedPlan,
+    frame: GeographicFrame,
     runtime_generation: u64,
 ) -> crate::error::Result<(crs::EllipsoidMetric<'a>, f64, f64)> {
-    crs::ensure_geographic_domain(a.shape())?;
-    crs::ensure_geographic_domain(b.shape())?;
-    let metric = crs::EllipsoidMetric::for_geodesic_at(geodesic, runtime_generation);
+    crs::ensure_geographic_domain_in_frame(frame, a.shape())?;
+    crs::ensure_geographic_domain_in_frame(frame, b.shape())?;
+    let metric = crs::EllipsoidMetric::for_geodesic_at_frame(geodesic, runtime_generation, frame);
     let (semi_major, flattening) = metric.ellipsoid_parameters();
     Ok((metric, semi_major, flattening))
 }
@@ -76,9 +80,9 @@ fn metric_densified(
                 let b = b.densified(fraction)?;
                 kernel(model, &a, &b)
             },
-            crs::MetricModel::Geodesic { crs, state } => {
-                crs::ensure_geographic_domain(a)?;
-                crs::ensure_geographic_domain(b)?;
+            crs::MetricModel::Geodesic { crs, frame, state } => {
+                crs::ensure_geographic_domain_in_frame(*frame, a)?;
+                crs::ensure_geographic_domain_in_frame(*frame, b)?;
                 // Copy the cached ellipsoid out before running the kernel: the
                 // geodesic metric kernel may acquire the same thread-local
                 // cache, and holding its RefCell borrow across that call would
@@ -92,12 +96,12 @@ fn metric_densified(
                 let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
                 let a = a.densified_budgeted_with_placement(
                     fraction,
-                    crate::geometry::SegmentPlacement::Geodesic(&geodesic),
+                    crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
                     &mut budget,
                 )?;
                 let b = b.densified_budgeted_with_placement(
                     fraction,
-                    crate::geometry::SegmentPlacement::Geodesic(&geodesic),
+                    crate::geometry::SegmentPlacement::Geodesic(&geodesic, *frame),
                     &mut budget,
                 )?;
                 kernel(model, &a, &b)
@@ -122,6 +126,7 @@ pub(crate) fn geodesic_point_columns_to_shape_values(
     ys: &[f64],
     shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
+    frame: GeographicFrame,
     state: &crs::RuntimeState,
 ) -> crate::error::Result<Vec<f64>> {
     crs::with_resolved_ellipsoid_metric_at(crs, &[shape.shape()], state, |crs, metric| {
@@ -133,6 +138,7 @@ pub(crate) fn geodesic_point_columns_to_shape_values(
             semi_major,
             flattening,
             metric,
+            frame,
         )
     })
 }
@@ -144,6 +150,7 @@ pub(crate) fn geodesic_point_columns_dwithin_shape_values(
     shape: &PreparedPlan,
     frame_cache: &FrameDependentCaches,
     distance: f64,
+    frame: GeographicFrame,
     state: &crs::RuntimeState,
 ) -> crate::error::Result<Vec<bool>> {
     crs::with_resolved_ellipsoid_metric_at(crs, &[shape.shape()], state, |crs, metric| {
@@ -156,6 +163,7 @@ pub(crate) fn geodesic_point_columns_dwithin_shape_values(
             flattening,
             metric,
             distance,
+            frame,
         )
     })
 }
@@ -263,19 +271,35 @@ pub(crate) fn geodesic_split_operands(
     a: &PreparedPlan,
     b: &PreparedPlan,
 ) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
-    if let crs::ResolvedMetric::Geodesic { .. } = metric
-        && !a.shape().is_empty()
-        && !b.shape().is_empty()
-    {
+    if let crs::ResolvedMetric::Geodesic { frame, .. } = metric {
+        return split_geodesic_operands(*frame, a, b);
+    }
+    Ok(None)
+}
+
+fn split_geodesic_operands(
+    frame: GeographicFrame,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
+) -> crate::error::Result<Option<(PreparedPlan, PreparedPlan)>> {
+    // Filled polygon interiors are not a geodesic linework operand. Leave
+    // them untouched so the shared geometry guard reports that contract
+    // instead of seam-splitting an unsupported shape first.
+    if contains_filled_area(a.shape()) || contains_filled_area(b.shape()) {
+        return Ok(None);
+    }
+    if !a.shape().is_empty() && !b.shape().is_empty() {
         // Cached verdicts; split ONLY the operand that actually crosses — the
         // other is passed through unchanged (no needless seam walk + rebuild).
-        let a_crosses = a.crosses_antimeridian();
-        let b_crosses = b.crosses_antimeridian();
+        let a_crosses = crate::geometry::crosses_antimeridian_in_frame(a.shape(), frame);
+        let b_crosses = crate::geometry::crosses_antimeridian_in_frame(b.shape(), frame);
         if a_crosses || b_crosses {
             let normalize =
                 |x: &PreparedPlan, crosses: bool| -> crate::error::Result<PreparedPlan> {
                     Ok(if crosses {
-                        PreparedPlan::new(ShapeData::from(x.shape().split_antimeridian()?))
+                        PreparedPlan::new(ShapeData::from(
+                            x.shape().split_antimeridian_in_frame(frame)?,
+                        ))
                     } else {
                         PreparedPlan::new(ShapeData::new(x.shape().clone()))
                     })
@@ -286,79 +310,83 @@ pub(crate) fn geodesic_split_operands(
     Ok(None)
 }
 
-/// Prepared-plan distance against an already-resolved metric — the batch lanes
-/// (array × array, index queries) resolve the geodesic ONCE then call this per
-/// pair, so the per-pair CRS/ellipsoid resolution is paid a single time.
-pub(crate) fn pair_distance_resolved_result(
-    metric: &crs::ResolvedMetric,
+fn contains_filled_area(shape: &Shape) -> bool {
+    match shape {
+        Shape::Polygon(_) | Shape::MultiPolygon(_) => true,
+        Shape::GeometryCollection(geometries) => geometries.iter().any(contains_filled_area),
+        _ => false,
+    }
+}
+
+pub(crate) fn pair_distance_planar(
+    to_metre: f64,
+    a: &PreparedPlan,
+    b: &PreparedPlan,
+) -> crate::error::Result<f64> {
+    Ok(a.distance(b) * to_metre)
+}
+
+pub(crate) fn pair_distance_geodesic(
+    crs: &str,
+    geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
+    state: &crs::RuntimeState,
     a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
 ) -> crate::error::Result<f64> {
-    if let Some((a, b)) = geodesic_split_operands(metric, a, b)? {
-        return pair_distance_resolved_result(
-            metric,
+    if let Some((a, b)) = split_geodesic_operands(frame, a, b)? {
+        return pair_distance_geodesic(
+            crs,
+            geodesic,
+            frame,
+            state,
             &a,
             &FrameDependentCaches::default(),
             &b,
             &FrameDependentCaches::default(),
         );
     }
-    if let crs::ResolvedMetric::Geodesic { .. } = metric
-        && (a.shape().is_empty() || b.shape().is_empty())
-    {
+    if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(f64::INFINITY);
     }
-    dispatch_resolved_metric(
-        metric,
-        |to_metre| Ok(a.distance(b) * to_metre),
-        |crs, geodesic, state| {
-            let (ellipsoid, semi_major, flattening) =
-                prepare_geodesic_pair(geodesic, a, b, state.generation)?;
-            finite_geodesic_value(
-                a.geodesic_distance_cached(
-                    a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid,
-                )?,
-                "geodesic distance",
-            )
-        },
+    let (ellipsoid, semi_major, flattening) =
+        prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
+    finite_geodesic_value(
+        a.geodesic_distance_cached(a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid)?,
+        "geodesic distance",
     )
 }
 
-pub(crate) fn pair_distance_resolved(
-    metric: &crs::ResolvedMetric,
+pub(crate) fn pair_dwithin_planar(
+    to_metre: f64,
     a: &PreparedPlan,
-    a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
-    b_cache: &FrameDependentCaches,
-) -> PyResult<f64> {
-    pair_distance_resolved_result(metric, a, a_cache, b, b_cache).map_err(Into::into)
+    distance: f64,
+) -> crate::error::Result<bool> {
+    let distance = NonNegative::try_new("distance", distance)?;
+    Ok(a.dwithin(b, distance.get() / to_metre))
 }
 
-pub(crate) fn pair_dwithin_resolved_result(
-    metric: &crs::ResolvedMetric,
+pub(crate) fn pair_dwithin_geodesic(
+    crs: &str,
+    geodesic: &geographiclib_rs::Geodesic,
+    frame: GeographicFrame,
+    state: &crs::RuntimeState,
     a: &PreparedPlan,
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
     distance: f64,
 ) -> crate::error::Result<bool> {
-    let distance = NonNegative::try_new("distance", distance)?;
-    pair_dwithin_resolved_checked_result(metric, a, a_cache, b, b_cache, distance)
-}
-
-fn pair_dwithin_resolved_checked_result(
-    metric: &crs::ResolvedMetric,
-    a: &PreparedPlan,
-    a_cache: &FrameDependentCaches,
-    b: &PreparedPlan,
-    b_cache: &FrameDependentCaches,
-    distance: NonNegative,
-) -> crate::error::Result<bool> {
-    if let Some((a, b)) = geodesic_split_operands(metric, a, b)? {
-        return pair_dwithin_resolved_checked_result(
-            metric,
+    let distance = NonNegative::try_new("distance", distance)?.get();
+    if let Some((a, b)) = split_geodesic_operands(frame, a, b)? {
+        return pair_dwithin_geodesic(
+            crs,
+            geodesic,
+            frame,
+            state,
             &a,
             &FrameDependentCaches::default(),
             &b,
@@ -366,34 +394,14 @@ fn pair_dwithin_resolved_checked_result(
             distance,
         );
     }
-    if let crs::ResolvedMetric::Geodesic { .. } = metric
-        && (a.shape().is_empty() || b.shape().is_empty())
-    {
+    if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(false);
     }
-    let distance = distance.get();
-    dispatch_resolved_metric(
-        metric,
-        |to_metre| Ok(a.dwithin(b, distance / to_metre)),
-        |crs, geodesic, state| {
-            let (ellipsoid, semi_major, flattening) =
-                prepare_geodesic_pair(geodesic, a, b, state.generation)?;
-            a.geodesic_dwithin_cached(
-                a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid, distance,
-            )
-        },
+    let (ellipsoid, semi_major, flattening) =
+        prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
+    a.geodesic_dwithin_cached(
+        a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid, distance,
     )
-}
-
-pub(crate) fn pair_dwithin_resolved(
-    metric: &crs::ResolvedMetric,
-    a: &PreparedPlan,
-    a_cache: &FrameDependentCaches,
-    b: &PreparedPlan,
-    b_cache: &FrameDependentCaches,
-    distance: f64,
-) -> PyResult<bool> {
-    pair_dwithin_resolved_result(metric, a, a_cache, b, b_cache, distance).map_err(Into::into)
 }
 
 /// Element-wise zero metric for array-vs-self when both operands share one
@@ -456,9 +464,9 @@ pub(crate) fn metric_hausdorff(
 ) -> crate::error::Result<f64> {
     // Domain validation BEFORE the identity exit: equal operands with
     // out-of-domain latitude must still raise on a geographic model.
-    if matches!(model, crs::MetricModel::Geodesic { .. }) {
-        crs::ensure_geographic_domain(a)?;
-        crs::ensure_geographic_domain(b)?;
+    if let crs::MetricModel::Geodesic { frame, .. } = model {
+        crs::ensure_geographic_domain_in_frame(*frame, a)?;
+        crs::ensure_geographic_domain_in_frame(*frame, b)?;
     }
     if a == b {
         return Ok(if a.is_empty() { f64::INFINITY } else { 0.0 });
@@ -469,7 +477,7 @@ pub(crate) fn metric_hausdorff(
     dispatch_metric_model(
         model,
         |to_metre| Ok(a.hausdorff_distance(b) * to_metre),
-        |crs, state| crs::geodesic_hausdorff_at(crs, a, b, state),
+        |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
 }
 
@@ -480,10 +488,20 @@ pub(crate) fn metric_frechet(
     a: &Shape,
     b: &Shape,
 ) -> crate::error::Result<f64> {
+    let mut scratch = crate::geometry::FrechetDpScratch::default();
+    metric_frechet_with_scratch(model, a, b, &mut scratch)
+}
+
+pub(crate) fn metric_frechet_with_scratch(
+    model: &crs::MetricModel,
+    a: &Shape,
+    b: &Shape,
+    scratch: &mut crate::geometry::FrechetDpScratch,
+) -> crate::error::Result<f64> {
     // Domain validation BEFORE the identity exit (same contract as Hausdorff).
-    if matches!(model, crs::MetricModel::Geodesic { .. }) {
-        crs::ensure_geographic_domain(a)?;
-        crs::ensure_geographic_domain(b)?;
+    if let crs::MetricModel::Geodesic { frame, .. } = model {
+        crs::ensure_geographic_domain_in_frame(*frame, a)?;
+        crs::ensure_geographic_domain_in_frame(*frame, b)?;
     }
     // Emptiness is TOTAL and is decided here, once, for every lane below —
     // planar, geodesic and identity alike. Deciding it per kernel is what let
@@ -503,8 +521,8 @@ pub(crate) fn metric_frechet(
     }
     dispatch_metric_model(
         model,
-        |to_metre| Ok(a.frechet_distance(b)? * to_metre),
-        |crs, state| crs::geodesic_frechet_at(crs, a, b, state),
+        |to_metre| Ok(a.frechet_distance_with_scratch(b, scratch)? * to_metre),
+        |crs, _, state| crs::geodesic_frechet_at(crs, a, b, state),
     )
 }
 
@@ -532,6 +550,26 @@ pub(crate) fn metric_frechet_densified(
     densify: Option<f64>,
 ) -> crate::error::Result<f64> {
     metric_densified(model, a, b, densify, metric_frechet)
+}
+
+pub(crate) fn metric_frechet_densified_with_scratch(
+    model: &crs::MetricModel,
+    a: &Shape,
+    b: &Shape,
+    densify: Option<f64>,
+    scratch: &mut crate::geometry::FrechetDpScratch,
+) -> crate::error::Result<f64> {
+    match densify {
+        None => metric_frechet_with_scratch(model, a, b, scratch),
+        Some(fraction) => match model {
+            crs::MetricModel::Planar { .. } => {
+                let a = a.densified(fraction)?;
+                let b = b.densified(fraction)?;
+                metric_frechet_with_scratch(model, &a, &b, scratch)
+            },
+            crs::MetricModel::Geodesic { .. } => metric_frechet_densified(model, a, b, densify),
+        },
+    }
 }
 
 /// Boundary validation for the ``densify=`` fraction: finite and in
@@ -613,7 +651,7 @@ pub(crate) fn metric_nearest_points(
 }
 
 /// `metric_nearest_points` against an already-resolved metric (see
-/// [`pair_distance_resolved`]). `None` when an operand is empty — the surfaces
+/// [`pair_distance_geodesic`]). `None` when an operand is empty — the surfaces
 /// map it to the output-type EMPTY sentinel (`(POINT EMPTY, POINT EMPTY)` /
 /// `LINESTRING EMPTY`), mirroring distance's empty→`inf`.
 pub(crate) fn metric_nearest_points_resolved(
@@ -640,9 +678,9 @@ pub(crate) fn metric_nearest_points_resolved(
     dispatch_resolved_metric(
         metric,
         |_| Ok(a.nearest_points(b)),
-        |crs, geodesic, state| {
+        |crs, geodesic, frame, state| {
             let (ellipsoid, semi_major, flattening) =
-                prepare_geodesic_pair(geodesic, a, b, state.generation)?;
+                prepare_geodesic_pair(geodesic, a, b, frame, state.generation)?;
             a.geodesic_nearest_points_cached(
                 a_cache, b, b_cache, crs, semi_major, flattening, &ellipsoid,
             )
@@ -678,7 +716,7 @@ pub(crate) fn metric_minimum_clearance_line(
     dispatch_metric_model(
         model,
         |_| Ok(shape.minimum_clearance_line()),
-        |_, state| {
+        |_, _, state| {
             crate::py::support::geodesic_by_identity(
                 shape,
                 crs,
@@ -717,7 +755,7 @@ pub(crate) fn metric_minimum_clearance(
     dispatch_metric_model(
         model,
         |to_metre| Ok(shape.minimum_clearance() * to_metre),
-        |geodesic_crs, state| {
+        |geodesic_crs, _, state| {
             let line = metric_minimum_clearance_line(model, crs, shape)?;
             crs::geodesic_length_at(geodesic_crs, &line, state)
         },
@@ -740,7 +778,7 @@ pub(crate) fn metric_maximum_inscribed_radius(
         |to_metre| {
             Ok(shape.maximum_inscribed_radius(tolerance.map(|value| value / to_metre))? * to_metre)
         },
-        |_, state| {
+        |_, _, state| {
             let source = crs.unwrap_or("EPSG:4326");
             let local = crs::estimate_local_crs_at(shape, source, state)?;
             crs::transform_at(shape, source, &local, state)?.maximum_inscribed_radius(tolerance)
@@ -775,7 +813,7 @@ mod dwithin_parity_tests {
     use crate::geometry::{point_distance, points_dwithin};
 
     fn point(x: f64, y: f64) -> Point {
-        Point::new_unchecked_xy(x, y)
+        Point::new_raw_xy(x, y)
     }
 
     fn scalar_point_dwithin(a: Point, b: Point, limit: f64) -> bool {

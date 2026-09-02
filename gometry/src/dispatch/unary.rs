@@ -6,7 +6,7 @@ use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
     rows_err,
 };
-use crate::dispatch::metric::{Lane, MetricScratch, OpCtx};
+use crate::dispatch::metric::{CachelessRowContext, Lane, LinearReferenceRow, MetricScratch};
 use crate::dispatch::operation::Operation;
 use crate::dispatch::packed::{
     PackedUnary, try_unary_packed_array, try_unary_packed_bool, try_unary_packed_bounds,
@@ -22,7 +22,7 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
     let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
@@ -30,13 +30,11 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     let geographic = is_geographic_frame(&frame);
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-    let ctx = OpCtx {
+    let ctx = CachelessRowContext {
         frame: &frame,
         geographic,
         metric,
         lane: Lane::Scalar,
-        left_frame_cache: Some(&geometry.frame_cache),
-        right_frame_cache: None,
     };
     let plan = geometry.plan_or_transient();
     py.detach(move || kernel(&plan, &ctx)).map_err(PyErr::from)
@@ -56,8 +54,6 @@ enum UnaryRowMode {
     /// Persist large/mixed prepared handles into the array cache; still no
     /// eager frame-cache acquisition.
     Prepared,
-    /// Transient `PreparedPlan` + per-row frame cache (distance-basis linref).
-    ShapeWithFrameCache,
 }
 
 /// Array geometry lane: resolve metric once, try packed fast paths, else per-row kernel.
@@ -67,7 +63,7 @@ pub(crate) fn unary_array<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
@@ -100,12 +96,6 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::IsRing
         | Operation::Bounds
         | Operation::ClipByRect => UnaryRowMode::Prepared,
-        // Distance-basis LRS kernels read `ctx.left_frame_cache`; M-basis
-        // siblings ignore it. Acquiring only for these ops keeps simplify /
-        // reverse / etc. cache-free.
-        Operation::LineInterpolate | Operation::LineSubstring | Operation::LineLocate => {
-            UnaryRowMode::ShapeWithFrameCache
-        },
         _ => UnaryRowMode::ShapeOnly,
     }
 }
@@ -118,7 +108,7 @@ fn run_unary_rows<T: BulkElement>(
     resolver: super::metric::MetricResolver,
     op_name: &str,
     mode: UnaryRowMode,
-    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<T> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<T> + Send + Sync,
 ) -> PyResult<(Vec<T>, Frame)> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
@@ -129,40 +119,33 @@ fn run_unary_rows<T: BulkElement>(
     let values = py
         .detach(move || {
             let frame = &frame;
+            let mut products = array.row_products.operation();
             array
-                .storage()
-                .iter_rows()
-                .enumerate()
-                .map(|(row, shape_row)| {
-                    if array.is_row_missing(row) {
+                .logical_storage_rows()
+                .map(|logical_row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row,
+                        row: shape_row,
+                    } = logical_row
+                    else {
                         // Missing rows never reach the kernel: they yield the
                         // element's missing value (NaN / false / placeholder).
                         return Ok(T::missing_value());
-                    }
-                    let row_cache;
-                    let left_frame_cache = match mode {
-                        UnaryRowMode::ShapeWithFrameCache => {
-                            row_cache = array.row_frame_cache(row);
-                            Some(row_cache.as_ref())
-                        },
-                        UnaryRowMode::ShapeOnly | UnaryRowMode::Prepared => None,
                     };
-                    let ctx = OpCtx {
+                    let ctx = CachelessRowContext {
                         frame,
                         geographic,
                         metric,
                         lane: Lane::Array(row),
-                        left_frame_cache,
-                        right_frame_cache: None,
                     };
                     match mode {
-                        UnaryRowMode::ShapeOnly | UnaryRowMode::ShapeWithFrameCache => {
+                        UnaryRowMode::ShapeOnly => {
                             // Transient handle — never write prepared slots.
                             let data = crate::array::PreparedRow::transient(shape_row);
                             kernel(&data, &ctx)
                         },
                         UnaryRowMode::Prepared => {
-                            let data = array.prepared_row(row, shape_row);
+                            let data = array.prepared_row_with(&mut products, row, shape_row);
                             kernel(&data, &ctx)
                         },
                     }
@@ -179,7 +162,7 @@ pub(crate) fn unary_scalar_shape(
     geometry: &PyGeometry,
     op: Operation,
     unit: Option<DistanceUnit>,
-    kernel: impl FnOnce(&PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send,
+    kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send,
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
     let shape = unary_scalar(py, geometry, op, unit, kernel)?;
@@ -199,7 +182,7 @@ pub(crate) fn unary_array_shapes(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<Shape> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
     let resolver = op.resolver_with_unit(unit);
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
@@ -208,6 +191,85 @@ pub(crate) fn unary_array_shapes(
     let (shapes, frame) =
         run_unary_rows(py, array, resolver, op.name(), unary_row_mode(op), kernel)?;
     Ok(PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(array.missing().cloned()))
+}
+
+pub(crate) fn unary_scalar_linref_shape(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
+) -> PyResult<Typed> {
+    let frame = geometry.frame.clone();
+    let geographic = is_geographic_frame(&frame);
+    let mut scratch = MetricScratch::default();
+    let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
+    let model = metric.require_model(op.name())?;
+    let row = LinearReferenceRow {
+        op: CachelessRowContext {
+            frame: &frame,
+            geographic,
+            metric,
+            lane: Lane::Scalar,
+        },
+        model,
+        cache: &geometry.frame_cache(),
+    };
+    let plan = geometry.plan_or_transient();
+    let shape = py.detach(move || kernel(&plan, &row))?;
+    Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+pub(crate) fn unary_array_linref_shapes(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    packed: Option<&PackedUnary>,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
+) -> PyResult<PyGeometryArray> {
+    if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
+        return result;
+    }
+    let frame = array.frame.clone();
+    let output_frame = frame.clone();
+    let geographic = is_geographic_frame(&frame);
+    let mut scratch = MetricScratch::default();
+    let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
+    let model = metric.require_model(op.name())?;
+    let output_missing = array.missing().cloned();
+    let array = array.clone();
+    let shapes = py
+        .detach(move || {
+            let mut products = array.row_products.operation();
+            array
+                .logical_storage_rows()
+                .map(|logical_row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row_index,
+                        row: shape,
+                    } = logical_row
+                    else {
+                        return Ok(Shape::empty_point());
+                    };
+                    let data = crate::array::PreparedRow::transient(shape);
+                    let cache = products.frame_cache(row_index);
+                    let row = LinearReferenceRow {
+                        op: CachelessRowContext {
+                            frame: &frame,
+                            geographic,
+                            metric,
+                            lane: Lane::Array(row_index),
+                        },
+                        model,
+                        cache: &cache,
+                    };
+                    kernel(&data, &row)
+                })
+                .collect_rows()
+        })
+        .map_err(rows_err)?;
+    Ok(PyGeometryArray::from_shapes(shapes, output_frame).with_missing_mask(output_missing))
 }
 
 /// Geometry-returning array lane for constructive operations whose generated
@@ -222,7 +284,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     parameter: &'static str,
     mut kernel: impl FnMut(
         &PreparedPlan,
-        &OpCtx<'_>,
+        &CachelessRowContext<'_>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Shape>
     + Send,
@@ -238,23 +300,24 @@ pub(crate) fn unary_array_shapes_budgeted(
     let shapes = py
         .detach(move || {
             let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
+            let mut products = array.row_products.operation();
             array
-                .storage()
-                .iter_rows()
-                .enumerate()
-                .map(|(row, shape_row)| {
-                    if array.is_row_missing(row) {
+                .logical_storage_rows()
+                .map(|logical_row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row,
+                        row: shape_row,
+                    } = logical_row
+                    else {
                         return Ok(Shape::empty_point());
-                    }
-                    let ctx = OpCtx {
+                    };
+                    let ctx = CachelessRowContext {
                         frame: &frame,
                         geographic,
                         metric,
                         lane: Lane::Array(row),
-                        left_frame_cache: None,
-                        right_frame_cache: None,
                     };
-                    let data = array.prepared_row(row, shape_row);
+                    let data = array.prepared_row_with(&mut products, row, shape_row);
                     kernel(&data, &ctx, &mut budget)
                 })
                 .collect_rows()
@@ -272,7 +335,7 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
     op: Operation,
     unit: Option<DistanceUnit>,
     packed: Option<&PackedUnary>,
-    kernel: impl Fn(&PreparedPlan, &OpCtx<'_>) -> Result<R> + Send + Sync,
+    kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
     let Some(input) = classify_input(value) else {

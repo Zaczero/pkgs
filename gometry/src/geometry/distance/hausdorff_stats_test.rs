@@ -33,7 +33,7 @@ fn point_target(points: &[(f64, f64)]) -> HausdorffTarget {
         &[],
         points
             .iter()
-            .map(|&(x, y)| Point::new_unchecked_xy(x, y))
+            .map(|&(x, y)| Point::new_raw_xy(x, y))
             .collect(),
         None,
     )

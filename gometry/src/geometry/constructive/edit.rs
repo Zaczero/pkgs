@@ -284,15 +284,19 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => {
                 let (x, y) = op(point.x, point.y)?;
-                Self::Point(point.with_xy_unchecked(x, y))
+                Self::Point(point.with_xy_raw(x, y))
             },
             Self::MultiPoint(points) => Self::MultiPoint(points.try_map_xy_with(op)?),
-            Self::LineString(points) => {
-                Self::LineString(LineSeq::from_trusted(points.try_map_xy_with(op)?))
-            },
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(points.try_map_xy_with(op)?)
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    line.try_map_xy_with(op).map(LineSeq::from_trusted)
+                    line.try_map_xy_with(op).map(|coords| {
+                        LineSeq::try_new(coords)
+                            .expect("coordinate transform preserves line cardinality")
+                    })
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.map_rings_xy_with(op)?),
@@ -358,7 +362,7 @@ pub(crate) fn affine_y_row_identity(d: f64, e: f64, yoff: f64) -> bool {
     clippy::many_single_char_names,
     reason = "a,b,d,e,x,y are the canonical affine matrix and point coordinates"
 )]
-fn stable_affine_xy(
+pub(crate) fn stable_affine_xy(
     a: f64,
     b: f64,
     d: f64,
@@ -392,15 +396,18 @@ impl Shape {
         match self {
             Self::Point(point) => Self::Point(point.quantize(precision)),
             Self::MultiPoint(points) => Self::MultiPoint(points.quantize(precision)),
-            Self::LineString(points) => {
-                Self::LineString(LineSeq::from_trusted(points.quantize(precision)))
-            },
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(points.quantize(precision))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .try_map_values(lines.axes(), |line| {
-                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(
-                            line.quantize(precision),
-                        ))
+                        Ok::<_, std::convert::Infallible>(
+                            LineSeq::try_new(line.quantize(precision)).expect(
+                                "line coordinate sequence must contain at least two vertices",
+                            ),
+                        )
                     })
                     .expect("quantize preserves multipart members"),
             ),
@@ -516,11 +523,18 @@ impl Shape {
         match self {
             Self::Point(point) => Self::Point(point.force_2d()),
             Self::MultiPoint(points) => Self::MultiPoint(points.force_2d()),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(points.force_2d())),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(points.force_2d())
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .try_map_values(CoordinateAxes::XY, |line| {
-                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(line.force_2d()))
+                        Ok::<_, std::convert::Infallible>(
+                            LineSeq::try_new(line.force_2d()).expect(
+                                "line coordinate sequence must contain at least two vertices",
+                            ),
+                        )
                     })
                     .expect("force_2d preserves multipart members"),
             ),
@@ -606,11 +620,9 @@ impl Shape {
                 // keeps that axis, so scalar must share the same frame rule.
                 let extent_x = point.x.abs().max(ox.abs());
                 let extent_y = point.y.abs().max(oy.abs());
-                if let Some(frame) = AxisFrame::from_origin_extents(
-                    Point::new_unchecked_xy(ox, oy),
-                    extent_x,
-                    extent_y,
-                ) {
+                if let Some(frame) =
+                    AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), extent_x, extent_y)
+                {
                     let local = frame.frame_xy(point.x, point.y);
                     let sx = frame.scale_x();
                     let sy = frame.scale_y();
@@ -671,31 +683,34 @@ impl Shape {
         match self {
             Self::Point(point) => Ok(Self::Point(transform(*point)?)),
             Self::MultiPoint(points) => Ok(Self::MultiPoint(points.try_map_values(transform)?)),
-            Self::LineString(points) => {
-                Ok(Self::LineString(LineSeq::from_trusted(CoordSeq::from(
+            Self::LineString(points) => Ok(Self::LineString(
+                LineSeq::try_new(CoordSeq::from(
                     points
                         .iter()
                         .map(transform)
                         .collect::<Result<Vec<_>, _>>()?,
-                ))))
-            },
+                ))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            )),
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
-                    .iter()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
-                            Ok(crate::geometry::MultiMember::Value(LineSeq::from_trusted(
-                                CoordSeq::from(
-                                    lines.as_slice()[*index]
+                            Ok(crate::geometry::MultiMember::Value(
+                                LineSeq::try_new(CoordSeq::from(
+                                    lines.as_slice()[index]
                                         .iter()
                                         .map(transform)
                                         .collect::<Result<Vec<_>, _>>()?,
+                                ))
+                                .expect(
+                                    "line coordinate sequence must contain at least two vertices",
                                 ),
-                            )))
+                            ))
                         },
                     })
                     .collect::<Result<Vec<_>, crate::error::Error>>()?;
@@ -714,12 +729,11 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(index) => polygons.as_slice()[*index]
+                        crate::geometry::MultiMember::Value(index) => polygons.as_slice()[index]
                             .map_points(transform)
                             .map(crate::geometry::MultiMember::Value),
                     })
@@ -761,6 +775,49 @@ impl Shape {
 
     pub fn clip_by_rect(&self, rect: Bounds, drop: bool) -> Result<Self> {
         self.clip_by_rect_with_bounds(rect, drop, self.bounds())
+    }
+
+    /// Clip in a geographic frame, where longitude aliases and pole vertices
+    /// require the frame-aware topology graph rather than Cartesian windows.
+    pub(crate) fn clip_by_rect_in_geographic_frame(
+        &self,
+        rect: Bounds,
+        drop: bool,
+        bounds: Option<Bounds>,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Result<Self> {
+        let subject_bounds_sound = bounds.is_none_or(|bounds| {
+            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(self), bounds, frame)
+        });
+        let rectangle_bounds_sound =
+            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame);
+        if subject_bounds_sound
+            && rectangle_bounds_sound
+            && !rect.crosses_antimeridian()
+        {
+            return self.clip_by_rect_with_bounds(rect, drop, bounds);
+        }
+
+        let rectangle = if rect.crosses_antimeridian() {
+            let west = Bounds::new(rect.minx(), rect.miny(), frame.longitude().half_period(), rect.maxy())?;
+            let east = Bounds::new(-frame.longitude().half_period(), rect.miny(), rect.maxx(), rect.maxy())?;
+            Self::GeometryCollection(
+                vec![
+                    crate::geometry::geographic_bounds_to_shape(west, frame)?,
+                    crate::geometry::geographic_bounds_to_shape(east, frame)?,
+                ]
+                .into(),
+            )
+        } else {
+            crate::geometry::geographic_bounds_to_shape(rect, frame)?
+        };
+        let clipped =
+            Self::intersection_all_topo(&[self, &rectangle], Some(frame), Strictness::from(drop))?;
+        Ok(if clipped.is_empty() {
+            empty_clip_shape(self)
+        } else {
+            clipped
+        })
     }
 
     /// [`Self::clip_by_rect`] with the operand's bounds supplied by the
@@ -934,14 +991,14 @@ impl Shape {
             let shell = remove_repeated_points(polygon.shell.coords(), tolerance);
             (shell.len() >= Ring::MIN_VERTICES_CLOSED).then(|| {
                 Polygon::new(
-                    Ring::from_trusted_closed(shell),
+                    Ring::from_closed(shell),
                     polygon
                         .holes
                         .iter()
                         .filter_map(|hole| {
                             let hole = remove_repeated_points(hole.coords(), tolerance);
                             (hole.len() >= Ring::MIN_VERTICES_CLOSED)
-                                .then(|| Ring::from_trusted_closed(hole))
+                                .then(|| Ring::from_closed(hole))
                         })
                         .collect(),
                 )
@@ -952,17 +1009,15 @@ impl Shape {
             Self::MultiPoint(points) => {
                 let values = points
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => None,
-                        crate::geometry::MultiMember::Value(index) => Some(points.point_at(*index)),
+                        crate::geometry::MultiMember::Value(index) => Some(points.point_at(index)),
                     })
                     .collect::<Vec<_>>();
                 let cleaned = remove_repeated_points(&CoordSeq::from_points(&values), tolerance);
                 let mut cleaned = cleaned.iter();
                 let members = points
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
@@ -978,15 +1033,18 @@ impl Shape {
                     Self::MultiPoint(MultiPoint::from_values(points.axes(), members))
                 }
             },
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                remove_repeated_line_points(points, tolerance),
-            )),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(remove_repeated_line_points(points, tolerance))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .try_map_values(lines.axes(), |line| {
-                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(
-                            remove_repeated_line_points(line, tolerance),
-                        ))
+                        Ok::<_, std::convert::Infallible>(
+                            LineSeq::try_new(remove_repeated_line_points(line, tolerance)).expect(
+                                "line coordinate sequence must contain at least two vertices",
+                            ),
+                        )
                     })
                     .expect("repeated-point removal preserves multipart members"),
             ),
@@ -997,11 +1055,10 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
                         crate::geometry::MultiMember::Value(index) => {
-                            remove_repeated_polygon(&polygons.as_slice()[*index])
+                            remove_repeated_polygon(&polygons.as_slice()[index])
                                 .map(crate::geometry::MultiMember::Value)
                                 .unwrap_or(crate::geometry::MultiMember::Empty)
                         },
@@ -1044,18 +1101,20 @@ impl Shape {
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self.clone(),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                crate::geometry::densify_points_budgeted_with_placement(
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(crate::geometry::densify_points_budgeted_with_placement(
                     points, fraction, placement, budget,
-                )?,
-            )),
+                )?)
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(
-                        crate::geometry::densify_points_budgeted_with_placement(
+                    Ok::<_, crate::error::Error>(
+                        LineSeq::try_new(crate::geometry::densify_points_budgeted_with_placement(
                             line, fraction, placement, budget,
-                        )?,
-                    ))
+                        )?)
+                        .expect("line coordinate sequence must contain at least two vertices"),
+                    )
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(
@@ -1094,17 +1153,26 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                segmentize_points_budgeted(points, max_segment_length, placement, budget)?,
-            )),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(segmentize_points_budgeted(
+                    points,
+                    max_segment_length,
+                    placement,
+                    budget,
+                )?)
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(segmentize_points_budgeted(
-                        line,
-                        max_segment_length,
-                        placement,
-                        budget,
-                    )?))
+                    Ok::<_, crate::error::Error>(
+                        LineSeq::try_new(segmentize_points_budgeted(
+                            line,
+                            max_segment_length,
+                            placement,
+                            budget,
+                        )?)
+                        .expect("line coordinate sequence must contain at least two vertices"),
+                    )
                 })?)
             },
             Self::Polygon(polygon) => {
@@ -1136,7 +1204,7 @@ impl Shape {
         // Infallible: the `Ok`/`?` wrapping collapses away in codegen.
         match self.try_map_coordseqs(
             |seq| Ok::<_, Infallible>(seq.swap_xy()),
-            |point| Ok(point.with_xy_unchecked(point.y, point.x)),
+            |point| Ok(point.with_xy_raw(point.y, point.x)),
         ) {
             Ok(shape) => shape,
             Err(infallible) => match infallible {},
@@ -1148,11 +1216,18 @@ impl Shape {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             // Columnar reverse-copies — no AoS `Vec<Point>` round-trip.
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(points.reversed())),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(points.reversed())
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .try_map_values(lines.axes(), |line| {
-                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(line.reversed()))
+                        Ok::<_, std::convert::Infallible>(
+                            LineSeq::try_new(line.reversed()).expect(
+                                "line coordinate sequence must contain at least two vertices",
+                            ),
+                        )
                     })
                     .expect("reverse preserves multipart members"),
             ),
@@ -1204,7 +1279,6 @@ impl Shape {
                 let mut values = values.into_iter();
                 let members = points
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
@@ -1216,19 +1290,22 @@ impl Shape {
                     .collect();
                 Self::MultiPoint(MultiPoint::from_values(points.axes(), members))
             },
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(CoordSeq::from(
-                normalized_line(points),
-            ))),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(CoordSeq::from(normalized_line(points)))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 let mut values = lines
                     .iter()
-                    .map(|line| LineSeq::from_trusted(CoordSeq::from(normalized_line(line))))
+                    .map(|line| {
+                        LineSeq::try_new(CoordSeq::from(normalized_line(line)))
+                            .expect("line coordinate sequence must contain at least two vertices")
+                    })
                     .collect::<Vec<_>>();
                 values.sort_by(compare_point_slices);
                 let mut values = values.into_iter();
                 let members = lines
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)
@@ -1247,7 +1324,6 @@ impl Shape {
                 let mut values = values.into_iter();
                 let members = polygons
                     .members()
-                    .iter()
                     .filter_map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Some(crate::geometry::MultiMember::Empty)

@@ -15,7 +15,7 @@ pub(crate) fn shape_from_open_hull(hull: &[Point], empty: impl FnOnce() -> Shape
         _ => {
             let mut ring = hull.to_vec();
             ring.push(ring[0]);
-            Shape::Polygon(Polygon::new(Ring::from_trusted_closed(ring), Vec::new()))
+            Shape::Polygon(Polygon::new(Ring::from_closed(ring), Vec::new()))
         },
     }
 }
@@ -41,7 +41,7 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<Point> {
     if xy.len() <= 2 {
         return xy
             .into_iter()
-            .map(|point| Point::new_unchecked_xy(point.x, point.y))
+            .map(|point| Point::new_raw_xy(point.x, point.y))
             .collect();
     }
     let mut hull: Vec<XY> = Vec::with_capacity(64);
@@ -63,7 +63,7 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<Point> {
     }
     hull.pop();
     hull.into_iter()
-        .map(|point| Point::new_unchecked_xy(point.x, point.y))
+        .map(|point| Point::new_raw_xy(point.x, point.y))
         .collect()
 }
 

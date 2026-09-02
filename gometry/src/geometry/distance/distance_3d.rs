@@ -27,16 +27,6 @@ struct SegmentBvh3d {
     codes: Box<[u32]>,
 }
 
-impl Distance3dParts {
-    #[expect(
-        clippy::same_name_method,
-        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
-    )]
-    pub(crate) fn heap_bytes(&self) -> usize {
-        HeapSize::heap_bytes(self)
-    }
-}
-
 crate::heapless!(Segment3d);
 
 impl HeapSize for SegmentBvh3d {

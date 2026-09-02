@@ -182,13 +182,11 @@ impl FacetBvh {
                     let candidate = if SQUARED {
                         linework.facet_point_distance_squared(facet, x, y)
                     } else {
-                        linework.facet_point_distance(facet, Point::new_unchecked_xy(x, y))
+                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
                     };
                     if candidate < best {
                         best = candidate;
-                        witness = linework
-                            .facet_point_distance_with_witness(facet, facet_index, x, y)
-                            .1;
+                        witness = linework.facet_point_distance_with_witness(facet, x, y).1;
                     }
                 },
                 BvhNode::Internal(first_child) => {
@@ -257,7 +255,7 @@ impl FacetBvh {
                     let candidate = if SQUARED {
                         linework.facet_point_distance_squared(facet, x, y)
                     } else {
-                        linework.facet_point_distance(facet, Point::new_unchecked_xy(x, y))
+                        linework.facet_point_distance(facet, Point::new_raw_xy(x, y))
                     };
                     best = best.min(candidate);
                 },
@@ -318,7 +316,7 @@ impl FacetBvh {
                     let candidate = if simd {
                         linework.facet_point_distance_squared(facet, x, y)
                     } else {
-                        let point = Point::new_unchecked_xy(x, y);
+                        let point = Point::new_raw_xy(x, y);
                         (0..facet.segment_count as usize).fold(f64::INFINITY, |best, i| {
                             best.min(point_segment_distance_squared(
                                 point,

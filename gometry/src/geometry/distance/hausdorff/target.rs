@@ -156,7 +156,7 @@ impl SmallLineTarget {
 }
 
 pub(crate) fn small_line_target_distance_squared(target: &SmallLineTarget, point: XY) -> f64 {
-    let probe = Point::new_unchecked_xy(point.x, point.y);
+    let probe = Point::new_raw_xy(point.x, point.y);
     let mut best = f64::INFINITY;
     for index in 0..target.n_segments as usize {
         best = best.min(point_segment_distance_squared(

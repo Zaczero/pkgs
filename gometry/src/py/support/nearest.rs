@@ -2,9 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::sync::Arc;
-
-use crate::array::MissingMask;
+use crate::array::ValidityMask;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
     PyGeometryArray, PyResult, PyTypeError, Python, Shape, Typed, geometry_type_err,
@@ -23,7 +21,7 @@ pub(crate) fn py_geometry_array(shapes: Vec<Shape>, frame: &Frame) -> PyGeometry
 pub(crate) fn nearest_point_columns_masked(
     pairs: Vec<(Option<(Point, Point)>, CoordinateAxes)>,
     frame: Frame,
-    missing: Option<MissingMask>,
+    missing: Option<ValidityMask>,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let pair_count = pairs.len();
     let mut left = Vec::new();
@@ -33,7 +31,7 @@ pub(crate) fn nearest_point_columns_masked(
         return Err(error.into());
     }
     for (row, (pair, common)) in pairs.into_iter().enumerate() {
-        if missing.as_ref().is_some_and(|mask| mask[row]) {
+        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
             left.push(PyGeometryArray::missing_placeholder());
             right.push(PyGeometryArray::missing_placeholder());
             continue;
@@ -49,6 +47,7 @@ pub(crate) fn nearest_point_columns_masked(
 }
 
 pub(crate) fn py_nearest_points(
+    py: Python<'_>,
     left: &PyGeometry,
     right: &PyGeometry,
     unit: Option<DistanceUnit>,
@@ -56,17 +55,16 @@ pub(crate) fn py_nearest_points(
     left.frame.compatible(&right.frame, "nearest_points")?;
     let model = resolve_metric(left.crs_str(), unit, "nearest_points")?;
     let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
+    let left_plan = left.plan_or_transient();
+    let right_plan = right.plan_or_transient();
+    let pair = py.detach(move || metric_nearest_points(&model, &left_plan, &right_plan))?;
     let (left_shape, right_shape) = crate::geometry::nearest_point_pair(
-        metric_nearest_points(
-            &model,
-            &left.plan_or_transient(),
-            &right.plan_or_transient(),
-        )?,
+        pair,
         common,
     );
     Ok((
-        PyGeometry::typed_with_epoch(left_shape, left.crs_ref().cloned(), left.epoch()),
-        PyGeometry::typed_with_epoch(right_shape, right.crs_ref().cloned(), right.epoch()),
+        Typed(PyGeometry::with_frame(left_shape, left.frame.clone())),
+        Typed(PyGeometry::with_frame(right_shape, right.frame.clone())),
     ))
 }
 
@@ -90,21 +88,23 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
     let query = require_locate_point(point, "line_locate_point")?;
     let model = resolve_line_metric(left.crs_str(), unit, normalized, "line_locate_point")?;
     let left = left.clone();
-    let missing = left.missing().cloned();
     let result = py
         .detach(move || {
-            left.storage()
-                .iter_rows()
-                .enumerate()
-                .map(|(index, row)| {
-                    if missing.as_ref().is_some_and(|mask| mask[index]) {
+            let mut products = left.row_products.operation();
+            left.logical_storage_rows()
+                .map(|logical_row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: index,
+                        row,
+                    } = logical_row
+                    else {
                         return Ok(f64::NAN);
-                    }
-                    let line = left.prepared_row(index, row);
+                    };
+                    let line = left.prepared_row_with(&mut products, index, row);
                     crate::broadcast::degrade_linref_float(line_locate_shape(
                         &model,
                         &line,
-                        &left.row_frame_cache(index),
+                        &products.frame_cache(index),
                         query,
                         normalized,
                     ))
@@ -121,10 +121,6 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
 /// Frame/model resolution, antimeridian-aware geodesic preparation, missing
 /// rows, and output materialization live here once for both scalar-left and
 /// array-left entry points.
-#[expect(
-    clippy::too_many_lines,
-    reason = "planar and geodesic nearest lanes share one output assembly path"
-)]
 pub(crate) fn fixed_geometry_array_nearest_points(
     py: Python<'_>,
     fixed: &PyGeometry,
@@ -141,18 +137,18 @@ pub(crate) fn fixed_geometry_array_nearest_points(
     )?;
     let model = resolve_metric(fixed.crs_str(), unit, "nearest_points")?;
     let fixed_plan = fixed.plan_or_transient();
-    let fixed_cache = Arc::clone(&fixed.frame_cache);
+    let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
-    let missing = array.missing().cloned();
-    if let crate::crs::MetricModel::Geodesic { crs, state } = model {
+    if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
         let rows = py.detach(move || {
+            let mut products = array_owned.row_products.operation();
             crate::crs::with_resolved_ellipsoid_metric_at(
                 &crs,
                 &[fixed_plan.shape()],
                 &state,
                 |crs, metric| {
                     let (semi_major, flattening) = metric.ellipsoid_parameters();
-                    if !fixed_plan.shape().crosses_antimeridian() {
+                    if !crate::geometry::crosses_antimeridian_in_frame(fixed_plan.shape(), frame) {
                         fixed_plan.prepare_geodesic_parts(
                             &fixed_cache,
                             crs,
@@ -162,15 +158,18 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                         )?;
                     }
                     Ok(array_owned
-                        .storage()
-                        .iter_rows()
-                        .enumerate()
-                        .map(|(row_index, row)| {
-                            if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                        .logical_storage_rows()
+                        .map(|logical_row| {
+                            let crate::array::LogicalRow::Present {
+                                logical: row_index,
+                                row,
+                            } = logical_row
+                            else {
                                 return Ok((None, CoordinateAxes::XY));
-                            }
-                            let element = array_owned.prepared_row(row_index, row);
-                            let element_cache = array_owned.row_frame_cache(row_index);
+                            };
+                            let element =
+                                array_owned.prepared_row_with(&mut products, row_index, row);
+                            let element_cache = products.frame_cache(row_index);
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
@@ -182,6 +181,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                                     semi_major,
                                     flattening,
                                     metric,
+                                    frame,
                                 )
                             } else {
                                 element.geodesic_nearest_points_cached_split(
@@ -192,6 +192,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                                     semi_major,
                                     flattening,
                                     metric,
+                                    frame,
                                 )
                             }
                             .map(|pair| (pair, common))
@@ -201,24 +202,22 @@ pub(crate) fn fixed_geometry_array_nearest_points(
             )
         })?;
         let pairs = rows.map_err(rows_err)?;
-        return Ok(nearest_point_columns_masked(
-            pairs,
-            array.frame.clone(),
-            array.missing().cloned(),
-        )?);
+        return nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned());
     }
-    let missing = array.missing().cloned();
     let pairs = py
         .detach(move || {
+            let mut products = array_owned.row_products.operation();
             array_owned
-                .storage()
-                .iter_rows()
-                .enumerate()
-                .map(|(row_index, row)| {
-                    if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                .logical_storage_rows()
+                .map(|logical_row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row_index,
+                        row,
+                    } = logical_row
+                    else {
                         return Ok((None, CoordinateAxes::XY));
-                    }
-                    let element = array_owned.prepared_row(row_index, row);
+                    };
+                    let element = array_owned.prepared_row_with(&mut products, row_index, row);
                     let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                     if fixed_is_left {
                         metric_nearest_points(&model, &fixed_plan, &element)
@@ -230,11 +229,7 @@ pub(crate) fn fixed_geometry_array_nearest_points(
                 .collect_rows()
         })
         .map_err(crate::broadcast::rows_err)?;
-    Ok(nearest_point_columns_masked(
-        pairs,
-        array.frame.clone(),
-        array.missing().cloned(),
-    )?)
+    nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned())
 }
 
 /// Extract the query `Point` for a linear-referencing locate, with the

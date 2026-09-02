@@ -1,11 +1,11 @@
 use crate::geometry::distance::{
-    GeodesicScratchGuard, GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result,
-    any_parts_within, collect_geodesic_segments_into, collect_point_only_into,
-    compact_hausdorff_params, directed_hausdorff_distance_squared_shapes,
-    discrete_frechet_distance, ensure_geodesic_linework, geodesic_cap_streaming,
+    GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result, any_parts_within,
+    collect_geodesic_segments_into, collect_point_only_into, compact_hausdorff_params,
+    directed_hausdorff_distance_squared_shapes, discrete_frechet_distance,
+    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, geodesic_cap_streaming,
     geodesic_capped_sweep, geodesic_capped_witness_sweep, geodesic_max_min_on_source_segment,
-    geodesic_min_distance_to_target, geodesic_segments_cross_streaming, min_parts_to_parts,
-    push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
+    geodesic_min_distance_to_target, geodesic_scratch, geodesic_segments_cross_streaming,
+    min_parts_to_parts, push_equidistant_roots_on_interval, push_point_on_line_breakpoint,
     push_segment_projection_breakpoints, squared_space_safe,
 };
 use crate::geometry::frame::SimilarityFrame;
@@ -34,7 +34,7 @@ impl Shape {
     /// Build this shape's geodesic working set for one ellipsoid. Domain
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
-        ensure_geodesic_linework(self)?;
+        ensure_geodesic_linework(self, metric)?;
         let mut points = Vec::with_capacity(self.coord_count());
         self.for_each_point(|point| points.push(point));
         let mut point_only = Vec::new();
@@ -135,8 +135,8 @@ impl Shape {
         reason = "the metric is used only through its trait contract; a named generic adds no API signal"
     )]
     pub fn geodesic_distance(&self, other: &Self, metric: &impl GeodesicMetric) -> Result<f64> {
-        ensure_geodesic_linework(self)?;
-        ensure_geodesic_linework(other)?;
+        ensure_geodesic_linework(self, metric)?;
+        ensure_geodesic_linework(other, metric)?;
         // Point pairs reduce to ONE Karney inverse (`segment_length` IS the
         // point distance; the degenerate-segment spelling would burn three).
         if let (Self::Point(a), Self::Point(b)) = (self, other) {
@@ -145,8 +145,8 @@ impl Shape {
         if self.geodesic_segments_cross(other, metric)? {
             return Ok(0.0);
         }
-        let mut scratch_guard = GeodesicScratchGuard::take();
-        let scratch = &mut scratch_guard.scratch;
+        let mut scratch = geodesic_scratch();
+        let scratch = &mut *scratch;
         scratch.left_points.clear();
         scratch.left_points.reserve(self.coord_count());
         self.collect_points_into(&mut scratch.left_points);
@@ -200,26 +200,24 @@ impl Shape {
         other: &Self,
         metric: &impl GeodesicMetric,
     ) -> Result<f64> {
-        ensure_geodesic_linework(self)?;
-        ensure_geodesic_linework(other)?;
+        ensure_geodesic_linework(self, metric)?;
+        ensure_geodesic_linework(other, metric)?;
         if self.is_empty() || other.is_empty() {
             return Ok(f64::INFINITY);
         }
-        let mut scratch_guard = GeodesicScratchGuard::take();
-        let scratch = &mut scratch_guard.scratch;
+        let mut scratch = geodesic_scratch();
+        let scratch = &mut *scratch;
         collect_geodesic_segments_into(other, metric, &mut scratch.right_edges)?;
         other.collect_points_into(&mut scratch.right_points);
         collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
         self.collect_points_into(&mut scratch.left_points);
-        let directed = |source: &Self,
+        let directed = |source_points: &[Point],
                         source_edges: &[GeodesicSegment],
                         target_edges: &[GeodesicSegment],
                         target_points: &[Point]|
          -> Result<f64> {
             let mut cmax = 0.0_f64;
-            let mut source_points = Vec::new();
-            source.collect_points_into(&mut source_points);
-            for point in source_points {
+            for &point in source_points {
                 let cmin = geodesic_min_distance_to_target(
                     point,
                     target_edges,
@@ -246,13 +244,13 @@ impl Shape {
             Ok(cmax)
         };
         Ok(directed(
-            self,
+            &scratch.left_points,
             &scratch.left_edges,
             &scratch.right_edges,
             &scratch.right_points,
         )?
         .max(directed(
-            other,
+            &scratch.right_points,
             &scratch.right_edges,
             &scratch.left_edges,
             &scratch.left_points,
@@ -274,10 +272,10 @@ impl Shape {
         other: &Self,
         metric: &impl GeodesicMetric,
     ) -> Result<Option<(Point, Point)>> {
-        ensure_geodesic_linework(self)?;
-        ensure_geodesic_linework(other)?;
-        let mut scratch_guard = GeodesicScratchGuard::take();
-        let scratch = &mut scratch_guard.scratch;
+        ensure_geodesic_linework(self, metric)?;
+        ensure_geodesic_linework(other, metric)?;
+        let mut scratch = geodesic_scratch();
+        let scratch = &mut *scratch;
         scratch.left_points.clear();
         scratch.left_points.reserve(self.coord_count());
         self.collect_points_into(&mut scratch.left_points);
@@ -474,6 +472,20 @@ impl Shape {
     }
 
     pub fn frechet_distance(&self, other: &Self) -> Result<f64> {
+        if self.is_empty() || other.is_empty() {
+            return Ok(f64::INFINITY);
+        }
+        Ok(discrete_frechet_distance(
+            self.single_linework()?,
+            other.single_linework()?,
+        ))
+    }
+
+    pub(crate) fn frechet_distance_with_scratch(
+        &self,
+        other: &Self,
+        scratch: &mut crate::geometry::distance::FrechetDpScratch,
+    ) -> Result<f64> {
         // An empty operand is TOTAL, not an error — the same output-type
         // sentinel `distance` and `hausdorff_distance` already return, so one
         // empty row never aborts a whole batch. Without this gate
@@ -486,9 +498,10 @@ impl Shape {
         if self.is_empty() || other.is_empty() {
             return Ok(f64::INFINITY);
         }
-        Ok(discrete_frechet_distance(
+        Ok(discrete_frechet_distance_with_scratch(
             self.single_linework()?,
             other.single_linework()?,
+            scratch,
         ))
     }
 }
@@ -560,7 +573,7 @@ fn similarity_framed_hausdorff(left: &Shape, right: &Shape) -> Option<f64> {
     right.for_each_point(|point| points.push(point));
     let frame = SimilarityFrame::from_points(&points)?;
     let map = |point: Point| {
-        Ok(point.with_xy_unchecked(
+        Ok(point.with_xy_raw(
             frame.frame_xy(point.x, point.y).x,
             frame.frame_xy(point.x, point.y).y,
         ))

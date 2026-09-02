@@ -22,7 +22,8 @@ mod shape_impl;
 pub(crate) use distance_3d::distance_3d_brute_parts;
 pub(crate) use distance_3d::{Distance3dParts, distance_3d_with_parts};
 pub(crate) use frechet::{
-    discrete_frechet_distance, frechet_distance_line_columns, frechet_distance_line_columns_batch,
+    FrechetDpScratch, discrete_frechet_distance, discrete_frechet_distance_with_scratch,
+    frechet_distance_line_columns, frechet_distance_line_columns_batch,
 };
 pub(crate) use geodesic_hausdorff_helpers::{
     geodesic_max_min_on_source_segment, geodesic_min_distance_to_target,
@@ -30,11 +31,11 @@ pub(crate) use geodesic_hausdorff_helpers::{
 pub(crate) use geodesic_parts::{
     ensure_geodesic_linework, geodesic_cap_streaming, geodesic_capped_sweep,
     geodesic_distance_with_parts, geodesic_dwithin_with_parts, geodesic_nearest_points_with_parts,
-    geodesic_point_distance_with_parts, geodesic_point_dwithin_with_parts,
+    geodesic_point_distance_with_parts_and_scratch, geodesic_point_dwithin_with_parts_and_scratch,
     geodesic_segments_cross_streaming,
 };
 pub(crate) use geodesic_scratch::{
-    GeodesicScratchGuard, collect_geodesic_segments_into, collect_point_only_into,
+    GeodesicScratch, collect_geodesic_segments_into, collect_point_only_into, geodesic_scratch,
 };
 pub(in crate::geometry) use geodesic_sweep::GeodesicSweepCaps;
 pub(crate) use geodesic_sweep::{

@@ -29,7 +29,7 @@ impl Shape {
             );
         }
         Ok(Self::Polygon(Polygon {
-            shell: Ring::from_trusted_closed(minimum_area_rectangle(&open)?),
+            shell: Ring::from_closed(minimum_area_rectangle(&open)?),
             holes: Vec::new().into(),
         }))
     }
@@ -79,7 +79,7 @@ impl Shape {
         // both lie ON the geometry (the only contract). Collections and
         // degenerate polygons take the dimensional cascade below.
         let native = match self {
-            Self::Point(point) => Some(Point::new_unchecked_xy(point.x, point.y)),
+            Self::Point(point) => Some(Point::new_raw_xy(point.x, point.y)),
             Self::MultiPoint(points) => multipoint_surface_point(points),
             Self::LineString(line) => lineal_surface_point(std::iter::once(line.as_coords())),
             Self::MultiLineString(lines) => {

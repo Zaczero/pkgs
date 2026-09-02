@@ -11,10 +11,11 @@ mod target;
 #[cfg(test)]
 pub(crate) use algorithm::directed_hausdorff_distance_squared_with_target_columns;
 pub(crate) use algorithm::{
-    directed_hausdorff_distance_squared_with_target_pruned,
-    directed_hausdorff_distance_squared_with_target_pruned_initial,
-    directed_hausdorff_vertex_lower_bound_squared, hausdorff_segment_upper_bound_squared,
-    sqrt_distance_squared,
+    HausdorffScratch, directed_hausdorff_distance_squared_with_target_pruned,
+    directed_hausdorff_distance_squared_with_target_pruned_initial_with_scratch,
+    directed_hausdorff_distance_squared_with_target_pruned_with_scratch,
+    directed_hausdorff_vertex_lower_bound_squared_with_scratch, hausdorff_scratch,
+    hausdorff_segment_upper_bound_squared, sqrt_distance_squared,
 };
 pub(crate) use breakpoints::{
     EquidistantRootSink, HausdorffFeature, HausdorffParamSink, SmallEquidistantRoots,

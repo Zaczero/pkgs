@@ -22,6 +22,9 @@ pub(crate) struct Facet {
     /// single chain can never hold >4G vertices.
     pub(crate) first_vertex: u32,
     pub(crate) segment_count: u8,
+    /// Global segment index of this facet's first edge. Witness queries must
+    /// return this packed-linework index without rescanning preceding facets.
+    first_segment: u32,
 }
 
 /// A shape's linework as per-chain [`CoordSeq`] views plus its facet
@@ -77,6 +80,7 @@ impl PreparedLinework {
                 chain: 0,
                 first_vertex: offset as u32,
                 segment_count: count as u8,
+                first_segment: offset as u32,
             });
             offset += count;
         }
@@ -110,6 +114,7 @@ impl PreparedLinework {
         let mut uniform_ordinates = true;
         let mut facets = Vec::with_capacity(segment_count.div_ceil(FACET_SEGMENTS));
         let mut global_vertices = 0;
+        let mut global_segments = 0;
         shape.for_each_segment_chain(|chain| {
             let vertices = chain.len();
             if vertices < 2 {
@@ -133,9 +138,11 @@ impl PreparedLinework {
                     chain: chain_index as u32,
                     first_vertex: offset as u32,
                     segment_count: count as u8,
+                    first_segment: (global_segments + offset) as u32,
                 });
                 offset += count;
             }
+            global_segments += segments;
         });
         let aabb = chains
             .iter()
@@ -289,15 +296,14 @@ impl PreparedLinework {
                 return (best, u32::MAX);
             }
             // Hypot-space path: fold distances, track witness by segment index.
-            let point = Point::new_unchecked_xy(x, y);
+            let point = Point::new_raw_xy(x, y);
             let mut witness = u32::MAX;
-            for (facet_index, &facet) in self.facets.iter().enumerate() {
-                let base = self.facet_segment_base(facet_index);
+            for &facet in &self.facets {
                 for index in 0..facet.segment_count as usize {
                     let candidate = point_segment_distance(point, self.segment(facet, index));
                     if candidate < best {
                         best = candidate;
-                        witness = base + index as u32;
+                        witness = facet.first_segment + index as u32;
                     }
                 }
             }
@@ -307,13 +313,11 @@ impl PreparedLinework {
             return (best, u32::MAX);
         }
         let mut witness = u32::MAX;
-        for (facet_index, &facet) in self.facets.iter().enumerate() {
+        for &facet in &self.facets {
             let candidate = self.facet_point_distance_squared(facet, x, y);
             if candidate < best {
                 best = candidate;
-                witness = self
-                    .facet_point_distance_with_witness(facet, facet_index, x, y)
-                    .1;
+                witness = self.facet_point_distance_with_witness(facet, x, y).1;
             }
         }
         (best, witness)
@@ -361,7 +365,7 @@ impl PreparedLinework {
                 let candidate = if SQUARED {
                     self.facet_point_distance_squared(facet, x, y)
                 } else {
-                    self.facet_point_distance(facet, Point::new_unchecked_xy(x, y))
+                    self.facet_point_distance(facet, Point::new_raw_xy(x, y))
                 };
                 best = best.min(candidate);
             }
@@ -397,7 +401,7 @@ impl PreparedLinework {
                     let candidate = if simd {
                         self.facet_point_distance_squared(facet, x, y)
                     } else {
-                        let point = Point::new_unchecked_xy(x, y);
+                        let point = Point::new_raw_xy(x, y);
                         (0..facet.segment_count as usize).fold(f64::INFINITY, |best, index| {
                             best.min(point_segment_distance_squared(
                                 point,
@@ -457,33 +461,23 @@ impl PreparedLinework {
         None
     }
 
-    /// Global segment index of the first edge in `facet`.
-    fn facet_segment_base(&self, facet_index: usize) -> u32 {
-        self.facets[..facet_index]
-            .iter()
-            .map(|facet| u32::from(facet.segment_count))
-            .sum()
-    }
-
     /// Minimum squared distance from `(px, py)` to one facet's segments and
     /// the global segment index of the witness edge.
     pub(crate) fn facet_point_distance_with_witness(
         &self,
         facet: Facet,
-        facet_index: usize,
         px: f64,
         py: f64,
     ) -> (f64, u32) {
-        let base = self.facet_segment_base(facet_index);
-        let point = Point::new_unchecked_xy(px, py);
+        let point = Point::new_raw_xy(px, py);
         let mut best = f64::INFINITY;
-        let mut witness = base;
+        let mut witness = facet.first_segment;
         for index in 0..facet.segment_count as usize {
             let distance_squared =
                 point_segment_distance_squared(point, self.segment(facet, index));
             if distance_squared < best {
                 best = distance_squared;
-                witness = base + index as u32;
+                witness = facet.first_segment + index as u32;
             }
         }
         (best, witness)
@@ -509,7 +503,7 @@ impl PreparedLinework {
                 return simd;
             }
         }
-        let point = Point::new_unchecked_xy(px, py);
+        let point = Point::new_raw_xy(px, py);
         (0..count).fold(f64::INFINITY, |best, index| {
             best.min(point_segment_distance_squared(
                 point,

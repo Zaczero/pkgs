@@ -71,9 +71,9 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
         for (x, y) in probe.probe_coords() {
             for &other in &target.point_only {
                 let candidate = if SQUARED {
-                    point_distance_squared(Point::new_unchecked_xy(x, y), other)
+                    point_distance_squared(Point::new_raw_xy(x, y), other)
                 } else {
-                    point_distance(Point::new_unchecked_xy(x, y), other)
+                    point_distance(Point::new_raw_xy(x, y), other)
                 };
                 best = best.min(candidate);
             }
@@ -107,7 +107,7 @@ pub(crate) fn any_parts_within(
     } else {
         // Tiny / zero radius: distance-space against linework.
         probe.probe_coords().any(|(x, y)| {
-            let point = Point::new_unchecked_xy(x, y);
+            let point = Point::new_raw_xy(x, y);
             target.linework.facets.iter().any(|&facet| {
                 (0..facet.segment_count as usize).any(|index| {
                     let segment = target.linework.segment(facet, index);
@@ -122,7 +122,7 @@ pub(crate) fn any_parts_within(
                 target
                     .point_only
                     .iter()
-                    .any(|&other| points_dwithin(Point::new_unchecked_xy(x, y), other, distance))
+                    .any(|&other| points_dwithin(Point::new_raw_xy(x, y), other, distance))
             }))
 }
 

@@ -89,10 +89,10 @@ pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> Option<Shape> {
                 return None;
             }
             vec![Polygon::new(
-                Ring::from_trusted_closed(closed_coordseq(shell)),
+                Ring::from_closed(closed_coordseq(shell)),
                 holes
                     .into_iter()
-                    .map(|h| Ring::from_trusted_closed(closed_coordseq(h)))
+                    .map(|h| Ring::from_closed(closed_coordseq(h)))
                     .collect(),
             )]
         },
@@ -105,12 +105,7 @@ pub(crate) fn assemble_rings(rings: Vec<Vec<XY>>) -> Option<Shape> {
             }
             shells
                 .into_iter()
-                .map(|shell| {
-                    Polygon::new(
-                        Ring::from_trusted_closed(closed_coordseq(shell)),
-                        Vec::new(),
-                    )
-                })
+                .map(|shell| Polygon::new(Ring::from_closed(closed_coordseq(shell)), Vec::new()))
                 .collect()
         },
     };

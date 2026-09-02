@@ -231,7 +231,7 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
         for step in 1..samples {
             let fraction = step as f64 / samples as f64;
             let mut point = spline.evaluate(fraction);
-            point = Point::new_unchecked_axes(
+            point = Point::new_raw_axes(
                 point.x,
                 point.y,
                 ZOrdinate(match (z0, z1) {
@@ -278,7 +278,7 @@ fn reflect_endpoint(end: Point, interior: Point) -> Point {
         let out = e + delta;
         if out.is_finite() { out } else { e }
     };
-    Point::new_unchecked_axes(
+    Point::new_raw_axes(
         reflect(end.x, interior.x),
         reflect(end.y, interior.y),
         ZOrdinate(match (end.z(), interior.z()) {
@@ -402,18 +402,28 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(
-                smooth_coord_seq::<false>(points, iterations, method, keep_endpoints, budget)?,
-            )),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(smooth_coord_seq::<false>(
+                    points,
+                    iterations,
+                    method,
+                    keep_endpoints,
+                    budget,
+                )?)
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(LineSeq::from_trusted(smooth_coord_seq::<false>(
-                        line,
-                        iterations,
-                        method,
-                        keep_endpoints,
-                        budget,
-                    )?))
+                    Ok::<_, crate::error::Error>(
+                        LineSeq::try_new(smooth_coord_seq::<false>(
+                            line,
+                            iterations,
+                            method,
+                            keep_endpoints,
+                            budget,
+                        )?)
+                        .expect("line coordinate sequence must contain at least two vertices"),
+                    )
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(smooth_polygon_rings(
@@ -452,7 +462,7 @@ fn smooth_polygon_rings(
     keep_endpoints: bool,
     budget: &mut ExpansionBudget,
 ) -> Result<Polygon> {
-    let shell = Ring::from_trusted_closed(smooth_coord_seq::<true>(
+    let shell = Ring::from_closed(smooth_coord_seq::<true>(
         polygon.shell.coords(),
         iterations,
         method,
@@ -463,7 +473,7 @@ fn smooth_polygon_rings(
         .holes
         .iter()
         .map(|hole| {
-            Ok(Ring::from_trusted_closed(smooth_coord_seq::<true>(
+            Ok(Ring::from_closed(smooth_coord_seq::<true>(
                 hole.coords(),
                 iterations,
                 method,
@@ -482,7 +492,7 @@ mod tests {
 
     fn line(n: usize) -> Shape {
         let points: Vec<Point> = (0..n)
-            .map(|index| Point::new_unchecked_xy(index as f64, 0.0))
+            .map(|index| Point::new_raw_xy(index as f64, 0.0))
             .collect();
         Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("valid test line"))
     }
@@ -544,8 +554,8 @@ mod tests {
 
     #[test]
     fn tiny_nonzero_knot_span_interpolates_instead_of_collapsing() {
-        let left = Point::new_unchecked_xy(0.0, 0.0);
-        let right = Point::new_unchecked_xy(1e-40, 2e-40);
+        let left = Point::new_raw_xy(0.0, 0.0);
+        let right = Point::new_raw_xy(1e-40, 2e-40);
         let span = knot_increment(left, right);
         assert!(span > 0.0 && span < f64::EPSILON);
 

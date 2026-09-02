@@ -1,4 +1,5 @@
 use crate::NonNegative;
+use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
@@ -20,7 +21,7 @@ pub(crate) struct SnapReference {
     /// the linear scan over `points`.
     tree: Option<BulkRTree<rstar::primitives::GeomWithData<[f64; 2], u32>>>,
     tolerance: f64,
-    /// `tolerance^2`, `None` when it overflows — absurd-but-finite
+    /// `tolerance²`, `None` when it overflows — absurd-but-finite
     /// tolerances fall back to distance-space comparison over every entry.
     limit: Option<f64>,
 }
@@ -127,7 +128,7 @@ impl SnapReference {
         let limit = self.limit;
         let mut candidates: Vec<(SegmentProjection, u32, Point)> = Vec::new();
         let mut consider = |reference: XY, ordinal: u32| {
-            let ref_pt = Point::new_unchecked_xy(reference.x, reference.y);
+            let ref_pt = Point::new_raw_xy(reference.x, reference.y);
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
             if points_dwithin(reference, start, tolerance)
@@ -290,14 +291,18 @@ pub(crate) fn segmentize_points_budgeted(
     // would emit pieces longer than requested near the poles.
     let length_of = |segment: Segment| match placement {
         SegmentPlacement::Planar => Ok(point_distance(segment.start, segment.end)),
-        SegmentPlacement::Geodesic(geodesic) => crate::crs::geodesic_line_solution_const::<false>(
-            geodesic,
-            segment.start.x,
-            segment.start.y,
-            segment.end.x,
-            segment.end.y,
-        )
-        .map(|(_, _, _, total)| total),
+        SegmentPlacement::Geodesic(geodesic, frame) => {
+            let start = frame
+                .to_geodesic_point(Point::new_raw_xy(segment.start.x, segment.start.y))
+                .expect("geographic subdivision received admitted coordinates");
+            let end = frame
+                .to_geodesic_point(Point::new_raw_xy(segment.end.x, segment.end.y))
+                .expect("geographic subdivision received admitted coordinates");
+            crate::crs::geodesic_line_solution_const::<false>(
+                geodesic, start.x, start.y, end.x, end.y,
+            )
+            .map(|(_, _, _, total)| total)
+        },
     };
     subdivide_columns(
         points,
@@ -410,8 +415,9 @@ impl SubdivisionSink for SubdivisionCount {
 pub(crate) enum SegmentPlacement<'a> {
     /// Straight line in coordinate space (projected or CRS-free input).
     Planar,
-    /// Along the geodesic on the CRS's own ellipsoid (geographic input).
-    Geodesic(&'a geographiclib_rs::Geodesic),
+    /// Along the ellipsoid for coordinates stored in a typed native angular
+    /// frame; the inserted points are emitted back in that same frame.
+    Geodesic(&'a geographiclib_rs::Geodesic, GeographicFrame),
 }
 
 struct SubdivisionColumns<'a> {
@@ -490,21 +496,28 @@ impl SubdivisionColumns<'_> {
     fn push_geodesic(
         &mut self,
         geodesic: &geographiclib_rs::Geodesic,
+        frame: Option<GeographicFrame>,
         segment_index: usize,
         steps: usize,
     ) -> Result<()> {
         let (xs, ys) = (self.points.xs(), self.points.ys());
-        let (x0, y0) = (xs[segment_index], ys[segment_index]);
-        let (x1, y1) = (xs[segment_index + 1], ys[segment_index + 1]);
+        let (mut x0, mut y0) = (xs[segment_index], ys[segment_index]);
+        let (mut x1, mut y1) = (xs[segment_index + 1], ys[segment_index + 1]);
+        if let Some(frame) = frame {
+            let start = frame
+                .to_geodesic_point(Point::new_raw_xy(x0, y0))
+                .expect("geographic subdivision received admitted coordinates");
+            let end = frame
+                .to_geodesic_point(Point::new_raw_xy(x1, y1))
+                .expect("geographic subdivision received admitted coordinates");
+            (x0, y0) = (start.x, start.y);
+            (x1, y1) = (end.x, end.y);
+        }
         let solution = crate::crs::geodesic_line_solution_const::<false>(geodesic, x0, y0, x1, y1)?;
         for step in 1..steps {
             let fraction = step as f64 / steps as f64;
-            #[expect(
-                clippy::float_cmp,
-                reason = "the equator is the literal zero-latitude geodesic"
-            )]
             let equatorial = y0 == 0.0 && y1 == 0.0 && (x1 - x0).abs() < 180.0;
-            let (longitude, latitude) = if equatorial {
+            let (mut longitude, mut latitude) = if equatorial {
                 (interpolate_f64(x0, x1, fraction), 0.0)
             } else {
                 let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
@@ -512,6 +525,12 @@ impl SubdivisionColumns<'_> {
                 )?;
                 (info.longitude, info.latitude)
             };
+            if let Some(frame) = frame {
+                let point = frame
+                    .from_geodesic_point(Point::new_raw_xy(longitude, latitude))
+                    .expect("geographic subdivision produced a finite coordinate");
+                (longitude, latitude) = (point.x, point.y);
+            }
             if !(longitude.is_finite() && latitude.is_finite()) {
                 return Err(GeometryErrorKind::message(
                     "geodesic subdivision calculation produced a non-finite coordinate",
@@ -544,8 +563,8 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
                 Self::push_interpolated(&mut self.xs, self.points.xs(), segment_index, steps);
                 Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
             },
-            SegmentPlacement::Geodesic(geodesic) => {
-                self.push_geodesic(geodesic, segment_index, steps)?;
+            SegmentPlacement::Geodesic(geodesic, frame) => {
+                self.push_geodesic(geodesic, Some(frame), segment_index, steps)?;
             },
         }
         if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
@@ -625,15 +644,19 @@ impl Shape {
                     })
                     .expect("snap preserves multipart members"),
             ),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(CoordSeq::from(
-                snap_line_to_reference(points, &engine),
-            ))),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(CoordSeq::from(snap_line_to_reference(points, &engine)))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => Self::MultiLineString(
                 lines
                     .try_map_values(lines.axes(), |line| {
-                        Ok::<_, std::convert::Infallible>(LineSeq::from_trusted(CoordSeq::from(
-                            snap_line_to_reference(line, &engine),
-                        )))
+                        Ok::<_, std::convert::Infallible>(
+                            LineSeq::try_new(CoordSeq::from(snap_line_to_reference(line, &engine)))
+                                .expect(
+                                    "line coordinate sequence must contain at least two vertices",
+                                ),
+                        )
                     })
                     .expect("snap preserves multipart members"),
             ),
@@ -690,15 +713,20 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(point_fn(point)?),
             Self::MultiPoint(points) => Self::MultiPoint(points.with_coords(seq_fn(points)?)),
-            Self::LineString(points) => Self::LineString(LineSeq::from_trusted(seq_fn(points)?)),
+            Self::LineString(points) => Self::LineString(
+                LineSeq::try_new(seq_fn(points)?)
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => seq_fn(&lines.as_slice()[*index])
-                            .map(LineSeq::from_trusted)
+                        MultiMember::Value(index) => seq_fn(&lines.as_slice()[index])
+                            .map(|coords| {
+                                LineSeq::try_new(coords)
+                                    .expect("coordinate transform preserves line cardinality")
+                            })
                             .map(MultiMember::Value),
                     })
                     .collect::<Result<Vec<_>, E>>()?;
@@ -715,10 +743,9 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => polygons.as_slice()[*index]
+                        MultiMember::Value(index) => polygons.as_slice()[index]
                             .try_map_ring_seqs(seq_fn)
                             .map(MultiMember::Value),
                     })
@@ -835,7 +862,7 @@ impl Shape {
                 vertices.push(first);
             }
             // A ring needs three distinct vertices plus the closure.
-            (vertices.len() >= 4).then(|| Ring::from_trusted_closed(vertices))
+            (vertices.len() >= 4).then(|| Ring::from_closed(vertices))
         }
         match self {
             Self::LineString(points) => {
@@ -852,13 +879,12 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
-                            let vertices = dedup_line(&lines.as_slice()[*index]);
+                            let vertices = dedup_line(&lines.as_slice()[index]);
                             if vertices.len() >= 2 {
-                                MultiMember::Value(LineSeq::from_trusted(CoordSeq::from(vertices)))
+                                MultiMember::Value(LineSeq::try_new(CoordSeq::from(vertices)).expect("line coordinate sequence must contain at least two vertices"))
                             } else {
                                 MultiMember::Empty
                             }
@@ -877,11 +903,10 @@ impl Shape {
             Self::MultiPolygon(polygons) => {
                 let members = polygons
                     .members()
-                    .iter()
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
-                            let polygon = &polygons.as_slice()[*index];
+                            let polygon = &polygons.as_slice()[index];
                             dedup_ring(&polygon.shell)
                                 .map(|shell| {
                                     MultiMember::Value(Polygon::new(

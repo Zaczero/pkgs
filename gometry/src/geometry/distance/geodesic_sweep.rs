@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::geometry::distance::GeodesicScratchGuard;
+use crate::geometry::distance::geodesic_scratch;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
 use crate::geometry::{
     GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentWitness,
@@ -529,8 +529,8 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
     order_offset: usize,
     swapped: bool,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
-    let mut scratch_guard = GeodesicScratchGuard::take();
-    let scratch = &mut scratch_guard.scratch;
+    let mut scratch = geodesic_scratch();
+    let scratch = &mut *scratch;
     let width = target_parts.segments.len() + target_parts.point_only.len();
     if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         let mut best = best;

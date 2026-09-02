@@ -32,38 +32,37 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let right = Arc::clone(&right.shape);
-            let missing = array.missing().cloned();
             float64_array(
                 py,
                 array
-                    .storage()
-                    .iter_rows()
-                    .enumerate()
-                    .map(|(row, left)| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            return Ok(f64::NAN);
-                        }
-                        left.with_shape(|left| kernel(&model, left, right.shape(), densify.at(row)))
+                    .logical_shape_rows()
+                    .map(|left| match left {
+                        crate::array::LogicalShapeRow::Missing { .. } => Ok(f64::NAN),
+                        crate::array::LogicalShapeRow::Present { logical, shape } => {
+                            kernel(&model, &shape, right.shape(), densify.at(logical))
+                        },
                     })
                     .collect_rows()
                     .map_err(rows_err)?,
             )
         },
         Many(right) => {
-            let (lefts, rights) = paired_arrays(array, right, operation)?;
-            let missing = crate::array::missing::union_pair(array.missing(), right.missing());
+            paired_arrays(array, right, operation)?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             float64_array(
                 py,
-                lefts
-                    .iter_shapes()
-                    .zip(rights.iter_shapes())
-                    .enumerate()
-                    .map(|(row, (left, right))| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            return Ok(f64::NAN);
-                        }
-                        kernel(&model, &left, &right, densify.at(row))
+                array
+                    .logical_shape_rows()
+                    .zip(right.logical_shape_rows())
+                    .map(|(left, right)| match (left, right) {
+                        (
+                            crate::array::LogicalShapeRow::Present {
+                                logical,
+                                shape: left,
+                            },
+                            crate::array::LogicalShapeRow::Present { shape: right, .. },
+                        ) => kernel(&model, &left, &right, densify.at(logical)),
+                        _ => Ok(f64::NAN),
                     })
                     .collect_rows()
                     .map_err(rows_err)?,

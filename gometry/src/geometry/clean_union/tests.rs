@@ -9,7 +9,7 @@ fn radial_ring(cx: f64, cy: f64, radii: &[f64], rot: f64, clockwise: bool) -> Co
     let mut points: Vec<Point> = (0..n)
         .map(|i| {
             let angle = rot + std::f64::consts::TAU * i as f64 / n as f64;
-            Point::new_unchecked_xy(cx + radii[i] * angle.cos(), cy + radii[i] * angle.sin())
+            Point::new_raw_xy(cx + radii[i] * angle.cos(), cy + radii[i] * angle.sin())
         })
         .collect();
     if clockwise {
@@ -22,7 +22,7 @@ fn radial_ring(cx: f64, cy: f64, radii: &[f64], rot: f64, clockwise: bool) -> Co
 /// Holeless radial polygon.
 fn radial(cx: f64, cy: f64, radii: &[f64], rot: f64) -> Polygon {
     Polygon::new(
-        Ring::from_trusted_closed(radial_ring(cx, cy, radii, rot, false)),
+        Ring::from_closed(radial_ring(cx, cy, radii, rot, false)),
         Vec::new(),
     )
 }
@@ -32,8 +32,8 @@ fn radial(cx: f64, cy: f64, radii: &[f64], rot: f64) -> Polygon {
 fn radial_holed(cx: f64, cy: f64, radii: &[f64], rot: f64, hole_scale: f64) -> Polygon {
     let hole_radii: Vec<f64> = radii.iter().map(|r| r * hole_scale).collect();
     Polygon::new(
-        Ring::from_trusted_closed(radial_ring(cx, cy, radii, rot, false)),
-        vec![Ring::from_trusted_closed(radial_ring(
+        Ring::from_closed(radial_ring(cx, cy, radii, rot, false)),
+        vec![Ring::from_closed(radial_ring(
             cx,
             cy,
             &hole_radii,
@@ -45,12 +45,12 @@ fn radial_holed(cx: f64, cy: f64, radii: &[f64], rot: f64, hole_scale: f64) -> P
 
 fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
     Polygon::new(
-        Ring::from_trusted_closed(vec![
-            Point::new_unchecked_xy(minx, miny),
-            Point::new_unchecked_xy(maxx, miny),
-            Point::new_unchecked_xy(maxx, maxy),
-            Point::new_unchecked_xy(minx, maxy),
-            Point::new_unchecked_xy(minx, miny),
+        Ring::from_closed(vec![
+            Point::new_raw_xy(minx, miny),
+            Point::new_raw_xy(maxx, miny),
+            Point::new_raw_xy(maxx, maxy),
+            Point::new_raw_xy(minx, maxy),
+            Point::new_raw_xy(minx, miny),
         ]),
         Vec::new(),
     )
@@ -65,12 +65,12 @@ fn holed_rectangle(
 ) -> Polygon {
     let (hx0, hy0, hx1, hy1) = hole;
     Polygon::new(rectangle(minx, miny, maxx, maxy).shell, vec![
-        Ring::from_trusted_closed(vec![
-            Point::new_unchecked_xy(hx0, hy0),
-            Point::new_unchecked_xy(hx1, hy0),
-            Point::new_unchecked_xy(hx1, hy1),
-            Point::new_unchecked_xy(hx0, hy1),
-            Point::new_unchecked_xy(hx0, hy0),
+        Ring::from_closed(vec![
+            Point::new_raw_xy(hx0, hy0),
+            Point::new_raw_xy(hx1, hy0),
+            Point::new_raw_xy(hx1, hy1),
+            Point::new_raw_xy(hx0, hy1),
+            Point::new_raw_xy(hx0, hy0),
         ]),
     ])
 }

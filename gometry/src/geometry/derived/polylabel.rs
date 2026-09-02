@@ -44,7 +44,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
             <= radius_sq * (1.0 + 1e-12) + f64::MIN_POSITIVE
     }
     fn from_two(a: Point, b: Point) -> (Point, f64) {
-        let center = Point::new_unchecked_xy(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
+        let center = Point::new_raw_xy(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
         (
             center,
             crate::geometry::segments::point_distance_squared(center, a),
@@ -63,7 +63,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
         let c2 = cx * cx + cy * cy;
         let ux = (cy * b2 - by * c2) / d;
         let uy = (bx * c2 - cx * b2) / d;
-        let center = Point::new_unchecked_xy(a.x + ux, a.y + uy);
+        let center = Point::new_raw_xy(a.x + ux, a.y + uy);
         Some((center, ux * ux + uy * uy))
     }
     /// Largest of the three pairwise circles (the collinear fallback).
@@ -78,7 +78,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
     // (per-point `max/2 - min/2` stays finite even when the full extent
     // overflows). Original input vertices are kept aside for the support.
     let bounds = Bounds::from_points(points.iter().copied());
-    let mid = Point::new_unchecked_xy(
+    let mid = Point::new_raw_xy(
         f64::midpoint(bounds.minx(), bounds.maxx()),
         f64::midpoint(bounds.miny(), bounds.maxy()),
     );
@@ -88,7 +88,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
     let originals = points;
     let mut points = points
         .iter()
-        .map(|point| Point::new_unchecked_xy((point.x - mid.x) / scale, (point.y - mid.y) / scale))
+        .map(|point| Point::new_raw_xy((point.x - mid.x) / scale, (point.y - mid.y) / scale))
         .collect::<Vec<_>>();
 
     // Deterministic shuffle (LCG) to defeat adversarial input order.
@@ -126,7 +126,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> (Point, Point) {
     // center — measured against the *original* coordinates (in the unit
     // scale, so the comparison cannot overflow) so the reported radius
     // includes the center's denormalization rounding.
-    let center = Point::new_unchecked_xy(mid.x + circle.0.x * scale, mid.y + circle.0.y * scale);
+    let center = Point::new_raw_xy(mid.x + circle.0.x * scale, mid.y + circle.0.y * scale);
     let scaled_distance = |point: &Point| {
         let dx = (point.x - center.x) / scale;
         let dy = (point.y - center.y) / scale;
@@ -195,7 +195,7 @@ fn framed_metric_nearest_on_segment(
         };
         (dot / (nx * nx + ny * ny)).clamp(0.0, 1.0)
     };
-    let nearest = Point::new_unchecked_xy(
+    let nearest = Point::new_raw_xy(
         segment.start.x + (segment.end.x - segment.start.x) * fraction,
         segment.start.y + (segment.end.y - segment.start.y) * fraction,
     );
@@ -213,7 +213,7 @@ fn normalized_polylabel_frame(
     shape: &Shape,
     bounds: Bounds,
 ) -> crate::error::Result<Option<PolylabelFrame>> {
-    let midpoint = Point::new_unchecked_xy(
+    let midpoint = Point::new_raw_xy(
         f64::midpoint(bounds.minx(), bounds.maxx()),
         f64::midpoint(bounds.miny(), bounds.maxy()),
     );
@@ -275,7 +275,7 @@ pub(crate) fn polylabel_point(
     tolerance: Option<f64>,
 ) -> crate::error::Result<(Point, Point)> {
     let Some(bounds) = shape.bounds() else {
-        let origin = Point::new_unchecked_xy(0.0, 0.0);
+        let origin = Point::new_raw_xy(0.0, 0.0);
         return Ok((origin, origin));
     };
     // Degenerate input — a zero-width bounding box (a sliver or a point): the
@@ -309,7 +309,7 @@ pub(crate) fn polylabel_point(
         0.0,
         None,
     );
-    let bbox_center = Point::new_unchecked_xy(0.0, 0.0);
+    let bbox_center = Point::new_raw_xy(0.0, 0.0);
     let bbox_cell = field.cell(bbox_center, 0.0, None);
     if bbox_cell.distance > best.distance {
         best = bbox_cell;
@@ -336,7 +336,7 @@ pub(crate) fn polylabel_point(
         for dx in [-half_size, half_size] {
             for dy in [-half_size, half_size] {
                 cells.push(field.cell(
-                    Point::new_unchecked_xy(cell.center.x + dx, cell.center.y + dy),
+                    Point::new_raw_xy(cell.center.x + dx, cell.center.y + dy),
                     half_size,
                     Some(&cell),
                 ));
@@ -346,7 +346,7 @@ pub(crate) fn polylabel_point(
 
     let denormalize = |point: Point| {
         let world = frame.frame.unframe_xy(point.xy());
-        Point::new_unchecked_xy(world.x, world.y)
+        Point::new_raw_xy(world.x, world.y)
     };
     let center = denormalize(best.center);
     let witness = field
@@ -358,7 +358,7 @@ pub(crate) fn polylabel_point(
 pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
     match shape.point_on_surface() {
         Ok(Shape::Point(point)) => point,
-        _ => Point::new_unchecked_xy(
+        _ => Point::new_raw_xy(
             bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
             bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
         ),
@@ -533,17 +533,17 @@ mod tests {
         let extent = 1.0e162;
         let half_height = 1.0 / extent;
         let shape = Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(vec![
-                Point::new_unchecked_xy(-extent, -half_height),
-                Point::new_unchecked_xy(extent, -half_height),
-                Point::new_unchecked_xy(extent, half_height),
-                Point::new_unchecked_xy(-extent, half_height),
-                Point::new_unchecked_xy(-extent, -half_height),
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-extent, -half_height),
+                Point::new_raw_xy(extent, -half_height),
+                Point::new_raw_xy(extent, half_height),
+                Point::new_raw_xy(-extent, half_height),
+                Point::new_raw_xy(-extent, -half_height),
             ]),
             Vec::new(),
         ));
         let (center, witness) = polylabel_point(&shape, None).expect("finite ribbon");
-        assert_eq!(center, Point::new_unchecked_xy(0.0, 0.0));
+        assert_eq!(center, Point::new_raw_xy(0.0, 0.0));
         assert_eq!(center.y.hypot(witness.y).to_bits(), half_height.to_bits());
         assert_eq!(
             center.x.to_bits(),

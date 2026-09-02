@@ -15,6 +15,7 @@ mod snap;
 mod walk;
 mod winding;
 
+pub(crate) use edit::stable_affine_xy;
 pub(crate) use offset::{
     BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, line_intersection, reversed_points,
     sided_strip_parts,
@@ -22,7 +23,8 @@ pub(crate) use offset::{
 pub(in crate::geometry) use ring::canonical_ring_seq;
 pub(crate) use ring::{
     affine_about, canonical_ring, decimal_scale, normalized_line, orient_ring,
-    quantize_column_simd, quantize_to_scale, snap_column_simd, vw_filter, vw_keep,
+    quantize_column_simd, quantize_to_scale, snap_column_simd, stable_snap_ordinate, vw_filter,
+    vw_keep,
 };
 pub(crate) use simplify::{raw_offset_loop, rdp_keep, split, strict_cycle, validate_buffer_style};
 #[cfg(test)]
@@ -38,8 +40,8 @@ pub(crate) use walk::{
 };
 pub(in crate::geometry) use walk::{assemble_region_polygons, winding_region};
 pub(crate) use winding::{
-    circle_loop, convex_buffer_budgeted, degenerate_polygonal_as_linework, emit_arc, point_buffer,
-    unit_right_normal,
+    convex_buffer_budgeted, degenerate_polygonal_as_linework, emit_arc, multipoint_loops,
+    point_buffer, unit_right_normal,
 };
 #[cfg(test)]
 pub(crate) use winding::{convex_buffer, winding_buffer, winding_erosion, winding_stroke};

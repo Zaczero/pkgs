@@ -45,7 +45,7 @@ mod winding_buffer_tests {
     use crate::geometry::Coordinates as _;
 
     fn ring(points: &[(f64, f64)]) -> Ring {
-        Ring::from_trusted_closed(
+        Ring::from_closed(
             points
                 .iter()
                 .map(|&(x, y)| Point::new(x, y).unwrap())
@@ -172,7 +172,7 @@ mod winding_buffer_tests {
     /// Miter and bevel join rules: a square's 90-degree corners are well
     /// within the default limit, so the miter expansion is the exact
     /// larger square and the bevel expansion cuts each corner to a
-    /// half-`d^2` triangle. Erosion of a convex shape never touches the
+    /// half-`d²` triangle. Erosion of a convex shape never touches the
     /// outside-join rule (all walk turns are inside turns), so every
     /// style erodes a square to the same smaller square.
     #[test]
@@ -394,7 +394,7 @@ mod winding_buffer_tests {
         let disc = Shape::Point(Point::new(1.0, 1.0).unwrap())
             .buffer(2.0)
             .unwrap();
-        // Inscribed 32-gon: area = n/2 * r^2 * sin(tau/n).
+        // Inscribed 32-gon: area = n/2 * r² * sin(tau/n).
         let expected = 16.0 * 4.0 * (std::f64::consts::TAU / 32.0).sin();
         assert!((disc.area() - expected).abs() < 1e-12, "{}", disc.area());
 
@@ -588,7 +588,7 @@ mod consecutive_dedup_tests {
 
     #[test]
     fn snap_to_grid_recloses_ring_after_dedup() {
-        let ring = Ring::from_trusted_closed(closed_ring(&[
+        let ring = Ring::from_closed(closed_ring(&[
             (0.0, 0.0),
             (0.0, 0.0),
             (2.0, 0.0),
@@ -613,7 +613,7 @@ mod consecutive_dedup_tests {
     fn empty_results_keep_source_axes() {
         use std::sync::Arc;
 
-        let collapsed_ring = Ring::from_trusted_closed(CoordSeq::from_columns(
+        let collapsed_ring = Ring::from_closed(CoordSeq::from_columns(
             Arc::from([0.0, 0.0, 0.0, 0.0]),
             Arc::from([0.0, 0.0, 0.0, 0.0]),
             Some(Arc::from([1.0, 1.0, 1.0, 1.0])),
@@ -719,20 +719,22 @@ mod expansion_budget_threading_tests {
     }
 
     fn bent_line() -> Shape {
-        Shape::LineString(LineSeq::from_trusted(
-            vec![
-                Point::new(0.0, 0.0).unwrap(),
-                Point::new(1.0, 0.0).unwrap(),
-                Point::new(1.0, 1.0).unwrap(),
-            ]
-            .into(),
-        ))
+        Shape::LineString(
+            LineSeq::try_new(
+                vec![
+                    Point::new(0.0, 0.0).unwrap(),
+                    Point::new(1.0, 0.0).unwrap(),
+                    Point::new(1.0, 1.0).unwrap(),
+                ]
+                .into(),
+            )
+            .expect("line coordinate sequence must contain at least two vertices"),
+        )
     }
 
     fn straight_line() -> LineSeq {
-        LineSeq::from_trusted(
-            vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into(),
-        )
+        LineSeq::try_new(vec![Point::new(0.0, 0.0).unwrap(), Point::new(1.0, 0.0).unwrap()].into())
+            .expect("line coordinate sequence must contain at least two vertices")
     }
 
     #[test]

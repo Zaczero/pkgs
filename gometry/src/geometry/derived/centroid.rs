@@ -289,8 +289,8 @@ fn centroid_polygon_columns(
 
 fn lineal_centroid_segment_contrib(xs: &[f64], ys: &[f64], segment: usize) -> (f64, f64, f64) {
     let length = point_distance(
-        Point::new_unchecked_xy(xs[segment], ys[segment]),
-        Point::new_unchecked_xy(xs[segment + 1], ys[segment + 1]),
+        Point::new_raw_xy(xs[segment], ys[segment]),
+        Point::new_raw_xy(xs[segment + 1], ys[segment + 1]),
     );
     (
         length,
@@ -521,11 +521,8 @@ fn lineal_centroid_online(revisit: impl Fn(&mut dyn FnMut(&[f64], &[f64]))) -> O
     // centroid rescue into `None`.
     let extent_x = max_abs_x;
     let extent_y = max_abs_y;
-    let frame = AxisFrame::from_origin_extents(
-        Point::new_unchecked_xy(anchor_x, anchor_y),
-        extent_x,
-        extent_y,
-    )?;
+    let frame =
+        AxisFrame::from_origin_extents(Point::new_raw_xy(anchor_x, anchor_y), extent_x, extent_y)?;
     let mut total_length = 0.0_f64;
     let mut mean = (0.0_f64, 0.0_f64);
     // Coordinate axes may use independent scales for their midpoints, but an
@@ -537,10 +534,7 @@ fn lineal_centroid_online(revisit: impl Fn(&mut dyn FnMut(&[f64], &[f64]))) -> O
         for segment in 0..xs.len().saturating_sub(1) {
             let dx = scaled_residual(xs[segment + 1], xs[segment], length_scale);
             let dy = scaled_residual(ys[segment + 1], ys[segment], length_scale);
-            let length = point_distance(
-                Point::new_unchecked_xy(0.0, 0.0),
-                Point::new_unchecked_xy(dx, dy),
-            );
+            let length = point_distance(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(dx, dy));
             if !(length > 0.0 && length.is_finite()) {
                 continue;
             }

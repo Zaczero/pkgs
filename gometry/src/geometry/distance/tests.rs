@@ -3,7 +3,7 @@ use crate::geometry::distance::*;
 use crate::geometry::*;
 
 pub(super) fn p(x: f64, y: f64) -> Point {
-    Point::new_unchecked_xy(x, y)
+    Point::new_raw_xy(x, y)
 }
 
 #[test]
@@ -202,7 +202,7 @@ pub(super) fn multipoint(points: Vec<Point>) -> Shape {
 }
 
 pub(super) fn polygon(points: Vec<Point>) -> Shape {
-    Shape::Polygon(Polygon::new(Ring::from_trusted_closed(points), Vec::new()))
+    Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
 }
 
 pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape {

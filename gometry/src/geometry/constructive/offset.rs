@@ -130,7 +130,7 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
 /// A small X/Y ring assembled straight into ordinate columns — no
 /// intermediate `Vec<Point>` per part.
 pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Ring {
-    Ring::from_trusted_closed(CoordSeq::from_columns(
+    Ring::from_closed(CoordSeq::from_columns(
         Arc::new(points.map(|point| point.x)),
         Arc::new(points.map(|point| point.y)),
         None,
@@ -188,7 +188,7 @@ pub(crate) fn sided_strip<C: Coordinates + ?Sized>(points: &C, signed: f64) -> O
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    (shell.len() >= 4).then(|| Polygon::new(Ring::from_trusted_closed(shell), Vec::new()))
+    (shell.len() >= 4).then(|| Polygon::new(Ring::from_closed(shell), Vec::new()))
 }
 
 /// The planned offset curve with the buffer's join vocabulary: round
@@ -234,7 +234,7 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     let mut result: Vec<Point> = std::iter::zip(std::iter::zip(xs, ys), sources)
         .map(|((x, y), origin)| {
             let origin = walk[origin as usize];
-            Point::new_unchecked_axes(x, y, ZOrdinate(origin.z()), MOrdinate(origin.m()))
+            Point::new_raw_axes(x, y, ZOrdinate(origin.z()), MOrdinate(origin.m()))
         })
         .collect();
     if source.closed
@@ -562,13 +562,12 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 let members = lines
                     .members()
-                    .iter()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
                         crate::geometry::MultiMember::Value(index) => {
-                            offset(lines.as_slice()[*index].as_coords()).map(|line| {
+                            offset(lines.as_slice()[index].as_coords()).map(|line| {
                                 line.map_or(crate::geometry::MultiMember::Empty, |line| {
                                     crate::geometry::MultiMember::Value(
                                         LineSeq::try_new(CoordSeq::from(line))

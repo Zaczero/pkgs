@@ -1,15 +1,15 @@
 use std::num::NonZeroU32;
 
 use crate::geometry::constructive::{
-    BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, Result, WalkJoinRule, circle_loop,
+    BUFFER_INPUT_SIMPLIFY_FACTOR, DEFAULT_MITER_LIMIT, Result, WalkJoinRule,
     convex_buffer_budgeted, degenerate_polygonal_as_linework, point_buffer, sided_strip_parts,
-    validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
+    multipoint_loops, validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
     winding_erosion_budgeted, winding_region, winding_stroke_budgeted,
 };
 use crate::geometry::{
-    BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, Coordinates as _, ExpansionBudget,
-    GeometryErrorKind, LineSeq, RepairMethod, Shape, polygon_parts_to_shape,
-    same_topological_coordinate,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget,
+    GeometryErrorKind, LineSeq, RepairMethod, Shape, for_each_overlapping_bounds_pair,
+    polygon_parts_to_shape, same_topological_coordinate,
 };
 use crate::{Finite, Positive};
 
@@ -169,12 +169,10 @@ impl Shape {
             Self::Point(point) => point_buffer(*point, distance, quadrant_segments, budget),
             Self::MultiPoint(points) => {
                 let mut loops = Vec::with_capacity(points.len());
-                for point in points.iter_coords() {
-                    let Some(circle) = circle_loop(point, distance, quadrant_segments, budget)?
-                    else {
-                        return Ok(None);
-                    };
-                    loops.push(circle);
+                if multipoint_loops(&mut loops, points, distance, quadrant_segments, budget)?
+                    .is_none()
+                {
+                    return Ok(None);
                 }
                 let parts = winding_region(&loops, |winding| winding >= 1);
                 if parts.is_empty() {
@@ -301,12 +299,30 @@ impl Shape {
             Self::MultiPolygon(strips.into())
         };
         let shape = shape.force_2d();
-        if shape.validate().is_none() {
+        if strips_are_pairwise_strictly_disjoint(&shape) || shape.validate().is_none() {
             Ok(shape)
         } else {
             shape.repair(RepairMethod::Structure, false)
         }
     }
+}
+
+/// Individually valid strips with pairwise non-intersecting closed envelopes
+/// cannot overlap or touch, which is exactly the remaining MultiPolygon
+/// validity condition. The envelope sweep avoids a quadratic proof for large
+/// multi-line inputs.
+fn strips_are_pairwise_strictly_disjoint(shape: &Shape) -> bool {
+    let Shape::MultiPolygon(strips) = shape else {
+        return true;
+    };
+    let mut bounds = Vec::with_capacity(strips.len());
+    for strip in strips.iter() {
+        let Some(bounds_for_strip) = Bounds::from_coords(strip.shell.coords()) else {
+            return false;
+        };
+        bounds.push(bounds_for_strip);
+    }
+    for_each_overlapping_bounds_pair(&bounds, |_, _| std::ops::ControlFlow::Break(())).is_continue()
 }
 
 /// The only non-empty non-collection member of `parts`, if there is exactly

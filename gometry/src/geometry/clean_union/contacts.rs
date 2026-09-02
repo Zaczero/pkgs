@@ -12,6 +12,7 @@ use crate::geometry::{
     Contact, PointKey, SharedSpan, XY, same_point, segment_contact_exact,
     segment_envelopes_disjoint, undirected_edge_key,
 };
+use crate::scratch_pool::{RetainScratch, ScratchLease, ScratchPool, nested_vec_retained_bytes};
 
 #[derive(Clone, Copy)]
 pub(crate) struct SharedArc {
@@ -21,7 +22,7 @@ pub(crate) struct SharedArc {
 }
 
 pub(crate) struct BoundaryContacts {
-    pub(crate) cuts: Vec<Vec<Cut>>,
+    pub(super) cuts: ScratchLease<CutsScratch>,
     pub(crate) shared: Vec<Vec<SharedArc>>,
     pub(crate) shared_nodes: HashSet<PointKey>,
     // Cross-operand touch points; the clean model accepts a touch ONLY when it
@@ -31,18 +32,75 @@ pub(crate) struct BoundaryContacts {
     pub(crate) has_shared: bool,
 }
 
+#[derive(Default)]
+pub(super) struct CutsScratch(Vec<Vec<Cut>>);
+
+impl std::ops::Deref for CutsScratch {
+    type Target = Vec<Vec<Cut>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CutsScratch {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl RetainScratch for CutsScratch {
+    fn clear_for_reuse(&mut self) {
+        self.0.iter_mut().for_each(Vec::clear);
+    }
+
+    fn retained_bytes(&self) -> usize {
+        nested_vec_retained_bytes(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn reserve(outer: usize, inner: usize) {
+        let mut scratch = ScratchPool::checkout(&CUTS_SCRATCH);
+        scratch.resize_with(outer, Vec::new);
+        for cuts in scratch.iter_mut() {
+            cuts.reserve(inner);
+        }
+    }
+
+    #[test]
+    fn nested_cut_scratch_charges_and_reuses_inner_buffers() {
+        reserve(64, 16);
+        let (_, allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        assert_eq!(allocations, 0);
+
+        let huge_inner = crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<Cut>() + 1;
+        reserve(1, huge_inner);
+        let empty = ScratchPool::checkout(&CUTS_SCRATCH);
+        assert_eq!(empty.capacity(), 0);
+        assert!(empty.is_empty());
+        drop(empty);
+
+        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        assert!(first_allocations > 0);
+        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        assert_eq!(repeat_allocations, 0);
+    }
+}
+
 thread_local! {
     // The per-segment cut index (one list per segment, ~N at large n) is the
     // same shape every overlay; reuse it per-thread so it is allocated ONCE, not
     // once per call (matching `segment_index`'s sweep scratch). Returned on drop.
-    static CUTS_SCRATCH: std::cell::RefCell<Vec<Vec<Cut>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    static CUTS_SCRATCH: ScratchPool<CutsScratch> = ScratchPool::new(CutsScratch(Vec::new()));
 }
 
 impl BoundaryContacts {
     pub(crate) fn new(len: usize) -> Self {
-        let mut cuts = CUTS_SCRATCH.with(|scratch| std::mem::take(&mut *scratch.borrow_mut()));
-        cuts.iter_mut().for_each(Vec::clear);
+        let mut cuts = ScratchPool::checkout(&CUTS_SCRATCH);
         cuts.resize_with(len, Vec::new);
         Self {
             cuts,
@@ -55,15 +113,6 @@ impl BoundaryContacts {
             has_cross: false,
             has_shared: false,
         }
-    }
-}
-
-impl Drop for BoundaryContacts {
-    fn drop(&mut self) {
-        // Return the cut buffer (capacity intact) to the per-thread pool.
-        CUTS_SCRATCH.with(|scratch| {
-            *scratch.borrow_mut() = std::mem::take(&mut self.cuts);
-        });
     }
 }
 

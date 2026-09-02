@@ -9,16 +9,16 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use pyo3::types::PyAny;
 
 use crate::PackedColumnError;
-use crate::array::MissingMask;
+use crate::array::{RowProductsHandle, ValidityMask};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
     Arc, Bound, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryArrayStorage,
-    GeometryInput, Point, Py, PyGeometry, PyGeometryArray, PyResult, Python, Shape, ShapeData,
+    GeometryInput, Point, Py, PyGeometry, PyGeometryArray, PyResult, Python, Shape,
     binary_frame_crs, bool_array, broadcast2_geometry, classify_required, crs,
     finite_geodesic_value, float64_array, geodesic_point_columns_dwithin_shape_values,
-    geodesic_point_columns_to_shape_values, mask_missing, pair_distance_resolved_result,
-    pair_dwithin_resolved, pair_dwithin_resolved_result, paired_arrays, point_distance,
-    resolve_metric, rows_err, same_storage_similarity_metric_zeros,
+    geodesic_point_columns_to_shape_values, mask_missing, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, paired_arrays,
+    point_distance, resolve_metric, rows_err, same_storage_similarity_metric_zeros,
 };
 use crate::geometry::packed_line_metrics::scale_metric_values;
 use crate::geometry::{
@@ -29,7 +29,7 @@ use crate::geometry::{
 fn float64_array_mask_missing(
     py: Python<'_>,
     mut values: Vec<f64>,
-    missing: Option<&MissingMask>,
+    missing: Option<&ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
     mask_missing(&mut values, missing, f64::NAN);
     float64_array(py, values)
@@ -45,6 +45,7 @@ pub(crate) fn array_crs_metric_float(
     other: &Bound<'_, PyAny>,
     operation: &str,
     unit: Option<DistanceUnit>,
+    frechet_densify: Option<f64>,
     packed_planar_lines: Option<
         impl Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<f64> + Send + Sync,
     >,
@@ -61,20 +62,66 @@ pub(crate) fn array_crs_metric_float(
                 operation,
             )?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
+            if array.is_compact_nullable() {
+                let array = array.clone();
+                let right = Arc::clone(&right.shape);
+                return float64_array(
+                    py,
+                    py.detach(move || {
+                        let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
+                        array
+                            .logical_shape_rows()
+                            .map(|row| match row {
+                                crate::array::LogicalShapeRow::Missing { .. } => Ok(f64::NAN),
+                                crate::array::LogicalShapeRow::Present { shape, .. } => {
+                                    if operation == "frechet_distance" {
+                                        crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                            &model,
+                                            &shape,
+                                            right.shape(),
+                                            frechet_densify,
+                                            &mut frechet_scratch,
+                                        )
+                                    } else {
+                                        kernel(&model, &shape, right.shape())
+                                    }
+                                },
+                            })
+                            .collect_rows()
+                    })
+                    .map_err(rows_err)?,
+                );
+            }
             let lefts = Arc::clone(array.storage_arc());
             let right = Arc::clone(&right.shape);
             let missing = array.missing().cloned();
             float64_array(
                 py,
                 py.detach(move || {
+                    let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
                     lefts
                         .iter_rows()
                         .enumerate()
                         .map(|(row_index, row)| {
-                            if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                            if missing
+                                .as_ref()
+                                .is_some_and(|mask| mask.is_missing(row_index))
+                            {
                                 return Ok(f64::NAN);
                             }
-                            row.with_shape(|left| kernel(&model, left, right.shape()))
+                            row.with_shape(|left| {
+                                if operation == "frechet_distance" {
+                                    crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                        &model,
+                                        left,
+                                        right.shape(),
+                                        frechet_densify,
+                                        &mut frechet_scratch,
+                                    )
+                                } else {
+                                    kernel(&model, left, right.shape())
+                                }
+                            })
                         })
                         .collect_rows()
                 })
@@ -83,8 +130,41 @@ pub(crate) fn array_crs_metric_float(
         },
         Many(right) => {
             let (lefts, rights) = paired_arrays(array, right, operation)?;
-            let missing = crate::array::missing::union_pair(array.missing(), right.missing());
             let model = resolve_metric(array.crs_str(), unit, operation)?;
+            let missing = crate::array::missing::union_pair(array.missing(), right.missing());
+            if array.is_compact_nullable() || right.is_compact_nullable() {
+                let left = array.clone();
+                let right = right.clone();
+                return float64_array(
+                    py,
+                    py.detach(move || {
+                        let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
+                        left.logical_shape_rows()
+                            .zip(right.logical_shape_rows())
+                            .map(|(left, right)| match (left, right) {
+                                (
+                                    crate::array::LogicalShapeRow::Present { shape: left, .. },
+                                    crate::array::LogicalShapeRow::Present { shape: right, .. },
+                                ) => {
+                                    if operation == "frechet_distance" {
+                                        crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                            &model,
+                                            &left,
+                                            &right,
+                                            frechet_densify,
+                                            &mut frechet_scratch,
+                                        )
+                                    } else {
+                                        kernel(&model, &left, &right)
+                                    }
+                                }
+                                _ => Ok(f64::NAN),
+                            })
+                            .collect_rows()
+                    })
+                    .map_err(rows_err)?,
+                );
+            }
             if Arc::ptr_eq(&lefts, &rights)
                 && operation == "hausdorff_distance"
                 && crate::array::row_map_is_identity(match &*lefts {
@@ -94,12 +174,17 @@ pub(crate) fn array_crs_metric_float(
             {
                 // Domain validation before the identity zeros path: out-of-
                 // domain latitudes must still raise under a geodesic model.
-                if matches!(model, crs::MetricModel::Geodesic { .. }) {
+                if let crs::MetricModel::Geodesic { frame, .. } = &model {
                     for (row_index, row) in lefts.iter_rows().enumerate() {
-                        if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                        if missing
+                            .as_ref()
+                            .is_some_and(|mask| mask.is_missing(row_index))
+                        {
                             continue;
                         }
-                        row.with_shape(crs::ensure_geographic_domain)?;
+                        row.with_shape(|shape| {
+                            crs::ensure_geographic_domain_in_frame(*frame, shape)
+                        })?;
                     }
                 }
                 return float64_array_mask_missing(
@@ -167,7 +252,7 @@ pub(crate) fn array_crs_metric_float(
                             let right_lines = rights.line_rows().expect("checked above");
                             (0..left_lines.len())
                                 .map(|index| {
-                                    if missing.as_ref().is_some_and(|mask| mask[index]) {
+                                    if missing.as_ref().is_some_and(|mask| mask.is_missing(index)) {
                                         return Ok(f64::NAN);
                                     }
                                     let (left_xs, left_ys) = left_lines.row_xy(index);
@@ -200,15 +285,26 @@ pub(crate) fn array_crs_metric_float(
             float64_array(
                 py,
                 py.detach(move || {
+                    let mut frechet_scratch = crate::geometry::FrechetDpScratch::default();
                     lefts
                         .iter_shapes()
                         .zip(rights.iter_shapes())
                         .enumerate()
                         .map(|(row, (left, right))| {
-                            if missing.as_ref().is_some_and(|mask| mask[row]) {
+                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                                 return Ok(f64::NAN);
                             }
-                            kernel(&model, &left, &right)
+                            if operation == "frechet_distance" {
+                                crate::broadcast::metrics::metric_frechet_densified_with_scratch(
+                                    &model,
+                                    &left,
+                                    &right,
+                                    frechet_densify,
+                                    &mut frechet_scratch,
+                                )
+                            } else {
+                                kernel(&model, &left, &right)
+                            }
                         })
                         .collect_rows()
                 })
@@ -234,19 +330,14 @@ pub(crate) fn crs_metric_binary_geometry_broadcast(
 }
 
 /// Element-wise lane ladder for array × array CRS-aware metrics, shared by
-/// `distance` and `dwithin`: planar packed × packed streams both shared
-/// columns through `packed_planar` with the GIL released (one kernel call per
-/// pair, no `Shape` wrapping); remaining all-`Point` pairings and general
-/// rows run `pair` over per-row shapes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the generic pair loop keeps bounds, parallel execution, and missing-value scattering together"
-)]
+/// `distance` and `dwithin`: packed points stream shared columns through
+/// `packed_points` with the GIL released (one kernel call per pair, no `Shape`
+/// wrapping); general rows run `pair` over prepared plans.
 fn array_pair_metric<T, P, C, B, F>(
     py: Python<'_>,
     array: &PyGeometryArray,
     right: &PyGeometryArray,
-    packed_planar: Option<P>,
+    packed_points: Option<P>,
     packed_columns: Option<C>,
     bounds_refute: Option<B>,
     missing_value: T,
@@ -254,14 +345,24 @@ fn array_pair_metric<T, P, C, B, F>(
 ) -> PyResult<Vec<T>>
 where
     T: Copy + Send + 'static,
-    P: Fn(Point, Point) -> T + Send,
+    P: Fn(Point, Point) -> crate::error::Result<T> + Send,
     C: Fn(&[f64], &[f64], &[f64], &[f64]) -> crate::error::Result<Vec<T>> + Send,
     B: Fn(Bounds, Bounds) -> Option<T> + Send + Sync,
-    F: Fn(usize, &PreparedPlan, &PreparedPlan) -> crate::error::Result<T> + Send + Sync,
+    F: Fn(
+            usize,
+            &PreparedPlan,
+            &PreparedPlan,
+            &mut RowProductsHandle,
+            &mut RowProductsHandle,
+        ) -> crate::error::Result<T>
+        + Send
+        + Sync,
 {
     let missing = crate::array::missing::union_pair(array.missing(), right.missing());
-    if let (Some(lefts), Some(rights)) =
-        (array.storage().point_rows(), right.storage().point_rows())
+    if !array.is_compact_nullable()
+        && !right.is_compact_nullable()
+        && let (Some(lefts), Some(rights)) =
+            (array.storage().point_rows(), right.storage().point_rows())
     {
         if let Some(columns) = packed_columns
             && missing.is_none()
@@ -275,42 +376,25 @@ where
         {
             return Ok(values);
         }
-        if let Some(kernel) = packed_planar {
-            return Ok(py.detach(move || {
-                lefts
-                    .iter()
-                    .zip(rights.iter())
-                    .enumerate()
-                    .map(|(row, (left, right))| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            missing_value
-                        } else {
-                            kernel(left, right)
-                        }
-                    })
-                    .collect()
-            }));
+        if let Some(kernel) = packed_points {
+            return py
+                .detach(move || {
+                    lefts
+                        .iter()
+                        .zip(rights.iter())
+                        .enumerate()
+                        .map(|(row, (left, right))| {
+                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                                Ok(missing_value)
+                            } else {
+                                kernel(left, right)
+                            }
+                        })
+                        .collect_rows()
+                })
+                .map_err(rows_err);
         }
-        // Remaining all-`Point` pairings (mixed storage, geodesic model).
-        return py
-            .detach(move || {
-                lefts
-                    .iter()
-                    .zip(rights.iter())
-                    .enumerate()
-                    .map(|(row, (left, right))| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
-                            return Ok(missing_value);
-                        }
-                        pair(
-                            row,
-                            &PreparedPlan::new(ShapeData::new(Shape::Point(left))),
-                            &PreparedPlan::new(ShapeData::new(Shape::Point(right))),
-                        )
-                    })
-                    .collect_rows()
-            })
-            .map_err(rows_err);
+        unreachable!("all-point pair metrics provide a direct point kernel")
     }
     // Row pairs ride prepared handles; dwithin can settle far-apart boxes
     // before materializing both operands' prepared plans + distance parts.
@@ -322,23 +406,38 @@ where
         let right_array = right.clone();
         return py
             .detach(move || {
+                let mut left_products = left_array.row_products.operation();
+                let mut right_products = right_array.row_products.operation();
                 left_array
-                    .storage()
-                    .iter_rows()
-                    .zip(right_array.storage().iter_rows())
-                    .enumerate()
-                    .map(|(index, (left_row, right_row))| {
-                        if missing.as_ref().is_some_and(|mask| mask[index]) {
+                    .logical_storage_rows()
+                    .zip(right_array.logical_storage_rows())
+                    .map(|(left, right)| {
+                        let (
+                            crate::array::LogicalRow::Present {
+                                logical: index,
+                                row: left_row,
+                            },
+                            crate::array::LogicalRow::Present { row: right_row, .. },
+                        ) = (left, right)
+                        else {
                             return Ok(missing_value);
-                        }
+                        };
                         if let (Some(lb), Some(rb)) = (left_bounds[index], right_bounds[index])
                             && let Some(verdict) = refute(lb, rb)
                         {
                             return Ok(verdict);
                         }
-                        let left = left_array.prepared_row(index, left_row);
-                        let right = right_array.prepared_row(index, right_row);
-                        pair(index, &left, &right)
+                        let left =
+                            left_array.prepared_row_with(&mut left_products, index, left_row);
+                        let right =
+                            right_array.prepared_row_with(&mut right_products, index, right_row);
+                        pair(
+                            index,
+                            &left,
+                            &right,
+                            &mut left_products,
+                            &mut right_products,
+                        )
                     })
                     .collect_rows()
             })
@@ -347,18 +446,31 @@ where
     let left_array = array.clone();
     let right_array = right.clone();
     py.detach(move || {
+        let mut left_products = left_array.row_products.operation();
+        let mut right_products = right_array.row_products.operation();
         left_array
-            .storage()
-            .iter_rows()
-            .zip(right_array.storage().iter_rows())
-            .enumerate()
-            .map(|(index, (left_row, right_row))| {
-                if missing.as_ref().is_some_and(|mask| mask[index]) {
+            .logical_storage_rows()
+            .zip(right_array.logical_storage_rows())
+            .map(|(left, right)| {
+                let (
+                    crate::array::LogicalRow::Present {
+                        logical: index,
+                        row: left_row,
+                    },
+                    crate::array::LogicalRow::Present { row: right_row, .. },
+                ) = (left, right)
+                else {
                     return Ok(missing_value);
-                }
-                let left = left_array.prepared_row(index, left_row);
-                let right = right_array.prepared_row(index, right_row);
-                pair(index, &left, &right)
+                };
+                let left = left_array.prepared_row_with(&mut left_products, index, left_row);
+                let right = right_array.prepared_row_with(&mut right_products, index, right_row);
+                pair(
+                    index,
+                    &left,
+                    &right,
+                    &mut left_products,
+                    &mut right_products,
+                )
             })
             .collect_rows()
     })
@@ -396,23 +508,25 @@ pub(crate) fn array_crs_distances(
             // rebuilds its vertex/segment sets per pair).
             if let crs::MetricModel::Planar { to_metre } = model {
                 let right_shape = right.plan_or_transient();
-                if let Some(values) = array.reduce_packed_points_detached(py, {
-                    let right_shape = Arc::clone(&right_shape);
-                    move |xs, ys| {
-                        let mut values = right_shape.distance_points(std::iter::zip(
-                            xs.iter().copied(),
-                            ys.iter().copied(),
-                        ));
-                        for value in &mut values {
-                            *value *= to_metre.get();
+                if !array.is_compact_nullable()
+                    && let Some(values) = array.reduce_packed_points_detached(py, {
+                        let right_shape = Arc::clone(&right_shape);
+                        move |points| {
+                            let mut values = right_shape
+                                .distance_points(points.iter().map(|point| (point.x, point.y)));
+                            for value in &mut values {
+                                *value *= to_metre.get();
+                            }
+                            Ok(values)
                         }
-                        Ok(values)
-                    }
-                })? {
+                    })?
+                {
                     return float64_array(py, values);
                 }
                 // Gathered mixed points run the same batch kernel from by-value points.
-                if let Some(points) = array.storage().point_rows() {
+                if !array.is_compact_nullable()
+                    && let Some(points) = array.storage().point_rows()
+                {
                     let right_shape = right.plan_or_transient();
                     return float64_array_mask_missing(
                         py,
@@ -432,36 +546,44 @@ pub(crate) fn array_crs_distances(
                 // state persists on ITS handle for later operations. Pure Rust
                 // work — run it detached.
                 let array = array.clone();
-                let missing = array.missing().cloned();
                 let right_shape = right.plan_or_transient();
-                return float64_array_mask_missing(
+                return float64_array(
                     py,
                     py.detach(move || {
+                        let mut products = array.row_products.operation();
                         array
-                            .storage()
-                            .iter_rows()
-                            .enumerate()
-                            .map(|(row, row_shape)| {
-                                let left = array.prepared_row(row, row_shape);
-                                left.distance(&right_shape) * to_metre.get()
+                            .logical_storage_rows()
+                            .map(|logical_row| {
+                                let crate::array::LogicalRow::Present {
+                                    logical: row,
+                                    row: row_shape,
+                                } = logical_row
+                                else {
+                                    return Ok(f64::NAN);
+                                };
+                                let left = array.prepared_row_with(&mut products, row, row_shape);
+                                Ok(left.distance(&right_shape) * to_metre.get())
                             })
-                            .collect::<Vec<f64>>()
-                    }),
-                    missing.as_ref(),
+                            .collect_rows()
+                    })
+                    .map_err(rows_err)?,
                 );
             }
             // Geodesic scalar-fixed packed points: the geodesic cache resolves
             // ONCE and raw columns stream through the same point kernel (the
             // per-row lane re-resolves the CRS cache for every pair).
-            if let (crs::MetricModel::Geodesic { crs, state }, Shape::Point(target)) =
+            if let (crs::MetricModel::Geodesic { crs, state, frame }, Shape::Point(target)) =
                 (&model, right.shape.shape())
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
                     let state = Arc::clone(state);
                     let target = *target;
-                    move |xs, ys| {
-                        crs::geodesic_point_distances(&crs, xs, ys, target, &state)
+                    move |points| {
+                        let (xs, ys) = points
+                            .geodesic_xy_lanes()
+                            .map_err(PackedColumnError::Batch)?;
+                        crs::geodesic_point_distances(&crs, &xs, &ys, target, *frame, &state)
                             .map_err(PackedColumnError::Batch)
                     }
                 })?
@@ -470,20 +592,24 @@ pub(crate) fn array_crs_distances(
             }
             // Geodesic point-array -> fixed complex shape: one prepared
             // geodesic BVH over the fixed operand, one stack for all probes.
-            if let crs::MetricModel::Geodesic { crs, state } = &model
+            if let crs::MetricModel::Geodesic { crs, state, frame } = &model
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = crs.clone();
                     let state = Arc::clone(state);
                     let right_shape = right.plan_or_transient();
-                    let right_cache = Arc::clone(&right.frame_cache);
-                    move |xs, ys| {
+                    let right_cache = right.frame_cache();
+                    move |points| {
+                        let (xs, ys) = points
+                            .geodesic_xy_lanes()
+                            .map_err(PackedColumnError::Batch)?;
                         geodesic_point_columns_to_shape_values(
                             &crs,
-                            xs,
-                            ys,
+                            &xs,
+                            &ys,
                             &right_shape,
                             &right_cache,
+                            *frame,
                             &state,
                         )
                         .map_err(PackedColumnError::Batch)
@@ -495,12 +621,12 @@ pub(crate) fn array_crs_distances(
             // Geodesic scalar-fixed general rows: resolve the CRS/ellipsoid once,
             // build the fixed operand's geodesic parts once, then let every array
             // row use its own persistent handle cache.
-            if let crs::MetricModel::Geodesic { crs, state } = model {
+            if let crs::MetricModel::Geodesic { crs, state, .. } = model {
                 let array = array.clone();
                 let right_shape = right.plan_or_transient();
-                let right_cache = Arc::clone(&right.frame_cache);
-                let missing = array.missing().cloned();
+                let right_cache = right.frame_cache();
                 let rows = py.detach(move || {
+                    let mut products = array.row_products.operation();
                     crs::with_resolved_ellipsoid_metric_at(
                         &crs,
                         &[right_shape.shape()],
@@ -515,15 +641,18 @@ pub(crate) fn array_crs_distances(
                                 metric,
                             )?;
                             Ok(array
-                                .storage()
-                                .iter_rows()
-                                .enumerate()
-                                .map(|(row_index, row)| {
-                                    if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                                .logical_storage_rows()
+                                .map(|logical_row| {
+                                    let crate::array::LogicalRow::Present {
+                                        logical: row_index,
+                                        row,
+                                    } = logical_row
+                                    else {
                                         return Ok(f64::NAN);
-                                    }
-                                    let left = array.prepared_row(row_index, row);
-                                    let left_cache = array.row_frame_cache(row_index);
+                                    };
+                                    let left =
+                                        array.prepared_row_with(&mut products, row_index, row);
+                                    let left_cache = products.frame_cache(row_index);
                                     finite_geodesic_value(
                                         left.geodesic_distance_cached(
                                             &left_cache,
@@ -557,7 +686,7 @@ pub(crate) fn array_crs_distances(
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             match &resolved {
                 crs::ResolvedMetric::Planar { to_metre } => {
-                    let packed_planar = Some(move |a, b| point_distance(a, b) * to_metre.get());
+                    let packed_planar = Some(move |a, b| Ok(point_distance(a, b) * to_metre.get()));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             let mut values = vec![0.0; lx.len()];
@@ -569,8 +698,8 @@ pub(crate) fn array_crs_distances(
                                 &mut values,
                                 |lx, ly, rx, ry| {
                                     point_distance(
-                                        Point::new_unchecked_xy(lx, ly),
-                                        Point::new_unchecked_xy(rx, ry),
+                                        Point::new_raw_xy(lx, ly),
+                                        Point::new_raw_xy(rx, ry),
                                     )
                                 },
                                 |lx, ly, rx, ry| {
@@ -603,25 +732,32 @@ pub(crate) fn array_crs_distances(
                             packed_columns,
                             None::<fn(Bounds, Bounds) -> Option<f64>>,
                             f64::NAN,
-                            |row, left, right_data| {
-                                pair_distance_resolved_result(
-                                    &resolved,
-                                    left,
-                                    &array.row_frame_cache(row),
-                                    right_data,
-                                    &right.row_frame_cache(row),
-                                )
+                            |_row, left, right_data, _left_products, _right_products| {
+                                pair_distance_planar(to_metre.get(), left, right_data)
                             },
                         )?,
                     )
                 },
-                crs::ResolvedMetric::Geodesic { geodesic, .. } => {
+                crs::ResolvedMetric::Geodesic {
+                    crs,
+                    geodesic,
+                    frame,
+                    state,
+                } => {
                     let geodesic = **geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            crs::geodesic_point_pair_distances(&geodesic, lx, ly, rx, ry)
+                            crs::geodesic_point_pair_distances(&geodesic, lx, ly, rx, ry, *frame)
                         });
-                    let packed_planar: Option<fn(Point, Point) -> f64> = None;
+                    let packed_planar = Some(move |left, right| {
+                        crs::geodesic_point_pair_distance(
+                            &geodesic,
+                            left,
+                            right,
+                            *frame,
+                            state.generation,
+                        )
+                    });
                     float64_array(
                         py,
                         array_pair_metric(
@@ -632,13 +768,16 @@ pub(crate) fn array_crs_distances(
                             packed_columns,
                             None::<fn(Bounds, Bounds) -> Option<f64>>,
                             f64::NAN,
-                            |row, left, right_data| {
-                                pair_distance_resolved_result(
-                                    &resolved,
+                            |row, left, right_data, left_products, right_products| {
+                                pair_distance_geodesic(
+                                    crs,
+                                    &geodesic,
+                                    *frame,
+                                    state,
                                     left,
-                                    &array.row_frame_cache(row),
+                                    &left_products.frame_cache(row),
                                     right_data,
-                                    &right.row_frame_cache(row),
+                                    &right_products.frame_cache(row),
                                 )
                             },
                         )?,
@@ -682,7 +821,7 @@ pub(crate) fn array_crs_dwithin(
                     let limit = distance / to_metre.get();
                     let limit_sq = limit * limit;
                     // Underflow-safe dwithin (squared only when both sides honest).
-                    let packed_planar = Some(move |a, b| points_dwithin(a, b, limit));
+                    let packed_planar = Some(move |a, b| Ok(points_dwithin(a, b, limit)));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
                             let mut out = vec![false; lx.len()];
@@ -699,8 +838,8 @@ pub(crate) fn array_crs_dwithin(
                                     &mut out,
                                     |lx, ly, rx, ry| {
                                         points_dwithin(
-                                            Point::new_unchecked_xy(lx, ly),
-                                            Point::new_unchecked_xy(rx, ry),
+                                            Point::new_raw_xy(lx, ly),
+                                            Point::new_raw_xy(rx, ry),
                                             limit,
                                         )
                                     },
@@ -713,8 +852,8 @@ pub(crate) fn array_crs_dwithin(
                             } else {
                                 for (index, slot) in out.iter_mut().enumerate() {
                                     *slot = points_dwithin(
-                                        Point::new_unchecked_xy(lx[index], ly[index]),
-                                        Point::new_unchecked_xy(rx[index], ry[index]),
+                                        Point::new_raw_xy(lx[index], ly[index]),
+                                        Point::new_raw_xy(rx[index], ry[index]),
                                         limit,
                                     );
                                 }
@@ -739,26 +878,35 @@ pub(crate) fn array_crs_dwithin(
                             packed_columns,
                             bounds_refute,
                             false,
-                            |row, left, right_data| {
-                                pair_dwithin_resolved_result(
-                                    &resolved,
-                                    left,
-                                    &array.row_frame_cache(row),
-                                    right_data,
-                                    &right.row_frame_cache(row),
-                                    distance,
-                                )
+                            |_row, left, right_data, _left_products, _right_products| {
+                                pair_dwithin_planar(to_metre.get(), left, right_data, distance)
                             },
                         )?,
                     )
                 },
-                crs::ResolvedMetric::Geodesic { geodesic, .. } => {
+                crs::ResolvedMetric::Geodesic {
+                    crs,
+                    geodesic,
+                    frame,
+                    state,
+                } => {
                     let geodesic = **geodesic;
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            crs::geodesic_point_pair_dwithin(&geodesic, lx, ly, rx, ry, distance)
+                            crs::geodesic_point_pair_dwithin(
+                                &geodesic, lx, ly, rx, ry, distance, *frame,
+                            )
                         });
-                    let packed_planar: Option<fn(Point, Point) -> bool> = None;
+                    let packed_planar = Some(move |left, right| {
+                        crs::geodesic_point_pair_dwithin_one(
+                            &geodesic,
+                            left,
+                            right,
+                            distance,
+                            *frame,
+                            state.generation,
+                        )
+                    });
                     bool_array(
                         py,
                         array_pair_metric(
@@ -769,13 +917,16 @@ pub(crate) fn array_crs_dwithin(
                             packed_columns,
                             None::<fn(Bounds, Bounds) -> Option<bool>>,
                             false,
-                            |row, left, right_data| {
-                                pair_dwithin_resolved_result(
-                                    &resolved,
+                            |row, left, right_data, left_products, right_products| {
+                                pair_dwithin_geodesic(
+                                    crs,
+                                    &geodesic,
+                                    *frame,
+                                    state,
                                     left,
-                                    &array.row_frame_cache(row),
+                                    &left_products.frame_cache(row),
                                     right_data,
-                                    &right.row_frame_cache(row),
+                                    &right_products.frame_cache(row),
                                     distance,
                                 )
                             },
@@ -785,6 +936,19 @@ pub(crate) fn array_crs_dwithin(
             }
         },
     }
+}
+
+/// Boxes farther apart than the threshold can never be within it.
+///
+/// The constant-threshold lane installs this same refutation as a closure over
+/// one precomputed square. Here the threshold varies per row, so the square is
+/// formed per row as well.
+fn dwithin_box_refutes(left: Option<Bounds>, right: Option<Bounds>, limit: f64) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+    let limit_sq = limit * limit;
+    limit_sq.is_finite() && bounds_distance_squared(left, right) > limit_sq
 }
 
 /// Per-element `dwithin`: one distance threshold PER geometry (the cold
@@ -813,55 +977,166 @@ pub(crate) fn array_crs_dwithin_per_element(
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.plan_or_transient();
-            let right_cache = Arc::clone(&right.frame_cache);
-            let missing = array.missing().cloned();
-            let results: Vec<bool> = array
-                .storage()
-                .iter_rows()
-                .enumerate()
-                .map(|(row, left)| {
-                    if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        return Ok(false);
-                    }
-                    let left = array.prepared_row(row, left);
-                    pair_dwithin_resolved(
-                        &resolved,
-                        &left,
-                        &array.row_frame_cache(row),
-                        &right_plan,
-                        &right_cache,
-                        distance.get(row),
-                    )
-                })
-                .collect::<PyResult<_>>()?;
+            let right_cache = right.frame_cache();
+            let mut products = array.row_products.operation();
+            let results: Vec<bool> = match &resolved {
+                crs::ResolvedMetric::Planar { to_metre } => {
+                    let right_bounds = right_plan.bounds();
+                    let left_bounds = array.cached_element_bounds();
+                    array
+                        .logical_storage_rows()
+                        .map(|left| {
+                            let crate::array::LogicalRow::Present {
+                                logical: row,
+                                row: left,
+                            } = left
+                            else {
+                                return Ok(false);
+                            };
+                            if dwithin_box_refutes(
+                                left_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(row).copied().flatten())
+                                    .or_else(|| left.quick_bounds()),
+                                right_bounds,
+                                distance.get(row) / to_metre.get(),
+                            ) {
+                                return Ok(false);
+                            }
+                            let left = array.prepared_row_with(&mut products, row, left);
+                            pair_dwithin_planar(
+                                to_metre.get(),
+                                &left,
+                                &right_plan,
+                                distance.get(row),
+                            )
+                            .map_err(Into::into)
+                        })
+                        .collect::<PyResult<_>>()?
+                },
+                crs::ResolvedMetric::Geodesic {
+                    crs,
+                    geodesic,
+                    frame,
+                    state,
+                } => array
+                    .logical_storage_rows()
+                    .map(|left| {
+                        let crate::array::LogicalRow::Present {
+                            logical: row,
+                            row: left,
+                        } = left
+                        else {
+                            return Ok(false);
+                        };
+                        let left = array.prepared_row_with(&mut products, row, left);
+                        let left_cache = products.frame_cache(row);
+                        pair_dwithin_geodesic(
+                            crs,
+                            geodesic,
+                            *frame,
+                            state,
+                            &left,
+                            &left_cache,
+                            &right_plan,
+                            &right_cache,
+                            distance.get(row),
+                        )
+                        .map_err(Into::into)
+                    })
+                    .collect::<PyResult<_>>()?,
+            };
             bool_array(py, results)
         },
         Many(right) => {
             paired_arrays(array, right, operation)?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
-            let missing = crate::array::missing::union_pair(array.missing(), right.missing());
-            let results: Vec<bool> = array
-                .storage()
-                .iter_rows()
-                .zip(right.storage().iter_rows())
-                .enumerate()
-                .map(|(row, (left, right_row))| {
-                    if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        return Ok(false);
-                    }
-                    let left = array.prepared_row(row, left);
-                    let right_data = right.prepared_row(row, right_row);
-                    pair_dwithin_resolved(
-                        &resolved,
-                        &left,
-                        &array.row_frame_cache(row),
-                        &right_data,
-                        &right.row_frame_cache(row),
-                        distance.get(row),
-                    )
-                })
-                .collect::<PyResult<_>>()?;
+            let mut left_products = array.row_products.operation();
+            let mut right_products = right.row_products.operation();
+            let results: Vec<bool> = match &resolved {
+                crs::ResolvedMetric::Planar { to_metre } => {
+                    let left_bounds = array.cached_element_bounds();
+                    let right_bounds = right.cached_element_bounds();
+                    array
+                        .logical_storage_rows()
+                        .zip(right.logical_storage_rows())
+                        .map(|(left, right_row)| {
+                            let (
+                                crate::array::LogicalRow::Present {
+                                    logical: row,
+                                    row: left,
+                                },
+                                crate::array::LogicalRow::Present { row: right_row, .. },
+                            ) = (left, right_row)
+                            else {
+                                return Ok(false);
+                            };
+                            if dwithin_box_refutes(
+                                left_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(row).copied().flatten())
+                                    .or_else(|| left.quick_bounds()),
+                                right_bounds
+                                    .as_ref()
+                                    .and_then(|bounds| bounds.get(row).copied().flatten())
+                                    .or_else(|| right_row.quick_bounds()),
+                                distance.get(row) / to_metre.get(),
+                            ) {
+                                return Ok(false);
+                            }
+                            let left = array.prepared_row_with(&mut left_products, row, left);
+                            let right_data =
+                                right.prepared_row_with(&mut right_products, row, right_row);
+                            pair_dwithin_planar(
+                                to_metre.get(),
+                                &left,
+                                &right_data,
+                                distance.get(row),
+                            )
+                            .map_err(Into::into)
+                        })
+                        .collect::<PyResult<_>>()?
+                },
+                crs::ResolvedMetric::Geodesic {
+                    crs,
+                    geodesic,
+                    frame,
+                    state,
+                } => array
+                    .logical_storage_rows()
+                    .zip(right.logical_storage_rows())
+                    .map(|(left, right_row)| {
+                        let (
+                            crate::array::LogicalRow::Present {
+                                logical: row,
+                                row: left,
+                            },
+                            crate::array::LogicalRow::Present { row: right_row, .. },
+                        ) = (left, right_row)
+                        else {
+                            return Ok(false);
+                        };
+                        let left = array.prepared_row_with(&mut left_products, row, left);
+                        let right_data =
+                            right.prepared_row_with(&mut right_products, row, right_row);
+                        let left_cache = left_products.frame_cache(row);
+                        let right_cache = right_products.frame_cache(row);
+                        pair_dwithin_geodesic(
+                            crs,
+                            geodesic,
+                            *frame,
+                            state,
+                            &left,
+                            &left_cache,
+                            &right_data,
+                            &right_cache,
+                            distance.get(row),
+                        )
+                        .map_err(Into::into)
+                    })
+                    .collect::<PyResult<_>>()?,
+            };
             bool_array(py, results)
         },
     }
@@ -898,44 +1173,75 @@ pub(crate) fn array_crs_dwithin_scalar(
         let resolved = crs::ResolvedMetric::from_model(&model)?;
         let array_owned = array.clone();
         let other_shape = other.plan_or_transient();
-        let other_cache = Arc::clone(&other.frame_cache);
-        let missing = array.missing().cloned();
-        let rows = array_owned
-            .storage()
-            .iter_rows()
-            .enumerate()
-            .map(|(row_index, row)| {
-                if missing.as_ref().is_some_and(|mask| mask[row_index]) {
-                    return Ok(false);
-                }
-                let left = array_owned.prepared_row(row_index, row);
-                pair_dwithin_resolved(
-                    &resolved,
-                    &left,
-                    &array_owned.row_frame_cache(row_index),
-                    &other_shape,
-                    &other_cache,
-                    distance,
-                )
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let other_cache = other.frame_cache();
+        let mut products = array_owned.row_products.operation();
+        let rows = match &resolved {
+            crs::ResolvedMetric::Planar { to_metre } => array_owned
+                .logical_storage_rows()
+                .map(|row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row_index,
+                        row,
+                    } = row
+                    else {
+                        return Ok(false);
+                    };
+                    let left = array_owned.prepared_row_with(&mut products, row_index, row);
+                    pair_dwithin_planar(to_metre.get(), &left, &other_shape, distance)
+                        .map_err(Into::into)
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+            crs::ResolvedMetric::Geodesic {
+                crs,
+                geodesic,
+                frame,
+                state,
+            } => array_owned
+                .logical_storage_rows()
+                .map(|row| {
+                    let crate::array::LogicalRow::Present {
+                        logical: row_index,
+                        row,
+                    } = row
+                    else {
+                        return Ok(false);
+                    };
+                    let left = array_owned.prepared_row_with(&mut products, row_index, row);
+                    let left_cache = products.frame_cache(row_index);
+                    pair_dwithin_geodesic(
+                        crs,
+                        geodesic,
+                        *frame,
+                        state,
+                        &left,
+                        &left_cache,
+                        &other_shape,
+                        &other_cache,
+                        distance,
+                    )
+                    .map_err(Into::into)
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+        };
         return bool_array(py, rows);
     }
     if let crs::MetricModel::Planar { to_metre } = &model {
         let limit = distance / to_metre.get();
-        if let Some(values) = array.reduce_packed_points_detached(py, {
-            let other_shape = other.plan_or_transient();
-            move |xs, ys| {
-                Ok(other_shape.dwithin_points(
-                    std::iter::zip(xs.iter().copied(), ys.iter().copied()),
-                    limit,
-                ))
-            }
-        })? {
+        if !array.is_compact_nullable()
+            && let Some(values) = array.reduce_packed_points_detached(py, {
+                let other_shape = other.plan_or_transient();
+                move |points| {
+                    Ok(other_shape
+                        .dwithin_points(points.iter().map(|point| (point.x, point.y)), limit))
+                }
+            })?
+        {
             return bool_array_mask_missing(py, values, array.missing());
         }
         // Gathered mixed points run the same batch kernel from by-value points.
-        if let Some(points) = array.storage().point_rows() {
+        if !array.is_compact_nullable()
+            && let Some(points) = array.storage().point_rows()
+        {
             let other_shape = other.plan_or_transient();
             return bool_array_mask_missing(
                 py,
@@ -961,11 +1267,17 @@ pub(crate) fn array_crs_dwithin_scalar(
             bool_array_mask_missing(
                 py,
                 py.detach(move || {
+                    let mut products = array.row_products.operation();
                     array
-                        .storage()
-                        .iter_rows()
-                        .enumerate()
-                        .map(|(index, row)| {
+                        .logical_storage_rows()
+                        .map(|row| {
+                            let crate::array::LogicalRow::Present {
+                                logical: index,
+                                row,
+                            } = row
+                            else {
+                                return false;
+                            };
                             if let (Some(sq_limit), Some(other_bounds), Some(element_bounds)) =
                                 (sq_limit, other_bounds, element_bounds.as_ref())
                                 && let Some(element) = element_bounds[index]
@@ -973,7 +1285,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             {
                                 return false;
                             }
-                            let left = array.prepared_row(index, row);
+                            let left = array.prepared_row_with(&mut products, index, row);
                             left.dwithin(&other_shape, limit)
                         })
                         .collect::<Vec<bool>>()
@@ -981,7 +1293,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 missing.as_ref(),
             )
         },
-        crs::MetricModel::Geodesic { crs, state } => {
+        crs::MetricModel::Geodesic { crs, state, frame } => {
             // Packed point lane: one geodesic cache resolve, raw columns
             // through the same point kernel (mirrors the distances lane).
             if let Shape::Point(target) = other.shape.shape()
@@ -990,8 +1302,11 @@ pub(crate) fn array_crs_dwithin_scalar(
                     let crs = crs.clone();
                     let state = Arc::clone(&state);
                     let target = *target;
-                    move |xs, ys| {
-                        crs::geodesic_point_distances(&crs, xs, ys, target, &state)
+                    move |points| {
+                        let (xs, ys) = points
+                            .geodesic_xy_lanes()
+                            .map_err(PackedColumnError::Batch)?;
+                        crs::geodesic_point_distances(&crs, &xs, &ys, target, frame, &state)
                             .map_err(PackedColumnError::Batch)
                     }
                 })?
@@ -1010,15 +1325,19 @@ pub(crate) fn array_crs_dwithin_scalar(
                     let crs = crs.clone();
                     let state = Arc::clone(&state);
                     let other_shape = other.plan_or_transient();
-                    let other_cache = Arc::clone(&other.frame_cache);
-                    move |xs, ys| {
+                    let other_cache = other.frame_cache();
+                    move |points| {
+                        let (xs, ys) = points
+                            .geodesic_xy_lanes()
+                            .map_err(PackedColumnError::Batch)?;
                         geodesic_point_columns_dwithin_shape_values(
                             &crs,
-                            xs,
-                            ys,
+                            &xs,
+                            &ys,
                             &other_shape,
                             &other_cache,
                             distance,
+                            frame,
                             &state,
                         )
                         .map_err(PackedColumnError::Batch)
@@ -1029,9 +1348,9 @@ pub(crate) fn array_crs_dwithin_scalar(
             }
             let array_owned = array.clone();
             let other_shape = other.plan_or_transient();
-            let other_cache = Arc::clone(&other.frame_cache);
-            let missing = array.missing().cloned();
+            let other_cache = other.frame_cache();
             let rows = py.detach(move || {
+                let mut products = array_owned.row_products.operation();
                 crs::with_resolved_ellipsoid_metric_at(
                     &crs,
                     &[other_shape.shape()],
@@ -1046,15 +1365,18 @@ pub(crate) fn array_crs_dwithin_scalar(
                             metric,
                         )?;
                         Ok(array_owned
-                            .storage()
-                            .iter_rows()
-                            .enumerate()
-                            .map(|(row_index, row)| {
-                                if missing.as_ref().is_some_and(|mask| mask[row_index]) {
+                            .logical_storage_rows()
+                            .map(|row| {
+                                let crate::array::LogicalRow::Present {
+                                    logical: row_index,
+                                    row,
+                                } = row
+                                else {
                                     return Ok(false);
-                                }
-                                let left = array_owned.prepared_row(row_index, row);
-                                let left_cache = array_owned.row_frame_cache(row_index);
+                                };
+                                let left =
+                                    array_owned.prepared_row_with(&mut products, row_index, row);
+                                let left_cache = products.frame_cache(row_index);
                                 left.geodesic_dwithin_cached(
                                     &left_cache,
                                     &other_shape,

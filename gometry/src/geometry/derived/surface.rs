@@ -29,10 +29,7 @@ fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> 
         .0
         .iter()
         .max_by(|left, right| (left[1] - left[0]).total_cmp(&(right[1] - right[0])))?;
-    Some(Point::new_unchecked_xy(
-        f64::midpoint(widest[0], widest[1]),
-        mid,
-    ))
+    Some(Point::new_raw_xy(f64::midpoint(widest[0], widest[1]), mid))
 }
 
 /// Column kernel for polygonal `point_on_surface`: widest even-odd chord on the
@@ -135,14 +132,14 @@ pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Po
     let total = line_length_columns(xs, ys);
     if total == 0.0 {
         // Every vertex coincides: the first one is on the line.
-        return Some(Point::new_unchecked_xy(xs[0], ys[0]));
+        return Some(Point::new_raw_xy(xs[0], ys[0]));
     }
     let target = total / 2.0;
     let mut walked = 0.0;
     for index in 1..xs.len() {
         let (start, end) = (
-            Point::new_unchecked_xy(xs[index - 1], ys[index - 1]),
-            Point::new_unchecked_xy(xs[index], ys[index]),
+            Point::new_raw_xy(xs[index - 1], ys[index - 1]),
+            Point::new_raw_xy(xs[index], ys[index]),
         );
         let length = point_distance(start, end);
         if walked + length >= target {
@@ -152,12 +149,12 @@ pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Po
                 (target - walked) / length
             };
             let point = interpolate_segment_point(start, end, fraction);
-            return Some(Point::new_unchecked_xy(point.x, point.y));
+            return Some(Point::new_raw_xy(point.x, point.y));
         }
         walked += length;
     }
     // Float accumulation can land a hair short of `target`: take the last vertex.
-    Some(Point::new_unchecked_xy(xs[xs.len() - 1], ys[ys.len() - 1]))
+    Some(Point::new_raw_xy(xs[xs.len() - 1], ys[ys.len() - 1]))
 }
 
 /// A representative point ON the linework: the arc-length midpoint of the
@@ -198,7 +195,7 @@ pub(crate) fn multipoint_surface_point(points: &CoordSeq) -> Option<Point> {
         dx * dx + dy * dy
     })
     .expect("non-empty multipoint");
-    Some(Point::new_unchecked_xy(xs[nearest], ys[nearest]))
+    Some(Point::new_raw_xy(xs[nearest], ys[nearest]))
 }
 
 /// Flatten a (possibly nested) collection into its areal, lineal, and puntal

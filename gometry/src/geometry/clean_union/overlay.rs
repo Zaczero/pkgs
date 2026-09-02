@@ -198,13 +198,11 @@ pub(crate) fn build_transverse_sections(
 /// `Vec` per ring (matches the cut/run scratch pools).
 pub(crate) fn with_section_scratch<R>(body: impl FnOnce(&mut Vec<(XY, XY, bool)>) -> R) -> R {
     thread_local! {
-        static SECTIONS: std::cell::Cell<Vec<(XY, XY, bool)>> = const { std::cell::Cell::new(Vec::new()) };
+        static SECTIONS: crate::scratch_pool::ScratchPool<Vec<(XY, XY, bool)>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
     }
-    let mut sections = SECTIONS.take();
-    let result = body(&mut sections);
-    sections.clear();
-    SECTIONS.set(sections);
-    result
+    body(&mut crate::scratch_pool::ScratchPool::checkout(&SECTIONS))
 }
 
 /// Strict membership of the ring's first section midpoint in the other operand.
