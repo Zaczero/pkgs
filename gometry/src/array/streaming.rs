@@ -3,7 +3,9 @@
 use pyo3::exceptions::PyMemoryError;
 use pyo3::{PyErr, PyResult};
 
-use crate::array::{CoordSeq, CoordinateAxes, Frame, Polygon, PyGeometryArray, Ring, Shape};
+use crate::array::{
+    CoordSeq, CoordinateAxes, Frame, GeometryKind, Polygon, PyGeometryArray, Ring, Shape,
+};
 use crate::geometry::LineSeq;
 
 /// Streaming row accumulator for parse-time bulk imports.
@@ -295,10 +297,14 @@ impl StreamingLines {
                     ends[0]..ends[1],
                     coords.len(),
                 ));
-                Shape::LineString(
-                    LineSeq::try_new(row)
-                        .expect("line coordinate sequence must contain at least two vertices"),
-                )
+                if row.is_empty() {
+                    Shape::typed_empty(GeometryKind::LineString, coords.axes())
+                } else {
+                    Shape::LineString(
+                        LineSeq::try_new(row)
+                            .expect("streamed present line contains at least two vertices"),
+                    )
+                }
             })
             .collect()
     }
@@ -322,10 +328,14 @@ fn line_shapes_from_parts(coords: &CoordSeq, offsets: &[usize]) -> Vec<Shape> {
                 ends[0]..ends[1],
                 coords.len(),
             ));
-            Shape::LineString(
-                LineSeq::try_new(row)
-                    .expect("line coordinate sequence must contain at least two vertices"),
-            )
+            if row.is_empty() {
+                Shape::typed_empty(GeometryKind::LineString, coords.axes())
+            } else {
+                Shape::LineString(
+                    LineSeq::try_new(row)
+                        .expect("streamed present line contains at least two vertices"),
+                )
+            }
         })
         .collect()
 }
@@ -412,6 +422,9 @@ fn polygon_shapes_from_parts(
     polygon_offsets
         .windows(2)
         .map(|polygon_ends| {
+            if polygon_ends[0] == polygon_ends[1] {
+                return Shape::typed_empty(GeometryKind::Polygon, coords.axes());
+            }
             let mut rings = (polygon_ends[0]..polygon_ends[1]).map(|ring| {
                 let row = coords.view(crate::geometry::CoordWindow::from_range(
                     ring_offsets[ring]..ring_offsets[ring + 1],

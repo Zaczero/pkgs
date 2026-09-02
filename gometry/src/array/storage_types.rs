@@ -36,11 +36,9 @@ pub struct RowWindow {
 }
 
 impl RowWindow {
-    /// `physical_len` MUST be the backing storage's true row count. A
-    /// `RowSelection::window(start, len)` constructor used to pass
-    /// `start + len` here, which made the assertion `start <= start + len &&
-    /// len <= len` — vacuously true in every build, so it could never fire.
-    /// Callers now pass the real length and the tripwire means something.
+    /// `physical_len` is the backing storage's true row count. Passing the
+    /// selected range's end instead would make an out-of-range window appear
+    /// valid, so every caller supplies the physical length explicitly.
     fn checked(start: usize, len: usize, physical_len: usize) -> Option<Self> {
         (start <= physical_len && len <= physical_len - start).then_some(Self { start, len })
     }
@@ -70,13 +68,6 @@ pub enum RowSelectionRef<'a> {
 }
 
 impl RowSelection {
-    pub(crate) fn gather(map: Arc<[usize]>, physical_len: usize) -> Self {
-        Self::Gather(
-            CheckedPhysicalRows::checked(map, physical_len)
-                .expect("row selection must reference existing physical rows"),
-        )
-    }
-
     pub(crate) fn gather_checked(
         map: Arc<[usize]>,
         physical_len: usize,
@@ -90,11 +81,18 @@ impl RowSelection {
         Ok(Self::Gather(rows))
     }
 
-    pub fn window(start: usize, len: usize, physical_len: usize) -> Self {
-        Self::Window(
-            RowWindow::checked(start, len, physical_len)
-                .expect("row window must reference existing physical rows"),
-        )
+    pub(crate) fn window_checked(
+        start: usize,
+        len: usize,
+        physical_len: usize,
+        label: &str,
+    ) -> PyResult<Self> {
+        let window = RowWindow::checked(start, len, physical_len).ok_or_else(|| {
+            GeometryError::new_err(format!(
+                "{label} row window references nonexistent physical rows"
+            ))
+        })?;
+        Ok(Self::Window(window))
     }
 
     pub fn as_deref(&self) -> RowSelectionRef<'_> {
@@ -421,14 +419,19 @@ impl RowSelectionBuild {
 
     fn finish(self, physical_len: usize) -> RowSelection {
         match self.state {
-            RowSelectionBuildState::Empty => {
-                RowSelection::gather(Arc::from([] as [usize; 0]), physical_len)
-            },
+            RowSelectionBuildState::Empty => RowSelection::gather_checked(
+                Arc::from([] as [usize; 0]),
+                physical_len,
+                "internal row selection",
+            )
+            .expect("empty row selection is always in bounds"),
             RowSelectionBuildState::Contiguous { start, len } => {
-                RowSelection::window(start, len, physical_len)
+                RowSelection::window_checked(start, len, physical_len, "internal row selection")
+                    .expect("contiguous row selection is always in bounds")
             },
             RowSelectionBuildState::Gathered(indices) => {
-                RowSelection::gather(indices.into(), physical_len)
+                RowSelection::gather_checked(indices.into(), physical_len, "internal row selection")
+                    .expect("gathered row selection is always in bounds")
             },
         }
     }
@@ -861,7 +864,7 @@ mod tests {
 
         let window = GeometryArrayStorage::Points {
             coords: Arc::clone(&coords),
-            row_map: RowSelection::window(1, 2, 3),
+            row_map: RowSelection::window_checked(1, 2, 3, "test").unwrap(),
         };
         assert_shapes_iter_exact(&window);
 
@@ -892,7 +895,7 @@ mod tests {
         let window = GeometryArrayStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
-            row_map: RowSelection::window(0, 2, 2),
+            row_map: RowSelection::window_checked(0, 2, 2, "test").unwrap(),
         };
         assert_shapes_iter_exact(&window);
 
@@ -936,7 +939,7 @@ mod tests {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
-            row_map: RowSelection::window(1, 1, 2),
+            row_map: RowSelection::window_checked(1, 1, 2, "test").unwrap(),
         };
         assert_shapes_iter_exact(&window);
 
@@ -966,25 +969,23 @@ mod row_window_assertion_tests {
 
     /// Row-window admission rejects ranges beyond the physical storage.
     ///
-    /// It previously could not: `RowSelection::window(start, len)` passed
+    /// It previously could not: the old `RowSelection::window(start, len)` passed
     /// `start + len` as `physical_len`, reducing the assertion to
     /// `start <= start + len && len <= len`. This pins that a window past the
     /// end of the backing storage is now rejected without a Python runtime.
     #[test]
-    #[should_panic(expected = "must reference existing physical rows")]
     fn window_assertion_is_not_vacuous() {
-        let _ = RowSelection::window(2, 5, 4);
+        assert!(RowSelection::window_checked(2, 5, 4, "test").is_err());
     }
 
     #[test]
-    #[should_panic(expected = "row selection must reference existing physical rows")]
     fn gather_assertion_is_not_vacuous() {
-        let _ = RowSelection::gather(Arc::from([4_usize]), 4);
+        assert!(RowSelection::gather_checked(Arc::from([4_usize]), 4, "test").is_err());
     }
 
     #[test]
     fn window_inside_physical_rows_is_accepted() {
-        let selection = RowSelection::window(1, 2, 4);
+        let selection = RowSelection::window_checked(1, 2, 4, "test").unwrap();
         assert!(matches!(selection, RowSelection::Window(_)));
     }
 }

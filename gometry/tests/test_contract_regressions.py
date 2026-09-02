@@ -6,6 +6,7 @@ their corresponding fixes.
 from __future__ import annotations
 
 import collections.abc
+import json
 import pickle
 import struct
 
@@ -568,6 +569,45 @@ def test_public_constructor_malformed_wkb_polygon_never_panics() -> None:
     geom = gm.from_wkb(unclosed)
     assert geom.is_valid
     assert geom.area > 0.0
+
+
+@pytest.mark.parametrize('loader', [gm.from_wkb, gm.from_wkt])
+def test_bulk_missing_rows_do_not_panic_streaming_line_or_polygon(loader) -> None:
+    """Missing rows survive a mixed streaming lane during homogeneous demotion."""
+    line = gm.LineString([(0, 0), (1, 1)])
+    point = gm.Point(2, 2)
+    polygon = gm.Polygon([(0, 0), (1, 0), (0, 1), (0, 0)])
+    values = [line, None, point]
+    polygon_values = [polygon, None, point]
+    if loader is gm.from_wkb:
+        values = [line.to_wkb(), None, point.to_wkb()]
+        polygon_values = [polygon.to_wkb(), None, point.to_wkb()]
+    else:
+        values = [line.to_wkt(), None, point.to_wkt()]
+        polygon_values = [polygon.to_wkt(), None, point.to_wkt()]
+
+    line_array = loader(values)
+    assert line_array.is_missing.tolist() == [False, True, False]
+    assert line_array[0].geometry_type == 'LineString'
+    assert line_array[1] is None
+    assert line_array[2].geometry_type == 'Point'
+
+    polygon_array = loader(polygon_values)
+    assert polygon_array.is_missing.tolist() == [False, True, False]
+    assert polygon_array[0].geometry_type == 'Polygon'
+    assert polygon_array[1] is None
+    assert polygon_array[2].geometry_type == 'Point'
+
+    def geojson(geometry):
+        return json.loads(geometry.to_geojson())
+
+    geojson_line_array = gm.from_geojson(
+        [geojson(line), None, geojson(point)],
+    )
+    assert geojson_line_array.is_missing.tolist() == [False, True, False]
+    assert [
+        None if row is None else row.geometry_type for row in geojson_line_array
+    ] == ['LineString', None, 'Point']
 
 
 def test_pickle_crafted_masked_row_map_nan_payload_rejected() -> None:

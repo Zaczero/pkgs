@@ -103,16 +103,19 @@ pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
         return buffer_to_vec_f64(py, buffer).map(Into::into);
     }
     let len = buffer.item_count();
+    // A third-party exporter can provide inconsistent buffer metadata. Preserve
+    // the public error path rather than turning that inconsistency into a panic.
+    let Some(cells) = buffer.as_slice(py) else {
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
+    };
+    if cells.len() != len {
+        return buffer_to_vec_f64(py, buffer).map(Into::into);
+    }
     let mut values = Vec::<MaybeUninit<f64>>::new();
     crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
     // The fallible reservation above owns the allocation; initialize its
     // length without asking the allocator for a second, infallible resize.
     unsafe { values.set_len(len) };
-    // C-contiguous path: as_slice is always Some for a matching contiguous buffer.
-    let cells = buffer
-        .as_slice(py)
-        .expect("C-contiguous f64 PyBuffer must expose as_slice");
-    debug_assert_eq!(cells.len(), len);
     if buffer_format_is_native_endian(buffer.format()) {
         for (dst, cell) in values.iter_mut().zip(cells.iter()) {
             dst.write(cell.get());

@@ -1576,7 +1576,7 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-            RowSelection::gather(vec![1, 0].into(), 2),
+            RowSelection::gather_checked(vec![1, 0].into(), 2, "test").unwrap(),
         );
         let gathered_points = gathered.coordinate_view().collect_points();
         assert_eq!(gathered_points.len(), 15);
@@ -1666,7 +1666,7 @@ mod tests {
             coords,
             offsets,
             Frame::default(),
-            RowSelection::gather(vec![2, 0].into(), 3),
+            RowSelection::gather_checked(vec![2, 0].into(), 3, "test").unwrap(),
         );
         let view = gathered.coordinate_view();
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
