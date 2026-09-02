@@ -46,7 +46,7 @@ impl Groups {
         offsets: Arc<[i64]>,
         rows: Range<usize>,
     ) -> PyResult<Self> {
-        validate_csr_offsets(&offsets, values.storage().len())?;
+        validate_csr_offsets(&offsets, values.len())?;
         Ok(Self {
             values: GroupsValues::Geometry(values),
             offsets,
@@ -61,7 +61,7 @@ impl Groups {
     ) -> PyResult<Self> {
         let (shapes, offsets) = builder.finish();
         let values = PyGeometryArray::from_shapes(shapes, frame);
-        validate_csr_offsets(&offsets, values.storage().len())?;
+        validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
             .len()
             .checked_sub(1)
@@ -90,7 +90,7 @@ impl Groups {
         } else {
             PyGeometryArray::packed_triangles(&vertices, frame)?
         };
-        validate_csr_offsets(&offsets, values.storage().len())?;
+        validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
             .len()
             .checked_sub(1)
@@ -139,20 +139,19 @@ impl Groups {
     pub fn from_self_intersection_rows(array: &PyGeometryArray) -> PyResult<Self> {
         let mut builder = CsrBuilder::<Shape>::new();
         let geographic = crate::geometry::is_geographic_frame(&array.frame);
-        for (missing, shape) in array.masked_shape_rows() {
-            if missing {
-                builder
+        for row in array.logical_shape_rows() {
+            match row {
+                crate::array::LogicalShapeRow::Missing { .. } => builder
                     .push_row(std::iter::empty())
-                    .map_err(pyo3::PyErr::from)?;
-                continue;
+                    .map_err(pyo3::PyErr::from)?,
+                crate::array::LogicalShapeRow::Present { shape, .. } => builder
+                    .push_row(
+                        crate::geometry::self_intersections_in_frame(&shape, geographic)
+                            .into_iter()
+                            .map(Shape::Point),
+                    )
+                    .map_err(pyo3::PyErr::from)?,
             }
-            builder
-                .push_row(
-                    crate::geometry::self_intersections_in_frame(&shape, geographic)
-                        .into_iter()
-                        .map(Shape::Point),
-                )
-                .map_err(pyo3::PyErr::from)?;
         }
         let (shapes, offsets) = builder.finish();
         let values = Arc::new(PyGeometryArray::from_shapes(shapes, array.frame.clone()));
@@ -199,7 +198,7 @@ impl Groups {
         ids: Vec<u64>,
         offsets: Vec<i64>,
     ) -> PyResult<Self> {
-        let values = Arc::new(PyCellArray::from_trusted_ids(kind, ids));
+        let values = Arc::new(PyCellArray::from_ids(kind, ids));
         // Validate before `len() - 1` so empty offsets never underflow.
         validate_csr_offsets(&offsets, values.len())?;
         let n = offsets

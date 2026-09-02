@@ -20,6 +20,61 @@ fn geocode_array_codes(
     array: &PyGeometryArray,
     operation: impl Fn(f64, f64) -> PyResult<String>,
 ) -> PyResult<Vec<Option<String>>> {
+    if array.is_compact_nullable() {
+        if !matches!(array.storage(), crate::GeometryArrayStorage::Points { .. }) {
+            return Err(crate::py::errors::geometry_type_err(
+                "expected Point geometry",
+            ));
+        }
+        let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
+        let mut present = Vec::new();
+        for logical_row in array.logical_storage_rows() {
+            let crate::array::LogicalRow::Present {
+                logical,
+                row: crate::array::ShapeRow::Point(point),
+            } = logical_row
+            else {
+                continue;
+            };
+            crate::try_push(&mut present, (logical, point)).map_err(pyo3::PyErr::from)?;
+        }
+        if lonlat_frame || present.is_empty() {
+            let mut output = crate::try_vec_with_capacity(array.len())?;
+            output.resize(array.len(), None);
+            for (logical, point) in present {
+                crate::boundary::geographic::validate_lonlat_point(point)
+                    .map_err(|err| crate::note_array_row(err, logical))?;
+                output[logical] = Some(
+                    operation(point.x, point.y)
+                        .map_err(|err| crate::note_array_row(err, logical))?,
+                );
+            }
+            return Ok(output);
+        }
+        let source_crs = array
+            .crs_str()
+            .expect("non-lonlat point array carries a CRS");
+        let mut source = crate::try_vec_with_capacity(present.len())?;
+        for &(_, point) in &present {
+            crate::try_push(&mut source, point.xy()).map_err(pyo3::PyErr::from)?;
+        }
+        let Shape::MultiPoint(transformed) =
+            crate::crs::transform(&Shape::MultiPoint(source.into()), source_crs, "EPSG:4326")?
+        else {
+            unreachable!("transform preserves the MultiPoint kind")
+        };
+        let mut output = crate::try_vec_with_capacity(array.len())?;
+        output.resize(array.len(), None);
+        for (index, &(logical, _)) in present.iter().enumerate() {
+            let point = transformed.point_at(index);
+            crate::boundary::geographic::validate_lonlat_point(point)
+                .map_err(|err| crate::note_array_row(err, logical))?;
+            output[logical] = Some(
+                operation(point.x, point.y).map_err(|err| crate::note_array_row(err, logical))?,
+            );
+        }
+        return Ok(output);
+    }
     let points = array
         .storage()
         .point_rows()

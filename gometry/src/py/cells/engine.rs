@@ -16,10 +16,6 @@ use crate::{
     expected_geometry_or_array, validate_lonlat_shape,
 };
 
-pub(super) fn cell_limit_err(err: crate::grid::CellLimitExceeded) -> PyErr {
-    GeometryError::new_err(err.to_string())
-}
-
 /// Collect one cell identity or any iterable of identities.
 ///
 /// Strings are atomic grid tokens, and non-iterable cell objects / integer
@@ -104,10 +100,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
     if let Some(array) = exact_geometry_array(value) {
         let crs = array.crs_str();
         let mut shapes = Vec::new();
-        for (row, shape) in array.storage().iter_shapes().enumerate() {
-            if array.is_row_missing(row) {
-                continue;
-            }
+        for (_, shape) in array.present_shape_rows() {
             let shape = crate::lonlat_shape_under(&shape, crs)?;
             validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
@@ -166,7 +159,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         crate::boundary::geographic::validate_lonlat_xy(*minx, *miny)?;
         crate::boundary::geographic::validate_lonlat_xy(*maxx, *maxy)?;
         return Ok(BoundingQueryRegion {
-            bounds: Bounds::new_unchecked(*minx, *miny, *maxx, *maxy),
+            bounds: Bounds::new_raw(*minx, *miny, *maxx, *maxy),
             crosses_antimeridian: false,
         });
     }
@@ -191,7 +184,7 @@ impl GridPointRows<'_> {
     pub(crate) fn get(&self, row: usize) -> Point {
         match self {
             Self::Source(points) => points.get(row),
-            Self::Columns { xs, ys } => Point::new_unchecked_xy(xs[row], ys[row]),
+            Self::Columns { xs, ys } => Point::new_raw_xy(xs[row], ys[row]),
         }
     }
 }
@@ -201,6 +194,63 @@ impl GridPointRows<'_> {
 /// transform (instead of one PROJ round trip per row), and packed point
 /// arrays gather straight off their shared column.
 pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointRows<'_>> {
+    if array.is_compact_nullable() {
+        if !matches!(array.storage(), crate::GeometryArrayStorage::Points { .. }) {
+            return Err(crate::py::errors::geometry_type_err(
+                "expected Point geometry",
+            ));
+        }
+        let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        let mut present = Vec::new();
+        crate::try_reserve_pair(&mut xs, &mut ys, array.len()).map_err(PyErr::from)?;
+        crate::try_reserve_vec(&mut present, array.len()).map_err(PyErr::from)?;
+        for logical_row in array.logical_storage_rows() {
+            match logical_row {
+                crate::array::LogicalRow::Missing { .. } => {
+                    crate::try_push_pair(&mut xs, &mut ys, f64::NAN, f64::NAN)
+                        .map_err(PyErr::from)?;
+                },
+                crate::array::LogicalRow::Present {
+                    logical,
+                    row: crate::array::ShapeRow::Point(point),
+                } => {
+                    crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
+                        .map_err(PyErr::from)?;
+                    crate::try_push(&mut present, logical).map_err(PyErr::from)?;
+                },
+                crate::array::LogicalRow::Present { .. } => {
+                    unreachable!("compact point storage yields point rows")
+                },
+            }
+        }
+        if lonlat_frame {
+            for &logical in &present {
+                crate::boundary::geographic::validate_lonlat_xy(xs[logical], ys[logical])?;
+            }
+            return Ok(GridPointRows::Columns { xs, ys });
+        }
+        let crs = array.crs_str().expect("non-lonlat frame carries a CRS");
+        let mut px = Vec::new();
+        let mut py = Vec::new();
+        crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(PyErr::from)?;
+        for &logical in &present {
+            crate::try_push_pair(&mut px, &mut py, xs[logical], ys[logical])
+                .map_err(PyErr::from)?;
+        }
+        crate::crs::TransformPlan::new(crs, "EPSG:4326").transform_coordinates(
+            &mut px,
+            &mut py,
+            crate::Zt::None,
+        )?;
+        for (index, &logical) in present.iter().enumerate() {
+            crate::boundary::geographic::validate_lonlat_xy(px[index], py[index])?;
+            xs[logical] = px[index];
+            ys[logical] = py[index];
+        }
+        return Ok(GridPointRows::Columns { xs, ys });
+    }
     let points = array
         .storage()
         .point_rows()
@@ -266,38 +316,42 @@ pub(crate) fn grid_cover_dispatch<'py>(
     geom: &Bound<'py, PyAny>,
     kind: GridKind,
     max_cells: Option<usize>,
-    build: impl Fn(&PyGeometry, Option<usize>) -> PyResult<Vec<u64>>,
+    build: impl Fn(&PyGeometry, Option<usize>) -> PyResult<Vec<u64>> + Send,
 ) -> PyResult<Py<PyAny>> {
     if let Some(geometry) = exact_geometry(geom) {
-        let coverage = build(geometry, max_cells)?;
-        return PyCellArray::from_trusted_ids(kind, coverage).into_py_any(py);
+        let geometry = geometry.clone();
+        let coverage = py.detach(move || build(&geometry, max_cells))?;
+        return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
     let Some(array) = exact_geometry_array(geom) else {
         return Err(expected_geometry_or_array());
     };
-    let crs = array.crs_str();
-    let mut produced = 0_usize;
-    let rows = crate::try_collect_results(array.masked_shape_rows().map(|(missing, shape)| {
-        if missing {
-            return Ok(Vec::new());
-        }
-        let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
-        // Scalar factories reject empty sources, but an array must retain row
-        // alignment. Represent a present empty exactly like a missing row in
-        // the ragged cell result: an empty group, not a batch error.
-        if shape.is_empty() {
-            return Ok(Vec::new());
-        }
-        let remaining = remaining_cover_budget(produced, max_cells)?;
-        if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
-            return Err(crate::py::cells::coverage_ops::cover_budget_err(
-                crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
-            ));
-        }
-        let ids = build(&PyGeometry::wgs84(shape), remaining)?;
-        produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
-        Ok(ids)
-    }))?;
+    let array = array.clone();
+    let rows = py.detach(move || {
+        let crs = array.crs_str().map(str::to_owned);
+        let mut produced = 0_usize;
+        crate::try_collect_results(array.logical_shape_rows().map(|row| {
+            let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
+                return Ok(Vec::new());
+            };
+            let shape = crate::lonlat_shape_under(&shape, crs.as_deref())?.into_owned();
+            // Scalar factories reject empty sources, but an array must retain row
+            // alignment. Represent a present empty exactly like a missing row in
+            // the ragged cell result: an empty group, not a batch error.
+            if shape.is_empty() {
+                return Ok(Vec::new());
+            }
+            let remaining = remaining_cover_budget(produced, max_cells)?;
+            if remaining == Some(0) && !matches!(&shape, crate::geometry::Shape::Empty(..)) {
+                return Err(crate::py::cells::coverage_ops::cover_budget_err(
+                    crate::grid::CoverBudgetExceeded::new(max_cells.expect("finite budget")),
+                ));
+            }
+            let ids = build(&PyGeometry::wgs84(shape), remaining)?;
+            produced = checked_cover_batch_len(produced, ids.len(), max_cells)?;
+            Ok(ids)
+        }))
+    })?;
     crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
 }
 
@@ -377,10 +431,10 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
         let bounds = cell.bounds();
         // CCW corners: (minx,miny) -> (maxx,miny) -> (maxx,maxy) -> (minx,maxy).
         let corners = [
-            Point::new_unchecked_xy(bounds.minx(), bounds.miny()),
-            Point::new_unchecked_xy(bounds.maxx(), bounds.miny()),
-            Point::new_unchecked_xy(bounds.maxx(), bounds.maxy()),
-            Point::new_unchecked_xy(bounds.minx(), bounds.maxy()),
+            Point::new_raw_xy(bounds.minx(), bounds.miny()),
+            Point::new_raw_xy(bounds.maxx(), bounds.miny()),
+            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
+            Point::new_raw_xy(bounds.minx(), bounds.maxy()),
         ];
         // edge_neighbors() is [south, east, north, west], matching side `k` =
         // corners[k] -> corners[k+1].
@@ -405,11 +459,12 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     let polygons = crate::try_collect_results(
         Shape::build_area_all(
             &[&Shape::MultiLineString(
-                crate::try_collect_results(
-                    outline
-                        .into_iter()
-                        .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
-                )?
+                crate::try_collect_results(outline.into_iter().map(|line| {
+                    Ok::<_, PyErr>(
+                        LineSeq::try_new(line)
+                            .expect("line coordinate sequence must contain at least two vertices"),
+                    )
+                }))?
                 .into(),
             )],
             true,

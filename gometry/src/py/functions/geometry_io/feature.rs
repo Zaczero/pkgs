@@ -328,26 +328,28 @@ fn to_feature_collection_impl(
         let array_crs = array.crs_str();
         let properties = if properties.is_none() {
             crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
-                    .take(array.storage().len()),
+                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any()))).take(array.len()),
             )?
         } else if let Some(props) = &broadcast_properties {
             crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
-                    .take(array.storage().len()),
+                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any()))).take(array.len()),
             )?
         } else {
-            aligned_rows(properties, array.storage().len(), "properties")?
+            aligned_rows(properties, array.len(), "properties")?
         };
-        let ids = aligned_rows(ids, array.storage().len(), "ids")?;
-        for (((missing, shape), properties), id) in array
-            .masked_shape_rows()
+        let ids = aligned_rows(ids, array.len(), "ids")?;
+        for ((row, properties), id) in array
+            .logical_shape_rows()
             .zip(properties.iter())
             .zip(ids.iter())
         {
+            let shape = match &row {
+                crate::array::LogicalShapeRow::Missing { .. } => None,
+                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.as_ref()),
+            };
             features.append(feature_dict(
                 py,
-                (!missing).then_some(shape.as_ref()),
+                shape,
                 array_crs,
                 properties.as_ref(),
                 id.as_ref(),

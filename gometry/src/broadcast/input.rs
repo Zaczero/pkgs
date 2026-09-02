@@ -84,7 +84,7 @@ pub(crate) fn paired_arrays(
     right: &PyGeometryArray,
     operation: &str,
 ) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
-    ensure_same_len(left.storage().len(), right.storage().len())?;
+    ensure_same_len(left.len(), right.len())?;
     Frame::compatible_parts(
         left.crs_ref(),
         left.epoch(),
@@ -105,7 +105,7 @@ pub(crate) fn paired_arrays_len(
     left: &PyGeometryArray,
     right: &PyGeometryArray,
 ) -> PyResult<(Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>)> {
-    ensure_same_len(left.storage().len(), right.storage().len())?;
+    ensure_same_len(left.len(), right.len())?;
     Ok((
         Arc::clone(left.storage_arc()),
         Arc::clone(right.storage_arc()),

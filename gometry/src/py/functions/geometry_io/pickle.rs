@@ -3,7 +3,7 @@ use std::sync::Arc;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 
-use crate::array::{MissingMask, RowSelection};
+use crate::array::{RowSelection, RowSelectionRef, ValidityMask};
 use crate::py::errors::{CRSError, ParseFormat, parse_error};
 use crate::py::wire_crs::{SridFrameAdmission, guard_embedded_crs_conflict};
 use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, Typed, parse_wkb_geometry};
@@ -28,22 +28,6 @@ impl GeometryError {
 // pickle; derived engines (spatial indexes, prepared geometries, coverages)
 // are rebuilt instead, like their ecosystem counterparts.
 
-/// One logical-row map as little-endian `u64` indices (the
-/// architecture-independent `__reduce__` payload for permuted packed arrays).
-pub(crate) fn usize_row_map_le_bytes(values: &[usize]) -> PyResult<Vec<u8>> {
-    let byte_len = values
-        .len()
-        .checked_mul(size_of::<u64>())
-        .ok_or_else(|| PyOverflowError::new_err("row map byte length overflows usize"))?;
-    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
-    for &value in values {
-        let value = u64::try_from(value)
-            .map_err(|_| PyOverflowError::new_err("row map index does not fit in u64"))?;
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    Ok(out)
-}
-
 /// One packed coordinate column as little-endian f64 bytes (the
 /// architecture-independent `__reduce__` payload; a memcpy on LE targets).
 pub(crate) fn f64_column_le_bytes(values: &[f64]) -> PyResult<Vec<u8>> {
@@ -54,6 +38,63 @@ pub(crate) fn f64_column_le_bytes(values: &[f64]) -> PyResult<Vec<u8>> {
     let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
     for &value in values {
         out.extend_from_slice(&value.to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// One selected point coordinate column in logical row order.
+pub(crate) fn selected_f64_column_le_bytes(
+    values: &[f64],
+    selection: RowSelectionRef<'_>,
+) -> PyResult<Vec<u8>> {
+    let len = selection.len(values.len());
+    let byte_len = len
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| PyOverflowError::new_err("coordinate byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    for logical in 0..len {
+        out.extend_from_slice(&values[selection.physical(logical)].to_le_bytes());
+    }
+    Ok(out)
+}
+
+pub(crate) fn selected_f64_windows_le_bytes(
+    values: &[f64],
+    windows: impl Iterator<Item = std::ops::Range<usize>>,
+    value_count: usize,
+) -> PyResult<Vec<u8>> {
+    let byte_len = value_count
+        .checked_mul(size_of::<f64>())
+        .ok_or_else(|| PyOverflowError::new_err("coordinate byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    for window in windows {
+        for &value in &values[window] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn rebased_i32_offsets_le_bytes(
+    lengths: impl Iterator<Item = usize>,
+    row_count: usize,
+) -> PyResult<Vec<u8>> {
+    let offset_count = row_count
+        .checked_add(1)
+        .ok_or_else(|| PyOverflowError::new_err("offset count overflows usize"))?;
+    let byte_len = offset_count
+        .checked_mul(size_of::<i32>())
+        .ok_or_else(|| PyOverflowError::new_err("offset byte length overflows usize"))?;
+    let mut out = crate::try_vec_with_capacity::<u8>(byte_len)?;
+    out.extend_from_slice(&0_i32.to_le_bytes());
+    let mut total = 0_usize;
+    for length in lengths {
+        total = total
+            .checked_add(length)
+            .ok_or_else(|| PyOverflowError::new_err("offset value overflows usize"))?;
+        let offset = i32::try_from(total)
+            .map_err(|_| PyOverflowError::new_err("offset value does not fit in i32"))?;
+        out.extend_from_slice(&offset.to_le_bytes());
     }
     Ok(out)
 }
@@ -100,10 +141,10 @@ pub(crate) fn _unpickle_geometry(
     let fallback = deserialized_crs(crs)?;
     guard_embedded_crs_conflict(geometry.crs_str(), fallback.as_deref(), "EWKB SRID")?;
     if geometry.crs_ref().is_none() {
-        geometry.set_crs_keep_epoch(fallback);
+        geometry.set_crs_keep_epoch(fallback)?;
     }
     let epoch = crate::deserialized_epoch(epoch, geometry.crs_str())?;
-    geometry.set_epoch_keep_crs(epoch);
+    geometry.set_epoch_keep_crs(epoch)?;
     Ok(Typed(geometry))
 }
 
@@ -135,7 +176,7 @@ pub(crate) fn _unpickle_geometry_array(
     // plain rows. Masked rows establish no CRS.
     let mut frame_admit = SridFrameAdmission::new(fallback, None);
     for (row, wkb) in rows.iter().enumerate() {
-        if mask.as_ref().is_some_and(|mask| mask[row]) {
+        if mask.as_ref().is_some_and(|mask| mask.is_missing(row)) {
             crate::try_push(&mut parsed_rows, None)?;
             continue;
         }
@@ -187,7 +228,7 @@ pub(crate) fn _unpickle_point_array(
     let physical_rows = seq.len();
     let row_map = pickled_usize_row_map(row_map, physical_rows, "point-array")?;
     let present = PyGeometryArray::packed_points_mapped(seq, frame, row_map);
-    let present_count = present.storage().len();
+    let present_count = present.len();
     let mask_len = missing.map_or(present_count, <[u8]>::len);
     if let Some(mask) = pickled_missing_mask(mask_len, missing, "point-array", Some(present_count))?
     {
@@ -240,7 +281,7 @@ pub(crate) fn _unpickle_line_array(
     let physical_rows = offsets.len().saturating_sub(1);
     let row_map = pickled_usize_row_map(row_map, physical_rows, "line-array")?;
     let present = PyGeometryArray::packed_lines_mapped(seq, offsets, frame, row_map);
-    let present_count = present.storage().len();
+    let present_count = present.len();
     let mask_len = missing.map_or(present_count, <[u8]>::len);
     if let Some(mask) = pickled_missing_mask(mask_len, missing, "line-array", Some(present_count))?
     {
@@ -311,7 +352,7 @@ pub(crate) fn _unpickle_polygon_array(
     let row_map = pickled_usize_row_map(row_map, physical_rows, "polygon-array")?;
     let present =
         PyGeometryArray::packed_polygons_mapped(seq, ring_offsets, polygon_offsets, frame, row_map);
-    let present_count = present.storage().len();
+    let present_count = present.len();
     let mask_len = missing.map_or(present_count, <[u8]>::len);
     if let Some(mask) =
         pickled_missing_mask(mask_len, missing, "polygon-array", Some(present_count))?
@@ -334,40 +375,24 @@ fn admit_pickled_polygon_rings(
     crate::geometry::CoordSeq,
     crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
 )> {
-    use crate::geometry::{CoordSeqBuilder, Ring, same_active_position};
+    use crate::geometry::CoordSeqBuilder;
 
-    let width = seq.len();
     let windows: Vec<(usize, usize)> = ring_offsets
         .array_windows::<2>()
-        .map(|[start, end]| {
-            let start = usize::try_from(*start).map_err(|_| {
-                GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
-            })?;
-            let end = usize::try_from(*end).map_err(|_| {
-                GeometryError::new_err("polygon-array pickle ring offsets are not a valid CSR")
-            })?;
-            if end < start || end > width {
-                return Err(GeometryError::new_err(
-                    "polygon-array pickle ring offsets are not a valid CSR",
-                ));
-            }
-            Ok((start, end))
-        })
-        .collect::<PyResult<_>>()?;
+        .map(|[start, end]| (*start as usize, *end as usize))
+        .collect();
 
     // Fast path: every ring already fully closed on active ordinates and long
     // enough — no rebuild (the common gometry-written pickle case).
-    let already_closed = windows.iter().all(|&(start, end)| {
-        let n = end - start;
-        n >= Ring::MIN_VERTICES_CLOSED
-            && same_active_position(seq.point_at(start), seq.point_at(end - 1))
-    });
+    let already_closed = windows
+        .iter()
+        .all(|&(start, end)| crate::array::CheckedRingWindow::checked(&seq, start..end).is_ok());
     if already_closed {
         return Ok((seq, ring_offsets));
     }
 
     // Rebuild through the shared admitter (silent-close / reject).
-    let coord_capacity = width.checked_add(windows.len()).ok_or_else(|| {
+    let coord_capacity = seq.len().checked_add(windows.len()).ok_or_else(|| {
         GeometryError::new_err("polygon-array pickle coordinate count overflows usize")
     })?;
     let mut builder =
@@ -485,7 +510,7 @@ fn pickled_missing_mask(
     missing: Option<&[u8]>,
     label: &str,
     present_count: Option<usize>,
-) -> PyResult<Option<MissingMask>> {
+) -> PyResult<Option<ValidityMask>> {
     let Some(bytes) = missing else {
         return Ok(None);
     };
@@ -504,8 +529,8 @@ fn pickled_missing_mask(
     for &byte in bytes {
         crate::try_push(&mut values, byte != 0)?;
     }
-    let mask = MissingMask::from_vec(len, values);
-    let decoded_present_count = mask.as_ref().map_or(len, MissingMask::present_count);
+    let mask = ValidityMask::from_vec(len, values);
+    let decoded_present_count = mask.as_ref().map_or(len, ValidityMask::present_count);
     if present_count.is_some_and(|present_count| decoded_present_count != present_count) {
         return Err(GeometryError::new_err(format!(
             "malformed {label} pickle missing mask"

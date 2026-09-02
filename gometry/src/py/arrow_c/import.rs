@@ -281,13 +281,14 @@ pub(crate) fn import_stream(
             let batch_arr = batch_bound.cast::<crate::PyGeometryArray>()?;
             let borrowed = batch_arr.borrow();
             let batch_len = borrowed.__len__();
-            // Collect shapes (missing placeholders included in storage iteration).
-            for (i, shape) in borrowed.storage().iter_shapes().enumerate() {
-                if borrowed.is_row_missing(i) {
-                    crate::try_push(&mut missing_rows, row_base + i)?;
-                    crate::try_push(&mut shapes, crate::PyGeometryArray::missing_placeholder())?;
-                } else {
-                    crate::try_push(&mut shapes, shape.into_owned())?;
+            for row in borrowed.logical_shape_rows() {
+                match row {
+                    crate::array::LogicalShapeRow::Missing { logical } => {
+                        crate::try_push(&mut missing_rows, row_base + logical)?;
+                    },
+                    crate::array::LogicalShapeRow::Present { shape, .. } => {
+                        crate::try_push(&mut shapes, shape.into_owned())?;
+                    },
                 }
             }
             if batch_crs.is_none() {
@@ -304,7 +305,7 @@ pub(crate) fn import_stream(
             drop(batch);
         }
 
-        if shapes.is_empty() {
+        if row_base == 0 {
             // Schema already released; use classified frame from owned admission.
             let crs = crate::py::arrow::reconcile_arrow_crs(classified.crs.as_deref(), crs)?;
             let epoch = crate::py::arrow::reconcile_arrow_epoch(classified.epoch, epoch)?;
@@ -316,9 +317,11 @@ pub(crate) fn import_stream(
         let crs = crate::py::arrow::reconcile_arrow_crs(batch_crs.as_deref(), crs)?;
         let epoch = crate::py::arrow::reconcile_arrow_epoch(batch_epoch, epoch)?;
         let frame = Frame::new(crs.map(crs_arc), epoch)?;
-        // Missing mask is authoritative; placeholders keep storage rectangular.
-        let mask = crate::array::MissingMask::from_sparse(shapes.len(), &missing_rows);
-        let array = crate::PyGeometryArray::from_shapes(shapes, frame).with_missing_mask(mask);
+        let mask = crate::array::ValidityMask::from_sparse(row_base, &missing_rows);
+        let present = crate::PyGeometryArray::from_shapes(shapes, frame);
+        let array = mask.map_or(present.clone(), |mask| {
+            crate::PyGeometryArray::scatter_present_rows(&present, mask)
+        });
         array.into_py_any(py).map(Some)
     }
 }

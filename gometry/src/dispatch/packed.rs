@@ -104,7 +104,7 @@ fn packed_f64_lane(
         Ok(Some(mut values)) => {
             if let Some(mask) = array.missing() {
                 for (value, missing) in values.iter_mut().zip(mask.iter()) {
-                    if *missing {
+                    if missing {
                         *value = f64::NAN;
                     }
                 }
@@ -150,7 +150,7 @@ fn packed_bool_lane(
     // kernel already wrote false for masked slots.
     if let Some(mask) = array.missing() {
         for (value, missing) in values.iter_mut().zip(mask.iter()) {
-            if *missing {
+            if missing {
                 *value = false;
             }
         }
@@ -164,6 +164,9 @@ pub(crate) fn try_unary_packed_bool(
     array: &PyGeometryArray,
     op: Operation,
 ) -> Option<PyResult<Py<PyAny>>> {
+    if array.is_compact_nullable() {
+        return None;
+    }
     // Packed bool kernels run over physical rows (including NaN placeholders
     // on missing slots). [`packed_bool_lane`] then writes the missing-row
     // sentinel (`false`) from the mask — identical to the shape-lane answer
@@ -211,16 +214,7 @@ pub(crate) fn try_unary_packed_bounds(
     array: &PyGeometryArray,
 ) -> Option<PyResult<Py<PyAny>>> {
     match array.bounds_unary_packed(py) {
-        Ok(Some(mut values)) => {
-            if let Some(mask) = array.missing() {
-                for (row, missing) in mask.iter().enumerate() {
-                    if *missing {
-                        values[row * 4..row * 4 + 4].fill(f64::NAN);
-                    }
-                }
-            }
-            Some(bounds_array(py, values))
-        },
+        Ok(Some(values)) => Some(bounds_array(py, values)),
         Ok(None) => None,
         Err(error) => Some(Err(error)),
     }
@@ -372,7 +366,7 @@ pub(crate) fn try_unary_packed_array(
                     Arc::clone(coords),
                     offsets.clone(),
                     row_map.clone(),
-                    array.storage().len(),
+                    array.len(),
                     metric.clone(),
                     distance.clone(),
                     *normalized,
@@ -403,7 +397,7 @@ pub(crate) fn try_unary_packed_array(
                     Arc::clone(coords),
                     offsets.clone(),
                     row_map.clone(),
-                    array.storage().len(),
+                    array.len(),
                     metric.clone(),
                     start_distance.clone(),
                     end_distance.clone(),
@@ -454,7 +448,7 @@ fn linref_point_between_packed_inner(
     // Parameter errors raise on BOTH surfaces: the coordseq row loop below
     // clamps out-of-range stationing by design, so a non-finite distance
     // must be rejected here (the scalar path's kernel owns its own check).
-    if let MetricModel::Geodesic { crs, state } = model {
+    if let MetricModel::Geodesic { crs, state, .. } = model {
         crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
@@ -520,7 +514,7 @@ fn linref_substring_packed_inner(
     end_distance: &F64Param,
     normalized: bool,
 ) -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-    if let MetricModel::Geodesic { crs, state } = model {
+    if let MetricModel::Geodesic { crs, state, .. } = model {
         crate::crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
             (0..len)
                 .map(|row| {
@@ -558,13 +552,21 @@ fn linref_substring_packed_inner(
 fn segmentize_metric(
     array: &PyGeometryArray,
     resolver: super::MetricResolver,
-) -> PyResult<(Option<geographiclib_rs::Geodesic>, f64)> {
+) -> PyResult<(
+    Option<(
+        geographiclib_rs::Geodesic,
+        crate::geographic::GeographicFrame,
+    )>,
+    f64,
+)> {
     let super::MetricResolver::Metric { unit } = resolver else {
         return Ok((None, 1.0));
     };
     let model = crate::broadcast::resolve_metric(array.crs_str(), unit, "segmentize")?;
     match crate::crs::ResolvedMetric::from_model(&model)? {
-        crate::crs::ResolvedMetric::Geodesic { geodesic, .. } => Ok((Some(*geodesic), 1.0)),
+        crate::crs::ResolvedMetric::Geodesic {
+            geodesic, frame, ..
+        } => Ok((Some((*geodesic, frame)), 1.0)),
         crate::crs::ResolvedMetric::Planar { to_metre } => Ok((None, to_metre.get())),
     }
 }

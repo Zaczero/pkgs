@@ -264,7 +264,7 @@ fn make_array_with_offset(
 /// length is checked in release builds (not debug-only).
 pub(crate) fn apply_top_level_validity(
     array: &mut GometryArrowArray,
-    mask: &[bool],
+    mask: &crate::array::ValidityMask,
 ) -> PyResult<()> {
     let array = array.as_mut();
     let logical_len = usize::try_from(array.length).map_err(|_| {
@@ -275,7 +275,7 @@ pub(crate) fn apply_top_level_validity(
             "missing mask length must match logical Arrow array length",
         ));
     }
-    let null_count = mask.iter().filter(|&&missing| missing).count();
+    let null_count = mask.missing_count();
     if null_count == 0 {
         return Ok(());
     }
@@ -295,15 +295,21 @@ pub(crate) fn apply_top_level_validity(
     let total_bits = offset.checked_add(mask.len()).ok_or_else(|| {
         GeometryError::new_err("Arrow geometry export validity span exceeds usize")
     })?;
-    let mut validity = crate::try_vec_with_capacity(total_bits.div_ceil(8))?;
-    validity.resize(total_bits.div_ceil(8), 0);
-    for (row, &missing) in mask.iter().enumerate() {
-        if !missing {
-            let bit = offset + row;
-            validity[bit / 8] |= 1 << (bit % 8);
+    let (owned, mask_offset) = mask.arrow_bitmap();
+    let owned_bits = owned.len().checked_mul(8).unwrap_or(usize::MAX);
+    let validity = if mask_offset == offset && owned_bits >= total_bits {
+        owned
+    } else {
+        let mut validity = crate::try_vec_with_capacity(total_bits.div_ceil(8))?;
+        validity.resize(total_bits.div_ceil(8), 0);
+        for row in 0..mask.len() {
+            if mask.is_valid(row) {
+                let bit = offset + row;
+                validity[bit / 8] |= 1 << (bit % 8);
+            }
         }
-    }
-    let validity: Arc<[u8]> = validity.into();
+        Arc::<[u8]>::from(validity)
+    };
     let private = array.private_data.cast::<ArrayPrivate>();
     if private.is_null() {
         return Err(GeometryError::new_err(
@@ -421,6 +427,8 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     let columns = seq.column_arcs();
     let start = columns.window.start;
     let len = columns.window.end - columns.window.start;
+    let m_start = columns.m_window.start;
+    let m_len = columns.m_window.end - columns.m_window.start;
     let mut children = vec![
         primitive_f64_array_windowed(columns.xs, start, len)?,
         primitive_f64_array_windowed(columns.ys, start, len)?,
@@ -429,7 +437,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
         children.push(primitive_f64_array_windowed(zs, start, len)?);
     }
     if let Some(ms) = columns.ms {
-        children.push(primitive_f64_array_windowed(ms, start, len)?);
+        children.push(primitive_f64_array_windowed(ms, m_start, m_len)?);
     }
     make_array(len, vec![OwnedBufferSlot::Null], children)
 }
@@ -654,7 +662,33 @@ mod owner_export_tests {
     fn validity_mask_length_checked_in_release() {
         ensure_python();
         let mut array = make_array(2, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
-        assert!(apply_top_level_validity(&mut array, &[false]).is_err());
-        apply_top_level_validity(&mut array, &[false, true]).unwrap();
+        let short = crate::array::ValidityMask::from_vec(1, vec![true]).unwrap();
+        assert!(apply_top_level_validity(&mut array, &short).is_err());
+        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true]).unwrap();
+        apply_top_level_validity(&mut array, &mask).unwrap();
+    }
+
+    #[test]
+    fn aligned_validity_window_shares_arc_with_arrow_owner() {
+        ensure_python();
+        let parent = crate::array::ValidityMask::from_vec(8, vec![
+            false, false, false, true, false, true, false, false,
+        ])
+        .unwrap();
+        let window = parent.window(3, 3).unwrap();
+        let (bitmap, offset) = window.arrow_bitmap();
+        assert_eq!(offset, 3);
+        assert_eq!(bitmap.as_ref(), &[0b1101_0111]);
+
+        let mut array =
+            make_array_with_offset(3, 3, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
+        apply_top_level_validity(&mut array, &window).unwrap();
+        assert_eq!(array.0.null_count, 2);
+        // The first exported pointer is the original Arc allocation, not a
+        // repacked bitmap. ArrayPrivate retains its own Arc clone.
+        let exported = unsafe { *array.0.buffers }.cast::<u8>();
+        assert_eq!(exported, bitmap.as_ptr());
+        drop((parent, window, bitmap));
+        assert_eq!(unsafe { *exported }, 0b1101_0111);
     }
 }

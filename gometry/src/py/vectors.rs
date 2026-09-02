@@ -72,15 +72,21 @@ fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<()> {
 fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> bool {
     left.frame == right.frame
         && left.missing() == right.missing()
-        && left.storage().len() == right.storage().len()
+        && left.len() == right.len()
         && (Arc::ptr_eq(left.storage_arc(), right.storage_arc())
             || left
-                .storage()
-                .iter_shapes()
-                .zip(right.storage().iter_shapes())
-                .enumerate()
-                .all(|(row, (left_shape, right_shape))| {
-                    left.is_row_missing(row) || left_shape.as_ref() == right_shape.as_ref()
+                .logical_shape_rows()
+                .zip(right.logical_shape_rows())
+                .all(|(left, right)| match (left, right) {
+                    (
+                        crate::array::LogicalShapeRow::Missing { .. },
+                        crate::array::LogicalShapeRow::Missing { .. },
+                    ) => true,
+                    (
+                        crate::array::LogicalShapeRow::Present { shape: left, .. },
+                        crate::array::LogicalShapeRow::Present { shape: right, .. },
+                    ) => left == right,
+                    _ => false,
                 }))
 }
 
@@ -493,7 +499,7 @@ impl Groups {
                 let start = this.offsets[this.rows.start] as usize;
                 let end = this.offsets[this.rows.end] as usize;
                 let py = slf.py();
-                if start == 0 && end == values.storage().len() {
+                if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
                 } else {
                     values.gather_logical_row_range(start..end).into_py_any(py)
@@ -1036,7 +1042,7 @@ impl Groups {
                 ))
             },
             GroupsValues::Geometry(values) => {
-                let windowed = if start == 0 && end == values.storage().len() {
+                let windowed = if start == 0 && end == values.len() {
                     values.as_ref().clone()
                 } else {
                     values.gather_logical_row_range(start..end)
@@ -1108,7 +1114,7 @@ pub(crate) fn _unpickle_geometry_groups(
         let array = values.bind(py).borrow().clone();
         // Validate CSR before computing the row range — empty offsets must not
         // panic on `len() - 1` (debug) before the BufferError path runs.
-        validate_csr_offsets(&offsets, array.storage().len())?;
+        validate_csr_offsets(&offsets, array.len())?;
         let offsets: Arc<[i64]> = offsets.into();
         let rows = 0..offsets.len() - 1;
         Groups::from_geometry_csr(Arc::new(array), offsets, rows)

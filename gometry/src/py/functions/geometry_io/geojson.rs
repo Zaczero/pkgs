@@ -12,14 +12,14 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use serde_json::value::RawValue;
 
-use crate::array::MissingMask;
+use crate::array::ValidityMask;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::{
-    CoordinateAxes, Crs, Frame, GeoJsonDecodeContext, Polygon, PyGeometry, PyGeometryArray,
-    ScalarOrIterator, Shape, Typed, Wgs84DefaultCrs, classify_scalar_or_iterator,
-    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, coordinate_epoch_option,
-    exact_geometry, exact_geometry_array, guard_epoch_frame, io, is_py_bytes_or_bytearray,
-    mapping_as_dict, parse_geojson_geometry_value, py_bool, py_to_json_value, require_geojson_crs,
+    Crs, Frame, GeoJsonDecodeContext, PyGeometry, PyGeometryArray, ScalarOrIterator, Shape, Typed,
+    Wgs84DefaultCrs, classify_scalar_or_iterator, coerce_geojson_geometry_value,
+    coerce_geojson_geometry_value_at, coordinate_epoch_option, exact_geometry,
+    exact_geometry_array, guard_epoch_frame, io, is_py_bytes_or_bytearray, mapping_as_dict,
+    parse_geojson_geometry_value, py_bool, py_to_json_value, require_geojson_crs,
     with_one_byte_buffer,
 };
 
@@ -663,24 +663,11 @@ fn build_features(
         };
         crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
     }
-    // Final-order with kind-preserving placeholders (no scatter).
     let geometries = {
         let array = if missing_rows.is_empty() {
             PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)
         } else {
-            let placeholder = homogeneous_missing_placeholder(shapes.iter())?;
-            let mut full = crate::try_vec_with_capacity(row_count)?;
-            let mut present = shapes.into_iter();
-            let mut miss = missing_rows.iter().copied().peekable();
-            for row in 0..row_count {
-                if miss.peek() == Some(&row) {
-                    miss.next();
-                    crate::try_push(&mut full, placeholder.clone())?;
-                } else {
-                    crate::try_push(&mut full, present.next().expect("present count matches"))?;
-                }
-            }
-            PyGeometryArray::from_shapes(full, Frame::new(crs, epoch)?)
+            PyGeometryArray::from_shapes(shapes, Frame::new(crs, epoch)?)
                 .with_missing_mask(crate::array::sparse_missing_mask(row_count, &missing_rows))
         };
         array.into_pyobject(py)?.into_any()
@@ -1033,93 +1020,6 @@ impl<'de> Deserialize<'de> for FeatureGeometryValue {
         } else {
             Ok(Self::Value(value))
         }
-    }
-}
-
-/// Split parsed features into **final-order** shapes (missing → kind-preserving
-/// placeholder when present rows share one packable kind) plus missing mask.
-/// When every present shape is the same packable kind/axes, return a
-/// kind-preserving missing placeholder so final-order arrays stay packed
-/// (D2 GeoArrow native). Otherwise the generic NaN point placeholder.
-fn homogeneous_missing_placeholder<'a>(
-    present: impl Iterator<Item = &'a Shape>,
-) -> PyResult<Shape> {
-    let mut first: Option<&Shape> = None;
-    for shape in present {
-        match first {
-            None => first = Some(shape),
-            Some(prev) if !same_packable_kind(prev, shape) => {
-                return Ok(PyGeometryArray::missing_placeholder());
-            },
-            Some(_) => {},
-        }
-    }
-    match first {
-        Some(Shape::Point(p)) => {
-            let axes = CoordinateAxes::from_point(*p);
-            let z = axes.has_z().then_some(f64::NAN);
-            let m = axes.has_m().then_some(f64::NAN);
-            Ok(Shape::Point(crate::geometry::Point::new_unchecked_axes(
-                f64::NAN,
-                f64::NAN,
-                crate::geometry::ZOrdinate(z),
-                crate::geometry::MOrdinate(m),
-            )))
-        },
-        Some(Shape::LineString(line)) => {
-            let axes = line.axes();
-            let mut b = crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 2)
-                .map_err(PyErr::from)?;
-            let pt = crate::geometry::Point::new_unchecked_axes(
-                f64::NAN,
-                f64::NAN,
-                crate::geometry::ZOrdinate(axes.has_z().then_some(f64::NAN)),
-                crate::geometry::MOrdinate(axes.has_m().then_some(f64::NAN)),
-            );
-            b.push(pt);
-            b.push(pt);
-            Ok(Shape::LineString(crate::geometry::LineSeq::from_trusted(
-                b.finish_unchecked(),
-            )))
-        },
-        Some(Shape::Polygon(poly)) => {
-            // Kind-preserving missing placeholder for hole-bearing polygons too
-            // (D2): packable storage keeps mask/offsets; do not demote to WKB.
-            let axes = poly.shell.coords().axes();
-            let mut b = crate::geometry::CoordSeqBuilder::try_with_capacity(axes, 4)
-                .map_err(PyErr::from)?;
-            let pt = crate::geometry::Point::new_unchecked_axes(
-                f64::NAN,
-                f64::NAN,
-                crate::geometry::ZOrdinate(axes.has_z().then_some(f64::NAN)),
-                crate::geometry::MOrdinate(axes.has_m().then_some(f64::NAN)),
-            );
-            for _ in 0..4 {
-                b.push(pt);
-            }
-            // Empty hole list on the placeholder; present rows keep their holes.
-            // Packed admission tolerates missing shells as NaN rings.
-            Ok(Shape::Polygon(Polygon::new(
-                crate::geometry::Ring::from_trusted_closed(b.finish_unchecked()),
-                Vec::new(),
-            )))
-        },
-        _ => Ok(PyGeometryArray::missing_placeholder()),
-    }
-}
-
-fn same_packable_kind(a: &Shape, b: &Shape) -> bool {
-    match (a, b) {
-        (Shape::Point(pa), Shape::Point(pb)) => {
-            CoordinateAxes::from_point(*pa) == CoordinateAxes::from_point(*pb)
-        },
-        (Shape::LineString(la), Shape::LineString(lb)) => la.axes() == lb.axes(),
-        (Shape::Polygon(pa), Shape::Polygon(pb)) => {
-            // Same axes — holes may differ per row; packed polygon storage
-            // admits variable hole counts via CSR offsets.
-            pa.shell.coords().axes() == pb.shell.coords().axes()
-        },
-        _ => false,
     }
 }
 
@@ -1478,32 +1378,22 @@ fn geojson_feature_collection_member(value: &Value, path: &str) -> PyResult<Opti
 
 fn feature_value_shapes_and_missing(
     features: &[Value],
-) -> PyResult<(Vec<Shape>, Option<MissingMask>)> {
+) -> PyResult<(Vec<Shape>, Option<ValidityMask>)> {
     let mut present = Vec::new();
-    let mut slots = Vec::new();
-    crate::try_reserve_pair(&mut present, &mut slots, features.len()).map_err(PyErr::from)?;
+    let mut missing_rows = Vec::new();
+    crate::try_reserve_pair(&mut present, &mut missing_rows, features.len())
+        .map_err(PyErr::from)?;
     for (row, feature) in features.iter().enumerate() {
         let feature_path = format!("$.features[{row}]");
         let shape = geojson_feature_collection_member(feature, &feature_path)?;
-        if let Some(s) = &shape {
-            crate::try_push(&mut present, s.clone())?;
-        }
-        crate::try_push(&mut slots, shape)?;
-    }
-    let placeholder = homogeneous_missing_placeholder(present.iter())?;
-    let mut shapes = Vec::new();
-    let mut missing_rows = Vec::new();
-    crate::try_reserve_pair(&mut shapes, &mut missing_rows, slots.len()).map_err(PyErr::from)?;
-    for (row, slot) in slots.into_iter().enumerate() {
-        if let Some(shape) = slot {
-            crate::try_push(&mut shapes, shape)?;
+        if let Some(shape) = shape {
+            crate::try_push(&mut present, shape)?;
         } else {
             crate::try_push(&mut missing_rows, row)?;
-            crate::try_push(&mut shapes, placeholder.clone())?;
         }
     }
     Ok((
-        shapes,
+        present,
         crate::array::sparse_missing_mask(features.len(), &missing_rows),
     ))
 }

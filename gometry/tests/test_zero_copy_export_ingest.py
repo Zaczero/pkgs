@@ -6,6 +6,9 @@ export / direct Arc-column paths. Not a perf test — numbers land in scratch.
 
 from __future__ import annotations
 
+import gc
+import sys
+
 import gometry as gm
 import numpy as np
 
@@ -84,6 +87,29 @@ def test_gather_selection_to_arrow_roundtrip() -> None:
     gathered = arr[[5, 1, 99, 0, 50]]
     back = gm.from_arrow(gathered.to_arrow())
     assert list(back.to_wkt()) == list(gathered.to_wkt())
+
+
+def test_gather_arrow_export_owns_materialized_columns() -> None:
+    import pyarrow as pa
+
+    source = gm.GeometryArray([
+        gm.LineString([(float(i), 0.0), (float(i + 1), 1.0)]) for i in range(8)
+    ])
+    gathered = source[[6, 1, 6, 0]]
+    expected = list(gathered.to_wkt())
+    retained = sys.getsizeof(gathered)
+
+    schema = gathered.__arrow_c_schema__()
+    assert schema is not None
+    assert sys.getsizeof(gathered) == retained
+
+    schema_capsule, array_capsule = gathered.__arrow_c_array__()
+    assert sys.getsizeof(gathered) == retained
+    del gathered, source
+    gc.collect()
+
+    exported = pa.Array._import_from_c_capsule(schema_capsule, array_capsule)
+    assert list(gm.from_arrow(exported).to_wkt()) == expected
 
 
 def test_linestring_numpy_nx2_direct() -> None:

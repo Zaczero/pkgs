@@ -5,7 +5,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
-use crate::array::MissingMask;
+use crate::array::ValidityMask;
 use crate::boundary::metadata::Frame;
 use crate::geometry::{Bounds, Shape};
 use crate::py::numpy::{bool_array, float64_array};
@@ -33,7 +33,7 @@ pub(crate) trait BulkElement: Sized + Send {
         values: Vec<Self>,
         py: Python<'_>,
         frame: &Frame,
-        missing: Option<&MissingMask>,
+        missing: Option<&ValidityMask>,
     ) -> PyResult<Py<PyAny>> {
         let _ = missing;
         Self::bulk_into_py(values, py, frame)
@@ -122,7 +122,7 @@ impl BulkElement for String {
         values: Vec<Self>,
         py: Python<'_>,
         _frame: &Frame,
-        missing: Option<&MissingMask>,
+        missing: Option<&ValidityMask>,
     ) -> PyResult<Py<PyAny>> {
         let Some(mask) = missing else {
             return values.into_py_any(py);
@@ -131,7 +131,7 @@ impl BulkElement for String {
             .into_iter()
             .enumerate()
             .map(|(row, value)| {
-                if mask[row] {
+                if mask.is_missing(row) {
                     Ok(py.None())
                 } else {
                     value.into_py_any(py)
@@ -164,7 +164,7 @@ impl BulkElement for Shape {
         values: Vec<Self>,
         py: Python<'_>,
         frame: &Frame,
-        missing: Option<&MissingMask>,
+        missing: Option<&ValidityMask>,
     ) -> PyResult<Py<PyAny>> {
         Ok(PyGeometryArray::from_shapes(values, frame.clone())
             .with_missing_mask(missing.cloned())

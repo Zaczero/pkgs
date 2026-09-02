@@ -51,10 +51,11 @@ def test_constructor_access_and_vocabulary(masked: gm.GeometryArray) -> None:
         dense.fill_missing(object())
 
 
-def test_missing_mask_is_counted_in_retained_size(masked: gm.GeometryArray) -> None:
+def test_missing_rows_have_no_coordinate_payload(masked: gm.GeometryArray) -> None:
     dense = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1), gm.Point(2, 2)])
-    assert masked.nbytes == dense.nbytes
-    assert masked.__sizeof__() == dense.__sizeof__() + len(masked)
+    assert masked.nbytes == 2 * 2 * 8
+    assert dense.nbytes == 3 * 2 * 8
+    assert masked.__sizeof__() > masked.nbytes
 
 
 def test_fill_missing_accepts_row_aligned_arrays(masked: gm.GeometryArray) -> None:
@@ -141,6 +142,42 @@ def test_multiway_concat_preserves_packed_rows_order_and_missing_mask() -> None:
     assert polygon_joined.to_wkt() == [
         value for chunk in polygons for value in chunk.to_wkt()
     ]
+
+
+def test_compact_point_logical_rows_survive_gather_concat_and_kernels() -> None:
+    rows = gm.GeometryArray([
+        gm.Point(1.0, 1.0),
+        None,
+        gm.Point(),
+        gm.Point(3.0, 3.0),
+    ])
+
+    assert rows.to_wkt() == ['POINT (1 1)', None, 'POINT EMPTY', 'POINT (3 3)']
+    assert rows[[3, 1, 3, 0]].to_wkt() == [
+        'POINT (3 3)',
+        None,
+        'POINT (3 3)',
+        'POINT (1 1)',
+    ]
+    assert rows[1:4].to_wkt() == [None, 'POINT EMPTY', 'POINT (3 3)']
+    assert rows.concat(rows[[3, 0]]).to_wkt() == [
+        'POINT (1 1)',
+        None,
+        'POINT EMPTY',
+        'POINT (3 3)',
+        'POINT (3 3)',
+        'POINT (1 1)',
+    ]
+    assert rows.translate(10.0, 20.0).to_wkt() == [
+        'POINT (11 21)',
+        None,
+        'POINT EMPTY',
+        'POINT (13 23)',
+    ]
+    assert gm.distance(rows, gm.Point(1.0, 1.0)).tolist()[0] == pytest.approx(0.0)
+    assert math.isnan(gm.distance(rows, gm.Point(1.0, 1.0)).tolist()[1])
+    assert gm.intersects(rows, gm.Point(1.0, 1.0)).tolist() == [True, False, False, False]
+    assert rows.geometry_type == ['Point', None, 'Point', 'Point']
 
 
 def test_geometry_item_consumers_handle_missing_rows_by_contract() -> None:
@@ -486,6 +523,14 @@ def test_spatial_index_point_fast_paths_skip_missing_query_rows() -> None:
     assert list(zip(left.tolist(), right.tolist(), strict=True)) == [(0, 0)]
 
 
+def test_spatial_index_build_from_compact_rows_keeps_logical_handles() -> None:
+    values = gm.GeometryArray([gm.Point(0.0, 0.0), None, gm.Point(2.0, 2.0)])
+    index = gm.SpatialIndex(values)
+
+    assert index.query(gm.Point(0.0, 0.0)).tolist() == [0]
+    assert index.nearest(gm.Point(2.0, 2.0)).tolist() == [2]
+
+
 def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     line = gm.LineString([(0.0, 0.0), (10.0, 0.0)])
     lines = gm.GeometryArray([line, None, line])
@@ -499,6 +544,8 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     assert located_points[0] == pytest.approx(5.0)
     assert math.isnan(located_points[1])
     assert located_points[2] == pytest.approx(7.0)
+    with pytest.raises(gm.GeometryTypeError, match='requires a Point'):
+        line.line_locate(lines)
 
     measured = gm.LineString([(0.0, 0.0), (10.0, 0.0)], m=[0.0, 100.0])
     measured_rows = gm.GeometryArray([measured, None])
@@ -684,6 +731,17 @@ def test_frame_semantics_with_missing() -> None:
     assert str(reprojected.crs) == 'EPSG:3857'
     with pytest.raises(gm.CRSMismatchError):
         tagged.fill_missing(gm.Point(1.0, 1.0, crs=3857))
+
+
+def test_compact_arrow_round_trip_keeps_logical_rows() -> None:
+    values = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
+        None,
+        gm.LineString([(2.0, 2.0), (3.0, 3.0)]),
+    ])
+    arrow = values.to_arrow()
+    assert len(arrow) == len(values)
+    assert gm.from_arrow(arrow) == values
 
 
 def test_container_equality_and_pickle(masked: gm.GeometryArray) -> None:
@@ -1055,14 +1113,16 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
 
 
 def test_repeated_ops_on_a_fancy_selection_stay_consistent() -> None:
-    # The gathered-storage memo must be invisible: every op on one selection
-    # object returns the same values as a fresh selection, and mutating-style
-    # ops (which build new arrays) never see stale columns.
+    # Packed operations materialize only operation-scoped columns: repeated
+    # reductions retain no selected coordinate payload on the source.
     polys = gm.GeometryArray([gm.box(i, 0, i + 1, 2) for i in range(12)])
     mask = np.array([i % 3 == 0 for i in range(12)])
     sel = polys[mask]
+    retained = sel.__sizeof__()
     first_area = sel.area
+    assert sel.__sizeof__() == retained
     np.testing.assert_array_equal(sel.area, first_area)
+    assert sel.__sizeof__() == retained
     np.testing.assert_array_equal(polys[mask].area, first_area)
     np.testing.assert_array_equal(sel.length, polys[mask].length)
     np.testing.assert_array_equal(sel.bounds, polys[mask].bounds)

@@ -240,6 +240,29 @@ def test_core_missing_rows_are_first_class() -> None:
     assert data[1] is None
 
 
+@pytest.mark.parametrize(
+    'rows',
+    [
+        [gm.Point(0, 0), None, gm.Point(2, 2)],
+        [
+            gm.LineString([(0, 0), (1, 1)]),
+            None,
+            gm.LineString([(2, 2), (3, 3)]),
+        ],
+        [gm.box(0, 0, 1, 1), None, gm.box(2, 2, 3, 3)],
+    ],
+)
+def test_pandas_nullable_packed_roundtrip_preserves_payload_rows(
+    rows: list[object],
+) -> None:
+    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    restored = from_pandas(to_pandas(values))
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.is_missing.tolist() == [False, True, False]
+    assert restored.crs == values.crs
+    assert restored.epoch == values.epoch
+
+
 def test_empty_selection_take_and_all_missing_mutation_preserve_frame() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).set_epoch(2020.0)
     series = to_pandas(arr)

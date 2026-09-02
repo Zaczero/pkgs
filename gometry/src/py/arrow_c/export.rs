@@ -15,25 +15,28 @@ use crate::{PyGeometryArray, io};
 ///
 /// Packed Identity/Window rows retain coordinate and CSR `Arc`s in capsule
 /// private data (Window is an Arrow offset/length over the parent buffers).
-/// Gather normalizes once through `gathered_memo`. Mixed scans `Vec<Shape>`
-/// without materializing `PyGeometry` per row.
+/// Gather columns are materialized for this export and retained by capsule
+/// private data. Mixed scans `Vec<Shape>` without materializing `PyGeometry`
+/// per row.
 pub(crate) fn export_from_geometry_array(array: &PyGeometryArray) -> PyResult<ExportedArray> {
     let crs = array.crs_str();
     let epoch = array.epoch();
-    // Gather → contiguous Identity once; Identity/Window pass through.
-    let storage =
-        crate::array::normalized_gather_storage(array.storage_arc(), &array.gathered_memo)
-            .map_err(crate::array::packed_columns_err)?;
-    export_from_storage(storage.as_ref(), crs, epoch)
+    if let Some(coords) = array.materialized_compact_point_coords()? {
+        return export_packed_points(&coords, RowSelectionRef::Identity, crs, epoch);
+    }
+    let gathered = crate::array::materialized_gather(array.storage())
+        .map_err(crate::array::packed_columns_err)?;
+    export_from_storage(
+        gathered.as_ref().unwrap_or_else(|| array.storage()),
+        crs,
+        epoch,
+    )
 }
 
 pub(crate) fn schema_from_geometry_array(array: &PyGeometryArray) -> PyResult<Box<ArrowSchema>> {
     let crs = array.crs_str();
     let epoch = array.epoch();
-    let storage =
-        crate::array::normalized_gather_storage(array.storage_arc(), &array.gathered_memo)
-            .map_err(crate::array::packed_columns_err)?;
-    schema_from_storage(storage.as_ref(), crs, epoch)
+    schema_from_storage(array.storage(), crs, epoch)
 }
 
 fn export_from_storage(
@@ -104,7 +107,7 @@ fn export_packed_points(
     let seq = match row_map {
         RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.clone(),
         RowSelectionRef::Window { start, len } => {
-            coords.view(CoordWindow::trusted(start..start + len, coords.len()))
+            coords.view(CoordWindow::from_range(start..start + len, coords.len()))
         },
     };
     let axes = seq.axes();
@@ -236,7 +239,7 @@ pub(crate) fn native_storage_schema_shapes(
             matches!(
                 shape,
                 Shape::MultiPoint(points)
-                    if points.members().iter().any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+                    if points.has_empty_members()
             )
         }) {
             return None;
@@ -338,7 +341,7 @@ fn export_native_shapes_slice(
             matches!(
                 shape,
                 Shape::MultiPoint(points)
-                    if points.members().iter().any(|member| matches!(member, crate::geometry::MultiMember::Empty))
+                    if points.has_empty_members()
             )
         }) {
             return Ok(None);
@@ -564,7 +567,7 @@ pub(crate) fn export_multilines_shapes(
             match member {
                 crate::geometry::MultiMember::Empty => line_offsets.push(point_count),
                 crate::geometry::MultiMember::Value(index) => {
-                    let line = &items.as_slice()[*index];
+                    let line = &items.as_slice()[index];
                     point_count = point_count
                         .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
                         .ok_or_else(offset_error)?;
@@ -792,7 +795,7 @@ pub(crate) fn export_multipolygons_shapes(
             match member {
                 crate::geometry::MultiMember::Empty => polygon_offsets.push(ring_count),
                 crate::geometry::MultiMember::Value(index) => {
-                    let polygon = &polygons.as_slice()[*index];
+                    let polygon = &polygons.as_slice()[index];
                     let ring_total = polygon
                         .holes
                         .len()
