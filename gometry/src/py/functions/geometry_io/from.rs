@@ -4,13 +4,14 @@
 )]
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyAny;
 
-use crate::py::functions::bulk_rows::{StreamedSridRow, stream_bulk_srid};
+use crate::py::functions::bulk_rows::{StreamedSridRow, batch_bulk_srid, stream_bulk_srid};
 use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
 use crate::{
-    PyGeometry, Typed, coordinate_epoch_option, guard_epoch_frame, io, parse_crs,
-    parse_wkb_geometry, parse_wkb_payload, parse_wkb_payload_bytes,
+    OwnedBytes, PyGeometry, Typed, coordinate_epoch_option, copy_wkb_payload, exact_backed_bytes,
+    guard_epoch_frame, io, parse_crs, parse_wkb_geometry,
 };
 
 /// Parse a geometry (or array) from Well-Known Text.
@@ -83,27 +84,46 @@ pub(crate) fn from_wkt(
         )?)
     };
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {
-        let text = text.to_cow()?.into_owned();
+        let text: PyBackedStr = text.extract()?;
         let geometry = py.detach(move || parse(&text))?;
         return Ok(Typed(geometry).into_pyobject(py)?.unbind());
     }
     let error = || PyTypeError::new_err("expected WKT string or iterable of WKT strings");
     let iter = crate::py_iter_or_error(data, error)?;
+    if crate::is_concrete_batch(data)? {
+        let array = batch_bulk_srid(
+            py,
+            iter,
+            move |item, _row| {
+                if item.is_none() {
+                    return Ok(None);
+                }
+                item.cast::<pyo3::types::PyString>()
+                    .map_err(|_| error())?
+                    .extract::<PyBackedStr>()
+                    .map(Some)
+            },
+            fallback.clone(),
+            parsed_epoch,
+            "WKT import",
+            "EWKT SRID",
+            |text| text.map(parse_wkt_stream_row).transpose(),
+        )?;
+        return Ok(array.into_pyobject(py)?.unbind().into());
+    }
     let array = stream_bulk_srid(
+        py,
         iter,
         fallback,
         parsed_epoch,
         "WKT import",
         "EWKT SRID",
-        move |item, rows| {
-            let text = item
-                .cast::<pyo3::types::PyString>()
+        move |item, _row| {
+            item.cast::<pyo3::types::PyString>()
                 .map_err(|_| error())?
-                .to_cow()?;
-            let (body, srid) = split_ewkt_srid(text.as_ref())?;
-            rows.try_push(io::parse_wkt(body)?)?;
-            Ok(StreamedSridRow::Present(srid))
+                .extract::<PyBackedStr>()
         },
+        parse_wkt_stream_row,
     )?;
     Ok(array.into_pyobject(py)?.unbind().into())
 }
@@ -177,28 +197,78 @@ pub(crate) fn from_wkb(
         geometry.set_epoch_keep_crs(parsed_epoch)?;
         Ok(geometry)
     };
-    match parse_wkb_payload_bytes(data, |bytes| Ok(bytes.to_vec())) {
-        Ok(bytes) => {
-            let geometry = py.detach(move || attach(parse_wkb_geometry(&bytes)?))?;
-            return Ok(Typed(geometry).into_pyobject(py)?.unbind());
-        },
-        Err(err) if err.is_instance_of::<PyTypeError>(py) => {},
-        Err(err) => return Err(err),
+    if crate::is_one_byte_buffer(data) {
+        let bytes = if let Some(bytes) = exact_backed_bytes(data)? {
+            OwnedBytes::Backed(bytes)
+        } else {
+            OwnedBytes::Copied(copy_wkb_payload(data)?)
+        };
+        let geometry = py.detach(move || attach(parse_wkb_geometry(bytes.as_slice())?))?;
+        return Ok(Typed(geometry).into_pyobject(py)?.unbind());
     }
     let values = crate::py_iter_or_error(data, || {
         PyTypeError::new_err("expected WKB bytes or iterable of WKB bytes")
     })?;
+    let iter = values.clone();
+    if crate::is_concrete_batch(data)? {
+        let array = batch_bulk_srid(
+            py,
+            iter,
+            move |item, _row| {
+                if item.is_none() {
+                    return Ok(None);
+                }
+                if let Some(bytes) = exact_backed_bytes(item)? {
+                    Ok(Some(OwnedBytes::Backed(bytes)))
+                } else {
+                    copy_wkb_payload(item).map(|bytes| Some(OwnedBytes::Copied(bytes)))
+                }
+            },
+            fallback.clone(),
+            parsed_epoch,
+            "WKB import",
+            "EWKB SRID",
+            |data| {
+                data.map(|data| {
+                    io::parse_wkb(data.as_slice()).map(|parsed| StreamedSridRow {
+                        shape: parsed.shape,
+                        srid: parsed.srid,
+                    })
+                })
+                .transpose()
+            },
+        )?;
+        return Ok(array.into_pyobject(py)?.unbind().into());
+    }
     let array = stream_bulk_srid(
+        py,
         values,
         fallback,
         parsed_epoch,
         "WKB import",
         "EWKB SRID",
-        move |data, rows| {
-            let parsed = parse_wkb_payload(data)?;
-            rows.try_push(parsed.shape)?;
-            Ok(StreamedSridRow::Present(parsed.srid))
+        move |data, _row| {
+            if let Some(bytes) = exact_backed_bytes(data)? {
+                Ok(OwnedBytes::Backed(bytes))
+            } else {
+                copy_wkb_payload(data).map(OwnedBytes::Copied)
+            }
+        },
+        move |data| {
+            let parsed = io::parse_wkb(data.as_slice())?;
+            Ok(StreamedSridRow {
+                shape: parsed.shape,
+                srid: parsed.srid,
+            })
         },
     )?;
     Ok(array.into_pyobject(py)?.unbind().into())
+}
+
+fn parse_wkt_stream_row(text: PyBackedStr) -> crate::error::Result<StreamedSridRow> {
+    let (body, srid) = split_ewkt_srid(text.as_ref())?;
+    Ok(StreamedSridRow {
+        shape: io::parse_wkt(body)?,
+        srid,
+    })
 }

@@ -43,6 +43,11 @@ pub(crate) enum FrameError {
         first: Option<f64>,
         other: Option<f64>,
     },
+    EmbeddedCrsConflict {
+        explicit: Crs,
+        embedded: Crs,
+        source: Box<str>,
+    },
     EpochRequiresCrs,
     EpochRequiresDynamicCrs {
         crs: Crs,
@@ -97,6 +102,15 @@ impl std::fmt::Display for FrameError {
                  item {index} has {}",
                 epoch_label(*first),
                 epoch_label(*other),
+            ),
+            Self::EmbeddedCrsConflict {
+                explicit,
+                embedded,
+                source,
+            } => write!(
+                formatter,
+                "crs argument {explicit:?} conflicts with the embedded {source} {embedded:?}; \
+                 omit crs= or align them",
             ),
             Self::EpochRequiresCrs => write!(
                 formatter,

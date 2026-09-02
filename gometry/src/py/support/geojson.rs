@@ -121,6 +121,18 @@ pub(crate) fn classify_scalar_or_iterator<'py>(
     Ok(ScalarOrIterator::Iterator(value.try_iter()?))
 }
 
+/// Concrete containers can be snapshotted before one detached batch parse.
+/// Everything else remains a general iterator and must retain fail-fast row
+/// consumption semantics.
+pub(crate) fn is_concrete_batch(value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if value.cast::<PyList>().is_ok() || value.cast::<PyTuple>().is_ok() {
+        return Ok(true);
+    }
+    let value_type = value.get_type();
+    Ok(value_type.name()? == "ndarray"
+        && value_type.getattr("__module__")?.extract::<&str>()? == "numpy")
+}
+
 #[derive(Clone, Copy)]
 enum JsonProjection {
     Full,
@@ -412,13 +424,10 @@ pub(crate) fn json_dumps(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 ///   one top-level Feature; a null Feature geometry is an error.
 /// * [`NullableRow`](GeoJsonDecodeContext::NullableRow) — bare Geometry or
 ///   Feature; a null Feature geometry yields ``None`` (missing row).
-/// * [`GeometrySlot`](GeoJsonDecodeContext::GeometrySlot) — Geometry only;
-///   Feature / FeatureCollection are rejected by the geometry-slot decoder.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum GeoJsonDecodeContext {
     GeometryLike,
     NullableRow,
-    GeometrySlot,
 }
 
 /// One context-aware Shape+Frame coercer for foreign GeoJSON values.
@@ -435,7 +444,7 @@ pub(crate) fn coerce_geojson_geometry_value(
     context: GeoJsonDecodeContext,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
     epoch: Option<f64>,
-) -> PyResult<Option<(Shape, Frame)>> {
+) -> crate::error::Result<Option<(Shape, Frame)>> {
     coerce_geojson_geometry_value_at(value, context, policy, epoch, "$")
 }
 
@@ -445,7 +454,7 @@ pub(crate) fn coerce_geojson_geometry_value_at(
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
     epoch: Option<f64>,
     base_path: &str,
-) -> PyResult<Option<(Shape, Frame)>> {
+) -> crate::error::Result<Option<(Shape, Frame)>> {
     let mut declarations = Vec::new();
     crate::io::collect_geojson_legacy_crs(value, &mut declarations);
     let resolved = crate::io::reconcile_legacy_geojson_crs(&declarations, policy)?;
@@ -462,9 +471,8 @@ fn select_geojson_geometry_value<'a>(
     value: &'a Value,
     context: GeoJsonDecodeContext,
     base_path: &str,
-) -> PyResult<Option<(&'a Value, String)>> {
+) -> crate::error::Result<Option<(&'a Value, String)>> {
     match context {
-        GeoJsonDecodeContext::GeometrySlot => Ok(Some((value, base_path.to_owned()))),
         GeoJsonDecodeContext::GeometryLike | GeoJsonDecodeContext::NullableRow => {
             let Some(object) = value.as_object() else {
                 return Ok(Some((value, base_path.to_owned())));
@@ -490,7 +498,6 @@ fn select_geojson_geometry_value<'a>(
                     )
                     .with_parse_path(&geometry_path)
                     .into()),
-                    GeoJsonDecodeContext::GeometrySlot => unreachable!("matched above"),
                 };
             }
             Ok(Some((geometry, geometry_path)))

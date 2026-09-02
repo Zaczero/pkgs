@@ -3,32 +3,47 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::IntoPyObjectExt as _;
+use pyo3::pybacked::PyBackedBytes;
+use pyo3::types::{PyByteArray, PyBytes};
 
 use crate::geometry::{MOrdinate, ZOrdinate};
 use crate::py::support::{
-    Bound, GeometryInput, InvalidGeometryError, Point, Polygon, Py, PyAny, PyAnyMethods as _,
-    PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape, classify_input,
-    coerce_geometry, coordinate_values_at_most, coordinate_values_exact, exact_geometry,
-    is_mapping_like, is_py_bytes_or_bytearray, push_ring_shapes, pyfunction, with_one_byte_buffer,
+    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, Py,
+    PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring,
+    Shape, Value, classify_input, coerce_geometry, coordinate_values_at_most,
+    coordinate_values_exact, exact_geometry, is_mapping_like, is_py_bytes_or_bytearray,
+    parse_geojson_geometry_value, push_ring_shapes, pyfunction,
 };
 
 pub(crate) enum CoercedCollectedGeometryItems {
     Items(Vec<PyGeometry>),
-    FramelessShapes(Vec<Shape>),
+}
+
+pub(crate) enum OwnedBytes {
+    Backed(PyBackedBytes),
+    Copied(Vec<u8>),
+}
+
+impl OwnedBytes {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Backed(bytes) => bytes.as_ref(),
+            Self::Copied(bytes) => bytes,
+        }
+    }
+}
+
+pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> PyResult<Option<PyBackedBytes>> {
+    if value.cast::<PyBytes>().is_ok() || value.cast::<PyByteArray>().is_ok() {
+        return value.extract().map(Some).map_err(Into::into);
+    }
+    Ok(None)
 }
 
 impl CoercedCollectedGeometryItems {
     pub(crate) fn into_items(self) -> PyResult<Vec<PyGeometry>> {
-        match self {
-            Self::Items(items) => Ok(items),
-            Self::FramelessShapes(shapes) => {
-                let mut items = Vec::new();
-                for shape in shapes {
-                    crate::try_push(&mut items, PyGeometry::with_epoch(shape, None, None)?)?;
-                }
-                Ok(items)
-            },
-        }
+        let Self::Items(items) = self;
+        Ok(items)
     }
 }
 
@@ -51,12 +66,15 @@ impl<'a> GeometryValues<'a> {
             Some(GeometryInput::One(geometry)) => Ok(Self::One(geometry)),
             Some(GeometryInput::Many(array)) => Ok(Self::Array(array)),
             None => {
-                let items = crate::collect_py_iter(values, Ok)?;
-                Ok(Self::Collected(coerce_collected_geometry_items(
-                    &items,
-                    true,
-                    crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
-                )?))
+                let iter = values.try_iter()?;
+                Ok(Self::Collected(CoercedCollectedGeometryItems::Items(
+                    coerce_geometry_iter(
+                        values.py(),
+                        iter,
+                        true,
+                        crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
+                    )?,
+                )))
             },
         }
     }
@@ -83,57 +101,106 @@ pub(crate) fn missing_geometry_items_error() -> PyErr {
     )
 }
 
-fn coerce_generic_geometry_items(
-    items: &[Bound<'_, PyAny>],
+pub(crate) enum OwnedGeometryItem {
+    Native(PyGeometry),
+    Wkb(OwnedBytes),
+    GeoJson(Value),
+}
+
+pub(crate) fn own_geometry_item(
+    item: &Bound<'_, PyAny>,
+    policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
+) -> PyResult<OwnedGeometryItem> {
+    if let Some(geometry) = exact_geometry(item) {
+        return Ok(OwnedGeometryItem::Native(geometry.clone()));
+    }
+    if is_py_bytes_or_bytearray(item) {
+        return Ok(OwnedGeometryItem::Wkb(
+            if let Some(bytes) = exact_backed_bytes(item)? {
+                OwnedBytes::Backed(bytes)
+            } else {
+                OwnedBytes::Copied(copy_wkb_payload(item)?)
+            },
+        ));
+    }
+    if is_mapping_like(item)?
+        || item
+            .getattr_opt(pyo3::intern!(item.py(), "__geo_interface__"))?
+            .is_some()
+    {
+        return Ok(OwnedGeometryItem::GeoJson(parse_geojson_geometry_value(
+            item,
+        )?));
+    }
+    // Preserve the existing type error for strings and unsupported values.
+    coerce_geometry(item, policy).map(OwnedGeometryItem::Native)
+}
+
+pub(crate) fn parse_owned_geometry_item(
+    item: OwnedGeometryItem,
+    policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
+) -> crate::error::Result<PyGeometry> {
+    match item {
+        OwnedGeometryItem::Native(geometry) => Ok(geometry),
+        OwnedGeometryItem::Wkb(bytes) => {
+            let parsed = crate::io::parse_wkb(bytes.as_slice())?;
+            let crs = crate::io::crs_from_optional_srid(parsed.srid)?.map(crate::crs_arc);
+            Ok(PyGeometry::with_frame(parsed.shape, Frame::new(crs, None)?))
+        },
+        OwnedGeometryItem::GeoJson(value) => {
+            let Some((shape, frame)) = crate::coerce_geojson_geometry_value(
+                &value,
+                GeoJsonDecodeContext::GeometryLike,
+                policy,
+                None,
+            )?
+            else {
+                return Err(crate::io::IoError::geojson(
+                    "Feature has null geometry (an unlocated feature); parse the FeatureCollection with from_geojson/from_features, where null geometries become missing rows",
+                ));
+            };
+            Ok(PyGeometry::with_frame(shape, frame))
+        },
+    }
+}
+
+fn coerce_geometry_iter<'py>(
+    py: pyo3::Python<'py>,
+    iter: Bound<'py, pyo3::types::PyIterator>,
     note_rows: bool,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
 ) -> PyResult<Vec<PyGeometry>> {
-    crate::try_collect_results(items.iter().enumerate().map(|(row, item)| {
-        coerce_geometry(item, policy).map_err(|error| {
-            if note_rows {
-                crate::note_array_row(error, row)
-            } else {
-                error
-            }
-        })
-    }))
-}
-
-/// Pure-bytes GeometryArray ingest: parse WKB/EWKB rows with one SRID
-/// canonicalize per distinct code (same cache as bulk `from_wkb`).
-fn coerce_collected_wkb_items(
-    items: &[Bound<'_, PyAny>],
-    note_rows: bool,
-) -> PyResult<CoercedCollectedGeometryItems> {
-    let mut rows = crate::try_vec_with_capacity(items.len())?;
-    let mut saw_embedded = false;
-    let mut srid_cache = crate::io::SridCrsCache::default();
-    for (row, item) in items.iter().enumerate() {
-        let note = |err: PyErr| {
-            if note_rows {
-                crate::note_array_row(err, row)
-            } else {
-                err
-            }
+    let mut output = Vec::new();
+    for (row, item) in iter.enumerate() {
+        let item = item?;
+        crate::check_python_signals(py, row)?;
+        if item.is_none() {
+            return Err(missing_geometry_items_error());
+        }
+        let owned = match own_geometry_item(&item, policy) {
+            Ok(owned) => owned,
+            Err(error) => {
+                return Err(if note_rows {
+                    crate::note_array_row(error, row)
+                } else {
+                    error
+                });
+            },
         };
-        let parsed = parse_wkb_payload(item).map_err(note)?;
-        let embedded = srid_cache
-            .resolve(parsed.srid)
-            .map_err(|err| note(err.into()))?;
-        saw_embedded |= embedded.is_some();
-        crate::try_push(&mut rows, (parsed.shape, embedded.map(crate::crs_arc)))?;
+        let parsed = py.detach(move || parse_owned_geometry_item(owned, policy));
+        let geometry = match parsed {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                return Err(if note_rows {
+                    crate::note_array_row(error.into(), row)
+                } else {
+                    error.into()
+                });
+            },
+        };
+        crate::try_push(&mut output, geometry)?;
     }
-    if !saw_embedded {
-        return Ok(CoercedCollectedGeometryItems::FramelessShapes(
-            crate::try_collect_results(rows.into_iter().map(|(shape, _)| Ok(shape)))?,
-        ));
-    }
-    Ok(CoercedCollectedGeometryItems::Items(
-        crate::try_collect_results(
-            rows.into_iter()
-                .map(|(shape, crs)| PyGeometry::with_epoch(shape, crs, None).map_err(Into::into)),
-        )?,
-    ))
+    Ok(output)
 }
 
 pub(crate) fn coerce_collected_geometry_items(
@@ -141,91 +208,45 @@ pub(crate) fn coerce_collected_geometry_items(
     note_rows: bool,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
 ) -> PyResult<CoercedCollectedGeometryItems> {
-    // Dispatch pure-batch lanes from the first non-None item so an all-bytes
-    // batch never runs the doomed geometry pass (and its speculative Vec).
-    // Mixed batches still fall through to the geo-interface / coerce lanes.
-    let first = items.iter().find(|item| !item.is_none());
-    match first {
-        None if items.is_empty() => {
-            return Ok(CoercedCollectedGeometryItems::Items(Vec::new()));
-        },
-        None => {
-            // Every item is None — same missing-geometry error as a pure-geometry
-            // pass that collected zero present rows.
-            return Err(missing_geometry_items_error());
-        },
-        Some(first) if exact_geometry(first).is_some() => {
-            let mut native_items = crate::try_vec_with_capacity(items.len())?;
-            let mut missing_items = 0_usize;
-            for item in items {
-                if item.is_none() {
-                    missing_items += 1;
-                    continue;
-                }
-                let Some(geometry) = exact_geometry(item) else {
-                    native_items.clear();
-                    break;
-                };
-                crate::try_push(&mut native_items, geometry.clone())?;
-            }
-            if missing_items > 0
-                && native_items.len().checked_add(missing_items) == Some(items.len())
-            {
-                return Err(missing_geometry_items_error());
-            }
-            if native_items.len() == items.len() {
-                return Ok(CoercedCollectedGeometryItems::Items(native_items));
-            }
-            // Mixed geometry + other kinds: fall through below.
-        },
-        Some(first) if is_py_bytes_or_bytearray(first) => {
-            // Pure-bytes candidate: skip the geometry pass entirely.
-        },
-        Some(_) => {
-            // Neither pure-geometry nor pure-bytes lead item: skip both pure
-            // speculative passes and fall through to geo-interface / coerce.
-        },
+    let Some(first) = items.first() else {
+        return Ok(CoercedCollectedGeometryItems::Items(Vec::new()));
+    };
+    if items.iter().any(|item| item.is_none()) {
+        return Err(missing_geometry_items_error());
     }
-
-    if items.iter().all(is_py_bytes_or_bytearray) {
-        return coerce_collected_wkb_items(items, note_rows);
-    }
-    let mut all_mapping_or_interface = true;
-    for item in items {
-        if exact_geometry(item).is_some() {
-            all_mapping_or_interface = false;
-            break;
-        }
-        // Propagate protocol errors from mapping / attribute probes — never
-        // swallow into a false negative that demotes the pure-mapping lane.
-        let mapping = is_mapping_like(item)?;
-        let interface = item
-            .getattr_opt(pyo3::intern!(item.py(), "__geo_interface__"))?
-            .is_some();
-        if !(mapping || interface) {
-            all_mapping_or_interface = false;
-            break;
+    let py = first.py();
+    let mut owned = crate::try_vec_with_capacity(items.len())?;
+    for (row, item) in items.iter().enumerate() {
+        match own_geometry_item(item, policy) {
+            Ok(item) => crate::try_push(&mut owned, item)?,
+            Err(error) => {
+                return Err(if note_rows {
+                    crate::note_array_row(error, row)
+                } else {
+                    error
+                });
+            },
         }
     }
-    if all_mapping_or_interface {
-        // Pure Mapping / __geo_interface__ batch: one shared GeoJSON coercer
-        // with the caller's legacy-CRS policy (Adopt for GeometryArray /
-        // require; Fixed for document decoders that pass through elsewhere).
-        return Ok(CoercedCollectedGeometryItems::Items(
-            crate::try_collect_results(items.iter().enumerate().map(|(row, item)| {
-                coerce_geometry(item, policy).map_err(|err| {
-                    if note_rows {
-                        crate::note_array_row(err, row)
-                    } else {
-                        err
-                    }
-                })
-            }))?,
-        ));
-    }
-    Ok(CoercedCollectedGeometryItems::Items(
-        coerce_generic_geometry_items(items, note_rows, policy)?,
-    ))
+    let parsed = py.detach(move || {
+        let mut output = Vec::new();
+        for (row, item) in owned.into_iter().enumerate() {
+            let geometry = parse_owned_geometry_item(item, policy).map_err(|error| (row, error))?;
+            crate::try_push_vec(&mut output, geometry).map_err(|error| (row, error))?;
+        }
+        Ok::<_, (usize, crate::error::Error)>(output)
+    });
+    let parsed = match parsed {
+        Ok(parsed) => parsed,
+        Err((row, error)) => {
+            return Err(if note_rows {
+                crate::note_array_row(error.into(), row)
+            } else {
+                error.into()
+            });
+        },
+    };
+    Ok(CoercedCollectedGeometryItems::Items(parsed))
 }
 
 /// Component geometries of a multipart geometry.
@@ -549,21 +570,12 @@ pub(crate) fn optional_coordinates(
     Ok(Some(values))
 }
 
-pub(crate) fn parse_wkb_payload(value: &Bound<'_, PyAny>) -> PyResult<crate::io::WkbGeometry> {
-    parse_wkb_payload_bytes(value, |wkb| Ok(crate::io::parse_wkb(wkb)?))
-}
-
-pub(crate) fn parse_wkb_payload_bytes<T>(
-    value: &Bound<'_, PyAny>,
-    parse: impl FnOnce(&[u8]) -> PyResult<T>,
-) -> PyResult<T> {
-    // One shared extractor: signed and unsigned one-byte buffers (bytes,
-    // bytearray, memoryview, array.array('B'|'b'), …).
-    with_one_byte_buffer(value, parse).map_err(|err| {
-        if err.is_instance_of::<PyTypeError>(value.py()) {
+pub(crate) fn copy_wkb_payload(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    crate::copy_one_byte_buffer(value).map_err(|error| {
+        if error.is_instance_of::<PyTypeError>(value.py()) {
             PyTypeError::new_err("expected WKB bytes or iterable of WKB bytes")
         } else {
-            err
+            error
         }
     })
 }

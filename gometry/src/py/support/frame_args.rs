@@ -142,10 +142,8 @@ pub(crate) fn deserialized_epoch(epoch: Option<f64>, crs: Option<&str>) -> PyRes
 
 /// Ask the frame owner to validate an epoch at an untrusted Python ingress
 /// before internal mutations that use [`Frame::new`].
-pub(crate) fn guard_epoch_frame(epoch: Option<f64>, crs: Option<&Crs>) -> PyResult<()> {
-    Frame::new(crs.cloned(), epoch)
-        .map(|_| ())
-        .map_err(PyErr::from)
+pub(crate) fn guard_epoch_frame(epoch: Option<f64>, crs: Option<&Crs>) -> crate::error::Result<()> {
+    Frame::new(crs.cloned(), epoch).map(|_| ())
 }
 
 /// Parse the shared constructor `crs=`/`epoch=` arguments into a validated

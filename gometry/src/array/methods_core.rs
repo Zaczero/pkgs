@@ -13,7 +13,7 @@ use pyo3::types::PyList;
 
 use crate::array::{
     ArrayRow, Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq,
-    CoordinateReplacement, CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage,
+    CoordinateReplacement, Crs, CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage,
     GeometryKind, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
     PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
     PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
@@ -25,6 +25,8 @@ use crate::array::{
     replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
     total_bounds_from_columns,
 };
+use crate::py::functions::bulk_rows::{StreamedRow, StreamedShape, stream_bulk_owned};
+use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
 
 fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -> PyResult<Vec<T>> {
     let mut output = crate::try_vec_with_capacity(capacity)?;
@@ -36,6 +38,43 @@ fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -
 
 fn type_module(value: &Bound<'_, PyAny>) -> PyResult<String> {
     value.get_type().getattr("__module__")?.extract()
+}
+
+fn normalize_streamed_geometry(
+    mut geometry: PyGeometry,
+    explicit_crs: Option<&Crs>,
+    explicit_epoch: Option<f64>,
+    row: usize,
+) -> Result<PyGeometry> {
+    if let Some(expected) = explicit_crs {
+        if let Some(actual) = geometry.crs_ref()
+            && !crate::boundary::metadata::crs_operationally_equal(actual, expected)?
+        {
+            return Err(crate::boundary::metadata::FrameError::SharedCrs {
+                context: "GeometryArray".into(),
+                index: row,
+                first: Some(expected.clone()),
+                other: Some(actual.clone()),
+            }
+            .into());
+        }
+        geometry.set_crs_keep_epoch(Some(expected.clone()))?;
+    }
+    if let Some(expected) = explicit_epoch {
+        if let Some(actual) = geometry.epoch()
+            && !crate::boundary::metadata::epochs_equal(actual, expected)
+        {
+            return Err(crate::boundary::metadata::FrameError::SharedEpoch {
+                context: "GeometryArray".into(),
+                index: row,
+                first: Some(expected),
+                other: Some(actual),
+            }
+            .into());
+        }
+        geometry.set_epoch_keep_crs(Some(expected))?;
+    }
+    Ok(geometry)
 }
 
 fn is_shapely_geometry(value: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -246,7 +285,52 @@ impl PyGeometryArray {
                 "GeometryArray requires an iterable; use GeometryArray([geom]) for one row or GeometryArray(geom.parts) to explode parts explicitly",
             ));
         }
-        // Mandatory keystone: hint-only `__len__` + fallible per-item growth.
+        let value_type = values.get_type();
+        let is_ndarray = value_type.name()? == "ndarray"
+            && value_type.getattr("__module__")?.extract::<&str>()? == "numpy";
+        if values.cast::<PyList>().is_err() && !is_ndarray {
+            let explicit_crs = parse_crs(crs)?;
+            let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
+            let policy_crs = explicit_crs.clone();
+            let parse_crs = explicit_crs.clone();
+            let _ = crate::advisory_len(values)?;
+            let iter = values.try_iter()?;
+            let py = values.py();
+            return stream_bulk_owned(
+                py,
+                iter,
+                explicit_crs,
+                explicit_epoch,
+                Some("GeometryArray"),
+                move |item, _row| {
+                    own_geometry_item(
+                        item,
+                        crate::io::LegacyGeoJsonCrsPolicy::Adopt(policy_crs.as_deref()),
+                    )
+                },
+                move |item, row| {
+                    let geometry = parse_owned_geometry_item(
+                        item,
+                        crate::io::LegacyGeoJsonCrsPolicy::Adopt(parse_crs.as_deref()),
+                    )?;
+                    let geometry = normalize_streamed_geometry(
+                        geometry,
+                        parse_crs.as_ref(),
+                        explicit_epoch,
+                        row,
+                    )?;
+                    Ok(StreamedShape {
+                        shape: Some(geometry.shape.shape().clone()),
+                        row: StreamedRow::Present {
+                            crs: geometry.crs_ref().cloned(),
+                            epoch: geometry.epoch(),
+                        },
+                    })
+                },
+            );
+        }
+        // Concrete list/ndarray batches retain their existing Shapely fast path
+        // and batch coercion; arbitrary iterators take the row-at-a-time lane.
         let raw_items = crate::collect_py_iter(values, Ok)?;
         if let Some(wkb) = shapely_wkb_batch(values, &raw_items)? {
             let parsed =
@@ -272,32 +356,24 @@ impl PyGeometryArray {
         }
         let explicit_crs = parse_crs(crs)?;
         let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
-        let (present_items, frame) = match coerce_collected_geometry_items(
+        let coerced = coerce_collected_geometry_items(
             &present,
             false,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(explicit_crs.as_deref()),
-        )? {
-            CoercedCollectedGeometryItems::Items(mut items) => {
-                let frame = Frame::resolve_items(
-                    &mut items,
-                    FrameAdoption {
-                        crs: explicit_crs,
-                        epoch: explicit_epoch,
-                    },
-                    "GeometryArray",
-                )?;
-                (items, frame)
-            },
-            CoercedCollectedGeometryItems::FramelessShapes(shapes) => {
-                let frame = Frame::new(explicit_crs, explicit_epoch)?;
-                let mut items = crate::try_vec_with_capacity(shapes.len())?;
-                for shape in shapes {
-                    crate::try_push(&mut items, PyGeometry::with_frame(shape, frame.clone()))?;
-                }
-                (items, frame)
-            },
-        };
-        let array = Self::pack_or_mixed(present_items, frame)?;
+        )?;
+        let py = values.py();
+        let array = py.detach(move || -> Result<Self> {
+            let CoercedCollectedGeometryItems::Items(mut items) = coerced;
+            let frame = Frame::resolve_items(
+                &mut items,
+                FrameAdoption {
+                    crs: explicit_crs,
+                    epoch: explicit_epoch,
+                },
+                "GeometryArray",
+            )?;
+            Self::pack_or_mixed(items, frame)
+        })?;
         Ok(if has_missing {
             Self::scatter_present_rows(
                 &array,

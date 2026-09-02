@@ -249,6 +249,29 @@ def test_from_features_native_generator_and_json_sequence_match() -> None:
     assert generated.ids == text.ids == ('a', None)
 
 
+def test_from_features_stops_generator_at_first_malformed_row() -> None:
+    consumed_after_failure = False
+
+    def rows():
+        nonlocal consumed_after_failure
+        yield {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': {},
+        }
+        yield {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1]},
+            'properties': {},
+        }
+        consumed_after_failure = True
+        raise AssertionError('from_features consumed a row after malformed geometry')
+
+    with pytest.raises(gm.ParseError):
+        gm.from_features(rows())
+    assert not consumed_after_failure
+
+
 @pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
 def test_features_copy_replace_and_identity_eq() -> None:
     """``copy.replace`` restores the frozen-dataclass contract; ``__eq__``

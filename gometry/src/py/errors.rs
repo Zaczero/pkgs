@@ -272,7 +272,10 @@ impl From<Error> for PyErr {
         use crate::FrameError as F;
         use crate::crs::CrsError as C;
         use crate::geometry::GeometryErrorKind as G;
-        let message = error.to_string();
+        let message = match error.kind() {
+            ErrorKind::Io(error) => error.display_message(),
+            _ => error.to_string(),
+        };
         match error.kind() {
             ErrorKind::Geometry(kind) => match kind {
                 // Wrong geometry kind for the operation → GeometryTypeError
@@ -425,6 +428,13 @@ impl From<Error> for PyErr {
                     ("left", Attr::OptionalFloat(*first)),
                     ("right", Attr::OptionalFloat(*other)),
                     ("index", Attr::Int(*index as i64)),
+                ]),
+                F::EmbeddedCrsConflict {
+                    explicit, embedded, ..
+                } => with_attrs(CRSMismatchError::new_err(message), &[
+                    ("field", Attr::Str("crs")),
+                    ("left", Attr::OptionalStr(Some(explicit.as_str()))),
+                    ("right", Attr::OptionalStr(Some(embedded.as_str()))),
                 ]),
                 // `epoch ⟹ crs` violated at a Frame::new construction boundary
                 // — a CRS-domain error, like its siblings (ValueError subclass).

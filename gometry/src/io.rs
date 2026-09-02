@@ -41,6 +41,17 @@ impl IoError {
         self.format.label()
     }
 
+    /// Polyline historically reports its decoder detail without the generic
+    /// ``invalid polyline:`` prefix; preserve that public error text after its
+    /// parser moved to the crate-error boundary.
+    pub(crate) fn display_message(&self) -> String {
+        if self.format == ParseFormat::Polyline {
+            self.detail.to_string()
+        } else {
+            self.to_string()
+        }
+    }
+
     pub const fn position(&self) -> Option<usize> {
         self.position
     }

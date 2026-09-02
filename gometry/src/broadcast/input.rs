@@ -9,7 +9,7 @@ use crate::broadcast::{
     parse_geojson_geometry_value,
 };
 
-pub(crate) fn parse_wkb_geometry(value: &[u8]) -> PyResult<PyGeometry> {
+pub(crate) fn parse_wkb_geometry(value: &[u8]) -> crate::error::Result<PyGeometry> {
     let geometry = crate::io::parse_wkb(value)?;
     let crs = crate::io::crs_from_optional_srid(geometry.srid)?;
     Ok(PyGeometry::with_frame(
@@ -126,7 +126,8 @@ pub(crate) fn coerce_geometry(
         return Ok(geometry.clone());
     }
     if is_one_byte_buffer(item) {
-        return parse_wkb_geometry_from_payload(item);
+        let bytes = crate::copy_wkb_payload(item)?;
+        return Ok(item.py().detach(move || parse_wkb_geometry(&bytes))?);
     }
     // Mapping or ``__geo_interface__``: classify without enumerating keys
     // (one-shot keys() streams), then parse once via the keystone.
@@ -136,21 +137,22 @@ pub(crate) fn coerce_geometry(
             .is_some()
     {
         let value = parse_geojson_geometry_value(item)?;
-        let Some((shape, frame)) = coerce_geojson_geometry_value(
-            &value,
-            GeoJsonDecodeContext::GeometryLike,
-            policy,
-            None,
-        )?
-        else {
-            return Err(crate::io::IoError::geojson(
-                "Feature has null geometry (an unlocated feature); parse the \
-                 FeatureCollection with from_geojson/from_features, where null \
-                 geometries become missing rows",
-            )
-            .into());
-        };
-        return Ok(PyGeometry::with_frame(shape, frame));
+        return Ok(item.py().detach(move || {
+            let Some((shape, frame)) = coerce_geojson_geometry_value(
+                &value,
+                GeoJsonDecodeContext::GeometryLike,
+                policy,
+                None,
+            )?
+            else {
+                return Err(crate::io::IoError::geojson(
+                    "Feature has null geometry (an unlocated feature); parse the \
+                     FeatureCollection with from_geojson/from_features, where null \
+                     geometries become missing rows",
+                ));
+            };
+            Ok(PyGeometry::with_frame(shape, frame))
+        })?);
     }
     if item.cast::<pyo3::types::PyString>().is_ok() {
         return Err(PyTypeError::new_err(
@@ -163,13 +165,4 @@ pub(crate) fn coerce_geometry(
             .name()
             .map_or_else(|_| "<unknown>".to_owned(), |name| name.to_string())
     )))
-}
-
-pub(crate) fn parse_wkb_geometry_from_payload(item: &Bound<'_, PyAny>) -> PyResult<PyGeometry> {
-    let geometry = crate::parse_wkb_payload(item)?;
-    let crs = crate::io::crs_from_optional_srid(geometry.srid)?;
-    Ok(PyGeometry::with_frame(
-        geometry.shape,
-        Frame::new(crs.map(crs_arc), None)?,
-    ))
 }

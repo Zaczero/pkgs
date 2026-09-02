@@ -1,8 +1,5 @@
 //! Streaming row accumulator for parse-time bulk imports.
 
-use pyo3::exceptions::PyMemoryError;
-use pyo3::{PyErr, PyResult};
-
 use crate::array::{
     CoordSeq, CoordinateAxes, Frame, GeometryKind, Polygon, PyGeometryArray, Ring, Shape,
 };
@@ -45,12 +42,14 @@ pub(crate) struct StreamingPolygons {
     polygon_offsets: Vec<usize>,
 }
 
-fn grow_err() -> PyErr {
-    PyMemoryError::new_err("failed to grow streaming geometry buffer from untrusted input")
+fn grow_err() -> crate::error::Error {
+    crate::error::ResourceError::Allocation.into()
 }
 
 /// Fallibly grow a `CoordSeqBuilder` column set by one slot when full.
-fn try_grow_coord_builder(builder: &mut crate::geometry::CoordSeqBuilder) -> PyResult<()> {
+fn try_grow_coord_builder(
+    builder: &mut crate::geometry::CoordSeqBuilder,
+) -> crate::error::Result<()> {
     if builder.len() < builder.capacity_slots() {
         return Ok(());
     }
@@ -67,7 +66,7 @@ impl StreamingShapes {
 
     /// Fallibly append one parsed shape. Prefer this over any infallible push
     /// at a Python-iterator boundary.
-    pub(crate) fn try_push(&mut self, shape: Shape) -> PyResult<()> {
+    pub(crate) fn try_push(&mut self, shape: Shape) -> crate::error::Result<()> {
         // Flush leading missings as kind-preserving placeholders for `shape`.
         if let Self::LeadingMissing(n) = *self {
             *self = Self::Empty;
@@ -75,7 +74,7 @@ impl StreamingShapes {
         }
         match (&mut *self, shape) {
             // Hot demoted lane: fallible Vec growth, no enum surgery.
-            (Self::Shapes { shapes, .. }, shape) => crate::try_push(shapes, shape),
+            (Self::Shapes { shapes, .. }, shape) => crate::try_push_vec(shapes, shape),
             (Self::Empty, Shape::Point(point)) => {
                 let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(
                     CoordinateAxes::from_point(point),
@@ -113,7 +112,7 @@ impl StreamingShapes {
             },
             (_, shape) => {
                 let shapes = self.try_demote()?;
-                crate::try_push(shapes, shape)
+                crate::try_push_vec(shapes, shape)
             },
         }
     }
@@ -121,7 +120,7 @@ impl StreamingShapes {
     /// Append a missing-row placeholder in final order (kind-preserving when
     /// the stream already has a homogeneous lane). Nulls establish no CRS and
     /// are never parsed by the caller.
-    pub(crate) fn try_push_missing(&mut self) -> PyResult<()> {
+    pub(crate) fn try_push_missing(&mut self) -> crate::error::Result<()> {
         match self {
             Self::Empty => {
                 *self = Self::LeadingMissing(1);
@@ -139,7 +138,7 @@ impl StreamingShapes {
                 row_aligned,
             } => {
                 if *row_aligned {
-                    crate::try_push(shapes, PyGeometryArray::missing_placeholder())?;
+                    crate::try_push_vec(shapes, PyGeometryArray::missing_placeholder())?;
                 }
                 Ok(())
             },
@@ -148,7 +147,7 @@ impl StreamingShapes {
 
     /// After `LeadingMissing(n)`, open a homogeneous lane (or Shapes) with `n`
     /// kind-preserving placeholders, then the caller pushes `shape`.
-    fn seed_with_leading_missing(&mut self, n: usize, shape: &Shape) -> PyResult<()> {
+    fn seed_with_leading_missing(&mut self, n: usize, shape: &Shape) -> crate::error::Result<()> {
         match shape {
             Shape::Point(point) => {
                 let axes = CoordinateAxes::from_point(*point);
@@ -179,9 +178,10 @@ impl StreamingShapes {
                 *self = Self::Polygons(out);
             },
             _ => {
-                let mut shapes = crate::try_vec_with_capacity(n)?;
+                let mut shapes = Vec::new();
+                crate::boundary::try_reserve_vec(&mut shapes, n)?;
                 for _ in 0..n {
-                    crate::try_push(&mut shapes, PyGeometryArray::missing_placeholder())?;
+                    crate::try_push_vec(&mut shapes, PyGeometryArray::missing_placeholder())?;
                 }
                 *self = Self::Shapes {
                     shapes,
@@ -193,13 +193,14 @@ impl StreamingShapes {
     }
 
     /// Re-expand any packed points into a plain shape list and switch lanes.
-    pub(crate) fn try_demote(&mut self) -> PyResult<&mut Vec<Shape>> {
+    pub(crate) fn try_demote(&mut self) -> crate::error::Result<&mut Vec<Shape>> {
         match std::mem::replace(self, Self::Empty) {
             Self::Points(builder) => {
                 let seq = builder.finish_infallible();
-                let mut shapes = crate::try_vec_with_capacity(seq.len())?;
+                let mut shapes = Vec::new();
+                crate::boundary::try_reserve_vec(&mut shapes, seq.len())?;
                 for row in 0..seq.len() {
-                    crate::try_push(&mut shapes, Shape::Point(seq.point_at(row)))?;
+                    crate::try_push_vec(&mut shapes, Shape::Point(seq.point_at(row)))?;
                 }
                 *self = Self::Shapes {
                     shapes,
@@ -259,7 +260,7 @@ impl StreamingShapes {
 }
 
 impl StreamingLines {
-    fn try_from_first(line: &LineSeq) -> PyResult<Self> {
+    fn try_from_first(line: &LineSeq) -> crate::error::Result<Self> {
         let mut out = Self {
             coords: crate::geometry::CoordSeqBuilder::with_capacity(line.axes(), 0),
             offsets: vec![0],
@@ -272,16 +273,16 @@ impl StreamingLines {
         Ok(out)
     }
 
-    fn try_push(&mut self, line: &LineSeq) -> PyResult<()> {
+    fn try_push(&mut self, line: &LineSeq) -> crate::error::Result<()> {
         for point in line {
             try_grow_coord_builder(&mut self.coords)?;
             self.coords.push(point);
         }
-        crate::try_push(&mut self.offsets, self.coords.len())
+        crate::try_push_vec(&mut self.offsets, self.coords.len())
     }
 
-    fn try_push_missing(&mut self) -> PyResult<()> {
-        crate::try_push(&mut self.offsets, self.coords.len())
+    fn try_push_missing(&mut self) -> crate::error::Result<()> {
+        crate::try_push_vec(&mut self.offsets, self.coords.len())
     }
 
     fn into_parts(self) -> (CoordSeq, Vec<usize>) {
@@ -341,7 +342,7 @@ fn line_shapes_from_parts(coords: &CoordSeq, offsets: &[usize]) -> Vec<Shape> {
 }
 
 impl StreamingPolygons {
-    fn try_from_first(polygon: &Polygon) -> PyResult<Self> {
+    fn try_from_first(polygon: &Polygon) -> crate::error::Result<Self> {
         let axes = polygon_stream_axes(polygon)
             .expect("StreamingPolygons requires one axes layout across every ring");
         let mut out = Self {
@@ -356,19 +357,19 @@ impl StreamingPolygons {
         Ok(out)
     }
 
-    fn try_push(&mut self, polygon: &Polygon) -> PyResult<()> {
+    fn try_push(&mut self, polygon: &Polygon) -> crate::error::Result<()> {
         for ring in polygon.rings() {
             for point in ring {
                 try_grow_coord_builder(&mut self.coords)?;
                 self.coords.push(point);
             }
-            crate::try_push(&mut self.ring_offsets, self.coords.len())?;
+            crate::try_push_vec(&mut self.ring_offsets, self.coords.len())?;
         }
-        crate::try_push(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
+        crate::try_push_vec(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
     }
 
-    fn try_push_missing(&mut self) -> PyResult<()> {
-        crate::try_push(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
+    fn try_push_missing(&mut self) -> crate::error::Result<()> {
+        crate::try_push_vec(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
     }
 
     fn into_parts(self) -> (CoordSeq, Vec<usize>, Vec<usize>) {

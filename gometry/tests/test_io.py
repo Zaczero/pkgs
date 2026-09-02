@@ -135,6 +135,82 @@ def test_batch_wkt_wkb_embedded_srid_still_reconciles_and_conflicts() -> None:
         ])
 
 
+@pytest.mark.parametrize(
+    ('reader', 'rows'),
+    [
+        pytest.param(gm.from_wkt, ['POINT (0 0', 1], id='wkt'),
+        pytest.param(gm.from_wkb, [b'\x01', 1], id='wkb'),
+        pytest.param(
+            gm.from_geojson,
+            ['{"type":"Point","coordinates":[1]}', object()],
+            id='geojson',
+        ),
+    ],
+)
+def test_concrete_bulk_parse_error_precedes_later_ownership_error(
+    reader: Any, rows: list[Any]
+) -> None:
+    with pytest.raises(gm.ParseError) as parse_error:
+        reader(rows)
+    assert parse_error.value.__notes__ == ['while processing array element 0']
+
+
+@pytest.mark.parametrize(
+    ('reader', 'row'),
+    [
+        pytest.param(gm.from_wkt, 1, id='wkt'),
+        pytest.param(gm.from_wkb, 1, id='wkb'),
+        pytest.param(gm.from_geojson, object(), id='geojson'),
+    ],
+)
+def test_concrete_bulk_acquisition_error_is_reported_at_row_zero(
+    reader: Any, row: Any
+) -> None:
+    with pytest.raises(TypeError) as type_error:
+        reader([row])
+    assert type_error.value.__notes__ == ['while processing array element 0']
+
+
+@pytest.mark.parametrize(
+    ('reader', 'valid', 'invalid'),
+    [
+        pytest.param(
+            gm.from_wkt,
+            'POINT (1 2)',
+            'POINT (1',
+            id='wkt',
+        ),
+        pytest.param(
+            gm.from_wkb,
+            gm.Point(1, 2).to_wkb(),
+            b'\x01',
+            id='wkb',
+        ),
+        pytest.param(
+            gm.from_geojson,
+            {'type': 'Point', 'coordinates': [1, 2]},
+            {'type': 'Point', 'coordinates': [1]},
+            id='geojson',
+        ),
+    ],
+)
+def test_bulk_readers_stop_lazy_iterators_at_first_malformed_row(
+    reader: Any, valid: Any, invalid: Any
+) -> None:
+    consumed_after_failure = False
+
+    def rows():
+        nonlocal consumed_after_failure
+        yield valid
+        yield invalid
+        consumed_after_failure = True
+        raise AssertionError('reader consumed a row after the malformed row')
+
+    with pytest.raises(gm.ParseError):
+        reader(rows())
+    assert not consumed_after_failure
+
+
 def test_wkb_point_z_empty_requires_all_present_ordinates_nan() -> None:
     nan = float('nan')
     empty_z = struct.pack('<BI3d', 1, 1001, nan, nan, nan)
@@ -465,6 +541,34 @@ def test_from_geojson_accepts_bytes_bytearray_and_iterables() -> None:
     assert parsed_bytearray.to_wkt() == parsed.to_wkt()
     with pytest.raises(gm.ParseError, match='GeoJSON'):
         gm.from_geojson(b'\xff')
+
+
+def test_bulk_binary_readers_snapshot_mutable_byte_rows() -> None:
+    point = gm.Point(1, 2)
+    wkb_storage = bytearray(point.to_wkb())
+    wkb = gm.from_wkb([memoryview(wkb_storage)])
+    wkb_storage[:] = b'\x01' * len(wkb_storage)
+    assert wkb.to_wkt() == ['POINT (1 2)']
+
+    geojson_storage = bytearray(b'{"type":"Point","coordinates":[3,4]}')
+    geojson = gm.from_geojson([memoryview(geojson_storage)])
+    geojson_storage[:] = b' ' * len(geojson_storage)
+    assert geojson.to_wkt() == ['POINT (3 4)']
+
+
+def test_geometry_array_stops_lazy_coercion_at_first_malformed_row() -> None:
+    consumed_after_failure = False
+
+    def rows():
+        nonlocal consumed_after_failure
+        yield gm.Point(1, 2).to_wkb()
+        yield b'\x01'
+        consumed_after_failure = True
+        raise AssertionError('GeometryArray consumed a row after malformed WKB')
+
+    with pytest.raises(gm.ParseError):
+        gm.GeometryArray(rows())
+    assert not consumed_after_failure
 
 
 def test_r18_geojson_duplicate_key_last_wins_all_frontends() -> None:

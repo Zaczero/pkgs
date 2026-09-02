@@ -18,7 +18,6 @@ use crate::{
     coordinate_values_at_most, coordinate_values_exact, exact_geometry, finite_f64_required,
     geometry_type_err, metric_nearest_points, non_negative_int, parameter_values, push_ring_shapes,
     py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err, wgs84_crs,
-    with_one_byte_buffer,
 };
 
 pub(crate) type Crs = SmolStr;
@@ -82,10 +81,11 @@ pub(crate) use constructive::{
     py_polygonize_full, voronoi_flatten,
 };
 pub(crate) use extract::{
-    CoercedCollectedGeometryItems, GeometryValues, coerce_collected_geometry_items,
-    ensure_homogeneous_axes, extract_coordinate, extract_coordinate_or_empty, extract_lines,
-    extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
-    optional_coordinates, parse_wkb_payload, parse_wkb_payload_bytes, parts, rings,
+    CoercedCollectedGeometryItems, GeometryValues, OwnedBytes, coerce_collected_geometry_items,
+    copy_wkb_payload, ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate,
+    extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons, geometry_items,
+    missing_geometry_items_error, optional_coordinates, own_geometry_item,
+    parse_owned_geometry_item, parts, rings,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, common_crs_required, crs_label, deserialized_epoch, guard_epoch_frame,
@@ -93,8 +93,8 @@ pub(crate) use frame_args::{
 };
 pub(crate) use geojson::{
     GeoJsonDecodeContext, ScalarOrIterator, classify_scalar_or_iterator,
-    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, is_mapping_like,
-    is_py_bytes_or_bytearray, is_wgs84_family_crs, is_wkt_string, mapping_as_dict,
+    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, is_concrete_batch,
+    is_mapping_like, is_py_bytes_or_bytearray, is_wgs84_family_crs, is_wkt_string, mapping_as_dict,
     parse_geojson_geometry_value, parse_geojson_slice, parse_geojson_text, py_to_json_value,
     require_geojson_crs,
 };

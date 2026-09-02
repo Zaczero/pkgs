@@ -25,7 +25,7 @@ impl SharedRowCrs {
         fallback: Option<&Crs>,
         row: usize,
         context: &str,
-    ) -> PyResult<()> {
+    ) -> crate::error::Result<()> {
         match self {
             Self::Unseen => *self = Self::Shared(row_crs),
             Self::Shared(existing) if fallback.is_none() => {
@@ -37,14 +37,12 @@ impl SharedRowCrs {
                     _ => false,
                 };
                 if !agrees {
-                    return Err(crate::error::Error::from(
-                        crate::boundary::metadata::FrameError::SharedCrs {
-                            context: context.into(),
-                            index: row,
-                            first: existing.clone(),
-                            other: row_crs,
-                        },
-                    )
+                    return Err(crate::boundary::metadata::FrameError::SharedCrs {
+                        context: context.into(),
+                        index: row,
+                        first: existing.clone(),
+                        other: row_crs,
+                    }
                     .into());
                 }
             },
@@ -114,7 +112,7 @@ impl SridFrameAdmission {
         row: usize,
         context: &str,
         source: &str,
-    ) -> PyResult<()> {
+    ) -> crate::error::Result<()> {
         // Explicit/storage CRS covers mixed free/tagged rows; numeric agreement
         // is required only when neither fallback is set.
         let has_fallback = self.explicit.is_some() || self.storage.is_some();
@@ -139,7 +137,7 @@ impl SridFrameAdmission {
         srid: Option<u32>,
         storage_crs: Option<&str>,
         _row: usize,
-    ) -> PyResult<()> {
+    ) -> crate::error::Result<()> {
         if let (Some(storage), Some(code)) = (storage_crs, srid) {
             let embedded = self.cache.resolve(Some(code))?;
             guard_embedded_crs_conflict(embedded.as_deref(), Some(storage), "EWKB SRID")?;
@@ -149,7 +147,7 @@ impl SridFrameAdmission {
 
     /// Finish: one shared final CRS. Explicit wins; else storage; else the
     /// resolved shared SRID (each distinct code resolved once via the cache).
-    pub(crate) fn finish(mut self) -> PyResult<Option<Crs>> {
+    pub(crate) fn finish(mut self) -> crate::error::Result<Option<Crs>> {
         if let Some(explicit) = self.explicit {
             return Ok(Some(explicit));
         }
@@ -171,39 +169,34 @@ impl SridFrameAdmission {
         first: Option<u32>,
         other: Option<u32>,
         context: &str,
-    ) -> PyResult<()> {
+    ) -> crate::error::Result<()> {
         let first_crs = self.cache.resolve(first)?.map(crs_arc);
         let other_crs = self.cache.resolve(other)?.map(crs_arc);
-        Err(
-            crate::error::Error::from(crate::boundary::metadata::FrameError::SharedCrs {
-                context: context.into(),
-                index: row,
-                first: first_crs,
-                other: other_crs,
-            })
-            .into(),
-        )
+        Err(crate::boundary::metadata::FrameError::SharedCrs {
+            context: context.into(),
+            index: row,
+            first: first_crs,
+            other: other_crs,
+        }
+        .into())
     }
 }
 pub(crate) fn guard_embedded_crs_conflict(
     embedded: Option<&str>,
     explicit: Option<&str>,
     source: &str,
-) -> PyResult<()> {
+) -> crate::error::Result<()> {
     if let (Some(embedded), Some(explicit)) = (embedded, explicit)
         && embedded != explicit
         && !io::is_wire_alias_restore(explicit, embedded)
         && !crate::boundary::metadata::crs_labels_operationally_equal(embedded, explicit)?
     {
-        return Err(crate::py::errors::crs_mismatch_error(
-            format!(
-                "crs argument {explicit:?} conflicts with the embedded {source} {embedded:?}; \
-             omit crs= or align them"
-            ),
-            Some(explicit),
-            Some(embedded),
-            None,
-        ));
+        return Err(crate::boundary::metadata::FrameError::EmbeddedCrsConflict {
+            explicit: explicit.into(),
+            embedded: embedded.into(),
+            source: source.into(),
+        }
+        .into());
     }
     Ok(())
 }
@@ -253,7 +246,7 @@ pub(crate) fn has_ewkt_srid_prefix(text: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case("SRID="))
 }
 
-pub(crate) fn split_ewkt_srid(text: &str) -> PyResult<(&str, Option<u32>)> {
+pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<u32>)> {
     // The EWKT prefix is `SRID=<code>;` — recognized ASCII-case-insensitively
     // and after any leading whitespace, matching PostGIS's lenient acceptance.
     // A bare WKT body is returned verbatim (the WKT parser trims it itself).
