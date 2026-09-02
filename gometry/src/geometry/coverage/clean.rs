@@ -50,7 +50,13 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     let snapped: Vec<Shape> = if grid_size > 0.0 {
         rows.iter()
             .map(std::borrow::Borrow::borrow)
-            .map(|shape| shape.snap_to_grid_repaired((grid_size, grid_size), (0.0, 0.0), false))
+            .map(|shape| {
+                shape.snap_to_grid_repaired(
+                    (grid_size, grid_size),
+                    (0.0, 0.0),
+                    crate::geometry::TopologyDomain::Cartesian,
+                )
+            })
             .collect::<Result<_, _>>()?
     } else {
         rows.iter()
@@ -458,24 +464,17 @@ fn dissolve_edge_incidences(incidences: HashMap<(PointKey, PointKey), (Segment, 
 /// geographic frame are split before the edge inventory sees them as planar.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: crate::geometry::TopologyDomain,
 ) -> Result<Shape> {
-    let Some(frame) = geographic else {
+    let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
         return coverage_union_inner(coverage);
     };
-    if coverage
-        .iter()
-        .all(|row| {
-            let shape = row.borrow();
-            shape.bounds().is_some_and(|bounds| {
-                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-                    Some(shape),
-                    bounds,
-                    frame,
-                )
-            })
+    if coverage.iter().all(|row| {
+        let shape = row.borrow();
+        shape.bounds().is_some_and(|bounds| {
+            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
         })
-    {
+    }) {
         return coverage_union_inner(coverage);
     }
     let split_owned: Vec<Shape> = coverage

@@ -8,7 +8,7 @@ use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
 
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
-use crate::geometry::{CoordSeq, LineSeq, Shape, is_geographic_frame};
+use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer;
@@ -241,8 +241,10 @@ where
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient();
     let authority_cache = membership.frame_cache();
-    let frame = crate::geometry::geographic_frame(&membership.frame)?
-        .expect("normalized coverage geometry has a geographic frame");
+    let TopologyDomain::Geographic(frame) = crate::geometry::topology_domain(&membership.frame)?
+    else {
+        unreachable!("normalized coverage geometry has a geographic frame")
+    };
     let ids = match cell_rule {
         CellRule::Overlap | CellRule::Bbox => crate::try_collect_results(
             coverer::cover(
@@ -338,8 +340,11 @@ pub(crate) fn cover_working_shape(
     frame: &crate::boundary::metadata::Frame,
     lonlat: &Shape,
 ) -> PyResult<(Shape, bool)> {
-    if is_geographic_frame(frame) && lonlat.crosses_antimeridian() {
-        Ok((lonlat.split_antimeridian()?, true))
+    let domain = crate::geometry::topology_domain(frame)?;
+    if let TopologyDomain::Geographic(frame) = domain
+        && crate::geometry::crosses_antimeridian_in_frame(lonlat, frame)
+    {
+        Ok((lonlat.split_antimeridian_in_frame(frame)?, true))
     } else {
         Ok((lonlat.clone(), false))
     }

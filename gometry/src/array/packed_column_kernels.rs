@@ -162,7 +162,7 @@ const COLUMN_STREAM_MIN_GROUPS: usize = 64;
 pub(crate) fn clip_lines_packed_xy(
     line_columns: LineColumns<'_>,
     rect: Bounds,
-    geographic_frame: Option<crate::geographic::GeographicFrame>,
+    domain: crate::geometry::TopologyDomain,
 ) -> PackedColumnResult<Option<PackedColumnOutput>> {
     let coords = line_columns.coords();
     if coords.zs().is_some() || coords.ms().is_some() {
@@ -183,7 +183,7 @@ pub(crate) fn clip_lines_packed_xy(
             return Ok(None);
         }
         let bounds = Bounds::new_raw(row_bounds[0], row_bounds[1], row_bounds[2], row_bounds[3]);
-        if let Some(frame) = geographic_frame {
+        if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
             let shape = Shape::LineString(
                 LineSeq::try_new(
                     coords.view(CoordWindow::from_range(window.clone(), coords.len())),
@@ -969,22 +969,25 @@ pub(crate) fn bounds_values_from_columns_masked(
 
 pub(crate) fn geographic_bounds_values_from_columns(
     columns: &PackedColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
 ) -> Result<Vec<f64>> {
-    geographic_bounds_values_from_columns_impl::<false>(columns, None)
+    geographic_bounds_values_from_columns_impl::<false>(columns, frame, None)
 }
 
 pub(crate) fn geographic_bounds_values_from_columns_masked(
     columns: &PackedColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
     missing: Option<&ValidityMask>,
 ) -> Result<Vec<f64>> {
     missing.map_or_else(
-        || geographic_bounds_values_from_columns_impl::<false>(columns, None),
-        |missing| geographic_bounds_values_from_columns_impl::<true>(columns, Some(missing)),
+        || geographic_bounds_values_from_columns_impl::<false>(columns, frame, None),
+        |missing| geographic_bounds_values_from_columns_impl::<true>(columns, frame, Some(missing)),
     )
 }
 
 fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     columns: &PackedColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
     missing: Option<&ValidityMask>,
 ) -> Result<Vec<f64>> {
     let mut values = Vec::new();
@@ -1019,8 +1022,8 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         )
                         .expect("line coordinate sequence must contain at least two vertices"),
                     );
-                    if shape.crosses_antimeridian() {
-                        crate::geometry::geographic_crossing_bounds(&shape)
+                    if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+                        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)
                     } else {
                         row_bounds_values(xs, ys, window)
@@ -1049,8 +1052,8 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         ring_offsets,
                         rings,
                     ));
-                    if shape.crosses_antimeridian() {
-                        crate::geometry::geographic_crossing_bounds(&shape)
+                    if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+                        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)
                     } else {
                         row_bounds_values(xs, ys, shell)

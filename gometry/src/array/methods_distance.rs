@@ -12,7 +12,7 @@ use crate::array::{
     Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
     PackedColumnError, PackedColumnOutput, PackedColumns, Point, PointColumnBuilder, PolygonLevel,
     PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape, column_window,
-    line_crosses_antimeridian, packed_centroid_xy, packed_surface_point, row_bounds_values,
+    packed_centroid_xy, packed_surface_point, row_bounds_values,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
@@ -27,6 +27,7 @@ fn point_from_unary_shape(shape: Shape) -> Point {
 fn packed_point_row(
     crosses_antimeridian: bool,
     shape: impl FnOnce() -> Shape,
+    domain: crate::geometry::TopologyDomain,
     strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     column_point: impl FnOnce() -> Result<Point>,
@@ -34,25 +35,36 @@ fn packed_point_row(
     if crosses_antimeridian {
         let shape = shape();
         Ok(point_from_unary_shape(
-            crate::geometry::unary_antimeridian_derived(&shape, true, strategy, op)?,
+            crate::geometry::unary_antimeridian_derived(&shape, domain, strategy, op)?,
         ))
     } else {
         column_point()
     }
 }
 
-fn line_window_crosses_antimeridian(coords: &CoordSeq, window: std::ops::Range<usize>) -> bool {
-    line_crosses_antimeridian(&coords.view(CoordWindow::from_range(window, coords.len())))
+fn line_window_crosses_antimeridian(
+    coords: &CoordSeq,
+    window: std::ops::Range<usize>,
+    domain: crate::geometry::TopologyDomain,
+) -> bool {
+    let view = coords.view(CoordWindow::from_range(window, coords.len()));
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => false,
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            crate::geometry::crosses_antimeridian_coords_in_frame(&view, frame)
+        },
+    }
 }
 
 fn polygon_row_crosses_antimeridian(
     coords: &CoordSeq,
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
+    domain: crate::geometry::TopologyDomain,
 ) -> bool {
     rings
         .map(|ring| ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize)
-        .any(|window| line_window_crosses_antimeridian(coords, window))
+        .any(|window| line_window_crosses_antimeridian(coords, window, domain))
 }
 
 fn longitude_span_cannot_cross_antimeridian(xs: &[f64]) -> bool {
@@ -63,7 +75,7 @@ fn packed_point_unary<L, P>(
     array: &PyGeometryArray,
     py: Python<'_>,
     frame: Frame,
-    geographic: bool,
+    domain: crate::geometry::TopologyDomain,
     strategy: DerivedPointStrategy,
     op: fn(&Shape) -> Result<Shape>,
     line_point: L,
@@ -88,18 +100,20 @@ where
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
-            let row_crosses_antimeridian =
-                (geographic && !longitude_span_cannot_cross_antimeridian(xs)).then(|| {
-                    columns.map_rows(|row| {
-                        if row.is_missing() {
-                            return false;
-                        }
-                        line_window_crosses_antimeridian(
-                            coords,
-                            row.vertex_window().expect("line rows have a vertex window"),
-                        )
-                    })
-                });
+            let row_crosses_antimeridian = (domain.is_geographic()
+                && !longitude_span_cannot_cross_antimeridian(xs))
+            .then(|| {
+                columns.map_rows(|row| {
+                    if row.is_missing() {
+                        return false;
+                    }
+                    line_window_crosses_antimeridian(
+                        coords,
+                        row.vertex_window().expect("line rows have a vertex window"),
+                        domain,
+                    )
+                })
+            });
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             for result in columns.map_rows(|row| {
@@ -122,6 +136,7 @@ where
                             .expect("line coordinate sequence must contain at least two vertices"),
                         )
                     },
+                    domain,
                     strategy,
                     op,
                     || line_point(coords, xs, ys, window),
@@ -143,19 +158,21 @@ where
             let coords = polygon_columns.coords();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let ring_offsets = polygon_columns.ring_offsets();
-            let row_crosses_antimeridian =
-                (geographic && !longitude_span_cannot_cross_antimeridian(xs)).then(|| {
-                    columns.map_rows(|row| {
-                        if row.is_missing() {
-                            return false;
-                        }
-                        polygon_row_crosses_antimeridian(
-                            coords,
-                            ring_offsets,
-                            row.polygon_rings().expect("polygon rows have rings"),
-                        )
-                    })
-                });
+            let row_crosses_antimeridian = (domain.is_geographic()
+                && !longitude_span_cannot_cross_antimeridian(xs))
+            .then(|| {
+                columns.map_rows(|row| {
+                    if row.is_missing() {
+                        return false;
+                    }
+                    polygon_row_crosses_antimeridian(
+                        coords,
+                        ring_offsets,
+                        row.polygon_rings().expect("polygon rows have rings"),
+                        domain,
+                    )
+                })
+            });
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
@@ -179,6 +196,7 @@ where
                             shape_rings,
                         ))
                     },
+                    domain,
                     strategy,
                     op,
                     || polygon_point(coords, xs, ys, ring_offsets, rings, shell, &mut crossings),
@@ -207,13 +225,13 @@ impl PyGeometryArray {
             return Ok(points);
         }
         let frame = self.frame.clone();
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        let domain = crate::geometry::topology_domain(&self.frame)?;
         if let Some(points) = Python::attach(|py| {
             packed_point_unary(
                 self,
                 py,
                 frame,
-                geographic,
+                domain,
                 DerivedPointStrategy::Centroid,
                 Shape::centroid,
                 |_, xs, ys, window| {
@@ -237,7 +255,7 @@ impl PyGeometryArray {
         self.map_shapes(|shape| {
             Ok(crate::geometry::unary_antimeridian_derived(
                 shape,
-                geographic,
+                domain,
                 DerivedPointStrategy::Centroid,
                 Shape::centroid,
             )?)
@@ -249,13 +267,13 @@ impl PyGeometryArray {
             return Ok(points);
         }
         let frame = self.frame.clone();
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        let domain = crate::geometry::topology_domain(&self.frame)?;
         if let Some(points) = Python::attach(|py| {
             packed_point_unary(
                 self,
                 py,
                 frame,
-                geographic,
+                domain,
                 DerivedPointStrategy::Interior,
                 Shape::point_on_surface,
                 |_, xs, ys, window| {
@@ -285,7 +303,7 @@ impl PyGeometryArray {
         self.map_shapes(|shape| {
             Ok(crate::geometry::unary_antimeridian_derived(
                 shape,
-                geographic,
+                domain,
                 DerivedPointStrategy::Interior,
                 Shape::point_on_surface,
             )?)

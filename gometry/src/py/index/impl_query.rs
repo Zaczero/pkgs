@@ -2,7 +2,7 @@
 use std::cell::Cell;
 
 use crate::array::ValidityMask;
-use crate::geometry::PreparedPlan;
+use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec};
 use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
@@ -108,7 +108,7 @@ impl PySpatialIndex {
             IndexPredicate::Dwithin => None,
         };
         let plan = PreparedIndexQuery::for_index(self, Some(predicate), distance, unit)?;
-        let geographic_frame = self.geographic_frame()?;
+        let domain = self.domain()?;
         let resolved = match &plan {
             PreparedIndexQuery::Dwithin { resolved, .. } => Some(resolved),
             _ => None,
@@ -149,23 +149,23 @@ impl PySpatialIndex {
             match (spec, resolved) {
                 (Some(spec), _) => {
                     let query = self.rows.prepared_row_with(i, &mut products);
-                    let query_operand = GateOperand::new(self.rows.row(i), None, geographic_frame);
+                    let query_operand = GateOperand::new(self.rows.row(i), None, domain);
                     retain_row(&mut candidates, 0, |idx| {
                         if let Some(verdict) = spec.pre_topology(
                             query_operand,
-                            GateOperand::new(self.rows.row(idx), None, geographic_frame),
+                            GateOperand::new(self.rows.row(idx), None, domain),
                         ) {
                             return Ok(verdict);
                         }
                         let data = self.rows.prepared_row_with(idx, &mut products);
                         Ok(topology_scalar_pair(
                             &spec,
-                            crate::predicates::engine::PreparedTopologyPair::for_frame(
+                            crate::predicates::engine::PreparedTopologyPair::for_domain(
                                 &query,
                                 &self.rows.frame_cache_with(i, &mut products),
                                 &data,
                                 &self.rows.frame_cache_with(idx, &mut products),
-                                geographic_frame,
+                                domain,
                             ),
                         ))
                     })?;
@@ -771,7 +771,7 @@ impl PySpatialIndex {
         missing: Option<&ValidityMask>,
         predicate: Predicate,
     ) -> PyResult<RowMatches> {
-        let geographic_frame = self.geographic_frame()?;
+        let domain = self.domain()?;
         let mut builder =
             CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
         let mut queries = Vec::with_capacity(points.len());
@@ -825,12 +825,12 @@ impl PySpatialIndex {
                     .expect("every grouped point row has a candidate plan");
                 keep[position] = topology_scalar_pair(
                     &spec,
-                    crate::predicates::engine::PreparedTopologyPair::for_frame(
+                    crate::predicates::engine::PreparedTopologyPair::for_domain(
                         query,
                         query_cache,
                         &data,
                         &self.rows.frame_cache_with(idx, &mut index_products),
-                        geographic_frame,
+                        domain,
                     ),
                 );
                 end += 1;
@@ -862,18 +862,13 @@ impl PySpatialIndex {
     /// Whether this index's shared frame is geographic. All rows and the query
     /// share this frame (`ensure_query_compatible`), so it is an index-level
     /// property used by the quotient-aware relation path.
-    pub(crate) fn geographic(&self) -> bool {
-        self.geographic_frame().ok().flatten().is_some()
-    }
-
-    fn geographic_frame(&self) -> PyResult<Option<crate::geographic::GeographicFrame>> {
-        let frame = self
+    pub(crate) fn domain(&self) -> PyResult<TopologyDomain> {
+        Ok(self
             .metadata
             .as_ref()
-            .map(crate::geometry::geographic_frame)
-            .transpose()?
-            .flatten();
-        Ok(frame)
+            .map(crate::geometry::topology_domain)
+            .transpose()
+            .map(|domain| domain.unwrap_or(TopologyDomain::Cartesian))?)
     }
 
     fn collect_point_candidates(&self, point: Point, out: &mut Vec<usize>) -> PyResult<()> {
@@ -908,7 +903,7 @@ impl PySpatialIndex {
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
         let start = out.len();
-        let cover = index_envelopes(shape, bounds, self.metadata.as_ref())?;
+        let cover = index_envelopes(shape, bounds, self.domain()?)?;
         for envelope in cover.windows(policy) {
             match policy {
                 IndexEnvelope::ContainedInQuery => self.collect_contained(envelope, out)?,
@@ -927,7 +922,7 @@ impl PySpatialIndex {
     ) -> PyResult<Vec<usize>> {
         let mut matches = candidates;
         let query_plan = geometry.plan_or_transient();
-        let geographic_frame = self.geographic_frame()?;
+        let domain = self.domain()?;
         let mut products = self.rows.row_products_operation();
         match plan {
             PreparedIndexQuery::Topological { predicate } => {
@@ -938,24 +933,24 @@ impl PySpatialIndex {
                 let query_operand = GateOperand::new(
                     ShapeRow::Shape(query_plan.shape()),
                     query_plan.bounds(),
-                    geographic_frame,
+                    domain,
                 );
                 retain_row(&mut matches, 0, |idx| {
                     if let Some(verdict) = spec.pre_topology(
                         query_operand,
-                        GateOperand::new(self.rows.row(idx), None, geographic_frame),
+                        GateOperand::new(self.rows.row(idx), None, domain),
                     ) {
                         return Ok(verdict);
                     }
                     let data = self.rows.prepared_row_with(idx, &mut products);
                     Ok(topology_scalar_pair(
                         &spec,
-                        crate::predicates::engine::PreparedTopologyPair::for_frame(
+                        crate::predicates::engine::PreparedTopologyPair::for_domain(
                             &query_plan,
                             &geometry.frame_cache(),
                             &data,
                             &self.rows.frame_cache_with(idx, &mut products),
-                            geographic_frame,
+                            domain,
                         ),
                     ))
                 })?;
@@ -1063,28 +1058,28 @@ impl PySpatialIndex {
             return Ok(());
         };
         self.collect_cover_candidates(shape.shape(), query_bounds, candidate_policy(&spec), out)?;
-        let frame = crate::geometry::geographic_frame(frame)?;
+        let domain = crate::geometry::topology_domain(frame)?;
         // The query is fixed for every candidate, so read its gate facts once.
         // A candidate the gate settles is never prepared at all.
         let query_operand =
-            GateOperand::new(ShapeRow::Shape(shape.shape()), Some(query_bounds), frame);
+            GateOperand::new(ShapeRow::Shape(shape.shape()), Some(query_bounds), domain);
         let mut products = self.rows.row_products_operation();
         retain_row(out, row_start, |idx| {
             if let Some(verdict) = spec.pre_topology(
                 query_operand,
-                GateOperand::new(self.rows.row(idx), None, frame),
+                GateOperand::new(self.rows.row(idx), None, domain),
             ) {
                 return Ok(verdict);
             }
             let data = self.rows.prepared_row_with(idx, &mut products);
             Ok(topology_scalar_pair(
                 &spec,
-                crate::predicates::engine::PreparedTopologyPair::for_frame(
+                crate::predicates::engine::PreparedTopologyPair::for_domain(
                     shape,
                     query_cache,
                     &data,
                     &self.rows.frame_cache_with(idx, &mut products),
-                    frame,
+                    domain,
                 ),
             ))
         })?;
@@ -1186,7 +1181,7 @@ impl PySpatialIndex {
             CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
         // Point queries never cross; geographic rows are refined by the
         // quotient-aware matrix path below.
-        let geographic_frame = self.geographic_frame()?;
+        let domain = self.domain()?;
         let mut query_products = array.row_products.operation();
         let mut index_products = self.rows.row_products_operation();
         for (row, point) in points.iter().enumerate() {
@@ -1235,28 +1230,25 @@ impl PySpatialIndex {
             let mut ids = builder.values_mut();
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
-                    let query_operand = GateOperand::new(
-                        ShapeRow::Shape(query.shape()),
-                        query.bounds(),
-                        geographic_frame,
-                    );
+                    let query_operand =
+                        GateOperand::new(ShapeRow::Shape(query.shape()), query.bounds(), domain);
                     let query_cache = query_products.frame_cache(row);
                     retain_row(&mut ids, row_start, |idx| {
                         if let Some(verdict) = spec.pre_topology(
                             query_operand,
-                            GateOperand::new(self.rows.row(idx), None, geographic_frame),
+                            GateOperand::new(self.rows.row(idx), None, domain),
                         ) {
                             return Ok(verdict);
                         }
                         let data = self.rows.prepared_row_with(idx, &mut index_products);
                         Ok(topology_scalar_pair(
                             spec,
-                            crate::predicates::engine::PreparedTopologyPair::for_frame(
+                            crate::predicates::engine::PreparedTopologyPair::for_domain(
                                 &query,
                                 &query_cache,
                                 &data,
                                 &self.rows.frame_cache_with(idx, &mut index_products),
-                                geographic_frame,
+                                domain,
                             ),
                         ))
                     })?

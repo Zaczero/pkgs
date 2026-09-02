@@ -154,12 +154,12 @@ impl<'a> GeographicCandidateClassifier<'a> {
         if !self.exact_intersects_bounds(&candidate, proposed) {
             return RectClass::Outside;
         }
-        let operands = PreparedTopologyPair::for_frame(
+        let operands = PreparedTopologyPair::for_domain(
             self.authority_plan,
             self.authority_cache,
             &candidate_plan,
             &candidate_cache,
-            Some(self.frame),
+            crate::geometry::TopologyDomain::Geographic(self.frame),
         );
         if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
             RectClass::Interior
@@ -193,12 +193,12 @@ impl<'a> GeographicCandidateClassifier<'a> {
         let candidate_cache = crate::geometry::FrameDependentCaches::default();
         topology_scalar_pair(
             &Predicate::Covers.spec(),
-            PreparedTopologyPair::for_frame(
+            PreparedTopologyPair::for_domain(
                 self.authority_plan,
                 self.authority_cache,
                 &candidate,
                 &candidate_cache,
-                Some(self.frame),
+                crate::geometry::TopologyDomain::Geographic(self.frame),
             ),
         )
     }

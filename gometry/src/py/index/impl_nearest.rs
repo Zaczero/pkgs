@@ -266,7 +266,8 @@ impl PySpatialIndex {
         };
         // A part cover only tightens a lower bound: the query lies inside its
         // parts, so the nearest of them is no further than the whole box.
-        let cover = index_envelopes(query.shape(), query_bounds, Some(frame))?;
+        let domain = crate::geometry::topology_domain(frame)?;
+        let cover = index_envelopes(query.shape(), query_bounds, domain)?;
         let query_envelopes = cover.entries();
         let mut products = self.rows.row_products_operation();
         if k == 1 {

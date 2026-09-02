@@ -6,17 +6,17 @@
 use std::sync::Arc;
 
 use crate::crs::transform::{
-    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, transform_in_core_xy_with_frames,
+    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, transform_in_core_xy_with_domains,
 };
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformOptions, begin_transform_observation, coordinate_identity_crs,
-    ensure_geographic_domain_in_frame, is_geographic_crs_with_state, record_transform_engine,
-    runtime_state_snapshot, transform_in_core_xy_batch, transform_proj_shapes,
-    try_in_core_transform_with_state, validate_coordinate_lanes, with_proj_pipeline_at,
+    ensure_geographic_domain_in_frame, record_transform_engine, runtime_state_snapshot,
+    transform_in_core_xy_batch, transform_proj_shapes, try_in_core_transform_with_state,
+    validate_coordinate_lanes, with_proj_pipeline_at,
 };
 use crate::error::{ErrorKind, Result};
-use crate::geometry::GeometryErrorKind;
+use crate::geometry::{GeometryErrorKind, TopologyDomain};
 
 impl TransformPlan {
     pub(crate) fn new(source: &str, target: &str) -> Self {
@@ -37,8 +37,12 @@ impl TransformPlan {
     ) -> Result<Self> {
         options.validate()?;
         let plan_options = options.clone();
-        let source_frame = crate::crs::info_with_state(source, &state)?.geographic_frame();
-        let target_frame = crate::crs::info_with_state(target, &state)?.geographic_frame();
+        let source_domain = crate::crs::info_with_state(source, &state)?
+            .geographic_frame()
+            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic);
+        let target_domain = crate::crs::info_with_state(target, &state)?
+            .geographic_frame()
+            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic);
         // A motion between unequal coordinate epochs is a real PROJ
         // operation, even when the CRS labels are otherwise identical.  Do
         // not let the same-CRS identity shortcut erase that time-dependent
@@ -49,8 +53,7 @@ impl TransformPlan {
             // Same-CRS identity still validates geographic domain (same class
             // as geodesic equality shortcuts) — never a silent pass for
             // out-of-domain latitudes.
-            let source_geographic = is_geographic_crs_with_state(source, &state)?;
-            TransformOperation::Identity { source_geographic }
+            TransformOperation::Identity { source_domain }
         } else if let Some(transform) =
             try_in_core_transform_with_state(source, target, &options, &state)
         {
@@ -68,8 +71,8 @@ impl TransformPlan {
             state,
             execution: TransformExecution::default(),
             options: plan_options,
-            source_frame,
-            target_frame,
+            source_domain,
+            target_domain,
         })
     }
 
@@ -114,13 +117,10 @@ impl TransformPlan {
     pub(crate) fn transform_shapes(&self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
         self.begin_execution();
         let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    let frame = self
-                        .source_frame
-                        .expect("geographic identity carries a typed source frame");
+            TransformOperation::Identity { source_domain } => {
+                if let TopologyDomain::Geographic(frame) = source_domain {
                     for shape in shapes {
-                        ensure_geographic_domain_in_frame(frame, shape)?;
+                        ensure_geographic_domain_in_frame(*frame, shape)?;
                     }
                 }
                 Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
@@ -128,10 +128,10 @@ impl TransformPlan {
             TransformOperation::InCore(operation) => {
                 let mut output = TransformOutputPlan::try_new(shapes)?;
                 output.execute(|x, y, _| {
-                    transform_in_core_xy_with_frames(
+                    transform_in_core_xy_with_domains(
                         operation,
-                        self.source_frame,
-                        self.target_frame,
+                        self.source_domain,
+                        self.target_domain,
                         x,
                         y,
                     )
@@ -177,13 +177,10 @@ impl TransformPlan {
             },
         }
         let result = match &self.operation {
-            TransformOperation::Identity { source_geographic } => {
-                if *source_geographic {
-                    let frame = self
-                        .source_frame
-                        .expect("geographic identity carries a typed source frame");
+            TransformOperation::Identity { source_domain } => {
+                if let TopologyDomain::Geographic(frame) = source_domain {
                     for (&lon, &lat) in x.iter().zip(y.iter()) {
-                        crate::crs::ensure_geographic_lonlat_in_frame(frame, lon, lat)?;
+                        crate::crs::ensure_geographic_lonlat_in_frame(*frame, lon, lat)?;
                     }
                 }
                 Ok(())
@@ -193,10 +190,10 @@ impl TransformPlan {
                 // slices were already boundary-validated finite — transform
                 // XY in place, leave the other lanes untouched. The operation
                 // variant is resolved once per batch via `transform_in_core_xy_batch`.
-                transform_in_core_xy_with_frames(
+                transform_in_core_xy_with_domains(
                     operation,
-                    self.source_frame,
-                    self.target_frame,
+                    self.source_domain,
+                    self.target_domain,
                     x,
                     y,
                 )
@@ -294,8 +291,8 @@ impl TransformPlan {
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
-                self.source_frame,
-                self.target_frame,
+                self.source_domain,
+                self.target_domain,
                 self.options.source_epoch,
             )?;
             self.execute_bounds_samples(&mut samples)?;
@@ -314,8 +311,8 @@ impl TransformPlan {
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
-                self.source_frame,
-                self.target_frame,
+                self.source_domain,
+                self.target_domain,
                 self.options.source_epoch,
             )?;
             self.execute_bounds_with_executor(&mut samples, executor)?;
@@ -336,8 +333,8 @@ impl TransformPlan {
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
-                self.source_frame,
-                self.target_frame,
+                self.source_domain,
+                self.target_domain,
                 self.options.source_epoch,
             )?;
             self.execute_bounds_samples(&mut samples)?;
@@ -356,8 +353,8 @@ impl TransformPlan {
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
-                self.source_frame,
-                self.target_frame,
+                self.source_domain,
+                self.target_domain,
                 self.options.source_epoch,
             )?;
             self.execute_bounds_with_executor(&mut samples, executor)?;
@@ -452,10 +449,10 @@ impl TransformPlan {
                 samples.include_target_poles(|x, y| {
                     let mut x = [x];
                     let mut y = [y];
-                    let result = transform_in_core_xy_with_frames(
+                    let result = transform_in_core_xy_with_domains(
                         &reverse,
-                        self.target_frame,
-                        self.source_frame,
+                        self.target_domain,
+                        self.source_domain,
                         &mut x,
                         &mut y,
                     );
@@ -525,8 +522,8 @@ pub(crate) struct TransformPlan {
     state: Arc<RuntimeState>,
     execution: TransformExecution,
     options: TransformOptions,
-    source_frame: Option<crate::geographic::GeographicFrame>,
-    target_frame: Option<crate::geographic::GeographicFrame>,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
 }
 
 #[expect(
@@ -534,10 +531,10 @@ pub(crate) struct TransformPlan {
     reason = "the operation is an owned, immutable transform plan; boxing its hot in-core variant would add an allocation and indirection"
 )]
 pub(super) enum TransformOperation {
-    /// Same source/target CRS. `source_geographic` gates domain validation so
+    /// Same source/target CRS. The source domain gates validation so
     /// identity never silently accepts out-of-domain geographic coordinates.
     Identity {
-        source_geographic: bool,
+        source_domain: TopologyDomain,
     },
     InCore(InCoreTransform),
     Proj {

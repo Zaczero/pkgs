@@ -23,8 +23,17 @@ fn line(coords: &[(f64, f64)]) -> Shape {
     )
 }
 
-fn written(shape: &Shape, geographic: bool) -> Value {
-    let text = to_geojson_string::<false>(shape, geographic).expect("serializes");
+fn geographic_domain() -> crate::geometry::TopologyDomain {
+    crate::geometry::TopologyDomain::Geographic(
+        crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap(),
+    )
+}
+
+fn written(shape: &Shape, domain: crate::geometry::TopologyDomain) -> Value {
+    let text = to_geojson_string::<false>(shape, domain).expect("serializes");
     serde_json::from_str(&text).expect("emitted GeoJSON parses")
 }
 
@@ -52,7 +61,7 @@ fn clockwise_shell_serializes_counterclockwise() {
         ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]),
         vec![],
     ));
-    let out = written(&cw_shell, false);
+    let out = written(&cw_shell, crate::geometry::TopologyDomain::Cartesian);
     assert_eq!(out["type"], "Polygon");
     let shell = &out["coordinates"][0];
     assert!(
@@ -80,7 +89,7 @@ fn holes_serialize_clockwise() {
             (2.0, 2.0),
         ])],
     ));
-    let out = written(&poly, false);
+    let out = written(&poly, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["coordinates"][0]) > 0.0, "shell CCW");
     assert!(
         ring_signed_area(&out["coordinates"][1]) < 0.0,
@@ -92,12 +101,12 @@ fn holes_serialize_clockwise() {
 fn multipolygon_and_collection_rings_are_right_handed() {
     let cw = ring(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]);
     let multi = Shape::MultiPolygon(vec![Polygon::new(cw.clone(), vec![])].into());
-    let out = written(&multi, false);
+    let out = written(&multi, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["coordinates"][0][0]) > 0.0);
 
     let collection =
         Shape::GeometryCollection(vec![Shape::Polygon(Polygon::new(cw, vec![]))].into());
-    let out = written(&collection, false);
+    let out = written(&collection, crate::geometry::TopologyDomain::Cartesian);
     assert!(ring_signed_area(&out["geometries"][0]["coordinates"][0]) > 0.0);
 }
 
@@ -105,9 +114,13 @@ fn multipolygon_and_collection_rings_are_right_handed() {
 fn write_rejects_out_of_domain_geographic_positions() {
     // Latitude beyond ±90 and longitude beyond ±180 fail on a geographic
     // frame; the same coordinates serialize fine as untagged planar data.
-    to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), true).unwrap_err();
-    to_geojson_string::<false>(&Shape::Point(point(181.0, 0.0)), true).unwrap_err();
-    to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), false).unwrap();
+    to_geojson_string::<false>(&Shape::Point(point(0.0, 91.0)), geographic_domain()).unwrap_err();
+    to_geojson_string::<false>(&Shape::Point(point(181.0, 0.0)), geographic_domain()).unwrap_err();
+    to_geojson_string::<false>(
+        &Shape::Point(point(0.0, 91.0)),
+        crate::geometry::TopologyDomain::Cartesian,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -116,7 +129,9 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         crate::geometry::GeometryKind::Point,
         crate::geometry::CoordinateAxes::XYZ,
     );
-    assert!(to_geojson_string::<true>(&xyz_empty, false).is_err());
+    assert!(
+        to_geojson_string::<true>(&xyz_empty, crate::geometry::TopologyDomain::Cartesian).is_err()
+    );
 
     let measured = Shape::Point(
         Point::new_axes(
@@ -127,10 +142,15 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         )
         .unwrap(),
     );
-    assert!(to_geojson_string::<true>(&measured, false).is_err());
+    assert!(
+        to_geojson_string::<true>(&measured, crate::geometry::TopologyDomain::Cartesian).is_err()
+    );
 
     let explicit_empty = parse_wkt("MULTIPOINT (EMPTY, (1 2))").unwrap();
-    assert!(to_geojson_string::<true>(&explicit_empty, false).is_err());
+    assert!(
+        to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian)
+            .is_err()
+    );
 }
 
 #[test]
@@ -202,7 +222,7 @@ fn read_rejects_out_of_domain_positions() {
 #[test]
 fn geographic_line_is_cut_at_the_antimeridian_and_round_trips() {
     let crossing = line(&[(170.0, 0.0), (-170.0, 0.0)]);
-    let cut = written(&crossing, true);
+    let cut = written(&crossing, geographic_domain());
     assert_eq!(
         cut["type"], "MultiLineString",
         "an antimeridian-crossing line cuts into a MultiLineString (RFC 7946 §3.1.9)"
@@ -211,14 +231,17 @@ fn geographic_line_is_cut_at_the_antimeridian_and_round_trips() {
     // match (writer-parity is value-based, not string-based).
     let reparsed = parse_geojson(&cut).expect("cut output reads back");
     assert!(matches!(reparsed, Shape::MultiLineString(_)));
-    let again = written(&reparsed, true);
+    let again = written(&reparsed, geographic_domain());
     assert_eq!(cut, again);
 }
 
 #[test]
 fn planar_line_is_never_cut() {
     // The identical coordinates on a CRS-free (planar) frame stay one line.
-    let out = written(&line(&[(170.0, 0.0), (-170.0, 0.0)]), false);
+    let out = written(
+        &line(&[(170.0, 0.0), (-170.0, 0.0)]),
+        crate::geometry::TopologyDomain::Cartesian,
+    );
     assert_eq!(out["type"], "LineString");
 }
 

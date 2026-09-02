@@ -80,14 +80,15 @@ fn try_is_simple_packed(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
 ) -> Option<PyResult<Py<PyAny>>> {
-    let geographic_frame = crate::geometry::geographic_frame(&array.frame)
-        .ok()
-        .flatten();
-    if geographic_frame.is_some_and(|frame| {
-        array
+    let domain = match crate::geometry::topology_domain(&array.frame) {
+        Ok(domain) => domain,
+        Err(error) => return Some(Err(error.into())),
+    };
+    if let crate::geometry::TopologyDomain::Geographic(frame) = domain
+        && array
             .present_shape_rows()
             .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
-    }) {
+    {
         return None;
     }
     array

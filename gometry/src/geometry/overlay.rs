@@ -2,7 +2,7 @@
 //! all-input variants) and linework set-ops (`line_merge`/`shared_paths`) on
 //! `Shape`, plus the shared noding/assembly kernel behind them.
 
-use crate::geometry::{CoordinateAxes, Shape};
+use crate::geometry::{CoordinateAxes, Shape, TopologyDomain};
 
 /// Whether synthesized overlay output must source Z/M from inputs (`Strict`)
 /// or may degrade to plain XY (`Lenient`).
@@ -64,13 +64,15 @@ impl OverlayOp {
         self,
         left: &super::Shape,
         right: &super::Shape,
-        frame: Option<crate::geographic::GeographicFrame>,
+        domain: TopologyDomain,
         strictness: Strictness,
     ) -> crate::error::Result<super::Shape> {
-        if frame.is_none() {
-            return self.apply(left, right, strictness);
+        match domain {
+            TopologyDomain::Cartesian => self.apply(left, right, strictness),
+            TopologyDomain::Geographic(_) => {
+                super::overlay_all(&[left, right], domain, self, strictness)
+            },
         }
-        super::overlay_all(&[left, right], frame, self, strictness)
     }
 }
 

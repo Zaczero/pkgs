@@ -2,6 +2,7 @@ use crate::DistanceUnit;
 use crate::boundary::metadata::Frame;
 use crate::broadcast::resolve_metric;
 use crate::crs::{self, MetricModel, ResolvedMetric};
+use crate::geometry::TopologyDomain;
 
 /// CRS/metric resolution policy for a dispatched operation.
 #[derive(Debug, Clone, Copy)]
@@ -184,7 +185,7 @@ pub(crate) type UnaryMeasureKernel =
 /// Per-row context for operations that cannot access frame-dependent products.
 pub(crate) struct CachelessRowContext<'a> {
     pub frame: &'a Frame,
-    pub geographic: bool,
+    pub domain: TopologyDomain,
     pub metric: MetricCtx<'a>,
     pub lane: Lane,
 }

@@ -346,10 +346,13 @@ impl PyGeometryArray {
         let size = size.into();
         let origin = origin.into();
         if repair {
-            let geographic = geometry::is_geographic_frame(&self.frame);
+            let domain = match geometry::topology_domain(&self.frame) {
+                Ok(domain) => domain,
+                Err(error) => return Some(Err(error.into())),
+            };
             return Some(Python::attach(|py| {
                 self.map_shapes_detached(py, move |shape| {
-                    shape.snap_to_grid_repaired(size.tuple(), origin.tuple(), geographic)
+                    shape.snap_to_grid_repaired(size.tuple(), origin.tuple(), domain)
                 })
             }));
         }
@@ -453,14 +456,12 @@ impl PyGeometryArray {
         rect: Bounds,
         drop: bool,
     ) -> PyResult<Self> {
-        let geographic_frame = crate::geometry::geographic_frame(&self.frame)?;
+        let domain = crate::geometry::topology_domain(&self.frame)?;
         if matches!(self.storage(), GeometryArrayStorage::Lines { .. }) {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
-                        PackedColumns::Lines(lines) => {
-                            clip_lines_packed_xy(lines, rect, geographic_frame)
-                        },
+                        PackedColumns::Lines(lines) => clip_lines_packed_xy(lines, rect, domain),
                         _ => Ok(None),
                     }
                 })?;
@@ -473,7 +474,7 @@ impl PyGeometryArray {
             }
         }
         self.map_shapes(|shape| {
-            if let Some(frame) = geographic_frame {
+            if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
                 Ok(shape.clip_by_rect_in_geographic_frame(rect, drop, shape.bounds(), frame)?)
             } else {
                 Ok(shape.clip_by_rect(rect, drop)?)

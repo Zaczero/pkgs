@@ -186,7 +186,7 @@ impl PyGeometryArray {
         // validation, antimeridian cutting); CRS-free rows are planar. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        let geographic = self.crs_str().is_some();
+        let domain = crate::geometry::topology_domain(&self.frame)?;
         Ok(if include_z {
             py.detach(move || {
                 let mut out = Vec::new();
@@ -194,7 +194,7 @@ impl PyGeometryArray {
                     let value = match row {
                         crate::array::LogicalShapeRow::Missing { .. } => String::new(),
                         crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            io::to_geojson_string::<true>(&shape, geographic)?
+                            io::to_geojson_string::<true>(&shape, domain)?
                         },
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
@@ -208,7 +208,7 @@ impl PyGeometryArray {
                     let value = match row {
                         crate::array::LogicalShapeRow::Missing { .. } => String::new(),
                         crate::array::LogicalShapeRow::Present { shape, .. } => {
-                            io::to_geojson_string::<false>(&shape, geographic)?
+                            io::to_geojson_string::<false>(&shape, domain)?
                         },
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
@@ -219,7 +219,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn validate_impl(&self) -> PyResult<Vec<Option<PyValidationReport>>> {
-        let geographic = geometry::is_geographic_frame(&self.frame);
+        let domain = geometry::topology_domain(&self.frame)?;
         let mut reports = Vec::new();
         for index in 0..self.len() {
             let report = if self.is_row_missing(index) {
@@ -227,7 +227,7 @@ impl PyGeometryArray {
             } else {
                 let geometry = self.geometry_at(index);
                 let plan = geometry.plan_or_transient();
-                let issue = crate::geometry::validate_data_in_frame(&plan, geographic);
+                let issue = crate::geometry::validate_data_in_frame(&plan, domain);
                 Some(PyValidationReport { geometry, issue })
             };
             crate::try_push(&mut reports, report)?;
@@ -237,7 +237,7 @@ impl PyGeometryArray {
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {
         let array = self.clone();
-        let geographic = geometry::is_geographic_frame(&self.frame);
+        let domain = geometry::topology_domain(&self.frame)?;
         let repaired = py
             .detach(move || {
                 let mut all_present_valid = true;
@@ -250,7 +250,7 @@ impl PyGeometryArray {
                     else {
                         continue;
                     };
-                    match geometry::repair_shape_in_frame(&shape, geographic, method)
+                    match geometry::repair_shape_in_frame(&shape, domain, method)
                         .map_err(|error| (row, error))?
                     {
                         None => crate::boundary::try_push_vec(&mut shapes, shape.into_owned())

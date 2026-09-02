@@ -2,11 +2,11 @@ use crate::geographic::{
     CircularInterval, GeographicFrame, GeographicRing, LongitudeWindows, RingDomain, RingSummary,
     RingTurn, ScalarGeographicView, SeamIdentity, union_circular_intervals,
 };
+use crate::geometry::TopologyDomain;
 use rstar::Envelope as _;
-
 use crate::predicates::engine::IndexEnvelope;
 use crate::py::errors::InvalidGeometryError;
-use crate::py::support::{AABB, Bounds, Frame, Point, Shape};
+use crate::py::support::{AABB, Bounds, Point, Shape};
 
 pub(crate) fn bounds_envelope(bounds: Bounds) -> AABB<[f64; 2]> {
     // Bounds are ordered by construction — skip from_corners' min/max pass.
@@ -82,18 +82,15 @@ impl EnvelopeCover {
 pub(crate) fn index_envelopes(
     shape: &Shape,
     bounds: Bounds,
-    frame: Option<&Frame>,
+    domain: TopologyDomain,
 ) -> pyo3::PyResult<EnvelopeCover> {
-    let geographic = match frame.and_then(|frame| frame.crs_str()) {
-        Some(crs) => crate::crs::info(crs)?.geographic_frame(),
-        None => None,
-    };
     let planar = bounds_envelope(bounds);
     let mut whole = Vec::new();
-    if let Some(geographic) = geographic {
-        whole = geographic_index_envelopes(shape, geographic)?;
-    } else {
-        crate::try_push_vec(&mut whole, planar)?;
+    match domain {
+        TopologyDomain::Cartesian => crate::try_push_vec(&mut whole, planar)?,
+        TopologyDomain::Geographic(frame) => {
+            whole = geographic_index_envelopes(shape, frame)?;
+        },
     }
     // Coordinate bounds describe a part's ground faithfully only where the
     // frame had nothing to add about the whole shape. A seam-crossing or

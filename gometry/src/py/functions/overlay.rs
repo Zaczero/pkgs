@@ -58,15 +58,14 @@ fn apply_overlay_all(
     values: &Bound<'_, PyAny>,
     kernel: impl FnOnce(
         &[Shape],
-        Option<crate::geographic::GeographicFrame>,
+        crate::geometry::TopologyDomain,
         crate::geometry::Strictness,
     ) -> crate::error::Result<Shape>
     + Send,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let geographic = crate::geometry::geographic_frame(&metadata)?;
-    let shape =
-        py.detach(move || kernel(&shapes, geographic, crate::geometry::Strictness::Lenient))?;
+    let domain = crate::geometry::topology_domain(&metadata)?;
+    let shape = py.detach(move || kernel(&shapes, domain, crate::geometry::Strictness::Lenient))?;
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
@@ -341,8 +340,8 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
             .into(),
         );
     }
-    let geographic = crate::geometry::geographic_frame(&metadata)?;
-    let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, geographic))?;
+    let domain = crate::geometry::topology_domain(&metadata)?;
+    let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, domain))?;
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 

@@ -14,13 +14,13 @@ use std::sync::Arc;
 
 use crate::crs::{
     CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
-    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformOptions, TransformPlan, info,
+    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformOptions, TransformPlan,
     info_with_state, proj_error_message, runtime_state_snapshot, transform_in_core_xy_batch,
     with_proj_operation_at,
 };
 use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
-use crate::geometry::{CoordWindow, LineSeq, MOrdinate, ZOrdinate};
+use crate::geometry::{CoordWindow, LineSeq, MOrdinate, TopologyDomain, ZOrdinate};
 
 /// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
@@ -35,8 +35,8 @@ pub(super) struct BoundsSamplePlan {
     pub(super) epoch: Option<[f64; 1]>,
     source_windows: Vec<[f64; 2]>,
     source_latitude_bounds: [f64; 2],
-    source_frame: Option<GeographicFrame>,
-    target_frame: Option<GeographicFrame>,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
     source_full_longitude: bool,
     target_poles: [bool; 2],
 }
@@ -45,13 +45,13 @@ impl BoundsSamplePlan {
     pub(super) fn new_2d(
         bounds: (f64, f64, f64, f64),
         densify: u32,
-        source_frame: Option<GeographicFrame>,
-        target_frame: Option<GeographicFrame>,
+        source_domain: TopologyDomain,
+        target_domain: TopologyDomain,
         epoch: Option<f64>,
     ) -> Result<Self> {
-        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.2, source_frame)?;
+        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.2, source_domain)?;
         let source_latitude_bounds =
-            admitted_source_latitude_bounds(source_frame, bounds.1, bounds.3)?;
+            admitted_source_latitude_bounds(source_domain, bounds.1, bounds.3)?;
         let edge_points = densify as usize + 2;
         let capacity = windows
             .len()
@@ -76,8 +76,8 @@ impl BoundsSamplePlan {
             epoch: epoch.map(|value| [value]),
             source_windows: windows,
             source_latitude_bounds,
-            source_frame,
-            target_frame,
+            source_domain,
+            target_domain,
             source_full_longitude,
             target_poles: [false; 2],
         })
@@ -86,13 +86,13 @@ impl BoundsSamplePlan {
     pub(super) fn new_3d(
         bounds: TransformedBounds3d,
         densify: u32,
-        source_frame: Option<GeographicFrame>,
-        target_frame: Option<GeographicFrame>,
+        source_domain: TopologyDomain,
+        target_domain: TopologyDomain,
         epoch: Option<f64>,
     ) -> Result<Self> {
-        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.3, source_frame)?;
+        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.3, source_domain)?;
         let source_latitude_bounds =
-            admitted_source_latitude_bounds(source_frame, bounds.1, bounds.4)?;
+            admitted_source_latitude_bounds(source_domain, bounds.1, bounds.4)?;
         let edge_points = densify as usize + 2;
         let capacity = windows
             .len()
@@ -138,8 +138,8 @@ impl BoundsSamplePlan {
             epoch: epoch.map(|value| [value]),
             source_windows: windows,
             source_latitude_bounds,
-            source_frame,
-            target_frame,
+            source_domain,
+            target_domain,
             source_full_longitude,
             target_poles: [false; 2],
         })
@@ -153,7 +153,7 @@ impl BoundsSamplePlan {
         // a north-polar projection at the south pole). The executor reports
         // that domain miss as `None`; all actual execution failures remain
         // errors so they cannot silently erase a contained pole.
-        let Some(frame) = self.target_frame else {
+        let TopologyDomain::Geographic(frame) = self.target_domain else {
             return Ok(());
         };
         for (index, latitude) in [(1, frame.pole()), (0, -frame.pole())] {
@@ -173,25 +173,23 @@ impl BoundsSamplePlan {
                 "inverse target-pole transform returned a non-finite coordinate",
             ));
         }
-        let latitude = if let Some(frame) = self.source_frame {
-            Latitude::try_new(frame, latitude)
+        let latitude = match self.source_domain {
+            TopologyDomain::Cartesian => latitude,
+            TopologyDomain::Geographic(frame) => Latitude::try_new(frame, latitude)
                 .map_err(map_geographic_conversion_error)?
-                .get()
-        } else {
-            latitude
+                .get(),
         };
         if !(self.source_latitude_bounds[0] < latitude && latitude < self.source_latitude_bounds[1])
         {
             return Ok(false);
         }
-        let longitude = if let Some(frame) = self.source_frame {
-            frame
+        let longitude = match self.source_domain {
+            TopologyDomain::Cartesian => longitude,
+            TopologyDomain::Geographic(frame) => frame
                 .longitude()
                 .canonicalize(longitude)
                 .map_err(map_geographic_conversion_error)?
-                .get()
-        } else {
-            longitude
+                .get(),
         };
         Ok(self
             .source_windows
@@ -203,7 +201,7 @@ impl BoundsSamplePlan {
         let horizontal = accumulate_horizontal(
             &mut self.x,
             &self.y,
-            self.target_frame,
+            self.target_domain,
             self.source_full_longitude,
             self.target_poles,
         )?;
@@ -214,7 +212,7 @@ impl BoundsSamplePlan {
         let horizontal = accumulate_horizontal(
             &mut self.x,
             &self.y,
-            self.target_frame,
+            self.target_domain,
             self.source_full_longitude,
             self.target_poles,
         )?;
@@ -231,9 +229,8 @@ impl BoundsSamplePlan {
     }
 
     pub(super) fn enter_in_core(&mut self) -> Result<()> {
-        if let Some(frame) = self
-            .source_frame
-            .filter(|frame| *frame != GeographicFrame::crs84())
+        if let TopologyDomain::Geographic(frame) = self.source_domain
+            && frame != GeographicFrame::crs84()
         {
             frame
                 .to_geodesic_lanes(&mut self.x, &mut self.y)
@@ -243,7 +240,7 @@ impl BoundsSamplePlan {
     }
 
     pub(super) fn leave_in_core(&mut self) -> Result<()> {
-        if let Some(frame) = self.target_frame {
+        if let TopologyDomain::Geographic(frame) = self.target_domain {
             frame
                 .from_geodesic_lanes(&mut self.x, &mut self.y)
                 .map_err(map_geographic_conversion_error)?;
@@ -252,20 +249,22 @@ impl BoundsSamplePlan {
     }
 }
 
-pub(super) fn transform_in_core_xy_with_frames(
+pub(super) fn transform_in_core_xy_with_domains(
     operation: &crate::crs::InCoreTransform,
-    source_frame: Option<GeographicFrame>,
-    target_frame: Option<GeographicFrame>,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
-    if let Some(frame) = source_frame.filter(|frame| *frame != GeographicFrame::crs84()) {
+    if let TopologyDomain::Geographic(frame) = source_domain
+        && frame != GeographicFrame::crs84()
+    {
         frame
             .to_geodesic_lanes(x, y)
             .map_err(map_geographic_conversion_error)?;
     }
     transform_in_core_xy_batch(operation, x, y)?;
-    if let Some(frame) = target_frame {
+    if let TopologyDomain::Geographic(frame) = target_domain {
         frame
             .from_geodesic_lanes(x, y)
             .map_err(map_geographic_conversion_error)?;
@@ -284,12 +283,8 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
     }
 }
 
-fn source_windows(
-    west: f64,
-    east: f64,
-    frame: Option<GeographicFrame>,
-) -> Result<(Vec<[f64; 2]>, bool)> {
-    let Some(frame) = frame else {
+fn source_windows(west: f64, east: f64, domain: TopologyDomain) -> Result<(Vec<[f64; 2]>, bool)> {
+    let TopologyDomain::Geographic(frame) = domain else {
         let mut windows = Vec::new();
         crate::try_reserve_vec(&mut windows, 1)?;
         windows.push([west, east]);
@@ -322,21 +317,21 @@ fn source_windows(
 }
 
 fn admitted_source_latitude_bounds(
-    frame: Option<GeographicFrame>,
+    domain: TopologyDomain,
     south: f64,
     north: f64,
 ) -> Result<[f64; 2]> {
-    let Some(frame) = frame else {
-        return Ok([south, north]);
-    };
-    Ok([
-        Latitude::try_new(frame, south)
-            .map_err(map_geographic_conversion_error)?
-            .get(),
-        Latitude::try_new(frame, north)
-            .map_err(map_geographic_conversion_error)?
-            .get(),
-    ])
+    match domain {
+        TopologyDomain::Cartesian => Ok([south, north]),
+        TopologyDomain::Geographic(frame) => Ok([
+            Latitude::try_new(frame, south)
+                .map_err(map_geographic_conversion_error)?
+                .get(),
+            Latitude::try_new(frame, north)
+                .map_err(map_geographic_conversion_error)?
+                .get(),
+        ]),
+    }
 }
 
 fn push_edge_2d(
@@ -376,11 +371,11 @@ fn interpolate(start: f64, end: f64, fraction: f64) -> f64 {
 fn accumulate_horizontal(
     x: &mut [f64],
     y: &[f64],
-    target_frame: Option<GeographicFrame>,
+    target_domain: TopologyDomain,
     source_full_longitude: bool,
     target_poles: [bool; 2],
 ) -> Result<[f64; 4]> {
-    let Some(frame) = target_frame else {
+    let TopologyDomain::Geographic(frame) = target_domain else {
         let (minx, maxx) = ordered_extrema(x);
         let (miny, maxy) = ordered_extrema(y);
         return Ok([minx, miny, maxx, maxy]);
@@ -461,9 +456,14 @@ mod bounds_plan_tests {
     #[test]
     fn wrapped_source_is_split_into_two_bounded_backend_windows() {
         let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
-        let samples =
-            BoundsSamplePlan::new_2d((170.0, -10.0, -170.0, 10.0), 3, Some(degrees), None, None)
-                .unwrap();
+        let samples = BoundsSamplePlan::new_2d(
+            (170.0, -10.0, -170.0, 10.0),
+            3,
+            TopologyDomain::Geographic(degrees),
+            TopologyDomain::Cartesian,
+            None,
+        )
+        .unwrap();
         assert_eq!(samples.x.len(), 2 * 4 * (3 + 2));
         assert!(
             samples
@@ -481,8 +481,8 @@ mod bounds_plan_tests {
         let samples = BoundsSamplePlan::new_2d(
             (0.0, -100.0, 400.0, 100.0),
             2,
-            Some(grads),
-            Some(grads),
+            TopologyDomain::Geographic(grads),
+            TopologyDomain::Geographic(grads),
             None,
         )
         .unwrap();
@@ -500,8 +500,14 @@ mod bounds_plan_tests {
     #[test]
     fn geographic_target_uses_smallest_closed_periodic_cover() {
         let radians = frame(1.0, 2.0_f64.to_radians());
-        let mut samples =
-            BoundsSamplePlan::new_2d((0.0, 0.0, 1.0, 1.0), 2, None, Some(radians), None).unwrap();
+        let mut samples = BoundsSamplePlan::new_2d(
+            (0.0, 0.0, 1.0, 1.0),
+            2,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(radians),
+            None,
+        )
+        .unwrap();
         for (index, value) in samples.x.iter_mut().enumerate() {
             *value = if index % 2 == 0 {
                 179.0_f64.to_radians()
@@ -523,8 +529,8 @@ mod bounds_plan_tests {
         let mut samples = BoundsSamplePlan::new_2d(
             (170.0, -1.0, -170.0, 1.0),
             2,
-            Some(degrees),
-            Some(degrees),
+            TopologyDomain::Geographic(degrees),
+            TopologyDomain::Geographic(degrees),
             None,
         )
         .unwrap();
@@ -541,8 +547,8 @@ mod bounds_plan_tests {
         let mut boundary = BoundsSamplePlan::new_2d(
             (0.0, -1.0, 10.0, 1.0),
             2,
-            Some(degrees),
-            Some(degrees),
+            TopologyDomain::Geographic(degrees),
+            TopologyDomain::Geographic(degrees),
             None,
         )
         .unwrap();
@@ -554,8 +560,8 @@ mod bounds_plan_tests {
         let mut admitted_boundary = BoundsSamplePlan::new_2d(
             (0.0, -1.0, 10.0, degrees.pole().next_up()),
             2,
-            Some(degrees),
-            Some(degrees),
+            TopologyDomain::Geographic(degrees),
+            TopologyDomain::Geographic(degrees),
             None,
         )
         .unwrap();
@@ -568,8 +574,14 @@ mod bounds_plan_tests {
     #[test]
     fn target_pole_probe_errors_are_not_treated_as_absent_poles() {
         let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
-        let mut samples =
-            BoundsSamplePlan::new_2d((-1.0, -1.0, 1.0, 1.0), 2, None, Some(degrees), None).unwrap();
+        let mut samples = BoundsSamplePlan::new_2d(
+            (-1.0, -1.0, 1.0, 1.0),
+            2,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(degrees),
+            None,
+        )
+        .unwrap();
         let error = samples.include_target_poles(|_, _| {
             Err(GeometryErrorKind::projection("target pole probe failed"))
         });
@@ -582,8 +594,8 @@ mod bounds_plan_tests {
         let mut samples = BoundsSamplePlan::new_3d(
             (-1.0, -1.0, 3.0, 1.0, 1.0, 7.0),
             2,
-            None,
-            Some(degrees),
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(degrees),
             None,
         )
         .unwrap();
@@ -601,8 +613,8 @@ mod bounds_plan_tests {
         let samples = BoundsSamplePlan::new_3d(
             (-1.0, -2.0, 3.0, 4.0, 5.0, 6.0),
             7,
-            None,
-            None,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Cartesian,
             Some(2020.0),
         )
         .unwrap();
@@ -645,6 +657,10 @@ pub(crate) fn transform_coordinates(
     let plan = TransformPlan::new_with_options_at(source, target, options, state)?;
     plan.transform_coordinates(x, y, zt)?;
     Ok(plan.execution())
+}
+
+fn is_geographic_crs_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
+    Ok(info_with_state(value, state)?.geographic_frame().is_some())
 }
 
 /// Shared densify gate for the bounds transforms: capped, and at least 2 when
@@ -956,17 +972,6 @@ fn validate_transform_bounds_3d_with_state(
         return validate_bounds_3d(bounds);
     }
     Err(CrsError::invalid(BOUNDS_3D_GEO_ERROR.to_owned()))
-}
-
-/// Whether `value` is geographic — including compound CRSs whose horizontal
-/// component is geographic (e.g. EPSG:9707). Uses the same recursive kind
-/// walk as [`CrsInfo::is_geographic`].
-pub(crate) fn is_geographic_crs(value: &str) -> Result<bool> {
-    Ok(info(value)?.geographic_frame().is_some())
-}
-
-pub(crate) fn is_geographic_crs_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
-    Ok(info_with_state(value, state)?.geographic_frame().is_some())
 }
 
 pub(crate) fn transform_coordinates_with_pipeline(

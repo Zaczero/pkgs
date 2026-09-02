@@ -26,12 +26,14 @@ mod normalize;
 mod polygon;
 
 pub(crate) use crs::{
-    crosses_antimeridian_in_frame, geographic_crossing, geographic_frame, is_geographic_frame,
+    crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame, geographic_crossing,
+    topology_domain,
 };
 use linestring::{collect_points, dedup_consecutive, resolve_seam_aliases};
 pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords};
 pub(crate) use normalize::{
-    DerivedPointStrategy, geographic_crossing_bounds, geographic_crossing_bounds_for_shapes,
+    DerivedPointStrategy, geographic_crossing_bounds,
+    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
     self_intersections_in_frame, unary_antimeridian_derived, validate_data_in_frame,
     validate_shape_in_frame,

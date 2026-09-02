@@ -155,10 +155,16 @@ mod binary_areal_overlay_tests {
     }
 
     fn assert_disjoint_certificate_matches_graph(inputs: &[&Shape], op: OverlayOp) {
-        let certified = overlay_all(inputs, None, op, Strictness::Strict).unwrap();
+        let certified = overlay_all(
+            inputs,
+            crate::geometry::TopologyDomain::Cartesian,
+            op,
+            Strictness::Strict,
+        )
+        .unwrap();
         let graph = super::super::nary::overlay_all_without_bounds_certificates(
             inputs,
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             op,
             Strictness::Strict,
         )
@@ -210,10 +216,15 @@ mod binary_areal_overlay_tests {
     }
 
     fn assert_disjoint_results_match(inputs: &[&Shape], op: OverlayOp) {
-        let certified = overlay_all(inputs, None, op, Strictness::Strict);
+        let certified = overlay_all(
+            inputs,
+            crate::geometry::TopologyDomain::Cartesian,
+            op,
+            Strictness::Strict,
+        );
         let forced = super::super::nary::overlay_all_without_bounds_certificates(
             inputs,
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             op,
             Strictness::Strict,
         );
@@ -264,7 +275,7 @@ mod binary_areal_overlay_tests {
         );
         let result = overlay_all(
             &[&area, &later_disjoint_point],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             Strictness::Strict,
         )
@@ -323,8 +334,13 @@ mod binary_areal_overlay_tests {
                 .iter()
                 .map(|&index| &shapes[index])
                 .collect::<Vec<_>>();
-            let canonical =
-                overlay_all(&inputs, None, OverlayOp::Intersection, Strictness::Strict).unwrap();
+            let canonical = overlay_all(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Intersection,
+                Strictness::Strict,
+            )
+            .unwrap();
             let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
             assert_topologically_equal(&canonical, &folded);
         }
@@ -336,8 +352,13 @@ mod binary_areal_overlay_tests {
         let crossing = line(&[(-1.0, 2.0), (5.0, 2.0)]);
         let marker = point(2.0, 2.0);
         let inputs = [&area, &crossing, &marker];
-        let canonical =
-            overlay_all(&inputs, None, OverlayOp::Intersection, Strictness::Strict).unwrap();
+        let canonical = overlay_all(
+            &inputs,
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
         let folded = manual_left_fold(&inputs, OverlayOp::Intersection);
         assert!(matches!(canonical, Shape::Point(_)), "{canonical:?}");
         assert_topologically_equal(&canonical, &folded);
@@ -359,7 +380,13 @@ mod binary_areal_overlay_tests {
         // A single operand intersects to itself — faithful, so both policies
         // keep Z/M (force_2d is the way to flatten).
         for strictness in [Strictness::Lenient, Strictness::Strict] {
-            let kept = overlay_all(&[&input], None, OverlayOp::Intersection, strictness).unwrap();
+            let kept = overlay_all(
+                &[&input],
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Intersection,
+                strictness,
+            )
+            .unwrap();
             assert_eq!(kept, input);
             assert!(kept.has_z() && kept.has_m(), "{kept:?}");
         }
@@ -372,7 +399,7 @@ mod binary_areal_overlay_tests {
         let third = z_square(2.0, 1.0, 6.0, 5.0, 10.0);
         let result = overlay_all(
             &[&first, &second, &third],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             Strictness::Lenient,
         )
@@ -389,7 +416,7 @@ mod binary_areal_overlay_tests {
         // the result degrades to 2D rather than raising.
         let auto = overlay_all(
             &[&source, &interior],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             Strictness::Lenient,
         )
@@ -399,7 +426,7 @@ mod binary_areal_overlay_tests {
         // 'error' (strict=true) raises on the unsourceable survivor.
         let error = overlay_all(
             &[&source, &interior],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             Strictness::Strict,
         );
@@ -415,7 +442,7 @@ mod binary_areal_overlay_tests {
         ];
         let baseline = overlay_all(
             &[&shapes[0], &shapes[1], &shapes[2]],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -427,7 +454,7 @@ mod binary_areal_overlay_tests {
                 .collect::<Vec<_>>();
             let canonical = overlay_all(
                 &inputs,
-                None,
+                crate::geometry::TopologyDomain::Cartesian,
                 OverlayOp::SymmetricDifference,
                 Strictness::Strict,
             )
@@ -444,7 +471,7 @@ mod binary_areal_overlay_tests {
         let contained_line = line(&[(1.0, 1.0), (3.0, 3.0)]);
         let result = overlay_all(
             &[&polygon, &polygon, &contained_line],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -460,7 +487,7 @@ mod binary_areal_overlay_tests {
             Shape::GeometryCollection(vec![contained_line.clone(), Shape::empty_polygon()].into());
         let result = overlay_all(
             &[&polygon, &polygon, &collection],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -474,7 +501,7 @@ mod binary_areal_overlay_tests {
         let point_on_line = point(0.0, 0.0);
         let result = overlay_all(
             &[&line, &line, &point_on_line],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -493,7 +520,7 @@ mod binary_areal_overlay_tests {
         let inputs = [&shapes[0], &shapes[1], &shapes[2], &shapes[3]];
         let result = overlay_all(
             &inputs,
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -516,7 +543,7 @@ mod binary_areal_overlay_tests {
         );
         let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -529,7 +556,7 @@ mod binary_areal_overlay_tests {
         let polygon = square(0.0, 0.0, 2.0, 2.0);
         let result = overlay_all(
             &[&polygon, &polygon],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -546,7 +573,7 @@ mod binary_areal_overlay_tests {
         let survivor = square(1.0, 1.0, 3.0, 3.0);
         let result = overlay_all(
             &[&duplicate, &duplicate, &survivor],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -559,7 +586,7 @@ mod binary_areal_overlay_tests {
         let shapes = [square(0.0, 0.0, 1.0, 1.0), square(3.0, 3.0, 4.0, 4.0)];
         let canonical = overlay_all(
             &[&shapes[0], &shapes[1]],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )
@@ -649,11 +676,16 @@ mod binary_areal_overlay_tests {
         let polygon = invalid_zm_bowtie();
         let line = zm_line((10.0, 0.0), (11.0, 1.0));
         for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-            let certified = overlay_all(&[&polygon, &line], None, op, Strictness::Strict)
-                .expect("certified mixed ZM overlay");
+            let certified = overlay_all(
+                &[&polygon, &line],
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            )
+            .expect("certified mixed ZM overlay");
             let forced = super::super::nary::overlay_all_without_bounds_certificates(
                 &[&polygon, &line],
-                None,
+                crate::geometry::TopologyDomain::Cartesian,
                 op,
                 Strictness::Strict,
             )
@@ -668,11 +700,15 @@ mod binary_areal_overlay_tests {
         let empty_z = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZ);
         let remote = square(3.0, 3.0, 4.0, 4.0);
         for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
-            let certified =
-                overlay_all(&[&polygon, &empty_z, &remote], None, op, Strictness::Strict);
+            let certified = overlay_all(
+                &[&polygon, &empty_z, &remote],
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            );
             let forced = super::super::nary::overlay_all_without_bounds_certificates(
                 &[&polygon, &empty_z, &remote],
-                None,
+                crate::geometry::TopologyDomain::Cartesian,
                 op,
                 Strictness::Strict,
             );
@@ -690,7 +726,7 @@ mod binary_areal_overlay_tests {
         for strictness in [Strictness::Lenient, Strictness::Strict] {
             let kept = overlay_all(
                 &[&first, &second],
-                None,
+                crate::geometry::TopologyDomain::Cartesian,
                 OverlayOp::SymmetricDifference,
                 strictness,
             )
@@ -702,7 +738,7 @@ mod binary_areal_overlay_tests {
         let overlap = zm_square(0.5, 0.5, 1.5, 1.5, 10.0);
         let carried = overlay_all(
             &[&first, &overlap],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Lenient,
         )
@@ -856,7 +892,7 @@ mod binary_areal_overlay_tests {
         ] {
             let baseline = wkb(&overlay_all(
                 &[&shapes[0], &shapes[1], &shapes[2]],
-                None,
+                crate::geometry::TopologyDomain::Cartesian,
                 op,
                 Strictness::Strict,
             )
@@ -867,7 +903,13 @@ mod binary_areal_overlay_tests {
                     .map(|&index| &shapes[index])
                     .collect::<Vec<_>>();
                 assert_eq!(
-                    wkb(&overlay_all(&inputs, None, op, Strictness::Strict).unwrap()),
+                    wkb(&overlay_all(
+                        &inputs,
+                        crate::geometry::TopologyDomain::Cartesian,
+                        op,
+                        Strictness::Strict
+                    )
+                    .unwrap()),
                     baseline,
                     "{} order={order:?}",
                     op.name()
@@ -883,7 +925,7 @@ mod binary_areal_overlay_tests {
         let area = square(0.0, 0.0, 4.0, 4.0);
         let direct = overlay_all(
             &[&point, &line, &area],
-            None,
+            crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::SymmetricDifference,
             Strictness::Strict,
         )

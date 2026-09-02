@@ -70,11 +70,16 @@ fn require_geojson_shape(shape: &Shape, crs: Option<&str>) -> PyResult<()> {
     Ok(())
 }
 
-/// Whether a Feature encoder should apply RFC 7946 geographic preparation
-/// (domain check + antimeridian split). CRS-tagged WGS84-family frames opt in;
-/// CRS-free geometry stays planar (same rule as `to_geojson`).
-const fn feature_geographic(crs: Option<&str>) -> bool {
-    crs.is_some()
+/// The RFC 7946 coordinate domain for a Feature's declared CRS.
+fn feature_domain(crs: Option<&str>) -> PyResult<crate::geometry::TopologyDomain> {
+    Ok(match crs {
+        Some(crs) => crate::crs::info(crs)?
+            .geographic_frame()
+            .map_or(crate::geometry::TopologyDomain::Cartesian, |frame| {
+                crate::geometry::TopologyDomain::Geographic(frame)
+            }),
+        None => crate::geometry::TopologyDomain::Cartesian,
+    })
 }
 
 fn feature_dict<'py>(
@@ -90,7 +95,7 @@ fn feature_dict<'py>(
         Some(crate::boundary::convert::geojson_dict_prepared(
             py,
             shape,
-            feature_geographic(crs),
+            feature_domain(crs)?,
         )?)
     } else {
         None

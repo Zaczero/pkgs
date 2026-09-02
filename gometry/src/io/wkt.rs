@@ -221,9 +221,15 @@ mod tests {
                     || matches!(shape, Shape::Empty(_, axes) if axes != CoordinateAxes::XY)
                 {
                     let result = if include_z {
-                        crate::io::geojson::to_geojson_string::<true>(&shape, false)
+                        crate::io::geojson::to_geojson_string::<true>(
+                            &shape,
+                            crate::geometry::TopologyDomain::Cartesian,
+                        )
                     } else {
-                        crate::io::geojson::to_geojson_string::<false>(&shape, false)
+                        crate::io::geojson::to_geojson_string::<false>(
+                            &shape,
+                            crate::geometry::TopologyDomain::Cartesian,
+                        )
                     };
                     assert!(result.is_err(), "unrepresentable GeoJSON axes must reject");
                     continue;

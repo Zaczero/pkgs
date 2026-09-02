@@ -791,16 +791,23 @@ impl Shape {
         });
         let rectangle_bounds_sound =
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame);
-        if subject_bounds_sound
-            && rectangle_bounds_sound
-            && !rect.crosses_antimeridian()
-        {
+        if subject_bounds_sound && rectangle_bounds_sound && !rect.crosses_antimeridian() {
             return self.clip_by_rect_with_bounds(rect, drop, bounds);
         }
 
         let rectangle = if rect.crosses_antimeridian() {
-            let west = Bounds::new(rect.minx(), rect.miny(), frame.longitude().half_period(), rect.maxy())?;
-            let east = Bounds::new(-frame.longitude().half_period(), rect.miny(), rect.maxx(), rect.maxy())?;
+            let west = Bounds::new(
+                rect.minx(),
+                rect.miny(),
+                frame.longitude().half_period(),
+                rect.maxy(),
+            )?;
+            let east = Bounds::new(
+                -frame.longitude().half_period(),
+                rect.miny(),
+                rect.maxx(),
+                rect.maxy(),
+            )?;
             Self::GeometryCollection(
                 vec![
                     crate::geometry::geographic_bounds_to_shape(west, frame)?,
@@ -811,8 +818,11 @@ impl Shape {
         } else {
             crate::geometry::geographic_bounds_to_shape(rect, frame)?
         };
-        let clipped =
-            Self::intersection_all_topo(&[self, &rectangle], Some(frame), Strictness::from(drop))?;
+        let clipped = Self::intersection_all_topo(
+            &[self, &rectangle],
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Strictness::from(drop),
+        )?;
         Ok(if clipped.is_empty() {
             empty_clip_shape(self)
         } else {

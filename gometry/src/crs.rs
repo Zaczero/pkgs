@@ -137,10 +137,9 @@ pub(crate) use runtime::{
     normalize_pair, reset_runtime_config, runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{
-    apply_operation, coordinates_are_finite, is_geographic_crs, is_geographic_crs_with_state,
-    is_wgs84_lonlat, parse_epsg, proj_transform_error, transform, transform_at, transform_bounds,
-    transform_bounds_3d, transform_bounds_3d_many, transform_bounds_many, transform_coordinates,
-    transform_proj_shapes, validate_coordinate_lanes,
+    apply_operation, coordinates_are_finite, is_wgs84_lonlat, parse_epsg, proj_transform_error,
+    transform, transform_at, transform_bounds, transform_bounds_3d, transform_bounds_3d_many,
+    transform_bounds_many, transform_coordinates, transform_proj_shapes, validate_coordinate_lanes,
 };
 pub(crate) use transformer::TransformPlan;
 pub(crate) use types::{

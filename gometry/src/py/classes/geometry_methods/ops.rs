@@ -118,13 +118,13 @@ impl PyGeometry {
         }
         // A WGS84-tagged frame opts into the RFC 7946 geographic rules (domain
         // validation, antimeridian cutting); CRS-free geometry is planar.
-        let geographic = self.crs_str().is_some();
+        let domain = geometry::topology_domain(&self.frame)?;
         let shape = self.shape.clone();
         py.detach(move || {
             Ok(if include_z {
-                io::to_geojson_string::<true>(&shape, geographic)?
+                io::to_geojson_string::<true>(&shape, domain)?
             } else {
-                io::to_geojson_string::<false>(&shape, geographic)?
+                io::to_geojson_string::<false>(&shape, domain)?
             })
         })
     }
@@ -132,18 +132,18 @@ impl PyGeometry {
     pub(crate) fn validate_impl(&self, py: Python<'_>) -> PyValidationReport {
         let geometry = self.clone();
         let plan = self.plan_or_transient();
-        let geographic = geometry::is_geographic_frame(&self.frame);
+        let domain = geometry::topology_domain(&self.frame)
+            .unwrap_or(crate::geometry::TopologyDomain::Cartesian);
         PyValidationReport {
             geometry,
-            issue: py.detach(move || geometry::validate_data_in_frame(&plan, geographic)),
+            issue: py.detach(move || geometry::validate_data_in_frame(&plan, domain)),
         }
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
-        let geographic = geometry::is_geographic_frame(&self.frame);
-        let repaired = py.detach(|| {
-            geometry::repair_data_in_frame(&self.plan_or_transient(), geographic, method)
-        })?;
+        let domain = geometry::topology_domain(&self.frame)?;
+        let repaired = py
+            .detach(|| geometry::repair_data_in_frame(&self.plan_or_transient(), domain, method))?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
             |shape| self.with_shape(shape),
@@ -152,9 +152,9 @@ impl PyGeometry {
 
     pub(crate) fn self_intersections_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
         let shape = self.shape.clone();
-        let geographic = geometry::is_geographic_frame(&self.frame);
+        let domain = geometry::topology_domain(&self.frame)?;
         let points =
-            py.detach(move || geometry::self_intersections_in_frame(shape.shape(), geographic));
+            py.detach(move || geometry::self_intersections_in_frame(shape.shape(), domain));
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }
 

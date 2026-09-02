@@ -13,7 +13,7 @@ use crate::dispatch::packed::{
     try_unary_packed_f64,
 };
 use crate::error::Result;
-use crate::geometry::{PreparedPlan, Shape, is_geographic_frame};
+use crate::geometry::{PreparedPlan, Shape};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
 
 /// Scalar geometry lane: resolve metric once, run one kernel, return the bulk element.
@@ -27,12 +27,12 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     let op_name = op.name();
     let resolver = op.resolver_with_unit(unit);
     let frame = geometry.frame.clone();
-    let geographic = is_geographic_frame(&frame);
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let ctx = CachelessRowContext {
         frame: &frame,
-        geographic,
+        domain,
         metric,
         lane: Lane::Scalar,
     };
@@ -112,7 +112,7 @@ fn run_unary_rows<T: BulkElement>(
 ) -> PyResult<(Vec<T>, Frame)> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
-    let geographic = is_geographic_frame(&frame);
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let array = array.clone();
@@ -134,7 +134,7 @@ fn run_unary_rows<T: BulkElement>(
                     };
                     let ctx = CachelessRowContext {
                         frame,
-                        geographic,
+                        domain,
                         metric,
                         lane: Lane::Array(row),
                     };
@@ -201,14 +201,14 @@ pub(crate) fn unary_scalar_linref_shape(
     kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
-    let geographic = is_geographic_frame(&frame);
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
     let model = metric.require_model(op.name())?;
     let row = LinearReferenceRow {
         op: CachelessRowContext {
             frame: &frame,
-            geographic,
+            domain,
             metric,
             lane: Lane::Scalar,
         },
@@ -233,7 +233,7 @@ pub(crate) fn unary_array_linref_shapes(
     }
     let frame = array.frame.clone();
     let output_frame = frame.clone();
-    let geographic = is_geographic_frame(&frame);
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op.name(), &mut scratch)?;
     let model = metric.require_model(op.name())?;
@@ -257,7 +257,7 @@ pub(crate) fn unary_array_linref_shapes(
                     let row = LinearReferenceRow {
                         op: CachelessRowContext {
                             frame: &frame,
-                            geographic,
+                            domain,
                             metric,
                             lane: Lane::Array(row_index),
                         },
@@ -292,7 +292,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     let resolver = op.resolver_with_unit(unit);
     let frame = array.frame.clone();
     let output_frame = frame.clone();
-    let geographic = is_geographic_frame(&frame);
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op.name(), &mut metric_scratch)?;
     let missing = array.missing().cloned();
@@ -313,7 +313,7 @@ pub(crate) fn unary_array_shapes_budgeted(
                     };
                     let ctx = CachelessRowContext {
                         frame: &frame,
-                        geographic,
+                        domain,
                         metric,
                         lane: Lane::Array(row),
                     };

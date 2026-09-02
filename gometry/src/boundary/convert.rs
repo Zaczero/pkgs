@@ -93,14 +93,14 @@ pub(crate) fn point_tuple(py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
 }
 
 /// Build a GeoJSON geometry dict after the same RFC 7946 preparation as
-/// [`crate::io::to_geojson_string`] when `geographic` is true (domain check,
+/// [`crate::io::to_geojson_string`] when the domain is geographic (domain check,
 /// antimeridian split, right-hand winding). CRS-free geometry stays planar.
 pub(crate) fn geojson_dict_prepared<'py>(
     py: Python<'py>,
     shape: &Shape,
-    geographic: bool,
+    domain: crate::geometry::TopologyDomain,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let prepared = crate::io::geojson_output_shape(shape, geographic)?;
+    let prepared = crate::io::geojson_output_shape(shape, domain)?;
     crate::io::validate_geojson_value::<true>(prepared.as_ref())?;
     geojson_dict_raw(py, prepared.as_ref())
 }

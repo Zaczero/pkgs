@@ -1,7 +1,8 @@
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
 use crate::geometry::topology::{
-    AreaSupport, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId, TopologySpace,
+    AreaSupport, TopologyDomain, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
+    TopologySpace,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, PreparedPlan,
@@ -730,13 +731,14 @@ fn geographic_area_polygons(
     left: &TopologyGraph,
     right: &TopologyGraph,
 ) -> (Vec<Polygon>, Vec<Polygon>) {
-    debug_assert_eq!(left.domain.frame(), right.domain.frame());
-    let period = left
-        .domain
-        .frame()
-        .expect("geographic graph has a native frame")
-        .longitude()
-        .period();
+    let TopologyDomain::Geographic(left_frame) = left.domain else {
+        unreachable!("geographic relation has a geographic left graph")
+    };
+    let TopologyDomain::Geographic(right_frame) = right.domain else {
+        unreachable!("geographic relation has a geographic right graph")
+    };
+    debug_assert_eq!(left_frame, right_frame);
+    let period = left_frame.longitude().period();
     let anchor = area_center(left)
         .or_else(|| area_center(right))
         .unwrap_or(0.0);

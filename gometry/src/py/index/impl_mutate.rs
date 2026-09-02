@@ -78,7 +78,8 @@ impl PySpatialIndex {
             .bounds()
             .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
         let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
-        let cover = index_envelopes(geometry.shape.shape(), bounds, Some(effective_frame))?;
+        let domain = crate::geometry::topology_domain(effective_frame)?;
+        let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
         let idx = self.rows.len();
         self.rows.try_reserve(1)?;
         // The geometry is indexable — adopt the frame only after all fallible
@@ -114,22 +115,19 @@ impl PySpatialIndex {
             drop(items);
             return Err(pyo3::PyErr::from(error));
         }
+        let domain = crate::geometry::topology_domain(
+            frame
+                .as_ref()
+                .or(self.metadata.as_ref())
+                .expect("non-empty batch has a frame"),
+        )?;
         let mut non_prunable_live = 0;
         for (offset, geometry) in items.iter().enumerate() {
             let bounds = geometry
                 .shape
                 .bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            let cover = index_envelopes(
-                geometry.shape.shape(),
-                bounds,
-                Some(
-                    frame
-                        .as_ref()
-                        .or(self.metadata.as_ref())
-                        .expect("non-empty batch has a frame"),
-                ),
-            )?;
+            let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
                 if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
                     idx: start + offset,
@@ -166,13 +164,14 @@ impl PySpatialIndex {
         if let Err(error) = crate::try_reserve_pair(&mut entries, &mut items, len) {
             return Err(pyo3::PyErr::from(error));
         }
+        let domain = crate::geometry::topology_domain(&array.frame)?;
         let mut non_prunable_live = 0;
         for (offset, row) in array.storage().iter_rows().enumerate() {
             let bounds = row
                 .quick_bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
             let shape = row.with_shape(std::clone::Clone::clone);
-            let cover = index_envelopes(&shape, bounds, Some(&array.frame))?;
+            let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
                 if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
                     idx: start + offset,

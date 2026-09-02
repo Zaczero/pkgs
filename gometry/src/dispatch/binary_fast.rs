@@ -91,17 +91,17 @@ pub(crate) fn dispatch_predicate(
         let right_plan = right.plan_or_transient();
         let left_cache = left.frame_cache();
         let right_cache = right.frame_cache();
-        let frame = crate::geometry::geographic_frame(&left.frame)?;
+        let domain = crate::geometry::topology_domain(&left.frame)?;
         let spec = predicate.spec();
         let value = py.detach(move || {
             crate::predicates::engine::topology_scalar_pair(
                 &spec,
-                crate::predicates::engine::PreparedTopologyPair::for_frame(
+                crate::predicates::engine::PreparedTopologyPair::for_domain(
                     &left_plan,
                     &left_cache,
                     &right_plan,
                     &right_cache,
-                    frame,
+                    domain,
                 ),
             )
         });

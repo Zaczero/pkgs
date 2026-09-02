@@ -1,3 +1,4 @@
+use crate::geometry::TopologyDomain;
 use crate::py::index::{
     AABB, Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore,
     PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, RTree,
@@ -19,13 +20,18 @@ fn spatial_index_rows(
     items: Vec<Option<PyGeometry>>,
     metadata: Option<Frame>,
 ) -> PyResult<PySpatialIndex> {
+    let domain = metadata
+        .as_ref()
+        .map(crate::geometry::topology_domain)
+        .transpose()?
+        .unwrap_or(TopologyDomain::Cartesian);
     let mut entries = Vec::new();
     for (idx, item) in items.iter().enumerate() {
         let Some(item) = item else { continue };
         let Some(bounds) = item.shape.bounds() else {
             continue;
         };
-        let cover = index_envelopes(item.shape.shape(), bounds, metadata.as_ref())?;
+        let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
         }
@@ -102,14 +108,15 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
     if array.has_missing() {
         return Ok(None);
     }
-    if crate::geometry::geographic_frame(&array.frame)?.is_some() {
+    let domain = crate::geometry::topology_domain(&array.frame)?;
+    if domain.is_geographic() {
         let mut entries = Vec::new();
         let mut non_prunable_live = 0;
         for (idx, shape) in array.storage().iter_shapes().enumerate() {
             let Some(bounds) = shape.bounds() else {
                 return Ok(None);
             };
-            let cover = index_envelopes(&shape, bounds, Some(&array.frame))?;
+            let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
                 crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
             }
@@ -341,7 +348,8 @@ pub(crate) fn restore_spatial_index(
                 "spatial index pickle payload marks empty handle {handle} as live"
             ))
         })?;
-        let cover = index_envelopes(item.shape.shape(), bounds, Some(&values.frame))?;
+        let domain = crate::geometry::topology_domain(&values.frame)?;
+        let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             crate::try_push(&mut entries, IndexEntry {
                 idx: handle,

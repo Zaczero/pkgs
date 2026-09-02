@@ -3,18 +3,46 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::error::Result;
+use crate::geographic::GeographicFrame;
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, PreparedPlan,
-    RepairMethod, Ring, Segment, Shape, ValidationIssue, shape_encloses_pole, shape_has_polar_ring,
-    shared_segment_part,
+    RepairMethod, Ring, Segment, Shape, TopologyDomain, ValidationIssue,
+    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame, shared_segment_part,
 };
 
-fn try_topology_split(shape: &Shape) -> Result<Shape> {
-    shape.force_2d().split_antimeridian()
+fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+    match domain {
+        TopologyDomain::Cartesian => Ok(shape.force_2d()),
+        TopologyDomain::Geographic(frame) => shape.force_2d().split_antimeridian_in_frame(frame),
+    }
 }
 
-fn needs_topology_split(shape: &Shape, geographic: bool) -> bool {
-    geographic && shape.crosses_antimeridian()
+fn split_in_domain(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+    match domain {
+        TopologyDomain::Cartesian => Ok(shape.clone()),
+        TopologyDomain::Geographic(frame) => shape.split_antimeridian_in_frame(frame),
+    }
+}
+
+fn needs_topology_split(shape: &Shape, domain: TopologyDomain) -> bool {
+    match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) => {
+            crate::geometry::crosses_antimeridian_in_frame(shape, frame)
+        },
+    }
+}
+
+fn data_needs_topology_split(data: &PreparedPlan, domain: TopologyDomain) -> bool {
+    match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) if frame == GeographicFrame::crs84() => {
+            data.crosses_antimeridian()
+        },
+        TopologyDomain::Geographic(frame) => {
+            crate::geometry::crosses_antimeridian_in_frame(data.shape(), frame)
+        },
+    }
 }
 
 fn rings_share_source_linework(left: &CoordSeq, right: &CoordSeq) -> bool {
@@ -38,14 +66,24 @@ fn rings_share_source_linework(left: &CoordSeq, right: &CoordSeq) -> bool {
 /// outside hole simply subtracts nothing and overlapping holes collapse to
 /// their union. That is useful to `repair`, but validity must diagnose the
 /// malformed source rather than bless the normalized result.
-fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<ValidationIssue> {
+fn crossing_hole_relationship_issue(
+    shape: &Shape,
+    path: &str,
+    domain: TopologyDomain,
+) -> Option<ValidationIssue> {
+    let TopologyDomain::Geographic(frame) = domain else {
+        return None;
+    };
     let polygon_issue = |polygon: &Polygon, path: &str| {
         let crossing: Vec<(usize, &Ring)> = polygon
             .holes
             .iter()
             .enumerate()
             .filter(|(_, hole)| {
-                Shape::Polygon(Polygon::new((*hole).clone(), Vec::new())).crosses_antimeridian()
+                crate::geometry::crosses_antimeridian_in_frame(
+                    &Shape::Polygon(Polygon::new((*hole).clone(), Vec::new())),
+                    frame,
+                )
             })
             .collect();
         if crossing.is_empty() {
@@ -61,7 +99,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
             .map(|(_, hole)| hole.clone())
             .collect();
         let container = Shape::Polygon(Polygon::new(polygon.shell.clone(), stationary));
-        let container = match container.split_antimeridian() {
+        let container = match try_topology_split(&container, domain) {
             Ok(container) => container,
             Err(error) => {
                 return Some(ValidationIssue::new(
@@ -93,7 +131,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
                 ));
             }
             let hole = Shape::Polygon(Polygon::new(hole.clone(), Vec::new()));
-            let hole = match hole.split_antimeridian() {
+            let hole = match try_topology_split(&hole, domain) {
                 Ok(hole) => hole,
                 Err(error) => {
                     return Some(ValidationIssue::new(
@@ -142,7 +180,7 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
             })
         },
         Shape::GeometryCollection(parts) => parts.iter().enumerate().find_map(|(index, part)| {
-            crossing_hole_relationship_issue(part, &format!("{path}.geometries[{index}]"))
+            crossing_hole_relationship_issue(part, &format!("{path}.geometries[{index}]"), domain)
         }),
         _ => None,
     }
@@ -151,13 +189,16 @@ fn crossing_hole_relationship_issue(shape: &Shape, path: &str) -> Option<Validat
 /// Validate stored geometry in its coordinate frame. Projected and CRS-free
 /// geometries retain ordinary planar OGC validity; only seam-crossing
 /// geographic geometry is normalized first.
-pub(crate) fn validate_shape_in_frame(shape: &Shape, geographic: bool) -> Option<ValidationIssue> {
-    if needs_topology_split(shape, geographic) {
+pub(crate) fn validate_shape_in_frame(
+    shape: &Shape,
+    domain: TopologyDomain,
+) -> Option<ValidationIssue> {
+    if needs_topology_split(shape, domain) {
         let planar = shape.force_2d();
-        if let Some(issue) = crossing_hole_relationship_issue(&planar, "$") {
+        if let Some(issue) = crossing_hole_relationship_issue(&planar, "$", domain) {
             return Some(issue);
         }
-        try_topology_split(shape).map_or_else(
+        try_topology_split(shape, domain).map_or_else(
             |error| {
                 Some(ValidationIssue::new(
                     "topology_normalization_failed",
@@ -176,10 +217,10 @@ pub(crate) fn validate_shape_in_frame(shape: &Shape, geographic: bool) -> Option
 /// Cached-handle twin of [`validate_shape_in_frame`].
 pub(crate) fn validate_data_in_frame(
     data: &PreparedPlan,
-    geographic: bool,
+    domain: TopologyDomain,
 ) -> Option<ValidationIssue> {
-    if geographic && data.crosses_antimeridian() {
-        validate_shape_in_frame(data.shape(), true)
+    if data_needs_topology_split(data, domain) {
+        validate_shape_in_frame(data.shape(), domain)
     } else {
         data.validate_cached().cloned()
     }
@@ -187,9 +228,9 @@ pub(crate) fn validate_data_in_frame(
 
 /// Frame-aware simplicity. Non-crossing inputs keep the frozen handle's cached
 /// verdict; seam-crossing geographic inputs answer on normalized topology.
-pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, geographic: bool) -> bool {
-    if geographic && data.crosses_antimeridian() {
-        try_topology_split(data.shape()).is_ok_and(|shape| shape.is_simple())
+pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> bool {
+    if data_needs_topology_split(data, domain) {
+        try_topology_split(data.shape(), domain).is_ok_and(|shape| shape.is_simple())
     } else {
         data.is_simple_cached()
     }
@@ -197,10 +238,10 @@ pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, geographic: bool) -> 
 
 /// Frame-aware `is_ring`: closure is structural on the original line, while
 /// simplicity is evaluated on normalized seam topology.
-pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, geographic: bool) -> bool {
-    if geographic && data.crosses_antimeridian() {
+pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> bool {
+    if data_needs_topology_split(data, domain) {
         data.shape().is_closed()
-            && try_topology_split(data.shape()).is_ok_and(|shape| shape.is_simple())
+            && try_topology_split(data.shape(), domain).is_ok_and(|shape| shape.is_simple())
     } else {
         data.shape().is_ring()
     }
@@ -208,9 +249,9 @@ pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, geographic: bool) -> bo
 
 /// Frame-aware self-intersection diagnostics, shared by scalar and grouped
 /// array output.
-pub(crate) fn self_intersections_in_frame(shape: &Shape, geographic: bool) -> Vec<Point> {
-    if needs_topology_split(shape, geographic) {
-        match try_topology_split(shape) {
+pub(crate) fn self_intersections_in_frame(shape: &Shape, domain: TopologyDomain) -> Vec<Point> {
+    if needs_topology_split(shape, domain) {
+        match try_topology_split(shape, domain) {
             Ok(normalized) if normalized.is_simple() => Vec::new(),
             Ok(normalized) => normalized.self_intersections(),
             Err(_) => shape.self_intersections(),
@@ -220,16 +261,20 @@ pub(crate) fn self_intersections_in_frame(shape: &Shape, geographic: bool) -> Ve
     }
 }
 
-fn repair_invalid_shape(shape: &Shape, geographic: bool, method: RepairMethod) -> Result<Shape> {
-    let repaired = if needs_topology_split(shape, geographic) {
+fn repair_invalid_shape(
+    shape: &Shape,
+    domain: TopologyDomain,
+    method: RepairMethod,
+) -> Result<Shape> {
+    let repaired = if needs_topology_split(shape, domain) {
         // Preserve source Z/M on ordinary seam crossings. Polar closure with
         // Z/M remains an honest error: no source ordinate exists at a
         // fabricated pole vertex.
-        shape.split_antimeridian()?.repair(method, false)
+        split_in_domain(shape, domain)?.repair(method, false)
     } else {
         shape.repair(method, false)
     }?;
-    if let Some(issue) = validate_shape_in_frame(&repaired, geographic) {
+    if let Some(issue) = validate_shape_in_frame(&repaired, domain) {
         return Err(GeometryErrorKind::repair_failed(format!(
             "repair did not produce valid geometry: {}",
             issue.detail,
@@ -242,22 +287,22 @@ fn repair_invalid_shape(shape: &Shape, geographic: bool, method: RepairMethod) -
 /// caller must preserve the original frozen handle/storage unchanged.
 pub(crate) fn repair_shape_in_frame(
     shape: &Shape,
-    geographic: bool,
+    domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_shape_in_frame(shape, geographic)
-        .map(|_| repair_invalid_shape(shape, geographic, method))
+    validate_shape_in_frame(shape, domain)
+        .map(|_| repair_invalid_shape(shape, domain, method))
         .transpose()
 }
 
 /// Cached-handle twin of [`repair_shape_in_frame`].
 pub(crate) fn repair_data_in_frame(
     data: &PreparedPlan,
-    geographic: bool,
+    domain: TopologyDomain,
     method: RepairMethod,
 ) -> Result<Option<Shape>> {
-    validate_data_in_frame(data, geographic)
-        .map(|_| repair_invalid_shape(data.shape(), geographic, method))
+    validate_data_in_frame(data, domain)
+        .map(|_| repair_invalid_shape(data.shape(), domain, method))
         .transpose()
 }
 
@@ -298,14 +343,21 @@ pub(crate) enum DerivedPointStrategy {
 
 pub(crate) fn derived_point_unwrapped(
     shape: &Shape,
+    domain: TopologyDomain,
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
+    let encloses_pole = match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) => {
+            shape_encloses_pole_in_frame(shape, frame, true)
+                || shape_encloses_pole_in_frame(shape, frame, false)
+        },
+    };
     if matches!(strategy, DerivedPointStrategy::Interior)
-        || shape_encloses_pole(shape, true)
-        || shape_encloses_pole(shape, false)
+        || encloses_pole
     {
-        return kernel(&shape.force_2d().split_antimeridian()?);
+        return kernel(&try_topology_split(shape, domain)?);
     }
     let unwrapped = unwrap_longitude(shape)?;
     match kernel(&unwrapped)? {
@@ -317,12 +369,12 @@ pub(crate) fn derived_point_unwrapped(
 /// Shared scalar/array gate for derived geographic points.
 pub(crate) fn unary_antimeridian_derived(
     shape: &Shape,
-    geographic: bool,
+    domain: TopologyDomain,
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    if geographic && shape.crosses_antimeridian() {
-        derived_point_unwrapped(shape, strategy, kernel)
+    if needs_topology_split(shape, domain) {
+        derived_point_unwrapped(shape, domain, strategy, kernel)
     } else {
         kernel(shape)
     }
@@ -332,12 +384,21 @@ pub(crate) fn unary_antimeridian_derived(
 /// minimum eastern (``lon >= 0``) longitude and ``maxx`` the maximum western
 /// (``lon < 0``) longitude; latitude extrema are ordinary planar min/max.
 pub(crate) fn geographic_crossing_bounds(shape: &Shape) -> Option<Bounds> {
-    geographic_crossing_bounds_for_shapes(std::iter::once(shape))
+    geographic_crossing_bounds_in_frame(shape, GeographicFrame::crs84())
 }
 
-pub(crate) fn geographic_crossing_bounds_for_shapes(
-    shapes: impl IntoIterator<Item = impl std::borrow::Borrow<Shape>>,
+pub(crate) fn geographic_crossing_bounds_in_frame(
+    shape: &Shape,
+    frame: GeographicFrame,
 ) -> Option<Bounds> {
+    geographic_crossing_bounds_for_shapes_in_frame(std::iter::once(shape), frame)
+}
+
+pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
+    shapes: impl IntoIterator<Item = impl std::borrow::Borrow<Shape>>,
+    frame: GeographicFrame,
+) -> Option<Bounds> {
+    let axis = frame.longitude();
     let mut eastern_min = None::<f64>;
     let mut western_max = None::<f64>;
     let mut miny = None::<f64>;
@@ -348,17 +409,18 @@ pub(crate) fn geographic_crossing_bounds_for_shapes(
     for shape in shapes {
         let shape = shape.borrow();
         shape.for_each_point(|point| {
-            if point.x >= 0.0 {
-                eastern_min = Some(eastern_min.map_or(point.x, |min| min.min(point.x)));
+            let longitude = axis.canonicalize(point.x).map_or(point.x, |value| value.get());
+            if longitude >= 0.0 {
+                eastern_min = Some(eastern_min.map_or(longitude, |min| min.min(longitude)));
             } else {
-                western_max = Some(western_max.map_or(point.x, |max| max.max(point.x)));
+                western_max = Some(western_max.map_or(longitude, |max| max.max(longitude)));
             }
             miny = Some(miny.map_or(point.y, |min| min.min(point.y)));
             maxy = Some(maxy.map_or(point.y, |max| max.max(point.y)));
         });
-        encloses_north |= shape_encloses_pole(shape, true);
-        encloses_south |= shape_encloses_pole(shape, false);
-        has_polar_ring |= shape_has_polar_ring(shape);
+        encloses_north |= shape_encloses_pole_in_frame(shape, frame, true);
+        encloses_south |= shape_encloses_pole_in_frame(shape, frame, false);
+        has_polar_ring |= shape_has_polar_ring_in_frame(shape, frame);
     }
     let (mut minx, mut miny, mut maxx, mut maxy) = (eastern_min?, miny?, western_max?, maxy?);
     // A pole-enclosing ring covers the whole polar cap, so its envelope reaches
@@ -367,13 +429,13 @@ pub(crate) fn geographic_crossing_bounds_for_shapes(
     // the spatial index's geographic envelopes so public bounds() and the index
     // agree.
     if has_polar_ring {
-        (minx, maxx) = (-180.0, 180.0);
+        (minx, maxx) = (-axis.half_period(), axis.half_period());
     }
     if encloses_north {
-        maxy = 90.0;
+        maxy = frame.pole();
     }
     if encloses_south {
-        miny = -90.0;
+        miny = -frame.pole();
     }
     Some(Bounds::new_raw(minx, miny, maxx, maxy))
 }

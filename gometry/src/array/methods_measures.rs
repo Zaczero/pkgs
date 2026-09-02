@@ -382,8 +382,8 @@ impl PyGeometryArray {
                 Ok(shapes)
             })?
         };
-        let geographic = crate::geometry::geographic_frame(&self.frame)?;
-        let shape = py.detach(move || Shape::union_all_topo(&shapes, geographic, strictness))?;
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let shape = py.detach(move || Shape::union_all_topo(&shapes, domain, strictness))?;
         Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
     }
 
@@ -488,10 +488,10 @@ impl PyGeometryArray {
             }
         }
         let frame = self.frame.clone();
-        let geographic = crate::geometry::geographic_frame(&frame)?;
+        let domain = crate::geometry::topology_domain(&frame)?;
         let mut shapes = crate::try_vec_with_capacity(group_shapes.len())?;
         for group in group_shapes {
-            let shape = py.detach(move || Shape::union_all_topo(&group, geographic, strictness))?;
+            let shape = py.detach(move || Shape::union_all_topo(&group, domain, strictness))?;
             crate::try_push(&mut shapes, shape)?;
         }
         Ok((Self::from_shapes(shapes, frame), groups)
@@ -770,15 +770,16 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn bounds_unary_packed(&self, py: Python<'_>) -> PyResult<Option<Vec<f64>>> {
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
+        let domain = crate::geometry::topology_domain(&self.frame)?;
         let missing = self.missing().cloned();
         if let Some(values) = self.reduce_packed_columns_detached(py, move |columns| {
-            let values = if geographic {
+            let values = if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
                 missing.as_ref().map_or_else(
-                    || geographic_bounds_values_from_columns(&columns),
+                    || geographic_bounds_values_from_columns(&columns, frame),
                     |missing| {
                         super::packed_column_kernels::geographic_bounds_values_from_columns_masked(
                             &columns,
+                            frame,
                             Some(missing),
                         )
                     },
@@ -979,15 +980,15 @@ impl PyGeometryArray {
         py: Python<'_>,
         kernel: impl FnOnce(
             &[Shape],
-            Option<crate::geographic::GeographicFrame>,
+            crate::geometry::TopologyDomain,
             crate::geometry::Strictness,
         ) -> crate::error::Result<Shape>
         + Send,
     ) -> PyResult<crate::Typed> {
         let strictness = crate::geometry::Strictness::Lenient;
         let shapes = self.present_shapes();
-        let geographic = crate::geometry::geographic_frame(&self.frame)?;
-        let shape = py.detach(move || kernel(&shapes, geographic, strictness))?;
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let shape = py.detach(move || kernel(&shapes, domain, strictness))?;
         Ok(crate::Typed(PyGeometry::with_frame(
             shape,
             self.frame.clone(),

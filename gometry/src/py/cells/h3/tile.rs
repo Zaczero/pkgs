@@ -1,5 +1,5 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::{Point, Polygon, PreparedPlan, Ring, Shape};
+use crate::geometry::{Point, Polygon, PreparedPlan, Ring, Shape, TopologyDomain};
 use crate::grid::affine_source::visit_grid_cover_components;
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
@@ -37,12 +37,12 @@ fn checked_predicate(
     let probe_cache = crate::geometry::FrameDependentCaches::default();
     topology_scalar_pair(
         &Predicate::Covers.spec(),
-        PreparedTopologyPair::for_frame(
+        PreparedTopologyPair::for_domain(
             authority,
             authority_cache,
             &probe,
             &probe_cache,
-            Some(frame),
+            TopologyDomain::Geographic(frame),
         ),
     )
 }

@@ -702,10 +702,11 @@ impl PySpatialIndex {
             let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
             // Pure envelope candidates (no distance, not geographic): never
             // enter row prep / with_shape — bounds cache is the whole answer.
+            let domain = self.domain()?;
             let envelope_only =
-                matches!(plan, PreparedIndexQuery::Candidates) && !self.geographic();
+                matches!(plan, PreparedIndexQuery::Candidates) && !domain.is_geographic();
             let geographic_envelopes =
-                matches!(plan, PreparedIndexQuery::Candidates) && self.geographic();
+                matches!(plan, PreparedIndexQuery::Candidates) && domain.is_geographic();
             let row_count = array.len();
             let mut builder =
                 CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
@@ -1039,7 +1040,8 @@ impl PySpatialIndex {
             let frame = self.metadata.as_ref().expect("live index has a frame");
             // Removal has to name the entries insertion made, so this reads
             // the same cover the same way.
-            let cover = index_envelopes(&shape, bounds, Some(frame))?;
+            let domain = crate::geometry::topology_domain(frame)?;
+            let cover = index_envelopes(&shape, bounds, domain)?;
             let mut removed = false;
             for &envelope in cover.entries() {
                 removed |= self

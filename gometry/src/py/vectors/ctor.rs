@@ -138,7 +138,7 @@ impl Groups {
     /// Element-wise self-intersection rows as one flat geometry column.
     pub fn from_self_intersection_rows(array: &PyGeometryArray) -> PyResult<Self> {
         let mut builder = CsrBuilder::<Shape>::new();
-        let geographic = crate::geometry::is_geographic_frame(&array.frame);
+        let domain = crate::geometry::topology_domain(&array.frame)?;
         for row in array.logical_shape_rows() {
             match row {
                 crate::array::LogicalShapeRow::Missing { .. } => builder
@@ -146,7 +146,7 @@ impl Groups {
                     .map_err(pyo3::PyErr::from)?,
                 crate::array::LogicalShapeRow::Present { shape, .. } => builder
                     .push_row(
-                        crate::geometry::self_intersections_in_frame(&shape, geographic)
+                        crate::geometry::self_intersections_in_frame(&shape, domain)
                             .into_iter()
                             .map(Shape::Point),
                     )

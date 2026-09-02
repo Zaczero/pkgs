@@ -117,8 +117,13 @@ impl PyGeometry {
     /// tuple or None
     #[getter]
     pub fn bounds(&self) -> Option<(f64, f64, f64, f64)> {
-        if crate::geometry::geographic_crossing(&self.frame, &self.shape) {
-            return crate::geometry::geographic_crossing_bounds(self.shape.shape())
+        if let Ok(domain) = crate::geometry::topology_domain(&self.frame)
+            && crate::geometry::geographic_crossing(domain, &self.shape)
+        {
+            let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
+                unreachable!("geographic crossing requires a geographic domain")
+            };
+            return crate::geometry::geographic_crossing_bounds_in_frame(self.shape.shape(), frame)
                 .map(Bounds::into_tuple);
         }
         self.shape.bounds().map(Bounds::into_tuple)
@@ -344,7 +349,11 @@ impl PyGeometry {
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
             ));
         }
-        geojson_dict_prepared(py, &self.shape, self.crs_str().is_some())
+        geojson_dict_prepared(
+            py,
+            &self.shape,
+            crate::geometry::topology_domain(&self.frame)?,
+        )
     }
     /// Area in CRS-natural units for the geometry's CRS.
     ///

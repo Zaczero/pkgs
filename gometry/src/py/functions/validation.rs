@@ -192,10 +192,10 @@ fn require_geometry_contract(
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
     let plan = geometry.plan_or_transient();
-    let geographic = geometry::is_geographic_frame(&geometry.frame);
+    let domain = geometry::topology_domain(&geometry.frame)?;
     let issue = match py {
-        Some(py) => py.detach(move || geometry::validate_data_in_frame(&plan, geographic)),
-        None => geometry::validate_data_in_frame(&plan, geographic),
+        Some(py) => py.detach(move || geometry::validate_data_in_frame(&plan, domain)),
+        None => geometry::validate_data_in_frame(&plan, domain),
     };
     if let Some(issue) = issue {
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
@@ -245,11 +245,11 @@ fn require_array_contract(
         );
         return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
     }
-    let geographic = geometry::is_geographic_frame(&array.frame);
+    let domain = geometry::topology_domain(&array.frame)?;
     if let Some(py) = py {
         let (array, issue) = py.detach(move || {
             let issue = array.present_shape_rows().find_map(|(row, shape)| {
-                geometry::validate_shape_in_frame(&shape, geographic).map(|issue| (row, issue))
+                geometry::validate_shape_in_frame(&shape, domain).map(|issue| (row, issue))
             });
             (array, issue)
         });
@@ -259,7 +259,7 @@ fn require_array_contract(
         return Ok(array);
     }
     if let Some((row, issue)) = array.present_shape_rows().find_map(|(row, shape)| {
-        geometry::validate_shape_in_frame(&shape, geographic).map(|issue| (row, issue))
+        geometry::validate_shape_in_frame(&shape, domain).map(|issue| (row, issue))
     }) {
         return Err(crate::py::errors::invalid_geometry_issue(&issue, Some(row)));
     }

@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use serde_json::Value;
 
 use crate::geometry::{
-    CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ZOrdinate,
+    CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
+    TopologyDomain, ZOrdinate,
 };
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, IoError, LineSeq,
@@ -15,9 +16,9 @@ pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String
     // The writer-parity fixtures are CRS-free planar shapes: only ring winding
     // is canonicalized (no geographic domain check or antimeridian cut).
     if include_z {
-        to_geojson_string::<true>(shape, false)
+        to_geojson_string::<true>(shape, TopologyDomain::Cartesian)
     } else {
-        to_geojson_string::<false>(shape, false)
+        to_geojson_string::<false>(shape, TopologyDomain::Cartesian)
     }
     .expect("test geometry serializes to GeoJSON")
 }
@@ -25,7 +26,8 @@ pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String
 /// Serialize a geometry to an RFC 7946 GeoJSON string.
 ///
 /// GeoJSON coordinates are WGS84 longitude/latitude by specification
-/// (RFC 7946 §4). When `geographic` (the geometry carries a WGS84 frame),
+/// (RFC 7946 §4). When the domain is geographic (the geometry carries a WGS84
+/// frame),
 /// the writer enforces the standard's geographic rules: positions are
 /// validated against the lon/lat domain (§4), antimeridian-crossing parts are
 /// cut into seam-following multiparts (§3.1.9), and polygon rings are emitted
@@ -35,10 +37,10 @@ pub(crate) fn to_geojson_string_with_z(shape: &Shape, include_z: bool) -> String
 /// geographic semantics that do not apply to planar coordinates.
 pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     shape: &Shape,
-    geographic: bool,
+    domain: TopologyDomain,
 ) -> Result<String> {
     validate_geojson_value::<INCLUDE_Z>(shape)?;
-    let prepared = geojson_output_shape(shape, geographic)?;
+    let prepared = geojson_output_shape(shape, domain)?;
     let coordinate_bytes = prepared
         .coord_count()
         .checked_mul(4096)
@@ -139,12 +141,16 @@ fn geojson_structure_count(shape: &Shape) -> Result<usize> {
 /// antimeridian (a no-op that returns an owned clone for non-crossing input),
 /// and any polygonal geometry is oriented to right-hand winding. Non-polygonal
 /// planar geometry borrows through unchanged.
-pub(crate) fn geojson_output_shape(shape: &Shape, geographic: bool) -> Result<Cow<'_, Shape>> {
-    let prepared: Cow<'_, Shape> = if geographic {
-        validate_geojson_domain(shape)?;
-        Cow::Owned(shape.split_antimeridian()?)
-    } else {
-        Cow::Borrowed(shape)
+pub(crate) fn geojson_output_shape(
+    shape: &Shape,
+    domain: TopologyDomain,
+) -> Result<Cow<'_, Shape>> {
+    let prepared: Cow<'_, Shape> = match domain {
+        TopologyDomain::Cartesian => Cow::Borrowed(shape),
+        TopologyDomain::Geographic(frame) => {
+            validate_geojson_domain(shape)?;
+            Cow::Owned(shape.split_antimeridian_in_frame(frame)?)
+        },
     };
     // RFC 7946 §3.1.6 mandates right-hand ring winding on output; only
     // polygonal geometry carries rings, so everything else borrows through

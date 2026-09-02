@@ -21,7 +21,7 @@ pub(in crate::geometry) use membership::{
     multi_polygon_members_issue, polygon_rings_issue, polygon_row_point_membership,
 };
 pub(crate) use pole::{
-    ring_encloses_pole, shape_encloses_pole, shape_has_polar_ring,
+    ring_encloses_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame,
 };
 pub(crate) use properties::shape_spans_full_longitude;

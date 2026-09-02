@@ -8,8 +8,8 @@ use crate::geometry::overlay::{
 use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
-    GeometryKind, Point, Segment, Shape, TopologyGraph, XY, carry_overlay_ordinates,
-    point_on_segment, same_point, segment_midpoint,
+    GeometryKind, Point, Segment, Shape, TopologyDomain, TopologyGraph, XY,
+    carry_overlay_ordinates, point_on_segment, same_point, segment_midpoint,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -19,26 +19,26 @@ use crate::geometry::{
 /// every output bucket is assembled once from that graph.
 pub(crate) fn overlay_all<S: Borrow<Shape>>(
     geometries: &[S],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    overlay_all_with_bounds_certificates(geometries, geographic, op, strictness, true)
+    overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
 }
 
 #[cfg(test)]
 pub(super) fn overlay_all_without_bounds_certificates<S: Borrow<Shape>>(
     geometries: &[S],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    overlay_all_with_bounds_certificates(geometries, geographic, op, strictness, false)
+    overlay_all_with_bounds_certificates(geometries, domain, op, strictness, false)
 }
 
 fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     geometries: &[S],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
     bounds_certificates: bool,
@@ -50,7 +50,7 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         .into());
     }
 
-    let bounds_facts = overlay_bounds_facts(geometries, geographic, op);
+    let bounds_facts = overlay_bounds_facts(geometries, domain, op);
 
     if bounds_certificates
         && geometries.len() > 1
@@ -71,7 +71,7 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         .iter()
         .map(|geometry| {
             let shape = geometry.borrow();
-            if let Some(frame) = geographic
+            if let TopologyDomain::Geographic(frame) = domain
                 && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
             {
                 Ok(shape.split_antimeridian_in_frame(frame)?.normalize())
@@ -93,12 +93,13 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     }
 
     let refs: Vec<&Shape> = sources.iter().collect();
-    if geometries.len() == 1
-        && op == OverlayOp::Intersection
-        && !(geographic.is_some_and(|frame| {
+    let input_crosses = match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) => {
             crate::geometry::crosses_antimeridian_in_frame(geometries[0].borrow(), frame)
-        }))
-    {
+        },
+    };
+    if geometries.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
         return Ok(geometries[0].borrow().clone());
     }
     let shape = if bounds_certificates
@@ -106,19 +107,9 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         && bounds_facts.raw_coordinate_bounds_sound
         && disjoint_bounds_certify(&bounds_facts.bounds, op)
     {
-        assemble_disjoint_overlay(
-            &refs,
-            geographic,
-            op,
-            bounds_facts.raw_polygon_loops_eligible,
-        )?
+        assemble_disjoint_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
     } else {
-        assemble_overlay(
-            &refs,
-            geographic,
-            op,
-            bounds_facts.raw_polygon_loops_eligible,
-        )?
+        assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
     };
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
@@ -138,15 +129,16 @@ struct OverlayBoundsFacts {
 
 fn overlay_bounds_facts<S: Borrow<Shape>>(
     inputs: &[S],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
 ) -> OverlayBoundsFacts {
     let bounds = inputs
         .iter()
         .map(|input| input.borrow().bounds())
         .collect::<Vec<_>>();
-    let raw_coordinate_bounds_sound = geographic.is_none_or(|frame| {
-        inputs.iter().zip(&bounds).all(|(input, bounds)| {
+    let raw_coordinate_bounds_sound = match domain {
+        TopologyDomain::Cartesian => true,
+        TopologyDomain::Geographic(frame) => inputs.iter().zip(&bounds).all(|(input, bounds)| {
             bounds.is_some_and(|bounds| {
                 crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
                     Some(input.borrow()),
@@ -154,8 +146,8 @@ fn overlay_bounds_facts<S: Borrow<Shape>>(
                     frame,
                 )
             })
-        })
-    });
+        }),
+    };
     let raw_polygon_loops_eligible = op == OverlayOp::Union
         && raw_coordinate_bounds_sound
         && !inputs
@@ -222,22 +214,19 @@ fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
 
 fn assemble_overlay(
     inputs: &[&Shape],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
 ) -> Result<Shape> {
-    let graph = if let Some(frame) = geographic {
-        TopologyGraph::geographic_many(inputs, frame)
-    } else {
-        TopologyGraph::cartesian_many(inputs)
+    let graph = match domain {
+        TopologyDomain::Cartesian => TopologyGraph::cartesian_many(inputs),
+        TopologyDomain::Geographic(frame) => TopologyGraph::geographic_many(inputs, frame),
     };
     let source_graphs: Vec<TopologyGraph> = inputs
         .iter()
-        .map(|shape| {
-            geographic.map_or_else(
-                || TopologyGraph::cartesian(shape),
-                |frame| TopologyGraph::geographic(shape, frame),
-            )
+        .map(|shape| match domain {
+            TopologyDomain::Cartesian => TopologyGraph::cartesian(shape),
+            TopologyDomain::Geographic(frame) => TopologyGraph::geographic(shape, frame),
         })
         .collect();
     let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
@@ -250,7 +239,7 @@ fn assemble_overlay(
 /// sink so result narrowing and mixed-dimension ordering stay graph-identical.
 fn assemble_disjoint_overlay(
     inputs: &[&Shape],
-    geographic: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
 ) -> Result<Shape> {
@@ -263,7 +252,7 @@ fn assemble_disjoint_overlay(
     let mut lines = Vec::new();
     let mut polygons = Vec::new();
     for source in sources {
-        let shape = assemble_overlay(&[*source], geographic, op, raw_polygon_loops_eligible)?;
+        let shape = assemble_overlay(&[*source], domain, op, raw_polygon_loops_eligible)?;
         append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
     }
     Ok(build_overlay_shape(points, lines, polygons))
@@ -304,7 +293,7 @@ fn overlay_polygons(
         if !loops.is_empty() {
             return crate::geometry::winding_region(&loops, |winding| winding >= 1)
                 .into_iter()
-                .map(|polygon| canonicalize_polygon(polygon, graph.domain.frame()))
+                .map(|polygon| canonicalize_polygon(polygon, graph.domain))
                 .collect();
         }
     }
@@ -318,15 +307,17 @@ fn overlay_polygons(
     if area_edges.is_empty() {
         return Vec::new();
     }
-    let arranged_edges = if let Some(frame) = graph.domain.frame()
-        && !graph
-            .nodes
-            .iter()
-            .any(|node| node.point.y.abs() == frame.pole())
-    {
-        unwrap_geographic_area_edges(graph, frame, &area_edges)
-    } else {
-        area_edges.clone()
+    let arranged_edges = match graph.domain {
+        TopologyDomain::Cartesian => area_edges.clone(),
+        TopologyDomain::Geographic(frame)
+            if !graph
+                .nodes
+                .iter()
+                .any(|node| node.point.y.abs() == frame.pole()) =>
+        {
+            unwrap_geographic_area_edges(graph, frame, &area_edges)
+        },
+        TopologyDomain::Geographic(_) => area_edges.clone(),
     };
     let segments: Vec<Segment> = arranged_edges.iter().map(|(_, segment)| *segment).collect();
 
@@ -358,7 +349,7 @@ fn overlay_polygons(
         .collect();
     crate::geometry::assemble_region_polygons(arrangement.region_rings(&selected, |keep| keep != 0))
         .into_iter()
-        .map(|polygon| canonicalize_polygon(polygon, graph.domain.frame()))
+        .map(|polygon| canonicalize_polygon(polygon, graph.domain))
         .collect()
 }
 
@@ -480,19 +471,18 @@ fn face_area_side(
 
 fn canonicalize_polygon(
     polygon: crate::geometry::Polygon,
-    frame: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
 ) -> crate::geometry::Polygon {
-    let canonicalize_point = |point: Point| {
-        frame.map_or(point, |frame| {
-            Point::new_raw_xy(
-                frame
-                    .longitude()
-                    .canonicalize(point.x)
-                    .expect("derived geographic longitude is finite")
-                    .get(),
-                point.y,
-            )
-        })
+    let canonicalize_point = |point: Point| match domain {
+        TopologyDomain::Cartesian => point,
+        TopologyDomain::Geographic(frame) => Point::new_raw_xy(
+            frame
+                .longitude()
+                .canonicalize(point.x)
+                .expect("derived geographic longitude is finite")
+                .get(),
+            point.y,
+        ),
     };
     let shell = crate::geometry::Ring::from_closed(crate::geometry::CoordSeq::from(
         drop_collinear_vertices(

@@ -32,7 +32,7 @@ fn scale_area(value: f64, to_metre: f64) -> f64 {
 pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
-        ctx.geographic,
+        ctx.domain,
         DerivedPointStrategy::Centroid,
         Shape::centroid,
     )
@@ -219,7 +219,7 @@ pub(crate) fn unary_point_on_surface(
 ) -> Result<Shape> {
     crate::geometry::unary_antimeridian_derived(
         data.shape(),
-        ctx.geographic,
+        ctx.domain,
         DerivedPointStrategy::Interior,
         Shape::point_on_surface,
     )
@@ -328,7 +328,7 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>
 }
 
 fn ensure_antimeridian_geographic_frame(ctx: &CachelessRowContext<'_>, op: &str) -> Result<()> {
-    if ctx.frame.crs_ref().is_some() && !ctx.geographic {
+    if ctx.frame.crs_ref().is_some() && !ctx.domain.is_geographic() {
         return Err(CrsError::invalid(format!(
             "{op} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
         )));
@@ -360,7 +360,7 @@ pub(crate) fn unary_is_closed(data: &PreparedPlan, _ctx: &CachelessRowContext<'_
     reason = "dispatch spine requires Result<bool>"
 )]
 pub(crate) fn unary_is_ring(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::is_ring_data_in_frame(data, ctx.geographic))
+    Ok(crate::geometry::is_ring_data_in_frame(data, ctx.domain))
 }
 
 /// ``is_ccw`` kernel shared by the spine-routed free function.
@@ -378,10 +378,7 @@ pub(crate) fn unary_is_ccw(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) 
     reason = "dispatch spine requires Result<bool>"
 )]
 pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::is_simple_data_in_frame(
-        data,
-        ctx.geographic,
-    ))
+    Ok(crate::geometry::is_simple_data_in_frame(data, ctx.domain))
 }
 
 /// ``is_valid`` kernel shared by the spine-routed free function.
@@ -390,7 +387,7 @@ pub(crate) fn unary_is_simple(data: &PreparedPlan, ctx: &CachelessRowContext<'_>
     reason = "dispatch spine requires Result<bool>"
 )]
 pub(crate) fn unary_is_valid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<bool> {
-    Ok(crate::geometry::validate_data_in_frame(data, ctx.geographic).is_none())
+    Ok(crate::geometry::validate_data_in_frame(data, ctx.domain).is_none())
 }
 
 /// ``is_convex`` kernel shared by the spine-routed free function.
@@ -407,15 +404,12 @@ pub(crate) fn unary_crosses_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<bool> {
     ensure_antimeridian_geographic_frame(ctx, "crosses_antimeridian")?;
-    if !ctx.geographic {
-        return Ok(data.shape().crosses_antimeridian());
-    }
-    let frame = crate::geometry::geographic_frame(ctx.frame)?
-        .expect("geographic context carries a typed frame");
-    Ok(crate::geometry::crosses_antimeridian_in_frame(
-        data.shape(),
-        frame,
-    ))
+    Ok(match ctx.domain {
+        crate::geometry::TopologyDomain::Cartesian => data.shape().crosses_antimeridian(),
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            crate::geometry::crosses_antimeridian_in_frame(data.shape(), frame)
+        },
+    })
 }
 
 /// ``split_antimeridian`` kernel shared by the spine-routed free function.
@@ -424,11 +418,14 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     ensure_antimeridian_geographic_frame(ctx, "split_antimeridian")?;
-    let frame = match ctx.frame.crs_str() {
-        Some(crs) => crate::crs::info(crs)?
-            .geographic_frame()
-            .ok_or_else(|| CrsError::invalid("split_antimeridian requires a geographic CRS"))?,
-        None => {
+    let frame = match ctx.domain {
+        crate::geometry::TopologyDomain::Geographic(frame) => frame,
+        crate::geometry::TopologyDomain::Cartesian => {
+            if ctx.frame.crs_ref().is_some() {
+                return Err(
+                    CrsError::invalid("split_antimeridian requires a geographic CRS").into(),
+                );
+            }
             let degrees = crate::geographic::AngularFactor::try_new(
                 "angular unit",
                 std::f64::consts::PI / 180.0,
@@ -702,8 +699,7 @@ pub(crate) fn unary_snap_to_grid(
     repair: bool,
 ) -> Result<Shape> {
     if repair {
-        data.shape()
-            .snap_to_grid_repaired(size, origin, ctx.geographic)
+        data.shape().snap_to_grid_repaired(size, origin, ctx.domain)
     } else {
         data.shape().snap_to_grid(size, origin)
     }
@@ -767,9 +763,7 @@ pub(crate) fn unary_clip_by_rect(
     rect: Bounds,
     drop: bool,
 ) -> Result<Shape> {
-    if ctx.geographic {
-        let frame = crate::geometry::geographic_frame(ctx.frame)?
-            .expect("geographic context carries a typed frame");
+    if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
         return data
             .shape()
             .clip_by_rect_in_geographic_frame(rect, drop, data.bounds(), frame);
@@ -786,10 +780,18 @@ pub(crate) fn unary_bounds(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Option<Bounds>> {
-    if crate::geometry::geographic_crossing(ctx.frame, data) {
-        Ok(crate::geometry::geographic_crossing_bounds(data.shape()))
-    } else {
-        Ok(data.bounds())
+    match ctx.domain {
+        crate::geometry::TopologyDomain::Cartesian => Ok(data.bounds()),
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            if crate::geometry::geographic_crossing(ctx.domain, data) {
+                Ok(crate::geometry::geographic_crossing_bounds_in_frame(
+                    data.shape(),
+                    frame,
+                ))
+            } else {
+                Ok(data.bounds())
+            }
+        },
     }
 }
 
@@ -911,12 +913,7 @@ pub(crate) fn binary_overlay(
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    op.apply_in_frame(
-        left.shape(),
-        right.shape(),
-        crate::geometry::geographic_frame(ctx.frame)?,
-        strictness,
-    )
+    op.apply_in_frame(left.shape(), right.shape(), ctx.domain, strictness)
 }
 
 /// ``line_interpolate_point`` kernel shared by the spine-routed free function.

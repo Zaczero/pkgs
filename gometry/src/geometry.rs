@@ -53,10 +53,13 @@ pub(crate) use types::{
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, crosses_antimeridian_in_frame, geographic_crossing,
-    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes, geographic_frame,
-    is_geographic_frame, is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame,
-    repair_shape_in_frame, self_intersections_in_frame, unary_antimeridian_derived,
+    DerivedPointStrategy, crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame,
+    geographic_crossing,
+    geographic_crossing_bounds, geographic_crossing_bounds_for_shapes_in_frame,
+    geographic_crossing_bounds_in_frame,
+    is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
     validate_data_in_frame, validate_shape_in_frame,
 };
 mod arrangement;
@@ -97,7 +100,7 @@ pub(crate) use segment_index::uses_linear_plan_for_len;
 mod segments;
 mod tessellation;
 mod topology;
-pub(crate) use topology::TopologyGraph;
+pub(crate) use topology::{TopologyDomain, TopologyGraph};
 mod util;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -164,7 +167,8 @@ use predicates::{
 };
 pub(crate) use predicates::{
     RingClass, RingEdgeMembership, line_crosses_antimeridian, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole, shape_has_polar_ring,
+    line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame, shape_spans_full_longitude,
 };
 pub(crate) use util::{

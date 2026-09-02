@@ -1,22 +1,18 @@
 use crate::boundary::metadata::Frame;
-use crate::geometry::{Shape, ShapeData};
+use crate::geometry::{Coordinates, Shape, ShapeData, TopologyDomain};
 
-/// Whether ``frame`` carries a geographic CRS (EPSG:4326/4979 fast path, then
-/// cached PROJ lookup).
-pub(crate) fn is_geographic_frame(frame: &Frame) -> bool {
-    let Some(crs) = frame.crs_str() else {
-        return false;
-    };
-    crate::crs::is_wgs84_lonlat(crs) || crate::crs::is_geographic_crs(crs).unwrap_or(false)
-}
-
-pub(crate) fn geographic_frame(
-    frame: &Frame,
-) -> crate::error::Result<Option<crate::geographic::GeographicFrame>> {
-    let Some(crs) = frame.crs_str() else {
-        return Ok(None);
-    };
-    Ok(crate::crs::info(crs)?.geographic_frame())
+/// Resolve the complete topology domain from CRS metadata. WGS84 uses the
+/// constant native frame; other geographic CRSs use their cached native frame.
+pub(crate) fn topology_domain(frame: &Frame) -> crate::error::Result<TopologyDomain> {
+    Ok(match frame.crs_str() {
+        Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
+            TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84())
+        },
+        Some(crs) => crate::crs::info(crs)?
+            .geographic_frame()
+            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic),
+        None => TopologyDomain::Cartesian,
+    })
 }
 
 /// Whether a shape edge crosses the canonical seam in its native periodic
@@ -60,19 +56,30 @@ pub(crate) fn crosses_antimeridian_in_frame(
     crosses
 }
 
+pub(crate) fn crosses_antimeridian_coords_in_frame<C: Coordinates + ?Sized>(
+    coords: &C,
+    frame: crate::geographic::GeographicFrame,
+) -> bool {
+    let axis = frame.longitude();
+    coords.segment_pairs().any(|[start, end]| {
+        let raw_delta = (end.x - start.x).abs();
+        let (Ok(start), Ok(end)) = (axis.canonicalize(start.x), axis.canonicalize(end.x)) else {
+            return false;
+        };
+        if start.identity(axis) == crate::geographic::SeamIdentity::Seam
+            || end.identity(axis) == crate::geographic::SeamIdentity::Seam
+        {
+            return raw_delta > axis.half_period() && raw_delta < axis.period().next_up();
+        }
+        (end.get() - start.get()).abs() > axis.half_period()
+    })
+}
+
 /// Whether a planar topology op must split-normalize ``shape`` at ±180 before
-/// evaluating. The geographic verdict is checked FIRST: it is a cheap cached
-/// CRS lookup (and short-circuits on a CRS-free frame), so the lazy ring-vertex
-/// walk of ``crosses_antimeridian`` runs only for actually-geographic geometry
-/// and only once per immutable handle. Every projected or CRS-free op skips the
-/// coordinate scan entirely.
-pub(crate) fn geographic_crossing(frame: &Frame, shape: &ShapeData) -> bool {
-    let Some(geographic) = frame
-        .crs_str()
-        .and_then(|crs| crate::crs::info(crs).ok())
-        .and_then(|info| info.geographic_frame())
-    else {
-        return false;
-    };
-    crosses_antimeridian_in_frame(shape.shape(), geographic)
+/// evaluating. Cartesian domains skip the coordinate scan entirely.
+pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> bool {
+    match domain {
+        TopologyDomain::Cartesian => false,
+        TopologyDomain::Geographic(frame) => crosses_antimeridian_in_frame(shape.shape(), frame),
+    }
 }

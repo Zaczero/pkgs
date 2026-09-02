@@ -370,7 +370,7 @@ impl PyGeometryArray {
                 crate::boundary::convert::geojson_dict_prepared(
                     py,
                     geometry.shape.shape(),
-                    self.crs_str().is_some(),
+                    crate::geometry::topology_domain(&self.frame)?,
                 )?
                 .into_any()
             };
@@ -906,12 +906,15 @@ impl PyGeometryArray {
             // that would poison the column min/max fold.
             return self.drop_missing().total_bounds();
         }
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        if geographic {
+        let domain = crate::geometry::topology_domain(&self.frame).ok();
+        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
             let mut shapes = self.present_shape_rows();
-            if shapes.any(|(_, shape)| shape.crosses_antimeridian()) {
-                return crate::geometry::geographic_crossing_bounds_for_shapes(
+            if shapes
+                .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
+            {
+                return crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
                     self.present_shape_rows().map(|(_, shape)| shape),
+                    frame,
                 )
                 .map(Bounds::into_tuple);
             }

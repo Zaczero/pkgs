@@ -10,7 +10,7 @@ use crate::broadcast::{
 use crate::crs::MetricModel;
 use crate::dispatch::operation::Operation;
 use crate::geometry::{
-    Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, is_geographic_frame,
+    Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, TopologyDomain,
 };
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::py::support::require_antimeridian_crs;
@@ -172,14 +172,18 @@ pub(crate) fn try_unary_packed_bool(
     // sentinel (`false`) from the mask — identical to the shape-lane answer
     // for masked rows. No blanket `has_missing()` bail: that forced a 10–500×
     // shape-lane cliff on nullable is_valid/is_simple.
+    let domain = match crate::geometry::topology_domain(&array.frame) {
+        Ok(domain) => domain,
+        Err(error) => return Some(Err(error.into())),
+    };
     if matches!(
         op,
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
-    ) && is_geographic_frame(&array.frame)
+    ) && let TopologyDomain::Geographic(frame) = domain
         && array
             .storage()
             .iter_shapes()
-            .any(|shape| shape.crosses_antimeridian())
+            .any(|shape| crate::geometry::crosses_antimeridian_in_frame(&shape, frame))
     {
         // Packed validity/simplicity kernels intentionally know nothing about
         // frames. A crossing geographic column takes the shared per-row lane;

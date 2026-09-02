@@ -4,10 +4,11 @@ use crate::geometry::constructive::Result;
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
     GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon,
-    RepairMethod, Ring, Segment, SegmentProjection, Shape, XY, bounds_distance_squared,
-    dedup_consecutive_points, interpolate_f64, line_segments, point_distance,
-    point_segment_distance, points_dwithin, push_distinct_point, repair_shape_in_frame, same_point,
-    same_topological_coordinate, segment_projection, validate_shape_in_frame,
+    RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
+    bounds_distance_squared, dedup_consecutive_points, interpolate_f64, line_segments,
+    point_distance, point_segment_distance, points_dwithin, push_distinct_point,
+    repair_shape_in_frame, same_point, same_topological_coordinate, segment_projection,
+    validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -496,14 +497,14 @@ impl SubdivisionColumns<'_> {
     fn push_geodesic(
         &mut self,
         geodesic: &geographiclib_rs::Geodesic,
-        frame: Option<GeographicFrame>,
+        domain: TopologyDomain,
         segment_index: usize,
         steps: usize,
     ) -> Result<()> {
         let (xs, ys) = (self.points.xs(), self.points.ys());
         let (mut x0, mut y0) = (xs[segment_index], ys[segment_index]);
         let (mut x1, mut y1) = (xs[segment_index + 1], ys[segment_index + 1]);
-        if let Some(frame) = frame {
+        if let TopologyDomain::Geographic(frame) = domain {
             let start = frame
                 .to_geodesic_point(Point::new_raw_xy(x0, y0))
                 .expect("geographic subdivision received admitted coordinates");
@@ -525,7 +526,7 @@ impl SubdivisionColumns<'_> {
                 )?;
                 (info.longitude, info.latitude)
             };
-            if let Some(frame) = frame {
+            if let TopologyDomain::Geographic(frame) = domain {
                 let point = frame
                     .from_geodesic_point(Point::new_raw_xy(longitude, latitude))
                     .expect("geographic subdivision produced a finite coordinate");
@@ -564,7 +565,12 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
                 Self::push_interpolated(&mut self.ys, self.points.ys(), segment_index, steps);
             },
             SegmentPlacement::Geodesic(geodesic, frame) => {
-                self.push_geodesic(geodesic, Some(frame), segment_index, steps)?;
+                self.push_geodesic(
+                    geodesic,
+                    TopologyDomain::Geographic(frame),
+                    segment_index,
+                    steps,
+                )?;
             },
         }
         if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
@@ -823,19 +829,19 @@ impl Shape {
     /// vertices onto grid nodes); a small iteration cap turns pathological
     /// non-convergence into an honest error rather than a hang. Repair may
     /// need to invent vertices (noding intersections), so Z/M-carrying
-    pub fn snap_to_grid_repaired(
+    pub(crate) fn snap_to_grid_repaired(
         &self,
         size: (f64, f64),
         origin: (f64, f64),
-        geographic: bool,
+        domain: TopologyDomain,
     ) -> Result<Self, crate::error::Error> {
         const MAX_PASSES: usize = 8;
         let mut shape = self.snap_to_grid(size, origin)?;
         for _ in 0..MAX_PASSES {
-            if validate_shape_in_frame(&shape, geographic).is_none() {
+            if validate_shape_in_frame(&shape, domain).is_none() {
                 return Ok(shape);
             }
-            shape = repair_shape_in_frame(&shape, geographic, RepairMethod::Linework)?
+            shape = repair_shape_in_frame(&shape, domain, RepairMethod::Linework)?
                 .expect("invalid geometry produces a repaired shape")
                 .snap_to_grid(size, origin)?;
         }

@@ -300,8 +300,8 @@ impl PyGeometry {
         let miny = finite_f64_required("miny", miny)?;
         let maxx = finite_f64_required("maxx", maxx)?;
         let maxy = finite_f64_required("maxy", maxy)?;
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        let rect = if minx > maxx && geographic {
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let rect = if minx > maxx && domain.is_geographic() {
             Bounds::new_geographic(minx, miny, maxx, maxy)?
         } else {
             Bounds::new(minx, miny, maxx, maxy)?
@@ -640,8 +640,8 @@ impl PyGeometryArray {
         let miny = finite_f64_required("miny", miny)?;
         let maxx = finite_f64_required("maxx", maxx)?;
         let maxy = finite_f64_required("maxy", maxy)?;
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        let rect = if minx > maxx && geographic {
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let rect = if minx > maxx && domain.is_geographic() {
             Bounds::new_geographic(minx, miny, maxx, maxy)?
         } else {
             Bounds::new(minx, miny, maxx, maxy)?

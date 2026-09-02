@@ -170,8 +170,8 @@ impl PyGeometryArray {
             )
             .into());
         }
-        let geographic = geometry::geographic_frame(&self.frame)?;
-        let shape = py.detach(move || geometry::coverage_union_topo(&shapes, geographic))?;
+        let domain = geometry::topology_domain(&self.frame)?;
+        let shape = py.detach(move || geometry::coverage_union_topo(&shapes, domain))?;
         Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
     }
 

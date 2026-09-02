@@ -50,8 +50,11 @@ pub(super) fn build_coverage(
         CellRule::Center => {
             let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "H3")?;
             let authority = membership_geometry.plan_or_transient();
-            let frame = crate::geometry::geographic_frame(&membership_geometry.frame)?
-                .expect("H3 membership geometry has a geographic frame");
+            let crate::geometry::TopologyDomain::Geographic(frame) =
+                crate::geometry::topology_domain(&membership_geometry.frame)?
+            else {
+                unreachable!("H3 membership geometry has a geographic frame")
+            };
             let annotated = h3_tile(
                 &cover_shape,
                 &authority,

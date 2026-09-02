@@ -18,7 +18,7 @@ use crate::dispatch::metric::{
     CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
 };
 use crate::error::Result;
-use crate::geometry::{PreparedPlan, Shape, ShapeData, is_geographic_frame};
+use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type MaskedRows<R> = (Vec<R>, Option<ValidityMask>);
@@ -95,7 +95,7 @@ fn run_array_rows<R, K>(
     py: Python<'_>,
     array: &PyGeometryArray,
     frame: &Frame,
-    geographic: bool,
+    domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
 ) -> PyResult<Vec<R>>
@@ -126,7 +126,7 @@ where
                 };
                 let ctx = CachelessRowContext {
                     frame,
-                    geographic,
+                    domain,
                     metric,
                     lane: Lane::Array(row),
                 };
@@ -143,7 +143,7 @@ fn run_paired_rows<R, K>(
     right: &PyGeometryArray,
     _rows: (Arc<GeometryArrayStorage>, Arc<GeometryArrayStorage>),
     frame: &Frame,
-    geographic: bool,
+    domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
 ) -> PyResult<MaskedRows<R>>
@@ -184,7 +184,7 @@ where
                     };
                     let ctx = CachelessRowContext {
                         frame,
-                        geographic,
+                        domain,
                         metric,
                         lane: Lane::Array(row),
                     };
@@ -216,7 +216,7 @@ where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
-    let (frame, geographic) = match side {
+    let (frame, domain) = match side {
         ArrayOperandSide::Left => binary_frame(
             (array.crs_ref(), array.epoch()),
             (fixed.crs_ref(), fixed.epoch()),
@@ -240,7 +240,7 @@ where
         py,
         array,
         &frame,
-        geographic,
+        domain,
         metric,
         move |row, array_row, ctx, products| {
             let array_data = array_handle.prepared_row_with(products, row, array_row);
@@ -266,7 +266,7 @@ where
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     let (lefts, rights) = paired_arrays(left, right, op_name)?;
-    let (frame, geographic) = binary_frame(
+    let (frame, domain) = binary_frame(
         (left.crs_ref(), left.epoch()),
         (right.crs_ref(), right.epoch()),
         op_name,
@@ -283,7 +283,7 @@ where
         right,
         (lefts, rights),
         &frame,
-        geographic,
+        domain,
         metric,
         move |row, left_row, right_row, ctx, left_products, right_products| {
             let left_data = left_array.prepared_row_with(left_products, row, left_row);
@@ -387,8 +387,7 @@ where
         One(value) => (value.crs_ref(), value.epoch()),
         Many(value) => (value.crs_ref(), value.epoch()),
     };
-    let (frame, _geographic) =
-        binary_frame((left_crs, left_epoch), (right_crs, right_epoch), op_name)?;
+    let (frame, _domain) = binary_frame((left_crs, left_epoch), (right_crs, right_epoch), op_name)?;
     let mut scratch = MetricScratch::default();
     let metric_ctx = resolver.resolve_ctx(&frame, op_name, &mut scratch)?;
     let resolved = metric_ctx.require_resolved(op_name)?;
@@ -568,10 +567,10 @@ fn binary_frame(
     left: (Option<&crate::Crs>, Option<f64>),
     right: (Option<&crate::Crs>, Option<f64>),
     op_name: &str,
-) -> PyResult<(Frame, bool)> {
+) -> PyResult<(Frame, TopologyDomain)> {
     let frame = Frame::compatible_parts(left.0, left.1, right.0, right.1, op_name)?;
-    let geographic = is_geographic_frame(&frame);
-    Ok((frame, geographic))
+    let domain = crate::geometry::topology_domain(&frame)?;
+    Ok((frame, domain))
 }
 
 fn dispatch_binary_scalar_scalar<R: BulkElement>(
@@ -582,7 +581,7 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
     op_name: &str,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
-    let (frame, geographic) = binary_frame(
+    let (frame, domain) = binary_frame(
         (left.crs_ref(), left.epoch()),
         (right.crs_ref(), right.epoch()),
         op_name,
@@ -591,7 +590,7 @@ fn dispatch_binary_scalar_scalar<R: BulkElement>(
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     let ctx = CachelessRowContext {
         frame: &frame,
-        geographic,
+        domain,
         metric,
         lane: Lane::Scalar,
     };
@@ -692,11 +691,11 @@ where
 /// Split one operand when the resolved frame is geographic and the shape
 /// crosses ±180, reusing the handle otherwise.
 fn split_operand_arc_for_topology(
-    frame: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     geometry: &PyGeometry,
 ) -> Result<Arc<PreparedPlan>> {
     let plan = geometry.plan_or_transient();
-    if let Some(frame) = frame
+    if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
         Ok(Arc::new(PreparedPlan::new(ShapeData::from(
@@ -709,7 +708,7 @@ fn split_operand_arc_for_topology(
 
 /// The shared antimeridian gate for geometry-returning binary lanes.
 fn invoke_topology_geometry_kernel<K>(
-    frame: Option<crate::geographic::GeographicFrame>,
+    domain: TopologyDomain,
     left: &PreparedPlan,
     right: &PreparedPlan,
     kernel: &K,
@@ -717,24 +716,27 @@ fn invoke_topology_geometry_kernel<K>(
 where
     K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape>,
 {
-    let left_crosses = frame
-        .is_some_and(|frame| crate::geometry::crosses_antimeridian_in_frame(left.shape(), frame));
-    let right_crosses = frame
-        .is_some_and(|frame| crate::geometry::crosses_antimeridian_in_frame(right.shape(), frame));
+    let (left_crosses, right_crosses) = match domain {
+        TopologyDomain::Cartesian => (false, false),
+        TopologyDomain::Geographic(frame) => (
+            crate::geometry::crosses_antimeridian_in_frame(left.shape(), frame),
+            crate::geometry::crosses_antimeridian_in_frame(right.shape(), frame),
+        ),
+    };
     if left_crosses || right_crosses {
+        let TopologyDomain::Geographic(frame) = domain else {
+            unreachable!("Cartesian topology cannot cross the antimeridian")
+        };
         let left_split = if left_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                left.shape()
-                    .split_antimeridian_in_frame(frame.expect("crossing has a frame"))?,
+                left.shape().split_antimeridian_in_frame(frame)?,
             )))
         } else {
             None
         };
         let right_split = if right_crosses {
             Some(PreparedPlan::new(ShapeData::from(
-                right
-                    .shape()
-                    .split_antimeridian_in_frame(frame.expect("crossing has a frame"))?,
+                right.shape().split_antimeridian_in_frame(frame)?,
             )))
         } else {
             None
@@ -772,7 +774,7 @@ where
 
     match (left_in, right_in) {
         (One(left), One(right)) => {
-            let (frame, geographic) = binary_frame(
+            let (frame, domain) = binary_frame(
                 (left.crs_ref(), left.epoch()),
                 (right.crs_ref(), right.epoch()),
                 op_name,
@@ -781,27 +783,23 @@ where
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
             let ctx = CachelessRowContext {
                 frame: &frame,
-                geographic,
+                domain,
                 metric,
                 lane: Lane::Scalar,
             };
-            let geographic_frame = crate::geometry::geographic_frame(&frame)?;
             let left_shape = left.plan_or_transient();
             let right_shape = right.plan_or_transient();
             let shape = py.detach(move || {
-                invoke_topology_geometry_kernel(
-                    geographic_frame,
-                    &left_shape,
-                    &right_shape,
-                    &|l, r| kernel(l, r, &ctx),
-                )
+                invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
+                    kernel(l, r, &ctx)
+                })
             })?;
             Ok(Typed(PyGeometry::with_frame(shape, frame))
                 .into_pyobject(py)?
                 .unbind())
         },
         (One(left), Many(right)) => {
-            let (frame, geographic) = binary_frame(
+            let (frame, domain) = binary_frame(
                 (left.crs_ref(), left.epoch()),
                 (right.crs_ref(), right.epoch()),
                 op_name,
@@ -820,15 +818,14 @@ where
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
-            let geographic_frame = crate::geometry::geographic_frame(&frame)?;
-            let left_fixed = split_operand_arc_for_topology(geographic_frame, left)?;
+            let left_fixed = split_operand_arc_for_topology(domain, left)?;
             // Overlay rows use transient plans only; MetricCtx is None so
             // no frame-dependent cache is retained.
             let shapes = run_array_rows(
                 py,
                 right,
                 &frame,
-                geographic,
+                domain,
                 metric,
                 move |row, right_row, ctx, products| {
                     let known_bounds = right_row.quick_bounds();
@@ -838,12 +835,9 @@ where
                         right_row,
                         known_bounds,
                     );
-                    invoke_topology_geometry_kernel(
-                        geographic_frame,
-                        &left_fixed,
-                        &right_data,
-                        &|l, r| kernel(l, r, ctx),
-                    )
+                    invoke_topology_geometry_kernel(domain, &left_fixed, &right_data, &|l, r| {
+                        kernel(l, r, ctx)
+                    })
                 },
             )?;
             Shape::bulk_into_py_masked(shapes, py, &output_frame, right.missing())
@@ -918,8 +912,7 @@ where
      -> Option<crate::geometry::Bounds> {
         bounds.as_ref().and_then(|b| b.get(row).copied()).flatten()
     };
-    let geographic = is_geographic_frame(&frame);
-    let geographic_frame = crate::geometry::geographic_frame(&frame)?;
+    let domain = crate::geometry::topology_domain(&frame)?;
     let mut metric_scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&frame, op_name, &mut metric_scratch)?;
     // Prefer already-warm bounds caches, but do NOT force-initialize them:
@@ -928,24 +921,21 @@ where
     let left_bounds = left.bounds_cache.get().cloned().flatten();
     let (shapes, output_missing) = match right {
         One(right) => {
-            let right_shape = split_operand_arc_for_topology(geographic_frame, right)?;
+            let right_shape = split_operand_arc_for_topology(domain, right)?;
             // Pure topology overlay: MetricCtx is None → no frame caches.
             let shapes = run_array_rows(
                 py,
                 left,
                 &frame,
-                geographic,
+                domain,
                 metric,
                 move |row, left_row, ctx, products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let left_data =
                         left.warm_prepared_row_or_transient_with(products, row, left_row, left_box);
-                    invoke_topology_geometry_kernel(
-                        geographic_frame,
-                        &left_data,
-                        &right_shape,
-                        &|l, r| kernel(l, r, ctx),
-                    )
+                    invoke_topology_geometry_kernel(domain, &left_data, &right_shape, &|l, r| {
+                        kernel(l, r, ctx)
+                    })
                 },
             )?;
             (shapes, left.missing().cloned())
@@ -959,7 +949,7 @@ where
                 right,
                 rows,
                 &frame,
-                geographic,
+                domain,
                 metric,
                 move |row, left_row, right_row, ctx, left_products, right_products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
@@ -977,12 +967,9 @@ where
                         right_row,
                         right_box,
                     );
-                    invoke_topology_geometry_kernel(
-                        geographic_frame,
-                        &left_data,
-                        &right_data,
-                        &|l, r| kernel(l, r, ctx),
-                    )
+                    invoke_topology_geometry_kernel(domain, &left_data, &right_data, &|l, r| {
+                        kernel(l, r, ctx)
+                    })
                 },
             )?
         },
