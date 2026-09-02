@@ -413,12 +413,19 @@ macro_rules! h3_index_array_common {
             /// Returns
             /// -------
             /// bool
-            fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+            fn __contains__(
+                &self,
+                py: Python<'_>,
+                item: &Bound<'_, PyAny>,
+            ) -> PyResult<bool> {
                 let custom_index = is_custom_index_provider(item)?;
                 match $parse(item) {
                     Ok(needle) => {
                         let needle = u64::from(needle);
-                        Ok((0..self.len()).any(|row| self.id_at(row) == needle))
+                        let array = self.clone();
+                        Ok(py.detach(move || {
+                            (0..array.len()).any(|row| array.id_at(row) == needle)
+                        }))
                     },
                     Err(error)
                         if item.cast_exact::<PyBool>().is_ok()

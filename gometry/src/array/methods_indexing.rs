@@ -851,15 +851,22 @@ impl PyGeometryArray {
     /// Returns
     /// -------
     /// bool
-    pub fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
+    pub fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> bool {
         if item.is_none() {
-            return self.has_missing();
+            let array = self.clone();
+            return py.detach(move || array.has_missing());
         }
-        exact_geometry(item).is_some_and(|geom| {
-            self.frame_matches(geom)
-                && self
+        let Some(geom) = exact_geometry(item) else {
+            return false;
+        };
+        let same_frame = self.frame_matches(geom);
+        let expected = Arc::clone(&geom.shape);
+        let array = self.clone();
+        py.detach(move || {
+            same_frame
+                && array
                     .present_shape_rows()
-                    .any(|(_, shape)| shape.as_ref() == geom.shape.shape())
+                    .any(|(_, shape)| shape.as_ref() == expected.shape())
         })
     }
 

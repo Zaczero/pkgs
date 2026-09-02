@@ -823,9 +823,10 @@ impl PyCellArray {
     /// Returns
     /// -------
     /// bool
-    fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+    fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         if item.is_none() {
-            return Ok((0..self.len()).any(|row| self.is_row_missing(row)));
+            let array = self.clone();
+            return Ok(py.detach(move || (0..array.len()).any(|row| array.is_row_missing(row))));
         }
         let custom_index = is_custom_index_provider(item)?;
         let needle = match self.kind().id_from_value(item) {
@@ -833,7 +834,10 @@ impl PyCellArray {
             Err(error) if custom_index => return Err(error),
             Err(_) => return Ok(false),
         };
-        Ok((0..self.len()).any(|row| !self.is_row_missing(row) && self.id_at(row) == needle))
+        let array = self.clone();
+        Ok(py.detach(move || {
+            (0..array.len()).any(|row| !array.is_row_missing(row) && array.id_at(row) == needle)
+        }))
     }
 
     /// Test whether every row hierarchically contains the paired cell.

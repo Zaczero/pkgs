@@ -7,6 +7,8 @@
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
 //! delegates on `Geometry`.
 
+use std::sync::Arc;
+
 use pyo3::PyErr;
 use pyo3::types::{PyBytes, PyTuple};
 
@@ -233,7 +235,7 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         voronoi_flatten(
             py,
-            std::iter::once(self.shape.shape()),
+            std::iter::once(Arc::clone(&self.shape)),
             self.frame.clone(),
             tolerance,
             clip,
@@ -250,13 +252,24 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         voronoi_flatten(
             py,
-            std::iter::once(self.shape.shape()),
+            std::iter::once(Arc::clone(&self.shape)),
             self.frame.clone(),
             tolerance,
             clip,
             "voronoi_edges",
             Shape::voronoi_edges_budgeted,
         )
+    }
+
+    pub(crate) fn split_shape_detached(
+        py: Python<'_>,
+        shape: Arc<crate::geometry::ShapeData>,
+        splitter: Shape,
+        frame: Frame,
+        tolerance: f64,
+    ) -> PyResult<PyGeometryArray> {
+        let shapes = py.detach(move || shape.split(&splitter, tolerance))?;
+        Ok(PyGeometryArray::from_shapes(shapes, frame))
     }
 
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -270,7 +283,12 @@ impl PyGeometry {
     }
 
     /// `tolerance` is already validated non-negative at the free-function boundary.
-    pub(crate) fn split(&self, splitter: &Self, tolerance: f64) -> PyResult<PyGeometryArray> {
+    pub(crate) fn split(
+        &self,
+        py: Python<'_>,
+        splitter: &Self,
+        tolerance: f64,
+    ) -> PyResult<PyGeometryArray> {
         Frame::compatible_parts(
             self.crs_ref(),
             self.epoch(),
@@ -278,7 +296,13 @@ impl PyGeometry {
             splitter.epoch(),
             "split",
         )?;
-        self.parts_to_array(self.shape.split(&splitter.shape, tolerance)?)
+        Self::split_shape_detached(
+            py,
+            Arc::clone(&self.shape),
+            splitter.shape.shape().clone(),
+            self.frame.clone(),
+            tolerance,
+        )
     }
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {

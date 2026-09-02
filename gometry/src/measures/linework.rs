@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Frame, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,
+    Frame, PyGeometry, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, multipoint_splitter_from_array,
 };
 
@@ -86,7 +86,7 @@ pub(crate) fn split(
     let tolerance = crate::NonNegative::try_new("tolerance", tolerance)?.get();
     if let Some(geometry) = exact_geometry(geom) {
         if let Some(splitter) = exact_geometry(splitter) {
-            return geometry.split(splitter, tolerance);
+            return geometry.split(py, splitter, tolerance);
         }
         if let Some(splitters) = exact_geometry_array(splitter) {
             Frame::compatible_parts(
@@ -97,15 +97,13 @@ pub(crate) fn split(
                 "split",
             )?;
             let splitter_shape = multipoint_splitter_from_array(splitters)?;
-            return Ok(PyGeometryArray::pack_or_mixed(
-                geometry
-                    .shape
-                    .split(&splitter_shape, tolerance)?
-                    .into_iter()
-                    .map(|shape| geometry.with_shape(shape))
-                    .collect(),
+            return PyGeometry::split_shape_detached(
+                py,
+                std::sync::Arc::clone(&geometry.shape),
+                splitter_shape,
                 geometry.frame.clone(),
-            )?);
+                tolerance,
+            );
         }
     }
     if let Some(array) = exact_geometry_array(geom) {

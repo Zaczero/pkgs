@@ -149,6 +149,14 @@ pub struct Groups {
     rows: Range<usize>,
 }
 
+enum GroupsContainsNeedle {
+    NoMatch,
+    Int64(Vec<i64>),
+    Geometry(PyGeometryArray),
+    Cells(PyCellArray),
+    Coordinates(Vec<f64>),
+}
+
 // Frozen + immutable Arc<[i64]> backing: the only owner admitted to
 // `frozen_i64_view` (Item C). A mutable pyclass cannot implement Sealed.
 impl frozen_i64_owner::Sealed for Groups {}
@@ -403,6 +411,63 @@ impl Groups {
                     actual,
                     &expected.into_iter().flatten().collect::<Vec<_>>(),
                 ))
+            },
+        }
+    }
+
+    fn admit_contains_needle(&self, item: &Bound<'_, PyAny>) -> PyResult<GroupsContainsNeedle> {
+        match &self.values {
+            GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
+                .map_or(GroupsContainsNeedle::NoMatch, GroupsContainsNeedle::Int64)),
+            GroupsValues::Geometry(_) => Ok(item
+                .cast::<PyGeometryArray>()
+                .ok()
+                .map_or(GroupsContainsNeedle::NoMatch, |other| {
+                    GroupsContainsNeedle::Geometry(other.get().clone())
+                })),
+            GroupsValues::Cells(_) => Ok(item
+                .cast::<PyCellArray>()
+                .ok()
+                .map_or(GroupsContainsNeedle::NoMatch, |other| {
+                    GroupsContainsNeedle::Cells(other.get().clone())
+                })),
+            GroupsValues::Coordinates { dimensions, .. } => {
+                let Ok(expected) = item.extract::<Vec<Vec<f64>>>() else {
+                    return Ok(GroupsContainsNeedle::NoMatch);
+                };
+                if expected.iter().any(|values| values.len() != *dimensions) {
+                    return Ok(GroupsContainsNeedle::NoMatch);
+                }
+                Ok(GroupsContainsNeedle::Coordinates(
+                    expected.into_iter().flatten().collect(),
+                ))
+            },
+        }
+    }
+
+    fn contains_needle(&self, needle: GroupsContainsNeedle) -> bool {
+        match needle {
+            GroupsContainsNeedle::NoMatch => false,
+            GroupsContainsNeedle::Int64(expected) => {
+                (0..self.rows.len()).any(|row| self.int64_row_matches(row, &expected))
+            },
+            GroupsContainsNeedle::Geometry(expected) => (0..self.rows.len())
+                .any(|row| geometry_arrays_equal(&self.geometry_row_view(row), &expected)),
+            GroupsContainsNeedle::Cells(expected) => {
+                (0..self.rows.len()).any(|row| self.cell_row_view(row).logical_eq(&expected))
+            },
+            GroupsContainsNeedle::Coordinates(values) => {
+                let GroupsValues::Coordinates {
+                    values: actual_values,
+                    ..
+                } = &self.values
+                else {
+                    unreachable!("coordinate needle requires Coordinates backing");
+                };
+                (0..self.rows.len()).any(|row| {
+                    let actual = &actual_values[self.coordinate_values_window(row)];
+                    actual.len() == values.len() && coordinate_values_equal(actual, &values)
+                })
             },
         }
     }
@@ -795,24 +860,10 @@ impl Groups {
     /// Returns
     /// -------
     /// bool
-    fn __contains__(&self, item: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if matches!(&self.values, GroupsValues::Int64(_)) {
-            let Some(expected) = Self::parse_int64_row_item(item)? else {
-                return Ok(false);
-            };
-            for row in 0..self.rows.len() {
-                if self.int64_row_matches(row, &expected) {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
-        }
-        for row in 0..self.rows.len() {
-            if self.row_matches(row, item)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+    fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let needle = self.admit_contains_needle(item)?;
+        let groups = self.clone();
+        Ok(py.detach(move || groups.contains_needle(needle)))
     }
 
     /// First index of an equal row in ``[start, stop)``.

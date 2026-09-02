@@ -279,12 +279,35 @@ fn geometry_part_matches(geometry: &PyGeometry, row: usize, item: &Bound<'_, PyA
     let Some(other) = exact_geometry(item) else {
         return false;
     };
-    geometry.crs_ref() == other.crs_ref()
-        && geometry.epoch() == other.epoch()
-        && geometry
-            .shape
-            .part_at(row)
-            .is_some_and(|part| part == *other.shape.shape())
+    geometry_part_matches_shape(
+        &geometry.shape,
+        row,
+        geometry.crs_ref() == other.crs_ref() && geometry.epoch() == other.epoch(),
+        other.shape.shape(),
+    )
+}
+
+fn geometry_part_matches_shape(
+    geometry: &crate::geometry::ShapeData,
+    row: usize,
+    same_frame: bool,
+    other: &crate::geometry::Shape,
+) -> bool {
+    same_frame && geometry.part_at(row).is_some_and(|part| part == *other)
+}
+
+fn geometry_parts_contains(py: Python<'_>, geometry: &PyGeometry, item: &Bound<'_, PyAny>) -> bool {
+    let Some(other) = exact_geometry(item) else {
+        return false;
+    };
+    let same_frame = geometry.crs_ref() == other.crs_ref() && geometry.epoch() == other.epoch();
+    let geometry_shape = Arc::clone(&geometry.shape);
+    let other_shape = Arc::clone(&other.shape);
+    py.detach(move || {
+        (0..geometry_shape.part_count()).any(|row| {
+            geometry_part_matches_shape(&geometry_shape, row, same_frame, other_shape.shape())
+        })
+    })
 }
 
 fn geometry_parts_index(
@@ -431,8 +454,8 @@ impl PyGeometryParts {
     /// Returns
     /// -------
     /// bool
-    fn __contains__(&self, item: &Bound<'_, PyAny>) -> bool {
-        (0..self.geometry.shape.part_count()).any(|row| self.part_matches(row, item))
+    fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> bool {
+        geometry_parts_contains(py, &self.geometry, item)
     }
 
     /// First index of an equal part in ``[start, stop)``.
@@ -741,9 +764,13 @@ macro_rules! geometry_parts_methods {
             }
 
             /// Whether a geometry equals one of the component parts.
-            fn __contains__(slf: PyRef<'_, Self>, item: &Bound<'_, PyAny>) -> bool {
+            fn __contains__(
+                slf: PyRef<'_, Self>,
+                py: Python<'_>,
+                item: &Bound<'_, PyAny>,
+            ) -> bool {
                 let geometry = &**slf.as_super();
-                (0..geometry.shape.part_count()).any(|row| geometry_part_matches(geometry, row, item))
+                geometry_parts_contains(py, geometry, item)
             }
 
             /// First index of an equal part in ``[start, stop)``.

@@ -2,6 +2,8 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::sync::Arc;
+
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
     GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original,
@@ -79,9 +81,9 @@ pub(crate) fn voronoi_boundary_from_value<'a>(
     }
 }
 
-/// Owned form used by detached array row walks. Scalar calls can borrow the
-/// supplied clip directly, while an array must carry the same resolved clip
-/// through the existing cumulative-budget helper across every row.
+/// Owned form used by detached scalar and array walks. Resolve the supplied
+/// clip before detaching; arrays carry the same boundary through the existing
+/// cumulative-budget helper across every row.
 pub(crate) enum OwnedVoronoiBoundary {
     Padded,
     Envelope,
@@ -121,9 +123,9 @@ pub(crate) fn owned_voronoi_boundary(
 /// `voronoi_edges` × scalar / array): resolve `tolerance` and the clip
 /// boundary once against the subject frame, run the per-shape diagram
 /// `kernel`, and flatten the cells into one mixed array carrying that frame.
-pub(crate) fn voronoi_flatten<S: std::borrow::Borrow<Shape>>(
+pub(crate) fn voronoi_flatten(
     py: Python<'_>,
-    shapes: impl Iterator<Item = S>,
+    shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
     frame: Frame,
     tolerance: f64,
     clip: &VoronoiClipInput,
@@ -135,21 +137,24 @@ pub(crate) fn voronoi_flatten<S: std::borrow::Borrow<Shape>>(
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Shape>>,
 ) -> PyResult<PyGeometryArray> {
-    let supplied = match clip {
-        VoronoiClipInput::Default => None,
-        VoronoiClipInput::Supplied(value) => Some(value.bind(py)),
-    };
-    let boundary = match &supplied {
-        None => VoronoiBoundary::Padded,
-        Some(bound) => {
-            voronoi_boundary_from_value(bound, frame.crs_ref(), frame.epoch(), operation)?
-        },
-    };
-    let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
-    let mut cells = Vec::new();
-    for shape in shapes {
-        cells.extend(kernel(shape.borrow(), tolerance, boundary, &mut budget)?);
-    }
+    let boundary = owned_voronoi_boundary(py, clip, &frame, operation)?;
+    // The boundary and shapes are now fully admitted Rust values. Keep all
+    // tessellation and output-shape construction outside the interpreter lock;
+    // Python objects are created only by `from_shapes` after reattachment.
+    let shapes = shapes.collect::<Vec<_>>();
+    let cells = py.detach(move || {
+        let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
+        let mut cells = Vec::new();
+        for shape in &shapes {
+            cells.extend(kernel(
+                shape,
+                tolerance,
+                boundary.as_borrowed(),
+                &mut budget,
+            )?);
+        }
+        Ok::<_, crate::error::Error>(cells)
+    })?;
     Ok(PyGeometryArray::from_shapes(cells, frame))
 }
 
