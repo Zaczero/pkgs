@@ -7,10 +7,10 @@ use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
 use crate::geometry::{
-    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, ExpansionBudget,
-    Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment, SegmentProjection, XY,
-    open_xy_cycle_decision, orientation, same_point, segment_cross_point, segment_projection,
-    segments_intersect, wrap_index,
+    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact,
+    ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
+    SegmentIndex, SegmentProjection, XY, line_segments, open_xy_cycle_decision, orientation,
+    same_point, segment_cross_point, segment_projection, segments_intersect, wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset
@@ -701,11 +701,101 @@ pub(in crate::geometry) fn winding_region(
     assemble_region_polygons(arrangement.region_rings(&windings, keep))
 }
 
+/// Temporary shell owner used while nesting boundary rings. Line coverage is a
+/// shell operation: the point index deliberately has no hole state, while the
+/// segment index supplies exact boundary contacts for concave shells.
+struct ShellCoverageIndex {
+    point_index: PolygonPointIndex,
+    boundary: SegmentIndex,
+}
+
+impl ShellCoverageIndex {
+    fn new(shell: &Ring) -> Self {
+        Self {
+            point_index: PolygonPointIndex::build_shell(shell),
+            boundary: SegmentIndex::build_from_iter(line_segments(shell)),
+        }
+    }
+
+    fn covers_xy(&self, x: f64, y: f64) -> bool {
+        self.point_index.covers_point(Point::new_raw_xy(x, y))
+    }
+
+    /// Boundary-inclusive coverage for a linework chain. Endpoint tests alone
+    /// are insufficient for a concave shell: a segment can leave and re-enter
+    /// between two covered vertices. The boundary index supplies exact contact
+    /// intervals, and one classified midpoint per interval settles each open
+    /// portion without constructing a source topology graph.
+    fn covers_line(&self, points: &[XY]) -> bool {
+        if points.len() < 2 {
+            return true;
+        }
+        if points.iter().any(|point| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::ContainmentPoint,
+                1,
+            );
+            !self.covers_xy(point.x, point.y)
+        }) {
+            return false;
+        }
+        points.array_windows::<2>().all(|[start, end]| {
+            let segment = Segment {
+                start: *start,
+                end: *end,
+            };
+            let mut contacts = Vec::new();
+            for entry in self.boundary.intersecting_candidates(segment) {
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::ContainmentRefinement,
+                    1,
+                );
+                match crate::geometry::segment_contact_exact(segment, entry.segment) {
+                    Contact::Disjoint => {},
+                    Contact::Cross { .. } => return false,
+                    Contact::Touch { point } => {
+                        contacts.push((segment_projection(point, segment), point));
+                    },
+                    Contact::Collinear { span } => {
+                        contacts.push((segment_projection(span.start, segment), span.start));
+                        contacts.push((segment_projection(span.end, segment), span.end));
+                    },
+                }
+            }
+            contacts.push((crate::geometry::segment_projection(*start, segment), *start));
+            contacts.push((crate::geometry::segment_projection(*end, segment), *end));
+            contacts.sort_unstable_by(|(left, _), (right, _)| left.cmp_along(right));
+
+            let mut previous_projection = &contacts[0].0;
+            let mut previous_point = contacts[0].1;
+            for (projection, point) in contacts.iter().skip(1) {
+                if projection.cmp_along(previous_projection).is_eq() {
+                    continue;
+                }
+                let midpoint = crate::geometry::segment_midpoint(Segment {
+                    start: previous_point,
+                    end: *point,
+                });
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::ContainmentPoint,
+                    1,
+                );
+                if !self.covers_xy(midpoint.x, midpoint.y) {
+                    return false;
+                }
+                previous_projection = projection;
+                previous_point = *point;
+            }
+            true
+        })
+    }
+}
+
 /// Nest boundary rings (shells CCW, holes CW — the
 /// [`Arrangement::region_rings`] convention) into polygons: each hole goes
 /// to the SMALLEST containing shell.
 pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<Polygon> {
-    let mut shells: Vec<(Vec<XY>, f64, Bounds)> = Vec::new();
+    let mut shells: Vec<(Ring, f64, Bounds)> = Vec::new();
     let mut holes: Vec<Vec<XY>> = Vec::new();
     for ring in rings {
         crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::RegionRing, 1);
@@ -714,26 +804,15 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         match sign {
             AreaSign::Positive => {
                 let bounds = Bounds::from_xy_iter(ring.iter().copied());
-                shells.push((ring, magnitude.get(), bounds));
+                shells.push((Ring::from_closed(ring), magnitude.get(), bounds));
             },
             AreaSign::Negative => holes.push(ring),
             AreaSign::Zero => {},
         }
     }
     shells.sort_by(|left, right| left.1.total_cmp(&right.1));
-    let shell_indexes: Vec<PolygonPointIndex> = if holes.is_empty() {
-        Vec::new()
-    } else {
-        shells
-            .iter()
-            .map(|(shell, ..)| {
-                PolygonPointIndex::build(&Polygon::new(
-                    Ring::from_closed(shell.clone()),
-                    Vec::new(),
-                ))
-            })
-            .collect()
-    };
+    let mut shell_indexes: Vec<Option<ShellCoverageIndex>> =
+        (0..shells.len()).map(|_| None).collect();
     let shell_tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>> =
         BulkRTree::bulk_load_with_params(
             shells
@@ -776,18 +855,21 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         let owner = if candidates.is_empty() {
             None
         } else {
-            candidates
-                .into_iter()
-                .find(|&index| shell_indexes[index].covers_line(&hole))
+            candidates.into_iter().find(|&shell_index| {
+                shell_indexes[shell_index]
+                    .get_or_insert_with(|| ShellCoverageIndex::new(&shells[shell_index].0))
+                    .covers_line(&hole)
+            })
         };
         if let Some(owner) = owner {
             assigned[owner].push(Ring::from_closed(hole));
         }
     }
+    drop(shell_indexes);
     shells
         .into_iter()
         .zip(assigned)
-        .map(|((shell, ..), holes)| Polygon::new(Ring::from_closed(shell), holes))
+        .map(|((shell, ..), holes)| Polygon::new(shell, holes))
         .collect()
 }
 
@@ -920,7 +1002,8 @@ mod tests {
             XY::new(0.0, 6.0),
             XY::new(0.0, 0.0),
         ];
-        let index = PolygonPointIndex::build(&Polygon::new(Ring::from_closed(shell), Vec::new()));
+        let ring = Ring::from_closed(shell);
+        let index = ShellCoverageIndex::new(&ring);
         assert!(index.covers_line(&[
             XY::new(0.0, 0.0),
             XY::new(6.0, 0.0),
@@ -928,5 +1011,28 @@ mod tests {
             XY::new(2.0, 2.0),
         ]));
         assert!(!index.covers_line(&[XY::new(5.0, 1.0), XY::new(1.0, 5.0), XY::new(5.5, 1.0),]));
+    }
+
+    #[test]
+    fn region_assembly_uses_shell_owner_not_holed_polygon_coverage() {
+        let shell = rectangle(0.0, 0.0, 10.0, 10.0, false);
+        let outer_hole = rectangle(2.0, 2.0, 8.0, 8.0, true);
+        let inner_hole = rectangle(3.0, 3.0, 7.0, 7.0, true);
+        let holed_shell = Shape::Polygon(Polygon::new(Ring::from_closed(shell.clone()), vec![
+            Ring::from_closed(outer_hole.clone()),
+        ]));
+        // The second negative ring is inside the first. A completed polygon
+        // would exclude it, but assembly owns each negative ring against the
+        // shell before those holes become polygon state.
+        assert!(
+            inner_hole
+                .iter()
+                .all(|point| !holed_shell.covers_point(Point::new_raw_xy(point.x, point.y)))
+        );
+
+        let polygons = assemble_region_polygons(vec![shell, outer_hole, inner_hole]);
+
+        assert_eq!(polygons.len(), 1);
+        assert_eq!(polygons[0].holes.len(), 2);
     }
 }
