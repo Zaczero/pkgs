@@ -236,10 +236,45 @@ def test_full_and_unwrapped_geographic_sources_retain_full_topology() -> None:
         4326, 3857, (-180.0, -10.0, 180.0, 10.0)
     ) == pytest.approx(expected)
     assert gm.crs_transform_bounds(4326, 4326, (0.0, -90.0, 360.0, 90.0)) == (
-        0.0,
+        -180.0,
         -90.0,
-        360.0,
+        180.0,
         90.0,
+    )
+
+
+def test_identity_bounds_use_canonical_geographic_and_projected_frames() -> None:
+    assert gm.crs_transform_bounds(4326, 4326, (0.0, -10.0, 360.0, 10.0)) == (
+        -180.0,
+        -10.0,
+        180.0,
+        10.0,
+    )
+    assert gm.crs_transform_bounds(4326, 4326, (-180.0, -10.0, 180.0, 10.0)) == (
+        -180.0,
+        -10.0,
+        180.0,
+        10.0,
+    )
+    assert gm.crs_transform_bounds(4326, 4326, (179.0, -1.0, -179.0, 1.0)) == (
+        179.0,
+        -1.0,
+        -179.0,
+        1.0,
+    )
+    assert gm.crs_transform_bounds(3857, 3857, (-10.0, -20.0, 30.0, 40.0)) == (
+        -10.0,
+        -20.0,
+        30.0,
+        40.0,
+    )
+    assert gm.crs_transform_bounds(4979, 4979, (0.0, -10.0, 3.0, 360.0, 10.0, 4.0)) == (
+        -180.0,
+        -10.0,
+        3.0,
+        180.0,
+        10.0,
+        4.0,
     )
 
 

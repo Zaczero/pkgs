@@ -286,7 +286,19 @@ impl TransformPlan {
     ) -> Result<(f64, f64, f64, f64)> {
         self.begin_execution();
         let result = if self.is_identity() {
-            Ok(bounds)
+            if self.source_domain.is_geographic() {
+                let mut samples = BoundsSamplePlan::new_2d(
+                    bounds,
+                    0,
+                    self.source_domain,
+                    self.target_domain,
+                    self.options.source_epoch,
+                )?;
+                self.execute_bounds_samples(&mut samples)?;
+                samples.finish_2d()
+            } else {
+                Ok(bounds)
+            }
         } else {
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
@@ -308,6 +320,11 @@ impl TransformPlan {
     ) -> Result<Vec<(f64, f64, f64, f64)>> {
         self.begin_execution();
         let result = self.execute_bounds_many(rows, |bounds, executor| {
+            let densify = if matches!(executor, BoundsExecutor::Identity) {
+                0
+            } else {
+                densify
+            };
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
@@ -328,7 +345,19 @@ impl TransformPlan {
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         self.begin_execution();
         let result = if self.is_identity() {
-            Ok(bounds)
+            if self.source_domain.is_geographic() {
+                let mut samples = BoundsSamplePlan::new_3d(
+                    bounds,
+                    0,
+                    self.source_domain,
+                    self.target_domain,
+                    self.options.source_epoch,
+                )?;
+                self.execute_bounds_samples(&mut samples)?;
+                samples.finish_3d()
+            } else {
+                Ok(bounds)
+            }
         } else {
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
@@ -350,6 +379,11 @@ impl TransformPlan {
     ) -> Result<Vec<TransformedBounds3d>> {
         self.begin_execution();
         let result = self.execute_bounds_many(rows, |bounds, executor| {
+            let densify = if matches!(executor, BoundsExecutor::Identity) {
+                0
+            } else {
+                densify
+            };
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
@@ -375,7 +409,13 @@ impl TransformPlan {
         }
         match &self.operation {
             TransformOperation::Identity { .. } => {
-                output.extend(rows.iter().copied().map(Into::into));
+                if self.source_domain.is_geographic() {
+                    for &bounds in rows {
+                        output.push(transform(bounds, BoundsExecutor::Identity)?);
+                    }
+                } else {
+                    output.extend(rows.iter().copied().map(Into::into));
+                }
                 Ok(output)
             },
             TransformOperation::InCore(operation) => {
@@ -443,6 +483,7 @@ impl TransformPlan {
         executor: BoundsExecutor<'_>,
     ) -> Result<()> {
         match executor {
+            BoundsExecutor::Identity => Ok(()),
             BoundsExecutor::InCore(operation) => {
                 executor.execute(samples, &self.execution)?;
                 let reverse = operation.reversed();
@@ -492,6 +533,7 @@ fn in_core_pole_domain_miss(error: &crate::error::Error) -> bool {
 
 #[derive(Clone, Copy)]
 enum BoundsExecutor<'a> {
+    Identity,
     InCore(&'a InCoreTransform),
     Proj(&'a ProjPipeline),
 }
@@ -499,6 +541,7 @@ enum BoundsExecutor<'a> {
 impl BoundsExecutor<'_> {
     fn execute(self, samples: &mut BoundsSamplePlan, execution: &TransformExecution) -> Result<()> {
         match self {
+            Self::Identity => Ok(()),
             Self::InCore(operation) => {
                 samples.enter_in_core()?;
                 transform_in_core_xy_batch(operation, &mut samples.x, &mut samples.y)?;

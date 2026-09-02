@@ -70,7 +70,7 @@ def test_point_navigation_and_lrs_boundaries_preserve_endpoint_bits() -> None:
     assert _coords_xy_bits(substring) == _coords_xy_bits(line)
 
 
-def test_raw_crs_geodesic_direct_and_transform_bounds_identity_preserve_bits() -> None:
+def test_raw_crs_geodesic_direct_and_identity_bounds_use_frame_canonicalization() -> None:
     crs = gm.CRS(4326)
     direct = crs.geodesic_direct(-0.0, -0.0, 90.0, 0.0)
     assert _bits(direct['longitude']) == _bits(-0.0)
@@ -83,11 +83,11 @@ def test_raw_crs_geodesic_direct_and_transform_bounds_identity_preserve_bits() -
     bounds = (-0.0, -0.0, 1.0, 1.0)
     same = gm.crs_transform_bounds(4326, 4326, bounds, densify=0)
     assert tuple(_bits(value) for value in same) == tuple(
-        _bits(value) for value in bounds
+        _bits(value) for value in (0.0, 0.0, 1.0, 1.0)
     )
     many = gm.crs_transform_bounds(4326, 4326, [bounds], densify=0)
     assert tuple(_bits(value) for value in many[0]) == tuple(
-        _bits(value) for value in bounds
+        _bits(value) for value in (0.0, 0.0, 1.0, 1.0)
     )
 
     polygon = gm.box(-0.0, -0.0, 1.0, 1.0, crs=4326)

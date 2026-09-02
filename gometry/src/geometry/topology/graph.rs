@@ -392,18 +392,13 @@ impl TopologyGraph {
 
     pub(crate) fn has_interior_support_other_than(&self, point: XY) -> bool {
         let key = self.key(point);
-        self.support
-            .point_support
-            .iter()
-            .any(|candidate| *candidate != key)
+        self.support.point_support.len() > 1 || !self.support.point_support.contains(&key)
     }
 
     pub(crate) fn has_boundary_support_other_than(&self, point: XY) -> bool {
         let key = self.key(point);
-        self.support
-            .boundary_support
-            .iter()
-            .any(|candidate| *candidate != key)
+        self.support.boundary_support.len() > 1
+            || !self.support.boundary_support.contains(&key)
     }
 
     pub(crate) fn has_line_support(&self, point: XY) -> bool {
@@ -937,15 +932,19 @@ impl TopologySupport {
                     .expect("validated geographic point")
                     .get();
                 let period = frame.longitude().period();
-                let copies = [longitude - period, longitude, longitude + period];
-                let mut seen = HashSet::with_capacity(8);
-                for x in copies {
+                let half_period = frame.longitude().half_period();
+                let mut visit_copy = |x: f64, skip_full_period: bool| {
                     let query = Segment {
                         start: XY::new(x, point.y),
                         end: XY::new(x, point.y),
                     };
                     for candidate in self.edge_index.intersecting_candidates(query) {
-                        if !seen.insert(candidate.ordinal) {
+                        if skip_full_period
+                            && ((candidate.segment.start.x == -half_period
+                                && candidate.segment.end.x == half_period)
+                                || (candidate.segment.start.x == half_period
+                                    && candidate.segment.end.x == -half_period))
+                        {
                             continue;
                         }
                         let edge = &edges[candidate.ordinal];
@@ -956,8 +955,13 @@ impl TopologySupport {
                             return Some(value);
                         }
                     }
+                    None
+                };
+                if longitude == -half_period {
+                    visit_copy(longitude, false).or_else(|| visit_copy(longitude + period, true))
+                } else {
+                    visit_copy(longitude, false)
                 }
-                None
             },
             TopologyDomain::Cartesian => {
                 let query = Segment {
@@ -2482,6 +2486,37 @@ mod tests {
         Shape::geometry_collection(shapes).expect("test collection is valid")
     }
 
+    fn edge_ordinals_at(graph: &TopologyGraph, point: XY) -> Vec<usize> {
+        let mut ordinals = Vec::new();
+        let _: Option<()> = graph.support.for_each_edge_at(
+            graph.domain,
+            &graph.edges,
+            point,
+            |edge| {
+                let ordinal = graph
+                    .edges
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, edge))
+                    .expect("edge callback points into the graph edge slice");
+                ordinals.push(ordinal);
+                std::ops::ControlFlow::Continue(())
+            },
+        );
+        ordinals.sort_unstable();
+        ordinals
+    }
+
+    fn brute_edge_ordinals_at(graph: &TopologyGraph, point: XY) -> Vec<usize> {
+        graph
+            .edges
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, edge)| {
+                point_on_graph_segment(graph.domain, point, edge.segment).then_some(ordinal)
+            })
+            .collect()
+    }
+
     #[test]
     fn geographic_seam_aliases_share_one_node() {
         let shape = Shape::MultiPoint(
@@ -2626,6 +2661,78 @@ mod tests {
                 .iter()
                 .any(|edge| { graph.equivalent(edge.segment.start, edge.segment.end) })
         );
+    }
+
+    #[test]
+    fn geographic_edge_lookup_is_unique_at_ordinary_and_seam_points() {
+        let shape = collection(vec![
+            Shape::LineString(line(&[(-10.0, -1.0), (10.0, 3.0)])),
+            Shape::LineString(line(&[(170.0, -2.0), (-170.0, 4.0)])),
+            Shape::LineString(line(&[(-180.0, -3.0), (180.0, 3.0)])),
+        ]);
+        let graph = TopologyGraph::geographic(&shape, degrees());
+        for point in [
+            XY::new(0.0, 1.0),
+            XY::new(360.0, 1.0),
+            XY::new(180.0, 0.0),
+            XY::new(-180.0, 0.0),
+            XY::new(180.0, 3.0),
+        ] {
+            assert_eq!(
+                edge_ordinals_at(&graph, point),
+                brute_edge_ordinals_at(&graph, point),
+                "edge lookup mismatch at {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn geographic_point_queries_reuse_index_without_allocations() {
+        let shape = collection(vec![
+            Shape::LineString(line(&[(-10.0, -1.0), (10.0, 3.0)])),
+            Shape::LineString(line(&[(170.0, -2.0), (-170.0, 4.0)])),
+            Shape::LineString(line(&[(-180.0, -3.0), (180.0, 3.0)])),
+        ]);
+        let graph = TopologyGraph::geographic(&shape, degrees());
+        let points = [
+            XY::new(0.0, 1.0),
+            XY::new(360.0, 1.0),
+            XY::new(180.0, 0.0),
+            XY::new(-180.0, 0.0),
+            XY::new(23.0, 30.0),
+            XY::new(-123.0, 90.0),
+        ];
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            for _ in 0..8 {
+                for point in points {
+                    let _ = graph.locate_point(point);
+                }
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn geographic_high_degree_absent_queries_reuse_index_without_allocations() {
+        let lines = (0..64)
+            .map(|index| {
+                let offset = (index as f64 + 0.5) / 64.0 - 0.5;
+                Shape::LineString(line(&[
+                    (-1.0, -1.0 + offset),
+                    (1.0, 1.0 + offset),
+                ]))
+            })
+            .collect();
+        let graph = TopologyGraph::geographic(&collection(lines), degrees());
+        let (_, allocations) = crate::test_support::allocation_count(|| {
+            for _ in 0..8 {
+                let _ = graph.locate_point(XY::new(0.0, 0.0));
+                let _ = graph.locate_point(XY::new(360.0, 0.0));
+                let _ = graph.locate_point(XY::new(180.0, 30.0));
+                let _ = graph.locate_point(XY::new(12.0, 30.0));
+            }
+        });
+        assert_eq!(allocations, 0);
     }
 
     #[test]

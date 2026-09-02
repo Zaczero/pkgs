@@ -607,13 +607,13 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
         1.0,
     )
     assert gm.crs_transform_bounds(4326, 4326, (-181.0, -1.0, 1.0, 1.0)) == (
-        -181.0,
+        179.0,
         -1.0,
         1.0,
         1.0,
     )
     assert gm.crs_transform_bounds(4979, 4979, (-181.0, -1.0, 0.0, 1.0, 1.0, 2.0)) == (
-        -181.0,
+        179.0,
         -1.0,
         0.0,
         1.0,
