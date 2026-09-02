@@ -22,9 +22,6 @@ impl RectCoverSpec for TileCoverSpec {
     fn id(cell: &Tile) -> u64 {
         cell.id()
     }
-    fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8> {
-        parse_tile_zoom(value)
-    }
     fn coverage_label() -> &'static str {
         "tile"
     }
@@ -50,19 +47,17 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 /// zoom : int
 ///     Tile zoom (``0``-``29``; finer at higher values).
 ///
-/// cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-///     Which cells to materialize. ``'center'`` selects cells whose center is
-///     inside; ``'within'`` selects cells entirely inside; ``'overlap'``
+/// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+///     Which cells to materialize. ``'within'`` selects cells entirely inside;
+///     ``'center'`` selects cells whose center is inside; ``'overlap'``
 ///     selects every cell touching the geometry; and ``'bbox'`` selects cells
 ///     whose bounding box overlaps. For tiles, ``'bbox'`` and ``'overlap'``
 ///     are equivalent. The rule never affects exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Finite hard cap on candidate cells considered by the coverer before the
-///     ``within`` filter. A ``within`` cover can yield fewer final cells while
-///     raising when the pre-within-filter candidate count would exceed this
-///     candidate budget. Pass
-///     ``None`` for an unlimited cover.
+///     Hard cap on returned cells and retained result allocation. Discarded
+///     candidates do not consume it; array calls apply it cumulatively across
+///     groups. Pass ``None`` for unlimited output (bounded only by memory).
 ///
 /// Returns
 /// -------
@@ -74,7 +69,7 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 /// ------
 /// GeometryError
 ///     If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
-///     if the pre-``within``-filter candidate count would exceed ``max_cells``.
+///     if the returned coverage would exceed ``max_cells``.
 /// InvalidGeometryError
 ///     If the geometry is empty or any latitude is outside the Web Mercator
 ///     domain (±85.05112878 degrees).
@@ -100,6 +95,7 @@ pub(super) fn tile_cover(
     #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     let max_cells = parse_max_cells(max_cells)?;
+    let zoom = parse_tile_zoom(zoom)?;
     grid_cover_dispatch(
         py,
         geom,

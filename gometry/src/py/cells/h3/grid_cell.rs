@@ -110,7 +110,7 @@ impl GridCell for CellIndex {
 
     fn center_point(self) -> Point {
         let latlng = LatLng::from(self);
-        Point::new_unchecked_xy(latlng.lng(), latlng.lat())
+        Point::new_raw_xy(latlng.lng(), latlng.lat())
     }
 
     fn boundary_shape(self) -> Shape {

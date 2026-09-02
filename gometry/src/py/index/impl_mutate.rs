@@ -1,11 +1,9 @@
 //! Internal (non-pymethods) mutation and handle helpers for
 //! [`PySpatialIndex`], plus the envelope builder shared by insert lanes.
 
-use crate::collections::sort_row_ids;
 use crate::py::index::{
-    AABB, Bounds, Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult,
-    PySpatialIndex, Shape, ShapeRow, geodesic_prunable_point, index_envelope, index_metadata,
-    point_index_envelope,
+    Frame, GeometryError, IndexEntry, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
+    geodesic_prunable_point, index_envelopes, index_metadata,
 };
 
 impl PySpatialIndex {
@@ -14,7 +12,8 @@ impl PySpatialIndex {
             self.live_entries()
                 .map(|entry| Ok::<_, pyo3::PyErr>(entry.idx)),
         )?;
-        sort_row_ids(&mut handles, self.rows.len());
+        handles.sort_unstable();
+        handles.dedup();
         Ok(handles)
     }
 
@@ -33,7 +32,7 @@ impl PySpatialIndex {
             .rows
             .packed
             .as_ref()
-            .map_or(0, |packed| packed.source.storage().len());
+            .map_or(0, |packed| packed.source.len());
         if handle < packed_len {
             let geometry = self
                 .rows
@@ -46,8 +45,8 @@ impl PySpatialIndex {
             return crate::Typed(geometry.with_prepared_plan(plan));
         }
         let geometry = &self.rows.boxed[handle - packed_len];
-        if let Some(plan) = &geometry.prepared_plan {
-            return crate::Typed(geometry.with_prepared_plan(std::sync::Arc::clone(plan)));
+        if let Some(plan) = geometry.cached_prepared_plan() {
+            return crate::Typed(geometry.with_prepared_plan(plan));
         }
         crate::Typed(crate::PyGeometry::with_frame(
             crate::ShapeData::new(self.rows.row(handle).with_shape(std::clone::Clone::clone)),
@@ -74,19 +73,12 @@ impl PySpatialIndex {
         // this geometry's own frame (which becomes the index frame on the first
         // insert) — so the first geographic antimeridian-crossing row still gets
         // the wrapped-band envelope.
-        let geographic = match &self.metadata {
-            Some(_) => self.geographic(),
-            None => crate::geometry::is_geographic_frame(&geometry.frame),
-        };
-        let envelope = if let Shape::Point(point) = geometry.shape.shape() {
-            point_index_envelope(*point, geographic)
-        } else {
-            let bounds = geometry
-                .shape
-                .bounds()
-                .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            index_envelope(geometry.shape.shape(), bounds, geographic)
-        };
+        let bounds = geometry
+            .shape
+            .bounds()
+            .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
+        let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
+        let cover = index_envelopes(geometry.shape.shape(), bounds, Some(effective_frame))?;
         let idx = self.rows.len();
         self.rows.try_reserve(1)?;
         // The geometry is indexable — adopt the frame only after all fallible
@@ -94,7 +86,9 @@ impl PySpatialIndex {
         if self.metadata.is_none() {
             self.metadata = Some(geometry.frame.clone());
         }
-        self.overflow.insert(IndexEntry { idx, envelope });
+        for &envelope in cover.entries() {
+            self.overflow.insert(IndexEntry { idx, envelope });
+        }
         self.non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         self.rows.push(geometry.clone());
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
@@ -114,10 +108,6 @@ impl PySpatialIndex {
             self.check_insert_frame(frame)?;
         }
         let adopt_frame = self.metadata.is_none().then(|| frame.clone()).flatten();
-        let geographic = frame
-            .as_ref()
-            .or(self.metadata.as_ref())
-            .is_some_and(crate::geometry::is_geographic_frame);
         let start = self.rows.len();
         let mut entries = Vec::new();
         if let Err(error) = crate::try_reserve_vec(&mut entries, items.len()) {
@@ -130,21 +120,24 @@ impl PySpatialIndex {
                 .shape
                 .bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
-                idx: start + offset,
-                envelope: insert_envelope(
-                    ShapeRow::Handle(
-                        geometry
-                            .prepared_plan
-                            .as_ref()
-                            .expect("indexed boxed rows retain prepared plans"),
-                    ),
-                    bounds,
-                    geographic,
+            let cover = index_envelopes(
+                geometry.shape.shape(),
+                bounds,
+                Some(
+                    frame
+                        .as_ref()
+                        .or(self.metadata.as_ref())
+                        .expect("non-empty batch has a frame"),
                 ),
-            }) {
-                drop(items);
-                return Err(pyo3::PyErr::from(error));
+            )?;
+            for &envelope in cover.entries() {
+                if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
+                    idx: start + offset,
+                    envelope,
+                }) {
+                    drop(items);
+                    return Err(pyo3::PyErr::from(error));
+                }
             }
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         }
@@ -152,7 +145,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn insert_array(&mut self, array: &PyGeometryArray) -> PyResult<Vec<usize>> {
-        let len = array.storage().len();
+        let len = array.len();
         if len == 0 {
             return Ok(Vec::new());
         }
@@ -167,7 +160,6 @@ impl PySpatialIndex {
         }
         self.check_insert_frame(&array.frame)?;
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
-        let geographic = crate::geometry::is_geographic_frame(&array.frame);
         let start = self.rows.len();
         let mut entries = Vec::new();
         let mut items = Vec::new();
@@ -179,12 +171,16 @@ impl PySpatialIndex {
             let bounds = row
                 .quick_bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
-                idx: start + offset,
-                envelope: insert_envelope(row, bounds, geographic),
-            }) {
-                drop(items);
-                return Err(pyo3::PyErr::from(error));
+            let shape = row.with_shape(std::clone::Clone::clone);
+            let cover = index_envelopes(&shape, bounds, Some(&array.frame))?;
+            for &envelope in cover.entries() {
+                if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
+                    idx: start + offset,
+                    envelope,
+                }) {
+                    drop(items);
+                    return Err(pyo3::PyErr::from(error));
+                }
             }
             let plan = array.prepared_row(offset, row).into_owned_plan();
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
@@ -216,7 +212,12 @@ impl PySpatialIndex {
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
     ) -> PyResult<Vec<usize>> {
-        debug_assert_eq!(items.len(), entries.len());
+        debug_assert!(
+            entries
+                .iter()
+                .all(|entry| entry.idx >= self.rows.len()
+                    && entry.idx < self.rows.len() + items.len())
+        );
         let start = self.rows.len();
         let count = items.len();
         let mut handles = crate::try_vec_with_capacity(count)?;
@@ -242,17 +243,4 @@ impl PySpatialIndex {
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
         Ok(handles)
     }
-}
-
-fn insert_envelope(row: ShapeRow<'_>, bounds: Bounds, geographic: bool) -> AABB<[f64; 2]> {
-    if let ShapeRow::Point(point) = row {
-        return point_index_envelope(point, geographic);
-    }
-    if let Some(point) = row.with_shape(|shape| match shape {
-        Shape::Point(point) => Some(*point),
-        _ => None,
-    }) {
-        return point_index_envelope(point, geographic);
-    }
-    row.with_shape(|shape| index_envelope(shape, bounds, geographic))
 }

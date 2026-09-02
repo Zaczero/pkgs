@@ -4,7 +4,7 @@
 //!
 //! Predicate facts come from the unified [`Predicate`] table
 //! (`crate::predicates::engine`), and exact refinement runs through the shared
-//! [`scalar_vs_shapes`] batch engine, so the index cannot drift from the
+//! the shared predicate matrix owner, so the index cannot drift from the
 //! broadcast/prepared surfaces. Geographic nearest/`dwithin` queries prune the
 //! R-tree with the sound geodesic lower bound in [`geodesic`].
 
@@ -31,9 +31,9 @@ use crate::{
     Crs, DistanceUnit, Frame, GeometryArrayStorage, HeapSize, IndexEnvelope, NonNegative,
     PointRows, Predicate, PyGeometry, PyGeometryArray, ShapeRow, bounds_envelope, crs, crs_label,
     epoch_label, exact_geometry, exact_geometry_array, geometry_items,
-    global_geographic_candidate_envelope, index_bounds, index_envelope, pair_distance_resolved,
-    pair_dwithin_resolved, point_from_bounds, point_index_envelope, resolve_metric,
-    scalar_vs_shapes, topology_scalar_pair, validate_distance_arg, validate_nearest_k,
+    global_geographic_candidate_envelope, index_envelopes, pair_distance_geodesic,
+    pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar, point_from_bounds,
+    resolve_metric, topology_scalar_pair, validate_distance_arg, validate_nearest_k,
 };
 
 mod build;
@@ -306,7 +306,7 @@ impl PreparedIndexQuery {
     /// [`cached_element_bounds`] already computed.
     pub(crate) fn row(
         &self,
-        index: &PySpatialIndex,
+        _index: &PySpatialIndex,
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
     ) -> PreparedIndexRow {
@@ -320,11 +320,11 @@ impl PreparedIndexQuery {
         // projected/CRS-free index never build a temporary polygon.
         let geodesic_metric = match self {
             Self::CandidatesDwithin {
-                metric: crs::MetricModel::Geodesic { crs, state },
+                metric: crs::MetricModel::Geodesic { crs, state, .. },
                 ..
             }
             | Self::Dwithin {
-                metric: crs::MetricModel::Geodesic { crs, state },
+                metric: crs::MetricModel::Geodesic { crs, state, .. },
                 ..
             } => Some((crs, state)),
             _ => None,
@@ -347,8 +347,7 @@ impl PreparedIndexQuery {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
         };
-        let bounds = bounds
-            .map(|bounds| row.with_shape(|shape| index_bounds(shape, bounds, index.geographic())));
+        let bounds = bounds.map(|bounds| row.with_shape(|_| bounds));
         PreparedIndexRow {
             bounds,
             pruner_point,
@@ -457,18 +456,18 @@ pub(crate) struct PackedStore {
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
     boxed: Vec<PyGeometry>,
-    /// O(1) liveness by stable handle. This mirrors the two physical index
-    /// stores so lazy mapping iteration never searches the overflow R-tree.
-    live: Vec<bool>,
+    /// O(1) liveness by stable handle. This is the sole liveness authority for
+    /// both immutable bulk entries and mutable overflow entries.
+    live: Vec<u8>,
+    live_count: usize,
 }
 
 impl IndexRows {
+    fn live_count(&self) -> usize {
+        self.live_count
+    }
     fn len(&self) -> usize {
-        let len = self
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.storage().len())
-            + self.boxed.len();
+        let len = self.packed.as_ref().map_or(0, |packed| packed.source.len()) + self.boxed.len();
         debug_assert_eq!(len, self.live.len());
         len
     }
@@ -477,77 +476,83 @@ impl IndexRows {
     /// packed rows, the persistent handle (prepared caches intact) for
     /// boxed rows.
     fn get(&self, handle: usize) -> Option<ShapeRow<'_>> {
-        let packed_len = self
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.storage().len());
+        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
         if let Some(packed) = &self.packed
-            && handle < packed.source.storage().len()
+            && handle < packed.source.len()
         {
             return Some(packed.source.storage().row(handle));
         }
-        self.boxed.get(handle - packed_len).map(|item| {
-            item.prepared_plan
-                .as_ref()
-                .map_or_else(|| ShapeRow::Shape(item.shape.shape()), ShapeRow::Handle)
-        })
+        self.boxed
+            .get(handle - packed_len)
+            .map(|item| ShapeRow::Shape(item.shape.shape()))
     }
 
     fn row(&self, handle: usize) -> ShapeRow<'_> {
-        let packed_len = self
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.storage().len());
+        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
         if let Some(packed) = &self.packed
-            && handle < packed.source.storage().len()
+            && handle < packed.source.len()
         {
             return packed.source.storage().row(handle);
         }
         let item = &self.boxed[handle - packed_len];
-        item.prepared_plan
-            .as_ref()
-            .map_or_else(|| ShapeRow::Shape(item.shape.shape()), ShapeRow::Handle)
+        ShapeRow::Shape(item.shape.shape())
     }
 
-    fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
-        let packed_len = self
-            .packed
+    fn row_products_operation(&self) -> Option<crate::array::RowProductsHandle> {
+        self.packed
             .as_ref()
-            .map_or(0, |packed| packed.source.storage().len());
+            .map(|packed| packed.source.row_products.operation())
+    }
+
+    fn prepared_row_with(
+        &self,
+        handle: usize,
+        products: &mut Option<crate::array::RowProductsHandle>,
+    ) -> crate::array::PreparedRow<'_> {
+        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
         if let Some(packed) = &self.packed
             && handle < packed_len
         {
             let row = packed.source.storage().row(handle);
-            return packed.source.prepared_row(handle, row);
+            return packed.source.prepared_row_with(
+                products
+                    .as_mut()
+                    .expect("packed rows have a product handle"),
+                handle,
+                row,
+            );
         }
         let geometry = &self.boxed[handle - packed_len];
-        geometry.prepared_plan.as_ref().map_or_else(
-            || {
-                crate::array::PreparedRow::Transient(crate::PreparedPlan::new(Arc::clone(
-                    &geometry.shape,
-                )))
-            },
-            crate::array::PreparedRow::Shared,
-        )
+        crate::array::PreparedRow::Owned(geometry.prepared_plan())
     }
 
-    fn frame_cache(&self, handle: usize) -> Arc<crate::geometry::FrameDependentCaches> {
-        let packed_len = self
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.storage().len());
+    fn prepared_row(&self, handle: usize) -> crate::array::PreparedRow<'_> {
+        let mut products = self.row_products_operation();
+        self.prepared_row_with(handle, &mut products)
+    }
+
+    fn frame_cache_with(
+        &self,
+        handle: usize,
+        products: &mut Option<crate::array::RowProductsHandle>,
+    ) -> Arc<crate::geometry::FrameDependentCaches> {
+        let packed_len = self.packed.as_ref().map_or(0, |packed| packed.source.len());
         if let Some(packed) = &self.packed
-            && handle < packed.source.storage().len()
+            && handle < packed.source.len()
         {
-            return packed.source.row_frame_cache(handle);
+            return products
+                .as_mut()
+                .expect("packed rows have a product handle")
+                .frame_cache(handle);
         }
-        Arc::clone(&self.boxed[handle - packed_len].frame_cache)
+        self.boxed[handle - packed_len].frame_cache()
     }
 
     fn push(&mut self, geometry: PyGeometry) -> usize {
         let handle = self.len();
         self.boxed.push(geometry);
-        self.live.push(true);
+        self.live.push(1);
+        self.live_count += 1;
         handle
     }
 
@@ -565,12 +570,19 @@ impl IndexRows {
     }
 
     fn is_live(&self, handle: usize) -> bool {
-        self.live.get(handle).copied().unwrap_or(false)
+        self.live.get(handle).copied().unwrap_or(0) != 0
     }
 
-    fn mark_removed(&mut self, handle: usize) {
-        debug_assert!(self.live[handle]);
-        self.live[handle] = false;
+    fn mark_removed(&mut self, handle: usize) -> bool {
+        let Some(live) = self.live.get_mut(handle) else {
+            return false;
+        };
+        if *live == 0 {
+            return false;
+        }
+        *live = 0;
+        self.live_count -= 1;
+        true
     }
 
     #[expect(

@@ -73,8 +73,7 @@ mod tokens;
 mod validate;
 
 pub(crate) use bounds_index::{
-    bounds_envelope, global_geographic_candidate_envelope, index_bounds, index_envelope,
-    point_from_bounds, point_index_envelope,
+    bounds_envelope, global_geographic_candidate_envelope, index_envelopes, point_from_bounds,
 };
 pub(crate) use constructive::{
     VoronoiClipInput, geodesic_by_identity, metric_concave_hull, metric_constructive_shape,

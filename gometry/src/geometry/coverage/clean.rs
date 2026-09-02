@@ -1,3 +1,5 @@
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
 use crate::geometry::coverage::{
     AABB, CoverageRow, HashMap, HashMapExt as _, HashSet, RTreeObject,
@@ -6,9 +8,9 @@ use crate::geometry::coverage::{
 };
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, OverlayOp, PointKey, Polygon,
-    Ring, Segment, Shape, XY, carry_overlay_ordinates, face_interior_point, line_segments,
-    point_distance, polygon_parts_to_shape, ring_area_measure, ring_contains_interior,
-    self_node_segments, topology_split, undirected_segment_edge_key,
+    Ring, Segment, SegmentIndex, Shape, XY, carry_overlay_ordinates, face_interior_point,
+    line_segments, point_distance, polygon_parts_to_shape, ring_area_measure,
+    ring_contains_interior, self_node_segments, undirected_segment_edge_key,
 };
 
 // --- Cleaning ----------------------------------------------------------------
@@ -90,15 +92,44 @@ fn assign_regions(
     gap_width: f64,
     overlaps: CoverageOverlapRule,
 ) -> Result<Vec<Vec<Polygon>>> {
-    let row_edge_keys: Vec<HashSet<(PointKey, PointKey)>> = prepared
-        .iter()
-        .map(|row| {
-            row.segments
-                .iter()
-                .map(|&s| undirected_segment_edge_key(s))
-                .collect()
-        })
-        .collect();
+    let mut row_edge_keys = Vec::with_capacity(prepared.len());
+    let mut boundary_segments = Vec::new();
+    let mut boundary_rows = Vec::new();
+    for (row, prepared_row) in prepared.iter().enumerate() {
+        let mut edge_keys = HashSet::new();
+        for &segment in &prepared_row.segments {
+            // The linear path counted a repeated row edge once per gap segment.
+            if edge_keys.insert(undirected_segment_edge_key(segment)) {
+                boundary_segments.push(segment);
+                boundary_rows.push(row);
+            }
+        }
+        row_edge_keys.push(edge_keys);
+    }
+    let boundary_index = SegmentIndex::build(&boundary_segments);
+    assign_regions_with_gap_neighbor(
+        prepared,
+        regions,
+        gap_width,
+        overlaps,
+        &row_edge_keys,
+        |segments| {
+            longest_border_neighbor(segments, &boundary_index, &boundary_rows, prepared.len())
+        },
+    )
+}
+
+/// Assign regions after the coverage boundary and gap-owner selection have been
+/// prepared. Keeping the latter as a parameter lets the test-only linear path
+/// exercise the complete cleaning pipeline as an oracle.
+fn assign_regions_with_gap_neighbor(
+    prepared: &[CoverageRow<'_>],
+    regions: Vec<Polygon>,
+    gap_width: f64,
+    overlaps: CoverageOverlapRule,
+    row_edge_keys: &[HashSet<(PointKey, PointKey)>],
+    mut gap_neighbor: impl FnMut(&[Segment]) -> Option<usize>,
+) -> Result<Vec<Vec<Polygon>>> {
     let row_areas: Vec<f64> = prepared.iter().map(|row| row.shape.area()).collect();
     // Point-stabbing index over row envelopes: each region probe asks which
     // rows could contain it. Scanning every row per region is O(regions ×
@@ -160,12 +191,8 @@ fn assign_regions(
                     continue;
                 }
                 let segments: Vec<Segment> = region.rings().flat_map(line_segments).collect();
-                let neighbor = (0..prepared.len())
-                    .map(|row| (row, shared_border(&segments, row)))
-                    .filter(|&(_, border)| border > 0.0)
-                    .max_by(|a, b| a.1.total_cmp(&b.1));
-                match neighbor {
-                    Some((row, _)) => row,
+                match gap_neighbor(&segments) {
+                    Some(row) => row,
                     None => continue,
                 }
             },
@@ -196,6 +223,78 @@ fn assign_regions(
         per_row[winner].push(region);
     }
     Ok(per_row)
+}
+
+/// Find the gap owner through the prepared boundary index. Segment ordinals
+/// carry row IDs through `boundary_rows`; each row's duplicate edge spellings
+/// were removed while building the index, matching the old per-row edge sets.
+fn longest_border_neighbor(
+    segments: &[Segment],
+    boundary_index: &SegmentIndex,
+    boundary_rows: &[usize],
+    row_count: usize,
+) -> Option<usize> {
+    let mut border_by_row: HashMap<usize, f64> = HashMap::new();
+    for &segment in segments {
+        let key = undirected_segment_edge_key(segment);
+        for entry in boundary_index.intersecting_candidates(segment) {
+            if undirected_segment_edge_key(entry.segment) == key {
+                // Every row has at most one indexed copy of an edge, so each
+                // row's additions retain the gap-boundary traversal order.
+                *border_by_row
+                    .entry(boundary_rows[entry.ordinal])
+                    .or_insert(0.0) += point_distance(segment.start, segment.end);
+            }
+        }
+    }
+    // `max_by` retains the later equal element, just like the prior ascending
+    // all-row scan: equal positive borders therefore select the highest row ID.
+    (0..row_count)
+        .filter_map(|row| border_by_row.get(&row).map(|&border| (row, border)))
+        .filter(|&(_, border)| border > 0.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(row, _)| row)
+}
+
+#[cfg(test)]
+fn assign_regions_linear(
+    prepared: &[CoverageRow<'_>],
+    regions: Vec<Polygon>,
+    gap_width: f64,
+    overlaps: CoverageOverlapRule,
+) -> Result<Vec<Vec<Polygon>>> {
+    let row_edge_keys: Vec<HashSet<(PointKey, PointKey)>> = prepared
+        .iter()
+        .map(|row| {
+            row.segments
+                .iter()
+                .map(|&segment| undirected_segment_edge_key(segment))
+                .collect()
+        })
+        .collect();
+    assign_regions_with_gap_neighbor(
+        prepared,
+        regions,
+        gap_width,
+        overlaps,
+        &row_edge_keys,
+        |segments| {
+            (0..prepared.len())
+                .map(|row| {
+                    let border = segments
+                        .iter()
+                        .filter(|&&segment| {
+                            row_edge_keys[row].contains(&undirected_segment_edge_key(segment))
+                        })
+                        .map(|segment| point_distance(segment.start, segment.end))
+                        .sum::<f64>();
+                    (row, border)
+                })
+                .filter(|&(_, border)| border > 0.0)
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(row, _)| row)
+        },
+    )
 }
 
 /// An indexed bounding box for the broad-phase R-tree (the same `rstar` index
@@ -303,9 +402,9 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
         .map(|(index, face)| {
             let holes: Vec<Ring> = holes_of[index]
                 .iter()
-                .map(|&hole| Ring::from_trusted_closed(CoordSeq::from_xy(&faces[hole])))
+                .map(|&hole| Ring::from_closed(CoordSeq::from_xy(&faces[hole])))
                 .collect();
-            Polygon::new(Ring::from_trusted_closed(CoordSeq::from_xy(face)), holes)
+            Polygon::new(Ring::from_closed(CoordSeq::from_xy(face)), holes)
         })
         .collect()
 }
@@ -355,26 +454,47 @@ fn dissolve_edge_incidences(incidences: HashMap<(PointKey, PointKey), (Segment, 
     polygon_parts_to_shape(parts)
 }
 
-/// Frame-aware coverage dissolve: antimeridian-crossing rows are split first
-/// so the edge inventory never sees the false-middle planar box.
+/// Frame-aware coverage dissolve: rows whose raw boxes are unsound in the
+/// geographic frame are split before the edge inventory sees them as planar.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    geographic: bool,
+    geographic: Option<crate::geographic::GeographicFrame>,
 ) -> Result<Shape> {
-    if !geographic {
+    let Some(frame) = geographic else {
+        return coverage_union_inner(coverage);
+    };
+    if coverage
+        .iter()
+        .all(|row| {
+            let shape = row.borrow();
+            shape.bounds().is_some_and(|bounds| {
+                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(shape),
+                    bounds,
+                    frame,
+                )
+            })
+        })
+    {
         return coverage_union_inner(coverage);
     }
     let split_owned: Vec<Shape> = coverage
         .iter()
         .map(|row| {
             let shape = row.borrow();
-            if shape.crosses_antimeridian() {
-                topology_split(shape)
+            if !shape.bounds().is_some_and(|bounds| {
+                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(shape),
+                    bounds,
+                    frame,
+                )
+            }) {
+                shape.split_antimeridian_in_frame(frame)
             } else {
-                shape.clone()
+                Ok(shape.clone())
             }
         })
-        .collect();
+        .collect::<Result<_>>()?;
     coverage_union_inner(&split_owned)
 }
 
@@ -518,4 +638,58 @@ fn gap_is_narrow(region: &Polygon, gap_width: f64) -> bool {
         .map(|segment| point_distance(segment.start, segment.end))
         .sum();
     perimeter > 0.0 && 2.0 * area / perimeter < gap_width
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::from_xy(&[
+                XY::new(minx, miny),
+                XY::new(maxx, miny),
+                XY::new(maxx, maxy),
+                XY::new(minx, maxy),
+                XY::new(minx, miny),
+            ])),
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn narrow_gap_cleanup_matches_linear_border_oracle() {
+        // Every pair of neighboring parcels leaves a narrow vertical gap. The
+        // equal shared borders deliberately exercise the highest-row tie break.
+        let rows: Vec<Shape> = (0..16)
+            .map(|column| {
+                let minx = column as f64 * 1.1;
+                rectangle(minx, 0.0, minx + 1.0, 2.0)
+            })
+            .collect();
+        let gap_width = 0.2;
+        let prepared = coverage_rows(&rows, gap_width).expect("polygon rows prepare");
+        let all_segments: Vec<Segment> = prepared
+            .iter()
+            .flat_map(|row| row.segments.iter().copied())
+            .collect();
+        let regions = arrangement_regions(&minimal_positive_face_rings(&self_node_segments(
+            &all_segments,
+        )));
+        let expected: Vec<Shape> = assign_regions_linear(
+            &prepared,
+            regions,
+            gap_width,
+            CoverageOverlapRule::LongestBorder,
+        )
+        .expect("linear assignment succeeds")
+        .into_iter()
+        .map(dissolve_regions)
+        .collect();
+
+        let actual = coverage_clean(&rows, 0.0, gap_width, CoverageOverlapRule::LongestBorder)
+            .expect("indexed cleanup succeeds");
+
+        assert_eq!(actual, expected);
+    }
 }

@@ -1,11 +1,8 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::{
-    Point, PointBatchTester, PolePosition, Polygon, PreparedPlan, Ring, Shape, pole_position,
-    shape_has_polar_ring, shape_spans_full_longitude,
-};
+use crate::geometry::{Point, Polygon, PreparedPlan, Ring, Shape};
 use crate::grid::affine_source::visit_grid_cover_components;
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
-use crate::predicates::engine::{Predicate, topology_scalar_pair};
+use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
 
 #[derive(Debug)]
@@ -26,42 +23,39 @@ fn check_budget(produced: usize, max_cells: Option<usize>) -> Result<(), H3TileE
     ensure_cover_budget(produced, max_cells).map_err(H3TileError::Budget)
 }
 
-/// Whether the unsplit source is inherently spherical (poles / full longitude /
-/// antimeridian) so center probes use the geographic topology gate.
-fn source_needs_checked_flood(source: &Shape) -> bool {
-    pole_position(source, true) != PolePosition::Exterior
-        || pole_position(source, false) != PolePosition::Exterior
-        || shape_has_polar_ring(source)
-        || source.crosses_antimeridian()
-        || shape_spans_full_longitude(source)
-}
-
-/// Boundary-inclusive center probe against a prepared areal tester (planar path).
-fn center_covers_prepared(tester: &PointBatchTester, cell: CellIndex) -> bool {
+/// Geographic classifier against the shared authority (H3 covers are always
+/// WGS84). Every candidate reaches the frame-keyed quotient topology graph;
+/// the flood's edge walk is only a cheap candidate generator.
+fn checked_predicate(
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+    cell: CellIndex,
+) -> bool {
     let center = LatLng::from(cell);
-    tester.covers_point(Point::new_unchecked_xy(center.lng(), center.lat()))
-}
-
-/// Geographic classifier against the unsplit whole source (H3 covers are always
-/// WGS84). Used when `checked` is true so seam/polar cell probes cannot take
-/// the false-middle planar path.
-fn checked_predicate(source: &PreparedPlan, cell: CellIndex) -> bool {
-    let center = LatLng::from(cell);
-    let probe = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(
-        center.lng(),
-        center.lat(),
-    )));
-    topology_scalar_pair(&Predicate::Covers.spec(), source, &probe, true)
+    let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())));
+    let probe_cache = crate::geometry::FrameDependentCaches::default();
+    topology_scalar_pair(
+        &Predicate::Covers.spec(),
+        PreparedTopologyPair::for_frame(
+            authority,
+            authority_cache,
+            &probe,
+            &probe_cache,
+            Some(frame),
+        ),
+    )
 }
 
 /// A native H3 polyfill: each polygon is flood-filled independently from the
 /// cells containing its vertices and an interior point, then the per-polygon
-/// coverages are unioned. Ordinary mid-latitude sources use planar center
-/// containment on the split working shape; polar / full-longitude / seam
-/// sources classify centers against the unsplit source with the geographic
-/// topology gate.
+/// coverages are unioned. Every center candidate uses the unsplit source's
+/// geographic topology authority.
 pub(super) fn h3_tile(
     shape: &Shape,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     resolution: Resolution,
     max_cells: Option<usize>,
 ) -> Result<Vec<TiledCell>, H3TileError> {
@@ -72,13 +66,14 @@ pub(super) fn h3_tile(
     // Visible H3 rows are the exact union of the same canonical atomic
     // components used by the certified overlap/bbox coverer.  Do not let the
     // center flood invent a container-specific path: each
-    // component is tiled against its own source, then the shared map performs
-    // the sole deduplicated global budget check.
+    // component is traversed independently against the shared authority, then
+    // the shared map performs the sole deduplicated global budget check.
     visit_grid_cover_components(shape, &mut |component| {
-        let component_source = PreparedPlan::new(component.clone());
         h3_tile_shape(
             component,
-            &component_source,
+            authority,
+            authority_cache,
+            frame,
             resolution,
             max_cells,
             &mut coverage,
@@ -97,18 +92,44 @@ pub(super) fn h3_tile(
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
     shape: &Shape,
-    unsplit_source: &PreparedPlan,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
     match shape {
         Shape::Polygon(polygon) => {
-            h3_tile_polygon(polygon, unsplit_source, resolution, max_cells, coverage)?;
+            h3_tile_polygon(
+                polygon,
+                authority,
+                authority_cache,
+                frame,
+                resolution,
+                max_cells,
+                coverage,
+            )?;
         },
-        Shape::Point(point) => h3_tile_point(*point, resolution, max_cells, coverage)?,
+        Shape::Point(point) => h3_tile_point(
+            *point,
+            authority,
+            authority_cache,
+            frame,
+            resolution,
+            max_cells,
+            coverage,
+        )?,
         Shape::LineString(coords) => {
-            h3_tile_line(unsplit_source, coords, resolution, max_cells, coverage)?;
+            h3_tile_line(
+                authority,
+                authority_cache,
+                frame,
+                coords,
+                resolution,
+                max_cells,
+                coverage,
+            )?;
         },
         // `visit_grid_cover_components` admits only these three atomic kinds
         // and skips empties. Keeping the invariant explicit prevents a second
@@ -127,6 +148,9 @@ pub(super) fn h3_tile_shape(
 /// Non-area `within` is owned by the certified traversal, not this tiler.
 pub(super) fn h3_tile_point(
     point: Point,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -135,17 +159,14 @@ pub(super) fn h3_tile_point(
         return Ok(());
     };
     let cell = latlng.to_cell(resolution);
-    // Exact center membership: the point must be the cell's center.
-    let center = LatLng::from(cell);
-    let center_pt = Point::new_unchecked_xy(center.lng(), center.lat());
-    if points_equal_signed_zero(point, center_pt) {
+    if checked_predicate(authority, authority_cache, frame, cell) {
         try_insert_cell(coverage, cell)?;
         check_budget(coverage.len(), max_cells)?;
     }
     Ok(())
 }
 
-/// IEEE equality that treats −0.0 and +0.0 as the same coordinate.
+/// IEEE equality that treats -0.0 and +0.0 as the same coordinate.
 fn points_equal_signed_zero(a: Point, b: Point) -> bool {
     #[expect(clippy::float_cmp, reason = "signed-zero-aware center identity")]
     {
@@ -156,7 +177,9 @@ fn points_equal_signed_zero(a: Point, b: Point) -> bool {
 /// Center-rule cells for a line.  Exact overlap/bbox line contact belongs to
 /// the affine carrier and ordered H3 arcs, never this sample-ring helper.
 pub(super) fn h3_tile_line(
-    source: &PreparedPlan,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     coords: &crate::geometry::CoordSeq,
     resolution: Resolution,
     max_cells: Option<usize>,
@@ -170,10 +193,7 @@ pub(super) fn h3_tile_line(
             if !try_insert_cell(&mut seen, cell)? {
                 continue;
             }
-            let center = LatLng::from(cell);
-            let center_pt = Point::new_unchecked_xy(center.lng(), center.lat());
-            let keep = source.covers_point(center_pt);
-            if keep {
+            if checked_predicate(authority, authority_cache, frame, cell) {
                 try_insert_cell(coverage, cell)?;
                 check_budget(coverage.len(), max_cells)?;
             }
@@ -183,9 +203,11 @@ pub(super) fn h3_tile_line(
 }
 
 /// Checked inward flood: every first-seen neighbor is tested against the
-/// unsplit source; only matched cells are recorded and enqueued.
+/// authority; only matched cells are recorded and enqueued.
 fn flood_checked(
-    unsplit_source: &PreparedPlan,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
     seen: &mut HashSet<CellIndex>,
@@ -198,35 +220,9 @@ fn flood_checked(
             for &raw in h3_one_ring(cell, scratch) {
                 let neighbor =
                     CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-                if try_insert_cell(seen, neighbor)? && checked_predicate(unsplit_source, neighbor) {
-                    try_insert_cell(coverage, neighbor)?;
-                    check_budget(coverage.len(), max_cells)?;
-                    crate::boundary::try_push_vec(&mut next, neighbor)
-                        .map_err(|_| H3TileError::Allocation)?;
-                }
-            }
-        }
-        frontier = next;
-    }
-    Ok(())
-}
-
-/// Unchecked inward flood: first-seen neighbors need no geometry test because
-/// the center-tested outline band is a closed barrier in `seen`.
-fn flood_unchecked(
-    max_cells: Option<usize>,
-    coverage: &mut HashSet<CellIndex>,
-    seen: &mut HashSet<CellIndex>,
-    mut frontier: Vec<CellIndex>,
-    scratch: &mut [u64; 7],
-) -> Result<(), H3TileError> {
-    while !frontier.is_empty() {
-        let mut next: Vec<CellIndex> = Vec::new();
-        for &cell in &frontier {
-            for &raw in h3_one_ring(cell, scratch) {
-                let neighbor =
-                    CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-                if try_insert_cell(seen, neighbor)? {
+                if try_insert_cell(seen, neighbor)?
+                    && checked_predicate(authority, authority_cache, frame, neighbor)
+                {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
                     crate::boundary::try_push_vec(&mut next, neighbor)
@@ -242,23 +238,19 @@ fn flood_unchecked(
 /// Flood-fill one polygon's center-rule H3 coverage into `coverage`.
 pub(super) fn h3_tile_polygon(
     polygon: &Polygon,
-    unsplit_source: &PreparedPlan,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
-    // Outline / first-inner never allocate hexagonal `Shape`s. Cell centers
-    // are classified via `LatLng` against one prepared areal tester (planar)
-    // or the geographic topology gate (checked). The gate is source-level:
-    // center classification is a single point probe and the flood is pure
-    // H3-graph traversal.
+    // Outline / first-inner never allocate hexagonal `Shape`s. Every center
+    // candidate is classified through the one frame-keyed geographic graph;
+    // the H3 edge walk only supplies seed candidates.
     let part_source = Shape::Polygon(polygon.clone());
-    let checked = source_needs_checked_flood(unsplit_source.shape());
     let mut seen: HashSet<CellIndex> = HashSet::new();
     let mut scratch = [0_u64; 7];
-
-    // One prepared tester for the whole part's planar center probes.
-    let planar_tester = (!checked).then(|| PointBatchTester::new(&part_source));
 
     // 1. Stream the outline straight into the exact classifier. A public
     // budget therefore stops at the first excess *emitted* cell instead of
@@ -269,16 +261,7 @@ pub(super) fn h3_tile_polygon(
             for &raw in h3_one_ring(edge_cell, &mut scratch) {
                 let cell = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
                 if try_insert_cell(&mut seen, cell)? {
-                    let matched = if checked {
-                        checked_predicate(unsplit_source, cell)
-                    } else {
-                        center_covers_prepared(
-                            planar_tester
-                                .as_ref()
-                                .expect("planar tester built when !checked"),
-                            cell,
-                        )
-                    };
+                    let matched = checked_predicate(authority, authority_cache, frame, cell);
                     if matched {
                         try_insert_cell(coverage, cell)?;
                         check_budget(coverage.len(), max_cells)?;
@@ -291,16 +274,16 @@ pub(super) fn h3_tile_polygon(
         })?;
     }
 
-    if seen.is_empty() {
+    if outline.is_empty() {
         return h3_tile_polygon_seeds_center(
             polygon,
             &part_source,
-            unsplit_source,
+            authority,
+            authority_cache,
+            frame,
             resolution,
             max_cells,
             coverage,
-            &mut seen,
-            checked,
         );
     }
 
@@ -310,16 +293,7 @@ pub(super) fn h3_tile_polygon(
         for &raw in h3_one_ring(cell, &mut scratch) {
             let neighbor = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
             if try_insert_cell(&mut seen, neighbor)? {
-                let matched = if checked {
-                    checked_predicate(unsplit_source, neighbor)
-                } else {
-                    center_covers_prepared(
-                        planar_tester
-                            .as_ref()
-                            .expect("planar tester built when !checked"),
-                        neighbor,
-                    )
-                };
+                let matched = checked_predicate(authority, authority_cache, frame, neighbor);
                 if matched {
                     try_insert_cell(coverage, neighbor)?;
                     check_budget(coverage.len(), max_cells)?;
@@ -330,39 +304,37 @@ pub(super) fn h3_tile_polygon(
         }
     }
 
-    // 4. INWARD FLOOD — checked center still uses LatLng + topology gate;
-    // unchecked interior stays geometry-free.
-    if checked {
-        flood_checked(
-            unsplit_source,
-            max_cells,
-            coverage,
-            &mut seen,
-            frontier,
-            &mut scratch,
-        )
-    } else {
-        flood_unchecked(max_cells, coverage, &mut seen, frontier, &mut scratch)
-    }
+    // 4. INWARD FLOOD: each newly retained center reaches the same authority.
+    flood_checked(
+        authority,
+        authority_cache,
+        frame,
+        max_cells,
+        coverage,
+        &mut seen,
+        frontier,
+        &mut scratch,
+    )
 }
 
 /// Sub-cell seed path for Center mode (no hex Shape materialization).
 fn h3_tile_polygon_seeds_center(
     polygon: &Polygon,
     part_source: &Shape,
-    unsplit_source: &PreparedPlan,
+    authority: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
-    seen: &mut HashSet<CellIndex>,
-    checked: bool,
 ) -> Result<(), H3TileError> {
     let mut seed_band: Vec<CellIndex> = Vec::new();
+    let mut seed_seen: HashSet<CellIndex> = HashSet::new();
     for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
         for point in ring.coords().points() {
             if let Ok(latlng) = h3_latlng(point) {
                 let seed = latlng.to_cell(resolution);
-                if try_insert_cell(seen, seed)? {
+                if try_insert_cell(&mut seed_seen, seed)? {
                     crate::boundary::try_push_vec(&mut seed_band, seed)
                         .map_err(|_| H3TileError::Allocation)?;
                 }
@@ -373,24 +345,13 @@ fn h3_tile_polygon_seeds_center(
         && let Ok(latlng) = h3_latlng(inside)
     {
         let seed = latlng.to_cell(resolution);
-        if try_insert_cell(seen, seed)? {
+        if try_insert_cell(&mut seed_seen, seed)? {
             crate::boundary::try_push_vec(&mut seed_band, seed)
                 .map_err(|_| H3TileError::Allocation)?;
         }
     }
-    let planar_tester = (!checked).then(|| PointBatchTester::new(part_source));
     for &seed in &seed_band {
-        let matched = if checked {
-            checked_predicate(unsplit_source, seed)
-        } else {
-            center_covers_prepared(
-                planar_tester
-                    .as_ref()
-                    .expect("planar tester built when !checked"),
-                seed,
-            )
-        };
-        if matched {
+        if checked_predicate(authority, authority_cache, frame, seed) {
             try_insert_cell(coverage, seed)?;
             check_budget(coverage.len(), max_cells)?;
         }
@@ -442,7 +403,7 @@ fn visit_edge_cells(
         let mut previous = None;
         for index in 0..=count {
             let fraction = index as f64 / count as f64;
-            let point = Point::new_unchecked_xy(
+            let point = Point::new_raw_xy(
                 start.x + (end.x - start.x) * fraction,
                 start.y + (end.y - start.y) * fraction,
             );
@@ -493,7 +454,7 @@ fn densify_edge_samples(
         if adjacent {
             continue;
         }
-        let mid = Point::new_unchecked_xy(
+        let mid = Point::new_raw_xy(
             a_pt.x + (b_pt.x - a_pt.x) * 0.5,
             a_pt.y + (b_pt.y - a_pt.y) * 0.5,
         );
@@ -558,12 +519,12 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> Shape {
     let mut shell: Vec<Point> = cell
         .boundary()
         .iter()
-        .map(|latlng| Point::new_unchecked_xy(latlng.lng(), latlng.lat()))
+        .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
         .collect();
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()))
+    Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
 }
 
 #[cfg(test)]
@@ -574,8 +535,8 @@ mod edge_trace_tests {
     #[test]
     fn streaming_edge_sink_stops_before_a_long_trace_is_materialized() {
         let coordinates = CoordSeq::from(vec![
-            Point::new_unchecked_xy(-170.0, 0.0),
-            Point::new_unchecked_xy(170.0, 0.0),
+            Point::new_raw_xy(-170.0, 0.0),
+            Point::new_raw_xy(170.0, 0.0),
         ]);
         assert!(
             line_hex_estimate(
@@ -600,12 +561,12 @@ mod edge_trace_tests {
     #[test]
     fn center_cover_is_sorted_and_unique() {
         let shape = Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(vec![
-                Point::new_unchecked_xy(-1.0, -1.0),
-                Point::new_unchecked_xy(1.0, -1.0),
-                Point::new_unchecked_xy(1.0, 1.0),
-                Point::new_unchecked_xy(-1.0, 1.0),
-                Point::new_unchecked_xy(-1.0, -1.0),
+            Ring::from_closed(vec![
+                Point::new_raw_xy(-1.0, -1.0),
+                Point::new_raw_xy(1.0, -1.0),
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(-1.0, 1.0),
+                Point::new_raw_xy(-1.0, -1.0),
             ]),
             Vec::new(),
         ));
@@ -615,8 +576,20 @@ mod edge_trace_tests {
                 .map(|cell| u64::from(cell.cell))
                 .collect::<Vec<_>>()
         };
-        let first = ids(h3_tile(&shape, Resolution::Six, None).expect("center cover"));
-        let second = ids(h3_tile(&shape, Resolution::Six, None).expect("center cover repeat"));
+        let authority = PreparedPlan::new(shape.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let first = ids(
+            h3_tile(&shape, &authority, &cache, frame, Resolution::Six, None)
+                .expect("center cover"),
+        );
+        let second = ids(
+            h3_tile(&shape, &authority, &cache, frame, Resolution::Six, None)
+                .expect("center cover repeat"),
+        );
         assert!(first.len() >= 2);
         assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(first, second);

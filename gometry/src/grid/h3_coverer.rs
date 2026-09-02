@@ -15,8 +15,8 @@ use h3o::{CellIndex, LatLng, Resolution};
 
 use crate::geometry::Shape;
 use crate::grid::affine_source::{
-    GridAffineSource, GridDegreePoint, GridPointClass, RectClass, SphericalGridTarget,
-    normalize_grid_source, visit_grid_cover_components,
+    GeographicCoverageSource, GridDegreePoint, GridPointClass, RectClass, SphericalGridTarget,
+    visit_grid_cover_components,
 };
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
@@ -109,24 +109,28 @@ pub(crate) fn h3_cover_shape(
     }
     #[cfg(test)]
     TEST_DIAGNOSTIC_NODES.set(0);
-    let normalized = normalize_grid_source(shape);
     // `within` is a claim about the complete source union. Decomposing an
     // aggregate would miss a cell jointly covered by touching components even
     // though neither component contains it alone.
     if rule == H3TraversalRule::Within {
-        let Some(dissolved) =
-            dissolved_polygonal_area(&normalized).map_err(H3CoverError::Geometry)?
+        let Some(dissolved) = dissolved_polygonal_area(shape).map_err(H3CoverError::Geometry)?
         else {
             return Ok(Vec::new());
         };
-        let source = GridAffineSource::new(&dissolved, SphericalGridTarget::H3(plan.target))
-            .map_err(|_| H3CoverError::Allocation)?;
+        let source = GeographicCoverageSource::from_validated(
+            &dissolved,
+            SphericalGridTarget::H3(plan.target),
+        )
+        .map_err(|_| H3CoverError::Allocation)?;
         return h3_cover(&source, plan, rule, max_cells);
     }
     let mut merged = Vec::new();
-    visit_grid_cover_components(&normalized, &mut |component| {
-        let source = GridAffineSource::new(component, SphericalGridTarget::H3(plan.target))
-            .map_err(|_| H3CoverError::Allocation)?;
+    visit_grid_cover_components(shape, &mut |component| {
+        let source = GeographicCoverageSource::from_validated(
+            component,
+            SphericalGridTarget::H3(plan.target),
+        )
+        .map_err(|_| H3CoverError::Allocation)?;
         // A component is a subset of the union, so it may use the same limit.
         // Merge immediately and enforce the budget again against the realized
         // deduplicated aggregate.
@@ -198,7 +202,7 @@ fn merge_h3_component(
 /// bbox; parent negatives require the certified descendant cap.  The 122 H3
 /// roots form a partition, so sorting is verification rather than dedup.
 pub(crate) fn h3_cover(
-    source: &GridAffineSource,
+    source: &GeographicCoverageSource,
     plan: &H3CoverPlan,
     rule: H3TraversalRule,
     max_cells: Option<usize>,
@@ -270,7 +274,7 @@ pub(crate) fn h3_cover(
 }
 
 fn emit_within_leaf(
-    source: &GridAffineSource,
+    source: &GeographicCoverageSource,
     plan: &H3CoverPlan,
     cell: CellIndex,
     max_cells: Option<usize>,
@@ -296,7 +300,7 @@ fn emit_within_leaf(
 /// continues to the ordered H3 arc/fan classifier; the old chord polygon has
 /// no role in this path.
 fn emit_overlap_leaf(
-    source: &GridAffineSource,
+    source: &GeographicCoverageSource,
     plan: &H3CoverPlan,
     cell: CellIndex,
     max_cells: Option<usize>,
@@ -323,7 +327,7 @@ fn emit_overlap_leaf(
 /// bbox is the sole fallback, so this route neither constructs nor depends on
 /// the fan used by overlap classification.
 fn emit_bbox_leaf(
-    source: &GridAffineSource,
+    source: &GeographicCoverageSource,
     cell: CellIndex,
     max_cells: Option<usize>,
     covered: &mut Vec<H3CoveredCell>,
@@ -408,7 +412,10 @@ pub(crate) enum H3LeafClass {
 /// source/cell boundary contact and source-in-cell witnesses veto before a
 /// cell-center PIP can establish area containment; lower-dimensional contact
 /// can retain a leaf but cannot downgrade an areal interior proof.
-pub(crate) fn classify_h3_overlap(source: &GridAffineSource, cell: &H3CellPlan) -> H3LeafClass {
+pub(crate) fn classify_h3_overlap(
+    source: &GeographicCoverageSource,
+    cell: &H3CellPlan,
+) -> H3LeafClass {
     let (Some(arcs), fan) = (cell.arcs(), cell.fan()) else {
         return H3LeafClass::Boundary;
     };
@@ -419,7 +426,7 @@ pub(crate) fn classify_h3_overlap(source: &GridAffineSource, cell: &H3CellPlan) 
 /// testable with an uncertified fan.  An `Uncertain` fan may never reach any
 /// source-derived negative, even when the source itself is empty.
 fn classify_h3_overlap_parts(
-    source: &GridAffineSource,
+    source: &GeographicCoverageSource,
     cell: h3o::CellIndex,
     arcs: &H3ArcSet,
     fan: &H3FanPlan,

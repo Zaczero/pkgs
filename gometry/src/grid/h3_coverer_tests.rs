@@ -2,7 +2,7 @@ use h3o::{CellIndex, Resolution};
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
 use crate::grid::affine_source::{
-    GridAffineSource, GridPointClass, RectClass, SphericalGridTarget,
+    GeographicCoverageSource, GridPointClass, RectClass, SphericalGridTarget,
 };
 use crate::grid::h3_coverer::{
     H3CoverError, H3CoverPlan, H3LeafClass, H3TraversalRule, TEST_DIAGNOSTIC_NODES,
@@ -21,7 +21,7 @@ const CENTER_LONGITUDE: f64 = 0.534_167_862_982_367_2;
 const CENTER_LATITUDE: f64 = -0.459_695_642_341_289_07;
 
 fn ring(west: f64, south: f64, east: f64, north: f64) -> Ring {
-    Ring::from_trusted_closed(CoordSeq::from(vec![
+    Ring::from_closed(CoordSeq::from(vec![
         Point::new(west, south).unwrap(),
         Point::new(east, south).unwrap(),
         Point::new(east, north).unwrap(),
@@ -46,12 +46,13 @@ fn latitude_ring(latitude: f64, reverse: bool) -> Ring {
         }
     }
     points.push(points[0]);
-    Ring::from_trusted_closed(CoordSeq::from(points))
+    Ring::from_closed(CoordSeq::from(points))
 }
 
 fn classify(shape: &Shape) -> H3LeafClass {
     let cell = CellIndex::try_from(CELL).unwrap();
-    let source = GridAffineSource::new(shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+    let source =
+        GeographicCoverageSource::new(shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let plan = h3_cell_plan(cell, H3PoleOwners::for_target(Resolution::Two));
     classify_h3_overlap(&source, &plan)
 }
@@ -59,7 +60,7 @@ fn classify(shape: &Shape) -> H3LeafClass {
 #[test]
 fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
     let cell = CellIndex::try_from(CELL).unwrap();
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(polygon(-3.0, -3.0, 3.0, 3.0)),
         SphericalGridTarget::H3(Resolution::Two),
     )
@@ -110,10 +111,13 @@ fn area_mixed_and_lower_dimensional_witnesses_obey_leaf_ordering() {
     let holed = Polygon::new(ring(-3.0, -3.0, 3.0, 3.0), vec![ring(
         0.52, -0.47, 0.55, -0.44,
     )]);
-    let line = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-        Point::new(0.52, -0.47).unwrap(),
-        Point::new(0.55, -0.44).unwrap(),
-    ])));
+    let line = Shape::LineString(
+        LineSeq::try_new(CoordSeq::from(vec![
+            Point::new(0.52, -0.47).unwrap(),
+            Point::new(0.55, -0.44).unwrap(),
+        ]))
+        .expect("line coordinate sequence must contain at least two vertices"),
+    );
     let point = Shape::Point(Point::new(CENTER_LONGITUDE, CENTER_LATITUDE).unwrap());
 
     assert_eq!(
@@ -155,11 +159,15 @@ fn authority_pip_is_the_only_path_that_certifies_big_interior() {
 
 #[test]
 fn wrapped_selection_image_does_not_turn_an_unrelated_leaf_into_contact() {
-    let line = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-        Point::new(170.0, -10.0).unwrap(),
-        Point::new(-170.0, 10.0).unwrap(),
-    ])));
-    let source = GridAffineSource::new(&line, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+    let line = Shape::LineString(
+        LineSeq::try_new(CoordSeq::from(vec![
+            Point::new(170.0, -10.0).unwrap(),
+            Point::new(-170.0, 10.0).unwrap(),
+        ]))
+        .expect("line coordinate sequence must contain at least two vertices"),
+    );
+    let source =
+        GeographicCoverageSource::new(&line, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let far = CellIndex::try_from(CELL).unwrap();
     let plan = h3_cell_plan(far, H3PoleOwners::for_target(Resolution::Two));
     assert!(
@@ -178,7 +186,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     // physical box [-20,-10] x [70,80].  The two candidates prove that a
     // reflection is neither ignored nor globally widened: only its exact
     // selection PIP may retain a leaf.
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(polygon(160.0, 100.0, 170.0, 110.0)),
         SphericalGridTarget::H3(Resolution::Two),
     )
@@ -232,7 +240,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
 #[test]
 fn uncertified_fan_cannot_reach_an_empty_source_negative() {
     let cell = CellIndex::try_from(CELL).unwrap();
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::typed_empty(
             crate::geometry::GeometryKind::GeometryCollection,
             crate::geometry::CoordinateAxes::XY,
@@ -255,11 +263,14 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
         .to_cell(Resolution::Two);
     let plan = h3_cell_plan(pole, H3PoleOwners::for_target(Resolution::Two));
     for longitude in [-180.0, 180.0] {
-        let source = GridAffineSource::new(
-            &Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-                Point::new(longitude, 80.0).unwrap(),
-                Point::new(longitude, 100.0).unwrap(),
-            ]))),
+        let source = GeographicCoverageSource::new(
+            &Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new(longitude, 80.0).unwrap(),
+                    Point::new(longitude, 100.0).unwrap(),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             SphericalGridTarget::H3(Resolution::Two),
         )
         .unwrap();
@@ -281,7 +292,7 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
 
 #[test]
 fn root_descent_nominates_the_two_ring_logical_bbox_owner() {
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Point(Point::new(-170.0, 74.0).unwrap()),
         SphericalGridTarget::H3(Resolution::Zero),
     )
@@ -302,11 +313,14 @@ fn root_descent_nominates_the_two_ring_logical_bbox_owner() {
 
 #[test]
 fn certified_bbox_descent_selects_the_polar_nine() {
-    let source = GridAffineSource::new(
-        &Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            Point::new(-90.0, 85.0).unwrap(),
-            Point::new(90.0, 85.0).unwrap(),
-        ]))),
+    let source = GeographicCoverageSource::new(
+        &Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new(-90.0, 85.0).unwrap(),
+                Point::new(90.0, 85.0).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -326,11 +340,14 @@ fn certified_bbox_descent_selects_the_polar_nine() {
 
 #[test]
 fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
-    let source = GridAffineSource::new(
-        &Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-            Point::new(-90.0, 85.0).unwrap(),
-            Point::new(90.0, 85.0).unwrap(),
-        ]))),
+    let source = GeographicCoverageSource::new(
+        &Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new(-90.0, 85.0).unwrap(),
+                Point::new(90.0, 85.0).unwrap(),
+            ]))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -356,7 +373,7 @@ fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
 #[test]
 fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
     let source = Shape::Polygon(Polygon::new(
-        Ring::from_trusted_closed(CoordSeq::from(vec![
+        Ring::from_closed(CoordSeq::from(vec![
             Point::new(179.0, -5.0).unwrap(),
             Point::new(-179.0, -5.0).unwrap(),
             Point::new(-179.0, 5.0).unwrap(),
@@ -365,7 +382,8 @@ fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
         ])),
         Vec::new(),
     ));
-    let source = GridAffineSource::new(&source, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+    let source =
+        GeographicCoverageSource::new(&source, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let plan = H3CoverPlan::new(Resolution::Two);
     let seam_cell = CellIndex::try_from(0x0827_FB7F_FFFF_FFFF_u64).unwrap();
     let overlap = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
@@ -378,7 +396,7 @@ fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
 
 #[test]
 fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(Polygon::new(latitude_ring(60.0, false), vec![
             latitude_ring(80.0, false),
         ])),
@@ -406,16 +424,19 @@ fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
 
 #[test]
 fn periodic_polar_winding_caps_retain_each_analytic_owner() {
-    // A full linear longitude winding closes through the sign-selected
-    // pole.  Its raw vertices all share latitude 60, but the forward
-    // degree +1 ring covers the north cap and the reverse degree -1 ring
-    // covers the south cap.  The companion affine-source unit test pins
-    // those exact degree/roof identities; each derived H3 owner must
-    // remain visible here.
-    for (reverse, latitude) in [(false, 87.0), (true, -87.0)] {
-        let shape = Shape::Polygon(Polygon::new(latitude_ring(85.0, reverse), Vec::new()));
+    // A full linear longitude winding closes through the pole named by its
+    // physical latitude. Reversing a ring changes its lift degree but not
+    // its cap, so each north/south owner must remain visible for both
+    // directions.
+    for (reverse, latitude) in [(false, 87.0), (true, 87.0), (false, -87.0), (true, -87.0)] {
+        let ring_latitude = if latitude > 0.0 { 85.0 } else { -85.0 };
+        let shape = Shape::Polygon(Polygon::new(
+            latitude_ring(ring_latitude, reverse),
+            Vec::new(),
+        ));
         let source =
-            GridAffineSource::new(&shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+            GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(Resolution::Two))
+                .unwrap();
         let owner = h3o::LatLng::new(latitude, 0.0)
             .unwrap()
             .to_cell(Resolution::Two);
@@ -443,7 +464,7 @@ fn globally_fail_open_multipart_recovers_independent_cap_certificates() {
     let middle = polygon(10.0, 0.0, 20.0, 10.0);
     let shape = Shape::MultiPolygon(vec![polar.clone(), middle.clone()].into());
     let plan = H3CoverPlan::new(TARGET);
-    let aggregate = GridAffineSource::new(&shape, SphericalGridTarget::H3(TARGET)).unwrap();
+    let aggregate = GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(TARGET)).unwrap();
     assert!(
         aggregate.cap_is_globally_fail_open(),
         "the mixed aggregate enters per-component cap certification"
@@ -451,7 +472,8 @@ fn globally_fail_open_multipart_recovers_independent_cap_certificates() {
 
     let actual = h3_cover_shape(&shape, &plan, H3TraversalRule::Overlap, None).unwrap();
     let mut expected = h3_cover(
-        &GridAffineSource::new(&Shape::Polygon(polar), SphericalGridTarget::H3(TARGET)).unwrap(),
+        &GeographicCoverageSource::new(&Shape::Polygon(polar), SphericalGridTarget::H3(TARGET))
+            .unwrap(),
         &plan,
         H3TraversalRule::Overlap,
         None,
@@ -459,8 +481,11 @@ fn globally_fail_open_multipart_recovers_independent_cap_certificates() {
     .unwrap();
     expected.extend(
         h3_cover(
-            &GridAffineSource::new(&Shape::Polygon(middle), SphericalGridTarget::H3(TARGET))
-                .unwrap(),
+            &GeographicCoverageSource::new(
+                &Shape::Polygon(middle),
+                SphericalGridTarget::H3(TARGET),
+            )
+            .unwrap(),
             &plan,
             H3TraversalRule::Overlap,
             None,
@@ -497,7 +522,7 @@ fn globally_fail_open_components_merge_duplicate_ids_before_budgeting() {
     let full = polygon(-180.0, 85.0, 180.0, 90.0);
     let plan = H3CoverPlan::new(TARGET);
     let partial_cover = h3_cover(
-        &GridAffineSource::new(
+        &GeographicCoverageSource::new(
             &Shape::Polygon(partial.clone()),
             SphericalGridTarget::H3(TARGET),
         )
@@ -508,7 +533,7 @@ fn globally_fail_open_components_merge_duplicate_ids_before_budgeting() {
     )
     .unwrap();
     let full_cover = h3_cover(
-        &GridAffineSource::new(
+        &GeographicCoverageSource::new(
             &Shape::Polygon(full.clone()),
             SphericalGridTarget::H3(TARGET),
         )
@@ -532,7 +557,7 @@ fn globally_fail_open_components_merge_duplicate_ids_before_budgeting() {
     let mixed =
         Shape::GeometryCollection(vec![Shape::Polygon(partial), Shape::Polygon(full)].into());
     assert!(
-        GridAffineSource::new(&mixed, SphericalGridTarget::H3(TARGET))
+        GeographicCoverageSource::new(&mixed, SphericalGridTarget::H3(TARGET))
             .unwrap()
             .cap_is_globally_fail_open(),
         "the overlapping collection enters per-component certification"
@@ -563,7 +588,7 @@ fn globally_fail_open_duplicate_components_merge_before_their_global_budget() {
     let full = polygon(-180.0, 85.0, 180.0, 90.0);
     let plan = H3CoverPlan::new(TARGET);
     let full_cover = h3_cover(
-        &GridAffineSource::new(
+        &GeographicCoverageSource::new(
             &Shape::Polygon(full.clone()),
             SphericalGridTarget::H3(TARGET),
         )
@@ -577,7 +602,7 @@ fn globally_fail_open_duplicate_components_merge_before_their_global_budget() {
     let duplicate =
         Shape::GeometryCollection(vec![Shape::Polygon(full.clone()), Shape::Polygon(full)].into());
     assert!(
-        GridAffineSource::new(&duplicate, SphericalGridTarget::H3(TARGET))
+        GeographicCoverageSource::new(&duplicate, SphericalGridTarget::H3(TARGET))
             .unwrap()
             .cap_is_globally_fail_open(),
         "the duplicate collection enters per-component certification"
@@ -620,7 +645,8 @@ fn globally_fail_open_duplicate_budget_applies_after_the_merge() {
 fn accepted_outward_pole_point_uses_the_physical_pole_owner() {
     let outward = 90.0_f64.next_up();
     let shape = Shape::Point(Point::new(17.0, outward).unwrap());
-    let source = GridAffineSource::new(&shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
+    let source =
+        GeographicCoverageSource::new(&shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let covered = h3_cover(
         &source,
         &H3CoverPlan::new(Resolution::Two),
@@ -637,7 +663,7 @@ fn every_depth_cap_certificate_reaches_the_north_cap_bulk_stream() {
     // number of boundary cells that must be certified, which scales with the
     // cap's circumference, while the property needs only that a substantial
     // INTERIOR bulk exists to be streamed -- 256 of the 327 visible cells.
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(polygon(-180.0, 80.0, 180.0, 90.0)),
         SphericalGridTarget::H3(Resolution::Three),
     )
@@ -670,7 +696,7 @@ fn unknown_overlap_leaves_reuse_the_certified_bbox_dispatch() {
     // A tighter polar cap than the 70-degree fixture: it still classifies as
     // unknown (asserted below, which is the property that routes this into
     // the dispatch) with far fewer boundary cells to certify.
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(polygon(-180.0, 85.0, 180.0, 90.0)),
         SphericalGridTarget::H3(Resolution::Three),
     )
@@ -695,7 +721,7 @@ fn unknown_overlap_leaves_reuse_the_certified_bbox_dispatch() {
 
 #[test]
 fn global_unknown_veto_cannot_suppress_north_cap_bulk_certificates() {
-    let source = GridAffineSource::new(
+    let source = GeographicCoverageSource::new(
         &Shape::Polygon(polygon(-180.0, 70.0, 180.0, 90.0)),
         SphericalGridTarget::H3(Resolution::Three),
     )
@@ -750,10 +776,13 @@ fn within_keeps_complete_target_bbox_certificates() {
 
 #[test]
 fn within_discards_non_areal_members_before_traversal() {
-    let line = Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-        Point::new(-90.0, 0.0).unwrap(),
-        Point::new(90.0, 0.0).unwrap(),
-    ])));
+    let line = Shape::LineString(
+        LineSeq::try_new(CoordSeq::from(vec![
+            Point::new(-90.0, 0.0).unwrap(),
+            Point::new(90.0, 0.0).unwrap(),
+        ]))
+        .expect("line coordinate sequence must contain at least two vertices"),
+    );
     for resolution in [
         Resolution::Two,
         Resolution::Four,

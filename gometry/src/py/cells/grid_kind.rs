@@ -419,6 +419,7 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
     };
+    crate::py::numpy::reject_masked_array(ids)?;
     if array.ndim() > 1 {
         return Err(PyTypeError::new_err(
             "cell array ids must be zero- or one-dimensional",
@@ -546,6 +547,7 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Ve
 }
 
 pub(super) fn collect_inferred_ids(values: &Bound<'_, PyAny>) -> PyResult<(GridKind, Vec<u64>)> {
+    crate::py::numpy::reject_masked_array(values)?;
     if values.is_instance_of::<pyo3::types::PyBytes>()
         || values.is_instance_of::<pyo3::types::PyByteArray>()
         || (values.is_instance_of::<pyo3::types::PyMemoryView>()

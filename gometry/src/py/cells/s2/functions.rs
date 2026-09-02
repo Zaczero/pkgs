@@ -7,6 +7,7 @@ use crate::geometry::CoordSeq;
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::coverage_ops::{GridDissolver, SortedCells, dissolve_grid_cells};
+use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::s2::{
     PyS2Cell, cell_pole_side, parse_s2_level_budget, parse_s2_level_value, s2_boundary_geometry,
     s2_cell_array, s2_cell_from_xy, s2_cell_id,
@@ -151,10 +152,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
     if let Some(array) = exact_geometry_array(value) {
         let crs = array.crs_str();
         let mut parts = Vec::new();
-        for (row, shape) in array.storage().iter_shapes().enumerate() {
-            if array.is_row_missing(row) {
-                continue;
-            }
+        for (_, shape) in array.present_shape_rows() {
             let shape = crate::lonlat_shape_under(&shape, crs)?.into_owned();
             validate_lonlat_shape(&shape)?;
             if !shape.is_empty() {
@@ -322,17 +320,19 @@ impl GridDissolver for S2Dissolver {
 ///     ``min_level`` and ``max_level``. Omit for an adaptive multi-level
 ///     covering guided by ``target_cells``.
 ///
-/// cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-///     Which cells to materialize, strictest to loosest. ``'center'``:
+/// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+///     Which cells to materialize, strictest to loosest. ``'within'``: only
+///     cells entirely inside — cells the area fully owns. ``'center'``:
 ///     cells whose center is inside — unique assignment, balanced point
-///     binning. ``'within'``: only cells entirely inside — cells the area
-///     fully owns. ``'overlap'``: every cell touching the geometry — a
+///     binning. ``'overlap'``: every cell touching the geometry — a
 ///     complete-coverage superset, the safe default for candidate keys.
 ///     ``'bbox'``: cells whose bounding box overlaps — loosest and fastest.
 ///     The rule never affects the exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Finite hard cap on emitted/allocation cells. For a fixed-level cover,
+///     Hard cap on returned cells and retained result allocation. Discarded
+///     candidates do not consume it; array calls apply it cumulatively across
+///     groups. For a fixed-level cover,
 ///     the level cannot be coarsened, so an insufficient cap raises. For an
 ///     adaptive cover, refinement stops and coarser cells are retained when
 ///     further children would exceed the cap; the result has at most
@@ -407,17 +407,12 @@ pub(crate) fn s2_cover(
         GridKind::S2Cell,
         budget_cells,
         |geometry, effective_max_cells| {
-            let cells = crate::py::cells::s2::register::build_coverage(
-                geometry,
-                level,
-                effective_max_cells
-                    .map(|cells| i64::try_from(cells).expect("parsed S2 max_cells fits in i64")),
-                target_cells,
-                min_level,
-                max_level,
-                level_mod,
-                cell_rule,
-            )?;
+            let parsed = S2LevelBudget {
+                max_cells: effective_max_cells,
+                ..parsed
+            };
+            let cells =
+                crate::py::cells::s2::register::build_coverage(geometry, parsed, cell_rule)?;
             crate::try_collect_results(
                 crate::py::cells::coverage_ops::SortedCells::from_sorted(cells)
                     .into_vec()

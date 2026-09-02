@@ -61,10 +61,7 @@ impl GridDissolver for H3Dissolver {
             let boundary = edge.boundary();
             let mut points = crate::try_vec_with_capacity(boundary.len())?;
             for latlng in boundary.iter() {
-                crate::try_push(
-                    &mut points,
-                    Point::new_unchecked_xy(latlng.lng(), latlng.lat()),
-                )?;
+                crate::try_push(&mut points, Point::new_raw_xy(latlng.lng(), latlng.lat()))?;
             }
             crate::try_push(
                 &mut segments,

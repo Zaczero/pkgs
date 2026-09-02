@@ -4,15 +4,16 @@ use std::collections::BinaryHeap;
 use crate::geometry::{
     CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
 };
-use crate::grid::affine_source::{GridAffineSource, SphericalGridTarget, WorkingShapeRelation};
+use crate::grid::affine_source::{
+    GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
+};
 use crate::grid::coverer::CellClass;
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{
-    AffineRectClass, CoverContext, Coverer, Covering, certified_rect_windows, classify,
+    AffineRectClass, CoverContext, CoverRule, Coverer, Covering, certified_rect_windows, classify,
 };
 use crate::grid::s2::projection::{MAX_LEVEL, NUM_FACES};
-use crate::grid::s2::seam::SourceWindows;
 use crate::grid::spherical_arc::{
     CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
@@ -22,7 +23,7 @@ use crate::grid::spherical_arc::{
 /// production `NativeRectClassifier`), so the differential test below
 /// cross-checks the fast rect classifier against the relate engine.
 struct RelateCoverContext {
-    windows: SourceWindows,
+    authority: GeographicCoverageSource,
     tester: PointBatchTester,
     source: Shape,
     point_leaves: Option<Vec<CellId>>,
@@ -67,7 +68,7 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         source
     };
     let ctx = RelateCoverContext {
-        windows: SourceWindows::new(source),
+        authority: GeographicCoverageSource::new(source, SphericalGridTarget::S2).unwrap(),
         tester: PointBatchTester::new(source),
         source: source.clone(),
         point_leaves: point_leaves(source),
@@ -158,7 +159,10 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         cells.push((id, interior));
     }
     cells.sort_unstable_by_key(|(id, _)| *id);
-    Covering { cells }
+    Covering {
+        cells,
+        classified: 0,
+    }
 }
 
 fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
@@ -173,7 +177,7 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     let cell = Cell::from_id(id);
     let vertices = cell.vertices_lonlat();
     let rect = cell.rect_bound(&vertices);
-    if !ctx.windows.may_overlap(rect) {
+    if ctx.authority.classify_rect(certified_rect_windows(rect)) == AffineRectClass::Outside {
         return CellClass::Outside;
     }
     let covered = vertices
@@ -236,39 +240,39 @@ fn relate_wrapped_rect_is_interior(
 
 fn box_shape(west: f64, south: f64, east: f64, north: f64) -> Shape {
     let shell = vec![
-        Point::new_unchecked_xy(west, south),
-        Point::new_unchecked_xy(east, south),
-        Point::new_unchecked_xy(east, north),
-        Point::new_unchecked_xy(west, north),
-        Point::new_unchecked_xy(west, south),
+        Point::new_raw_xy(west, south),
+        Point::new_raw_xy(east, south),
+        Point::new_raw_xy(east, north),
+        Point::new_raw_xy(west, north),
+        Point::new_raw_xy(west, south),
     ];
-    Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()))
+    Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
 }
 
 fn polygon_with_hole() -> Shape {
     let shell = vec![
-        Point::new_unchecked_xy(10.0, 10.0),
-        Point::new_unchecked_xy(20.0, 10.0),
-        Point::new_unchecked_xy(20.0, 20.0),
-        Point::new_unchecked_xy(10.0, 20.0),
-        Point::new_unchecked_xy(10.0, 10.0),
+        Point::new_raw_xy(10.0, 10.0),
+        Point::new_raw_xy(20.0, 10.0),
+        Point::new_raw_xy(20.0, 20.0),
+        Point::new_raw_xy(10.0, 20.0),
+        Point::new_raw_xy(10.0, 10.0),
     ];
     let hole = vec![
-        Point::new_unchecked_xy(13.0, 13.0),
-        Point::new_unchecked_xy(13.0, 17.0),
-        Point::new_unchecked_xy(17.0, 17.0),
-        Point::new_unchecked_xy(17.0, 13.0),
-        Point::new_unchecked_xy(13.0, 13.0),
+        Point::new_raw_xy(13.0, 13.0),
+        Point::new_raw_xy(13.0, 17.0),
+        Point::new_raw_xy(17.0, 17.0),
+        Point::new_raw_xy(17.0, 13.0),
+        Point::new_raw_xy(13.0, 13.0),
     ];
-    Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), vec![
-        Ring::from_trusted_closed(hole),
+    Shape::Polygon(Polygon::new(Ring::from_closed(shell), vec![
+        Ring::from_closed(hole),
     ]))
 }
 
 fn classify_with_native(source: &Shape, id: CellId) -> CellClass {
-    let affine = GridAffineSource::new(source, SphericalGridTarget::S2)
+    let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
         .expect("test source carrier allocates");
-    let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity);
+    let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity).unwrap();
     classify(&ctx, id)
 }
 
@@ -286,8 +290,8 @@ fn fixed(level: u8) -> Coverer {
 fn productive_cache_is_isolated_between_sources() {
     let line = Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(-50.0, -40.0),
-            Point::new_unchecked_xy(50.0, -40.0),
+            Point::new_raw_xy(-50.0, -40.0),
+            Point::new_raw_xy(50.0, -40.0),
         ]))
         .expect("fixture line is valid"),
     );
@@ -308,6 +312,31 @@ fn productive_cache_is_isolated_between_sources() {
         .cover_identity(&point)
         .expect("point has one level-zero owner");
     assert_eq!(covering.outer(), vec![face]);
+}
+
+#[test]
+fn rule_specific_sink_retains_only_visible_cells() {
+    let source = box_shape(0.0, 0.0, 2.0, 2.0);
+    let coverer = fixed(8);
+    let overlap = coverer
+        .cover_identity_for_rule(&source, CoverRule::Overlap)
+        .expect("fixture overlap fits");
+    let within = coverer
+        .cover_identity_for_rule(&source, CoverRule::Within)
+        .expect("fixture within fits");
+    let center = coverer
+        .cover_identity_for_rule(&source, CoverRule::Center)
+        .expect("fixture center fits");
+
+    let (overlap_retained, overlap_classified) = overlap.retained_and_classified();
+    let (within_retained, within_classified) = within.retained_and_classified();
+    let (center_retained, center_classified) = center.retained_and_classified();
+    assert!(within_retained < overlap_retained);
+    assert!(center_retained < overlap_retained);
+    assert_eq!(within_classified, overlap_classified);
+    assert_eq!(center_classified, overlap_classified);
+    assert!(within_retained < within_classified);
+    assert!(center_retained < center_classified);
 }
 
 /// Differential parity between the native coverer and the independent
@@ -371,15 +400,15 @@ fn mixed_dimension_collection() -> Shape {
             box_shape(-2.0, -2.0, 2.0, 2.0),
             Shape::LineString(
                 LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new_unchecked_xy(3.0, -1.0),
-                    Point::new_unchecked_xy(6.0, 1.0),
+                    Point::new_raw_xy(3.0, -1.0),
+                    Point::new_raw_xy(6.0, 1.0),
                 ]))
                 .expect("test line is valid"),
             ),
             Shape::MultiPoint(
                 CoordSeq::from(vec![
-                    Point::new_unchecked_xy(-4.0, 0.0),
-                    Point::new_unchecked_xy(0.0, 4.0),
+                    Point::new_raw_xy(-4.0, 0.0),
+                    Point::new_raw_xy(0.0, 4.0),
                 ])
                 .into(),
             ),
@@ -412,8 +441,8 @@ fn native_coverer_matches_relate_oracle_on_a_holed_polygon() {
 fn native_coverer_matches_relate_oracle_on_a_line() {
     let source = Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(-3.0, -2.0),
-            Point::new_unchecked_xy(4.0, 3.0),
+            Point::new_raw_xy(-3.0, -2.0),
+            Point::new_raw_xy(4.0, 3.0),
         ]))
         .expect("test line is valid"),
     );
@@ -497,30 +526,27 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
     // precisely the hazard corroboration must keep open.
     let source = Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(170.0, 0.0),
-            Point::new_unchecked_xy(-160.0, 40.0),
+            Point::new_raw_xy(170.0, 0.0),
+            Point::new_raw_xy(-160.0, 40.0),
         ]))
         .expect("test line is valid"),
     );
     let working = source
         .split_antimeridian()
         .expect("test line has a split working shape");
-    let affine = GridAffineSource::new(&source, SphericalGridTarget::S2)
+    let affine = GeographicCoverageSource::new(&source, SphericalGridTarget::S2)
         .expect("test source carrier allocates");
     let owner = CellId::from_token("7b32f3").expect("frozen S2 seam owner");
     let rect = Cell::from_id(owner).rect_bound(&Cell::from_id(owner).vertices_lonlat());
 
     assert!(affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit));
-    assert!(
-        !SourceWindows::new(&working).may_overlap(rect),
-        "the split working window supplies the unsafe Outside proposal"
-    );
     assert_eq!(
         affine.classify_rect(certified_rect_windows(rect)),
         AffineRectClass::Boundary,
         "the retained raw affine edge meets the candidate enclosure"
     );
-    let ctx = CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit);
+    let ctx =
+        CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
     assert_eq!(classify(&ctx, owner), CellClass::Boundary);
     let covering = fixed(10)
         .cover(&working, &affine, WorkingShapeRelation::AntimeridianSplit)
@@ -531,28 +557,29 @@ fn split_working_window_cannot_prune_the_retained_seam_owner() {
 #[test]
 fn corroboration_is_relation_gated_before_candidate_traversal() {
     let source = box_shape(10.0, 10.0, 20.0, 20.0);
-    let affine = GridAffineSource::new(&source, SphericalGridTarget::S2)
+    let affine = GeographicCoverageSource::new(&source, SphericalGridTarget::S2)
         .expect("test source carrier allocates");
 
     assert!(
         !affine.s2_needs_corroboration(WorkingShapeRelation::Identity),
         "an ordinary physical source stays on the fast path"
     );
-    let ordinary = CoverContext::prepare(&source, &affine, WorkingShapeRelation::Identity);
-    assert!(ordinary.affine.is_none());
+    let ordinary = CoverContext::prepare(&source, &affine, WorkingShapeRelation::Identity).unwrap();
+    assert!(!ordinary.corroborate);
 
     assert!(
         affine.s2_needs_corroboration(WorkingShapeRelation::AntimeridianSplit),
         "working-image identity is an explicit part of the authority proof"
     );
-    let split = CoverContext::prepare(&source, &affine, WorkingShapeRelation::AntimeridianSplit);
-    assert!(split.affine.is_some());
+    let split =
+        CoverContext::prepare(&source, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
+    assert!(split.corroborate);
 }
 
 #[test]
 fn split_seam_carrier_can_exclude_the_far_sheet() {
     let raw = box_shape(179.0, -1.0, -179.0, 1.0);
-    let affine = GridAffineSource::new(&raw, SphericalGridTarget::S2).unwrap();
+    let affine = GeographicCoverageSource::new(&raw, SphericalGridTarget::S2).unwrap();
     assert!(
         !affine.is_unknown(),
         "the exact 179/-179 seam rectangle must retain a complete affine carrier"
@@ -570,16 +597,13 @@ fn split_seam_carrier_can_exclude_the_far_sheet() {
     let far_seam = CellId::from_lonlat(179.5, 45.0).parent(8).unwrap();
     let far_cell = Cell::from_id(far_seam);
     let far_rect = far_cell.rect_bound(&far_cell.vertices_lonlat());
-    assert!(
-        !SourceWindows::new(&working).may_overlap(far_rect),
-        "normalized seam components keep their latitude bounds"
-    );
     assert_eq!(
         affine.classify_rect(certified_rect_windows(far_rect)),
         AffineRectClass::Outside,
         "the exact seam carrier excludes a far-latitude seam cell"
     );
-    let ctx = CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit);
+    let ctx =
+        CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
     assert_eq!(classify(&ctx, far_seam), CellClass::Outside);
     assert_eq!(
         fixed(8)
@@ -601,7 +625,7 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
     // working classifier is also Interior.
     let raw = box_shape(179.0, -1.0, -179.0, 1.0);
     let working = raw.split_antimeridian().unwrap();
-    let affine = GridAffineSource::new(&raw, SphericalGridTarget::S2).unwrap();
+    let affine = GeographicCoverageSource::new(&raw, SphericalGridTarget::S2).unwrap();
     let id = CellId::from_token("6554d").expect("frozen seam interior");
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
@@ -625,14 +649,15 @@ fn sub_ulp_seam_sheet_can_certify_retained_authority_interior() {
         AffineRectClass::Interior,
         "candidate={windows:?} rect={rect:?}"
     );
-    let ctx = CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit);
+    let ctx =
+        CoverContext::prepare(&working, &affine, WorkingShapeRelation::AntimeridianSplit).unwrap();
     assert_eq!(classify(&ctx, id), CellClass::Interior);
 }
 
 #[test]
 fn polar_cap_affine_certificate_prunes_the_south() {
     let cap = box_shape(-180.0, 80.0, 180.0, 90.0);
-    let affine = GridAffineSource::new(&cap, SphericalGridTarget::S2).unwrap();
+    let affine = GeographicCoverageSource::new(&cap, SphericalGridTarget::S2).unwrap();
     let id = CellId::from_lonlat(0.0, 0.0).parent(4).unwrap();
     let cell = Cell::from_id(id);
     let rect = cell.rect_bound(&cell.vertices_lonlat());
@@ -641,12 +666,8 @@ fn polar_cap_affine_certificate_prunes_the_south() {
         AffineRectClass::Outside,
         "the full-longitude cap's exact carrier excludes a south cell"
     );
-    let ctx = CoverContext::prepare(&cap, &affine, WorkingShapeRelation::Identity);
-    assert!(
-        !ctx.windows.may_overlap(rect),
-        "the cap's working window is disjoint from a south cell"
-    );
-    assert!(ctx.affine.is_some(), "the polar carrier is corroborated");
+    let ctx = CoverContext::prepare(&cap, &affine, WorkingShapeRelation::Identity).unwrap();
+    assert!(ctx.corroborate, "the polar carrier is corroborated");
     assert!(
         !affine.s2_raw_owner_descends_from(id),
         "the south cell owns no retained cap endpoint"
@@ -752,15 +773,15 @@ fn fixed_level_box_covering_is_complete_and_exact() {
 #[test]
 fn concave_source_excludes_notch() {
     let shell = vec![
-        Point::new_unchecked_xy(0.0, 0.0),
-        Point::new_unchecked_xy(4.0, 0.0),
-        Point::new_unchecked_xy(4.0, 1.0),
-        Point::new_unchecked_xy(1.0, 1.0),
-        Point::new_unchecked_xy(1.0, 4.0),
-        Point::new_unchecked_xy(0.0, 4.0),
-        Point::new_unchecked_xy(0.0, 0.0),
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(4.0, 0.0),
+        Point::new_raw_xy(4.0, 1.0),
+        Point::new_raw_xy(1.0, 1.0),
+        Point::new_raw_xy(1.0, 4.0),
+        Point::new_raw_xy(0.0, 4.0),
+        Point::new_raw_xy(0.0, 0.0),
     ];
-    let source = Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()));
+    let source = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
     let covering = fixed(8)
         .cover_identity(&source)
         .expect("small fixed-level covering is within budget");
@@ -870,7 +891,7 @@ fn seam_source_stays_narrow() {
 /// interior certificates on measure-zero geometry).
 #[test]
 fn thin_sources_have_no_interior() {
-    let point = Shape::Point(Point::new_unchecked_xy(13.4, 52.5));
+    let point = Shape::Point(Point::new_raw_xy(13.4, 52.5));
     let covering = fixed(12)
         .cover_identity(&point)
         .expect("small fixed-level covering is within budget");
@@ -964,7 +985,11 @@ fn cover_rejects_fine_min_level_before_flooding() {
     let err = coverer
         .cover_identity(&source)
         .expect_err("world-scale fixed min_level exceeds the cell budget");
-    assert_eq!(err.limit, crate::grid::GRID_MAX_CELLS);
+    assert!(matches!(
+        err,
+        crate::grid::CoverError::Budget(error)
+            if error.limit == crate::grid::GRID_MAX_CELLS
+    ));
     assert!(err.to_string().contains("max_cells"));
 }
 
@@ -976,8 +1001,8 @@ fn cover_rejects_fine_min_level_before_flooding() {
 fn fixed_level_budget_matches_unlimited_threshold() {
     let source = Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(-75.0, 40.0),
-            Point::new_unchecked_xy(-74.99, 40.01),
+            Point::new_raw_xy(-75.0, 40.0),
+            Point::new_raw_xy(-74.99, 40.01),
         ]))
         .expect("test line is valid"),
     );
@@ -1010,8 +1035,8 @@ fn fixed_level_budget_matches_unlimited_threshold() {
     // probe; use a multi-cell line for the raise side).
     let longer = Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(-75.0, 40.0),
-            Point::new_unchecked_xy(-74.0, 41.0),
+            Point::new_raw_xy(-75.0, 40.0),
+            Point::new_raw_xy(-74.0, 41.0),
         ]))
         .expect("longer line"),
     );
@@ -1045,6 +1070,9 @@ fn fixed_level_budget_matches_unlimited_threshold() {
     }
     .cover_identity(&longer)
     .expect_err("budget N-1 must raise");
-    assert_eq!(err.limit, n - 1);
+    assert!(matches!(
+        err,
+        crate::grid::CoverError::Budget(error) if error.limit == n - 1
+    ));
     assert!(err.to_string().contains("max_cells"));
 }

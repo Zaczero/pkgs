@@ -78,7 +78,7 @@ impl PyH3Vertex {
     #[getter]
     fn point(&self) -> Typed {
         let latlng = LatLng::from(self.vertex);
-        PyGeometry::typed_wgs84(Shape::Point(Point::new_unchecked_xy(
+        PyGeometry::typed_wgs84(Shape::Point(Point::new_raw_xy(
             latlng.lng(),
             latlng.lat(),
         )))
@@ -257,7 +257,7 @@ fn reverse(&self) -> Self {
             .edge
             .boundary()
             .iter()
-            .map(|latlng| Point::new_unchecked_xy(latlng.lng(), latlng.lat()))
+            .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
             .collect();
         PyGeometry::typed_wgs84(Shape::LineString(
             LineSeq::try_new(CoordSeq::from(points)).expect("H3 edge boundary is lineal"),

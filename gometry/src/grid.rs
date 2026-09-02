@@ -11,8 +11,7 @@ use thiserror::Error;
 /// Default cell-output budget for covering factories when `max_cells` is
 /// omitted. Secure-by-default against runaway coverings of untrusted boxes;
 /// callers pass a larger value or `max_cells=None` (unlimited) for deliberate
-/// large work. The independent `grid_disk`/`grid_ring` traversal budget remains
-/// fixed because those operations take a radius rather than a caller budget.
+/// large work. H3 traversal methods use the same default and escape hatch.
 pub(crate) const GRID_MAX_CELLS: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -39,13 +38,6 @@ pub(crate) struct CellCollector<T> {
 }
 
 impl<T> CellCollector<T> {
-    pub(crate) const fn new(operation: &'static str) -> Self {
-        Self {
-            operation,
-            values: Vec::new(),
-        }
-    }
-
     pub(crate) fn with_estimate(operation: &'static str, estimate: usize) -> Self {
         Self {
             operation,
@@ -96,6 +88,14 @@ pub(crate) struct CoverBudgetExceeded {
     pub limit: usize,
 }
 
+#[derive(Debug, Error)]
+pub(crate) enum CoverError {
+    #[error(transparent)]
+    Preparation(#[from] crate::error::Error),
+    #[error(transparent)]
+    Budget(#[from] CoverBudgetExceeded),
+}
+
 impl CoverBudgetExceeded {
     pub(crate) const fn new(limit: usize) -> Self {
         Self { limit }
@@ -126,6 +126,29 @@ pub(crate) mod h3_coverer;
 pub(crate) mod s2;
 pub(crate) mod spherical_arc;
 pub(crate) mod tile;
+
+/// Canonical degree spelling for one physical longitude/latitude location.
+///
+/// Grid identifiers are half-open in longitude, so the antimeridian owner is
+/// always `-180`. At either pole longitude has no physical meaning; using the
+/// same representative prevents backend projection roundoff from choosing an
+/// identifier from the caller's arbitrary pole spelling.
+pub(crate) fn canonical_lonlat(lon: f64, lat: f64) -> (f64, f64) {
+    let lat = crate::boundary::geographic::normalize_accepted_latitude(lat);
+    let mut lon = lon % 360.0;
+    if lon < -180.0 {
+        lon += 360.0;
+    } else if lon >= 180.0 {
+        lon -= 360.0;
+    }
+    if lon == 0.0 {
+        lon = 0.0;
+    }
+    if crate::boundary::geographic::normalized_geographic_pole(lat).is_some() {
+        lon = -180.0;
+    }
+    (lon, lat)
+}
 
 /// One-step toroidal wrap of `value` into `0..cells` for grid neighbour math.
 /// Identical to `value.rem_euclid(cells)` for a single neighbour step
@@ -174,6 +197,31 @@ pub(crate) fn ring_neighbors<C: Copy + PartialEq>(
 #[cfg(test)]
 mod budget_tests {
     use super::*;
+
+    #[test]
+    fn h3_periodic_seam_and_poles_have_canonical_owners() {
+        let resolution = h3o::Resolution::Nine;
+        let cell = |lon, lat| {
+            let (lon, lat) = canonical_lonlat(lon, lat);
+            h3o::LatLng::new(lat, lon).unwrap().to_cell(resolution)
+        };
+        for lat in [-45.0, 0.0, 45.0] {
+            let owner = cell(-180.0, lat);
+            for lon in [180.0, 540.0, -540.0] {
+                assert_eq!(cell(lon, lat), owner);
+            }
+            assert_eq!(cell((-180.0_f64).next_up(), lat), owner);
+            let east_neighbor = 180.0_f64.next_down();
+            assert_eq!(canonical_lonlat(east_neighbor, lat).0, east_neighbor);
+            let _ = cell(east_neighbor, lat);
+        }
+        for lat in [-90.0, 90.0] {
+            let owner = cell(-180.0, lat);
+            for lon in [-179.0, 0.0, 73.0, 180.0, 540.0] {
+                assert_eq!(cell(lon, lat), owner);
+            }
+        }
+    }
 
     #[test]
     fn flat_collector_accepts_exact_limit_and_rejects_next_cell() {

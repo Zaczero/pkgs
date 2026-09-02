@@ -20,9 +20,6 @@ impl RectCoverSpec for GeohashCoverSpec {
     fn id(cell: &Geohash) -> u64 {
         cell.identity_key()
     }
-    fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8> {
-        parse_geohash_precision(value)
-    }
     fn coverage_label() -> &'static str {
         "geohash"
     }
@@ -50,19 +47,17 @@ pub(super) fn geohash_cell_array(
 /// precision : int
 ///     Geohash precision (``1``-``12``; finer at higher values).
 ///
-/// cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-///     Which cells to materialize. ``'center'`` selects cells whose center is
-///     inside; ``'within'`` selects cells entirely inside; ``'overlap'``
+/// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+///     Which cells to materialize. ``'within'`` selects cells entirely inside;
+///     ``'center'`` selects cells whose center is inside; ``'overlap'``
 ///     selects every cell touching the geometry; and ``'bbox'`` selects cells
 ///     whose bounding box overlaps. For geohash cells, ``'bbox'`` and
 ///     ``'overlap'`` are equivalent. The rule never affects exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Finite hard cap on candidate cells considered by the coverer before the
-///     ``within`` filter. A ``within`` cover can yield fewer final cells while
-///     raising when the pre-within-filter candidate count would exceed this
-///     candidate budget. Pass
-///     ``None`` for an unlimited cover.
+///     Hard cap on returned cells and retained result allocation. Discarded
+///     candidates do not consume it; array calls apply it cumulatively across
+///     groups. Pass ``None`` for unlimited output (bounded only by memory).
 ///
 /// Returns
 /// -------
@@ -74,8 +69,7 @@ pub(super) fn geohash_cell_array(
 /// ------
 /// GeometryError
 ///     If the geometry, precision, ``cell_rule``, or ``max_cells`` is invalid,
-///     or if the pre-``within``-filter candidate count would exceed
-///     ``max_cells``.
+///     or if the returned coverage would exceed ``max_cells``.
 /// InvalidGeometryError
 ///     If the geometry is empty.
 ///
@@ -100,6 +94,7 @@ pub(super) fn geohash_cover(
     #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     let max_cells = parse_max_cells(max_cells)?;
+    let precision = parse_geohash_precision(precision)?;
     grid_cover_dispatch(
         py,
         geom,

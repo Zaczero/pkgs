@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 
 use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::py::cells::cell_ops::{
-    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
-    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+    cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
+    cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::h3::{
     CellIndex, LocalIJ, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3VertexArray, PyResult,
@@ -202,7 +202,7 @@ impl PyH3Cell {
     #[getter]
     fn vertices(&self) -> PyH3VertexArray {
         let ids: Vec<u64> = self.cell.vertexes().map(u64::from).collect();
-        PyH3VertexArray::from_trusted_ids(ids)
+        PyH3VertexArray::from_ids(ids)
     }
 
     /// Return the directed edge from this cell to a neighboring cell.
@@ -253,7 +253,7 @@ impl PyH3Cell {
     #[getter]
     fn edges(&self) -> PyH3EdgeArray {
         let ids: Vec<u64> = self.cell.edges().map(u64::from).collect();
-        PyH3EdgeArray::from_trusted_ids(ids)
+        PyH3EdgeArray::from_ids(ids)
     }
 
     /// Return cells within k grid steps (filled disk).
@@ -262,6 +262,8 @@ impl PyH3Cell {
     /// ----------
     /// k : int
     ///     Grid radius in steps (``>= 0``); ``k=0`` is this cell alone.
+    /// max_cells : int or None, default 1000000
+    ///     Hard cap on returned cells. Pass ``None`` for unlimited traversal.
     ///
     /// Returns
     /// -------
@@ -270,7 +272,7 @@ impl PyH3Cell {
     /// Raises
     /// ------
     /// GeometryError
-    ///     If ``k`` is negative or too large.
+    ///     If ``k`` is negative or too large, or the result exceeds ``max_cells``.
     ///
     /// Examples
     /// --------
@@ -279,14 +281,20 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> len(cell.grid_disk(1))
     /// 7
-    fn grid_disk(&self, k: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
+    #[pyo3(signature = (k, *, max_cells = Some(1_000_000)), text_signature = "($self, k, *, max_cells=1000000)")]
+    fn grid_disk(
+        &self,
+        k: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
+    ) -> PyResult<PyCellArray> {
         let k = parse_h3_grid_k(k)?;
-        let ids: Vec<u64> = try_h3_grid_disk_cells(self.cell, k)
-            .map_err(super::super::cell_limit_err)?
+        let max_cells = super::super::coverage_ops::parse_max_cells(max_cells)?;
+        let ids: Vec<u64> = try_h3_grid_disk_cells_with_budget(self.cell, k, max_cells)
+            .map_err(super::super::coverage_ops::cover_budget_err)?
             .into_iter()
             .map(u64::from)
             .collect();
-        Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// Return cells exactly ``k`` grid steps away (hollow ring).
@@ -295,6 +303,8 @@ impl PyH3Cell {
     /// ----------
     /// k : int
     ///     Grid radius in steps (``>= 0``); ``k=0`` is this cell alone.
+    /// max_cells : int or None, default 1000000
+    ///     Hard cap on returned cells. Pass ``None`` for unlimited traversal.
     ///
     /// Returns
     /// -------
@@ -303,7 +313,7 @@ impl PyH3Cell {
     /// Raises
     /// ------
     /// GeometryError
-    ///     If ``k`` is negative or too large.
+    ///     If ``k`` is negative or too large, or the result exceeds ``max_cells``.
     ///
     /// Examples
     /// --------
@@ -312,14 +322,20 @@ impl PyH3Cell {
     /// >>> assert cell is not None
     /// >>> len(cell.grid_ring(1))
     /// 6
-    fn grid_ring(&self, k: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
+    #[pyo3(signature = (k, *, max_cells = Some(1_000_000)), text_signature = "($self, k, *, max_cells=1000000)")]
+    fn grid_ring(
+        &self,
+        k: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
+    ) -> PyResult<PyCellArray> {
         let k = parse_h3_grid_k(k)?;
-        let ids: Vec<u64> = try_h3_grid_ring_cells(self.cell, k)
-            .map_err(super::super::cell_limit_err)?
+        let max_cells = super::super::coverage_ops::parse_max_cells(max_cells)?;
+        let ids: Vec<u64> = try_h3_grid_ring_cells_with_budget(self.cell, k, max_cells)
+            .map_err(super::super::coverage_ops::cover_budget_err)?
             .into_iter()
             .map(u64::from)
             .collect();
-        Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// Test whether ``other`` is an edge-adjacent neighbor of this cell.
@@ -498,6 +514,8 @@ impl PyH3Cell {
     /// ----------
     /// other : H3Cell, int, or str
     ///     The target cell; must share this cell's resolution.
+    /// max_cells : int or None, default 1000000
+    ///     Hard cap on returned cells. Pass ``None`` for unlimited traversal.
     ///
     /// Returns
     /// -------
@@ -506,7 +524,7 @@ impl PyH3Cell {
     /// Raises
     /// ------
     /// GeometryError
-    ///     If the cells cannot be connected (different resolutions or too far apart).
+    ///     If the cells cannot be connected or the result exceeds ``max_cells``.
     /// ParseError
     ///     If ``other`` is not a valid H3 cell.
     ///
@@ -519,19 +537,38 @@ impl PyH3Cell {
     /// >>> assert nbr is not None
     /// >>> len(cell.grid_path(nbr))
     /// 2
-    fn grid_path(&self, other: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
+    #[pyo3(signature = (other, *, max_cells = Some(1_000_000)), text_signature = "($self, other, *, max_cells=1000000)")]
+    fn grid_path(
+        &self,
+        other: &Bound<'_, PyAny>,
+        #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
+    ) -> PyResult<PyCellArray> {
+        let max_cells = super::super::coverage_ops::parse_max_cells(max_cells)?;
+        let other = h3_cell_index(other)?;
+        if let Some(limit) = max_cells {
+            let distance = self
+                .cell
+                .grid_distance(other)
+                .map_err(|error| GeometryError::new_err(error.to_string()))?;
+            let path_len = usize::try_from(distance)
+                .ok()
+                .and_then(|distance| distance.checked_add(1))
+                .unwrap_or(usize::MAX);
+            crate::grid::ensure_cover_budget(path_len, Some(limit))
+                .map_err(super::super::coverage_ops::cover_budget_err)?;
+        }
         let cells = self
             .cell
-            .grid_path_cells(h3_cell_index(other)?)
+            .grid_path_cells(other)
             .map_err(|error| GeometryError::new_err(error.to_string()))?;
-        let mut ids = crate::grid::CellCollector::new("H3 grid_path");
+        let mut ids = Vec::new();
         for cell in cells {
             let cell = cell.map_err(|error| GeometryError::new_err(error.to_string()))?;
-            ids.push(u64::from(cell))
-                .map_err(super::super::cell_limit_err)?;
+            crate::grid::ensure_cover_budget(ids.len().saturating_add(1), max_cells)
+                .map_err(super::super::coverage_ops::cover_budget_err)?;
+            ids.push(u64::from(cell));
         }
-        let ids = ids.into_vec();
-        Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 }
 
@@ -599,24 +636,25 @@ True
     }
 }
 
-pub(super) fn try_h3_grid_disk_cells(
+fn try_h3_grid_disk_cells_with_budget(
     cell: CellIndex,
     k: u32,
-) -> std::result::Result<Vec<CellIndex>, crate::grid::CellLimitExceeded> {
-    let estimate = usize::try_from(h3o::max_grid_disk_size(k)).unwrap_or(usize::MAX);
-    if estimate > crate::grid::GRID_MAX_CELLS {
-        return Err(crate::grid::CellLimitExceeded::new("H3 grid_disk"));
-    }
-    let mut cells = crate::grid::CellCollector::with_estimate("H3 grid_disk", estimate);
+    max_cells: Option<usize>,
+) -> Result<Vec<CellIndex>, crate::grid::CoverBudgetExceeded> {
+    let mut cells = Vec::new();
     for value in cell.grid_disk_fast(k) {
         let Some(value) = value else {
             cells.clear();
-            cells.extend(cell.grid_disk_safe(k))?;
-            return Ok(cells.into_vec());
+            for value in cell.grid_disk_safe(k) {
+                crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                cells.push(value);
+            }
+            return Ok(cells);
         };
-        cells.push(value)?;
+        crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+        cells.push(value);
     }
-    Ok(cells.into_vec())
+    Ok(cells)
 }
 
 pub(super) fn h3_grid_ring_cells(cell: CellIndex, k: u32) -> Vec<CellIndex> {
@@ -644,4 +682,27 @@ pub(super) fn try_h3_grid_ring_cells(
         cells.push(value)?;
     }
     Ok(cells.into_vec())
+}
+
+fn try_h3_grid_ring_cells_with_budget(
+    cell: CellIndex,
+    k: u32,
+    max_cells: Option<usize>,
+) -> Result<Vec<CellIndex>, crate::grid::CoverBudgetExceeded> {
+    let mut cells = Vec::new();
+    for value in cell.grid_ring_fast(k) {
+        let Some(value) = value else {
+            cells.clear();
+            for (value, distance) in cell.grid_disk_distances_safe(k) {
+                if distance == k {
+                    crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                    cells.push(value);
+                }
+            }
+            return Ok(cells);
+        };
+        crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+        cells.push(value);
+    }
+    Ok(cells)
 }

@@ -5,20 +5,20 @@ use rstar::{AABB, RTree, RTreeObject};
 
 use crate::geometry::{Coordinates as _, Shape};
 use crate::grid::affine_source::{
-    GridAffineSource, SphericalGridTarget, WorkingShapeRelation, visit_grid_cover_components,
+    GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
+    visit_grid_cover_components,
 };
-use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
-use crate::grid::s2::coverer::{Coverer, Covering};
+use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
 use crate::py::cells::coverage_ops::{self, coverage_factory_shapes};
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
     _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
     s2_union,
 };
-use crate::py::cells::s2::parse::{bounds_query_shape, parse_s2_level_budget};
+use crate::py::cells::s2::parse::{S2LevelBudget, bounds_query_shape};
 use crate::py::cells::{
-    Bound, CellRule, PyAny, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
+    Bound, CellRule, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
 };
 
 /// Level-budget knobs shared by cover construction and lazy membership.
@@ -34,9 +34,10 @@ struct S2Budget {
 ///
 /// The cover budget is cacheable by lazy membership; allocation is transient
 /// and must remain a Python memory error rather than a poisoned partition.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub(super) enum S2ComponentCoverError {
     Budget(crate::grid::CoverBudgetExceeded),
+    Preparation(crate::error::Error),
     Allocation,
 }
 
@@ -50,6 +51,7 @@ fn cover_s2_component(
     level_mod: u8,
     max_cells: Option<usize>,
     target_cells: usize,
+    rule: CoverRule,
 ) -> Result<Covering, S2ComponentCoverError> {
     let (working, relation) = if component.crosses_antimeridian() {
         (
@@ -61,7 +63,7 @@ fn cover_s2_component(
     } else {
         (component.clone(), WorkingShapeRelation::Identity)
     };
-    let affine = GridAffineSource::new(component, SphericalGridTarget::S2)
+    let affine = GeographicCoverageSource::from_validated(component, SphericalGridTarget::S2)
         .map_err(|_| S2ComponentCoverError::Allocation)?;
     Coverer {
         min_level,
@@ -70,8 +72,11 @@ fn cover_s2_component(
         max_cells,
         target_cells,
     }
-    .cover(&working, &affine, relation)
-    .map_err(S2ComponentCoverError::Budget)
+    .cover_for_rule(&working, &affine, relation, rule)
+    .map_err(|error| match error {
+        crate::grid::CoverError::Preparation(error) => S2ComponentCoverError::Preparation(error),
+        crate::grid::CoverError::Budget(error) => S2ComponentCoverError::Budget(error),
+    })
 }
 
 /// S2's covering target is global, so aggregate syntax cannot decide either
@@ -253,6 +258,7 @@ fn cover_s2_shapes(
     level_mod: u8,
     max_cells: Option<usize>,
     target_cells: usize,
+    rule: CoverRule,
 ) -> Result<Vec<(CellId, bool)>, S2ComponentCoverError> {
     if components.is_empty() {
         return Ok(Vec::new());
@@ -278,9 +284,11 @@ fn cover_s2_shapes(
         for component in &components {
             crate::try_push_vec(
                 &mut floors,
-                cover_s2_component(component, min_level, max_level, level_mod, max_cells, 1)?
-                    .into_cells()
-                    .len(),
+                cover_s2_component(
+                    component, min_level, max_level, level_mod, max_cells, 1, rule,
+                )?
+                .into_cells()
+                .len(),
             )
             .map_err(|_| S2ComponentCoverError::Allocation)?;
         }
@@ -312,6 +320,7 @@ fn cover_s2_shapes(
             level_mod,
             max_cells,
             component_target,
+            rule,
         )?;
         for (cell, interior) in covered.into_cells() {
             if let Some(unique) = &mut unique {
@@ -372,6 +381,7 @@ pub(super) fn cover_s2_components(
     level_mod: u8,
     max_cells: Option<usize>,
     target_cells: usize,
+    rule: CoverRule,
 ) -> Result<Vec<(CellId, bool)>, S2ComponentCoverError> {
     let mut components = canonical_s2_components(source)?;
     let canonical_source = match components.len() {
@@ -386,6 +396,7 @@ pub(super) fn cover_s2_components(
         level_mod,
         max_cells,
         target_cells,
+        rule,
     )
     .map(Covering::into_cells)
 }
@@ -393,38 +404,34 @@ pub(super) fn cover_s2_components(
 /// Select visible cells + lazy/seeded membership from a tagged coverer emission.
 fn membership_from_tagged(
     tagged: Vec<(CellId, bool)>,
-    cover_shape: Shape,
     cell_rule: CellRule,
     bbox_visible: Option<Vec<CellId>>,
+    max_cells: Option<usize>,
 ) -> PyResult<Vec<CellId>> {
     if cell_rule == CellRule::Bbox {
         return Ok(bbox_visible.expect("bbox cells were built"));
     }
     let mut cells = Vec::new();
-    crate::try_reserve_vec(&mut cells, tagged.len()).map_err(PyErr::from)?;
+    if cell_rule == CellRule::Overlap {
+        crate::try_reserve_vec(&mut cells, tagged.len()).map_err(PyErr::from)?;
+    }
     match cell_rule {
         // Overlap already builds the annotated product — seed the inspection
         // partition so interior/boundary do not re-cover.
         CellRule::Overlap => {
             for (cell, _) in tagged {
+                crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)
+                    .map_err(coverage_ops::cover_budget_err)?;
                 crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
             }
         },
         CellRule::Bbox => unreachable!("bbox membership returned before allocation"),
-        // Center: interior is a full-cover certificate (source.covers(rect)),
-        // so the cell center is covered; only boundary cells probe the cover
-        // working shape (split-normalized). Partition stays cold.
+        // Rule-specific visibility was decided by the cover traversal. The
+        // tagged stream therefore contains only retained result cells.
         CellRule::Within | CellRule::Center => {
-            for (cell, interior) in tagged {
-                if cell_rule == CellRule::Within && !interior {
-                    continue;
-                }
-                if cell_rule == CellRule::Center
-                    && !(interior
-                        || cover_shape.covers_point(S2GeomCell::from_id(cell).center_lonlat()))
-                {
-                    continue;
-                }
+            for (cell, _) in tagged {
+                crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)
+                    .map_err(coverage_ops::cover_budget_err)?;
                 crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
             }
         },
@@ -440,22 +447,9 @@ fn membership_from_tagged(
 /// overlap rule, which already produces the annotated product).
 pub(crate) fn build_coverage(
     geometry: &PyGeometry,
-    level: Option<&Bound<'_, PyAny>>,
-    max_cells: Option<i64>,
-    target_cells: i64,
-    min_level: Option<&Bound<'_, PyAny>>,
-    max_level: Option<&Bound<'_, PyAny>>,
-    level_mod: i64,
+    parsed: S2LevelBudget,
     cell_rule: CellRule,
 ) -> PyResult<Vec<CellId>> {
-    let parsed = parse_s2_level_budget(
-        level,
-        max_cells,
-        target_cells,
-        min_level,
-        max_level,
-        level_mod,
-    )?;
     let budget = S2Budget {
         min_level: parsed.min_level,
         max_level: parsed.max_level,
@@ -489,9 +483,11 @@ pub(crate) fn build_coverage(
             budget.level_mod,
             budget.max_cells,
             budget.target_cells,
+            CoverRule::Overlap,
         )
         .map_err(|error| match error {
             S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
+            S2ComponentCoverError::Preparation(error) => error.into(),
             S2ComponentCoverError::Allocation => {
                 PyMemoryError::new_err("S2 coverage allocation failed")
             },
@@ -501,6 +497,12 @@ pub(crate) fn build_coverage(
         let cells = crate::try_collect_results(cells)?;
         (Vec::new(), Some(cells))
     } else {
+        let rule = match cell_rule {
+            CellRule::Overlap => CoverRule::Overlap,
+            CellRule::Within => CoverRule::Within,
+            CellRule::Center => CoverRule::Center,
+            CellRule::Bbox => unreachable!("bbox uses window covering"),
+        };
         let tagged = cover_s2_components(
             membership_geometry.shape.as_ref(),
             budget.min_level,
@@ -508,9 +510,11 @@ pub(crate) fn build_coverage(
             budget.level_mod,
             budget.max_cells,
             budget.target_cells,
+            rule,
         )
         .map_err(|error| match error {
             S2ComponentCoverError::Budget(error) => coverage_ops::cover_budget_err(error),
+            S2ComponentCoverError::Preparation(error) => error.into(),
             S2ComponentCoverError::Allocation => {
                 PyMemoryError::new_err("S2 coverage allocation failed")
             },
@@ -518,8 +522,7 @@ pub(crate) fn build_coverage(
         (tagged, None)
     };
 
-    let cells = membership_from_tagged(tagged, cover_shape, cell_rule, bbox_visible)?;
-    let _ = budget.max_cells;
+    let cells = membership_from_tagged(tagged, cell_rule, bbox_visible, budget.max_cells)?;
     Ok(cells)
 }
 
@@ -556,15 +559,11 @@ fn push_bounds_windows(
         // Antimeridian wrap: cover [west, 180] and [-180, east] separately.
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_unchecked(
-                west, south, 180.0, north,
-            ))?,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
         )?;
         crate::try_push_vec(
             out,
-            bounds_query_shape(crate::geometry::Bounds::new_unchecked(
-                -180.0, south, east, north,
-            ))?,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
         )?;
     } else {
         crate::try_push_vec(out, bounds_query_shape(bounds)?)?;

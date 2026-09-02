@@ -15,10 +15,18 @@
 use std::sync::Arc;
 
 use crate::geometry::{
-    Bounds, CoordSeq, Point, PointBatchTester, Polygon, Segment, SegmentIndex, Shape, Strictness,
-    XY, line_segments,
+    Bounds, CoordSeq, GeographicPrepared, Point, PointBatchTester, Polygon, PreparedPlan, Segment,
+    SegmentIndex, Shape, Strictness, XY, bounds_to_shape, graph_intersects_rectangle_data,
+    line_segments,
 };
-use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
+use crate::grid::affine_source::{
+    GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
+};
+use crate::grid::spherical_arc::{
+    Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
+};
+use crate::grid::{CoverError, ensure_cover_budget};
+use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 
 /// A cell of a rectangular lon/lat grid (geohash or tile).
 ///
@@ -83,6 +91,132 @@ pub(crate) struct NativeRectClassifier {
     points: Box<[Point]>,
 }
 
+/// Candidate admission is owned by the unsplit periodic source. The native
+/// classifier remains the rule-refinement working image; disagreement can
+/// only widen to `Boundary`, never turn a chart cut into a negative.
+struct GeographicCandidateClassifier<'a> {
+    authority: GeographicCoverageSource,
+    working: NativeRectClassifier,
+    exact: bool,
+    authority_plan: &'a PreparedPlan,
+    authority_cache: &'a crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+}
+
+impl<'a> GeographicCandidateClassifier<'a> {
+    fn new(
+        authority: &Shape,
+        working: &Shape,
+        charted: bool,
+        authority_plan: &'a PreparedPlan,
+        authority_cache: &'a crate::geometry::FrameDependentCaches,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Result<Self, crate::error::Error> {
+        Ok(Self {
+            authority: GeographicCoverageSource::from_validated(
+                authority,
+                SphericalGridTarget::Rectangular,
+            )
+            .map_err(|_| crate::error::ResourceError::Allocation)?,
+            working: NativeRectClassifier::new(working)?,
+            exact: crate::geometry::shape_reaches_geographic_pole_in_frame(authority, frame)
+                || crate::geometry::shape_spans_full_longitude(authority)
+                || (charted
+                    && authority
+                        .bounds()
+                        .is_some_and(|bounds| bounds.maxx() - bounds.minx() <= 180.0)),
+            authority_plan,
+            authority_cache,
+            frame,
+        })
+    }
+
+    fn classify_bounds(&self, bounds: Bounds) -> RectClass {
+        let working = self.working.classify_bounds(bounds);
+        let candidate = self.authority.classify_rect(rectangle_windows(bounds));
+        match (candidate, working) {
+            (AffineRectClass::Outside, RectClass::Outside) => RectClass::Outside,
+            (AffineRectClass::Interior, RectClass::Interior) => RectClass::Interior,
+            _ => RectClass::Boundary,
+        }
+    }
+
+    /// Refine a quotient-sensitive retained rectangle against the source-owned
+    /// geographic graph. The affine source and working chart admit ordinary
+    /// candidates without rebuilding the source graph.
+    fn exact_classify_bounds(&self, bounds: Bounds, proposed: RectClass) -> RectClass {
+        if !self.exact || proposed == RectClass::Interior {
+            return proposed;
+        }
+        let candidate = bounds_to_shape(bounds);
+        let candidate_plan = PreparedPlan::transient(&candidate);
+        let candidate_cache = crate::geometry::FrameDependentCaches::default();
+        if !self.exact_intersects_bounds(&candidate, proposed) {
+            return RectClass::Outside;
+        }
+        let operands = PreparedTopologyPair::for_frame(
+            self.authority_plan,
+            self.authority_cache,
+            &candidate_plan,
+            &candidate_cache,
+            Some(self.frame),
+        );
+        if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
+            RectClass::Interior
+        } else {
+            RectClass::Boundary
+        }
+    }
+
+    fn exact_intersects_bounds(&self, candidate: &Shape, proposed: RectClass) -> bool {
+        if !self.exact || proposed == RectClass::Interior {
+            return true;
+        }
+        graph_intersects_rectangle_data(
+            self.authority_plan,
+            None,
+            Some(GeographicPrepared::new(
+                self.authority_plan,
+                self.authority_cache,
+                self.frame,
+            )),
+            candidate,
+        )
+        .unwrap_or(true)
+    }
+
+    fn exact_covers_point(&self, point: Point) -> bool {
+        if !self.exact {
+            return self.working.covers_point(point);
+        }
+        let candidate = PreparedPlan::transient(&Shape::Point(point));
+        let candidate_cache = crate::geometry::FrameDependentCaches::default();
+        topology_scalar_pair(
+            &Predicate::Covers.spec(),
+            PreparedTopologyPair::for_frame(
+                self.authority_plan,
+                self.authority_cache,
+                &candidate,
+                &candidate_cache,
+                Some(self.frame),
+            ),
+        )
+    }
+}
+
+const fn rectangle_windows(bounds: Bounds) -> DegreeWindowResult {
+    let (Some(longitude), Some(latitude)) = (
+        Bound::new(bounds.minx(), bounds.maxx()),
+        Bound::new(bounds.miny(), bounds.maxy()),
+    ) else {
+        return DegreeWindowResult::Boundary;
+    };
+    DegreeWindowResult::Windows(CertifiedDegreeWindows {
+        latitude,
+        longitude: CertifiedLongitudeDegrees::One(longitude),
+    })
+}
+
 struct AreaRectClassifier {
     bounds: Option<Bounds>,
     tester: Arc<PointBatchTester>,
@@ -90,7 +224,7 @@ struct AreaRectClassifier {
 }
 
 impl NativeRectClassifier {
-    pub(crate) fn new(source: &Shape) -> Self {
+    pub(crate) fn new(source: &Shape) -> Result<Self, crate::error::Error> {
         Self::new_with_area_tester(source, None)
     }
 
@@ -101,19 +235,17 @@ impl NativeRectClassifier {
     pub(crate) fn new_with_area_tester(
         source: &Shape,
         area_tester: Option<Arc<PointBatchTester>>,
-    ) -> Self {
+    ) -> Result<Self, crate::error::Error> {
         let mut polygons = Vec::new();
         collect_area(source, &mut polygons);
-        let area = dissolved_area_shape(polygons)
-            .expect("polygonal classifier union should not fail with ordinate dropping")
-            .map(|shape| {
-                let tester = area_tester.unwrap_or_else(|| Arc::new(PointBatchTester::new(&shape)));
-                AreaRectClassifier {
-                    bounds: shape.bounds(),
-                    tester,
-                    boundary_index: polygon_segment_index(&shape),
-                }
-            });
+        let area = dissolved_area_shape(polygons)?.map(|shape| {
+            let tester = area_tester.unwrap_or_else(|| Arc::new(PointBatchTester::new(&shape)));
+            AreaRectClassifier {
+                bounds: shape.bounds(),
+                tester,
+                boundary_index: polygon_segment_index(&shape),
+            }
+        });
 
         let mut line_seqs = Vec::new();
         collect_line_sequences(source, &mut line_seqs);
@@ -123,12 +255,12 @@ impl NativeRectClassifier {
         let mut points = Vec::new();
         collect_points(source, &mut points);
 
-        Self {
+        Ok(Self {
             source_bounds: source.bounds(),
             area,
             line_index,
             points: points.into_boxed_slice(),
-        }
+        })
     }
 
     /// Classify a closed lon/lat rectangle against the source. Polygonal
@@ -232,7 +364,7 @@ impl AreaRectClassifier {
                 RectContact::None => {},
             }
         }
-        let center = Point::new_unchecked_xy(
+        let center = Point::new_raw_xy(
             f64::midpoint(bounds.minx(), bounds.maxx()),
             f64::midpoint(bounds.miny(), bounds.maxy()),
         );
@@ -425,8 +557,9 @@ pub(crate) fn segment_vs_rect(segment: Segment, rect: Bounds) -> RectContact {
 
 /// Cover `source` with `roots`' descendants at `target_depth`.
 ///
-/// Interior branches bulk-emit their descendants; boundary branches descend;
-/// empty branches prune. `roots` must be DISJOINT cells (every caller passes
+/// Candidate branches descend until their terminal refinement; quotient-
+/// sensitive retained candidates receive exact graph refinement before output.
+/// `roots` must be DISJOINT cells (every caller passes
 /// the system's base cells), so each target-depth cell is classified exactly
 /// once and the outputs need ordering but never dedup.
 ///
@@ -438,22 +571,32 @@ pub(crate) fn segment_vs_rect(segment: Segment, rect: Bounds) -> RectContact {
 /// [`CoverBudgetExceeded`] (naming `max_cells`) before the next allocation
 /// instead of flooding memory. `None` = unlimited.
 pub(crate) fn cover<C: RectCell>(
-    source: &Shape,
+    authority: &Shape,
+    working: &Shape,
+    authority_plan: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+    charted: bool,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
-) -> Result<Vec<(C, bool)>, CoverBudgetExceeded> {
-    let classifier = NativeRectClassifier::new(source);
+) -> Result<Vec<(C, bool)>, CoverError> {
+    let classifier = GeographicCandidateClassifier::new(
+        authority,
+        working,
+        charted,
+        authority_plan,
+        authority_cache,
+        frame,
+    )?;
     let mut cells = Vec::new();
-    // Boundary frames: (cell, carried bounds). Interior: cell only — inherited
-    // Interior never reclassifies, so bounds are irrelevant.
+    // Carry bounds through every traversal step so the terminal can be
+    // refined without recomputing a cell's rectangle.
     let mut boundary: Vec<(C, Bounds)> = roots
         .into_iter()
         .map(|cell| (cell, cell.bounds()))
         .collect();
     let mut interior: Vec<C> = Vec::new();
-    // Drain interior first when both are non-empty: pure bulk-emit, no
-    // classify — keeps the hot boundary path denser in the cache.
     loop {
         while let Some(cell) = interior.pop() {
             if cell.depth() >= target_depth {
@@ -469,15 +612,33 @@ pub(crate) fn cover<C: RectCell>(
         match classifier.classify_bounds(bounds) {
             RectClass::Outside => {},
             RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push((cell, true));
-                } else {
-                    interior.extend(cell.children());
+                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
+                    RectClass::Outside => {},
+                    RectClass::Interior => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push((cell, true));
+                        } else {
+                            interior.extend(cell.children());
+                        }
+                    },
+                    RectClass::Boundary => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push((cell, false));
+                        } else {
+                            cell.push_children_bounds(bounds, &mut boundary);
+                        }
+                    },
                 }
             },
             RectClass::Boundary => {
                 if cell.depth() >= target_depth {
+                    if !classifier
+                        .exact_intersects_bounds(&bounds_to_shape(bounds), RectClass::Boundary)
+                    {
+                        continue;
+                    }
                     // A boundary cell at the target depth intersects but is
                     // not fully covered.
                     ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
@@ -510,12 +671,24 @@ pub(crate) fn cover<C: RectCell>(
 /// `max_cells` counts only visible emitted center cells (not a superset overlap
 /// product). Returns a sorted unique cell vector.
 pub(crate) fn cover_center<C: RectCell>(
-    source: &Shape,
+    authority: &Shape,
+    working: &Shape,
+    authority_plan: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+    charted: bool,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
-) -> Result<Vec<C>, CoverBudgetExceeded> {
-    let classifier = NativeRectClassifier::new(source);
+) -> Result<Vec<C>, CoverError> {
+    let classifier = GeographicCandidateClassifier::new(
+        authority,
+        working,
+        charted,
+        authority_plan,
+        authority_cache,
+        frame,
+    )?;
     let mut cells = Vec::new();
     let mut boundary: Vec<(C, Bounds)> = roots
         .into_iter()
@@ -537,20 +710,39 @@ pub(crate) fn cover_center<C: RectCell>(
         match classifier.classify_bounds(bounds) {
             RectClass::Outside => {},
             RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push(cell);
-                } else {
-                    interior.extend(cell.children());
+                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
+                    RectClass::Outside => {},
+                    RectClass::Interior => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push(cell);
+                        } else {
+                            interior.extend(cell.children());
+                        }
+                    },
+                    RectClass::Boundary => {
+                        if cell.depth() >= target_depth {
+                            let center = Point::new_raw_xy(
+                                f64::midpoint(bounds.minx(), bounds.maxx()),
+                                f64::midpoint(bounds.miny(), bounds.maxy()),
+                            );
+                            if classifier.exact_covers_point(center) {
+                                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                                cells.push(cell);
+                            }
+                        } else {
+                            cell.push_children_bounds(bounds, &mut boundary);
+                        }
+                    },
                 }
             },
             RectClass::Boundary => {
                 if cell.depth() >= target_depth {
-                    let center = Point::new_unchecked_xy(
+                    let center = Point::new_raw_xy(
                         f64::midpoint(bounds.minx(), bounds.maxx()),
                         f64::midpoint(bounds.miny(), bounds.maxy()),
                     );
-                    if classifier.covers_point(center) {
+                    if classifier.exact_covers_point(center) {
                         ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
                         cells.push(cell);
                     }
@@ -558,6 +750,75 @@ pub(crate) fn cover_center<C: RectCell>(
                     cell.push_children_bounds(bounds, &mut boundary);
                 }
             },
+        }
+    }
+    cells.sort_unstable();
+    Ok(cells)
+}
+
+/// Cover `source` with target-depth cells fully contained by it.
+///
+/// Boundary descendants remain traversal state but are never retained or
+/// charged to `max_cells`; only visible interior cells consume the output
+/// budget.
+pub(crate) fn cover_within<C: RectCell>(
+    authority: &Shape,
+    working: &Shape,
+    authority_plan: &PreparedPlan,
+    authority_cache: &crate::geometry::FrameDependentCaches,
+    frame: crate::geographic::GeographicFrame,
+    charted: bool,
+    roots: Vec<C>,
+    target_depth: u8,
+    max_cells: Option<usize>,
+) -> Result<Vec<C>, CoverError> {
+    let classifier = GeographicCandidateClassifier::new(
+        authority,
+        working,
+        charted,
+        authority_plan,
+        authority_cache,
+        frame,
+    )?;
+    let mut cells = Vec::new();
+    let mut boundary: Vec<(C, Bounds)> = roots
+        .into_iter()
+        .map(|cell| (cell, cell.bounds()))
+        .collect();
+    let mut interior: Vec<C> = Vec::new();
+    loop {
+        while let Some(cell) = interior.pop() {
+            if cell.depth() >= target_depth {
+                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                cells.push(cell);
+            } else {
+                interior.extend(cell.children());
+            }
+        }
+        let Some((cell, bounds)) = boundary.pop() else {
+            break;
+        };
+        match classifier.classify_bounds(bounds) {
+            RectClass::Interior => {
+                match classifier.exact_classify_bounds(bounds, RectClass::Interior) {
+                    RectClass::Interior => {
+                        if cell.depth() >= target_depth {
+                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+                            cells.push(cell);
+                        } else {
+                            interior.extend(cell.children());
+                        }
+                    },
+                    RectClass::Boundary if cell.depth() < target_depth => {
+                        cell.push_children_bounds(bounds, &mut boundary);
+                    },
+                    RectClass::Outside | RectClass::Boundary => {},
+                }
+            },
+            RectClass::Boundary if cell.depth() < target_depth => {
+                cell.push_children_bounds(bounds, &mut boundary);
+            },
+            RectClass::Outside | RectClass::Boundary => {},
         }
     }
     cells.sort_unstable();
@@ -580,8 +841,8 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
-) -> Result<Vec<(C, bool)>, CoverBudgetExceeded> {
-    let classifier = NativeRectClassifier::new(source);
+) -> Result<Vec<(C, bool)>, CoverError> {
+    let classifier = NativeRectClassifier::new(source)?;
     let mut cells = Vec::new();
     let mut stack: Vec<(C, bool)> = roots.into_iter().map(|cell| (cell, false)).collect();
     while let Some((cell, inherited_interior)) = stack.pop() {
@@ -617,10 +878,12 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ErrorKind;
+    use crate::geometry::GeometryErrorKind;
     use crate::grid::geohash;
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
-        let unit = Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0);
+        let unit = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
         let segment = crate::geometry::Segment {
             start: crate::geometry::XY::new(start.0, start.1),
             end: crate::geometry::XY::new(end.0, end.1),
@@ -660,20 +923,109 @@ mod tests {
     }
 
     #[test]
+    fn classifier_propagates_invalid_dissolved_area() {
+        use crate::geometry::Ring;
+
+        let z_square = Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_axes(
+                    0.0,
+                    0.0,
+                    crate::geometry::ZOrdinate(Some(1.0)),
+                    crate::geometry::MOrdinate(None),
+                ),
+                Point::new_raw_axes(
+                    2.0,
+                    0.0,
+                    crate::geometry::ZOrdinate(Some(1.0)),
+                    crate::geometry::MOrdinate(None),
+                ),
+                Point::new_raw_axes(
+                    2.0,
+                    2.0,
+                    crate::geometry::ZOrdinate(Some(1.0)),
+                    crate::geometry::MOrdinate(None),
+                ),
+                Point::new_raw_axes(
+                    0.0,
+                    2.0,
+                    crate::geometry::ZOrdinate(Some(1.0)),
+                    crate::geometry::MOrdinate(None),
+                ),
+                Point::new_raw_axes(
+                    0.0,
+                    0.0,
+                    crate::geometry::ZOrdinate(Some(1.0)),
+                    crate::geometry::MOrdinate(None),
+                ),
+            ]),
+            Vec::new(),
+        );
+        let square = Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(1.0, 1.0),
+                Point::new_raw_xy(3.0, 1.0),
+                Point::new_raw_xy(3.0, 3.0),
+                Point::new_raw_xy(1.0, 3.0),
+                Point::new_raw_xy(1.0, 1.0),
+            ]),
+            Vec::new(),
+        );
+        let source = Shape::GeometryCollection(
+            vec![Shape::Polygon(z_square), Shape::Polygon(square)].into(),
+        );
+        let authority_plan = PreparedPlan::new(source.clone());
+        let authority_cache = crate::geometry::FrameDependentCaches::default();
+
+        let error = match cover(
+            &source,
+            &source,
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
+            geohash::roots(),
+            1,
+            None,
+        ) {
+            Ok(_) => panic!("cover preparation must reject dropped ordinates"),
+            Err(CoverError::Preparation(error)) => error,
+            Err(CoverError::Budget(error)) => panic!("unexpected budget error: {error}"),
+        };
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
+        ));
+    }
+
+    #[test]
     fn cover_bounds_carry_matches_recompute() {
         use crate::geometry::Ring;
         use crate::grid::tile;
         // Boundary-heavy lat band (z15) — the investigation's public case shape.
         let shell = vec![
-            Point::new_unchecked_xy(-120.0, 30.0),
-            Point::new_unchecked_xy(-60.0, 30.0),
-            Point::new_unchecked_xy(-60.0, 30.5),
-            Point::new_unchecked_xy(-120.0, 30.5),
-            Point::new_unchecked_xy(-120.0, 30.0),
+            Point::new_raw_xy(-120.0, 30.0),
+            Point::new_raw_xy(-60.0, 30.0),
+            Point::new_raw_xy(-60.0, 30.5),
+            Point::new_raw_xy(-120.0, 30.5),
+            Point::new_raw_xy(-120.0, 30.0),
         ];
-        let band = Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()));
+        let band = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
+        let authority_plan = PreparedPlan::new(band.clone());
+        let authority_cache = crate::geometry::FrameDependentCaches::default();
         let target = 15_u8;
-        let new = cover(&band, vec![tile::root()], target, None).expect("cover");
+        let new = cover(
+            &band,
+            &band,
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
+            vec![tile::root()],
+            target,
+            None,
+        )
+        .expect("cover");
         let old = cover_recompute_baseline(&band, vec![tile::root()], target, None).expect("base");
         assert_eq!(
             new.iter().map(|(c, i)| (*c, *i)).collect::<Vec<_>>(),
@@ -689,24 +1041,32 @@ mod tests {
     fn cover_rejects_world_scale_fine_depth_before_flooding() {
         use crate::geometry::Ring;
         let shell = vec![
-            Point::new_unchecked_xy(-179.0, -85.0),
-            Point::new_unchecked_xy(179.0, -85.0),
-            Point::new_unchecked_xy(179.0, 85.0),
-            Point::new_unchecked_xy(-179.0, 85.0),
-            Point::new_unchecked_xy(-179.0, -85.0),
+            Point::new_raw_xy(-179.0, -85.0),
+            Point::new_raw_xy(179.0, -85.0),
+            Point::new_raw_xy(179.0, 85.0),
+            Point::new_raw_xy(-179.0, 85.0),
+            Point::new_raw_xy(-179.0, -85.0),
         ];
-        let world = Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()));
+        let world = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
+        let authority_plan = PreparedPlan::new(world.clone());
+        let authority_cache = crate::geometry::FrameDependentCaches::default();
         match cover(
             &world,
+            &world,
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
             geohash::roots(),
             10,
             Some(crate::grid::GRID_MAX_CELLS),
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
-            Err(err) => {
+            Err(CoverError::Budget(err)) => {
                 assert_eq!(err.limit, crate::grid::GRID_MAX_CELLS);
                 assert!(err.to_string().contains("max_cells"));
             },
+            Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }
     }
 
@@ -716,17 +1076,41 @@ mod tests {
         // Unit square: center-rule at coarse precision should match
         // overlap-then-filter on the same classifier.
         let shell = vec![
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_xy(1.0, 0.0),
-            Point::new_unchecked_xy(1.0, 1.0),
-            Point::new_unchecked_xy(0.0, 1.0),
-            Point::new_unchecked_xy(0.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(0.0, 0.0),
         ];
-        let poly = Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()));
+        let poly = Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()));
+        let authority_plan = PreparedPlan::new(poly.clone());
+        let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
-        let center = cover_center(&poly, geohash::roots(), depth, None).expect("cover");
-        let overlap = cover(&poly, geohash::roots(), depth, None).expect("cover");
-        let classifier = NativeRectClassifier::new(&poly);
+        let center = cover_center(
+            &poly,
+            &poly,
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
+            geohash::roots(),
+            depth,
+            None,
+        )
+        .expect("cover");
+        let overlap = cover(
+            &poly,
+            &poly,
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
+            geohash::roots(),
+            depth,
+            None,
+        )
+        .expect("cover");
+        let classifier = NativeRectClassifier::new(&poly).expect("classifier");
         let filtered: Vec<_> = overlap
             .into_iter()
             .filter_map(|(cell, interior)| {
@@ -734,7 +1118,7 @@ mod tests {
                     return Some(cell);
                 }
                 let bounds = cell.bounds();
-                let c = Point::new_unchecked_xy(
+                let c = Point::new_raw_xy(
                     f64::midpoint(bounds.minx(), bounds.maxx()),
                     f64::midpoint(bounds.miny(), bounds.maxy()),
                 );
@@ -742,5 +1126,54 @@ mod tests {
             })
             .collect();
         assert_eq!(center, filtered);
+    }
+
+    #[test]
+    fn periodic_authority_and_internal_chart_emit_the_same_candidates() {
+        use crate::geometry::Ring;
+
+        let raw = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(179.0, -1.0),
+                Point::new_raw_xy(-179.0, -1.0),
+                Point::new_raw_xy(-179.0, 1.0),
+                Point::new_raw_xy(179.0, 1.0),
+                Point::new_raw_xy(179.0, -1.0),
+            ]),
+            Vec::new(),
+        ));
+        let chart = raw.split_antimeridian().unwrap();
+        let raw_plan = PreparedPlan::new(raw.clone());
+        let raw_cache = crate::geometry::FrameDependentCaches::default();
+        let chart_plan = PreparedPlan::new(chart.clone());
+        let chart_cache = crate::geometry::FrameDependentCaches::default();
+        let from_raw = cover(
+            &raw,
+            &chart,
+            &raw_plan,
+            &raw_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            true,
+            geohash::roots(),
+            3,
+            None,
+        )
+        .unwrap();
+        let from_chart = cover(
+            &chart,
+            &chart,
+            &chart_plan,
+            &chart_cache,
+            crate::geographic::GeographicFrame::crs84(),
+            false,
+            geohash::roots(),
+            3,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            from_raw.iter().map(|(cell, _)| cell).collect::<Vec<_>>(),
+            from_chart.iter().map(|(cell, _)| cell).collect::<Vec<_>>()
+        );
     }
 }

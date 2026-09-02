@@ -1,10 +1,9 @@
 //! Immutable STR-packed envelope tree — the bulk half of the spatial index.
 //!
 //! Built once with the sort-tile-recursive layout (one global x-sort, one
-//! y-sort per strip, flat level arrays — no per-node heap graph), queried
-//! with explicit-stack descents, and "mutated" only by tombstoning: removed
-//! handles flip a bitmap bit, post-build inserts live in the index's small
-//! dynamic overflow tree. Node fields are `pub(super)` — the nearest
+//! y-sort per strip, flat level arrays — no per-node heap graph). Liveness is
+//! owned by the index row table; post-build inserts live in its small dynamic
+//! overflow tree. Node fields are `pub(super)` — the nearest
 //! frontier and the convex descent in `mod.rs` walk levels directly.
 
 use rstar::{AABB, Envelope as _};
@@ -25,9 +24,8 @@ pub(super) struct StrNode {
 }
 
 /// The immutable bulk tree. Each `entries[*].idx` is a stable build handle in
-/// `0..initial_len()`; rows with no entry (skipped empties) are pre-tombstoned
-/// but still occupy a handle, so tombstones index by HANDLE — `remove` never
-/// searches the tree.
+/// `0..initial_len()`; rows with no entry (skipped empties) still occupy a
+/// handle in the row liveness table, so `remove` never searches the tree.
 #[derive(Clone, Debug, Default)]
 pub(super) struct StaticStrTree {
     /// STR-ordered entries (leaf children).
@@ -35,8 +33,7 @@ pub(super) struct StaticStrTree {
     /// `levels[0]` = leaves; the last level is the root layer (length <=
     /// `NODE_CAP` — descents seed from it directly).
     levels: Vec<Vec<StrNode>>,
-    removed: Vec<u8>,
-    live: usize,
+    initial_len: usize,
 }
 
 impl StaticStrTree {
@@ -49,43 +46,32 @@ impl StaticStrTree {
     }
 
     /// Bulk-load with the STR layout. `total_rows` is the input row count —
-    /// each `entry.idx` is a stable handle in `0..total_rows`. Rows with no
-    /// entry (e.g. skipped empty geometries) are pre-tombstoned, so `removed`
-    /// stays sized to `total_rows`: that length is also the tree/overflow handle
-    /// boundary ([`initial_len`](Self::initial_len)) and the index for
-    /// `removed[entry.idx]`, both of which must span every input row, not just
-    /// the indexed ones.
+    /// each `entry.idx` is a stable handle in `0..total_rows`. `total_rows`
+    /// is the tree/overflow handle boundary and spans skipped rows too.
     pub(super) fn build(entries: Vec<IndexEntry>, total_rows: usize) -> crate::error::Result<Self> {
-        Self::build_with_removed(entries, total_rows, false)
+        Self::build_with_len(entries, total_rows)
     }
 
     /// Build a dense bulk tree whose every input row has an entry. Packed
-    /// arrays prove this at admission, so the tombstone bitmap can start at
-    /// zero without the sparse-path fill pass.
+    /// arrays prove this at admission.
     pub(super) fn build_dense(entries: Vec<IndexEntry>) -> crate::error::Result<Self> {
-        let total_rows = entries.len();
-        Self::build_with_removed(entries, total_rows, true)
+        let total_rows = entries
+            .iter()
+            .map(|entry| entry.idx)
+            .max()
+            .map_or(0, |idx| idx + 1);
+        Self::build_with_len(entries, total_rows)
     }
 
-    fn build_with_removed(
+    fn build_with_len(
         mut entries: Vec<IndexEntry>,
         total_rows: usize,
-        dense: bool,
     ) -> crate::error::Result<Self> {
         let entry_count = entries.len();
-        let mut removed = Vec::new();
-        crate::boundary::try_reserve_vec(&mut removed, total_rows)?;
-        removed.resize(total_rows, u8::from(!dense));
-        if !dense {
-            for entry in &entries {
-                removed[entry.idx] = 0;
-            }
-        }
         let mut tree = Self {
             entries: Vec::new(),
             levels: Vec::new(),
-            removed,
-            live: entry_count,
+            initial_len: total_rows,
         };
         if entry_count == 0 {
             return Ok(tree);
@@ -148,33 +134,15 @@ impl StaticStrTree {
     /// Handles `0..initial_len()` belong to this tree; later handles are the
     /// index's overflow inserts.
     pub(super) const fn initial_len(&self) -> usize {
-        self.removed.len()
-    }
-
-    pub(super) const fn live(&self) -> usize {
-        self.live
-    }
-
-    /// Tombstone a build handle. `true` when it was live.
-    pub(super) fn tombstone(&mut self, handle: usize) -> bool {
-        let slot = &mut self.removed[handle];
-        if *slot != 0 {
-            return false;
-        }
-        *slot = 1;
-        self.live -= 1;
-        true
+        self.initial_len
     }
 
     /// Every live entry, in STR storage order.
-    pub(super) fn live_entries(&self) -> impl Iterator<Item = &IndexEntry> {
-        self.entries
-            .iter()
-            .filter(|entry| self.removed[entry.idx] == 0)
-    }
-
-    pub(super) fn is_live(&self, handle: usize) -> bool {
-        self.removed[handle] == 0
+    pub(super) fn live_entries<'a>(
+        &'a self,
+        live: &'a [u8],
+    ) -> impl Iterator<Item = &'a IndexEntry> {
+        self.entries.iter().filter(|entry| live[entry.idx] != 0)
     }
 
     /// The root layer (empty tree → empty slice) — descent seeds.
@@ -199,10 +167,12 @@ impl StaticStrTree {
     /// Live handles whose envelope intersects `query`.
     pub(super) fn each_intersecting(
         &self,
+        live: &[u8],
         query: &AABB<[f64; 2]>,
         mut visit: impl FnMut(usize) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
         self.descend(
+            live,
             |envelope| intersects(envelope, query),
             |entry| {
                 if intersects(&entry.envelope, query) {
@@ -216,10 +186,12 @@ impl StaticStrTree {
     /// Live handles whose envelope is fully contained in `query`.
     pub(super) fn each_contained(
         &self,
+        live: &[u8],
         query: &AABB<[f64; 2]>,
         mut visit: impl FnMut(usize) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
         self.descend(
+            live,
             |envelope| intersects(envelope, query),
             |entry| {
                 if contains_envelope(query, &entry.envelope) {
@@ -235,11 +207,13 @@ impl StaticStrTree {
     /// semantics: the entry's envelope distance decides).
     pub(super) fn each_within_distance_2(
         &self,
+        live: &[u8],
         point: [f64; 2],
         max_distance_2: f64,
         mut visit: impl FnMut(usize) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
         self.descend(
+            live,
             |envelope| distance_2(envelope, &point) <= max_distance_2,
             |entry| {
                 if distance_2(&entry.envelope, &point) <= max_distance_2 {
@@ -260,6 +234,7 @@ impl StaticStrTree {
     /// ids), so one buffer per thread serves every call.
     fn descend(
         &self,
+        live: &[u8],
         enter: impl Fn(&AABB<[f64; 2]>) -> bool,
         mut leaf: impl FnMut(&IndexEntry) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
@@ -280,7 +255,7 @@ impl StaticStrTree {
                 let node = self.node(level, index);
                 if level == 0 {
                     for entry in self.leaf_entries(node) {
-                        if self.removed[entry.idx] == 0 {
+                        if live[entry.idx] != 0 {
                             leaf(entry)?;
                         }
                     }
@@ -346,7 +321,7 @@ crate::heapless!(IndexEntry, StrNode);
 
 impl HeapSize for StaticStrTree {
     fn heap_bytes(&self) -> usize {
-        self.entries.heap_bytes() + self.levels.heap_bytes() + self.removed.heap_bytes()
+        self.entries.heap_bytes() + self.levels.heap_bytes()
     }
 }
 
@@ -403,15 +378,14 @@ mod tests {
     fn brute_force_parity_across_sizes_and_tombstones() {
         for count in [0, 1, 15, 16, 17, 100, 1000] {
             let entries = fixture(count);
-            let mut tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
+            let tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
             let removed: Vec<usize> = (0..count).filter(|idx| idx % 7 == 3).collect();
+            let mut live = vec![1_u8; count];
             for &handle in &removed {
-                assert!(tree.tombstone(handle));
-                assert!(!tree.tombstone(handle), "double tombstone must be false");
+                live[handle] = 0;
             }
-            assert_eq!(tree.live(), count - removed.len());
             assert_eq!(
-                sorted(tree.live_entries().map(|entry| entry.idx).collect()),
+                sorted(tree.live_entries(&live).map(|entry| entry.idx).collect()),
                 brute(&entries, &removed, |_| true)
             );
             for query in [
@@ -421,7 +395,7 @@ mod tests {
                 AABB::from_point([73.0, 131.0]),
             ] {
                 let mut hits = Vec::new();
-                tree.each_intersecting(&query, |idx| {
+                tree.each_intersecting(&live, &query, |idx| {
                     hits.push(idx);
                     Ok(())
                 })
@@ -433,7 +407,7 @@ mod tests {
                         .intersects(&query))
                 );
                 let mut inside = Vec::new();
-                tree.each_contained(&query, |idx| {
+                tree.each_contained(&live, &query, |idx| {
                     inside.push(idx);
                     Ok(())
                 })
@@ -447,7 +421,7 @@ mod tests {
             let point = [120.0, 90.0];
             for radius_2 in [0.0, 100.0, 10_000.0] {
                 let mut near = Vec::new();
-                tree.each_within_distance_2(point, radius_2, |idx| {
+                tree.each_within_distance_2(&live, point, radius_2, |idx| {
                     near.push(idx);
                     Ok(())
                 })
@@ -473,6 +447,7 @@ mod tests {
         let tree = StaticStrTree::build(vec![positive, negative], 2).expect("tree");
         let mut negative_hits = Vec::new();
         tree.each_intersecting(
+            &[1, 1],
             &AABB::from_corners([-1.0e308, -1.0e308], [-9.0e307, -9.0e307]),
             |idx| {
                 negative_hits.push(idx);

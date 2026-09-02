@@ -88,36 +88,8 @@ where
     })
 }
 
-pub(crate) fn cell_children_array<G, P>(
-    kind: GridKind,
-    cell: G,
-    depth: Option<&Bound<'_, PyAny>>,
-    parse_depth: P,
-) -> PyResult<PyCellArray>
-where
-    G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
-{
-    cell_array_from_keys(kind, cell_children(cell, depth, parse_depth)?)
-}
-
 pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyResult<PyCellArray> {
     cell_array_from_keys(kind, cell.neighbors())
-}
-
-pub(crate) fn cell_children<G, P>(
-    cell: G,
-    depth: Option<&Bound<'_, PyAny>>,
-    parse_depth: P,
-) -> PyResult<Vec<G>>
-where
-    G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
-{
-    let Some(target) = children_target_depth(cell, depth, parse_depth)? else {
-        return Ok(Vec::new());
-    };
-    cell.children_to(target).map_err(Into::into)
 }
 
 pub(crate) fn cell_descendant_count<G, P>(
@@ -191,5 +163,5 @@ pub(crate) fn cell_array_from_keys<G: GridCell>(
     for cell in cells {
         crate::try_push(&mut ids, cell.hash_key())?;
     }
-    Ok(PyCellArray::from_trusted_ids(kind, ids))
+    Ok(PyCellArray::from_ids(kind, ids))
 }

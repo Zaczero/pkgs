@@ -140,8 +140,47 @@ macro_rules! grid_cell_common_pymethods {
             /// --------
             #[doc = $example_children]
             #[pyo3(signature = ($depth = None), text_signature = $children_text_signature)]
-            fn children(&self, $depth: Option<&Bound<'_, PyAny>>) -> PyResult<PyCellArray> {
-                cell_children_array($kind, self.cell, $depth, $parse_depth)
+            fn children(
+                &self,
+                py: pyo3::Python<'_>,
+                $depth: Option<&Bound<'_, PyAny>>,
+            ) -> PyResult<PyCellArray> {
+                fn child_ids<G: crate::grid::cell::GridCell>(
+                    cell: G,
+                    target: Option<u8>,
+                ) -> PyResult<Vec<u64>> {
+                    let Some(target) = target.or_else(|| {
+                        cell.depth()
+                            .checked_add(1)
+                            .filter(|target| *target <= G::MAX_DEPTH)
+                    }) else {
+                        return Ok(Vec::new());
+                    };
+                    let children = cell.children_to(target)?;
+                    let mut ids = crate::try_vec_with_capacity(children.len())?;
+                    for child in children {
+                        crate::try_push(&mut ids, child.hash_key())?;
+                    }
+                    Ok(ids)
+                }
+
+                let target = match $depth {
+                    Some(value) if !pyo3::types::PyAnyMethods::is_none(value) => {
+                        let target = $parse_depth(value)?;
+                        if target < self.cell.depth() {
+                            return Err(crate::py::errors::GeometryError::new_err(format!(
+                                "children {} must be >= cell {}",
+                                $depth_name,
+                                $depth_name
+                            )));
+                        }
+                        Some(target)
+                    },
+                    _ => None,
+                };
+                let cell = self.cell;
+                let ids = py.detach(move || child_ids(cell, target))?;
+                Ok(PyCellArray::from_ids($kind, ids))
             }
 
             #[doc = concat!("Number of descendant cells at a finer ", $depth_name, ", counted closed-form without materializing them.")]

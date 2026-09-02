@@ -40,23 +40,30 @@ pub(in crate::py::cells) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// visible rule and rebuilds the same certified overlap traversal on demand.
 pub(super) fn build_coverage(
     geometry: &PyGeometry,
-    resolution: &Bound<'_, PyAny>,
+    resolution: Resolution,
     cell_rule: CellRule,
     max_cells: Option<usize>,
 ) -> PyResult<Vec<CellIndex>> {
-    let resolution = parse_h3_resolution(resolution)?;
     let (membership_geometry, cells) = match cell_rule {
-        // Center retains its specialized native tiler. Its split-normalized
-        // shape stays contained to this legacy owner.
+        // Center retains its specialized native tiler. The split shape is only
+        // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
             let (membership_geometry, cover_shape, _) = coverage_factory_shapes(geometry, "H3")?;
-            let annotated =
-                h3_tile(&cover_shape, resolution, max_cells).map_err(|error| match error {
-                    H3TileError::Budget(error) => cover_budget_err(error),
-                    H3TileError::Allocation => {
-                        PyMemoryError::new_err("H3 coverage allocation failed")
-                    },
-                })?;
+            let authority = membership_geometry.plan_or_transient();
+            let frame = crate::geometry::geographic_frame(&membership_geometry.frame)?
+                .expect("H3 membership geometry has a geographic frame");
+            let annotated = h3_tile(
+                &cover_shape,
+                &authority,
+                &membership_geometry.frame_cache(),
+                frame,
+                resolution,
+                max_cells,
+            )
+            .map_err(|error| match error {
+                H3TileError::Budget(error) => cover_budget_err(error),
+                H3TileError::Allocation => PyMemoryError::new_err("H3 coverage allocation failed"),
+            })?;
             let cells = crate::try_collect_results(
                 annotated.into_iter().map(|cell| Ok::<_, PyErr>(cell.cell)),
             )?;

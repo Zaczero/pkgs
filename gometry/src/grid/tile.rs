@@ -92,6 +92,7 @@ impl Tile {
     /// silently clamped — callers that need a typed error raise at the
     /// boundary; mercantile-style clamp is not offered.
     pub(crate) fn from_lonlat(lon: f64, lat: f64, zoom: u8) -> Option<Self> {
+        let (lon, lat) = super::canonical_lonlat(lon, lat);
         if !latitude_in_tile_domain(lat) {
             return None;
         }
@@ -176,7 +177,7 @@ impl Tile {
             let n = PI * (1.0 - 2.0 * y / cells);
             n.sinh().atan().to_degrees()
         };
-        Bounds::new_unchecked(
+        Bounds::new_raw(
             lon(f64::from(self.x)),
             lat(f64::from(self.y) + 1.0),
             lon(f64::from(self.x) + 1.0),
@@ -270,19 +271,19 @@ impl crate::grid::coverer::RectCell for Tile {
         let kids = Self::children(self);
         out.push((
             kids[0],
-            Bounds::new_unchecked(parent.minx(), mid_lat, mid_lon, parent.maxy()),
+            Bounds::new_raw(parent.minx(), mid_lat, mid_lon, parent.maxy()),
         ));
         out.push((
             kids[1],
-            Bounds::new_unchecked(mid_lon, mid_lat, parent.maxx(), parent.maxy()),
+            Bounds::new_raw(mid_lon, mid_lat, parent.maxx(), parent.maxy()),
         ));
         out.push((
             kids[2],
-            Bounds::new_unchecked(parent.minx(), parent.miny(), mid_lon, mid_lat),
+            Bounds::new_raw(parent.minx(), parent.miny(), mid_lon, mid_lat),
         ));
         out.push((
             kids[3],
-            Bounds::new_unchecked(mid_lon, parent.miny(), parent.maxx(), mid_lat),
+            Bounds::new_raw(mid_lon, parent.miny(), parent.maxx(), mid_lat),
         ));
     }
     fn edge_neighbors(self) -> [Option<Self>; 4] {
@@ -376,6 +377,24 @@ mod tests {
         assert!((bounds.maxx() - -8.789_062_5).abs() < 1e-9);
         assert!((bounds.miny() - 53.120_405_283_106_564).abs() < 1e-9);
         assert!((bounds.maxy() - 53.330_872_983_017_07).abs() < 1e-9);
+    }
+
+    #[test]
+    fn periodic_seam_has_canonical_owner() {
+        for lat in [-45.0, 0.0, 45.0] {
+            let owner = Tile::from_lonlat(-180.0, lat, TILE_MAX_ZOOM).unwrap();
+            for lon in [180.0, 540.0, -540.0] {
+                assert_eq!(Tile::from_lonlat(lon, lat, TILE_MAX_ZOOM), Some(owner));
+            }
+            assert_eq!(
+                Tile::from_lonlat((-180.0_f64).next_up(), lat, TILE_MAX_ZOOM),
+                Some(owner)
+            );
+            assert_ne!(
+                Tile::from_lonlat(180.0_f64.next_down(), lat, TILE_MAX_ZOOM),
+                Some(owner)
+            );
+        }
     }
 
     #[test]

@@ -176,6 +176,7 @@ impl CellId {
 
     /// The leaf cell containing validated-finite lon/lat degrees.
     pub(crate) fn from_lonlat(lon: f64, lat: f64) -> Self {
+        let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
         Self::from_point(lonlat_to_point(lon, lat))
     }
 
@@ -326,6 +327,7 @@ impl CellId {
         clippy::same_name_method,
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
+    #[cfg(test)]
     pub(crate) fn contains(self, other: Self) -> bool {
         self.range_min() <= other && other <= self.range_max()
     }
@@ -337,15 +339,15 @@ impl CellId {
         let size = size_ij(level);
         let (face, i, j, _) = self.face_ij_orientation();
         [
-            Self::from_face_ij_wrap(face, i, j - size).parent_unchecked(level),
-            Self::from_face_ij_wrap(face, i + size, j).parent_unchecked(level),
-            Self::from_face_ij_wrap(face, i, j + size).parent_unchecked(level),
-            Self::from_face_ij_wrap(face, i - size, j).parent_unchecked(level),
+            Self::from_face_ij_wrap(face, i, j - size).parent_at_level(level),
+            Self::from_face_ij_wrap(face, i + size, j).parent_at_level(level),
+            Self::from_face_ij_wrap(face, i, j + size).parent_at_level(level),
+            Self::from_face_ij_wrap(face, i - size, j).parent_at_level(level),
         ]
     }
 
     /// `parent` for levels known to be coarser-or-equal (leaf → `level`).
-    const fn parent_unchecked(self, level: u8) -> Self {
+    const fn parent_at_level(self, level: u8) -> Self {
         let lsb = lsb_for_level(level);
         Self((self.0 & lsb.wrapping_neg()) | lsb)
     }
@@ -454,11 +456,30 @@ mod tests {
         samples
     }
 
+    #[test]
+    fn periodic_seam_and_poles_have_canonical_owners() {
+        for lat in [-45.0, 0.0, 45.0] {
+            let owner = CellId::from_lonlat(-180.0, lat);
+            for lon in [180.0, 540.0, -540.0] {
+                assert_eq!(CellId::from_lonlat(lon, lat), owner);
+            }
+            assert_eq!(CellId::from_lonlat((-180.0_f64).next_up(), lat), owner);
+            assert_ne!(CellId::from_lonlat(180.0_f64.next_down(), lat), owner);
+        }
+        for lat in [-90.0, 90.0] {
+            let owner = CellId::from_lonlat(-180.0, lat);
+            for lon in [-179.0, 0.0, 73.0, 180.0, 540.0] {
+                assert_eq!(CellId::from_lonlat(lon, lat), owner);
+            }
+        }
+    }
+
     /// Leaf encode + every-level parent match the reference crate exactly.
     #[test]
     fn encode_and_hierarchy_match_oracle() {
         for (lon, lat) in sample_points() {
             let leaf = CellId::from_lonlat(lon, lat);
+            let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
             let oracle_leaf =
                 ::s2::cellid::CellID::from(::s2::latlng::LatLng::from_degrees(lat, lon));
             assert_eq!(leaf.raw(), oracle_leaf.0, "leaf at lon={lon} lat={lat}");

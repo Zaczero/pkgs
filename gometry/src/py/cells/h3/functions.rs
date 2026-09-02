@@ -197,6 +197,7 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
 }
 
 fn h3_corner_cell(lon: f64, lat: f64, resolution: Resolution) -> PyResult<CellIndex> {
+    let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
     Ok(LatLng::new(lat, lon)
         .map_err(|error| GeometryError::new_err(error.to_string()))?
         .to_cell(resolution))
@@ -207,6 +208,7 @@ pub(in crate::py::cells) fn h3_cell_from_xy(
     lat: f64,
     resolution: Resolution,
 ) -> PyResult<PyH3Cell> {
+    let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
     let latlng =
         LatLng::new(lat, lon).map_err(|error| GeometryError::new_err(error.to_string()))?;
     Ok(PyH3Cell {
@@ -238,18 +240,19 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 /// resolution : int
 ///     H3 resolution (``0``-``15``; finer at higher values).
 ///
-/// cell_rule : {'center', 'within', 'overlap', 'bbox'}, default 'overlap'
-///     Which cells to materialize, strictest to loosest. ``'center'``:
+/// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
+///     Which cells to materialize, strictest to loosest. ``'within'``: only
+///     cells entirely inside — cells the area fully owns. ``'center'``:
 ///     cells whose center is inside — unique assignment, balanced point
-///     binning. ``'within'``: only cells entirely inside — cells the area
-///     fully owns. ``'overlap'``: every cell touching the geometry — a
+///     binning. ``'overlap'``: every cell touching the geometry — a
 ///     complete-coverage superset, the safe default for candidate keys.
 ///     ``'bbox'``: cells whose bounding box overlaps — loosest and fastest.
 ///     The rule never affects the exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Upper bound on emitted cells. Raise to allow a larger covering, or
-///     pass ``None`` for unlimited (bounded only by memory).
+///     Hard cap on returned cells and retained result allocation. Discarded
+///     candidates do not consume it; array calls apply it cumulatively across
+///     groups. Pass ``None`` for unlimited output (bounded only by memory).
 ///
 /// Returns
 /// -------
@@ -290,6 +293,7 @@ pub(super) fn h3_cover(
     #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     let max_cells = super::super::coverage_ops::parse_max_cells(max_cells)?;
+    let resolution = crate::py::cells::h3::parse_h3_resolution(resolution)?;
     grid_cover_dispatch(
         py,
         geom,

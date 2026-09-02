@@ -13,8 +13,8 @@ use crate::curves::morton_interleave;
 use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::cell_ops::{
-    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
-    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+    cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
+    cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::{
     Bound, GridKind, Py, PyAnyMethods as _, PyCellArray, PyDictMethods as _, PyResult,

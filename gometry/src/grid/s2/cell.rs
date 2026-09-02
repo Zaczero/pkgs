@@ -159,7 +159,7 @@ impl Cell {
     /// The cell center as a lon/lat point.
     pub(crate) fn center_lonlat(self) -> Point {
         let (lon, lat) = point_to_lonlat(self.center_point());
-        Point::new_unchecked_xy(lon, lat)
+        Point::new_raw_xy(lon, lat)
     }
 
     /// The four corners on the unit sphere, CCW from the (lo, lo) corner.
@@ -183,7 +183,7 @@ impl Cell {
     pub(crate) fn vertices_lonlat(self) -> [Point; 4] {
         self.vertices_point().map(|vertex| {
             let (lon, lat) = point_to_lonlat(vertex);
-            Point::new_unchecked_xy(lon, lat)
+            Point::new_raw_xy(lon, lat)
         })
     }
 
@@ -199,7 +199,7 @@ impl Cell {
         let vertices = self.vertices_lonlat();
         let mut shell = vertices.to_vec();
         shell.push(vertices[0]);
-        Shape::Polygon(Polygon::new(Ring::from_trusted_closed(shell), Vec::new()))
+        Shape::Polygon(Polygon::new(Ring::from_closed(shell), Vec::new()))
     }
 
     /// The cell's exact latitude/longitude bound (canonical S2

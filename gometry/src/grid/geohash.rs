@@ -106,6 +106,7 @@ impl Geohash {
 
     /// The cell containing a lon/lat point at `precision`.
     pub(crate) fn from_lonlat(lon: f64, lat: f64, precision: u8) -> Self {
+        let (lon, lat) = super::canonical_lonlat(lon, lat);
         let (lon_count, lat_count) = axis_counts(precision);
         let lon_index = discretize_axis(
             lon,
@@ -162,7 +163,7 @@ impl Geohash {
         let (lon_count, lat_count) = axis_counts(self.precision);
         let lon_span = 360.0 / (1_u64 << lon_count) as f64;
         let lat_span = 180.0 / (1_u64 << lat_count) as f64;
-        Bounds::new_unchecked(
+        Bounds::new_raw(
             -180.0 + lon_index as f64 * lon_span,
             -90.0 + lat_index as f64 * lat_span,
             -180.0 + (lon_index + 1) as f64 * lon_span,
@@ -335,6 +336,24 @@ mod tests {
         assert_eq!(Geohash::from_lonlat(117.0, 32.0, 3).token(), "wte");
         // Case-insensitive parse canonicalizes.
         assert_eq!(Geohash::parse("WW8P1R4T8").unwrap().token(), "ww8p1r4t8");
+    }
+
+    #[test]
+    fn periodic_seam_and_poles_have_canonical_owners() {
+        for lat in [-45.0, 0.0, 45.0] {
+            let owner = Geohash::from_lonlat(-180.0, lat, 12);
+            for lon in [180.0, 540.0, -540.0] {
+                assert_eq!(Geohash::from_lonlat(lon, lat, 12), owner);
+            }
+            assert_eq!(Geohash::from_lonlat((-180.0_f64).next_up(), lat, 12), owner);
+            assert_ne!(Geohash::from_lonlat(180.0_f64.next_down(), lat, 12), owner);
+        }
+        for lat in [-90.0, 90.0] {
+            let owner = Geohash::from_lonlat(-180.0, lat, 12);
+            for lon in [-179.0, 0.0, 73.0, 180.0, 540.0] {
+                assert_eq!(Geohash::from_lonlat(lon, lat, 12), owner);
+            }
+        }
     }
 
     #[test]

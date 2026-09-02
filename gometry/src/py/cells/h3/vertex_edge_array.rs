@@ -9,7 +9,9 @@ use numpy::PyArrayMethods as _;
 use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::PyAnyMethods as _;
 use pyo3::types::{PyAny, PyBool, PyInt, PyTuple};
-use pyo3::{Bound, IntoPyObject as _, Py, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
+use pyo3::{
+    Bound, IntoPyObject as _, Py, PyErr, PyRef, PyResult, Python, pyclass, pyfunction, pymethods,
+};
 
 use crate::HeapSize;
 use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows};
@@ -97,7 +99,7 @@ pub(super) struct PyH3EdgeArrayIter {
 }
 
 impl PyH3VertexArray {
-    pub(super) fn from_trusted_ids(ids: Vec<u64>) -> Self {
+    pub(super) fn from_ids(ids: Vec<u64>) -> Self {
         Self {
             ids: Arc::from(ids),
             selection: RowSelection::Identity,
@@ -106,7 +108,7 @@ impl PyH3VertexArray {
 }
 
 impl PyH3EdgeArray {
-    pub(super) fn from_trusted_ids(ids: Vec<u64>) -> Self {
+    pub(super) fn from_ids(ids: Vec<u64>) -> Self {
         Self {
             ids: Arc::from(ids),
             selection: RowSelection::Identity,
@@ -202,12 +204,12 @@ macro_rules! h3_index_array_common {
                 if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
                     let len = logical.end - logical.start;
                     let selection = match self.selection_ref() {
-                        RowSelectionRef::Identity => RowSelection::window_trusted(logical.start, len, self.ids.len()),
+                        RowSelectionRef::Identity => RowSelection::window(logical.start, len, self.ids.len()),
                         RowSelectionRef::Window {
                             start: base,
                             len: base_len,
                         } if logical.start <= base_len && logical.end <= base_len => {
-                            RowSelection::window_trusted(base + logical.start, len, self.ids.len())
+                            RowSelection::window(base + logical.start, len, self.ids.len())
                         },
                         map => row_selection_from_logical_rows(map, self.ids.len(), logical),
                     };
@@ -550,7 +552,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                     crate::try_push(&mut sorted_uniques, uniques[slot])?;
                     crate::try_push(&mut sorted_counts, counts[slot])?;
                 }
-                let values = Self::from_trusted_ids(sorted_uniques)
+                let values = Self::from_ids(sorted_uniques)
                     .into_pyobject(py)?
                     .into_any()
                     .unbind();
@@ -577,7 +579,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
 fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let (uniques, _, codes) = self.factorized_entries()?;
                 let codes = crate::py::numpy::int64_array(py, codes)?;
-                let values = Self::from_trusted_ids(uniques)
+                let values = Self::from_ids(uniques)
                     .into_pyobject(py)?
                     .into_any()
                     .unbind();
@@ -647,8 +649,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             /// ----------
             /// dtype : uint64 or object, optional
             /// copy : bool, optional
-            ///     ``False`` requires a zero-copy id export; gathered ids and
-            ///     ``dtype=object`` raise because they must materialize.
+            ///     ``False`` requires a zero-copy id export; gathered ids,
+            ///     opposite-endian numeric ids, and ``dtype=object`` raise
+            ///     because they must materialize.
             ///
             /// Returns
             /// -------
@@ -660,6 +663,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 copy: Option<bool>,
             ) -> PyResult<Py<PyAny>> {
                 let py = slf.py();
+                let mut requested_dtype = None;
+                let mut native = true;
                 if let Some(dtype) = dtype
                     && !dtype.is_none()
                 {
@@ -699,20 +704,33 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                             "dtype must be uint64, object, or None",
                         ));
                     }
+                    native = dtype.getattr("isnative")?.extract::<bool>()?;
+                    requested_dtype = Some(dtype);
                 }
-                if copy == Some(true) {
+                if !native && copy == Some(false) {
+                    return Err(crate::GeometryError::new_err(
+                        "gometry cannot return the requested array without copying",
+                    ));
+                }
+                let array = if copy == Some(true) {
                     let ids = slf.borrow().logical_ids_vec()?;
-                    return crate::py::numpy::uint64_array(py, ids);
-                }
-                if copy == Some(false) {
-                    let can_borrow = slf.borrow().logical_contiguous_ids().is_some();
-                    if !can_borrow {
-                        return Err(crate::GeometryError::new_err(
-                            "gometry cannot return the requested array without copying",
-                        ));
+                    crate::py::numpy::uint64_array(py, ids)?
+                } else {
+                    if copy == Some(false) {
+                        let can_borrow = slf.borrow().logical_contiguous_ids().is_some();
+                        if !can_borrow {
+                            return Err(crate::GeometryError::new_err(
+                                "gometry cannot return the requested array without copying",
+                            ));
+                        }
                     }
+                    Self::to_numpy(slf)?
+                };
+                if !native {
+                    let dtype = requested_dtype.expect("non-native ids require a requested dtype");
+                    return crate::py::numpy::astype_readonly(array.bind(py), &dtype);
                 }
-                Self::to_numpy(slf)
+                Ok(array)
             }
 
             fn __copy__(slf: &Bound<'_, Self>) -> Py<Self> {
@@ -770,19 +788,23 @@ impl PyH3VertexArray {
     /// GeometryArray
     ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per vertex.
     #[getter]
-    fn point(&self) -> PyResult<crate::PyGeometryArray> {
-        let mut points = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
-            let latlng = LatLng::from(vertex);
-            crate::try_push(&mut points, crate::geometry::XY {
-                x: latlng.lng(),
-                y: latlng.lat(),
-            })?;
-        }
+    fn point(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
+        let ids = self.logical_ids_vec()?;
+        let points = py.detach(move || {
+            let mut points = crate::try_vec_with_capacity(ids.len())?;
+            for id in ids {
+                let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
+                let latlng = LatLng::from(vertex);
+                crate::try_push(&mut points, crate::geometry::XY {
+                    x: latlng.lng(),
+                    y: latlng.lat(),
+                })?;
+            }
+            Ok::<_, PyErr>(points)
+        })?;
         let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
         for point in points {
-            builder.push(crate::geometry::Point::new_unchecked_xy(point.x, point.y));
+            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y));
         }
         let coords = builder.finish()?;
         Ok(crate::PyGeometryArray::packed_points(
@@ -797,7 +819,7 @@ impl PyH3VertexArray {
 pub(super) fn _unpickle_h3_vertex_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3VertexArray> {
     let ids = crate::collect_u64_sequence(ids, "H3 vertex array pickle ids")?;
     validate_h3_index_ids::<VertexIndex>(&ids)?;
-    Ok(PyH3VertexArray::from_trusted_ids(ids))
+    Ok(PyH3VertexArray::from_ids(ids))
 }
 
 #[pymethods]
@@ -815,7 +837,7 @@ impl PyH3EdgeArray {
             let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
             crate::try_push(&mut ids, u64::from(edge.origin()))?;
         }
-        Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// The cells these directed edges enter.
@@ -831,7 +853,7 @@ impl PyH3EdgeArray {
             let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
             crate::try_push(&mut ids, u64::from(edge.destination()))?;
         }
-        Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// Reverse every directed edge from its destination back to its origin.
@@ -854,7 +876,7 @@ impl PyH3EdgeArray {
             let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
             crate::try_push(&mut ids, u64::from(edge.reverse()))?;
         }
-        Ok(Self::from_trusted_ids(ids))
+        Ok(Self::from_ids(ids))
     }
 
     /// Edge linework along each shared cell boundary.
@@ -864,26 +886,27 @@ impl PyH3EdgeArray {
     /// GeometryArray
     ///     One ``LineString`` (lon/lat, ``OGC:CRS84``) per edge.
     #[getter]
-    fn line(&self) -> PyResult<crate::PyGeometryArray> {
-        let mut shapes = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-            let boundary = edge.boundary();
-            let mut points = crate::try_vec_with_capacity(boundary.len())?;
-            for latlng in boundary.iter() {
+    fn line(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
+        let ids = self.logical_ids_vec()?;
+        let shapes = py.detach(move || {
+            let mut shapes = crate::try_vec_with_capacity(ids.len())?;
+            for id in ids {
+                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                let boundary = edge.boundary();
+                let mut points = crate::try_vec_with_capacity(boundary.len())?;
+                for latlng in boundary.iter() {
+                    crate::try_push(&mut points, Point::new_raw_xy(latlng.lng(), latlng.lat()))?;
+                }
                 crate::try_push(
-                    &mut points,
-                    Point::new_unchecked_xy(latlng.lng(), latlng.lat()),
+                    &mut shapes,
+                    Shape::LineString(
+                        LineSeq::try_new(CoordSeq::try_from_points(&points)?)
+                            .expect("H3 edge boundary is lineal"),
+                    ),
                 )?;
             }
-            crate::try_push(
-                &mut shapes,
-                Shape::LineString(
-                    LineSeq::try_new(CoordSeq::try_from_points(&points)?)
-                        .expect("H3 edge boundary is lineal"),
-                ),
-            )?;
-        }
+            Ok::<_, PyErr>(shapes)
+        })?;
         Ok(crate::PyGeometryArray::from_shapes(
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
@@ -898,11 +921,15 @@ impl PyH3EdgeArray {
     ///     One ``float64`` length per edge.
     #[getter]
     fn length(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let mut values = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-            crate::try_push(&mut values, edge.length_m())?;
-        }
+        let ids = self.logical_ids_vec()?;
+        let values = py.detach(move || {
+            let mut values = crate::try_vec_with_capacity(ids.len())?;
+            for id in ids {
+                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                crate::try_push(&mut values, edge.length_m())?;
+            }
+            Ok::<_, PyErr>(values)
+        })?;
         crate::py::numpy::float64_array(py, values)
     }
 }
@@ -912,5 +939,5 @@ impl PyH3EdgeArray {
 pub(super) fn _unpickle_h3_edge_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3EdgeArray> {
     let ids = crate::collect_u64_sequence(ids, "H3 edge array pickle ids")?;
     validate_h3_index_ids::<DirectedEdgeIndex>(&ids)?;
-    Ok(PyH3EdgeArray::from_trusted_ids(ids))
+    Ok(PyH3EdgeArray::from_ids(ids))
 }

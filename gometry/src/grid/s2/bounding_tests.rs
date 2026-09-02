@@ -8,8 +8,8 @@ use crate::grid::s2::cellid::CellId;
 fn line(a: (f64, f64), b: (f64, f64)) -> Shape {
     Shape::LineString(
         LineSeq::try_new(CoordSeq::from(vec![
-            Point::new_unchecked_xy(a.0, a.1),
-            Point::new_unchecked_xy(b.0, b.1),
+            Point::new_raw_xy(a.0, a.1),
+            Point::new_raw_xy(b.0, b.1),
         ]))
         .expect("test line"),
     )
@@ -94,7 +94,7 @@ fn dense_edge_hilbert_ok(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f6
 
 #[test]
 fn point_is_exact_l30_leaf() {
-    let shape = Shape::Point(Point::new_unchecked_xy(13.4, 52.5));
+    let shape = Shape::Point(Point::new_raw_xy(13.4, 52.5));
     let cell = bounding_cell(&shape).expect("point");
     assert_eq!(cell, CellId::from_lonlat(13.4, 52.5));
     assert_eq!(cell.level(), 30);
@@ -104,13 +104,13 @@ fn point_is_exact_l30_leaf() {
 fn multipoint_uses_bbox_path_same_as_box() {
     let shape = Shape::MultiPoint(
         CoordSeq::from(vec![
-            Point::new_unchecked_xy(0.1, 0.1),
-            Point::new_unchecked_xy(0.2, 0.2),
+            Point::new_raw_xy(0.1, 0.1),
+            Point::new_raw_xy(0.2, 0.2),
         ])
         .into(),
     );
     let cell = bounding_cell(&shape).expect("same face");
-    let bbox = bounding_cell_bbox(Bounds::new_unchecked(0.1, 0.1, 0.2, 0.2)).expect("bbox");
+    let bbox = bounding_cell_bbox(Bounds::new_raw(0.1, 0.1, 0.2, 0.2)).expect("bbox");
     assert_eq!(cell, bbox);
     dense_edge_geom_ok(cell, 0.1, 0.1, 0.2, 0.2);
 }
@@ -120,8 +120,8 @@ fn multipoint_oracle_repros_match_bbox() {
     // Leaf-LCA returned non-containing L7 'a8eb4'; bbox path is L6 'a8eb'.
     let a = Shape::MultiPoint(
         CoordSeq::from(vec![
-            Point::new_unchecked_xy(170.0, -60.0),
-            Point::new_unchecked_xy(170.2, -59.8),
+            Point::new_raw_xy(170.0, -60.0),
+            Point::new_raw_xy(170.2, -59.8),
         ])
         .into(),
     );
@@ -130,13 +130,13 @@ fn multipoint_oracle_repros_match_bbox() {
     assert_eq!(cell_a.level(), 6);
     assert_eq!(
         cell_a,
-        bounding_cell_bbox(Bounds::new_unchecked(170.0, -60.0, 170.2, -59.8)).expect("box a")
+        bounding_cell_bbox(Bounds::new_raw(170.0, -60.0, 170.2, -59.8)).expect("box a")
     );
     // Leaf-LCA multi-face raise; face root '3' closed-contains the bbox.
     let b = Shape::MultiPoint(
         CoordSeq::from(vec![
-            Point::new_unchecked_xy(45.0, -20.0),
-            Point::new_unchecked_xy(45.2, -19.8),
+            Point::new_raw_xy(45.0, -20.0),
+            Point::new_raw_xy(45.2, -19.8),
         ])
         .into(),
     );
@@ -145,7 +145,7 @@ fn multipoint_oracle_repros_match_bbox() {
     assert_eq!(cell_b.level(), 0);
     assert_eq!(
         cell_b,
-        bounding_cell_bbox(Bounds::new_unchecked(45.0, -20.0, 45.2, -19.8)).expect("box b")
+        bounding_cell_bbox(Bounds::new_raw(45.0, -20.0, 45.2, -19.8)).expect("box b")
     );
 }
 
@@ -153,8 +153,8 @@ fn multipoint_oracle_repros_match_bbox() {
 fn multipoint_multi_face_is_none() {
     let shape = Shape::MultiPoint(
         CoordSeq::from(vec![
-            Point::new_unchecked_xy(-100.0, 0.0),
-            Point::new_unchecked_xy(100.0, 0.0),
+            Point::new_raw_xy(-100.0, 0.0),
+            Point::new_raw_xy(100.0, 0.0),
         ])
         .into(),
     );
@@ -165,20 +165,20 @@ fn multipoint_multi_face_is_none() {
 fn multipoint_seam_straddle_matches_bbox() {
     let shape = Shape::MultiPoint(
         CoordSeq::from(vec![
-            Point::new_unchecked_xy(45.0, 0.5),
-            Point::new_unchecked_xy(46.0, 0.5),
+            Point::new_raw_xy(45.0, 0.5),
+            Point::new_raw_xy(46.0, 0.5),
         ])
         .into(),
     );
     assert_eq!(
         bounding_cell(&shape),
-        bounding_cell_bbox(Bounds::new_unchecked(45.0, 0.5, 46.0, 0.5))
+        bounding_cell_bbox(Bounds::new_raw(45.0, 0.5, 46.0, 0.5))
     );
 }
 
 #[test]
 fn berlin_single_cell() {
-    let cell = bounding_cell_bbox(Bounds::new_unchecked(13.3, 52.4, 13.5, 52.6)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(13.3, 52.4, 13.5, 52.6)).expect("cell");
     assert_eq!(cell.token(), "47a85");
     assert_eq!(cell.level(), 8);
     assert_hilbert_contains_samples(cell, &[
@@ -197,7 +197,7 @@ fn berlin_10m_box_always_contains() {
     let miny = 52.5;
     let maxx = 13.4001;
     let maxy = 52.5001;
-    let cell = bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
     dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
     assert!(
         cell.contains(CellId::from_lonlat(13.40005, 52.50005)),
@@ -238,12 +238,12 @@ fn berlin_10m_box_always_contains() {
 
 #[test]
 fn multi_face_wide_box_is_none() {
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(-100.0, -40.0, 100.0, 40.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(-100.0, -40.0, 100.0, 40.0)).is_none());
 }
 
 #[test]
 fn multi_face_moderate_box_is_none() {
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(-50.0, 10.0, -32.0, 15.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(-50.0, 10.0, -32.0, 15.0)).is_none());
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn line_0_0_to_0_45_contains_samples() {
 fn face_diagonal_meridian_135_lat0_to_5_raises() {
     for lon in [135.0, -135.0] {
         assert!(
-            bounding_cell_bbox(Bounds::new_unchecked(lon, 0.0, lon, 5.0)).is_none(),
+            bounding_cell_bbox(Bounds::new_raw(lon, 0.0, lon, 5.0)).is_none(),
             "lon={lon} lat 0..5 must multi-face"
         );
     }
@@ -276,7 +276,7 @@ fn face_diagonal_meridian_135_lat0_to_5_raises() {
 fn face_boundary_meridian_135_short_raises() {
     for lon in [-135.0, 135.0] {
         assert!(
-            bounding_cell_bbox(Bounds::new_unchecked(lon, -10.0, lon, -9.7)).is_none(),
+            bounding_cell_bbox(Bounds::new_raw(lon, -10.0, lon, -9.7)).is_none(),
             "lon={lon} short face-boundary segment must multi-face"
         );
     }
@@ -285,7 +285,7 @@ fn face_boundary_meridian_135_short_raises() {
 #[test]
 fn cube_edge_meridian_45_to_60_raise_or_closed_contain() {
     for lon in [90.0, -90.0, -180.0, 180.0] {
-        match bounding_cell_bbox(Bounds::new_unchecked(lon, 45.0, lon, 60.0)) {
+        match bounding_cell_bbox(Bounds::new_raw(lon, 45.0, lon, 60.0)) {
             None => {},
             Some(cell) => dense_edge_geom_ok(cell, lon, 45.0, lon, 60.0),
         }
@@ -294,7 +294,7 @@ fn cube_edge_meridian_45_to_60_raise_or_closed_contain() {
 
 #[test]
 fn south_pole_lon90_closed_contains() {
-    let cell = bounding_cell_bbox(Bounds::new_unchecked(90.0, -80.0, 91.0, -79.0)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(90.0, -80.0, 91.0, -79.0)).expect("cell");
     dense_edge_geom_ok(cell, 90.0, -80.0, 91.0, -79.0);
 }
 
@@ -305,14 +305,14 @@ fn antimeridian_south_closed_contains() {
         (-180.0, -80.0, -179.0, -79.0),
         (-180.0, -75.0, -179.0, -74.0),
     ] {
-        let cell = bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)).expect("cell");
+        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
         dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
     }
 }
 
 #[test]
 fn seam_box_45_is_multi_face_or_dense_geom() {
-    match bounding_cell_bbox(Bounds::new_unchecked(45.0, 0.0, 46.0, 1.0)) {
+    match bounding_cell_bbox(Bounds::new_raw(45.0, 0.0, 46.0, 1.0)) {
         None => {},
         Some(cell) => dense_edge_geom_ok(cell, 45.0, 0.0, 46.0, 1.0),
     }
@@ -321,14 +321,13 @@ fn seam_box_45_is_multi_face_or_dense_geom() {
 #[test]
 fn exact_seam_repro_neg135_lat_neg35() {
     // Boundary-adjacent: may coarsen vs theoretical deepest under margin.
-    let cell =
-        bounding_cell_bbox(Bounds::new_unchecked(-135.0, -35.0, -134.8, -34.8)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(-135.0, -35.0, -134.8, -34.8)).expect("cell");
     dense_edge_geom_ok(cell, -135.0, -35.0, -134.8, -34.8);
 }
 
 #[test]
 fn exact_seam_repro_neg135_lat_0() {
-    let cell = bounding_cell_bbox(Bounds::new_unchecked(-135.0, 0.0, -134.8, 0.2)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(-135.0, 0.0, -134.8, 0.2)).expect("cell");
     dense_edge_geom_ok(cell, -135.0, 0.0, -134.8, 0.2);
 }
 
@@ -350,7 +349,7 @@ fn tiny_scale_solid_boxes_never_over_descend() {
         if maxy > 90.0 || miny < -90.0 || maxx > 180.0 {
             continue;
         }
-        let Some(cell) = bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)) else {
+        let Some(cell) = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) else {
             continue;
         };
         dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
@@ -391,7 +390,7 @@ fn exact_seam_touch_matrix_no_false_reject() {
                 if maxy > 90.0 || miny < -90.0 {
                     continue;
                 }
-                match bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)) {
+                match bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) {
                     None => raised += 1,
                     Some(cell) => {
                         dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
@@ -403,7 +402,7 @@ fn exact_seam_touch_matrix_no_false_reject() {
     }
     for &lon in &seams {
         assert!(
-            bounding_cell_bbox(Bounds::new_unchecked(lon, 0.0, lon, 5.0)).is_none(),
+            bounding_cell_bbox(Bounds::new_raw(lon, 0.0, lon, 5.0)).is_none(),
             "zero-width face edge lon={lon}"
         );
         raised += 1;
@@ -420,7 +419,7 @@ fn exact_seam_touch_matrix_no_false_reject() {
 
 #[test]
 fn small_equator_box_hilbert_contains_corners() {
-    let cell = bounding_cell_bbox(Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0)).expect("cell");
+    let cell = bounding_cell_bbox(Bounds::new_raw(0.0, 0.0, 1.0, 1.0)).expect("cell");
     assert_hilbert_contains_samples(cell, &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
     dense_edge_hilbert_ok(cell, 0.0, 0.0, 1.0, 1.0);
 }
@@ -435,26 +434,26 @@ fn line_uses_envelope_hilbert() {
 
 #[test]
 fn poles_and_empty() {
-    let north = bounding_cell(&Shape::Point(Point::new_unchecked_xy(0.0, 90.0))).expect("N");
+    let north = bounding_cell(&Shape::Point(Point::new_raw_xy(0.0, 90.0))).expect("N");
     assert_eq!(north.level(), 30);
     assert!(bounding_cell(&Shape::empty_polygon()).is_none());
 }
 
 #[test]
 fn polygon_with_hole_uses_bbox() {
-    let shell = Ring::from_trusted_closed(vec![
-        Point::new_unchecked_xy(-1.0, -1.0),
-        Point::new_unchecked_xy(1.0, -1.0),
-        Point::new_unchecked_xy(1.0, 1.0),
-        Point::new_unchecked_xy(-1.0, 1.0),
-        Point::new_unchecked_xy(-1.0, -1.0),
+    let shell = Ring::from_closed(vec![
+        Point::new_raw_xy(-1.0, -1.0),
+        Point::new_raw_xy(1.0, -1.0),
+        Point::new_raw_xy(1.0, 1.0),
+        Point::new_raw_xy(-1.0, 1.0),
+        Point::new_raw_xy(-1.0, -1.0),
     ]);
-    let hole = Ring::from_trusted_closed(vec![
-        Point::new_unchecked_xy(-0.2, -0.2),
-        Point::new_unchecked_xy(-0.2, 0.2),
-        Point::new_unchecked_xy(0.2, 0.2),
-        Point::new_unchecked_xy(0.2, -0.2),
-        Point::new_unchecked_xy(-0.2, -0.2),
+    let hole = Ring::from_closed(vec![
+        Point::new_raw_xy(-0.2, -0.2),
+        Point::new_raw_xy(-0.2, 0.2),
+        Point::new_raw_xy(0.2, 0.2),
+        Point::new_raw_xy(0.2, -0.2),
+        Point::new_raw_xy(-0.2, -0.2),
     ]);
     let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
     let cell = bounding_cell(&shape).expect("cell");
@@ -476,7 +475,7 @@ fn false_reject_corpus_targets() {
         (121.977_231, 41.851_431, 124.077_057, 42.468_080, "5e3", 4),
     ];
     for (minx, miny, maxx, maxy, token, level) in cases {
-        let cell = bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)).expect("cell");
+        let cell = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)).expect("cell");
         assert_eq!(
             (cell.token().as_str(), cell.level()),
             (token, level),
@@ -503,7 +502,7 @@ fn band_0_2_boxes_no_false_reject() {
             if !(maxy <= 90.0 && miny >= -90.0) {
                 continue;
             }
-            match bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)) {
+            match bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) {
                 None => {},
                 Some(cell) => dense_edge_geom_ok(cell, minx, miny, maxx, maxy),
             }
@@ -532,7 +531,7 @@ fn multi_scale_soundness_zero_non_containing() {
                 if maxy > 90.0 || miny < -90.0 || maxx > 180.0 {
                     continue;
                 }
-                match bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)) {
+                match bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) {
                     None => {},
                     Some(cell) => {
                         dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
@@ -585,13 +584,13 @@ fn soundness_matrix_success_is_dense_geom_or_none() {
         (-135.0, 0.0, -134.8, 0.2),
     ];
     for &(minx, miny, maxx, maxy) in cases {
-        let Some(cell) = bounding_cell_bbox(Bounds::new_unchecked(minx, miny, maxx, maxy)) else {
+        let Some(cell) = bounding_cell_bbox(Bounds::new_raw(minx, miny, maxx, maxy)) else {
             continue;
         };
         dense_edge_geom_ok(cell, minx, miny, maxx, maxy);
     }
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(-100.0, -40.0, 100.0, 40.0)).is_none());
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(-50.0, 10.0, -32.0, 15.0)).is_none());
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(135.0, 0.0, 135.0, 5.0)).is_none());
-    assert!(bounding_cell_bbox(Bounds::new_unchecked(-135.0, 0.0, -135.0, 5.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(-100.0, -40.0, 100.0, 40.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(-50.0, 10.0, -32.0, 15.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(135.0, 0.0, 135.0, 5.0)).is_none());
+    assert!(bounding_cell_bbox(Bounds::new_raw(-135.0, 0.0, -135.0, 5.0)).is_none());
 }

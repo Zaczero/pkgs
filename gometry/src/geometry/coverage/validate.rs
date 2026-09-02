@@ -131,10 +131,24 @@ pub(crate) fn coverage_invalid_segments_prepared(
     gap_width: f64,
 ) -> Vec<Vec<Segment>> {
     let occurrences = edge_row_occurrences(rows);
-    coverage_invalid_with_count(rows, |key| occurrences[&key], gap_width)
+    let mut invalid = vec![Vec::new(); rows.len()];
+    coverage_invalid_with_count(
+        rows,
+        |key| occurrences[&key],
+        gap_width,
+        |index, segment| {
+            invalid[index].push(segment);
+            true
+        },
+    );
+    invalid
 }
 
 /// Core validator given a count lookup: matched interface when count==2.
+///
+/// `report_invalid` receives each offending segment in diagnostic order and
+/// returns whether validation should continue. The result reports whether any
+/// offending segment was found.
 #[expect(
     clippy::iter_over_hash_type,
     reason = "bucket iteration only marks per-row coincidence flags; its order cannot affect the returned rows"
@@ -143,7 +157,8 @@ fn coverage_invalid_with_count(
     rows: &[CoverageRow<'_>],
     mut count_of: impl FnMut((PointKey, PointKey)) -> u32,
     gap_width: f64,
-) -> Vec<Vec<Segment>> {
+    mut report_invalid: impl FnMut(usize, Segment) -> bool,
+) -> bool {
     let envelope_tree = BulkRTree::bulk_load_with_params(
         rows.iter()
             .enumerate()
@@ -159,7 +174,6 @@ fn coverage_invalid_with_count(
             .collect(),
     );
 
-    let mut invalid: Vec<Vec<Segment>> = vec![Vec::new(); rows.len()];
     // Two coincident polygon rows are an overlap, not a valid shared
     // interface. Their edges occur exactly twice, which otherwise looks just
     // like two adjacent polygons and would take the fast shared-edge path
@@ -220,9 +234,15 @@ fn coverage_invalid_with_count(
             }
         }
     }
+    let mut any_invalid = false;
     for (index, row) in rows.iter().enumerate() {
         if coincident[index] {
-            invalid[index].extend(row.segments.iter().copied());
+            for &segment in &row.segments {
+                any_invalid = true;
+                if !report_invalid(index, segment) {
+                    return true;
+                }
+            }
             continue;
         }
         for &segment in &row.segments {
@@ -246,11 +266,14 @@ fn coverage_invalid_with_count(
                         && segment_offends_row(segment, &rows[candidate.row], gap_width)
                 });
             if offending {
-                invalid[index].push(segment);
+                any_invalid = true;
+                if !report_invalid(index, segment) {
+                    return true;
+                }
             }
         }
     }
-    invalid
+    any_invalid
 }
 
 /// Prepare and require a valid coverage for a public check-and-do operation.
@@ -280,10 +303,7 @@ pub(crate) fn valid_coverage_rows<'a, S: std::borrow::Borrow<Shape>>(
                 .or_insert((segment, 1));
         }
     }
-    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0)
-        .iter()
-        .any(|segments| !segments.is_empty())
-    {
+    if coverage_invalid_with_count(&prepared, |key| incidences[&key].1, 0.0, |_, _| false) {
         return Err(GeometryErrorKind::InvalidCoverage { operation }.into());
     }
     Ok(ValidCoverage {
@@ -304,7 +324,7 @@ pub(crate) fn segment_offends_row(
     other: &CoverageRow<'_>,
     gap_width: f64,
 ) -> bool {
-    let midpoint = Point::new_unchecked_xy(
+    let midpoint = Point::new_raw_xy(
         f64::midpoint(segment.start.x, segment.end.x),
         f64::midpoint(segment.start.y, segment.end.y),
     );
@@ -359,9 +379,14 @@ pub(crate) fn coverage_is_valid<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     gap_width: f64,
 ) -> Result<bool> {
-    Ok(coverage_invalid_segments(rows, gap_width)?
-        .iter()
-        .all(Vec::is_empty))
+    let rows = coverage_rows(rows, gap_width)?;
+    let occurrences = edge_row_occurrences(&rows);
+    Ok(!coverage_invalid_with_count(
+        &rows,
+        |key| occurrences[&key],
+        gap_width,
+        |_, _| false,
+    ))
 }
 
 /// Per-row invalid boundary linework: the row's offending segments merged

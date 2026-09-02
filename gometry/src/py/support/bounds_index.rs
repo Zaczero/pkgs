@@ -1,5 +1,12 @@
-use crate::boundary::geographic::normalize_accepted_latitude;
-use crate::py::support::{AABB, Bounds, Point, Shape};
+use crate::geographic::{
+    CircularInterval, GeographicFrame, GeographicRing, LongitudeWindows, RingDomain, RingSummary,
+    RingTurn, ScalarGeographicView, SeamIdentity, union_circular_intervals,
+};
+use rstar::Envelope as _;
+
+use crate::predicates::engine::IndexEnvelope;
+use crate::py::errors::InvalidGeometryError;
+use crate::py::support::{AABB, Bounds, Frame, Point, Shape};
 
 pub(crate) fn bounds_envelope(bounds: Bounds) -> AABB<[f64; 2]> {
     // Bounds are ordered by construction — skip from_corners' min/max pass.
@@ -9,96 +16,512 @@ pub(crate) fn bounds_envelope(bounds: Bounds) -> AABB<[f64; 2]> {
     ])
 }
 
+/// How many windows a cover may hold before further parts merge into the ones
+/// it has.
+///
+/// A descent is cheap and a loose window is not, so this sits high enough that
+/// an ordinary multipart geometry keeps its parts: a cap that forces merges
+/// sprawls them across the gaps, and the cover is then rejected outright for
+/// covering no less ground than one box did. What the cap exists for is the
+/// row that would otherwise put a window on every vertex — a MultiPoint of a
+/// hundred thousand points — since each window is another tree entry that the
+/// index holds for as long as the row lives.
+const MAX_COVER_WINDOWS: usize = 64;
+
+/// Where a shape sits, as the index sees it.
+///
+/// One box around a scattered multipart geometry also covers the ground
+/// between its parts, which for widely separated parts is nearly all of the
+/// box — a search admits every row lying in the gaps and pays an exact test on
+/// each. Covering the parts themselves ties selectivity to the ground a
+/// geometry occupies rather than to how its parts happen to be packaged, so a
+/// MultiPolygon narrows a search as well as an array of its polygons does.
+#[derive(Clone, Debug)]
+pub(crate) enum EnvelopeCover {
+    /// Nothing worth decomposing; these windows serve every lookup.
+    Whole(Vec<AABB<[f64; 2]>>),
+    /// Parts far enough apart to be worth searching separately, and the
+    /// whole-shape windows containment still needs.
+    Scattered {
+        whole: Vec<AABB<[f64; 2]>>,
+        parts: Vec<AABB<[f64; 2]>>,
+    },
+}
+
+impl EnvelopeCover {
+    /// The windows a candidate search visits under `policy`.
+    ///
+    /// Containment reads the whole shape even when a cover is available: a row
+    /// spanning two parts lies inside the whole and inside no single part, so
+    /// searching the parts would drop it.
+    pub(crate) fn windows(&self, policy: IndexEnvelope) -> &[AABB<[f64; 2]>] {
+        match self {
+            Self::Whole(whole) => whole,
+            Self::Scattered { whole, parts } => match policy {
+                IndexEnvelope::Intersecting => parts,
+                IndexEnvelope::ContainedInQuery => whole,
+            },
+        }
+    }
+
+    /// The windows stored for an indexed row, where parts are sound for every
+    /// lookup: each is a subset of the whole, so a containment search gains
+    /// candidates to refine away rather than losing any, and a nearest lower
+    /// bound only tightens.
+    pub(crate) fn entries(&self) -> &[AABB<[f64; 2]>] {
+        match self {
+            Self::Whole(whole) => whole,
+            Self::Scattered { parts, .. } => parts,
+        }
+    }
+}
+
+/// Minimal conservative index windows in the coordinate system of `frame`.
+/// Periodic frames split an arc at the canonical seam and retain the logical
+/// row id on every physical entry.
+pub(crate) fn index_envelopes(
+    shape: &Shape,
+    bounds: Bounds,
+    frame: Option<&Frame>,
+) -> pyo3::PyResult<EnvelopeCover> {
+    let geographic = match frame.and_then(|frame| frame.crs_str()) {
+        Some(crs) => crate::crs::info(crs)?.geographic_frame(),
+        None => None,
+    };
+    let planar = bounds_envelope(bounds);
+    let mut whole = Vec::new();
+    if let Some(geographic) = geographic {
+        whole = geographic_index_envelopes(shape, geographic)?;
+    } else {
+        crate::try_push_vec(&mut whole, planar)?;
+    }
+    // Coordinate bounds describe a part's ground faithfully only where the
+    // frame had nothing to add about the whole shape. A seam-crossing or
+    // pole-enclosing geometry gets windows coordinate bounds cannot express —
+    // an enclosed pole reaches a latitude no vertex holds — and parts taken
+    // from coordinates could then miss ground the shape covers.
+    if whole.len() != 1 || whole[0] != planar {
+        return Ok(EnvelopeCover::Whole(whole));
+    }
+    match part_cover(shape, planar)? {
+        Some(parts) => Ok(EnvelopeCover::Scattered { whole, parts }),
+        None => Ok(EnvelopeCover::Whole(whole)),
+    }
+}
+
+/// A cover of `shape`'s parts, or `None` where splitting it up buys nothing.
+fn part_cover(
+    shape: &Shape,
+    whole: AABB<[f64; 2]>,
+) -> pyo3::PyResult<Option<Vec<AABB<[f64; 2]>>>> {
+    if !matches!(
+        shape,
+        Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+    ) {
+        return Ok(None);
+    }
+    let mut cover = Vec::new();
+    for_each_part(shape, &mut |part| admit(&mut cover, part))?;
+    // The extra entries and descents have to buy something. Adjacent parts
+    // merge back into one window, and a compact geometry then covers exactly
+    // what its single box already did.
+    let covered: f64 = cover.iter().map(margin).sum();
+    Ok((cover.len() > 1 && covered < margin(&whole)).then_some(cover))
+}
+
+/// Fold `part` into `cover`, holding it to [`MAX_COVER_WINDOWS`] windows.
+///
+/// A merge spending no more margin than the two windows already spend is free:
+/// overlapping and adjacent parts collapse into one window and distant parts
+/// stay apart. Once the cover is full the cheapest merge is taken instead.
+fn admit(cover: &mut Vec<AABB<[f64; 2]>>, part: AABB<[f64; 2]>) -> pyo3::PyResult<()> {
+    let part_margin = margin(&part);
+    let mut free = None;
+    let mut cheapest: Option<(usize, f64)> = None;
+    for (index, window) in cover.iter().enumerate() {
+        let merged = margin(&window.merged(&part));
+        if merged <= margin(window) + part_margin {
+            free = Some(index);
+            break;
+        }
+        let growth = merged - margin(window);
+        if cheapest.is_none_or(|(_, best)| growth < best) {
+            cheapest = Some((index, growth));
+        }
+    }
+    if let Some(index) = free {
+        cover[index] = cover[index].merged(&part);
+        return Ok(());
+    }
+    if cover.len() < MAX_COVER_WINDOWS {
+        return Ok(crate::try_push_vec(cover, part)?);
+    }
+    let (index, _) = cheapest.expect("a full cover holds a window to merge into");
+    cover[index] = cover[index].merged(&part);
+    Ok(())
+}
+
+/// Half the perimeter — the standard R-tree margin. Unlike area it stays
+/// discriminating for a degenerate window, so a run of collinear points does
+/// not read as free to merge into the segment through them.
+fn margin(envelope: &AABB<[f64; 2]>) -> f64 {
+    let lower = envelope.lower();
+    let upper = envelope.upper();
+    (upper[0] - lower[0]) + (upper[1] - lower[1])
+}
+
+/// Every part of `shape` that occupies ground, as its own window.
+fn for_each_part(
+    shape: &Shape,
+    visit: &mut impl FnMut(AABB<[f64; 2]>) -> pyo3::PyResult<()>,
+) -> pyo3::PyResult<()> {
+    match shape {
+        Shape::MultiPoint(points) => {
+            for point in points.iter() {
+                visit(bounds_envelope(Bounds::from_point(point)))?;
+            }
+        },
+        Shape::MultiLineString(lines) => {
+            for line in lines.iter() {
+                if let Some(bounds) = Bounds::from_coords(line) {
+                    visit(bounds_envelope(bounds))?;
+                }
+            }
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons.iter() {
+                // The shell bounds the polygon; its holes lie inside.
+                if let Some(bounds) = Bounds::from_coords(polygon.shell.coords()) {
+                    visit(bounds_envelope(bounds))?;
+                }
+            }
+        },
+        Shape::GeometryCollection(members) => {
+            for member in members {
+                for_each_part(member, visit)?;
+            }
+        },
+        _ => {
+            if let Some(bounds) = shape.bounds() {
+                visit(bounds_envelope(bounds))?;
+            }
+        },
+    }
+    Ok(())
+}
+
+fn geographic_index_envelopes(
+    shape: &Shape,
+    frame: GeographicFrame,
+) -> pyo3::PyResult<Vec<AABB<[f64; 2]>>> {
+    let view = ScalarGeographicView::try_new(frame, shape)
+        .map_err(|error| InvalidGeometryError::new_err(error.to_string()))?;
+    let mut intervals = Vec::new();
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    let mut full_longitude = false;
+    let mut allocation_error = None;
+    view.try_for_each_coordinate(|coordinate| {
+        south = south.min(coordinate.latitude().get());
+        north = north.max(coordinate.latitude().get());
+        if coordinate.identity(frame) == SeamIdentity::Pole {
+            full_longitude = true;
+            if coordinate.latitude().get().is_sign_negative() {
+                south = -frame.pole();
+            } else {
+                north = frame.pole();
+            }
+        }
+        let interval =
+            CircularInterval::try_arc(frame.longitude(), coordinate.longitude().get(), 0.0)
+                .expect("admitted longitude makes a point interval");
+        if let Err(error) = crate::try_push_vec(&mut intervals, interval) {
+            allocation_error = Some(error);
+        }
+        Ok(())
+    })
+    .map_err(|error| InvalidGeometryError::new_err(error.to_string()))?;
+    if let Some(error) = allocation_error {
+        return Err(error.into());
+    }
+    let mut edge_error = None;
+    shape.for_each_segment_chain(|chain| {
+        for pair in chain.xs().windows(2) {
+            if edge_error.is_some() {
+                break;
+            }
+            let delta = frame
+                .longitude()
+                .shortest_edge(pair[0], pair[1])
+                .expect("the geographic view admitted every chain coordinate")
+                .delta(frame.longitude());
+            let (start, sweep) = if delta.is_sign_negative() {
+                (pair[1], -delta)
+            } else {
+                (pair[0], delta)
+            };
+            let interval = CircularInterval::try_arc(frame.longitude(), start, sweep)
+                .expect("a shortest edge is a valid circular arc");
+            if let Err(error) = crate::try_push_vec(&mut intervals, interval) {
+                edge_error = Some(error);
+            }
+        }
+    });
+    if let Some(error) = edge_error {
+        return Err(error.into());
+    }
+    if intervals.is_empty() {
+        return Ok(Vec::new());
+    }
+    try_for_each_ring_summary(shape, frame, |summary| {
+        if matches!(summary.domain, RingDomain::FullLongitude(_)) {
+            full_longitude = true;
+        }
+        if matches!(summary.turn, RingTurn::Full(_)) {
+            if summary.south.get().is_sign_positive() {
+                north = frame.pole();
+            } else if summary.north.get().is_sign_negative() {
+                south = -frame.pole();
+            }
+        }
+    })?;
+    let longitude = if full_longitude {
+        CircularInterval::Full
+    } else {
+        union_circular_intervals(frame.longitude(), intervals)?
+    };
+    let mut envelopes = Vec::new();
+    let mut push = |window: [f64; 2]| {
+        crate::try_push_vec(
+            &mut envelopes,
+            AABB::from_bounds([window[0], south], [window[1], north]),
+        )
+    };
+    match longitude.windows(frame.longitude()) {
+        Some(LongitudeWindows::One(window)) => push(window)?,
+        Some(LongitudeWindows::Two(left, right)) => {
+            push(left)?;
+            push(right)?;
+        },
+        Some(LongitudeWindows::Full) => {
+            push([
+                -frame.longitude().half_period(),
+                frame.longitude().half_period(),
+            ])?;
+        },
+        None => {},
+    }
+    Ok(envelopes)
+}
+
+fn try_for_each_ring_summary(
+    shape: &Shape,
+    frame: GeographicFrame,
+    mut visit: impl FnMut(RingSummary),
+) -> pyo3::PyResult<()> {
+    fn recurse(
+        shape: &Shape,
+        frame: GeographicFrame,
+        visit: &mut impl FnMut(RingSummary),
+    ) -> pyo3::PyResult<()> {
+        fn summarize(
+            polygon: &crate::geometry::Polygon,
+            frame: GeographicFrame,
+            visit: &mut impl FnMut(RingSummary),
+        ) -> pyo3::PyResult<()> {
+            for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
+                let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
+                    .map_err(|source| InvalidGeometryError::new_err(source.to_string()))?;
+                visit(summary);
+            }
+            Ok(())
+        }
+        match shape {
+            Shape::Polygon(polygon) => summarize(polygon, frame, visit)?,
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons.iter() {
+                    summarize(polygon, frame, visit)?;
+                }
+            },
+            Shape::GeometryCollection(members) => {
+                for member in members {
+                    recurse(member, frame, visit)?;
+                }
+            },
+            _ => {},
+        }
+        Ok(())
+    }
+    recurse(shape, frame, &mut visit)
+}
+
 pub(crate) fn global_geographic_candidate_envelope() -> AABB<[f64; 2]> {
     AABB::from_bounds([-f64::MAX, -f64::MAX], [f64::MAX, f64::MAX])
-}
-
-/// The R-tree index/query envelope for an antimeridian-crossing geographic
-/// geometry, whose true extent a single planar box cannot represent. The planar
-/// min/max is the spurious *false-middle* box that excludes the real region, so
-/// widen longitude to the full band; and a pole-enclosing ring's vertices stop
-/// short of the pole it actually contains, so extend latitude to ±90 for any
-/// pole it encloses. Conservative (never misses a candidate); the gated refine
-/// restores exactness.
-pub(crate) fn crossing_index_bounds(shape: &Shape, bounds: Bounds) -> Bounds {
-    // A planar polygon box only reads its shell, but a polar hole can be the
-    // far latitude edge of the represented annulus.  Index envelopes are a
-    // conservative trust boundary, so include every ring vertex before the
-    // exact predicate refines candidates.
-    let mut miny = bounds.miny();
-    let mut maxy = bounds.maxy();
-    shape.for_each_point(|point| {
-        miny = miny.min(point.y);
-        maxy = maxy.max(point.y);
-    });
-    Bounds::new_unchecked(
-        -180.0,
-        if crate::geometry::shape_encloses_pole(shape, false) {
-            -90.0
-        } else {
-            miny
-        },
-        180.0,
-        if crate::geometry::shape_encloses_pole(shape, true) {
-            90.0
-        } else {
-            maxy
-        },
-    )
-}
-
-/// Conservative envelope for any geometry with a coordinate at a physical
-/// pole.  Its longitude is undefined after geographic admission, so retaining
-/// a raw coordinate longitude would let the planar R-tree reject an exact
-/// geographic candidate.  Normalize the accepted exterior ULP before deriving
-/// latitude extents as well: a point at ``90.next_up()`` is the north pole,
-/// not a point above every exact-pole entry.
-fn pole_reaching_index_bounds(shape: &Shape) -> Bounds {
-    let mut miny = f64::INFINITY;
-    let mut maxy = f64::NEG_INFINITY;
-    shape.for_each_point(|point| {
-        let latitude = normalize_accepted_latitude(point.y);
-        miny = miny.min(latitude);
-        maxy = maxy.max(latitude);
-    });
-    Bounds::new_unchecked(-180.0, miny, 180.0, maxy)
-}
-
-/// One conservative envelope policy for every geographic index entry and
-/// query. A physical pole has no unique longitude, so it needs the same
-/// full-longitude treatment as an antimeridian-crossing shape: a planar point
-/// envelope could otherwise make the R-tree establish a false negative before
-/// the exact geographic predicate has a chance to run.
-pub(crate) fn index_bounds(shape: &Shape, bounds: Bounds, geographic: bool) -> Bounds {
-    if !geographic {
-        return bounds;
-    }
-    if crate::geometry::shape_reaches_geographic_pole(shape) {
-        return pole_reaching_index_bounds(shape);
-    }
-    if shape.crosses_antimeridian() {
-        return crossing_index_bounds(shape, bounds);
-    }
-    bounds
-}
-
-/// [`index_bounds`] as an R-tree envelope.
-pub(crate) fn index_envelope(shape: &Shape, bounds: Bounds, geographic: bool) -> AABB<[f64; 2]> {
-    bounds_envelope(index_bounds(shape, bounds, geographic))
-}
-
-/// The point-specialized form avoids building a transient [`Shape`] in packed
-/// point index/query lanes.
-pub(crate) fn point_index_envelope(point: Point, geographic: bool) -> AABB<[f64; 2]> {
-    if geographic && crate::geometry::point_is_geographic_pole(point).is_some() {
-        let latitude = normalize_accepted_latitude(point.y);
-        return bounds_envelope(Bounds::new_unchecked(-180.0, latitude, 180.0, latitude));
-    }
-    AABB::from_point([point.x, point.y])
 }
 
 pub(crate) fn point_from_bounds(bounds: Bounds) -> Option<Point> {
     (bounds.minx().total_cmp(&bounds.maxx()).is_eq()
         && bounds.miny().total_cmp(&bounds.maxy()).is_eq())
-    .then_some(Point::new_unchecked_xy(bounds.minx(), bounds.miny()))
+    .then_some(Point::new_raw_xy(bounds.minx(), bounds.miny()))
+}
+
+#[cfg(test)]
+mod periodic_tests {
+    use super::*;
+    use crate::geographic::AngularFactor;
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPoint, Polygon, Ring};
+
+    fn frame(radians_per_unit: f64) -> GeographicFrame {
+        let unit = AngularFactor::try_new("test unit", radians_per_unit).unwrap();
+        GeographicFrame::try_new(unit, unit, 0.0).unwrap()
+    }
+
+    fn multipoint(points: &[(f64, f64)]) -> Shape {
+        Shape::MultiPoint(
+            MultiPoint::try_new(
+                CoordinateAxes::XY,
+                points
+                    .iter()
+                    .map(|&(x, y)| MultiMember::Value(Point::new(x, y).unwrap()))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn polygon(xs: &[f64], ys: &[f64], holes: Vec<Ring>) -> Shape {
+        Shape::Polygon(Polygon {
+            shell: Ring::closed(
+                xs.iter()
+                    .zip(ys)
+                    .map(|(&x, &y)| Point::new(x, y).unwrap())
+                    .collect(),
+            )
+            .unwrap(),
+            holes: holes.into(),
+        })
+    }
+
+    #[test]
+    fn aliases_collapse_and_seam_neighbors_split_minimally() {
+        for native in [
+            frame(std::f64::consts::PI / 180.0),
+            frame(1.0),
+            frame(std::f64::consts::TAU / 400.0),
+        ] {
+            let period = native.longitude().period();
+            let aliases =
+                geographic_index_envelopes(&multipoint(&[(0.0, 0.0), (period, 0.0)]), native)
+                    .unwrap();
+            assert_eq!(aliases.len(), 1);
+            assert_eq!(aliases[0].lower(), [0.0, 0.0]);
+            assert_eq!(aliases[0].upper(), [0.0, 0.0]);
+        }
+
+        let degrees = frame(std::f64::consts::PI / 180.0);
+        let seam = geographic_index_envelopes(&multipoint(&[(-179.0, 0.0), (179.0, 0.0)]), degrees)
+            .unwrap();
+        assert_eq!(seam.len(), 2);
+        assert_eq!((seam[0].upper()[0] - seam[0].lower()[0]).abs(), 1.0);
+        assert_eq!((seam[1].upper()[0] - seam[1].lower()[0]).abs(), 1.0);
+    }
+
+    #[test]
+    fn typed_poles_caps_holes_and_axis_bands_own_full_longitude() {
+        for native in [
+            frame(std::f64::consts::PI / 180.0),
+            frame(1.0),
+            frame(std::f64::consts::TAU / 400.0),
+        ] {
+            let half = native.longitude().half_period();
+            let pole = native.pole();
+            for sign in [-1.0, 1.0] {
+                let latitude = sign * pole;
+                let point = geographic_index_envelopes(
+                    &Shape::Point(Point::new(half / 3.0, latitude).unwrap()),
+                    native,
+                )
+                .unwrap();
+                assert_eq!(point[0].lower(), [-half, latitude]);
+                assert_eq!(point[0].upper(), [half, latitude]);
+
+                let exterior = if sign.is_sign_positive() {
+                    latitude.next_up()
+                } else {
+                    latitude.next_down()
+                };
+                let admitted = geographic_index_envelopes(
+                    &Shape::Point(Point::new(-half / 4.0, exterior).unwrap()),
+                    native,
+                )
+                .unwrap();
+                assert_eq!(admitted[0].lower(), [-half, latitude]);
+                assert_eq!(admitted[0].upper(), [half, latitude]);
+
+                let rejected = if sign.is_sign_positive() {
+                    exterior.next_up()
+                } else {
+                    exterior.next_down()
+                };
+                geographic_index_envelopes(
+                    &Shape::Point(Point::new(0.0, rejected).unwrap()),
+                    native,
+                )
+                .unwrap_err();
+            }
+
+            let cap = polygon(
+                &[0.0, half * 2.0 / 3.0, half * 4.0 / 3.0, half * 2.0],
+                &[pole / 2.0; 4],
+                Vec::new(),
+            );
+            let cap = geographic_index_envelopes(&cap, native).unwrap();
+            assert_eq!(cap[0].lower(), [-half, pole / 2.0]);
+            assert_eq!(cap[0].upper(), [half, pole]);
+
+            let south_cap = polygon(
+                &[0.0, half * 2.0 / 3.0, half * 4.0 / 3.0, half * 2.0],
+                &[-pole / 2.0; 4],
+                Vec::new(),
+            );
+            let south_cap = geographic_index_envelopes(&south_cap, native).unwrap();
+            assert_eq!(south_cap[0].lower(), [-half, -pole]);
+            assert_eq!(south_cap[0].upper(), [half, -pole / 2.0]);
+
+            let band = polygon(
+                &[-half, half, half, -half, -half],
+                &[
+                    -pole / 2.0,
+                    -pole / 2.0,
+                    pole / 2.0,
+                    pole / 2.0,
+                    -pole / 2.0,
+                ],
+                Vec::new(),
+            );
+            let band = geographic_index_envelopes(&band, native).unwrap();
+            assert_eq!(band[0].lower(), [-half, -pole / 2.0]);
+            assert_eq!(band[0].upper(), [half, pole / 2.0]);
+
+            let hole = Ring::closed(vec![
+                Point::new(0.0, pole * 3.0 / 4.0).unwrap(),
+                Point::new(half * 2.0 / 3.0, pole * 3.0 / 4.0).unwrap(),
+                Point::new(half * 4.0 / 3.0, pole * 3.0 / 4.0).unwrap(),
+                Point::new(half * 2.0, pole * 3.0 / 4.0).unwrap(),
+            ])
+            .unwrap();
+            let annulus = polygon(
+                &[0.0, half * 2.0 / 3.0, half * 4.0 / 3.0, half * 2.0],
+                &[pole / 2.0; 4],
+                vec![hole],
+            );
+            let annulus = geographic_index_envelopes(&annulus, native).unwrap();
+            assert_eq!(annulus[0].lower(), [-half, pole / 2.0]);
+            assert_eq!(annulus[0].upper()[0], half);
+            assert_eq!(annulus[0].upper()[1], pole);
+        }
+    }
 }

@@ -14,4 +14,3 @@ pub(crate) mod cell_set;
 pub(crate) mod cellid;
 pub(crate) mod coverer;
 pub(crate) mod projection;
-pub(crate) mod seam;

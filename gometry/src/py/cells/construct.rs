@@ -4,6 +4,7 @@
 )]
 //! Callable cell constructors (`H3Cell(...)`, `S2Cell(...)`, ...).
 
+use pyo3::PyErr;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 
@@ -73,6 +74,7 @@ fn cell_from_lonlat_or_point<C>(
     if let Some(lat) = lat {
         let lon = finite_coordinate_required("longitude", lon)?;
         let lat = finite_coordinate_required("latitude", lat)?;
+        let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
         crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
         return from_xy(lon, lat);
     }
@@ -248,6 +250,7 @@ pub(crate) fn construct_tile(
     };
     let lon = finite_coordinate_required("longitude", lon)?;
     let lat = finite_coordinate_required("latitude", lat)?;
+    let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
     crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
     let zoom = parse_tile_zoom(zoom)?;
     let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
@@ -271,11 +274,12 @@ pub(crate) fn dispatch_grid_cell_array<'py, C, D>(
     kind: GridKind,
     class_name: &str,
     depth_kw: &str,
-    validate_depth: impl Fn(i64) -> PyResult<D>,
-    from_xy: impl Fn(f64, f64, D) -> PyResult<C>,
+    validate_depth: impl Fn(i64) -> PyResult<D> + Send,
+    from_xy: impl Fn(f64, f64, D) -> PyResult<C> + Send,
 ) -> PyResult<PyCellArray>
 where
-    C: CellArrayId,
+    C: CellArrayId + Send,
+    D: Send,
 {
     if let Some(array) = exact_geometry_array(values) {
         if lat.is_some() {
@@ -297,20 +301,21 @@ where
                 continue;
             }
             let point = points.get(row);
-            crate::boundary::geographic::validate_lonlat_point(point)?;
+            let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
+            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
             let depth = validate_depth(depth.get(row))?;
             crate::try_push_pair(
                 &mut ids,
                 &mut missing,
-                from_xy(point.x, point.y, depth)?.into_cell_array_id(),
+                from_xy(lon, lat, depth)?.into_cell_array_id(),
                 false,
             )
             .map_err(pyo3::PyErr::from)?;
         }
         return Ok(if any_missing {
-            PyCellArray::from_trusted_ids_with_missing(kind, ids, missing)
+            PyCellArray::from_ids_with_missing(kind, ids, missing)
         } else {
-            PyCellArray::from_trusted_ids(kind, ids)
+            PyCellArray::from_ids(kind, ids)
         });
     }
     let lat = lat
@@ -333,11 +338,15 @@ where
     broadcast_coordinate_group([(&mut lon, "lon"), (&mut lat, "lat")], "lon and lat")?;
     let len = lon.values.len();
     let depth = I64Param::parse(depth, depth_kw, len)?;
-    let mut ids = crate::try_vec_with_capacity(len)?;
-    for (row, (&lon, &lat)) in lon.values.iter().zip(lat.values.iter()).enumerate() {
-        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
-        let depth = validate_depth(depth.get(row))?;
-        crate::try_push(&mut ids, from_xy(lon, lat, depth)?.into_cell_array_id())?;
-    }
-    Ok(PyCellArray::from_trusted_ids(kind, ids))
+    let ids = py.detach(move || {
+        let mut ids = crate::try_vec_with_capacity(len)?;
+        for (row, (&lon, &lat)) in lon.values.iter().zip(lat.values.iter()).enumerate() {
+            let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
+            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+            let depth = validate_depth(depth.get(row))?;
+            crate::try_push(&mut ids, from_xy(lon, lat, depth)?.into_cell_array_id())?;
+        }
+        Ok::<_, PyErr>(ids)
+    })?;
+    Ok(PyCellArray::from_ids(kind, ids))
 }

@@ -37,18 +37,18 @@ use std::sync::Arc;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{Bounds, Point, PointBatchTester, Shape, same_point};
 use crate::grid::affine_source::{
-    GridAffineSource, RectClass as AffineRectClass, SphericalGridTarget, WorkingShapeRelation,
+    GeographicCoverageSource, RectClass as AffineRectClass, SphericalGridTarget,
+    WorkingShapeRelation,
 };
 pub(crate) use crate::grid::coverer::CellClass;
 use crate::grid::coverer::{NativeRectClassifier, RectClass};
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::{MAX_LEVEL, NUM_FACES};
-use crate::grid::s2::seam::SourceWindows;
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
-use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
+use crate::grid::{CoverBudgetExceeded, CoverError, ensure_cover_budget};
 
 /// Level budget for a covering. `min_level <= max_level`; emitted levels
 /// satisfy `(level - min_level) % level_mod == 0`; `target_cells` guides
@@ -68,10 +68,20 @@ pub(crate) struct Coverer {
     pub target_cells: usize,
 }
 
+/// Public cell-selection rule applied while the cover tree emits results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoverRule {
+    Overlap,
+    Within,
+    Center,
+}
+
 /// An exact classified covering: one sorted cell column plus an interior bit.
 #[derive(Clone, Debug)]
 pub(crate) struct Covering {
     cells: Vec<(CellId, bool)>,
+    #[cfg(test)]
+    classified: usize,
 }
 
 impl Covering {
@@ -94,6 +104,11 @@ impl Covering {
             .filter_map(|(id, interior)| interior.then_some(*id))
             .collect()
     }
+
+    #[cfg(test)]
+    fn retained_and_classified(&self) -> (usize, usize) {
+        (self.cells.len(), self.classified)
+    }
 }
 
 /// The prepared classification context: built once per covering, reused by
@@ -102,7 +117,6 @@ impl Covering {
 /// Rect Outside is the only negative certificate; the planar chord proxy is
 /// never used to prune (see module soundness model).
 struct CoverContext<'a> {
-    windows: SourceWindows,
     tester: Arc<PointBatchTester>,
     rects: NativeRectClassifier,
     /// For a point carrier (including collapsed linework), every leaf cell
@@ -110,10 +124,11 @@ struct CoverContext<'a> {
     /// is the exact point fast path; unlike the historical version it uses the
     /// pole/seam-normalized owner representation rather than rounded trig XYZ.
     point_leaves: Option<Vec<CellId>>,
-    /// The unsplit affine source is consulted only on seam/pole/periodic or
-    /// otherwise uncertain inputs.  The ordinary fast path keeps the old
-    /// source-window/native-rectangle cost per candidate.
-    affine: Option<&'a GridAffineSource>,
+    /// The unsplit periodic source owns candidate negatives. Its richer
+    /// corroboration is needed only on seam/pole/periodic or otherwise
+    /// uncertain inputs.
+    affine: &'a GeographicCoverageSource,
+    corroborate: bool,
     /// Candidate classification is a pure function of the source and cell.
     /// Productivity probes look deep into a subtree before adaptive descent
     /// later visits the same cells, so retain those expensive results for the
@@ -145,31 +160,47 @@ impl Coverer {
     /// Cover `source` (canonical lon/lat, non-empty) exactly.
     ///
     /// Forced descent to `min_level` is **budget-aware and depth-first**.
-    /// Fixed-level `max_cells` charges only **proven-productive** cells
-    /// (emitted terminals and phase-2 queue entries that will emit ≥1 cell),
+    /// Fixed-level `max_cells` charges only cells visible under `rule`
+    /// (emitted terminals and visible phase-2 queue entries),
     /// never the transient fail-open DFS frontier — conservative Boundary
     /// candidates can vanish on deeper classification, so the frontier size
     /// is not a lower bound on final emissions. Interior subtrees preflight
     /// exact `4^Δ` multiplicity before enumerating. Adaptive splits above
     /// `min_level` stage actual 4/16/64 (`level_mod`) non-Outside children and
     /// commit only when the projected total still fits `target_cells`;
-    /// otherwise the parent is emitted (optional coarsening — never below
-    /// `min_level`).
+    /// otherwise the parent is retained only when it is visible under `rule`
+    /// (optional coarsening, never below `min_level`).
     ///
     /// `max_cells = None` is unlimited (factory `max_cells=None`).
+    #[cfg(test)]
     pub(crate) fn cover(
         &self,
         working: &Shape,
-        affine: &GridAffineSource,
+        affine: &GeographicCoverageSource,
         relation: WorkingShapeRelation,
-    ) -> Result<Covering, CoverBudgetExceeded> {
+    ) -> Result<Covering, CoverError> {
+        self.cover_for_rule(working, affine, relation, CoverRule::Overlap)
+    }
+
+    pub(crate) fn cover_for_rule(
+        &self,
+        working: &Shape,
+        affine: &GeographicCoverageSource,
+        relation: WorkingShapeRelation,
+        rule: CoverRule,
+    ) -> Result<Covering, CoverError> {
         debug_assert_eq!(affine.target(), SphericalGridTarget::S2);
-        let ctx = CoverContext::prepare(working, affine, relation);
-        // E = emitted cells; Q = phase-2 queue (proven ≥1 emission each).
-        // Transient DFS candidates are *not* charged against max_cells.
+        let ctx = CoverContext::prepare(working, affine, relation)?;
+        // E = emitted cells; Q = visible phase-2 emissions. Non-visible
+        // candidates use depth-first scratch and never consume max_cells.
         let mut cells: Vec<(CellId, bool)> = Vec::new();
-        // Phase-2 frontier (candidates already at/above min_level).
+        // Visible phase-2 frontier (candidates already at/above min_level).
         let mut queue: BinaryHeap<(Reverse<u8>, CellId, CellClass)> = BinaryHeap::new();
+        let mut queued_visible = 0_usize;
+        // Non-visible boundary candidates can still have visible descendants.
+        // Keep them depth-first so scratch scales with depth/fanout, not the
+        // number of discarded candidates.
+        let mut hidden: Vec<(u8, CellId, CellClass)> = Vec::with_capacity(3 * MAX_LEVEL as usize);
         // Phase-1 DFS stack: unresolved candidates still below min_level.
         // Fail-open Boundary entries may later classify Outside — do not
         // charge them until proven productive.
@@ -179,35 +210,74 @@ impl Coverer {
         // Scratch for productivity probes (must not alias `staged`).
         let mut scratch: Vec<(CellId, CellClass)> = Vec::with_capacity(64);
 
-        self.seed_faces(&ctx, &cells, &mut dfs, &mut queue, &mut scratch)?;
+        self.seed_faces(
+            &ctx,
+            rule,
+            &cells,
+            &mut dfs,
+            &mut queue,
+            &mut queued_visible,
+            &mut hidden,
+            &mut scratch,
+        )?;
         self.force_min_level(
             &ctx,
+            rule,
             &mut cells,
             &mut dfs,
             &mut queue,
+            &mut queued_visible,
+            &mut hidden,
             &mut staged,
             &mut scratch,
         )?;
-        self.adaptive_emit(&ctx, &mut cells, &mut queue, &mut staged, &mut scratch)?;
+        self.adaptive_emit(
+            &ctx,
+            rule,
+            &mut cells,
+            &mut queue,
+            &mut queued_visible,
+            &mut hidden,
+            &mut staged,
+            &mut scratch,
+        )?;
 
         cells.sort_unstable_by_key(|(id, _)| *id);
-        Ok(Covering { cells })
+        Ok(Covering {
+            cells,
+            #[cfg(test)]
+            classified: ctx.classes.borrow().len(),
+        })
     }
 
     #[cfg(test)]
-    fn cover_identity(&self, source: &Shape) -> Result<Covering, CoverBudgetExceeded> {
-        let affine = GridAffineSource::new(source, SphericalGridTarget::S2)
+    fn cover_identity(&self, source: &Shape) -> Result<Covering, CoverError> {
+        let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
             .expect("test source carrier allocates");
         self.cover(source, &affine, WorkingShapeRelation::Identity)
+    }
+
+    #[cfg(test)]
+    fn cover_identity_for_rule(
+        &self,
+        source: &Shape,
+        rule: CoverRule,
+    ) -> Result<Covering, CoverError> {
+        let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
+            .expect("test source carrier allocates");
+        self.cover_for_rule(source, &affine, WorkingShapeRelation::Identity, rule)
     }
 
     /// Classify the six face roots into the phase-1 DFS stack or phase-2 queue.
     fn seed_faces(
         self,
         ctx: &CoverContext<'_>,
+        rule: CoverRule,
         cells: &[(CellId, bool)],
         dfs: &mut Vec<(u8, CellId, CellClass)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
+        queued_visible: &mut usize,
+        hidden: &mut Vec<(u8, CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
     ) -> Result<(), CoverBudgetExceeded> {
         for face in 0..NUM_FACES {
@@ -221,10 +291,20 @@ impl Coverer {
                         if !is_productive(ctx, id, 0, class, self, scratch) {
                             continue;
                         }
-                        let base = cells.len() + queue.len();
-                        ensure_cover_budget(base.saturating_add(1), self.hard_budget())?;
-                        queue.push((Reverse(0), id, class));
-                        debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
+                        let visible = is_visible(ctx, rule, id, class);
+                        ensure_cover_budget(
+                            cells
+                                .len()
+                                .saturating_add(*queued_visible)
+                                .saturating_add(usize::from(visible)),
+                            self.hard_budget(),
+                        )?;
+                        if visible {
+                            *queued_visible += 1;
+                            queue.push((Reverse(0), id, class));
+                        } else {
+                            hidden.push((0, id, class));
+                        }
                     } else {
                         // Below min_level: unresolved — resolve depth-first
                         // without charging the transient frontier.
@@ -238,28 +318,31 @@ impl Coverer {
 
     /// Phase 1: depth-first forced descent to `min_level`.
     ///
-    /// Budget charges only proven-productive emissions: interior `4^Δ`
-    /// terminals and phase-2 queue entries that will emit ≥1 cell. Fail-open
+    /// Budget charges only visible emissions: interior `4^Δ` terminals and
+    /// visible phase-2 queue entries. Fail-open
     /// Boundary that deeper adaptive refinement prunes to Outside is never
     /// charged (same class as R11 B2, applied at the min_level queue entry).
     fn force_min_level(
         self,
         ctx: &CoverContext<'_>,
+        rule: CoverRule,
         cells: &mut Vec<(CellId, bool)>,
         dfs: &mut Vec<(u8, CellId, CellClass)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
+        queued_visible: &mut usize,
+        hidden: &mut Vec<(u8, CellId, CellClass)>,
         staged: &mut Vec<(CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
     ) -> Result<(), CoverBudgetExceeded> {
         while let Some((level, id, class)) = dfs.pop() {
             debug_assert!(level < self.min_level);
             // Proven base: emitted + phase-2 queue (not the unresolved DFS).
-            let proven = cells.len() + queue.len();
+            let proven = cells.len() + *queued_visible;
             match class {
                 CellClass::Outside => unreachable!("Outside never enters the frontier"),
                 CellClass::Interior => {
                     emit_interior_descendants(self, id, level, proven, cells)?;
-                    debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
+                    debug_assert_budget(cells.len(), *queued_visible, self.hard_budget());
                 },
                 CellClass::Boundary => {
                     stage_children_at(ctx, id, level + 1, staged);
@@ -269,11 +352,21 @@ impl Coverer {
                         // before charging the phase-2 queue.
                         retain_productive(ctx, child_level, staged, self, scratch);
                         for &(child, child_class) in &*staged {
-                            let base = cells.len() + queue.len();
-                            ensure_cover_budget(base.saturating_add(1), self.hard_budget())?;
-                            queue.push((Reverse(child_level), child, child_class));
+                            let visible = is_visible(ctx, rule, child, child_class);
+                            ensure_cover_budget(
+                                cells
+                                    .len()
+                                    .saturating_add(*queued_visible)
+                                    .saturating_add(usize::from(visible)),
+                                self.hard_budget(),
+                            )?;
+                            if visible {
+                                *queued_visible += 1;
+                                queue.push((Reverse(child_level), child, child_class));
+                            } else {
+                                hidden.push((child_level, child, child_class));
+                            }
                         }
-                        debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                     } else {
                         for &(child, child_class) in &*staged {
                             dfs.push((child_level, child, child_class));
@@ -287,19 +380,30 @@ impl Coverer {
 
     /// Phase 2: adaptive refinement (actual K fanout) or emit conforming cells.
     ///
-    /// Staged children are filtered to proven-productive before budget charge:
+    /// Staged children are filtered to proven-productive before visibility and budget charge:
     /// fail-open Boundary that deeper classification prunes to Outside never
     /// enters the queue. Optional coarsen uses E+Q+staged against the
     /// adaptive `target_cells` guide.
     fn adaptive_emit(
         self,
         ctx: &CoverContext<'_>,
+        rule: CoverRule,
         cells: &mut Vec<(CellId, bool)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
+        queued_visible: &mut usize,
+        hidden: &mut Vec<(u8, CellId, CellClass)>,
         staged: &mut Vec<(CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
     ) -> Result<(), CoverBudgetExceeded> {
-        while let Some((Reverse(level), id, class)) = queue.pop() {
+        loop {
+            let (level, id, class, visible) = if let Some((level, id, class)) = hidden.pop() {
+                (level, id, class, false)
+            } else if let Some((Reverse(level), id, class)) = queue.pop() {
+                *queued_visible -= 1;
+                (level, id, class, true)
+            } else {
+                break;
+            };
             debug_assert!(level >= self.min_level);
             let can_refine = self.can_refine(level, class);
             if can_refine {
@@ -310,25 +414,38 @@ impl Coverer {
                     // Fail-open parent pruned entirely — not an emission.
                     continue;
                 }
-                let base = cells.len() + queue.len();
-                let projected = base.saturating_add(staged.len());
+                let staged_visible = staged
+                    .iter()
+                    .filter(|&&(child, child_class)| is_visible(ctx, rule, child, child_class))
+                    .count();
+                let base = cells.len() + *queued_visible;
+                let projected = base.saturating_add(staged_visible);
                 let fits_target = projected <= self.target_budget();
                 let fits_hard = self.hard_budget().is_none_or(|limit| projected <= limit);
                 if fits_target && fits_hard {
                     for &(child, child_class) in &*staged {
-                        queue.push((Reverse(target), child, child_class));
+                        let child_visible = is_visible(ctx, rule, child, child_class);
+                        if child_visible {
+                            *queued_visible += 1;
+                            queue.push((Reverse(target), child, child_class));
+                        } else {
+                            hidden.push((target, child, child_class));
+                        }
                     }
-                    debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                     continue;
                 }
                 // Optional split does not fit — emit the conforming parent
                 // (never below min_level; F7 purity preserved).
             }
             // Emit at this level (interior, max-level boundary, or unaffordable split).
-            let base = cells.len() + queue.len();
-            ensure_cover_budget(base.saturating_add(1), self.hard_budget())?;
-            cells.push((id, class == CellClass::Interior));
-            debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
+            if visible {
+                let projected = cells
+                    .len()
+                    .saturating_add(*queued_visible)
+                    .saturating_add(1);
+                ensure_cover_budget(projected, self.hard_budget())?;
+                cells.push((id, class == CellClass::Interior));
+            }
         }
         Ok(())
     }
@@ -429,22 +546,22 @@ fn cache_productive_path(
 impl<'a> CoverContext<'a> {
     fn prepare(
         source: &Shape,
-        affine: &'a GridAffineSource,
+        affine: &'a GeographicCoverageSource,
         relation: WorkingShapeRelation,
-    ) -> Self {
+    ) -> Result<Self, crate::error::Error> {
         let tester = Arc::new(PointBatchTester::new(source));
         let shared_area_tester = matches!(source, Shape::Polygon(_) | Shape::MultiPolygon(_))
             .then(|| Arc::clone(&tester));
-        Self {
-            windows: SourceWindows::new(source),
+        Ok(Self {
             tester,
-            rects: NativeRectClassifier::new_with_area_tester(source, shared_area_tester),
+            rects: NativeRectClassifier::new_with_area_tester(source, shared_area_tester)?,
             point_leaves: closed_point_leaves(source),
-            affine: affine.s2_needs_corroboration(relation).then_some(affine),
+            affine,
+            corroborate: affine.s2_needs_corroboration(relation),
             classes: RefCell::new(HashMap::new()),
             productive: RefCell::new(HashMap::new()),
             point_membership: RefCell::new(HashMap::new()),
-        }
+        })
     }
 
     fn covers_point(&self, point: Point) -> bool {
@@ -568,6 +685,16 @@ fn debug_assert_budget(emitted: usize, frontier: usize, max_cells: Option<usize>
     }
 }
 
+fn is_visible(ctx: &CoverContext<'_>, rule: CoverRule, id: CellId, class: CellClass) -> bool {
+    match rule {
+        CoverRule::Overlap => true,
+        CoverRule::Within => class == CellClass::Interior,
+        CoverRule::Center => {
+            class == CellClass::Interior || ctx.covers_point(Cell::from_id(id).center_lonlat())
+        },
+    }
+}
+
 /// Classify one candidate cell against the source (decode once, stage the
 /// gates cheap-to-expensive).
 fn classify(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
@@ -592,7 +719,13 @@ fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
     let cell = Cell::from_id(id);
     let vertices = cell.vertices_lonlat();
     let rect = cell.rect_bound(&vertices);
-    let proposed = if ctx.windows.may_overlap(rect) {
+    // The unsplit periodic authority owns the only candidate negative. A
+    // charted source window may refine a retained candidate below, but an
+    // internal seam cut can never prune a subtree.
+    if ctx.affine.classify_rect(certified_rect_windows(rect)) == AffineRectClass::Outside {
+        return CellClass::Outside;
+    }
+    let proposed = {
         let covered = vertices
             .iter()
             .filter(|vertex| ctx.covers_point(**vertex))
@@ -633,23 +766,21 @@ fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
                 }
             }
         }
-    } else {
-        CellClass::Outside
     };
 
     // An exact affine certificate only corroborates a planar proposal on
     // hazards.  Boundary stays Boundary: no terminal spherical refiner is
     // smuggled onto S2's ordinary candidate path.
-    let Some(affine) = ctx.affine else {
+    if !ctx.corroborate {
         return proposed;
-    };
+    }
     if proposed == CellClass::Boundary {
         return CellClass::Boundary;
     }
     merge_certified_rect(
         proposed,
-        affine.classify_rect(certified_rect_windows(rect)),
-        affine.s2_raw_owner_descends_from(id),
+        ctx.affine.classify_rect(certified_rect_windows(rect)),
+        ctx.affine.s2_raw_owner_descends_from(id),
     )
 }
 
@@ -709,12 +840,10 @@ const fn merge_certified_rect(
 /// interior. Never used to certify Outside (that stays fail-open Boundary).
 fn wrapped_rect_is_interior(ctx: &CoverContext<'_>, rect: super::cell::LatLngRect) -> bool {
     if rect.is_full_lng() {
-        return ctx.rects.classify_bounds(Bounds::new_unchecked(
-            -180.0,
-            rect.lat_lo,
-            180.0,
-            rect.lat_hi,
-        )) == RectClass::Interior;
+        return ctx
+            .rects
+            .classify_bounds(Bounds::new_raw(-180.0, rect.lat_lo, 180.0, rect.lat_hi))
+            == RectClass::Interior;
     }
     let ((lo0, hi0), second) = rect.lng_windows();
     if !window_interior(ctx, lo0, rect.lat_lo, hi0, rect.lat_hi) {
@@ -734,12 +863,12 @@ fn window_interior(ctx: &CoverContext<'_>, west: f64, south: f64, east: f64, nor
         return true;
     }
     ctx.rects
-        .classify_bounds(Bounds::new_unchecked(west, south, east, north))
+        .classify_bounds(Bounds::new_raw(west, south, east, north))
         == RectClass::Interior
 }
 
 const fn rect_bounds(rect: super::cell::LatLngRect) -> Bounds {
-    Bounds::new_unchecked(rect.lng_lo, rect.lat_lo, rect.lng_hi, rect.lat_hi)
+    Bounds::new_raw(rect.lng_lo, rect.lat_lo, rect.lng_hi, rect.lat_hi)
 }
 
 #[cfg(test)]

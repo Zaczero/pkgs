@@ -172,6 +172,7 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
     };
+    crate::py::numpy::reject_masked_array(ids)?;
     if array.ndim() > 1 {
         return Err(PyTypeError::new_err(format!(
             "{} ids must be zero- or one-dimensional",

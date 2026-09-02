@@ -9,7 +9,7 @@ pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyResult
     for cell in cells {
         crate::try_push(&mut ids, cell.raw())?;
     }
-    Ok(PyCellArray::from_trusted_ids(GridKind::S2Cell, ids))
+    Ok(PyCellArray::from_ids(GridKind::S2Cell, ids))
 }
 
 #[pymethods]
@@ -206,7 +206,7 @@ use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::cell_ops::{
-    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
-    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+    cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
+    cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::s2::{PyS2Cell, parse_s2_level};

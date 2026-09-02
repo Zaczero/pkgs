@@ -6,10 +6,11 @@ use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 
 use crate::py::cells::{GridKind, PyCellArray, PyResult, pyclass};
 
-pub(super) const fn h3_latlng(
+pub(super) fn h3_latlng(
     p: crate::geometry::types::Point,
 ) -> Result<h3o::LatLng, h3o::error::InvalidLatLng> {
-    h3o::LatLng::new(p.y, p.x)
+    let (lon, lat) = crate::grid::canonical_lonlat(p.x, p.y);
+    h3o::LatLng::new(lat, lon)
 }
 
 /// One cell selected by the historical center/within tiler.
@@ -48,7 +49,7 @@ pub(super) fn h3_cell_array(cells: impl IntoIterator<Item = CellIndex>) -> PyRes
     for cell in cells {
         crate::try_push(&mut ids, u64::from(cell))?;
     }
-    Ok(PyCellArray::from_trusted_ids(GridKind::H3Cell, ids))
+    Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
 }
 
 /// A canonical H3 topological vertex.

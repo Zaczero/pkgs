@@ -6,8 +6,8 @@
 
 use pyo3::exceptions::PyMemoryError;
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::{CoordSeq, LineSeq, Shape, is_geographic_frame};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
@@ -180,11 +180,12 @@ fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
     let polygons = crate::try_collect_results(
         Shape::build_area_all(
             &[&Shape::MultiLineString(
-                crate::try_collect_results(
-                    outline
-                        .into_iter()
-                        .map(|line| Ok::<_, PyErr>(LineSeq::from_trusted(line))),
-                )?
+                crate::try_collect_results(outline.into_iter().map(|line| {
+                    Ok::<_, PyErr>(
+                        LineSeq::try_new(line)
+                            .expect("line coordinate sequence must contain at least two vertices"),
+                    )
+                }))?
                 .into(),
             )],
             true,
@@ -222,40 +223,74 @@ pub(crate) trait RectCoverSpec {
 
     fn roots() -> Vec<Self::Cell>;
     fn id(cell: &Self::Cell) -> u64;
-    fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn coverage_label() -> &'static str;
 }
 
 /// Build the public rectangular-grid result directly as canonical cell ids.
 pub(crate) fn build_rect_coverage_ids<S>(
     geometry: &PyGeometry,
-    depth: &Bound<'_, PyAny>,
+    depth: u8,
     cell_rule: CellRule,
     max_cells: Option<usize>,
 ) -> PyResult<Vec<u64>>
 where
     S: RectCoverSpec,
 {
-    let depth = S::parse_depth(depth)?;
-    let (_, cover_shape, _) = coverage_factory_shapes(geometry, S::coverage_label())?;
+    let (membership, cover_shape, charted) =
+        coverage_factory_shapes(geometry, S::coverage_label())?;
+    let authority = membership.shape.as_ref();
+    let authority_plan = membership.plan_or_transient();
+    let authority_cache = membership.frame_cache();
+    let frame = crate::geometry::geographic_frame(&membership.frame)?
+        .expect("normalized coverage geometry has a geographic frame");
     let ids = match cell_rule {
         CellRule::Overlap | CellRule::Bbox => crate::try_collect_results(
-            coverer::cover(&cover_shape, S::roots(), depth, max_cells)
-                .map_err(cover_budget_err)?
-                .into_iter()
-                .map(|(cell, _)| Ok::<_, PyErr>(S::id(&cell))),
+            coverer::cover(
+                authority,
+                &cover_shape,
+                &authority_plan,
+                &authority_cache,
+                frame,
+                charted,
+                S::roots(),
+                depth,
+                max_cells,
+            )
+            .map_err(cover_error)?
+            .into_iter()
+            .map(|(cell, _)| Ok::<_, PyErr>(S::id(&cell))),
         )?,
         CellRule::Within => crate::try_collect_results(
-            coverer::cover(&cover_shape, S::roots(), depth, max_cells)
-                .map_err(cover_budget_err)?
-                .into_iter()
-                .filter_map(|(cell, interior)| interior.then_some(Ok::<_, PyErr>(S::id(&cell)))),
+            coverer::cover_within(
+                authority,
+                &cover_shape,
+                &authority_plan,
+                &authority_cache,
+                frame,
+                charted,
+                S::roots(),
+                depth,
+                max_cells,
+            )
+            .map_err(cover_error)?
+            .into_iter()
+            .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
         )?,
         CellRule::Center => crate::try_collect_results(
-            coverer::cover_center(&cover_shape, S::roots(), depth, max_cells)
-                .map_err(cover_budget_err)?
-                .into_iter()
-                .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
+            coverer::cover_center(
+                authority,
+                &cover_shape,
+                &authority_plan,
+                &authority_cache,
+                frame,
+                charted,
+                S::roots(),
+                depth,
+                max_cells,
+            )
+            .map_err(cover_error)?
+            .into_iter()
+            .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
         )?,
     };
     Ok(SortedCells::from_sorted(ids).into_vec())
@@ -270,6 +305,13 @@ pub(crate) fn empty_coverage_err(label: &str) -> PyErr {
 /// (the shared boundary mapping for every grid's `cover(...)` factory).
 pub(crate) fn cover_budget_err(err: crate::grid::CoverBudgetExceeded) -> PyErr {
     integer_parameter_error(err.to_string(), "max_cells", err.limit as i64)
+}
+
+pub(crate) fn cover_error(err: crate::grid::CoverError) -> PyErr {
+    match err {
+        crate::grid::CoverError::Preparation(error) => error.into(),
+        crate::grid::CoverError::Budget(error) => cover_budget_err(error),
+    }
 }
 
 /// Parse the shared cover-factory `max_cells` parameter.
@@ -316,6 +358,8 @@ pub(crate) fn coverage_factory_geometry(
     // lane receives the same physical-pole spelling before it can derive a
     // working image, a rectangle certificate, or aggregate components.
     let shape = normalize_grid_source(&shape);
+    ScalarGeographicView::try_new(GeographicFrame::crs84(), &shape)
+        .expect("the normalized result of public CRS84 admission is a valid geographic view");
     if shape.is_empty() {
         return Err(empty_coverage_err(label));
     }

@@ -566,11 +566,11 @@ fn rebuild_row(
 
 fn rebuild_polygon(polygon: &Polygon, rebuild_ring: &impl Fn(&CoordSeq) -> Vec<Point>) -> Polygon {
     Polygon::new(
-        Ring::from_trusted_closed(rebuild_ring(polygon.shell.coords())),
+        Ring::from_closed(rebuild_ring(polygon.shell.coords())),
         polygon
             .holes
             .iter()
-            .map(|hole| Ring::from_trusted_closed(rebuild_ring(hole.coords())))
+            .map(|hole| Ring::from_closed(rebuild_ring(hole.coords())))
             .collect(),
     )
 }

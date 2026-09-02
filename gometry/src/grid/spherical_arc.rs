@@ -2651,7 +2651,7 @@ pub(crate) struct AffineParentMap {
 }
 
 /// A source segment which remains affine in its exact input longitude and
-/// latitude. Structural endpoint/pole facts are supplied by `GridAffineSource`;
+/// latitude. Structural endpoint/pole facts are supplied by `GeographicCoverageSource`;
 /// outward radians only evaluate the already-chosen parent piece.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct AffineSourceArc {
@@ -4645,13 +4645,16 @@ mod tests {
     #[test]
     fn source_endpoint_carrier_certifies_the_seam_contact_exclusion() {
         use crate::geometry::{CoordSeq, LineSeq, Point, Shape};
-        use crate::grid::affine_source::{GridAffineSource, SphericalGridTarget};
+        use crate::grid::affine_source::{GeographicCoverageSource, SphericalGridTarget};
 
-        let source = GridAffineSource::new(
-            &Shape::LineString(LineSeq::from_trusted(CoordSeq::from(vec![
-                Point::new(170.0, -10.0).unwrap(),
-                Point::new(-170.0, 10.0).unwrap(),
-            ]))),
+        let source = GeographicCoverageSource::new(
+            &Shape::LineString(
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new(170.0, -10.0).unwrap(),
+                    Point::new(-170.0, 10.0).unwrap(),
+                ]))
+                .expect("line coordinate sequence must contain at least two vertices"),
+            ),
             SphericalGridTarget::H3(Resolution::Seven),
         )
         .unwrap();

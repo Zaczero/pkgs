@@ -11,8 +11,8 @@ use crate::Typed;
 use crate::grid::cell::{GridCell, HierarchicalCell};
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::py::cells::cell_ops::{
-    cell_boundary, cell_center, cell_children_array, cell_contains, cell_descendant_count,
-    cell_hash, cell_intersects, cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
+    cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
+    cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::{
     Bound, GridKind, Py, PyCellArray, PyResult, Python, construct_geohash_cell, pyclass, pyfunction,

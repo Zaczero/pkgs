@@ -10,6 +10,7 @@ use crate::py::cells::{Bound, PyAnyMethods as _};
 use crate::py::errors::{GeometryError, integer_parameter_error};
 use crate::py_i64_required;
 
+#[derive(Clone, Copy)]
 pub(crate) struct S2LevelBudget {
     pub(super) min_level: u8,
     pub(super) max_level: u8,
@@ -104,12 +105,12 @@ pub(crate) fn bounds_query_shape(bounds: crate::geometry::Bounds) -> PyResult<Sh
     #[expect(clippy::float_cmp, reason = "exact degenerate-bounds dispatch")]
     Ok(
         if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
-            Shape::Point(Point::new_unchecked_xy(bounds.minx(), bounds.miny()))
+            Shape::Point(Point::new_raw_xy(bounds.minx(), bounds.miny()))
         } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
             Shape::LineString(
                 LineSeq::try_new(CoordSeq::from(vec![
-                    Point::new_unchecked_xy(bounds.minx(), bounds.miny()),
-                    Point::new_unchecked_xy(bounds.maxx(), bounds.maxy()),
+                    Point::new_raw_xy(bounds.minx(), bounds.miny()),
+                    Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
                 ]))
                 .expect("degenerate bounds line has two vertices"),
             )

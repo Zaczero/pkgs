@@ -33,7 +33,7 @@ use crate::py::index::{
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 /// exclusive : bool, default False
@@ -69,7 +69,7 @@ pub(crate) fn nearest(
     exclusive: bool,
     ties: bool,
 ) -> PyResult<Py<PyAny>> {
-    build_spatial_index(values)?.nearest(
+    build_spatial_index(py, values)?.nearest(
         py,
         geom,
         k,
@@ -100,7 +100,7 @@ pub(crate) fn nearest(
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
-///     ``'planar'`` forces raw coordinate units (degrees-as-Cartesian on a
+///     ``'planar'`` forces raw coordinate units (native angular units as Cartesian
 ///     geographic CRS — only for deliberate coordinate-space math);
 ///     ``'meters'`` forces the CRS metric and raises without a CRS.
 ///
@@ -139,7 +139,7 @@ pub(crate) fn join(
 ) -> PyResult<Py<PyAny>> {
     let predicate_op = IndexPredicate::parse(predicate)?;
     let distance = query_distance(Some(predicate_op), distance)?;
-    let index = build_spatial_index(right)?;
+    let index = build_spatial_index(py, right)?;
     join_indexed(py, left, &index, predicate_op, distance, unit)
 }
 
@@ -177,12 +177,13 @@ pub(crate) fn join_pair_columns(
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
     if let Some(array) = exact_geometry_array(left)
+        && !array.is_compact_nullable()
         && let Some(points) = array.storage().point_rows()
     {
         let matches = index.point_rows_matches(
             array,
             &points,
-            array.missing().map(crate::array::MissingMask::as_slice),
+            array.missing(),
             Some(predicate),
             distance,
             unit,
@@ -207,35 +208,74 @@ pub(crate) fn join_pair_columns(
         if let IndexPredicate::Topological(topological) = predicate
             && distance.is_none()
         {
-            for (left_idx, (missing, row)) in array.masked_storage_rows().enumerate() {
-                if missing {
+            let mut products = array.row_products.operation();
+            for logical_row in array.logical_storage_rows() {
+                let crate::array::LogicalRow::Present { logical, row } = logical_row else {
                     continue;
-                }
-                let left = left_idx as i64;
-                let shape = array.prepared_row(left_idx, row);
-                for right_idx in index.topological_matches(&shape, topological)? {
+                };
+                let left = logical as i64;
+                let shape = array.prepared_row_with(&mut products, logical, row);
+                for right_idx in index.topological_matches(
+                    &shape,
+                    &products.frame_cache(logical),
+                    topological,
+                )? {
                     crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
                 }
             }
             return Ok((left_ids, right_ids));
         }
         let mut scratch = Vec::new();
-        for (left_idx, (missing, row)) in array.masked_storage_rows().enumerate() {
-            if missing {
-                continue;
-            }
-            let seeded = array.row_bounds_seed(left_idx);
-            index.dwithin_query_row_matches(
-                row,
-                &array.row_frame_cache(left_idx),
-                &plan,
-                &mut scratch,
-                seeded,
-            )?;
-            let left = left_idx as i64;
-            for &right_idx in &scratch {
-                crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
-            }
+        let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
+            unreachable!("dwithin join constructs a dwithin plan")
+        };
+        let mut products = array.row_products.operation();
+        match resolved {
+            crate::crs::ResolvedMetric::Planar { .. } => {
+                for logical_row in array.logical_storage_rows() {
+                    let crate::array::LogicalRow::Present { logical, row } = logical_row else {
+                        continue;
+                    };
+                    index.planar_dwithin_query_row_matches(
+                        row,
+                        &plan,
+                        &mut scratch,
+                        array.row_bounds_seed(logical),
+                    )?;
+                    for &right_idx in &scratch {
+                        crate::try_push_pair(
+                            &mut left_ids,
+                            &mut right_ids,
+                            logical as i64,
+                            right_idx as i64,
+                        )?;
+                    }
+                }
+            },
+            crate::crs::ResolvedMetric::Geodesic { .. } => {
+                for logical_row in array.logical_storage_rows() {
+                    let crate::array::LogicalRow::Present { logical, row } = logical_row else {
+                        continue;
+                    };
+                    scratch.clear();
+                    let mut query_cache = || products.frame_cache(logical);
+                    index.geodesic_dwithin_query_row_matches_append(
+                        row,
+                        &mut query_cache,
+                        &plan,
+                        &mut scratch,
+                        array.row_bounds_seed(logical),
+                    )?;
+                    for &right_idx in &scratch {
+                        crate::try_push_pair(
+                            &mut left_ids,
+                            &mut right_ids,
+                            logical as i64,
+                            right_idx as i64,
+                        )?;
+                    }
+                }
+            },
         }
         return Ok((left_ids, right_ids));
     }
