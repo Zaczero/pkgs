@@ -28,6 +28,8 @@ from tests._oracles_support import (
 )
 
 GOLDEN_PATH = Path(__file__).resolve().parent / 'data' / 'kernel_parity_golden.json'
+# Parity covers plumbing; dedicated H3 tests own high-resolution semantics.
+H3_SNAPSHOT_RESOLUTION = 4
 
 
 def _staircase(
@@ -188,15 +190,6 @@ def _is_geo(crs: Any) -> bool:
     return crs in (4326, 'EPSG:4326')
 
 
-def _h3_snapshot_resolution(geom: gm.Geometry) -> int:
-    # Keep the antimeridian line on the certified traversal without paying the
-    # disproportionate resolution-7 refinement cost; other corpus inputs keep
-    # the original resolution.
-    if geom.geometry_type == 'LineString' and _is_geo(_matching_crs(geom)):
-        return 6
-    return 7
-
-
 def _segmentize_length(geom: gm.Geometry) -> float:
     """A max segment length in the units ``segmentize`` actually measures in.
 
@@ -315,9 +308,7 @@ OP_RUNNERS: dict[str, Callable[[gm.Geometry], object]] = {
     'h3_parent': lambda geom: gm.H3Cell(geom, resolution=7).parent(6),
     'h3_children': lambda geom: gm.H3Cell(geom, resolution=7).children(8),
     'h3_boundary': lambda geom: gm.H3Cell(geom, resolution=7).polygon,
-    'h3_cover': lambda geom: gm.h3_cover(
-        geom, resolution=_h3_snapshot_resolution(geom)
-    ),
+    'h3_cover': lambda geom: gm.h3_cover(geom, resolution=H3_SNAPSHOT_RESOLUTION),
     's2_cell': lambda geom: gm.S2Cell(geom, level=12),
     's2_parent': lambda geom: gm.S2Cell(geom, level=12).parent(10),
     's2_children': lambda geom: gm.S2Cell(geom, level=12).children(13),
@@ -454,6 +445,7 @@ def build_golden_payload() -> dict[str, object]:
             entries[_entry_key(op, input_name)] = _capture_entry(op, input_name)
     return {
         'version': 1,
+        'h3_cover_resolution': H3_SNAPSHOT_RESOLUTION,
         'op_count': OP_COUNT,
         'ops': list(OP_NAMES),
         'inputs': list(INPUT_BUILDERS),
@@ -493,6 +485,7 @@ def golden() -> dict[str, Any]:
 def test_kernel_parity_golden_covers_the_registry(golden: dict[str, Any]) -> None:
     """The golden's header and key set stay in step with the runner table."""
     assert golden['op_count'] == OP_COUNT
+    assert golden['h3_cover_resolution'] == H3_SNAPSHOT_RESOLUTION
     assert golden['ops'] == list(OP_NAMES)
     assert golden['inputs'] == list(INPUT_BUILDERS)
     entries = golden['entries']
@@ -505,13 +498,9 @@ def test_kernel_parity_golden_covers_the_registry(golden: dict[str, Any]) -> Non
 CASES = [(op, input_name) for op in OP_NAMES for input_name in INPUT_BUILDERS]
 
 
-# One case per golden entry rather than one for the corpus. As a single test the
-# comparison ran 74 seconds against a 60-second budget, and cost is not spread
-# across it: `h3_cover` alone accounts for 72 of those seconds, so splitting per
-# op would still leave one case over the timeout. Per entry the dearest case is
-# `h3_cover-antimeridian_line`, the corpus spreads across xdist workers, and a
-# divergence names the kernel and the input instead of arriving as a truncated
-# mismatch list.
+# One case per golden entry rather than one for the corpus. The corpus spreads
+# across xdist workers, and a divergence names the kernel and input instead of
+# arriving as a truncated mismatch list.
 @pytest.mark.parametrize(('op', 'input_name'), CASES)
 def test_kernel_parity_snapshot(
     golden: dict[str, Any], op: str, input_name: str
