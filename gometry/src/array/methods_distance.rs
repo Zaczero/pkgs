@@ -19,7 +19,7 @@ use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 fn point_from_unary_shape(shape: Shape) -> Point {
     match shape {
         Shape::Point(point) => point,
-        Shape::Empty(GeometryKind::Point, _) => Point::new_unchecked_xy(f64::NAN, f64::NAN),
+        Shape::Empty(GeometryKind::Point, _) => Point::new_raw_xy(f64::NAN, f64::NAN),
         _ => unreachable!("centroid/point_on_surface yield Point or POINT EMPTY"),
     }
 }
@@ -42,7 +42,7 @@ fn packed_point_row(
 }
 
 fn line_window_crosses_antimeridian(coords: &CoordSeq, window: std::ops::Range<usize>) -> bool {
-    line_crosses_antimeridian(&coords.view(CoordWindow::trusted(window, coords.len())))
+    line_crosses_antimeridian(&coords.view(CoordWindow::from_range(window, coords.len())))
 }
 
 fn polygon_row_crosses_antimeridian(
@@ -83,13 +83,17 @@ where
         + Send
         + Sync,
 {
+    let has_missing = array.has_missing();
     array.map_packed_columns_detached(py, frame, |columns| match &columns {
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
-            let XyColumns { xs, ys } = line_columns.xy();
+            let XyColumns { xs, ys } = line_columns.physical_xy();
             let row_crosses_antimeridian =
                 (geographic && !longitude_span_cannot_cross_antimeridian(xs)).then(|| {
                     columns.map_rows(|row| {
+                        if row.is_missing() {
+                            return false;
+                        }
                         line_window_crosses_antimeridian(
                             coords,
                             row.vertex_window().expect("line rows have a vertex window"),
@@ -100,6 +104,9 @@ where
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
+                if row.is_missing() {
+                    return Ok(Point::new_raw_xy(f64::NAN, f64::NAN));
+                }
                 let window = row.vertex_window().expect("line rows have a vertex window");
                 let crosses = row_crosses_antimeridian
                     .as_ref()
@@ -108,9 +115,12 @@ where
                 packed_point_row(
                     crosses,
                     move || {
-                        Shape::LineString(LineSeq::from_trusted(
-                            coords.view(CoordWindow::trusted(shape_window, coords.len())),
-                        ))
+                        Shape::LineString(
+                            LineSeq::try_new(
+                                coords.view(CoordWindow::from_range(shape_window, coords.len())),
+                            )
+                            .expect("line coordinate sequence must contain at least two vertices"),
+                        )
                     },
                     strategy,
                     op,
@@ -123,17 +133,22 @@ where
             }) {
                 builder.try_push(result)?;
             }
-            Ok(PackedColumnOutput::Points(
-                builder.finish().map_err(PackedColumnError::Batch)?,
-            ))
+            Ok(PackedColumnOutput::Points(if has_missing {
+                builder.finish_with_missing_placeholders()
+            } else {
+                builder.finish().map_err(PackedColumnError::Batch)?
+            }))
         },
         PackedColumns::Polygons(polygon_columns) => {
             let coords = polygon_columns.coords();
-            let XyColumns { xs, ys } = polygon_columns.xy();
+            let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let ring_offsets = polygon_columns.ring_offsets();
             let row_crosses_antimeridian =
                 (geographic && !longitude_span_cannot_cross_antimeridian(xs)).then(|| {
                     columns.map_rows(|row| {
+                        if row.is_missing() {
+                            return false;
+                        }
                         polygon_row_crosses_antimeridian(
                             coords,
                             ring_offsets,
@@ -146,6 +161,9 @@ where
             let mut crossings = Vec::new();
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
+                if row.is_missing() {
+                    return Ok(Point::new_raw_xy(f64::NAN, f64::NAN));
+                }
                 let rings = row.polygon_rings().expect("polygon rows have rings");
                 let shell = row.polygon_shell_window();
                 let crosses = row_crosses_antimeridian
@@ -172,9 +190,11 @@ where
             }) {
                 builder.try_push(result)?;
             }
-            Ok(PackedColumnOutput::Points(
-                builder.finish().map_err(PackedColumnError::Batch)?,
-            ))
+            Ok(PackedColumnOutput::Points(if has_missing {
+                builder.finish_with_missing_placeholders()
+            } else {
+                builder.finish().map_err(PackedColumnError::Batch)?
+            }))
         },
         PackedColumns::Points(_) => unreachable!("points handled above"),
     })
@@ -247,7 +267,7 @@ impl PyGeometryArray {
                 |_, xs, ys, ring_offsets, rings, shell, crossings| {
                     let row_bounds = shell.map(|shell| {
                         let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, shell);
-                        Bounds::new_unchecked(minx, miny, maxx, maxy)
+                        Bounds::new_raw(minx, miny, maxx, maxy)
                     });
                     packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
                         xs,

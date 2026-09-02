@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::array::{
     Bound, CollectRows as _, DistanceUnit, GeometryArrayStorage, GeometryError, I64Param,
-    InterpolatePlan, MissingMask, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python,
-    RowSelection, Shape, crs, line_interpolate_points_coordseq, line_interpolate_points_shape,
+    InterpolatePlan, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, RowSelection, Shape,
+    ValidityMask, crs, line_interpolate_points_coordseq, line_interpolate_points_shape,
     line_locate_coordseq, note_array_row, parse_interpolate_plan, positive_int,
     resolve_line_metric, rows_err,
 };
@@ -46,18 +46,18 @@ pub(crate) fn line_locate_point_on_lines(
     row_map: RowSelection,
     logical_len: usize,
     queries: PointRows<'_>,
-    missing: Option<MissingMask>,
+    missing: Option<ValidityMask>,
     model: crs::MetricModel,
     normalized: bool,
 ) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(move || match &model {
-            crs::MetricModel::Geodesic { crs, state } => {
+            crs::MetricModel::Geodesic { crs, state, .. } => {
                 crs::with_geodesic_coordseq_collect_rows_at(crs, state, |metric| {
                     let map = row_map.as_deref();
                     (0..logical_len)
                         .map(|row| {
-                            if missing.as_ref().is_some_and(|mask| mask[row]) {
+                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                                 return Ok(f64::NAN);
                             }
                             let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
@@ -75,7 +75,7 @@ pub(crate) fn line_locate_point_on_lines(
                 let map = row_map.as_deref();
                 (0..logical_len)
                     .map(|row| {
-                        if missing.as_ref().is_some_and(|mask| mask[row]) {
+                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             return Ok(f64::NAN);
                         }
                         let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
@@ -108,13 +108,13 @@ pub(crate) fn line_interpolate_points_rows(
                     "normalized applies to at; count samples fractions already",
                 ));
             }
-            let counts = I64Param::parse(count, "count", array.storage().len())?;
+            let counts = I64Param::parse(count, "count", array.len())?;
             counts.try_validate(|value| {
                 positive_int("line_interpolate_points", "count", value).map(|_| ())
             })?;
             let mut budget =
                 crate::geometry::ExpansionBudget::new("line_interpolate_points", "count");
-            for row in 0..array.storage().len() {
+            for row in 0..array.len() {
                 if !array.is_row_missing(row) {
                     budget
                         .add(usize::try_from(counts.get(row)).expect("validated positive count"))?;
@@ -148,13 +148,13 @@ pub(crate) fn line_interpolate_points_rows(
         let offsets = offsets.clone();
         let row_map = row_map.clone();
         let missing = array.missing().cloned();
-        let logical_len = array.storage().len();
+        let logical_len = array.len();
         let frame = array.frame.clone();
         let builder = py.detach(move || -> PyResult<_> {
             let map = row_map.as_deref();
             let mut builder = crate::CsrBuilder::<Shape>::new();
             for row in 0..logical_len {
-                let values = if missing.as_ref().is_some_and(|mask| mask[row]) {
+                let values = if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                     Vec::new()
                 } else {
                     let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
@@ -175,15 +175,17 @@ pub(crate) fn line_interpolate_points_rows(
         return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
     }
     let mut builder = crate::CsrBuilder::<Shape>::new();
-    for (row, handle) in array.storage().iter_rows().enumerate() {
-        let values = if array.missing().is_some_and(|mask| mask[row]) {
-            Vec::new()
-        } else {
-            plan.with_row(row, |plan| {
-                let line = array.prepared_row(row, handle);
-                line_interpolate_points_shape(&model, &line, &array.row_frame_cache(row), plan)
-            })
-            .map_err(|error| note_array_row(error.into(), row))?
+    let mut products = array.row_products.operation();
+    for logical_row in array.logical_storage_rows() {
+        let row = logical_row.logical();
+        let values = match logical_row {
+            crate::array::LogicalRow::Missing { .. } => Vec::new(),
+            crate::array::LogicalRow::Present { row: handle, .. } => plan
+                .with_row(row, |plan| {
+                    let line = array.prepared_row_with(&mut products, row, handle);
+                    line_interpolate_points_shape(&model, &line, &products.frame_cache(row), plan)
+                })
+                .map_err(|error| note_array_row(error.into(), row))?,
         };
         builder
             .push_row(values)

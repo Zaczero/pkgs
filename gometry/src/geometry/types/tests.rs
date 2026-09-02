@@ -1,6 +1,103 @@
 use std::sync::Arc;
 
 use crate::geometry::types::*;
+use crate::test_support::allocation_count;
+
+mod multipoint_iteration_tests {
+    use super::*;
+
+    fn point(x: f64, y: f64, z: Option<f64>, m: Option<f64>) -> Point {
+        Point::new_axes(x, y, ZOrdinate(z), MOrdinate(m)).expect("finite point")
+    }
+
+    #[test]
+    fn borrowed_iteration_filters_empty_members_in_order_and_preserves_axes() {
+        let points = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+            MultiMember::Empty,
+            MultiMember::Value(point(1.0, 2.0, Some(3.0), Some(4.0))),
+            MultiMember::Empty,
+            MultiMember::Value(point(5.0, 6.0, Some(7.0), Some(8.0))),
+        ])
+        .expect("homogeneous members");
+
+        let mut iter = (&points).into_iter();
+        assert_eq!(iter.len(), 2);
+        assert_eq!(
+            iter.next_back(),
+            Some(point(5.0, 6.0, Some(7.0), Some(8.0)))
+        );
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.next(), Some(point(1.0, 2.0, Some(3.0), Some(4.0))));
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+
+        let empty = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+            MultiMember::Empty,
+            MultiMember::Empty,
+        ])
+        .expect("embedded empties are valid members");
+        assert_eq!((&empty).into_iter().len(), 0);
+        assert_eq!((&empty).into_iter().next(), None);
+    }
+
+    #[test]
+    fn borrowed_iteration_preserves_each_coordinate_layout() {
+        for (axes, point) in [
+            (CoordinateAxes::XY, point(1.0, 2.0, None, None)),
+            (CoordinateAxes::XYZ, point(1.0, 2.0, Some(3.0), None)),
+            (CoordinateAxes::XYM, point(1.0, 2.0, None, Some(4.0))),
+            (CoordinateAxes::XYZM, point(1.0, 2.0, Some(3.0), Some(4.0))),
+        ] {
+            let multipoint =
+                MultiPoint::try_new(axes, vec![MultiMember::Value(point)]).expect("matching axes");
+            assert_eq!((&multipoint).into_iter().next(), Some(point));
+        }
+    }
+
+    #[test]
+    fn borrowed_iteration_and_shape_scans_do_not_allocate() {
+        let multipoint = MultiPoint::from(vec![
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(3.0, 4.0),
+        ]);
+        let (sum, allocations) =
+            allocation_count(|| (&multipoint).into_iter().map(|p| p.x).sum::<f64>());
+        assert_eq!(sum, 4.0);
+        assert_eq!(allocations, 0);
+
+        let shape = Shape::MultiPoint(multipoint);
+        let (sum, allocations) = allocation_count(|| {
+            let mut sum = 0.0;
+            shape.for_each_point(|point| sum += point.x);
+            sum
+        });
+        assert_eq!(sum, 4.0);
+        assert_eq!(allocations, 0);
+
+        let (issue, allocations) = allocation_count(|| shape.validate());
+        assert_eq!(issue, None);
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn borrowed_iteration_short_circuits_and_owned_collection_remains_available() {
+        let multipoint = MultiPoint::from(vec![
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(3.0, 4.0),
+            Point::new_raw_xy(5.0, 6.0),
+        ]);
+        let mut visited = 0;
+        let result: Result<(), ()> =
+            Shape::MultiPoint(multipoint.clone()).try_for_each_point(|_| {
+                visited += 1;
+                Err(())
+            });
+        assert_eq!(result, Err(()));
+        assert_eq!(visited, 1);
+        assert_eq!(multipoint.into_iter().collect::<Vec<_>>().len(), 3);
+    }
+}
 
 mod csr_offset_column_tests {
     use super::*;
@@ -82,50 +179,65 @@ mod csr_offset_column_tests {
     }
 
     #[test]
-    fn csr_offset_rebase_concat_trusted_matches_rebase_concat() {
+    fn csr_offset_rebase_concat_validated_matches_rebase_concat() {
         let cases: &[(&[i32], &[i32], usize)] = &[
             (&[0, 3, 7], &[0, 2, 5], 12),
             (&[0, 4, 8], &[0, 3], 11),
             (&[0, 2], &[0, 1], 3),
         ];
         for &(prefix, tail, end_cap) in cases {
-            let trusted = CsrOffsetColumn::<()>::rebase_concat_trusted(prefix, tail, end_cap)
+            let prefix = CsrOffsetColumn::<()>::try_new(
+                prefix.iter().map(|&offset| offset as usize).collect(),
+                end_cap,
+            )
+            .expect("valid prefix");
+            let tail = CsrOffsetColumn::<()>::try_new(
+                tail.iter().map(|&offset| offset as usize).collect(),
+                end_cap,
+            )
+            .expect("valid tail");
+            let trusted = CsrOffsetColumn::<()>::rebase_concat_validated(&prefix, &tail, end_cap)
                 .expect("trusted");
             let checked =
-                CsrOffsetColumn::<()>::rebase_concat(prefix, tail, end_cap).expect("checked");
+                CsrOffsetColumn::<()>::rebase_concat(prefix.as_slice(), tail.as_slice(), end_cap)
+                    .expect("checked");
             assert_eq!(trusted.as_slice(), checked.as_slice());
         }
     }
 
-    /// Naked near-`i32::MAX` slices must return an error — never hit
-    /// `unchecked_add` overflow (audit B6 / round-13 CSR repro).
+    /// Valid near-`i32::MAX` slices must reject a rebased end that cannot be
+    /// represented by the output offsets.
     #[test]
-    fn csr_offset_rebase_concat_trusted_rejects_overflow() {
-        let err =
-            CsrOffsetColumn::<()>::rebase_concat_trusted(&[0, i32::MAX], &[0, 1, 0], usize::MAX)
-                .expect_err("overflowing tail must error");
-        assert!(matches!(
-            err.kind(),
-            crate::error::ErrorKind::Geometry(
-                GeometryErrorKind::OffsetCapacityExceeded | GeometryErrorKind::MalformedCsrOffsets
-            )
-        ));
-        let err = CsrOffsetColumn::<()>::rebase_concat_trusted(
-            &[0, i32::MAX],
-            &[0, i32::MAX, 0],
-            usize::MAX,
-        )
-        .expect_err("double-max tail must error");
+    fn csr_offset_rebase_concat_rejects_overflow() {
+        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 1], &[0, i32::MAX], usize::MAX)
+            .expect_err("rebased tail must exceed i32 capacity");
         assert!(matches!(
             err.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
         ));
     }
 
-    /// Non-monotonic tail ends must error rather than produce a false CSR.
+    /// Negative raw offsets must error before rebase arithmetic.
     #[test]
-    fn csr_offset_rebase_concat_trusted_rejects_non_monotonic_tail() {
-        let err = CsrOffsetColumn::<()>::rebase_concat_trusted(&[0, 5], &[0, 3, 1], 100)
+    fn csr_offset_rebase_concat_rejects_negative_offsets() {
+        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 1], &[0, -1], usize::MAX)
+            .expect_err("negative tail offset must error");
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+    }
+
+    /// Non-monotonic raw ends must error rather than produce a false CSR.
+    #[test]
+    fn csr_offset_rebase_concat_rejects_non_monotonic_offsets() {
+        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 5, 3], &[0], 100)
+            .expect_err("non-monotonic prefix must error");
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 5], &[0, 3, 1], 100)
             .expect_err("non-monotonic tail must error");
         assert!(matches!(
             err.kind(),
@@ -142,8 +254,8 @@ mod coordseq_builder_tests {
     #[test]
     fn finish_rejects_mismatched_point_axes() {
         let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 2);
-        builder.push(Point::new_unchecked_xy(0.0, 0.0));
-        builder.push(Point::new_unchecked_axes(
+        builder.push(Point::new_raw_xy(0.0, 0.0));
+        builder.push(Point::new_raw_axes(
             1.0,
             1.0,
             ZOrdinate(Some(0.0)),
@@ -162,8 +274,8 @@ mod coordseq_builder_tests {
     #[test]
     fn try_from_points_rejects_mixed_axes_without_panicking() {
         let points = [
-            Point::new_unchecked_xy(0.0, 0.0),
-            Point::new_unchecked_axes(1.0, 1.0, ZOrdinate(Some(2.0)), MOrdinate(None)),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(2.0)), MOrdinate(None)),
         ];
         let err = CoordSeq::try_from_points(&points).unwrap_err();
         assert!(matches!(
@@ -211,13 +323,13 @@ mod coordseq_builder_tests {
     #[test]
     fn finish_seals_homogeneous_points() {
         let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XYZ, 2);
-        builder.push(Point::new_unchecked_axes(
+        builder.push(Point::new_raw_axes(
             0.0,
             0.0,
             ZOrdinate(Some(1.0)),
             MOrdinate(None),
         ));
-        builder.push(Point::new_unchecked_axes(
+        builder.push(Point::new_raw_axes(
             2.0,
             3.0,
             ZOrdinate(Some(4.0)),
@@ -309,7 +421,7 @@ mod coordseq_xy_transform_carry_tests {
             Some([10.0, 11.0, 12.0, 13.0].into()),
             None,
         )
-        .view(CoordWindow::trusted(1..3, 4));
+        .view(CoordWindow::from_range(1..3, 4));
         let parent_z = seq.column_arcs().zs.expect("Z column");
         let mapped = seq.map_xy(|x, y| (x + 1.0, y + 1.0));
         assert_eq!(mapped.zs().expect("Z carried").to_vec(), [11.0, 12.0]);

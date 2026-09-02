@@ -1,23 +1,377 @@
 //! Lazy per-row prepared handles for packed array rows.
 
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::{Arc, OnceLock};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::array::{
-    GeometryArrayStorage, PyGeometry, PyGeometryArray, RowSelection, RowSelectionRef, ShapeRow,
-};
+use crate::array::{GeometryArrayStorage, PyGeometry, PyGeometryArray, RowSelection, ShapeRow};
 use crate::geometry::{Bounds, FrameDependentCaches, PreparedPlan, Shape, ShapeData};
 use crate::heap_size::HeapSize;
 
-/// Sidecar cache: one [`OnceLock`] per logical row, shared across array clones.
-pub(crate) type PreparedRowCache = Arc<OnceLock<Arc<[OnceLock<Arc<PreparedPlan>>]>>>;
+const ROWS_PER_CHUNK: usize = 64;
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Transient avoids an allocation on the linear packed fast path"
-)]
+#[cfg(test)]
+static DIRECTORY_RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Default)]
+struct RowProductCell {
+    prepared: OnceLock<Arc<PreparedPlan>>,
+    frame: OnceLock<Arc<FrameDependentCaches>>,
+}
+
+#[derive(Debug)]
+struct RowProductChunk {
+    cells: Box<[RowProductCell]>,
+}
+
+impl RowProductChunk {
+    fn try_new() -> crate::error::Result<Self> {
+        let mut cells = Vec::new();
+        crate::boundary::try_reserve_vec(&mut cells, ROWS_PER_CHUNK)?;
+        cells.resize_with(ROWS_PER_CHUNK, RowProductCell::default);
+        Ok(Self {
+            cells: cells.into_boxed_slice(),
+        })
+    }
+}
+
+/// Demand-allocated products owned by one immutable physical row source.
+#[derive(Debug)]
+pub(crate) struct RowProductOwner {
+    physical_len: usize,
+    chunks: Mutex<HashMap<usize, Arc<RowProductChunk>>>,
+    aliases: HashMap<usize, (Arc<RowProductOwner>, usize)>,
+}
+
+impl RowProductOwner {
+    fn new(physical_len: usize) -> Self {
+        Self {
+            physical_len,
+            chunks: Mutex::new(HashMap::new()),
+            aliases: HashMap::new(),
+        }
+    }
+
+    fn cell(
+        self: &Arc<Self>,
+        physical: usize,
+    ) -> crate::error::Result<(Arc<Self>, usize, Arc<RowProductChunk>)> {
+        if let Some((owner, source_physical)) = self.aliases.get(&physical) {
+            return owner.cell(*source_physical);
+        }
+        let chunk_index = physical / ROWS_PER_CHUNK;
+        let offset = physical % ROWS_PER_CHUNK;
+        #[cfg(test)]
+        DIRECTORY_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+        let mut chunks = self
+            .chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(chunk) = chunks.get(&chunk_index) {
+            return Ok((Arc::clone(self), offset, Arc::clone(chunk)));
+        }
+        let chunk = Arc::new(RowProductChunk::try_new()?);
+        chunks
+            .try_reserve(1)
+            .map_err(|_| crate::error::ResourceError::Allocation)?;
+        chunks.insert(chunk_index, Arc::clone(&chunk));
+        drop(chunks);
+        Ok((Arc::clone(self), offset, chunk))
+    }
+
+    fn existing_cell(
+        self: &Arc<Self>,
+        physical: usize,
+    ) -> Option<(Arc<Self>, usize, Arc<RowProductChunk>)> {
+        if let Some((owner, source_physical)) = self.aliases.get(&physical) {
+            return owner.existing_cell(*source_physical);
+        }
+        let chunk_index = physical / ROWS_PER_CHUNK;
+        let offset = physical % ROWS_PER_CHUNK;
+        #[cfg(test)]
+        DIRECTORY_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+        let chunks = self
+            .chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        chunks
+            .get(&chunk_index)
+            .map(|chunk| (Arc::clone(self), offset, Arc::clone(chunk)))
+    }
+}
+
+/// Logical view onto a physical row-product owner.
+#[derive(Clone, Debug)]
+pub(crate) struct RowProducts {
+    owner: Arc<RowProductOwner>,
+    selection: RowSelection,
+}
+
+#[derive(Debug)]
+struct ResolvedRowProductChunk {
+    physical: usize,
+    owner: Arc<RowProductOwner>,
+    chunk_index: usize,
+    chunk: Arc<RowProductChunk>,
+}
+
+/// Operation-scoped access to one logical row-product view.
+///
+/// The owner remains shared and immutable from the operation's perspective;
+/// only the last resolved directory entry is retained here. The mutex is
+/// therefore acquired when a new chunk is reached, never for each product
+/// access within a chunk.
+#[derive(Debug)]
+pub(crate) struct RowProductsHandle {
+    owner: Arc<RowProductOwner>,
+    selection: RowSelection,
+    current: Option<ResolvedRowProductChunk>,
+}
+
+impl RowProductsHandle {
+    fn cell(
+        &mut self,
+        logical: usize,
+    ) -> crate::error::Result<Option<(&Arc<RowProductChunk>, usize)>> {
+        let physical = self.selection.as_deref().physical(logical);
+        let has_aliases = !self.owner.aliases.is_empty();
+        let cached = self.current.as_ref().is_some_and(|current| {
+            if has_aliases {
+                current.physical == physical
+            } else {
+                Arc::ptr_eq(&current.owner, &self.owner)
+                    && current.chunk_index == physical / ROWS_PER_CHUNK
+            }
+        });
+        if !cached {
+            let (owner, offset, chunk) = self.owner.cell(physical)?;
+            self.current = Some(ResolvedRowProductChunk {
+                physical,
+                owner,
+                chunk_index: physical / ROWS_PER_CHUNK,
+                chunk,
+            });
+            return Ok(self
+                .current
+                .as_ref()
+                .map(|current| (&current.chunk, offset)));
+        }
+        Ok(self
+            .current
+            .as_ref()
+            .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK)))
+    }
+
+    fn existing_cell(
+        &mut self,
+        logical: usize,
+    ) -> Option<(&Arc<RowProductChunk>, usize)> {
+        let physical = self.selection.as_deref().physical(logical);
+        let has_aliases = !self.owner.aliases.is_empty();
+        let cached = self.current.as_ref().is_some_and(|current| {
+            if has_aliases {
+                current.physical == physical
+            } else {
+                Arc::ptr_eq(&current.owner, &self.owner)
+                    && current.chunk_index == physical / ROWS_PER_CHUNK
+            }
+        });
+        if !cached {
+            let (owner, offset, chunk) = self.owner.existing_cell(physical)?;
+            self.current = Some(ResolvedRowProductChunk {
+                physical,
+                owner,
+                chunk_index: physical / ROWS_PER_CHUNK,
+                chunk,
+            });
+            return self
+                .current
+                .as_ref()
+                .map(|current| (&current.chunk, offset));
+        }
+        self.current
+            .as_ref()
+            .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK))
+    }
+
+    pub(crate) fn frame_cache(&mut self, logical: usize) -> Arc<FrameDependentCaches> {
+        let Some((chunk, offset)) = self.cell(logical).ok().flatten() else {
+            return Arc::new(FrameDependentCaches::default());
+        };
+        Arc::clone(
+            chunk.cells[offset]
+                .frame
+                .get_or_init(|| Arc::new(FrameDependentCaches::default())),
+        )
+    }
+
+    pub(crate) fn prepared_plan(
+        &mut self,
+        logical: usize,
+        shape: Arc<ShapeData>,
+    ) -> Arc<PreparedPlan> {
+        let Some((chunk, offset)) = self.cell(logical).ok().flatten() else {
+            return Arc::new(PreparedPlan::new(shape));
+        };
+        Arc::clone(
+            chunk.cells[offset]
+                .prepared
+                .get_or_init(|| Arc::new(PreparedPlan::new(shape))),
+        )
+    }
+
+    pub(crate) fn cached_prepared_plan(&mut self, logical: usize) -> Option<Arc<PreparedPlan>> {
+        let (chunk, offset) = self.existing_cell(logical)?;
+        chunk.cells[offset].prepared.get().cloned()
+    }
+
+    pub(crate) fn install_prepared_plan(
+        &mut self,
+        logical: usize,
+        plan: Arc<PreparedPlan>,
+    ) -> Arc<PreparedPlan> {
+        let Some((chunk, offset)) = self.cell(logical).ok().flatten() else {
+            return plan;
+        };
+        Arc::clone(chunk.cells[offset].prepared.get_or_init(|| plan))
+    }
+}
+
+impl RowProducts {
+    pub(crate) fn fresh(physical_len: usize) -> Self {
+        Self {
+            owner: Arc::new(RowProductOwner::new(physical_len)),
+            selection: RowSelection::Identity,
+        }
+    }
+
+    pub(crate) fn operation(&self) -> RowProductsHandle {
+        RowProductsHandle {
+            owner: Arc::clone(&self.owner),
+            selection: self.selection.clone(),
+            current: None,
+        }
+    }
+
+    pub(crate) fn frame_cache(&self, logical: usize) -> Arc<FrameDependentCaches> {
+        self.operation().frame_cache(logical)
+    }
+
+    pub(crate) fn prepared_plan(&self, logical: usize, shape: Arc<ShapeData>) -> Arc<PreparedPlan> {
+        self.operation().prepared_plan(logical, shape)
+    }
+
+    pub(crate) fn cached_prepared_plan(&self, logical: usize) -> Option<Arc<PreparedPlan>> {
+        self.operation().cached_prepared_plan(logical)
+    }
+
+    /// Retained products for one scalar view into this row owner. The scalar
+    /// must not charge products initialized for its array siblings.
+    pub(crate) fn heap_bytes_at(&self, logical: usize) -> usize {
+        let mut products = self.operation();
+        let Some((chunk, offset)) = products.existing_cell(logical) else {
+            return 0;
+        };
+        std::mem::size_of::<RowProductChunk>()
+            + chunk.cells.len() * std::mem::size_of::<RowProductCell>()
+            + chunk.cells[offset].prepared.get().map_or(0, |plan| {
+                std::mem::size_of_val(plan.as_ref()) + plan.retained_heap_bytes()
+            })
+            + chunk.cells[offset].frame.get().map_or(0, |cache| {
+                std::mem::size_of_val(cache.as_ref()) + cache.heap_bytes()
+            })
+    }
+
+    pub(crate) fn install_prepared_plan(
+        &self,
+        logical: usize,
+        plan: Arc<PreparedPlan>,
+    ) -> Arc<PreparedPlan> {
+        self.operation().install_prepared_plan(logical, plan)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_directory_resolution_count() {
+        DIRECTORY_RESOLUTIONS.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn directory_resolution_count() -> usize {
+        DIRECTORY_RESOLUTIONS.load(Ordering::Relaxed)
+    }
+
+    fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
+        let current = self.selection.as_deref();
+        let physical_len = self.owner.physical_len;
+        let selection = crate::array::row_selection_from_logical_rows(current, physical_len, rows);
+        Self {
+            owner: Arc::clone(&self.owner),
+            selection,
+        }
+    }
+
+    pub(super) fn with_selection(&self, selection: RowSelection) -> Self {
+        Self {
+            owner: Arc::clone(&self.owner),
+            selection,
+        }
+    }
+
+    pub(super) fn preserving_physical_rows(
+        physical_len: usize,
+        source: &Self,
+        unchanged_rows: &[usize],
+    ) -> crate::error::Result<Self> {
+        let current = source.selection.as_deref();
+        let mut aliases = HashMap::new();
+        aliases
+            .try_reserve(unchanged_rows.len())
+            .map_err(|_| crate::error::ResourceError::Allocation)?;
+        for &row in unchanged_rows {
+            aliases.insert(row, (Arc::clone(&source.owner), current.physical(row)));
+        }
+        Ok(Self {
+            owner: Arc::new(RowProductOwner {
+                physical_len,
+                chunks: Mutex::new(HashMap::new()),
+                aliases,
+            }),
+            selection: RowSelection::Identity,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_owner_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner) && self.selection == other.selection
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialized_counts(&self) -> (usize, usize, usize) {
+        let mut chunks = std::collections::HashSet::new();
+        let mut prepared = std::collections::HashSet::new();
+        let mut frame = std::collections::HashSet::new();
+        for logical in 0..self.selection.as_deref().len(self.owner.physical_len) {
+            let physical = self.selection.as_deref().physical(logical);
+            if let Some((_, offset, chunk)) = self.owner.existing_cell(physical) {
+                let chunk_id = Arc::as_ptr(&chunk) as usize;
+                chunks.insert(chunk_id);
+                if chunk.cells[offset].prepared.get().is_some() {
+                    prepared.insert((chunk_id, offset));
+                }
+                if chunk.cells[offset].frame.get().is_some() {
+                    frame.insert((chunk_id, offset));
+                }
+            }
+        }
+        (chunks.len(), prepared.len(), frame.len())
+    }
+}
+
 pub(crate) enum PreparedRow<'a> {
     Shared(&'a Arc<PreparedPlan>),
+    Owned(Arc<PreparedPlan>),
     Transient(PreparedPlan),
 }
 
@@ -27,6 +381,7 @@ impl Deref for PreparedRow<'_> {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Shared(data) => data,
+            Self::Owned(data) => data,
             Self::Transient(data) => data,
         }
     }
@@ -58,11 +413,14 @@ impl<'a> PreparedRow<'a> {
             },
             ShapeRow::Shape(shape) => PreparedPlan::new(ShapeData::new(shape.clone())),
             ShapeRow::Point(point) => PreparedPlan::new(ShapeData::new(Shape::Point(point))),
-            ShapeRow::Line(coords, start, end) => PreparedPlan::new(ShapeData::new(
-                Shape::LineString(crate::geometry::LineSeq::from_trusted(coords.view(
-                    crate::geometry::CoordWindow::trusted(start..end, coords.len()),
-                ))),
-            )),
+            ShapeRow::Line(coords, start, end) => {
+                PreparedPlan::new(ShapeData::new(Shape::LineString(
+                    crate::geometry::LineSeq::try_new(coords.view(
+                        crate::geometry::CoordWindow::from_range(start..end, coords.len()),
+                    ))
+                    .expect("validated line window has at least two vertices"),
+                )))
+            },
             ShapeRow::Rings(coords, ring_offsets, start, end) => {
                 PreparedPlan::new(ShapeData::new(Shape::Polygon(
                     GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end),
@@ -79,153 +437,37 @@ impl<'a> PreparedRow<'a> {
     pub(crate) fn into_owned_plan(self) -> Arc<PreparedPlan> {
         match self {
             Self::Shared(data) => Arc::clone(data),
+            Self::Owned(data) => data,
             Self::Transient(data) => Arc::new(data),
         }
     }
 }
 
-/// Frame-dependent row caches stored in one contiguous allocation.
-///
-/// Selections remap logical rows onto the original slots, so clones, slices,
-/// and gathers share initialized caches without requiring one `Arc`
-/// allocation per row.
-#[derive(Clone, Debug)]
-pub(crate) struct FrameCacheRows {
-    slots: Arc<[OnceLock<Arc<FrameDependentCaches>>]>,
-    selection: RowSelection,
-}
-
-impl FrameCacheRows {
-    pub(crate) fn cache(&self, logical: usize) -> Arc<FrameDependentCaches> {
-        let physical = self.selection.as_deref().physical(logical);
-        Arc::clone(self.slots[physical].get_or_init(|| Arc::new(FrameDependentCaches::default())))
-    }
-
-    fn initialized(&self, logical: usize) -> Option<Arc<FrameDependentCaches>> {
-        let physical = self.selection.as_deref().physical(logical);
-        self.slots[physical].get().cloned()
-    }
-
-    fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
-        let current = self.selection.as_deref();
-        let mut first = None;
-        let mut count = 0_usize;
-        let mut gather = None::<Vec<usize>>;
-
-        for logical in rows {
-            let physical = current.physical(logical);
-            if let Some(indices) = &mut gather {
-                indices.push(physical);
-            } else if let Some(start) = first {
-                if physical != start + count {
-                    let mut indices = Vec::with_capacity(count.saturating_add(1));
-                    indices.extend(start..start + count);
-                    indices.push(physical);
-                    gather = Some(indices);
-                }
-            } else {
-                first = Some(physical);
-            }
-            count += 1;
-        }
-
-        let selection = gather.map_or_else(
-            || {
-                let start = first.unwrap_or(0);
-                if start == 0 && count == self.slots.len() {
-                    RowSelection::Identity
-                } else {
-                    RowSelection::window_trusted(start, count, self.slots.len())
-                }
-            },
-            |indices| RowSelection::gather_trusted(indices.into(), self.slots.len()),
-        );
-        Self {
-            slots: Arc::clone(&self.slots),
-            selection,
-        }
-    }
-
-    pub(super) fn mapped_from(source: &Self, unchanged: impl AsRef<[bool]>) -> Self {
-        let unchanged = unchanged.as_ref();
-        if unchanged.iter().all(|&value| value) {
-            return source.clone();
-        }
-        let slots: Arc<[OnceLock<Arc<FrameDependentCaches>>]> = unchanged
-            .iter()
-            .enumerate()
-            .map(|(row, &keep)| {
-                let slot = OnceLock::new();
-                if keep && let Some(cache) = source.initialized(row) {
-                    let _ = slot.set(cache);
-                }
-                slot
-            })
-            .collect();
-        Self {
-            slots,
-            selection: RowSelection::Identity,
-        }
-    }
-}
-
-impl HeapSize for FrameCacheRows {
+impl HeapSize for RowProducts {
     fn heap_bytes(&self) -> usize {
-        // Logical retained footprint: charge only the selected logical rows'
-        // slots (plus selection metadata), not the full shared parent table.
-        // A tiny window/gather over a large parent must not report the parent's
-        // full OnceLock table as its own size (NumPy-view doctrine).
-        let logical_len = match self.selection.as_deref() {
-            RowSelectionRef::Identity => self.slots.len(),
-            RowSelectionRef::Window { len, .. } => len,
-            RowSelectionRef::Gather(map) => map.len(),
-        };
-        let slot_bytes = logical_len * std::mem::size_of::<OnceLock<Arc<FrameDependentCaches>>>();
-        let initialized: usize = (0..logical_len)
-            .filter_map(|logical| self.initialized(logical))
-            .map(|cache| std::mem::size_of_val(cache.as_ref()) + cache.heap_bytes())
-            .sum();
-        slot_bytes + initialized + self.selection.heap_bytes()
+        let chunks = self
+            .owner
+            .chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let retained = chunks.values().fold(0, |total, chunk| {
+            total
+                + std::mem::size_of::<RowProductChunk>()
+                + chunk.cells.len() * std::mem::size_of::<RowProductCell>()
+                + chunk.cells.iter().fold(0, |cell_total, cell| {
+                    cell_total
+                        + cell.prepared.get().map_or(0, |plan| {
+                            std::mem::size_of_val(plan.as_ref()) + plan.retained_heap_bytes()
+                        })
+                        + cell.frame.get().map_or(0, |cache| {
+                            std::mem::size_of_val(cache.as_ref()) + cache.heap_bytes()
+                        })
+                })
+        });
+        retained
+            + chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
+            + self.selection.heap_bytes()
     }
-}
-
-pub(crate) fn fresh_frame_caches(len: usize) -> FrameCacheRows {
-    FrameCacheRows {
-        slots: Arc::from_iter(std::iter::repeat_with(OnceLock::new).take(len)),
-        selection: RowSelection::Identity,
-    }
-}
-
-pub(crate) fn fresh_prepared_cache() -> PreparedRowCache {
-    Arc::new(OnceLock::new())
-}
-
-/// Carry initialized prepared slots across a shared map when the corresponding
-/// row shape was reused (`unchanged[i] == true`).
-pub(crate) fn mapped_prepared_cache(
-    source: &PreparedRowCache,
-    unchanged: &[bool],
-) -> PreparedRowCache {
-    let Some(source_slots) = source.get() else {
-        return fresh_prepared_cache();
-    };
-    if unchanged.iter().all(|&value| value) && source_slots.len() == unchanged.len() {
-        return Arc::clone(source);
-    }
-    let slots: Arc<[OnceLock<Arc<PreparedPlan>>]> = unchanged
-        .iter()
-        .enumerate()
-        .map(|(row, &keep)| {
-            let slot = OnceLock::new();
-            if keep && let Some(handle) = source_slots.get(row).and_then(OnceLock::get) {
-                let _ = slot.set(Arc::clone(handle));
-            }
-            slot
-        })
-        .collect();
-    let out = Arc::new(OnceLock::new());
-    let _ = out.set(slots);
-    out
 }
 
 fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
@@ -245,15 +487,11 @@ fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
 }
 
 impl PyGeometryArray {
-    pub(crate) fn row_frame_cache(&self, index: usize) -> Arc<FrameDependentCaches> {
-        self.frame_caches.cache(index)
-    }
-
-    pub(crate) fn selected_frame_caches(
+    pub(crate) fn selected_row_products(
         &self,
         rows: impl IntoIterator<Item = usize>,
-    ) -> FrameCacheRows {
-        self.frame_caches.selected(rows)
+    ) -> RowProducts {
+        self.row_products.selected(rows)
     }
 
     pub(crate) fn row_bounds_seed(&self, index: usize) -> BoundsSeed {
@@ -264,6 +502,16 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn prepared_row<'a>(&'a self, index: usize, row: ShapeRow<'a>) -> PreparedRow<'a> {
+        let mut products = self.row_products.operation();
+        self.prepared_row_with(&mut products, index, row)
+    }
+
+    pub(crate) fn prepared_row_with<'a>(
+        &self,
+        products: &mut RowProductsHandle,
+        index: usize,
+        row: ShapeRow<'a>,
+    ) -> PreparedRow<'a> {
         match row {
             ShapeRow::Handle(handle) => PreparedRow::Shared(handle),
             ShapeRow::Shape(shape) => {
@@ -271,10 +519,13 @@ impl PyGeometryArray {
                 // exists. Seeding `None` means "known empty" — not "unknown".
                 // Mixed storage has no packed fold until first materialization,
                 // so leave ShapeData's OnceLock unset and let it compute.
-                let slots = self
-                    .prepared_cache
-                    .get_or_init(|| Arc::from(vec![OnceLock::new(); self.storage().len()]));
-                let handle = slots[index].get_or_init(|| {
+                let Some((chunk, offset)) = products.cell(index).ok().flatten() else {
+                    return PreparedRow::transient_with_seed(
+                        ShapeRow::Shape(shape),
+                        self.row_bounds_seed(index),
+                    );
+                };
+                let handle = chunk.cells[offset].prepared.get_or_init(|| {
                     let data = PreparedPlan::new(ShapeData::new(shape.clone()));
                     if let Some(element_bounds) = self.cached_element_bounds() {
                         Arc::new(
@@ -284,29 +535,42 @@ impl PyGeometryArray {
                         Arc::new(data)
                     }
                 });
-                PreparedRow::Shared(handle)
+                PreparedRow::Owned(Arc::clone(handle))
             },
             packed @ (ShapeRow::Line(..) | ShapeRow::Rings(..))
                 if packed_row_persistent(packed) =>
             {
                 let bounds = self.row_bounds_seed(index);
-                let slots = self
-                    .prepared_cache
-                    .get_or_init(|| Arc::from(vec![OnceLock::new(); self.storage().len()]));
-                let handle = slots[index].get_or_init(|| {
+                let Some((chunk, offset)) = products.cell(index).ok().flatten() else {
+                    return PreparedRow::transient_with_seed(packed, bounds);
+                };
+                let handle = chunk.cells[offset].prepared.get_or_init(|| {
                     match PreparedRow::transient_with_seed(packed, bounds) {
                         PreparedRow::Transient(data) => Arc::new(data),
                         PreparedRow::Shared(data) => Arc::clone(data),
+                        PreparedRow::Owned(data) => data,
                     }
                 });
-                PreparedRow::Shared(handle)
+                PreparedRow::Owned(Arc::clone(handle))
             },
             packed => PreparedRow::transient_with_seed(packed, self.row_bounds_seed(index)),
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn warm_prepared_row_or_transient<'a>(
         &'a self,
+        index: usize,
+        row: ShapeRow<'a>,
+        bounds: Option<Bounds>,
+    ) -> PreparedRow<'a> {
+        let mut products = self.row_products.operation();
+        self.warm_prepared_row_or_transient_with(&mut products, index, row, bounds)
+    }
+
+    pub(crate) fn warm_prepared_row_or_transient_with<'a>(
+        &self,
+        products: &mut RowProductsHandle,
         index: usize,
         row: ShapeRow<'a>,
         bounds: Option<Bounds>,
@@ -314,66 +578,52 @@ impl PyGeometryArray {
         if let ShapeRow::Handle(handle) = row {
             return PreparedRow::Shared(handle);
         }
-        let Some(slots) = self.prepared_cache.get() else {
+        let Some((chunk, offset)) = products.existing_cell(index) else {
             return PreparedRow::transient_with_bounds(row, bounds);
         };
-        slots[index].get().map_or_else(
+        chunk.cells[offset].prepared.get().map_or_else(
             || PreparedRow::transient_with_bounds(row, bounds),
-            PreparedRow::Shared,
+            |plan| PreparedRow::Owned(Arc::clone(plan)),
         )
     }
 
     /// Scalar geometry for a logical row: mixed rows share one array-cached
     /// [`PreparedPlan`]; packed rows build a fresh handle (same as before).
     pub(crate) fn geometry_at(&self, index: usize) -> PyGeometry {
-        let frame_cache = self.row_frame_cache(index);
         let frame = self.frame.clone();
         match self.storage() {
             GeometryArrayStorage::Mixed(shapes) => {
-                let slots = self
-                    .prepared_cache
-                    .get_or_init(|| Arc::from(vec![OnceLock::new(); self.storage().len()]));
-                let shape = Arc::clone(slots[index].get_or_init(|| {
-                    Arc::new(PreparedPlan::new(ShapeData::new(shapes[index].clone())))
-                }));
-                PyGeometry {
-                    shape: Arc::clone(shape.shape_arc()),
-                    prepared_plan: Some(shape),
-                    frame_cache,
+                let plan = self
+                    .row_products
+                    .prepared_plan(index, Arc::new(ShapeData::new(shapes[index].clone())));
+                PyGeometry::with_row_products(
+                    Arc::clone(plan.shape_arc()),
                     frame,
-                }
+                    self.row_products.clone(),
+                    index,
+                )
             },
-            _ => {
-                let geometry = self.storage().geometry_at(index, frame, frame_cache);
-                if let Some(plan) = self
-                    .prepared_cache
-                    .get()
-                    .and_then(|slots| slots.get(index))
-                    .and_then(OnceLock::get)
-                    .cloned()
-                {
-                    geometry.with_prepared_plan(plan)
-                } else {
-                    geometry
-                }
+            _ if self.rows.is_compact_nullable() => {
+                let crate::array::LogicalRow::Present { row, .. } = self
+                    .logical_row(index)
+                    .expect("geometry row must be in bounds")
+                else {
+                    unreachable!("missing rows are rejected before scalar extraction")
+                };
+                PyGeometry::with_row_products(
+                    Arc::new(ShapeData::new(row.with_shape(Clone::clone))),
+                    frame,
+                    self.row_products.clone(),
+                    index,
+                )
             },
+            _ => PyGeometry::with_row_products(
+                self.storage().shape_data_at(index),
+                frame,
+                self.row_products.clone(),
+                index,
+            ),
         }
-    }
-
-    /// Retained heap of initialized prepared-row slots (mixed + large packed).
-    ///
-    /// Counts only this array's logical rows — a window/gather view must not
-    /// charge the full parent prepared table.
-    pub(crate) fn prepared_cache_heap_bytes(&self) -> usize {
-        let Some(slots) = self.prepared_cache.get() else {
-            return 0;
-        };
-        let n = self.storage().len().min(slots.len());
-        (0..n).fold(0_usize, |acc, row| {
-            acc + slots[row].get().map_or(0, |data| {
-                std::mem::size_of_val(data.as_ref()) + data.retained_heap_bytes()
-            })
-        })
     }
 }
 
@@ -381,7 +631,7 @@ impl PyGeometryArray {
 mod frame_cache_row_tests {
     use super::*;
     use crate::boundary::{Frame, crs_arc_static};
-    use crate::geometry::{CoordSeq, LineSeq, Point};
+    use crate::geometry::{CoordSeq, LineSeq, PlanarMetric, Point};
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
@@ -390,17 +640,119 @@ mod frame_cache_row_tests {
         )
     }
 
+    #[test]
+    fn huge_owners_are_cold_and_chunk_boundaries_are_physical() {
+        for len in [1_000_000, 100_000_000] {
+            let products = RowProducts::fresh(len);
+            assert!(products.owner.chunks.lock().unwrap().is_empty());
+            assert_eq!(products.heap_bytes(), 0);
+        }
+
+        let products = RowProducts::fresh(100_000_000);
+        let mut handle = products.operation();
+        let row_63 = handle
+            .cell(63)
+            .unwrap()
+            .map(|(chunk, offset)| (Arc::as_ptr(chunk), offset));
+        assert_eq!(products.owner.chunks.lock().unwrap().len(), 1);
+        let row_64 = handle
+            .cell(64)
+            .unwrap()
+            .map(|(chunk, offset)| (Arc::as_ptr(chunk), offset));
+        assert_eq!(products.owner.chunks.lock().unwrap().len(), 2);
+        assert_ne!(row_63.unwrap().0, row_64.unwrap().0);
+    }
+
+    #[test]
+    fn duplicate_logical_rows_share_one_physical_cell() {
+        let products = RowProducts::fresh(3).selected([2, 2]);
+        let mut handle = products.operation();
+        let first = handle
+            .cell(0)
+            .unwrap()
+            .map(|(chunk, offset)| (Arc::as_ptr(chunk), offset));
+        let second = handle
+            .cell(1)
+            .unwrap()
+            .map(|(chunk, offset)| (Arc::as_ptr(chunk), offset));
+        assert_eq!(first.unwrap(), second.unwrap());
+    }
+
+    #[test]
+    fn operation_resolves_each_sequential_chunk_once() {
+        let products = RowProducts::fresh(192);
+        let mut handle = products.operation();
+        RowProducts::reset_directory_resolution_count();
+        for row in 0..192 {
+            let _ = handle.frame_cache(row);
+            let _ = handle.frame_cache(row);
+        }
+        assert_eq!(RowProducts::directory_resolution_count(), 3);
+    }
+
+    #[test]
+    fn prepared_and_frame_access_share_one_resolved_slot() {
+        let products = RowProducts::fresh(1);
+        let mut handle = products.operation();
+        RowProducts::reset_directory_resolution_count();
+        let _ = handle.prepared_plan(
+            0,
+            Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
+        );
+        let _ = handle.frame_cache(0);
+        assert_eq!(RowProducts::directory_resolution_count(), 1);
+    }
+
+    #[test]
+    fn existing_only_cold_lookup_does_not_allocate() {
+        let products = RowProducts::fresh(1_000_000);
+        let mut handle = products.operation();
+        RowProducts::reset_directory_resolution_count();
+        assert!(handle.cached_prepared_plan(0).is_none());
+        assert!(products.owner.chunks.lock().unwrap().is_empty());
+        assert_eq!(RowProducts::directory_resolution_count(), 1);
+    }
+
+    #[test]
+    fn concurrent_first_publication_keeps_one_prepared_arc() {
+        let products = Arc::new(RowProducts::fresh(1));
+        let mut threads: Vec<_> = (0..8)
+            .map(|_| {
+                let products = Arc::clone(&products);
+                std::thread::spawn(move || {
+                    products.operation().prepared_plan(
+                        0,
+                        Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
+                    )
+                })
+            })
+            .collect();
+        let first = threads
+            .remove(0)
+            .join()
+            .expect("publication thread must finish");
+        for thread in threads {
+            assert!(Arc::ptr_eq(
+                &first,
+                &thread.join().expect("publication thread must finish")
+            ));
+        }
+    }
+
     fn mixed_shapes() -> PyGeometryArray {
         PyGeometryArray::mixed_shapes(
             vec![
-                Shape::Point(Point::new_unchecked_xy(1.0, 2.0)),
-                Shape::LineString(LineSeq::from_trusted(CoordSeq::from_vecs(
-                    vec![0.0, 1.0],
-                    vec![0.0, 1.0],
-                    None,
-                    None,
-                ))),
-                Shape::Point(Point::new_unchecked_xy(3.0, 4.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from_vecs(
+                        vec![0.0, 1.0],
+                        vec![0.0, 1.0],
+                        None,
+                        None,
+                    ))
+                    .expect("fixture line has two vertices"),
+                ),
+                Shape::Point(Point::new_raw_xy(3.0, 4.0)),
             ],
             Frame::None,
         )
@@ -415,7 +767,7 @@ mod frame_cache_row_tests {
             Arc::ptr_eq(&a.shape, &b.shape),
             "arr[i] must reuse the array-side prepared plan's ShapeData Arc"
         );
-        assert!(Arc::ptr_eq(&a.frame_cache, &b.frame_cache));
+        assert!(Arc::ptr_eq(&a.frame_cache(), &b.frame_cache()));
         // Different rows stay independent.
         let c = array.geometry_at(0);
         assert!(!Arc::ptr_eq(&a.shape, &c.shape));
@@ -426,49 +778,181 @@ mod frame_cache_row_tests {
         let array = points();
         let clone = array.clone();
         assert!(Arc::ptr_eq(
-            &array.row_frame_cache(1),
-            &clone.row_frame_cache(1)
+            &array.row_products.frame_cache(1),
+            &clone.row_products.frame_cache(1)
         ));
 
         let slice = array.gather_logical_rows(&[2, 0]);
         assert!(Arc::ptr_eq(
-            &array.row_frame_cache(2),
-            &slice.row_frame_cache(0)
+            &array.row_products.frame_cache(2),
+            &slice.row_products.frame_cache(0)
         ));
-        let extracted =
-            slice
-                .storage()
-                .geometry_at(0, slice.frame.clone(), slice.row_frame_cache(0));
+        let extracted = slice.geometry_at(0);
         assert!(Arc::ptr_eq(
-            &extracted.frame_cache,
-            &array.row_frame_cache(2)
+            &extracted.frame_cache(),
+            &array.row_products.frame_cache(2)
         ));
     }
 
     #[test]
-    fn array_retag_reuses_storage_but_refreshes_every_frame_cache_slot() {
+    fn array_retag_reuses_storage_and_row_products() {
         let array = points();
         let retagged = array.retag_frame(
             Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("valid test frame"),
         );
         assert!(Arc::ptr_eq(array.storage_arc(), retagged.storage_arc()));
-        for row in 0..array.storage().len() {
-            assert!(!Arc::ptr_eq(
-                &array.row_frame_cache(row),
-                &retagged.row_frame_cache(row)
+        for row in 0..array.len() {
+            assert!(Arc::ptr_eq(
+                &array.row_products.frame_cache(row),
+                &retagged.row_products.frame_cache(row)
             ));
         }
     }
 
     #[test]
-    fn frame_cache_slots_use_one_contiguous_allocation() {
+    fn retagged_gathered_scalars_keep_their_physical_product_cells() {
+        let source = points().gather_logical_rows(&[2, 2, 1]);
+        let before = source.row_products.initialized_counts();
+        let retagged = source.retag_frame(Frame::Crs(crs_arc_static("EPSG:4326")));
+
+        assert!(
+            source
+                .row_products
+                .shares_owner_with(&retagged.row_products)
+        );
+        assert_eq!(before, retagged.row_products.initialized_counts());
+        let first = retagged.geometry_at(0);
+        let duplicate = retagged.geometry_at(1);
+        let source_row = source.geometry_at(0);
+        assert_eq!(first.product_row, 0);
+        assert_eq!(duplicate.product_row, 1);
+        assert!(Arc::ptr_eq(&first.frame_cache(), &duplicate.frame_cache()));
+        assert!(Arc::ptr_eq(&first.frame_cache(), &source_row.frame_cache()));
+        assert_eq!(source.row_products.initialized_counts(), (1, 0, 1));
+    }
+
+    #[test]
+    fn retags_share_the_inner_keyed_frame_cache_and_prepared_plan() {
+        let a = mixed_shapes().retag_frame(Frame::Crs(crs_arc_static("EPSG:4326")));
+        let prepared_a = a.prepared_row(1, a.storage().row(1)).into_owned_plan();
+        let cache_a = a.row_products.frame_cache(1);
+        let index_a = prepared_a
+            .geodesic_line_index(
+                &cache_a,
+                "EPSG:4326",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                4,
+                &PlanarMetric,
+            )
+            .expect("first keyed line index");
+
+        let b = a.retag_frame(Frame::Crs(crs_arc_static("EPSG:4269")));
+        let prepared_b = b.prepared_row(1, b.storage().row(1)).into_owned_plan();
+        let cache_b = b.row_products.frame_cache(1);
+        assert!(Arc::ptr_eq(&prepared_a, &prepared_b));
+        assert!(Arc::ptr_eq(&cache_a, &cache_b));
+        let index_b = prepared_b
+            .geodesic_line_index(
+                &cache_b,
+                "EPSG:4269",
+                6_378_137.0,
+                1.0 / 298.257_222_101,
+                4,
+                &PlanarMetric,
+            )
+            .expect("retagged keyed line index");
+        assert!(!Arc::ptr_eq(&index_a, &index_b));
+
+        let back_to_a = b.retag_frame(Frame::Crs(crs_arc_static("EPSG:4326")));
+        let cache_a2 = back_to_a.row_products.frame_cache(1);
+        assert!(Arc::ptr_eq(&cache_a, &cache_a2));
+        let index_a2 = prepared_a
+            .geodesic_line_index(
+                &cache_a2,
+                "EPSG:4326",
+                6_378_137.0,
+                1.0 / 298.257_223_563,
+                4,
+                &PlanarMetric,
+            )
+            .expect("restored keyed line index");
+        assert!(!Arc::ptr_eq(&index_a, &index_a2));
+    }
+
+    #[test]
+    fn cold_owner_allocates_chunks_only_for_touched_rows() {
         let array = points();
-        assert_eq!(Arc::strong_count(&array.frame_caches.slots), 1);
+        assert!(array.row_products.owner.chunks.lock().unwrap().is_empty());
+        let _ = array.row_products.frame_cache(0);
+        assert_eq!(array.row_products.owner.chunks.lock().unwrap().len(), 1);
         let gathered = array.gather_logical_rows(&[2, 0]);
         assert!(Arc::ptr_eq(
-            &array.frame_caches.slots,
-            &gathered.frame_caches.slots
+            &array.row_products.owner,
+            &gathered.row_products.owner
         ));
+    }
+
+    #[test]
+    fn planar_metric_over_million_logical_rows_initializes_no_products() {
+        let source = points();
+        let rows: Vec<usize> = (0..1_000_000).map(|row| row % 3).collect();
+        let array = source.gather_logical_rows(&rows);
+        let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(4.0, 4.0)));
+
+        for row in array.storage().iter_rows() {
+            let data = PreparedRow::transient(row);
+            crate::broadcast::pair_distance_planar(1.0, &data, &probe).unwrap();
+        }
+
+        assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
+    }
+
+    #[test]
+    fn duplicate_selections_share_only_admitted_frame_cells() {
+        let array = points().gather_logical_rows(&[1, 1, 2, 0, 1]);
+        let first = array.row_products.frame_cache(0);
+        let duplicate = array.row_products.frame_cache(1);
+        let refined = array.row_products.frame_cache(2);
+
+        assert!(Arc::ptr_eq(&first, &duplicate));
+        assert!(!Arc::ptr_eq(&first, &refined));
+        assert_eq!(array.row_products.initialized_counts(), (1, 0, 2));
+    }
+
+    #[test]
+    fn geodesic_metric_initializes_only_refined_duplicate_row() {
+        let array = points().gather_logical_rows(&[1, 1, 2]);
+        let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(3.0, 3.0)));
+        let probe_cache = FrameDependentCaches::default();
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let crate::crs::ResolvedMetric::Geodesic {
+            crs,
+            geodesic,
+            frame,
+            state,
+        } = &resolved
+        else {
+            panic!("EPSG:4326 resolves geodesically")
+        };
+
+        for row in [0, 1] {
+            let data = PreparedRow::transient(array.storage().row(row));
+            crate::broadcast::pair_distance_geodesic(
+                crs,
+                geodesic,
+                *frame,
+                state,
+                &data,
+                &array.row_products.frame_cache(row),
+                &probe,
+                &probe_cache,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(array.row_products.initialized_counts(), (1, 0, 1));
     }
 }
 
@@ -499,21 +983,17 @@ mod prepared_row_ownership_tests {
     fn packed_row_persistence_matches_the_execution_plan_boundary() {
         let linear = lines(3);
         assert!(uses_linear_plan_for_len(2));
-        assert!(linear.prepared_cache.get().is_none());
+        assert!(linear.row_products.owner.chunks.lock().unwrap().is_empty());
         let _ = linear.prepared_row(0, linear.storage().row(0));
-        assert!(linear.prepared_cache.get().is_none());
+        assert!(linear.row_products.owner.chunks.lock().unwrap().is_empty());
 
         let nonlinear = lines(34);
         assert!(!uses_linear_plan_for_len(33));
         let first = nonlinear.prepared_row(0, nonlinear.storage().row(0));
-        let slots = nonlinear
-            .prepared_cache
-            .get()
-            .expect("non-linear row persists");
-        assert!(slots[0].get().is_some());
+        assert_eq!(nonlinear.row_products.owner.chunks.lock().unwrap().len(), 1);
         let second = nonlinear.prepared_row(0, nonlinear.storage().row(0));
-        assert!(matches!(first, PreparedRow::Shared(_)));
-        assert!(matches!(second, PreparedRow::Shared(_)));
+        assert!(matches!(first, PreparedRow::Owned(_)));
+        assert!(matches!(second, PreparedRow::Owned(_)));
 
         // A short shell with many holes is non-linear because of hole count,
         // not because any individual ring crosses the length threshold.
@@ -535,7 +1015,7 @@ mod prepared_row_ownership_tests {
         assert!(uses_linear_plan_for_len(4));
         assert!(!uses_linear_plan_for_len(33));
         let _ = polygons.prepared_row(0, polygons.storage().row(0));
-        assert!(polygons.prepared_cache.get().is_some());
+        assert_eq!(polygons.row_products.owner.chunks.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -545,14 +1025,11 @@ mod prepared_row_ownership_tests {
             .prepared_row(0, array.storage().row(0))
             .into_owned_plan();
         let geometry = array.geometry_at(0);
-        let extracted = geometry
-            .prepared_plan
-            .as_ref()
-            .expect("initialized packed rows retain their plan");
-        assert!(Arc::ptr_eq(&plan, extracted));
+        let extracted = geometry.prepared_plan();
+        assert!(Arc::ptr_eq(&plan, &extracted));
         assert!(Arc::ptr_eq(
-            &geometry.frame_cache,
-            &array.row_frame_cache(0)
+            &geometry.frame_cache(),
+            &array.row_products.frame_cache(0)
         ));
     }
 
@@ -569,9 +1046,9 @@ mod prepared_row_ownership_tests {
             if (x - 2.0).abs() < f64::EPSILON && (y - 3.0).abs() < f64::EPSILON));
         assert_eq!(
             prepared.bounds(),
-            Some(crate::geometry::Bounds::new_unchecked(2.0, 3.0, 2.0, 3.0))
+            Some(crate::geometry::Bounds::new_raw(2.0, 3.0, 2.0, 3.0))
         );
-        assert!(array.prepared_cache.get().is_none());
+        assert!(array.row_products.owner.chunks.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -580,16 +1057,22 @@ mod prepared_row_ownership_tests {
         let prepared = PreparedRow::transient(array.storage().row(0));
         assert_eq!(
             prepared.bounds(),
-            Some(crate::geometry::Bounds::new_unchecked(0.0, 0.0, 2.0, 0.0))
+            Some(crate::geometry::Bounds::new_raw(0.0, 0.0, 2.0, 0.0))
         );
     }
 
     #[test]
     fn array_dwithin_unknown_bounds_stay_lazy() {
         let array = PyGeometryArray::mixed_shapes(
-            vec![Shape::LineString(crate::geometry::LineSeq::from_trusted(
-                CoordSeq::from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, None),
-            ))],
+            vec![Shape::LineString(
+                crate::geometry::LineSeq::try_new(CoordSeq::from_vecs(
+                    vec![0.0, 1.0],
+                    vec![0.0, 1.0],
+                    None,
+                    None,
+                ))
+                .expect("fixture line has two vertices"),
+            )],
             Frame::None,
         );
         let seed = array.row_bounds_seed(0);
@@ -600,7 +1083,7 @@ mod prepared_row_ownership_tests {
         let prepared = PreparedRow::transient_with_seed(array.storage().row(0), seed);
         assert_eq!(
             prepared.bounds(),
-            Some(crate::geometry::Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0))
+            Some(crate::geometry::Bounds::new_raw(0.0, 0.0, 1.0, 1.0))
         );
     }
 
@@ -613,10 +1096,12 @@ mod prepared_row_ownership_tests {
             .into_owned_plan();
         let warm_size = crate::HeapSize::heap_bytes(&array);
         assert!(warm_size > source_size);
-        let slots = array.prepared_cache.get().unwrap();
-        assert!(Arc::ptr_eq(&owned, slots[0].get().unwrap()));
-        assert_eq!(array.prepared_cache_heap_bytes(), warm_size - source_size);
-        assert_eq!(slots.iter().filter(|slot| slot.get().is_some()).count(), 1);
+        let chunks = array.row_products.owner.chunks.lock().unwrap();
+        assert!(Arc::ptr_eq(
+            &owned,
+            chunks.get(&0).unwrap().cells[0].prepared.get().unwrap()
+        ));
+        assert_eq!(chunks.len(), 1);
     }
 
     #[test]
@@ -644,13 +1129,13 @@ mod prepared_row_ownership_tests {
 
         assert_eq!(crate::HeapSize::heap_bytes(&left), cold_left);
         assert_eq!(crate::HeapSize::heap_bytes(&right), cold_right);
-        assert!(left.prepared_cache.get().is_none());
-        assert!(right.prepared_cache.get().is_none());
+        assert!(left.row_products.owner.chunks.lock().unwrap().is_empty());
+        assert!(right.row_products.owner.chunks.lock().unwrap().is_empty());
     }
 
     #[test]
     fn handle_conversion_is_borrowed_not_rebuilt() {
-        let shape = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
+        let shape = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
         let source = Arc::new(shape);
         let prepared = PreparedRow::Shared(&source).into_owned_plan();
         assert!(Arc::ptr_eq(&source, &prepared));

@@ -117,6 +117,12 @@ impl CsrOffsetBuilder {
         Self::default()
     }
 
+    pub(crate) fn with_capacity(rows: usize) -> Result<Self> {
+        Ok(Self {
+            builder: crate::boundary::CsrBuilder::with_capacity(0, rows)?,
+        })
+    }
+
     /// Append the end offset of the next row; `vertex_index` must not exceed
     /// `vertex_cap`.
     pub(crate) fn push_end(&mut self, vertex_index: usize, vertex_cap: usize) -> Result<()> {
@@ -209,6 +215,11 @@ impl<Level> CsrOffsetColumn<Level> {
     /// tail ends (skipping its leading zero) by the prefix's last end — single
     /// O(n) `usize` pass, one i32 conversion at freeze.
     pub fn rebase_concat(prefix: &[i32], tail: &[i32], combined_vertex_cap: usize) -> Result<Self> {
+        // Raw slices are an admission boundary. Validate before converting any
+        // signed offset to usize so malformed negative or descending values
+        // cannot enter the rebase arithmetic.
+        validate_csr_offsets_i32(prefix, combined_vertex_cap)?;
+        validate_csr_offsets_i32(tail, combined_vertex_cap)?;
         let base = *prefix
             .last()
             .ok_or(GeometryErrorKind::MalformedCsrOffsets)? as usize;
@@ -222,17 +233,16 @@ impl<Level> CsrOffsetColumn<Level> {
         Self::try_new(ends, combined_vertex_cap)
     }
 
-    /// Fast-path concat of two CSR columns: one exact `i32` allocation, prefix
-    /// copy, one rebase pass over the tail (skipping its leading zero).
+    /// Fast-path concat of two already-validated CSR columns: one exact `i32`
+    /// allocation, prefix copy, and one rebase pass over the tail (skipping its
+    /// leading zero).
     ///
-    /// Every addition is **checked** — a safe caller cannot drive overflow into
-    /// `unchecked_add` UB by supplying naked non-monotonic or near-`i32::MAX`
-    /// slices. Monotonicity of the rebased tail is also checked so a non-CSR
-    /// input cannot produce a column that only *looks* valid at the ends.
-    pub fn rebase_concat_trusted(prefix: &[i32], tail: &[i32], end_cap: usize) -> Result<Self> {
-        if prefix.first().copied() != Some(0) {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        }
+    /// Raw slices use [`Self::rebase_concat`], which owns their validation.
+    /// Carrying validated columns here makes descending and negative offsets
+    /// unrepresentable at the fast-path boundary.
+    pub fn rebase_concat_validated(prefix: &Self, tail: &Self, end_cap: usize) -> Result<Self> {
+        let prefix = prefix.as_slice();
+        let tail = tail.as_slice();
         let base = *prefix
             .last()
             .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;

@@ -1020,8 +1020,8 @@ fn line_length_segment_hypot<const HAS_Z: bool>(
         }
     } else {
         point_distance(
-            Point::new_unchecked_xy(xs[segment], ys[segment]),
-            Point::new_unchecked_xy(xs[segment + 1], ys[segment + 1]),
+            Point::new_raw_xy(xs[segment], ys[segment]),
+            Point::new_raw_xy(xs[segment + 1], ys[segment + 1]),
         )
     }
 }

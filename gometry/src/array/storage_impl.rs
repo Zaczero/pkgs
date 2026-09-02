@@ -5,11 +5,10 @@
 use std::sync::Arc;
 
 use crate::array::{
-    Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, LineRows, PointRows, Polygon,
-    PyGeometry, Ring, RowSelectionRef, RowsIter, Shape, ShapeData, ShapeRow, ShapesIter,
-    column_window, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
-    packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
-    polygon_rings_range,
+    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PointRows, Polygon, Ring,
+    RowSelectionRef, RowsIter, Shape, ShapeData, ShapeRow, ShapesIter, column_window,
+    line_logical_len, packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
+    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
 };
 use crate::error::Result;
 use crate::geometry::{CoordWindow, LineSeq};
@@ -69,7 +68,7 @@ impl GeometryArrayStorage {
                         let window = map.csr_window(offsets.as_slice(), logical);
                         crate::boundary::try_push_vec(
                             &mut output,
-                            line(&coords.view(CoordWindow::trusted(window, coords.len()))),
+                            line(&coords.view(CoordWindow::from_range(window, coords.len()))),
                         )?;
                     }
                     Ok(output)
@@ -118,7 +117,7 @@ impl GeometryArrayStorage {
     /// mask is present — dense input uses [`lines_bool`].
     pub(crate) fn lines_bool_masked(
         &self,
-        missing: Option<&crate::array::MissingMask>,
+        missing: Option<&crate::array::ValidityMask>,
         line: impl Fn(&CoordSeq) -> bool,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
@@ -140,7 +139,7 @@ impl GeometryArrayStorage {
                             false
                         } else {
                             let window = map.csr_window(offsets.as_slice(), logical);
-                            line(&coords.view(CoordWindow::trusted(window, coords.len())))
+                            line(&coords.view(CoordWindow::from_range(window, coords.len())))
                         };
                         crate::boundary::try_push_vec(&mut output, value)?;
                     }
@@ -156,7 +155,7 @@ impl GeometryArrayStorage {
     /// present — dense input uses [`polygons_bool`].
     pub(crate) fn polygons_bool_masked(
         &self,
-        missing: Option<&crate::array::MissingMask>,
+        missing: Option<&crate::array::ValidityMask>,
         polygon: impl Fn(&Polygon) -> bool,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
@@ -276,7 +275,7 @@ impl GeometryArrayStorage {
         match self {
             // Shape payload + the Vec's own allocation. Prepared ShapeData
             // (array-side cache) is counted on PyGeometryArray::heap_bytes
-            // once slots initialize — see prepared_cache_heap_bytes.
+            // once chunks initialize — see RowProducts::heap_bytes.
             Self::Mixed(shapes) => {
                 self.logical_coordinate_bytes() + shapes.len() * std::mem::size_of::<Shape>()
             },
@@ -312,7 +311,7 @@ impl GeometryArrayStorage {
         logical: usize,
     ) -> CoordSeq {
         let window = row_map.into().csr_window(offsets, logical);
-        coords.view(CoordWindow::trusted(window, coords.len()))
+        coords.view(CoordWindow::from_range(window, coords.len()))
     }
 
     pub(crate) fn polygon_view(
@@ -322,7 +321,7 @@ impl GeometryArrayStorage {
     ) -> Polygon {
         let ring = |index: usize| {
             let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-            Ring::from_trusted_closed(coords.view(CoordWindow::trusted(window, coords.len())))
+            Ring::from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
         };
         Polygon::new(
             ring(rings.start),
@@ -398,7 +397,7 @@ impl GeometryArrayStorage {
                     ring_offsets[shell_index] as usize..ring_offsets[shell_index + 1] as usize;
                 let (minx, maxx) = crate::geometry::column_minmax(&coords.xs()[shell.clone()])?;
                 let (miny, maxy) = crate::geometry::column_minmax(&coords.ys()[shell])?;
-                let bounds = Bounds::new_unchecked(minx, miny, maxx, maxy);
+                let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
                 match &mut total {
                     Some(current) => current.include_bounds(bounds),
                     None => total = Some(bounds),
@@ -416,7 +415,7 @@ impl GeometryArrayStorage {
         if let Some(seq) = packed {
             let (minx, maxx) = crate::geometry::column_minmax(seq.xs())?;
             let (miny, maxy) = crate::geometry::column_minmax(seq.ys())?;
-            return Some(Bounds::new_unchecked(minx, miny, maxx, maxy));
+            return Some(Bounds::new_raw(minx, miny, maxx, maxy));
         }
         // Mixed rows fold their cached per-row bounds.
         let mut values = self.iter_shapes().filter_map(|shape| shape.bounds());
@@ -438,7 +437,7 @@ impl GeometryArrayStorage {
                 column_window(xs, &range),
                 column_window(ys, &range),
             );
-            crate::geometry::bounds_to_shape(Bounds::new_unchecked(minx, miny, maxx, maxy))
+            crate::geometry::bounds_to_shape(Bounds::new_raw(minx, miny, maxx, maxy))
         };
         match self {
             Self::Polygons {
@@ -482,7 +481,7 @@ impl GeometryArrayStorage {
                 }
                 let (minx, maxx) = crate::geometry::column_minmax(column_window(xs, &range))?;
                 let (miny, maxy) = crate::geometry::column_minmax(column_window(ys, &range))?;
-                Some(Bounds::new_unchecked(minx, miny, maxx, maxy))
+                Some(Bounds::new_raw(minx, miny, maxx, maxy))
             };
         match self {
             Self::Polygons {
@@ -577,58 +576,34 @@ impl GeometryArrayStorage {
         }
     }
 
-    /// Build a scalar geometry for a packed row (always fresh ShapeData).
+    /// Build a scalar shape payload for a packed row (always fresh ShapeData).
     ///
     /// Mixed rows must go through [`PyGeometryArray::geometry_at`] so the
     /// array-side prepared cache owns the plan and its ShapeData.
-    pub(crate) fn geometry_at(
-        &self,
-        index: usize,
-        frame: Frame,
-        frame_cache: Arc<crate::geometry::FrameDependentCaches>,
-    ) -> PyGeometry {
+    pub(crate) fn shape_data_at(&self, index: usize) -> Arc<ShapeData> {
         match self {
-            Self::Mixed(shapes) => PyGeometry {
-                shape: Arc::new(ShapeData::new(shapes[index].clone())),
-                prepared_plan: None,
-                frame_cache,
-                frame,
-            },
-            Self::Points { coords, row_map } => PyGeometry {
-                shape: Arc::new(ShapeData::new(Shape::Point(
-                    coords.point_at(physical_row(row_map.as_deref(), index)),
-                ))),
-                prepared_plan: None,
-                frame_cache,
-                frame,
-            },
+            Self::Mixed(shapes) => Arc::new(ShapeData::new(shapes[index].clone())),
+            Self::Points { coords, row_map } => Arc::new(ShapeData::new(Shape::Point(
+                coords.point_at(physical_row(row_map.as_deref(), index)),
+            ))),
             Self::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => PyGeometry {
-                shape: Arc::new(ShapeData::new(Shape::Polygon(Self::polygon_view(
-                    coords,
-                    ring_offsets,
-                    polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
-                )))),
-                prepared_plan: None,
-                frame_cache,
-                frame,
-            },
+            } => Arc::new(ShapeData::new(Shape::Polygon(Self::polygon_view(
+                coords,
+                ring_offsets,
+                polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
+            )))),
             Self::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => PyGeometry {
-                shape: Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_trusted(
-                    Self::line_view(coords, offsets, row_map.as_deref(), index),
-                )))),
-                prepared_plan: None,
-                frame_cache,
-                frame,
-            },
+            } => Arc::new(ShapeData::new(Shape::LineString(
+                LineSeq::try_new(Self::line_view(coords, offsets, row_map.as_deref(), index))
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            ))),
         }
     }
 }

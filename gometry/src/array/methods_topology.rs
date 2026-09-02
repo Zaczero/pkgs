@@ -3,14 +3,15 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::IntoPyObjectExt as _;
+use pyo3::exceptions::PyOverflowError;
 use pyo3::types::PyAnyMethods as _;
 
 use crate::array::{
-    Arc, Bound, CRSError, CoordSeq, CoordinateAxes, FrameEdit, GeometryArrayStorage,
-    GeometryTransformFrame, Py, PyAny, PyBytes, PyErr, PyGeometryArray, PyResult, PyTuple,
-    PyTupleMethods as _, Python, Result, Shape, coordinate_epoch_option, crs, f64_column_le_bytes,
-    i32_column_le_bytes, map_coordseq_to_crs, parse_crs, parse_geometry_transform_options,
-    pymethods, usize_row_map_le_bytes,
+    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryArrayStorage, GeometryTransformFrame,
+    Point, Py, PyAny, PyBytes, PyErr, PyGeometryArray, PyResult, PyTuple, PyTupleMethods as _,
+    Python, Result, Shape, coordinate_epoch_option, crs, f64_column_le_bytes, i32_column_le_bytes,
+    parse_crs, parse_geometry_transform_options, pymethods, rebased_i32_offsets_le_bytes,
+    selected_f64_column_le_bytes, selected_f64_windows_le_bytes,
 };
 
 #[pymethods]
@@ -49,12 +50,7 @@ impl PyGeometryArray {
             overwrite,
         }
         .apply(&self.frame)?;
-        // Shape storage (packed or mixed) carries no per-row frame: relabel
-        // by sharing storage — only the array-level frame refreshes.
-        Ok(
-            Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
-                .with_missing_mask(self.missing().cloned()),
-        )
+        Ok(self.retag_frame(frame))
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
@@ -91,11 +87,7 @@ impl PyGeometryArray {
     pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Self> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
-        // Shape storage (packed or mixed) carries no per-row frame.
-        Ok(
-            Self::from_storage_arc(Arc::clone(self.storage_arc()), frame)
-                .with_missing_mask(self.missing().cloned()),
-        )
+        Ok(self.retag_frame(frame))
     }
 
     /// Reproject all geometries to a target CRS.
@@ -179,7 +171,8 @@ impl PyGeometryArray {
         only_best: Option<bool>,
         force_over: bool,
     ) -> PyResult<Self> {
-        if self.missing().is_some() && matches!(self.storage(), GeometryArrayStorage::Points { .. })
+        if let Some(mask) = self.missing().cloned()
+            && matches!(self.storage(), GeometryArrayStorage::Mixed(_))
         {
             let target =
                 parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
@@ -208,27 +201,32 @@ impl PyGeometryArray {
                 return Ok(self.clone());
             }
             let execution = transformer.execution();
-            let result = self
-                .map_masked_points_to_crs_detached(py, output, transformer)?
-                .expect("masked packed points have a packed transform path");
+            let storage = Arc::clone(self.storage_arc());
+            let transformed = py.detach(move || {
+                let present: Vec<_> = storage
+                    .iter_shapes()
+                    .zip(mask.iter())
+                    .filter_map(|(shape, missing)| (!missing).then(|| shape.into_owned()))
+                    .collect();
+                let borrowed: Vec<_> = present.iter().collect();
+                let transformed = transformer.transform_shapes(&borrowed)?;
+                let mut transformed = transformed.into_iter();
+                let rows = mask
+                    .iter()
+                    .map(|missing| {
+                        if missing {
+                            Self::missing_placeholder()
+                        } else {
+                            transformed.next().expect("present row count is stable")
+                        }
+                    })
+                    .collect();
+                Ok::<_, crate::error::Error>((rows, mask))
+            })?;
             crate::py::crs::drain_accuracy_warning(py, &execution)?;
-            return Ok(result);
-        }
-        if let Some(mask) = self.missing().cloned() {
-            // PROJ pipelines reject the NaN placeholder: reproject the present
-            // rows densely, then scatter them back under the same mask.
-            let dense = self.drop_missing().to_crs(
-                py,
-                crs,
-                area_of_interest,
-                epoch,
-                authority,
-                accuracy,
-                allow_ballpark,
-                only_best,
-                force_over,
-            )?;
-            return Ok(Self::scatter_present_rows(&dense, mask));
+            return Ok(
+                Self::from_shapes(transformed.0, output).with_missing_mask(Some(transformed.1))
+            );
         }
         let target =
             parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
@@ -269,12 +267,13 @@ impl PyGeometryArray {
                 transformer.transform_shapes(&borrowed)
             })?;
             crate::py::crs::drain_accuracy_warning(py, &execution)?;
-            Ok(Self::from_shapes(shapes, output))
+            Ok(Self::from_storage(
+                GeometryArrayStorage::Mixed(shapes),
+                output,
+            ))
         } else {
             let result = self
-                .map_packed_coordseq_detached(py, output, move |coords| {
-                    map_coordseq_to_crs(&transformer, coords)
-                })?
+                .map_packed_to_crs_detached(py, output, transformer)?
                 .ok_or_else(|| {
                     PyErr::from(crate::error::Error::from(
                         crate::geometry::GeometryErrorKind::Projection(
@@ -312,24 +311,24 @@ impl PyGeometryArray {
         // only its finite present rows, then restores the logical mask below.
         if self.missing().is_some() && matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             let rows = self.to_wkb_impl(py, false, None)?;
-            let missing_bytes = self.missing().map(|mask| {
-                PyBytes::new(py, &mask.iter().map(|&m| u8::from(m)).collect::<Vec<u8>>())
-            });
+            let missing_bytes = self
+                .missing()
+                .map(|mask| PyBytes::new(py, &mask.to_missing_bytes()));
             let args = (rows, self.crs_str(), self.epoch(), missing_bytes).into_py_any(py)?;
             return Ok((unpickle!("_unpickle_geometry_array"), args));
         }
         if let Some(mask) = self.missing() {
-            let present = self.drop_missing();
+            // Keep the declared homogeneous kind/axes for an all-missing
+            // compact column; dropping its rows otherwise falls through the
+            // empty Mixed representation before the reducer sees the schema.
+            let present = if mask.present_count() == 0 && self.is_compact_nullable() {
+                self.empty_homogeneous_like()
+            } else {
+                self.drop_missing()
+            };
             let (callable, args) = present.__reduce__(py)?;
             let args = args.bind(py).cast::<PyTuple>()?;
-            let missing = PyBytes::new(
-                py,
-                &mask
-                    .iter()
-                    .map(|&missing| u8::from(missing))
-                    .collect::<Vec<_>>(),
-            )
-            .into_any();
+            let missing = PyBytes::new(py, &mask.to_missing_bytes()).into_any();
             let mut values: Vec<Bound<'_, PyAny>> = args.iter().collect();
             *values
                 .last_mut()
@@ -339,31 +338,16 @@ impl PyGeometryArray {
         }
         match self.storage() {
             GeometryArrayStorage::Points { coords, row_map } => {
-                // Orphan NaN physical rows (drop_missing / present-only gather
-                // clear the mask but leave missing placeholders in the full
-                // column) must never be serialized. Densify to logical rows
-                // only; if physical non-finite remains on the identity path,
-                // fall through to mixed WKB.
-                let physical_nonfinite = !crate::geometry::column_all_finite(coords.xs())
-                    || !crate::geometry::column_all_finite(coords.ys())
-                    || coords
-                        .zs()
-                        .is_some_and(|z| !crate::geometry::column_all_finite(z))
-                    || coords
-                        .ms()
-                        .is_some_and(|m| !crate::geometry::column_all_finite(m));
-                if physical_nonfinite {
-                    let densified =
-                        self.materialize_packed_points_parts(coords, row_map.as_deref());
-                    let densified_finite = matches!(densified.storage(), GeometryArrayStorage::Points { coords, .. }
-                        if crate::geometry::column_all_finite(coords.xs())
-                            && crate::geometry::column_all_finite(coords.ys())
-                            && coords.zs().is_none_or(crate::geometry::column_all_finite)
-                            && coords.ms().is_none_or(crate::geometry::column_all_finite)
-                    );
-                    if densified_finite {
-                        return densified.__reduce__(py);
-                    }
+                let selection = row_map.as_deref();
+                let selected_all_finite = |values: &[f64]| {
+                    (0..selection.len(values.len()))
+                        .all(|logical| values[selection.physical(logical)].is_finite())
+                };
+                if !selected_all_finite(coords.xs())
+                    || !selected_all_finite(coords.ys())
+                    || coords.zs().is_some_and(|z| !selected_all_finite(z))
+                    || coords.ms().is_some_and(|m| !selected_all_finite(m))
+                {
                     let rows = self.to_wkb_impl(py, false, None)?;
                     let args = (
                         rows,
@@ -375,18 +359,9 @@ impl PyGeometryArray {
                     return Ok((unpickle!("_unpickle_geometry_array"), args));
                 }
                 let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
-                    let bytes = f64_column_le_bytes(values)?;
+                    let bytes = selected_f64_column_le_bytes(values, selection)?;
                     Ok(PyBytes::new(py, &bytes))
                 };
-                // Empty gather is a valid empty selection — encode as empty
-                // bytes (not omitted Identity).
-                let row_map_bytes = row_map
-                    .pickle_row_map_indices()
-                    .map(|map| {
-                        let bytes = usize_row_map_le_bytes(&map)?;
-                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
-                    })
-                    .transpose()?;
                 let args = (
                     column(coords.xs())?,
                     column(coords.ys())?,
@@ -394,7 +369,7 @@ impl PyGeometryArray {
                     coords.ms().map(column).transpose()?,
                     self.crs_str(),
                     self.epoch(),
-                    row_map_bytes,
+                    Option::<Bound<'_, PyBytes>>::None,
                     Option::<Bound<'_, PyBytes>>::None,
                 )
                     .into_py_any(py)?;
@@ -405,6 +380,42 @@ impl PyGeometryArray {
                 offsets,
                 row_map,
             } => {
+                let selection = row_map.as_deref();
+                let len = selection.len(offsets.len().saturating_sub(1));
+                let windows = || (0..len).map(|logical| selection.csr_window(offsets, logical));
+                let selected_all_finite = |values: &[f64]| {
+                    windows().all(|window| values[window].iter().all(|value| value.is_finite()))
+                };
+                if selected_all_finite(coords.xs())
+                    && selected_all_finite(coords.ys())
+                    && coords.zs().is_none_or(selected_all_finite)
+                    && coords.ms().is_none_or(selected_all_finite)
+                {
+                    let vertex_count = windows()
+                        .try_fold(0_usize, |total, window| total.checked_add(window.len()))
+                        .ok_or_else(|| {
+                            PyOverflowError::new_err("coordinate count overflows usize")
+                        })?;
+                    let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
+                        let bytes = selected_f64_windows_le_bytes(values, windows(), vertex_count)?;
+                        Ok(PyBytes::new(py, &bytes))
+                    };
+                    let offset_bytes =
+                        rebased_i32_offsets_le_bytes(windows().map(|window| window.len()), len)?;
+                    let args = (
+                        column(coords.xs())?,
+                        column(coords.ys())?,
+                        coords.zs().map(column).transpose()?,
+                        coords.ms().map(column).transpose()?,
+                        PyBytes::new(py, &offset_bytes),
+                        self.crs_str(),
+                        self.epoch(),
+                        Option::<Bound<'_, PyBytes>>::None,
+                        Option::<Bound<'_, PyBytes>>::None,
+                    )
+                        .into_py_any(py)?;
+                    return Ok((unpickle!("_unpickle_line_array"), args));
+                }
                 // Same orphan-NaN densify path as packed points: drop_missing /
                 // present-only gather leave NaN placeholders in physical columns.
                 let physical_nonfinite = !crate::geometry::column_all_finite(coords.xs())
@@ -442,13 +453,6 @@ impl PyGeometryArray {
                     Ok(PyBytes::new(py, &bytes))
                 };
                 let offset_bytes = i32_column_le_bytes(offsets)?;
-                let row_map_bytes = row_map
-                    .pickle_row_map_indices()
-                    .map(|map| {
-                        let bytes = usize_row_map_le_bytes(&map)?;
-                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
-                    })
-                    .transpose()?;
                 let args = (
                     column(coords.xs())?,
                     column(coords.ys())?,
@@ -457,7 +461,7 @@ impl PyGeometryArray {
                     PyBytes::new(py, &offset_bytes),
                     self.crs_str(),
                     self.epoch(),
-                    row_map_bytes,
+                    Option::<Bound<'_, PyBytes>>::None,
                     Option::<Bound<'_, PyBytes>>::None,
                 )
                     .into_py_any(py)?;
@@ -469,6 +473,63 @@ impl PyGeometryArray {
                 polygon_offsets,
                 row_map,
             } => {
+                let selection = row_map.as_deref();
+                let len = selection.len(polygon_offsets.len().saturating_sub(1));
+                let ring_windows = || {
+                    (0..len).flat_map(|logical| {
+                        selection.csr_window(polygon_offsets, logical).map(|ring| {
+                            ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize
+                        })
+                    })
+                };
+                let selected_all_finite = |values: &[f64]| {
+                    ring_windows()
+                        .all(|window| values[window].iter().all(|value| value.is_finite()))
+                };
+                if selected_all_finite(coords.xs())
+                    && selected_all_finite(coords.ys())
+                    && coords.zs().is_none_or(selected_all_finite)
+                    && coords.ms().is_none_or(selected_all_finite)
+                {
+                    let ring_count = (0..len)
+                        .try_fold(0_usize, |total, logical| {
+                            total.checked_add(selection.csr_window(polygon_offsets, logical).len())
+                        })
+                        .ok_or_else(|| PyOverflowError::new_err("ring count overflows usize"))?;
+                    let vertex_count = ring_windows()
+                        .try_fold(0_usize, |total, window| total.checked_add(window.len()))
+                        .ok_or_else(|| {
+                            PyOverflowError::new_err("coordinate count overflows usize")
+                        })?;
+                    let column = |values: &[f64]| -> PyResult<Bound<'_, PyBytes>> {
+                        let bytes =
+                            selected_f64_windows_le_bytes(values, ring_windows(), vertex_count)?;
+                        Ok(PyBytes::new(py, &bytes))
+                    };
+                    let ring_offset_bytes = rebased_i32_offsets_le_bytes(
+                        ring_windows().map(|window| window.len()),
+                        ring_count,
+                    )?;
+                    let polygon_offset_bytes = rebased_i32_offsets_le_bytes(
+                        (0..len)
+                            .map(|logical| selection.csr_window(polygon_offsets, logical).len()),
+                        len,
+                    )?;
+                    let args = (
+                        column(coords.xs())?,
+                        column(coords.ys())?,
+                        coords.zs().map(column).transpose()?,
+                        coords.ms().map(column).transpose()?,
+                        PyBytes::new(py, &ring_offset_bytes),
+                        PyBytes::new(py, &polygon_offset_bytes),
+                        self.crs_str(),
+                        self.epoch(),
+                        Option::<Bound<'_, PyBytes>>::None,
+                        Option::<Bound<'_, PyBytes>>::None,
+                    )
+                        .into_py_any(py)?;
+                    return Ok((unpickle!("_unpickle_polygon_array"), args));
+                }
                 let physical_nonfinite = !crate::geometry::column_all_finite(coords.xs())
                     || !crate::geometry::column_all_finite(coords.ys())
                     || coords
@@ -507,13 +568,6 @@ impl PyGeometryArray {
                     let bytes = f64_column_le_bytes(values)?;
                     Ok(PyBytes::new(py, &bytes))
                 };
-                let row_map_bytes = row_map
-                    .pickle_row_map_indices()
-                    .map(|map| {
-                        let bytes = usize_row_map_le_bytes(&map)?;
-                        Ok::<_, PyErr>(PyBytes::new(py, &bytes))
-                    })
-                    .transpose()?;
                 let ring_offset_bytes = i32_column_le_bytes(ring_offsets)?;
                 let polygon_offset_bytes = i32_column_le_bytes(polygon_offsets)?;
                 let args = (
@@ -525,7 +579,7 @@ impl PyGeometryArray {
                     PyBytes::new(py, &polygon_offset_bytes),
                     self.crs_str(),
                     self.epoch(),
-                    row_map_bytes,
+                    Option::<Bound<'_, PyBytes>>::None,
                     Option::<Bound<'_, PyBytes>>::None,
                 )
                     .into_py_any(py)?;
@@ -582,12 +636,20 @@ impl PyGeometryArray {
         {
             return Ok(self.clone());
         }
-        if let Some(mapped) =
-            self.map_packed_coordseq_detached(py, self.frame.clone(), move |coords| {
-                Ok(ordinate.set_coords(coords, value, overwrite))
-            })?
+        if !self.is_compact_nullable() && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
         {
-            return Ok(mapped);
+            let input_axes = self
+                .uniform_axes()
+                .expect("packed storage has uniform axes");
+            let output_axes = ordinate.output_axes(input_axes, value);
+            if let Some(mapped) = self.map_packed_points_detached(
+                py,
+                self.frame.clone(),
+                output_axes,
+                move |point| Ok(ordinate.set_point(point, value, overwrite)),
+            )? {
+                return Ok(mapped);
+            }
         }
         self.map_shapes_detached(py, move |shape| ordinate.set_shape(shape, value, overwrite))
     }
@@ -614,11 +676,35 @@ impl Ordinate {
         }
     }
 
-    fn set_coords(self, coords: &CoordSeq, value: Option<f64>, overwrite: bool) -> CoordSeq {
+    const fn output_axes(self, axes: CoordinateAxes, value: Option<f64>) -> CoordinateAxes {
+        let has = value.is_some();
         match self {
-            Self::Z => coords.set_z(value, overwrite),
-            Self::M => coords.set_m(value, overwrite),
+            Self::Z => CoordinateAxes::new(
+                crate::geometry::HasZ(has),
+                crate::geometry::HasM(axes.has_m()),
+            ),
+            Self::M => CoordinateAxes::new(
+                crate::geometry::HasZ(axes.has_z()),
+                crate::geometry::HasM(has),
+            ),
         }
+    }
+
+    fn set_point(self, point: Point, value: Option<f64>, overwrite: bool) -> Point {
+        let z = match self {
+            Self::Z => value.or_else(|| (!overwrite).then(|| point.z()).flatten()),
+            Self::M => point.z(),
+        };
+        let m = match self {
+            Self::Z => point.m(),
+            Self::M => value.or_else(|| (!overwrite).then(|| point.m()).flatten()),
+        };
+        Point::new_raw_axes(
+            point.x,
+            point.y,
+            crate::geometry::ZOrdinate(z),
+            crate::geometry::MOrdinate(m),
+        )
     }
 
     fn set_shape(self, shape: &Shape, value: Option<f64>, overwrite: bool) -> Result<Shape> {

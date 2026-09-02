@@ -170,13 +170,9 @@ impl PyGeometryArray {
             )
             .into());
         }
-        let geographic = geometry::is_geographic_frame(&self.frame);
+        let geographic = geometry::geographic_frame(&self.frame)?;
         let shape = py.detach(move || geometry::coverage_union_topo(&shapes, geographic))?;
-        Ok(PyGeometry::typed_with_epoch(
-            shape,
-            self.frame.crs_owned(),
-            self.frame.epoch(),
-        ))
+        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())))
     }
 
     /// Clean this near-coverage into an exact polygonal coverage (see `coverage_clean`).

@@ -8,7 +8,7 @@ use crate::geometry::{same_active_position, same_point};
 /// [`Polygon`] holds `Ring`s so a too-short or unclosed ring is
 /// unrepresentable. Construct via [`Ring::closed`] / [`Ring::closed_coordseq`]
 /// at **every** input boundary (constructors, WKT, WKB, GeoArrow, pickle) and
-/// [`Ring::from_trusted_closed`] for coordinate-preserving transforms of an
+/// [`Ring::from_closed`] for coordinate-preserving transforms of an
 /// existing ring. Read access mirrors a slice via the delegating accessors.
 ///
 /// **Admission policy (one owner, all ingresses):**
@@ -70,16 +70,19 @@ impl Ring {
         Ok(Self(closed.finish()?))
     }
 
-    /// Wrap a coordinate sequence already known to form a valid closed ring —
-    /// e.g. a geo-rs conversion, a coordinate-preserving transform of an
-    /// existing `Ring`, or a WKB/Arrow column run. Accepts either a
-    /// `Vec<Point>` or a `CoordSeq`. Skips validation (mirrors
-    /// [`Point::new_unchecked_xy`]).
-    pub(crate) fn from_trusted_closed(coords: impl Into<CoordSeq>) -> Self {
+    /// Wrap a coordinate sequence that must already form a valid closed ring —
+    /// e.g. a coordinate-preserving transform of an existing `Ring`. Parsed
+    /// input uses [`Self::closed_coordseq`] so it can return a typed error.
+    ///
+    /// This transport constructor does not perform input admission or silently
+    /// append an endpoint. External and mutable-coordinate input must use
+    /// [`Self::closed_coordseq`], which owns closure validation and its typed
+    /// error.
+    pub(crate) fn from_closed(coords: impl Into<CoordSeq>) -> Self {
         let coords = coords.into();
         assert!(
             coords.len() >= Self::MIN_VERTICES_CLOSED,
-            "trusted Ring construction received an empty or too-short coordinate sequence"
+            "closed Ring construction requires at least four coordinates"
         );
         Self(coords)
     }
@@ -181,10 +184,7 @@ pub(crate) trait Coordinates {
             if let Some((xs, ys)) = &mut columns {
                 let x = xs.next()?;
                 let y = ys.next()?;
-                return Some([
-                    Point::new_unchecked_xy(x[0], y[0]),
-                    Point::new_unchecked_xy(x[1], y[1]),
-                ]);
+                return Some([Point::new_raw_xy(x[0], y[0]), Point::new_raw_xy(x[1], y[1])]);
             }
             (index < len).then(|| {
                 let pair = [self.nth_coord(index - 1), self.nth_coord(index)];

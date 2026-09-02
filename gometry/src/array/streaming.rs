@@ -4,7 +4,7 @@ use pyo3::exceptions::PyMemoryError;
 use pyo3::{PyErr, PyResult};
 
 use crate::array::{CoordSeq, CoordinateAxes, Frame, Polygon, PyGeometryArray, Ring, Shape};
-use crate::geometry::{LineSeq, MOrdinate, Point, ZOrdinate};
+use crate::geometry::LineSeq;
 
 /// Streaming row accumulator for parse-time bulk imports.
 ///
@@ -14,10 +14,8 @@ use crate::geometry::{LineSeq, MOrdinate, Point, ZOrdinate};
 /// demotes the accumulated columns to zero-copy row views before continuing
 /// through the mixed path.
 ///
-/// Missing rows push **kind-preserving placeholders in final order** via
-/// [`try_push_missing`] so finish + [`PyGeometryArray::with_missing_mask`]
-/// never needs a second `scatter_present_rows` / `from_shapes` pass (D2
-/// homogeneous GeoArrow + Stage 3 null contract).
+/// Missing rows advance only logical offsets. The caller's validity mask owns
+/// missingness and point payload remains present-only.
 ///
 /// All growth is fallible ([`try_push`]) so unbounded Python iterators cannot
 /// allocator-abort the process — they surface a clean `MemoryError`.
@@ -28,7 +26,10 @@ pub(crate) enum StreamingShapes {
     Points(crate::geometry::CoordSeqBuilder),
     Lines(StreamingLines),
     Polygons(StreamingPolygons),
-    Shapes(Vec<Shape>),
+    Shapes {
+        shapes: Vec<Shape>,
+        row_aligned: bool,
+    },
 }
 
 pub(crate) struct StreamingLines {
@@ -72,7 +73,7 @@ impl StreamingShapes {
         }
         match (&mut *self, shape) {
             // Hot demoted lane: fallible Vec growth, no enum surgery.
-            (Self::Shapes(shapes), shape) => crate::try_push(shapes, shape),
+            (Self::Shapes { shapes, .. }, shape) => crate::try_push(shapes, shape),
             (Self::Empty, Shape::Point(point)) => {
                 let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(
                     CoordinateAxes::from_point(point),
@@ -128,14 +129,18 @@ impl StreamingShapes {
                 *n = n.saturating_add(1);
                 Ok(())
             },
-            Self::Points(builder) => {
-                try_grow_coord_builder(builder)?;
-                builder.push(missing_point(builder.axes()));
-                Ok(())
-            },
+            Self::Points(_) => Ok(()),
             Self::Lines(builder) => builder.try_push_missing(),
             Self::Polygons(builder) => builder.try_push_missing(),
-            Self::Shapes(shapes) => crate::try_push(shapes, PyGeometryArray::missing_placeholder()),
+            Self::Shapes {
+                shapes,
+                row_aligned,
+            } => {
+                if *row_aligned {
+                    crate::try_push(shapes, PyGeometryArray::missing_placeholder())?;
+                }
+                Ok(())
+            },
         }
     }
 
@@ -145,11 +150,7 @@ impl StreamingShapes {
         match shape {
             Shape::Point(point) => {
                 let axes = CoordinateAxes::from_point(*point);
-                let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(axes, n);
-                builder.try_reserve_exact(n).map_err(|_| grow_err())?;
-                for _ in 0..n {
-                    builder.push(missing_point(axes));
-                }
+                let builder = crate::geometry::CoordSeqBuilder::with_capacity(axes, 0);
                 *self = Self::Points(builder);
             },
             Shape::LineString(line) => {
@@ -158,9 +159,6 @@ impl StreamingShapes {
                     coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, 0),
                     offsets: vec![0],
                 };
-                out.coords
-                    .try_reserve_exact(n.saturating_mul(2))
-                    .map_err(|_| grow_err())?;
                 for _ in 0..n {
                     out.try_push_missing()?;
                 }
@@ -173,9 +171,6 @@ impl StreamingShapes {
                     ring_offsets: vec![0],
                     polygon_offsets: vec![0],
                 };
-                out.coords
-                    .try_reserve_exact(n.saturating_mul(4))
-                    .map_err(|_| grow_err())?;
                 for _ in 0..n {
                     out.try_push_missing()?;
                 }
@@ -186,7 +181,10 @@ impl StreamingShapes {
                 for _ in 0..n {
                     crate::try_push(&mut shapes, PyGeometryArray::missing_placeholder())?;
                 }
-                *self = Self::Shapes(shapes);
+                *self = Self::Shapes {
+                    shapes,
+                    row_aligned: true,
+                };
             },
         }
         Ok(())
@@ -201,15 +199,41 @@ impl StreamingShapes {
                 for row in 0..seq.len() {
                     crate::try_push(&mut shapes, Shape::Point(seq.point_at(row)))?;
                 }
-                *self = Self::Shapes(shapes);
+                *self = Self::Shapes {
+                    shapes,
+                    row_aligned: false,
+                };
             },
-            Self::Lines(builder) => *self = Self::Shapes(builder.into_shapes()),
-            Self::Polygons(builder) => *self = Self::Shapes(builder.into_shapes()),
-            Self::Shapes(shapes) => *self = Self::Shapes(shapes),
-            Self::Empty | Self::LeadingMissing(_) => *self = Self::Shapes(Vec::new()),
+            Self::Lines(builder) => {
+                *self = Self::Shapes {
+                    shapes: builder.into_shapes(),
+                    row_aligned: true,
+                }
+            },
+            Self::Polygons(builder) => {
+                *self = Self::Shapes {
+                    shapes: builder.into_shapes(),
+                    row_aligned: true,
+                }
+            },
+            Self::Shapes {
+                shapes,
+                row_aligned,
+            } => {
+                *self = Self::Shapes {
+                    shapes,
+                    row_aligned,
+                }
+            },
+            Self::Empty | Self::LeadingMissing(_) => {
+                *self = Self::Shapes {
+                    shapes: Vec::new(),
+                    row_aligned: false,
+                }
+            },
         }
         match self {
-            Self::Shapes(shapes) => Ok(shapes),
+            Self::Shapes { shapes, .. } => Ok(shapes),
             _ => unreachable!("demote always leaves the Shapes lane"),
         }
     }
@@ -227,36 +251,9 @@ impl StreamingShapes {
             },
             Self::Lines(builder) => builder.finish(frame),
             Self::Polygons(builder) => builder.finish(frame),
-            Self::Shapes(shapes) => PyGeometryArray::from_shapes(shapes, frame),
+            Self::Shapes { shapes, .. } => PyGeometryArray::from_shapes(shapes, frame),
         }
     }
-}
-
-/// Missing-row point matching scatter_present_points (NaN on active axes).
-fn missing_point(axes: CoordinateAxes) -> Point {
-    let z = axes.has_z().then_some(f64::NAN);
-    let m = axes.has_m().then_some(f64::NAN);
-    Point::new_unchecked_axes(f64::NAN, f64::NAN, ZOrdinate(z), MOrdinate(m))
-}
-
-/// Missing-row line: two NaN vertices (scatter_present_lines convention).
-fn missing_line(axes: CoordinateAxes) -> LineSeq {
-    let a = missing_point(axes);
-    let b = missing_point(axes);
-    let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(axes, 2);
-    builder.push(a);
-    builder.push(b);
-    LineSeq::from_trusted(builder.finish_infallible())
-}
-
-/// Missing-row polygon: one 4-vertex NaN shell (scatter_present_polygons).
-fn missing_polygon(axes: CoordinateAxes) -> Polygon {
-    let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(axes, 4);
-    for _ in 0..4 {
-        builder.push(missing_point(axes));
-    }
-    let ring = Ring::from_trusted_closed(builder.finish_infallible());
-    Polygon::new(ring, Vec::new())
 }
 
 impl StreamingLines {
@@ -282,7 +279,7 @@ impl StreamingLines {
     }
 
     fn try_push_missing(&mut self) -> PyResult<()> {
-        self.try_push(&missing_line(self.coords.axes()))
+        crate::try_push(&mut self.offsets, self.coords.len())
     }
 
     fn into_parts(self) -> (CoordSeq, Vec<usize>) {
@@ -294,11 +291,14 @@ impl StreamingLines {
         offsets
             .windows(2)
             .map(|ends| {
-                let row = coords.view(crate::geometry::CoordWindow::trusted(
+                let row = coords.view(crate::geometry::CoordWindow::from_range(
                     ends[0]..ends[1],
                     coords.len(),
                 ));
-                Shape::LineString(LineSeq::from_trusted(row))
+                Shape::LineString(
+                    LineSeq::try_new(row)
+                        .expect("line coordinate sequence must contain at least two vertices"),
+                )
             })
             .collect()
     }
@@ -318,11 +318,14 @@ fn line_shapes_from_parts(coords: &CoordSeq, offsets: &[usize]) -> Vec<Shape> {
     offsets
         .windows(2)
         .map(|ends| {
-            let row = coords.view(crate::geometry::CoordWindow::trusted(
+            let row = coords.view(crate::geometry::CoordWindow::from_range(
                 ends[0]..ends[1],
                 coords.len(),
             ));
-            Shape::LineString(LineSeq::from_trusted(row))
+            Shape::LineString(
+                LineSeq::try_new(row)
+                    .expect("line coordinate sequence must contain at least two vertices"),
+            )
         })
         .collect()
 }
@@ -355,7 +358,7 @@ impl StreamingPolygons {
     }
 
     fn try_push_missing(&mut self) -> PyResult<()> {
-        self.try_push(&missing_polygon(self.coords.axes()))
+        crate::try_push(&mut self.polygon_offsets, self.ring_offsets.len() - 1)
     }
 
     fn into_parts(self) -> (CoordSeq, Vec<usize>, Vec<usize>) {
@@ -410,11 +413,11 @@ fn polygon_shapes_from_parts(
         .windows(2)
         .map(|polygon_ends| {
             let mut rings = (polygon_ends[0]..polygon_ends[1]).map(|ring| {
-                let row = coords.view(crate::geometry::CoordWindow::trusted(
+                let row = coords.view(crate::geometry::CoordWindow::from_range(
                     ring_offsets[ring]..ring_offsets[ring + 1],
                     coords.len(),
                 ));
-                Ring::from_trusted_closed(row)
+                Ring::from_closed(row)
             });
             let shell = rings
                 .next()

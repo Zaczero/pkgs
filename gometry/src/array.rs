@@ -40,10 +40,11 @@ use crate::{
     non_negative_int, note_array_row, overlay_operator, owned_voronoi_boundary,
     packed_points_to_arrow, paired_arrays, parse_coordinate_replacement, parse_crs,
     parse_curve_bounds, parse_geometry_transform_options, parse_interpolate_plan, parse_precision,
-    parse_wkt_output_dimension, positive_int, pyclass, replace_shape_coordinates,
-    require_geojson_crs, resolve_line_metric, resolve_metric, row_sample_seed,
-    slice_replacement_for_shape, usize_row_map_le_bytes, validate_densify_fraction,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_subdivide_max_vertices,
+    parse_wkt_output_dimension, positive_int, pyclass, rebased_i32_offsets_le_bytes,
+    replace_shape_coordinates, require_geojson_crs, resolve_line_metric, resolve_metric,
+    row_sample_seed, selected_f64_column_le_bytes, selected_f64_windows_le_bytes,
+    slice_replacement_for_shape, validate_densify_fraction, validate_equals_exact_tolerance,
+    validate_max_segment_length, validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.
@@ -63,12 +64,104 @@ enum ArrayRows {
     /// Storage and its row-aligned missingness are one indivisible state.
     Masked {
         storage: Arc<GeometryArrayStorage>,
-        missing: MissingMask,
+        missing: ValidityMask,
+    },
+    /// Homogeneous nullable rows whose packed payload contains present rows
+    /// only. Lines and polygons retain logical outer offsets; point rank comes
+    /// from validity.
+    CompactNullable {
+        storage: Arc<GeometryArrayStorage>,
+        missing: ValidityMask,
     },
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum LogicalRow<'a> {
+    Missing { logical: usize },
+    Present { logical: usize, row: ShapeRow<'a> },
+}
+
+impl LogicalRow<'_> {
+    pub(crate) const fn logical(self) -> usize {
+        match self {
+            Self::Missing { logical } | Self::Present { logical, .. } => logical,
+        }
+    }
+}
+
+enum LogicalRowsState<'a> {
+    Dense(RowsIter<'a>),
+    RowAligned {
+        rows: RowsIter<'a>,
+        validity: missing::ValidityCursor<'a>,
+    },
+    CompactPoints {
+        rows: RowsIter<'a>,
+        validity: missing::ValidityCursor<'a>,
+    },
+}
+
+pub(crate) struct LogicalRows<'a> {
+    state: LogicalRowsState<'a>,
+    logical: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for LogicalRows<'a> {
+    type Item = LogicalRow<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let logical = self.logical;
+        self.logical += 1;
+        self.remaining -= 1;
+        Some(match &mut self.state {
+            LogicalRowsState::Dense(rows) => LogicalRow::Present {
+                logical,
+                row: rows.next().expect("dense storage length is exact"),
+            },
+            LogicalRowsState::RowAligned { rows, validity } => {
+                let (_, present) = validity.next().expect("validity length is exact");
+                let row = rows.next().expect("row-aligned storage length is exact");
+                present.map_or(LogicalRow::Missing { logical }, |_| LogicalRow::Present {
+                    logical,
+                    row,
+                })
+            },
+            LogicalRowsState::CompactPoints { rows, validity } => {
+                let (_, present) = validity.next().expect("validity length is exact");
+                present.map_or(LogicalRow::Missing { logical }, |_| LogicalRow::Present {
+                    logical,
+                    row: rows.next().expect("present point payload count is exact"),
+                })
+            },
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for LogicalRows<'_> {}
+
+pub(crate) struct PresentRows<'a>(LogicalRows<'a>);
+
+impl<'a> Iterator for PresentRows<'a> {
+    type Item = (usize, ShapeRow<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.find_map(|row| match row {
+            LogicalRow::Missing { .. } => None,
+            LogicalRow::Present { logical, row } => Some((logical, row)),
+        })
+    }
+}
+
 impl ArrayRows {
-    fn new(storage: Arc<GeometryArrayStorage>, missing: Option<MissingMask>) -> Self {
+    fn new(storage: Arc<GeometryArrayStorage>, missing: Option<ValidityMask>) -> Self {
         match missing {
             Some(missing) if missing.any() => {
                 assert_eq!(
@@ -92,19 +185,100 @@ impl ArrayRows {
 
     const fn storage(&self) -> &Arc<GeometryArrayStorage> {
         match self {
-            Self::Dense(storage) | Self::Masked { storage, .. } => storage,
+            Self::Dense(storage)
+            | Self::Masked { storage, .. }
+            | Self::CompactNullable { storage, .. } => storage,
         }
     }
 
-    const fn missing(&self) -> Option<&MissingMask> {
+    const fn missing(&self) -> Option<&ValidityMask> {
         match self {
             Self::Dense(_) => None,
-            Self::Masked { missing, .. } => Some(missing),
+            Self::Masked { missing, .. } | Self::CompactNullable { missing, .. } => Some(missing),
         }
     }
 
-    fn with_missing(&self, missing: Option<MissingMask>) -> Self {
+    fn with_missing(&self, missing: Option<ValidityMask>) -> Self {
         Self::new(Arc::clone(self.storage()), missing)
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(storage) | Self::Masked { storage, .. } => storage.len(),
+            Self::CompactNullable { missing, .. } => missing.len(),
+        }
+    }
+
+    const fn is_compact_nullable(&self) -> bool {
+        matches!(self, Self::CompactNullable { .. })
+    }
+
+    fn logical_row(&self, logical: usize) -> Option<LogicalRow<'_>> {
+        if logical >= self.len() {
+            return None;
+        }
+        Some(match self {
+            Self::Dense(storage) => LogicalRow::Present {
+                logical,
+                row: storage.row(logical),
+            },
+            Self::Masked { storage, missing } => {
+                if missing.is_missing(logical) {
+                    LogicalRow::Missing { logical }
+                } else {
+                    LogicalRow::Present {
+                        logical,
+                        row: storage.row(logical),
+                    }
+                }
+            },
+            Self::CompactNullable { storage, missing } => {
+                if missing.is_missing(logical) {
+                    LogicalRow::Missing { logical }
+                } else {
+                    let payload = if matches!(storage.as_ref(), GeometryArrayStorage::Points { .. })
+                    {
+                        missing.present_before(logical)
+                    } else {
+                        logical
+                    };
+                    LogicalRow::Present {
+                        logical,
+                        row: storage.row(payload),
+                    }
+                }
+            },
+        })
+    }
+
+    fn logical_rows(&self) -> LogicalRows<'_> {
+        let remaining = self.len();
+        let state = match self {
+            Self::Dense(storage) => LogicalRowsState::Dense(storage.iter_rows()),
+            Self::CompactNullable { storage, missing }
+                if matches!(storage.as_ref(), GeometryArrayStorage::Points { .. }) =>
+            {
+                LogicalRowsState::CompactPoints {
+                    rows: storage.iter_rows(),
+                    validity: missing.cursor(),
+                }
+            },
+            Self::Masked { storage, missing } | Self::CompactNullable { storage, missing } => {
+                LogicalRowsState::RowAligned {
+                    rows: storage.iter_rows(),
+                    validity: missing.cursor(),
+                }
+            },
+        };
+        LogicalRows {
+            state,
+            logical: 0,
+            remaining,
+        }
+    }
+
+    fn present_rows(&self) -> PresentRows<'_> {
+        PresentRows(self.logical_rows())
     }
 }
 
@@ -144,21 +318,10 @@ pub struct PyGeometryArray {
     /// frame); shared only where geometry-derived bounds are proven unchanged
     /// and the frame is the same.
     pub(crate) total_bounds_cache: TotalBoundsCache,
-    /// Lazy per-row prepared handles for packed line/polygon rows — shared
-    /// across clones so repeated predicates reuse facet trees and point
-    /// testers.
-    pub(crate) prepared_cache: prepared::PreparedRowCache,
-    /// Frame-owned per-row geodesic/LRS products. Row slots are reference
-    /// counted so clones, slices, gathers, and scalar extraction share the
-    /// same lazy cache without attaching CRS-derived state to coordinates.
-    pub(crate) frame_caches: prepared::FrameCacheRows,
-    /// Lazy materialization of a fancy-selected (`RowSelection::Gather`)
-    /// storage, shared across clones like `bounds_cache`. Filter-then-compute
-    /// workflows (`arr[mask].area` + `.length` + ...) resolve the gather ONCE;
-    /// every later packed-column op reuses the contiguous columns zero-copy.
-    /// `None`-typed until the first packed op on a gathered array; Identity/
-    /// Window storages never populate it (they are already zero-copy views).
-    pub(crate) gathered_memo: Arc<std::sync::OnceLock<Arc<GeometryArrayStorage>>>,
+    /// Lazy products keyed by stable physical source row. The owner allocates
+    /// fixed-size chunks only when a row first needs a product; the selection
+    /// maps this array's logical rows back to that source.
+    pub(crate) row_products: prepared::RowProducts,
 }
 
 /// Cached per-element bounding boxes (one entry per row, `None` for empty
@@ -173,6 +336,7 @@ pub(crate) type ElementBounds = Arc<[Option<Bounds>]>;
 type TotalBoundsCache = Arc<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>;
 mod linref_kernels;
 mod masked;
+pub(crate) use masked::LogicalShapeRow;
 mod methods_buffer;
 mod methods_convert;
 mod methods_core;
@@ -184,7 +348,7 @@ mod methods_measures;
 mod methods_predicates;
 mod methods_topology;
 pub(crate) mod missing;
-pub(crate) use missing::MissingMask;
+pub(crate) use missing::ValidityMask;
 
 mod methods_unary_io;
 mod ops;
@@ -192,7 +356,7 @@ pub(crate) use linref_kernels::{line_interpolate_points_rows, line_locate_point_
 mod iter;
 pub(crate) use iter::PyGeometryArrayIter;
 mod prepared;
-pub(crate) use prepared::{BoundsSeed, FrameCacheRows, PreparedRow, fresh_prepared_cache};
+pub(crate) use prepared::{BoundsSeed, PreparedRow, RowProducts, RowProductsHandle};
 mod storage_helpers;
 mod storage_types;
 pub(crate) use packed_column_builder::{PackedColumnBuilder, PointColumnBuilder};
@@ -210,7 +374,7 @@ mod packed_gather;
 pub(crate) use packed_column_kernels::{
     bounds_3d_values_from_columns, bounds_values_from_columns_masked, buffer_point_columns,
     clip_lines_packed_xy, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
-    line_measure_masked, map_coordseq_to_crs, map_masked_point_columns_to_crs,
+    line_measure_masked, map_masked_point_columns_to_crs,
     packed_per_row_self_origin_affine_columns, polygon_measure_masked, reduce_lines_or_polygons,
     segmented_planar_lengths, segmented_planar_lengths_3d, subdivide_line_columns,
     subdivide_polygon_columns, total_bounds_from_columns,
@@ -218,7 +382,7 @@ pub(crate) use packed_column_kernels::{
 pub(crate) use packed_columns::{
     PackedColumnError, PackedColumnOutput, PackedColumns, packed_columns_err,
 };
-pub(crate) use packed_gather::normalized_gather_storage;
+pub(crate) use packed_gather::materialized_gather;
 mod pack_admission;
 mod packed_builders;
 mod packed_column_builder;
@@ -227,7 +391,7 @@ mod packed_ops;
 mod streaming;
 mod uniform_columns;
 pub(crate) use pack_admission::{
-    packable_closed_ring_len, polygon_pack_axes, ring_seq_is_packable,
+    CheckedRingWindow, RingCoordinateColumns, RingWindowError, polygon_pack_axes,
 };
 pub(crate) use packed::sparse_missing_mask;
 pub(crate) use streaming::StreamingShapes;

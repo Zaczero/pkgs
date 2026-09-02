@@ -10,29 +10,17 @@ use crate::geometry::{
 
 impl Shape {
     pub const fn geometry_type(&self) -> &'static str {
-        match self {
-            Self::Point(_) => "Point",
-            Self::MultiPoint(_) => "MultiPoint",
-            Self::LineString(_) => "LineString",
-            Self::MultiLineString(_) => "MultiLineString",
-            Self::Polygon(_) => "Polygon",
-            Self::MultiPolygon(_) => "MultiPolygon",
-            Self::GeometryCollection(_) => "GeometryCollection",
-            Self::Empty(kind, _) => kind.geometry_type(),
-        }
+        GeometryKind::of(self).geometry_type()
     }
 
     pub fn topological_dimension(&self) -> Dimension {
         match self {
-            Self::Point(_) | Self::MultiPoint(_) => Dimension::Point,
-            Self::LineString(_) | Self::MultiLineString(_) => Dimension::Curve,
-            Self::Polygon(_) | Self::MultiPolygon(_) => Dimension::Surface,
-            Self::Empty(kind, _) => kind.topological_dimension(),
             Self::GeometryCollection(geometries) => geometries
                 .iter()
                 .map(Self::topological_dimension)
                 .max()
                 .unwrap_or(Dimension::Point),
+            _ => GeometryKind::of(self).topological_dimension(),
         }
     }
 
@@ -323,58 +311,6 @@ impl Shape {
         }
     }
 
-    /// Borrowed counterpart of [`parts`](Self::parts): test the top-level
-    /// parts without cloning coordinate storage. Collection members that are
-    /// themselves multi/collection shapes are visited as
-    /// [`ShapePart::Nested`] (matching `parts()`, which does not recurse).
-    pub(crate) fn any_part(&self, mut predicate: impl FnMut(ShapePart<'_>) -> bool) -> bool {
-        match self {
-            Self::Point(point) => predicate(ShapePart::Point(*point)),
-            Self::LineString(points) => predicate(ShapePart::LineString(points)),
-            Self::Polygon(polygon) => predicate(ShapePart::Polygon(polygon)),
-            Self::MultiPoint(points) => points.members().iter().any(|member| match member {
-                MultiMember::Empty => {
-                    predicate(ShapePart::Empty(GeometryKind::Point, points.axes()))
-                },
-                MultiMember::Value(index) => predicate(ShapePart::Point(points.point_at(*index))),
-            }),
-            Self::MultiLineString(lines) => lines.members().iter().any(|member| match member {
-                MultiMember::Empty => {
-                    predicate(ShapePart::Empty(GeometryKind::LineString, lines.axes()))
-                },
-                MultiMember::Value(index) => {
-                    predicate(ShapePart::LineString(&lines.as_slice()[*index]))
-                },
-            }),
-            Self::MultiPolygon(polygons) => polygons.members().iter().any(|member| match member {
-                MultiMember::Empty => {
-                    predicate(ShapePart::Empty(GeometryKind::Polygon, polygons.axes()))
-                },
-                MultiMember::Value(index) => {
-                    predicate(ShapePart::Polygon(&polygons.as_slice()[*index]))
-                },
-            }),
-            Self::GeometryCollection(geometries) => geometries.iter().any(|geometry| {
-                predicate(match geometry {
-                    Self::Point(point) => ShapePart::Point(*point),
-                    Self::LineString(points) => ShapePart::LineString(points),
-                    Self::Polygon(polygon) => ShapePart::Polygon(polygon),
-                    Self::Empty(kind, axes) => ShapePart::Empty(*kind, *axes),
-                    nested => ShapePart::Nested(nested),
-                })
-            }),
-            Self::Empty(kind, axes)
-                if matches!(
-                    kind,
-                    GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon
-                ) =>
-            {
-                predicate(ShapePart::Empty(*kind, *axes))
-            },
-            Self::Empty(..) => false,
-        }
-    }
-
     pub fn parts(&self) -> ShapePartsIter<'_> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
@@ -445,32 +381,30 @@ impl Shape {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
                 (index == 0).then(|| self.clone())
             },
-            Self::MultiPoint(points) => points.members().get(index).map(|member| match member {
+            Self::MultiPoint(points) => points.member_at(index).map(|member| match member {
                 crate::geometry::MultiMember::Empty => {
                     Self::typed_empty(GeometryKind::Point, points.axes())
                 },
                 crate::geometry::MultiMember::Value(value_index) => {
-                    Self::Point(points.point_at(*value_index))
+                    Self::Point(points.point_at(value_index))
                 },
             }),
-            Self::MultiLineString(lines) => lines.members().get(index).map(|member| match member {
+            Self::MultiLineString(lines) => lines.member_at(index).map(|member| match member {
                 crate::geometry::MultiMember::Empty => {
                     Self::typed_empty(GeometryKind::LineString, lines.axes())
                 },
                 crate::geometry::MultiMember::Value(value_index) => {
-                    Self::LineString(lines.as_slice()[*value_index].clone())
+                    Self::LineString(lines.as_slice()[value_index].clone())
                 },
             }),
-            Self::MultiPolygon(polygons) => {
-                polygons.members().get(index).map(|member| match member {
-                    crate::geometry::MultiMember::Empty => {
-                        Self::typed_empty(GeometryKind::Polygon, polygons.axes())
-                    },
-                    crate::geometry::MultiMember::Value(value_index) => {
-                        Self::Polygon(polygons.as_slice()[*value_index].clone())
-                    },
-                })
-            },
+            Self::MultiPolygon(polygons) => polygons.member_at(index).map(|member| match member {
+                crate::geometry::MultiMember::Empty => {
+                    Self::typed_empty(GeometryKind::Polygon, polygons.axes())
+                },
+                crate::geometry::MultiMember::Value(value_index) => {
+                    Self::Polygon(polygons.as_slice()[value_index].clone())
+                },
+            }),
             Self::GeometryCollection(geometries) => geometries.get(index).cloned(),
             Self::Empty(kind, _)
                 if matches!(
@@ -720,32 +654,32 @@ impl Iterator for ShapePartsIter<'_> {
     fn next(&mut self) -> Option<Shape> {
         match self {
             Self::Single(shape) => shape.take().cloned(),
-            Self::MultiPoint(points, indices) => {
-                indices.next().map(|index| match points.members()[index] {
+            Self::MultiPoint(points, indices) => indices.next().map(|index| {
+                match points.member_at(index).expect("part index in range") {
                     MultiMember::Empty => Shape::typed_empty(GeometryKind::Point, points.axes()),
                     MultiMember::Value(value_index) => Shape::Point(points.point_at(value_index)),
-                })
-            },
-            Self::MultiLineString(lines, indices) => {
-                indices.next().map(|index| match lines.members()[index] {
+                }
+            }),
+            Self::MultiLineString(lines, indices) => indices.next().map(|index| {
+                match lines.member_at(index).expect("part index in range") {
                     MultiMember::Empty => {
                         Shape::typed_empty(GeometryKind::LineString, lines.axes())
                     },
                     MultiMember::Value(value_index) => {
                         Shape::LineString(lines.as_slice()[value_index].clone())
                     },
-                })
-            },
-            Self::MultiPolygon(polygons, indices) => {
-                indices.next().map(|index| match polygons.members()[index] {
+                }
+            }),
+            Self::MultiPolygon(polygons, indices) => indices.next().map(|index| {
+                match polygons.member_at(index).expect("part index in range") {
                     MultiMember::Empty => {
                         Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                     },
                     MultiMember::Value(value_index) => {
                         Shape::Polygon(polygons.as_slice()[value_index].clone())
                     },
-                })
-            },
+                }
+            }),
             Self::GeometryCollection(geometries) => geometries.next().cloned(),
             Self::Empty => None,
         }
@@ -761,41 +695,33 @@ impl DoubleEndedIterator for ShapePartsIter<'_> {
     fn next_back(&mut self) -> Option<Shape> {
         match self {
             Self::Single(shape) => shape.take().cloned(),
-            Self::MultiPoint(points, indices) => {
-                indices
-                    .next_back()
-                    .map(|index| match points.members()[index] {
-                        MultiMember::Empty => {
-                            Shape::typed_empty(GeometryKind::Point, points.axes())
-                        },
-                        MultiMember::Value(value_index) => {
-                            Shape::Point(points.point_at(value_index))
-                        },
-                    })
-            },
-            Self::MultiLineString(lines, indices) => {
-                indices
-                    .next_back()
-                    .map(|index| match lines.members()[index] {
-                        MultiMember::Empty => {
-                            Shape::typed_empty(GeometryKind::LineString, lines.axes())
-                        },
-                        MultiMember::Value(value_index) => {
-                            Shape::LineString(lines.as_slice()[value_index].clone())
-                        },
-                    })
-            },
+            Self::MultiPoint(points, indices) => indices.next_back().map(|index| {
+                match points.member_at(index).expect("part index in range") {
+                    MultiMember::Empty => Shape::typed_empty(GeometryKind::Point, points.axes()),
+                    MultiMember::Value(value_index) => Shape::Point(points.point_at(value_index)),
+                }
+            }),
+            Self::MultiLineString(lines, indices) => indices.next_back().map(|index| {
+                match lines.member_at(index).expect("part index in range") {
+                    MultiMember::Empty => {
+                        Shape::typed_empty(GeometryKind::LineString, lines.axes())
+                    },
+                    MultiMember::Value(value_index) => {
+                        Shape::LineString(lines.as_slice()[value_index].clone())
+                    },
+                }
+            }),
             Self::MultiPolygon(polygons, indices) => {
-                indices
-                    .next_back()
-                    .map(|index| match polygons.members()[index] {
+                indices.next_back().map(|index| {
+                    match polygons.member_at(index).expect("part index in range") {
                         MultiMember::Empty => {
                             Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                         },
                         MultiMember::Value(value_index) => {
                             Shape::Polygon(polygons.as_slice()[value_index].clone())
                         },
-                    })
+                    }
+                })
             },
             Self::GeometryCollection(geometries) => geometries.next_back().cloned(),
             Self::Empty => None,
@@ -853,32 +779,6 @@ const fn merge_ord_extremes(acc: &mut Option<(f64, f64)>, chunk: Option<(f64, f6
     }
 }
 
-/// Borrowed view of one top-level part — the clone-free currency of
-/// `Shape::any_part`.
-///
-/// Single geometries borrow their coordinate storage; a collection member
-/// that is itself a multi/collection arrives as [`Nested`](Self::Nested).
-pub(crate) enum ShapePart<'a> {
-    Point(Point),
-    LineString(&'a CoordSeq),
-    Polygon(&'a Polygon),
-    Empty(GeometryKind, CoordinateAxes),
-    Nested(&'a Shape),
-}
-
-impl ShapePart<'_> {
-    /// Planar bounds of this part (`None` for an empty nested member).
-    pub(crate) fn bounds(&self) -> Option<Bounds> {
-        match self {
-            Self::Point(point) => Some(Bounds::from_point(*point)),
-            Self::LineString(points) => Bounds::from_coords(points),
-            Self::Polygon(polygon) => polygon.bounds(),
-            Self::Empty(..) => None,
-            Self::Nested(shape) => shape.bounds(),
-        }
-    }
-}
-
 /// First vertex of the first non-empty line piece, if any.
 pub(crate) fn linework_first_point(lines: &[&CoordSeq]) -> Option<Point> {
     lines.iter().find_map(|line| line.first())
@@ -891,9 +791,9 @@ mod parts_iter_tests {
     #[test]
     fn parts_iterator_is_exact_and_exhausts_from_both_ends() {
         let points = [
-            Point::new_unchecked_xy(1.0, 2.0),
-            Point::new_unchecked_xy(3.0, 4.0),
-            Point::new_unchecked_xy(5.0, 6.0),
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(3.0, 4.0),
+            Point::new_raw_xy(5.0, 6.0),
         ];
         let shape = Shape::MultiPoint(points.to_vec().into());
         let mut parts = shape.parts();

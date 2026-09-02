@@ -100,14 +100,13 @@ pub enum Shape {
 
 // `Shape` is the widest hot type and the one whose width multiplies: mixed
 // array storage is `Vec<Shape>`, and both `storage_impl.rs` and `packed_ops.rs`
-// account heap by `rows * size_of::<Shape>()`.  The `Polygon` variant alone sets
-// the width (`Ring` 72 + `Arc<[Ring]>` 16 = 88, +8 tag); every other variant is
-// 72 or less.  Boxing `Polygon` to reach 80 was measured a net loss — the packed
-// lanes never store `Shape`, so it would buy ~2% of a mixed array's footprint
-// for a per-row allocation and an indirection on the hottest structural access.
+// account heap by `rows * size_of::<Shape>()`. `Polygon` and `MultiPoint` carry
+// 88-byte payloads, producing a 96-byte enum. Boxing either would trade the hot
+// structural access for a per-row allocation and indirection.
 impl HeapSize for Shape {
     /// Retained native heap: coordinate columns **plus** container allocations
-    /// (`Vec` of parts/members, `Arc<[Ring]>` hole storage) and nested shapes.
+    /// (`Vec` of parts, sparse member maps, `Arc<[Ring]>` hole storage) and
+    /// nested shapes.
     /// Leaf points and sequences contribute only their ordinate payload so
     /// scalar `Point`/`LineString` sizes stay in the coordinate-class band;
     /// multipart and collection containers scale with part/member count.
@@ -140,14 +139,6 @@ impl LineSeq {
             return Err(GeometryErrorKind::LineStringTooShort.into());
         }
         Ok(Self(coords))
-    }
-
-    pub(crate) fn from_trusted(coords: CoordSeq) -> Self {
-        assert!(
-            coords.len() >= 2,
-            "trusted LineSeq construction received an empty or one-vertex coordinate sequence"
-        );
-        Self(coords)
     }
 
     pub(crate) const fn as_coords(&self) -> &CoordSeq {
@@ -226,10 +217,6 @@ impl<T> NonEmptyVec<T> {
         Self::try_from_vec(items).expect("shape payload must not be empty")
     }
 
-    pub(crate) fn into_vec(self) -> Vec<T> {
-        self.0
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
@@ -265,31 +252,179 @@ impl<T> IntoIterator for NonEmptyVec<T> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MultiMember<T> {
     Empty,
     Value(T),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct MultiPoint {
-    axes: CoordinateAxes,
-    coords: CoordSeq,
-    members: NonEmptyVec<MultiMember<usize>>,
+enum MultipartMembers {
+    Dense,
+    // Contains at least one Empty; Value indices are consecutive encounter order.
+    Sparse(Box<[MultiMember<usize>]>),
 }
+
+impl MultipartMembers {
+    fn from_indices(indices: Vec<MultiMember<usize>>) -> Result<Self> {
+        if indices.is_empty() {
+            return Err(GeometryErrorKind::EmptyGeometrySequence {
+                operation: "geometry payload",
+            }
+            .into());
+        }
+        let mut expected = 0;
+        let mut has_empty = false;
+        let mut indices = indices;
+        for member in &mut indices {
+            match member {
+                MultiMember::Empty => has_empty = true,
+                MultiMember::Value(index) => {
+                    *index = expected;
+                    expected += 1;
+                },
+            }
+        }
+        Ok(if has_empty {
+            Self::Sparse(indices.into_boxed_slice())
+        } else {
+            Self::Dense
+        })
+    }
+
+    fn len(&self, value_len: usize) -> usize {
+        match self {
+            Self::Dense => value_len,
+            Self::Sparse(members) => members.len(),
+        }
+    }
+
+    const fn has_empty_members(&self) -> bool {
+        matches!(self, Self::Sparse(_))
+    }
+
+    fn get(&self, index: usize, value_len: usize) -> Option<MultiMember<usize>> {
+        match self {
+            Self::Dense => (index < value_len).then_some(MultiMember::Value(index)),
+            Self::Sparse(members) => members.get(index).copied(),
+        }
+    }
+
+    fn iter(&self, value_len: usize) -> MultipartMemberIter<'_> {
+        match self {
+            Self::Dense => MultipartMemberIter::Dense(0..value_len),
+            Self::Sparse(members) => MultipartMemberIter::Sparse(members.iter()),
+        }
+    }
+
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Dense => 0,
+            Self::Sparse(members) => std::mem::size_of_val(&**members),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum MultipartMemberIter<'a> {
+    Dense(std::ops::Range<usize>),
+    Sparse(std::slice::Iter<'a, MultiMember<usize>>),
+}
+
+impl Iterator for MultipartMemberIter<'_> {
+    type Item = MultiMember<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Dense(indices) => indices.next().map(MultiMember::Value),
+            Self::Sparse(members) => members.next().copied(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl DoubleEndedIterator for MultipartMemberIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Dense(indices) => indices.next_back().map(MultiMember::Value),
+            Self::Sparse(members) => members.next_back().copied(),
+        }
+    }
+}
+
+impl ExactSizeIterator for MultipartMemberIter<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(indices) => indices.len(),
+            Self::Sparse(members) => members.len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MultiPoint {
+    coords: CoordSeq,
+    members: MultipartMembers,
+}
+
+/// Borrowed `MultiPoint` values in logical member order.
+///
+/// Empty members have no coordinate row and are skipped; each value is rebuilt
+/// directly from the shared coordinate columns.
+pub struct MultiPointIter<'a> {
+    members: MultipartMemberIter<'a>,
+    coords: &'a CoordSeq,
+    remaining: usize,
+}
+
+impl Iterator for MultiPointIter<'_> {
+    type Item = Point;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.members.find_map(|member| match member {
+            MultiMember::Empty => None,
+            MultiMember::Value(index) => {
+                self.remaining -= 1;
+                Some(self.coords.point_at(index))
+            },
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl DoubleEndedIterator for MultiPointIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        while let Some(member) = self.members.next_back() {
+            if let MultiMember::Value(index) = member {
+                self.remaining -= 1;
+                return Some(self.coords.point_at(index));
+            }
+        }
+        None
+    }
+}
+
+impl ExactSizeIterator for MultiPointIter<'_> {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiLineString {
     axes: CoordinateAxes,
     values: Vec<LineSeq>,
-    members: NonEmptyVec<MultiMember<usize>>,
+    members: MultipartMembers,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiPolygon {
     axes: CoordinateAxes,
     values: Vec<Polygon>,
-    members: NonEmptyVec<MultiMember<usize>>,
+    members: MultipartMembers,
 }
 
 macro_rules! impl_multipart {
@@ -299,11 +434,20 @@ macro_rules! impl_multipart {
                 axes: CoordinateAxes,
                 members: Vec<MultiMember<$member>>,
             ) -> Result<Self> {
+                let member_len = members.len();
                 let mut values = Vec::new();
-                let mut indices = Vec::with_capacity(members.len());
+                let mut indices = Vec::new();
+                let mut sparse = false;
                 for member in members {
                     match member {
-                        MultiMember::Empty => indices.push(MultiMember::Empty),
+                        MultiMember::Empty => {
+                            if !sparse {
+                                indices = Vec::with_capacity(member_len);
+                                indices.extend((0..values.len()).map(MultiMember::Value));
+                                sparse = true;
+                            }
+                            indices.push(MultiMember::Empty);
+                        },
                         MultiMember::Value(value) => {
                             let got = shape_member_axes(&value);
                             if got != axes {
@@ -313,15 +457,27 @@ macro_rules! impl_multipart {
                                 }
                                 .into());
                             }
-                            indices.push(MultiMember::Value(values.len()));
+                            if sparse {
+                                indices.push(MultiMember::Value(values.len()));
+                            }
                             values.push(value);
                         },
                     }
                 }
+                let members = if sparse {
+                    MultipartMembers::from_indices(indices)?
+                } else if values.is_empty() {
+                    return Err(GeometryErrorKind::EmptyGeometrySequence {
+                        operation: "geometry payload",
+                    }
+                    .into());
+                } else {
+                    MultipartMembers::Dense
+                };
                 Ok(Self {
                     axes,
                     values,
-                    members: NonEmptyVec::try_from_vec(indices)?,
+                    members,
                 })
             }
 
@@ -336,8 +492,16 @@ macro_rules! impl_multipart {
                 self.axes
             }
 
-            pub(crate) fn members(&self) -> &[MultiMember<usize>] {
-                &self.members
+            pub(crate) fn members(&self) -> MultipartMemberIter<'_> {
+                self.members.iter(self.values.len())
+            }
+
+            pub(crate) fn member_at(&self, index: usize) -> Option<MultiMember<usize>> {
+                self.members.get(index, self.values.len())
+            }
+
+            pub(crate) fn has_empty_members(&self) -> bool {
+                self.members.has_empty_members()
             }
 
             pub(crate) fn try_map_values<E>(
@@ -345,13 +509,28 @@ macro_rules! impl_multipart {
                 axes: CoordinateAxes,
                 mut map: impl FnMut(&$member) -> Result<$member, E>,
             ) -> Result<Self, E> {
+                if matches!(self.members, MultipartMembers::Dense) {
+                    let values = self
+                        .values
+                        .iter()
+                        .map(&mut map)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    assert!(
+                        values.iter().all(|value| shape_member_axes(value) == axes),
+                        "homogeneous nonempty multipart payload"
+                    );
+                    return Ok(Self {
+                        axes,
+                        values,
+                        members: MultipartMembers::Dense,
+                    });
+                }
                 let members = self
-                    .members
-                    .iter()
+                    .members()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => {
-                            map(&self.values[*index]).map(MultiMember::Value)
+                            map(&self.values[index]).map(MultiMember::Value)
                         },
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -370,7 +549,7 @@ macro_rules! impl_multipart {
         impl crate::HeapSize for $name {
             fn heap_bytes(&self) -> usize {
                 self.values.capacity() * std::mem::size_of::<$member>()
-                    + self.members.capacity() * std::mem::size_of::<MultiMember<usize>>()
+                    + self.members.heap_bytes()
                     + self
                         .values
                         .iter()
@@ -386,11 +565,20 @@ impl_multipart!(MultiPolygon, Polygon);
 
 impl MultiPoint {
     pub(crate) fn try_new(axes: CoordinateAxes, members: Vec<MultiMember<Point>>) -> Result<Self> {
+        let member_len = members.len();
         let mut points = Vec::new();
-        let mut indices = Vec::with_capacity(members.len());
+        let mut indices = Vec::new();
+        let mut sparse = false;
         for member in members {
             match member {
-                MultiMember::Empty => indices.push(MultiMember::Empty),
+                MultiMember::Empty => {
+                    if !sparse {
+                        indices = Vec::with_capacity(member_len);
+                        indices.extend((0..points.len()).map(MultiMember::Value));
+                        sparse = true;
+                    }
+                    indices.push(MultiMember::Empty);
+                },
                 MultiMember::Value(point) => {
                     if point.axes() != axes {
                         return Err(GeometryErrorKind::CoordinateAxesMismatch {
@@ -399,14 +587,24 @@ impl MultiPoint {
                         }
                         .into());
                     }
-                    indices.push(MultiMember::Value(points.len()));
+                    if sparse {
+                        indices.push(MultiMember::Value(points.len()));
+                    }
                     points.push(point);
                 },
             }
         }
-        let members = NonEmptyVec::try_from_vec(indices)?;
+        let members = if sparse {
+            MultipartMembers::from_indices(indices)?
+        } else if points.is_empty() {
+            return Err(GeometryErrorKind::EmptyGeometrySequence {
+                operation: "geometry payload",
+            }
+            .into());
+        } else {
+            MultipartMembers::Dense
+        };
         Ok(Self {
-            axes,
             coords: if points.is_empty() {
                 CoordSeq::empty(axes)
             } else {
@@ -427,44 +625,46 @@ impl MultiPoint {
             }
             .into());
         }
-        let members = (0..coords.len())
-            .map(MultiMember::Value)
-            .collect::<Vec<_>>();
         Ok(Self {
-            axes: coords.axes(),
             coords,
-            members: NonEmptyVec::from_vec(members),
+            members: MultipartMembers::Dense,
         })
     }
 
     pub(crate) const fn axes(&self) -> CoordinateAxes {
-        self.axes
+        self.coords.axes()
     }
 
-    pub(crate) fn members(&self) -> &[MultiMember<usize>] {
-        &self.members
+    pub(crate) fn members(&self) -> MultipartMemberIter<'_> {
+        self.members.iter(self.coords.len())
+    }
+
+    pub(crate) fn member_at(&self, index: usize) -> Option<MultiMember<usize>> {
+        self.members.get(index, self.coords.len())
+    }
+
+    pub(crate) fn has_empty_members(&self) -> bool {
+        self.members.has_empty_members()
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.members.len()
+        self.members.len(self.coords.len())
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.coords.is_empty()
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = Point> + '_ {
-        self.members.iter().filter_map(|member| match member {
-            MultiMember::Value(index) => Some(self.coords.point_at(*index)),
-            MultiMember::Empty => None,
-        })
+    pub(crate) fn iter(&self) -> MultiPointIter<'_> {
+        MultiPointIter {
+            members: self.members(),
+            coords: &self.coords,
+            remaining: self.coords.len(),
+        }
     }
 
-    pub(crate) fn points(&self) -> impl Iterator<Item = Point> + '_ {
-        self.members.iter().filter_map(|member| match member {
-            MultiMember::Value(index) => Some(self.coords.point_at(*index)),
-            MultiMember::Empty => None,
-        })
+    pub(crate) fn points(&self) -> MultiPointIter<'_> {
+        self.iter()
     }
 
     pub(crate) fn point_at(&self, index: usize) -> Point {
@@ -501,7 +701,6 @@ impl MultiPoint {
     ) -> Result<Self, E> {
         let coords = self.coords.try_map_xy_with(op)?;
         Ok(Self {
-            axes: coords.axes(),
             coords,
             members: self.members.clone(),
         })
@@ -511,13 +710,16 @@ impl MultiPoint {
         &self,
         mut map: impl FnMut(Point) -> Result<Point, E>,
     ) -> Result<Self, E> {
+        if matches!(self.members, MultipartMembers::Dense) {
+            let points = self.points().map(&mut map).collect::<Result<Vec<_>, _>>()?;
+            return Ok(Self::from(points));
+        }
         let members = self
-            .members
-            .iter()
+            .members()
             .map(|member| match member {
                 MultiMember::Empty => Ok(MultiMember::Empty),
                 MultiMember::Value(index) => {
-                    map(self.coords.point_at(*index)).map(MultiMember::Value)
+                    map(self.coords.point_at(index)).map(MultiMember::Value)
                 },
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -527,14 +729,13 @@ impl MultiPoint {
                 MultiMember::Value(point) => Some(point.axes()),
                 MultiMember::Empty => None,
             })
-            .unwrap_or(self.axes);
+            .unwrap_or_else(|| self.axes());
         Ok(Self::from_values(axes, members))
     }
 
     pub(crate) fn quantize(&self, precision: i32) -> Self {
         let coords = self.coords.quantize(precision);
         Self {
-            axes: coords.axes(),
             coords,
             members: self.members.clone(),
         }
@@ -543,7 +744,6 @@ impl MultiPoint {
     pub(crate) fn force_2d(&self) -> Self {
         let coords = self.coords.force_2d();
         Self {
-            axes: CoordinateAxes::XY,
             coords,
             members: self.members.clone(),
         }
@@ -551,7 +751,6 @@ impl MultiPoint {
 
     pub(crate) fn with_axes(&self, axes: CoordinateAxes) -> Self {
         Self {
-            axes,
             coords: if self.coords.is_empty() {
                 CoordSeq::empty(axes)
             } else {
@@ -564,7 +763,6 @@ impl MultiPoint {
     pub(crate) fn with_coords(&self, coords: CoordSeq) -> Self {
         debug_assert_eq!(coords.len(), self.coords.len());
         Self {
-            axes: coords.axes(),
             coords,
             members: self.members.clone(),
         }
@@ -573,10 +771,10 @@ impl MultiPoint {
 
 impl<'a> IntoIterator for &'a MultiPoint {
     type Item = Point;
-    type IntoIter = std::vec::IntoIter<Point>;
+    type IntoIter = MultiPointIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.points().collect::<Vec<_>>().into_iter()
+        self.iter()
     }
 }
 
@@ -611,29 +809,27 @@ impl From<Vec<XY>> for MultiPoint {
 
 impl FromIterator<Point> for MultiPoint {
     fn from_iter<T: IntoIterator<Item = Point>>(iter: T) -> Self {
-        let members = iter.into_iter().map(MultiMember::Value).collect::<Vec<_>>();
-        let axes = members
-            .iter()
-            .find_map(|member| match member {
-                MultiMember::Value(point) => Some(point.axes()),
-                MultiMember::Empty => None,
-            })
-            .unwrap_or(CoordinateAxes::XY);
-        Self::from_values(axes, members)
+        let points = iter.into_iter().collect::<Vec<_>>();
+        Self::from(points)
     }
 }
 
 impl FromIterator<LineSeq> for MultiLineString {
     fn from_iter<T: IntoIterator<Item = LineSeq>>(iter: T) -> Self {
-        let members = iter.into_iter().map(MultiMember::Value).collect::<Vec<_>>();
-        let axes = members
+        let values = iter.into_iter().collect::<Vec<_>>();
+        let axes = values
             .first()
-            .map(|member| match member {
-                MultiMember::Value(line) => line.axes(),
-                MultiMember::Empty => CoordinateAxes::XY,
-            })
-            .unwrap_or(CoordinateAxes::XY);
-        Self::from_values(axes, members)
+            .map_or(CoordinateAxes::XY, |line| line.axes());
+        assert!(!values.is_empty(), "shape payload must not be empty");
+        assert!(
+            values.iter().all(|line| line.axes() == axes),
+            "homogeneous nonempty multipart payload"
+        );
+        Self {
+            axes,
+            values,
+            members: MultipartMembers::Dense,
+        }
     }
 }
 
@@ -645,15 +841,18 @@ impl From<Vec<LineSeq>> for MultiLineString {
 
 impl FromIterator<Polygon> for MultiPolygon {
     fn from_iter<T: IntoIterator<Item = Polygon>>(iter: T) -> Self {
-        let members = iter.into_iter().map(MultiMember::Value).collect::<Vec<_>>();
-        let axes = members
-            .first()
-            .map(|member| match member {
-                MultiMember::Value(polygon) => polygon.axes(),
-                MultiMember::Empty => CoordinateAxes::XY,
-            })
-            .unwrap_or(CoordinateAxes::XY);
-        Self::from_values(axes, members)
+        let values = iter.into_iter().collect::<Vec<_>>();
+        let axes = values.first().map_or(CoordinateAxes::XY, Polygon::axes);
+        assert!(!values.is_empty(), "shape payload must not be empty");
+        assert!(
+            values.iter().all(|polygon| polygon.axes() == axes),
+            "homogeneous nonempty multipart payload"
+        );
+        Self {
+            axes,
+            values,
+            members: MultipartMembers::Dense,
+        }
     }
 }
 
@@ -677,8 +876,7 @@ impl<T> FromIterator<T> for NonEmptyVec<T> {
 
 impl crate::HeapSize for MultiPoint {
     fn heap_bytes(&self) -> usize {
-        self.coords.coordinate_bytes()
-            + self.members.capacity() * std::mem::size_of::<MultiMember<usize>>()
+        self.coords.coordinate_bytes() + self.members.heap_bytes()
     }
 }
 
@@ -686,7 +884,7 @@ macro_rules! impl_multipart_iteration {
     ($name:ident, $member:ty) => {
         impl $name {
             pub(crate) fn len(&self) -> usize {
-                self.members.len()
+                self.members.len(self.values.len())
             }
 
             pub(crate) fn is_empty(&self) -> bool {
@@ -737,15 +935,26 @@ impl MultiPolygon {
     }
 
     pub(crate) fn pop(&mut self) -> Option<Polygon> {
-        let mut members = self.members.clone().into_vec();
+        if matches!(self.members, MultipartMembers::Dense) {
+            return if self.values.len() == 1 {
+                self.values.last().cloned()
+            } else {
+                self.values.pop()
+            };
+        }
+        let mut members = self.members().collect::<Vec<_>>();
         let value = members.pop().and_then(|member| match member {
-            MultiMember::Value(index) => Some(self.values[index].clone()),
+            MultiMember::Value(index) => {
+                debug_assert_eq!(index + 1, self.values.len());
+                self.values.pop()
+            },
             MultiMember::Empty => None,
         });
         if members.is_empty() {
             return value;
         }
-        self.members = NonEmptyVec::from_vec(members);
+        self.members = MultipartMembers::from_indices(members)
+            .expect("remaining multipart members are nonempty");
         value
     }
 
@@ -810,6 +1019,57 @@ impl crate::HeapSize for NonEmptyVec<Shape> {
 impl Point {
     pub(crate) const fn axes(self) -> CoordinateAxes {
         self.axes
+    }
+}
+
+#[cfg(test)]
+mod multipart_layout_tests {
+    use super::*;
+
+    #[test]
+    fn dense_and_sparse_members_are_canonical() {
+        assert!(matches!(
+            MultipartMembers::from_indices(vec![MultiMember::Value(0), MultiMember::Value(1)])
+                .expect("identity members"),
+            MultipartMembers::Dense
+        ));
+        let dense = MultiPoint::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Value(Point::new_raw_xy(1.0, 2.0)),
+            MultiMember::Value(Point::new_raw_xy(3.0, 4.0)),
+        ])
+        .expect("dense multipoint");
+        assert!(matches!(dense.members, MultipartMembers::Dense));
+        assert_eq!(dense.members().collect::<Vec<_>>(), [
+            MultiMember::Value(0),
+            MultiMember::Value(1)
+        ]);
+        assert!(!dense.has_empty_members());
+        assert_eq!(dense.members.heap_bytes(), 0);
+
+        let sparse = MultiPoint::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(Point::new_raw_xy(1.0, 2.0)),
+            MultiMember::Empty,
+        ])
+        .expect("sparse multipoint");
+        assert!(matches!(sparse.members, MultipartMembers::Sparse(_)));
+        assert_eq!(sparse.members().collect::<Vec<_>>(), [
+            MultiMember::Empty,
+            MultiMember::Value(0),
+            MultiMember::Empty
+        ]);
+        assert!(sparse.has_empty_members());
+        assert_eq!(sparse.members.heap_bytes(), 3 * 16);
+    }
+
+    #[test]
+    fn multipart_layouts_match_the_hot_shape_budget() {
+        assert_eq!(std::mem::size_of::<MultiMember<usize>>(), 16);
+        assert_eq!(std::mem::size_of::<MultipartMembers>(), 16);
+        assert_eq!(std::mem::size_of::<MultiPoint>(), 88);
+        assert_eq!(std::mem::size_of::<MultiLineString>(), 48);
+        assert_eq!(std::mem::size_of::<MultiPolygon>(), 48);
+        assert_eq!(std::mem::size_of::<Shape>(), 96);
     }
 }
 

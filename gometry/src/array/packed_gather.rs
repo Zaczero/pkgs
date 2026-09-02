@@ -1,6 +1,4 @@
-//! Gather materialization for fancy-selected packed storage: the
-//! per-kind column gathers plus the shared `gathered_memo`
-//! normalization used by every packed-column chokepoint.
+//! Contiguous gather materialization owned by separated-data export boundaries.
 
 use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
@@ -117,23 +115,4 @@ pub(crate) fn materialized_gather(
             _ => None,
         },
     })
-}
-
-/// Gather-normalize a packed storage through the array's shared memo: the
-/// first packed op on a fancy-selected array pays the gather ONCE; every
-/// later op on the same array (or a clone) reuses the contiguous columns
-/// zero-copy. Identity/Window storages pass straight through. A lost
-/// `get_or_init` race costs one redundant gather, never correctness.
-pub(crate) fn normalized_gather_storage(
-    storage: &Arc<GeometryArrayStorage>,
-    memo: &std::sync::OnceLock<Arc<GeometryArrayStorage>>,
-) -> PackedColumnResult<Arc<GeometryArrayStorage>> {
-    if let Some(hit) = memo.get() {
-        return Ok(Arc::clone(hit));
-    }
-    let Some(built) = materialized_gather(storage)? else {
-        return Ok(Arc::clone(storage));
-    };
-    let built = Arc::new(built);
-    Ok(Arc::clone(memo.get_or_init(|| built)))
 }

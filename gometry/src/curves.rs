@@ -181,14 +181,12 @@ mod tests {
     #[test]
     fn hilbert_keys_are_locality_preserving_and_distinct() {
         let frame = CurveFrame::new(
-            Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0),
+            Bounds::new_raw(0.0, 0.0, 1.0, 1.0),
             CurveLevel::try_new(16).unwrap(),
         );
         let key = |x: f64, y: f64| {
             frame
-                .hilbert_key(&Shape::Point(crate::geometry::Point::new_unchecked_xy(
-                    x, y,
-                )))
+                .hilbert_key(&Shape::Point(crate::geometry::Point::new_raw_xy(x, y)))
                 .unwrap()
         };
         // Distinct cells, and near neighbors are closer than far ones.
@@ -201,10 +199,10 @@ mod tests {
     #[test]
     fn curve_kind_dispatches_both_core_kernels() {
         let frame = CurveFrame::new(
-            Bounds::new_unchecked(0.0, 0.0, 1.0, 1.0),
+            Bounds::new_raw(0.0, 0.0, 1.0, 1.0),
             CurveLevel::try_new(16).unwrap(),
         );
-        let shape = Shape::Point(crate::geometry::Point::new_unchecked_xy(0.25, 0.75));
+        let shape = Shape::Point(crate::geometry::Point::new_raw_xy(0.25, 0.75));
         assert_eq!(
             CurveKind::Hilbert.key(&frame, &shape),
             frame.hilbert_key(&shape)

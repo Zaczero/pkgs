@@ -11,20 +11,20 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
-use std::borrow::Cow;
 use std::fmt::Write as _;
-use std::mem::size_of;
 
-use numpy::{Element, PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
+use numpy::{
+    Element, PyArrayDescrMethods as _, PyArrayDyn, PyArrayMethods as _, PyUntypedArray,
+    PyUntypedArrayMethods as _,
+};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
-use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PySequence, PyTuple};
+use pyo3::types::{PyBool, PyInt, PyList, PySequence, PyTuple};
 
 use crate::array::{
     Arc, Bound, CoordSeq, GeometryArrayStorage, GeometryError, HeapSize, IntoPyObject as _,
-    MissingMask, OverlayOp, PointColumnBuilder, Py, PyAny, PyAnyMethods as _, PyBytesMethods as _,
-    PyCoordinates, PyErr, PyGeometryArray, PyGeometryArrayIter, PyListMethods as _, PyResult,
-    PyTupleMethods as _, PyTypeMethods as _, Python, Shape, Typed, exact_geometry,
-    exact_geometry_array, overlay_operator, physical_row,
+    OverlayOp, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray,
+    PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _,
+    Python, Shape, Typed, ValidityMask, exact_geometry, exact_geometry_array, overlay_operator,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
@@ -49,45 +49,69 @@ pub(crate) fn numpy_fancy_index(
     let Ok(array) = index.cast::<PyUntypedArray>() else {
         return Ok(None);
     };
+    crate::py::numpy::reject_masked_array(index)?;
     let ndim = array.ndim();
     if ndim > 1 {
         return Err(PyTypeError::new_err(format!(
             "{label} NumPy indices must be zero- or one-dimensional"
         )));
     }
-    if index.extract::<PyReadonlyArrayDyn<'_, bool>>().is_ok() {
+    let dtype = array.dtype();
+    if dtype.kind() == b'b' && dtype.itemsize() == 1 {
         if ndim == 0 {
             return Err(PyTypeError::new_err(format!(
                 "boolean scalar is not a {type_label} index; use an integer index or a boolean mask"
             )));
         }
-        // `ndarray.tobytes()` materializes immutable Python bytes — owned by
-        // construction, never an ArrayView over writable provider memory.
-        let owned = owned_bool_mask_from_tobytes(index)?;
+        let owned = owned_numpy_values::<bool>(index)?;
         return Ok(Some(NumpyFancyIndex::Mask(owned)));
     }
-    macro_rules! try_integer_array {
-        ($($ty:ty),* $(,)?) => {
-            $(
-                if index.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    return numpy_integer_fancy_index::<$ty>(index, ndim, label).map(Some);
-                }
-            )*
-        };
+    match (dtype.kind(), dtype.itemsize()) {
+        (b'i', 1) => return numpy_integer_fancy_index::<i8>(index, ndim, label).map(Some),
+        (b'i', 2) => return numpy_integer_fancy_index::<i16>(index, ndim, label).map(Some),
+        (b'i', 4) => return numpy_integer_fancy_index::<i32>(index, ndim, label).map(Some),
+        (b'i', 8) => return numpy_integer_fancy_index::<i64>(index, ndim, label).map(Some),
+        (b'u', 1) => return numpy_integer_fancy_index::<u8>(index, ndim, label).map(Some),
+        (b'u', 2) => return numpy_integer_fancy_index::<u16>(index, ndim, label).map(Some),
+        (b'u', 4) => return numpy_integer_fancy_index::<u32>(index, ndim, label).map(Some),
+        (b'u', 8) => return numpy_integer_fancy_index::<u64>(index, ndim, label).map(Some),
+        _ => {},
     }
-    try_integer_array!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
     Err(PyTypeError::new_err(format!(
         "{label} NumPy indices must have an integer or boolean dtype"
     )))
 }
 
-/// Copy a NumPy bool mask via `tobytes()` into owned `Vec<bool>`.
-fn owned_bool_mask_from_tobytes(index: &Bound<'_, PyAny>) -> PyResult<Vec<bool>> {
-    let py_bytes = index.call_method0("tobytes")?;
-    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    let mut out = crate::try_vec_with_capacity(bytes.len())?;
-    for &byte in bytes {
-        crate::try_push(&mut out, byte != 0)?;
+fn native_numpy_array<'py, T>(index: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyArrayDyn<T>>>
+where
+    T: Element,
+{
+    let py = index.py();
+    let array = index.cast::<PyUntypedArray>()?;
+    // SAFETY: `array` is a verified NumPy array and the target is a built-in dtype.
+    let ptr = unsafe {
+        numpy::PY_ARRAY_API.PyArray_CastToType(
+            py,
+            array.as_array_ptr(),
+            T::get_dtype(py).into_dtype_ptr(),
+            0,
+        )
+    };
+    // SAFETY: the C API returns a new reference or null; the helper handles both cases.
+    unsafe { Bound::from_owned_ptr_or_err(py, ptr).map(|array| array.cast_into_unchecked()) }
+}
+
+/// Copy logical NumPy values through a C-level native-dtype cast.
+fn owned_numpy_values<T>(index: &Bound<'_, PyAny>) -> PyResult<Vec<T>>
+where
+    T: Copy + Element,
+{
+    let array = native_numpy_array::<T>(index)?;
+    let readonly = array.try_readonly()?;
+    let values = readonly.as_array();
+    let mut out = crate::try_vec_with_capacity(values.len())?;
+    for value in values.iter().copied() {
+        crate::try_push(&mut out, value)?;
     }
     Ok(out)
 }
@@ -100,8 +124,7 @@ pub(crate) fn numpy_integer_fancy_index<T>(
 where
     T: Copy + Element + TryInto<isize>,
 {
-    // Owned capture via `tobytes()` — immutable bytes by construction.
-    let values = owned_integer_indices_from_tobytes::<T>(index, label)?;
+    let values = owned_integer_indices_from_numpy::<T>(index, label)?;
     if ndim == 0 {
         return Ok(NumpyFancyIndex::Scalar(
             values
@@ -113,26 +136,16 @@ where
     Ok(NumpyFancyIndex::Indices(values))
 }
 
-fn owned_integer_indices_from_tobytes<T>(
+fn owned_integer_indices_from_numpy<T>(
     index: &Bound<'_, PyAny>,
     label: &str,
 ) -> PyResult<Vec<isize>>
 where
     T: Copy + Element + TryInto<isize>,
 {
-    let py_bytes = index.call_method0("tobytes")?;
-    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    let width = size_of::<T>();
-    if width == 0 || !bytes.len().is_multiple_of(width) {
-        return Err(PyTypeError::new_err(format!(
-            "{label} NumPy integer index buffer length is invalid"
-        )));
-    }
-    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
-    for chunk in bytes.chunks_exact(width) {
-        // SAFETY: `T: Element` for integer dtypes used here; bytes come from
-        // NumPy's native-endian `tobytes()` for that dtype.
-        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
+    let values = owned_numpy_values::<T>(index)?;
+    let mut out = crate::try_vec_with_capacity(values.len())?;
+    for value in values {
         crate::try_push(
             &mut out,
             value
@@ -293,9 +306,8 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
 impl HeapSize for PyGeometryArray {
     fn heap_bytes(&self) -> usize {
         self.storage().logical_heap_bytes()
-            + self.missing().map_or(0, MissingMask::len)
-            + self.frame_caches.heap_bytes()
-            + self.prepared_cache_heap_bytes()
+            + self.missing().map_or(0, HeapSize::heap_bytes)
+            + self.row_products.heap_bytes()
     }
 }
 
@@ -304,7 +316,7 @@ impl RowContainer for PyGeometryArray {
     const INDEX_LABEL: &'static str = "geometry array";
 
     fn row_count(&self) -> usize {
-        self.storage().len()
+        self.len()
     }
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
@@ -321,11 +333,18 @@ impl RowGetItemContainer for PyGeometryArray {
     }
 
     fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self {
-        if matches!(self.storage(), GeometryArrayStorage::Points { .. }) {
-            let rows = collect_slice_rows(start, stop, step);
+        if matches!(self.storage(), GeometryArrayStorage::Points { .. })
+            && !self.is_compact_nullable()
+        {
             let mut out = self.slice_packed_points(start, stop, step);
-            out.frame_caches = self.selected_frame_caches(rows);
+            let GeometryArrayStorage::Points { row_map, .. } = out.storage() else {
+                unreachable!("packed point slicing preserves point storage")
+            };
+            out.row_products = self.row_products.with_selection(row_map.clone());
             return out;
+        }
+        if self.is_compact_nullable() && step == 1 {
+            return self.gather_logical_row_range(start as usize..stop as usize);
         }
         self.gather_logical_rows(&collect_slice_rows(start, stop, step))
     }
@@ -429,7 +448,7 @@ impl PyGeometryArray {
         #[pyo3(from_py_with = crate::strict_i64)] start: i64,
         #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
     ) -> PyResult<usize> {
-        let len = self.storage().len();
+        let len = self.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
                 bound + i64::try_from(len).unwrap_or(i64::MAX)
@@ -454,13 +473,12 @@ impl PyGeometryArray {
         if self.frame_matches(geometry)
             && start < stop
             && let Some(position) = self
-                .storage()
-                .iter_shapes()
-                .enumerate()
+                .logical_shape_rows()
                 .take(stop)
                 .skip(start)
-                .position(|(row, shape)| {
-                    !self.is_row_missing(row) && shape.as_ref() == geometry.shape.shape()
+                .position(|row| {
+                    matches!(row, crate::array::LogicalShapeRow::Present { shape, .. }
+                        if shape.as_ref() == geometry.shape.shape())
                 })
         {
             return Ok(start + position);
@@ -484,7 +502,7 @@ impl PyGeometryArray {
             return self
                 .missing()
                 .as_ref()
-                .map_or(0, |mask| mask.iter().filter(|missing| **missing).count());
+                .map_or(0, |mask| mask.iter().filter(|missing| *missing).count());
         }
         let Some(geometry) = exact_geometry(value) else {
             return 0;
@@ -492,11 +510,10 @@ impl PyGeometryArray {
         if !self.frame_matches(geometry) {
             return 0;
         }
-        self.storage()
-            .iter_shapes()
-            .enumerate()
-            .filter(|(row, shape)| {
-                !self.is_row_missing(*row) && shape.as_ref() == geometry.shape.shape()
+        self.logical_shape_rows()
+            .filter(|row| {
+                matches!(row, crate::array::LogicalShapeRow::Present { shape, .. }
+                    if shape.as_ref() == geometry.shape.shape())
             })
             .count()
     }
@@ -538,17 +555,20 @@ impl PyGeometryArray {
             self.frame == other.frame
                 && self.missing() == other.missing()
                 && (Arc::ptr_eq(self.storage_arc(), other.storage_arc())
-                    || (self.storage().len() == other.storage().len()
-                        && self
-                            .storage()
-                            .iter_shapes()
-                            .zip(other.storage().iter_shapes())
-                            .enumerate()
-                            .all(|(row, (left, right))| {
-                                // Mutually-missing rows are equal by mask;
-                                // placeholders are NaN points.
-                                self.is_row_missing(row) || left.as_ref() == right.as_ref()
-                            })))
+                    || (self.len() == other.len()
+                        && self.logical_shape_rows().zip(other.logical_shape_rows()).all(
+                            |(left, right)| match (left, right) {
+                                (
+                                    crate::array::LogicalShapeRow::Missing { .. },
+                                    crate::array::LogicalShapeRow::Missing { .. },
+                                ) => true,
+                                (
+                                    crate::array::LogicalShapeRow::Present { shape: left, .. },
+                                    crate::array::LogicalShapeRow::Present { shape: right, .. },
+                                ) => left == right,
+                                _ => false,
+                            },
+                        )))
         })
     }
 
@@ -571,8 +591,11 @@ impl PyGeometryArray {
     #[getter]
     pub fn is_missing(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.missing().map_or_else(
-            || crate::py::numpy::false_bool_array(py, self.storage().len()),
-            |mask| crate::py::numpy::bool_slice_array(py, mask),
+            || crate::py::numpy::false_bool_array(py, self.len()),
+            |mask| {
+                let values: Vec<bool> = mask.iter().collect();
+                crate::py::numpy::bool_slice_array(py, &values)
+            },
         )
     }
 
@@ -587,9 +610,9 @@ impl PyGeometryArray {
     /// reservation — never generic ``Vec<bool>`` extraction from a lying
     /// ``__len__`` (which can allocator-abort before the length check).
     pub fn _with_missing(&self, py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let expected = self.storage().len();
+        let expected = self.len();
         let mask = crate::collect_bool_mask(py, mask, expected)?;
-        let incoming = MissingMask::from_vec(expected, mask);
+        let incoming = ValidityMask::from_vec(expected, mask);
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.
         let merged = crate::array::missing::union_pair(self.missing(), incoming.as_ref());
@@ -616,7 +639,7 @@ impl PyGeometryArray {
                 let rows: Vec<usize> = mask
                     .iter()
                     .enumerate()
-                    .filter(|(_, missing)| !**missing)
+                    .filter(|(_, missing)| !*missing)
                     .map(|(row, _)| row)
                     .collect();
                 // Carry frame-only caches for the retained rows — the dense
@@ -664,12 +687,12 @@ impl PyGeometryArray {
             return Err(PyTypeError::new_err("expected Geometry or GeometryArray"));
         }
         if let Some(fill) = fill_array
-            && fill.storage().len() != self.storage().len()
+            && fill.len() != self.len()
         {
             return Err(PyValueError::new_err(format!(
                 "fill array length {} does not match GeometryArray length {}",
-                fill.storage().len(),
-                self.storage().len()
+                fill.len(),
+                self.len()
             )));
         }
         let Some(mask) = self.missing() else {
@@ -685,7 +708,7 @@ impl PyGeometryArray {
             self.frame.compatible(&fill.frame, "fill_missing")?;
             // Reject missing fill rows that land on a missing target row before
             // allocating the output column — only consumed fill rows must be present.
-            for (row, &missing) in mask.iter().enumerate() {
+            for (row, missing) in mask.iter().enumerate() {
                 if missing && fill.is_row_missing(row) {
                     return Err(GeometryError::new_err(
                         "fill array contains missing geometries at rows this array needs",
@@ -729,7 +752,7 @@ impl PyGeometryArray {
                 values.len()
             )));
         }
-        let n = self.storage().len();
+        let n = self.len();
         let mut rows: Vec<(usize, Option<Shape>)> = crate::try_vec_with_capacity(positions.len())?;
         for (position, value) in positions.into_iter().zip(values) {
             if position < 0 || position as usize >= n {
@@ -756,6 +779,7 @@ impl PyGeometryArray {
         // Packed identity XY points: copy ordinate columns once and patch
         // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).
         if let GeometryArrayStorage::Points { coords, row_map } = self.storage()
+            && !self.is_compact_nullable()
             && row_map.is_identity()
             && coords.axes() == crate::geometry::CoordinateAxes::XY
             && rows.iter().all(|(_, shape)| {
@@ -783,27 +807,36 @@ impl PyGeometryArray {
                     Some(_) => unreachable!("axes gate above"),
                 }
             }
-            let seq = CoordSeq::from_columns_unchecked(xs.into(), ys.into(), None, None);
+            // SAFETY: point replacement updates X and Y vectors in lockstep;
+            // both retain the original checked row count.
+            let seq = unsafe { CoordSeq::from_columns_unchecked(xs.into(), ys.into(), None, None) };
             return Ok(Self::packed_points(seq, self.frame.clone())
-                .with_missing_mask(MissingMask::from_vec(n, missing_flags)));
+                .with_missing_mask(ValidityMask::from_vec(n, missing_flags)));
         }
 
-        let mut shapes: Vec<Shape> = self.storage().iter_shapes().map(Cow::into_owned).collect();
-        let mut missing_flags: Vec<bool> = (0..n).map(|row| self.is_row_missing(row)).collect();
+        let mut shapes: Vec<Option<Shape>> = self
+            .logical_shape_rows()
+            .map(|row| match row {
+                crate::array::LogicalShapeRow::Missing { .. } => None,
+                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.into_owned()),
+            })
+            .collect();
         for (row, shape) in rows {
             match shape {
                 None => {
-                    missing_flags[row] = true;
-                    shapes[row] = Self::missing_placeholder();
+                    shapes[row] = None;
                 },
                 Some(shape) => {
-                    missing_flags[row] = false;
-                    shapes[row] = shape;
+                    shapes[row] = Some(shape);
                 },
             }
         }
-        Ok(Self::from_shapes(shapes, self.frame.clone())
-            .with_missing_mask(MissingMask::from_vec(n, missing_flags)))
+        let missing_flags = shapes.iter().map(Option::is_none).collect();
+        let present = Self::from_shapes(shapes.into_iter().flatten().collect(), self.frame.clone());
+        Ok(ValidityMask::from_vec(n, missing_flags).map_or_else(
+            || present.clone(),
+            |mask| Self::scatter_present_rows(&present, mask),
+        ))
     }
 
     /// Whether a geometry (or missing row via ``None``) is present.
@@ -821,12 +854,8 @@ impl PyGeometryArray {
         exact_geometry(item).is_some_and(|geom| {
             self.frame_matches(geom)
                 && self
-                    .storage()
-                    .iter_shapes()
-                    .enumerate()
-                    .any(|(row, shape)| {
-                        !self.is_row_missing(row) && shape.as_ref() == geom.shape.shape()
-                    })
+                    .present_shape_rows()
+                    .any(|(_, shape)| shape.as_ref() == geom.shape.shape())
         })
     }
 
@@ -835,12 +864,14 @@ impl PyGeometryArray {
         let mut hasher = crate::collections::python_hasher();
         self.crs_ref().hash(&mut hasher);
         self.epoch().map(f64::to_bits).hash(&mut hasher);
-        self.storage().len().hash(&mut hasher);
-        for (row, shape) in self.storage().iter_shapes().enumerate() {
-            let missing = self.is_row_missing(row);
-            missing.hash(&mut hasher);
-            if !missing {
-                shape.hash(&mut hasher);
+        self.len().hash(&mut hasher);
+        for row in self.logical_shape_rows() {
+            match row {
+                crate::array::LogicalShapeRow::Missing { .. } => true.hash(&mut hasher),
+                crate::array::LogicalShapeRow::Present { shape, .. } => {
+                    false.hash(&mut hasher);
+                    shape.hash(&mut hasher);
+                },
             }
         }
         hasher.finish()
@@ -849,7 +880,7 @@ impl PyGeometryArray {
     /// the stored ``f64`` ordinate columns for this array's selected rows.
     /// Slices and fancy-indexed arrays report only their logical rows. Object
     /// headers, CSR offset columns, row maps, prepared-geometry / frame
-    /// sidecars, gather memos, and CRS metadata are excluded (``nbytes`` is
+    /// sidecars and CRS metadata are excluded (``nbytes`` is
     /// payload-only, matching NumPy).
     ///
     /// Returns
@@ -882,7 +913,7 @@ impl PyGeometryArray {
             out.push_str(first);
             out.push(']');
         }
-        let _ = write!(out, " len={}", self.storage().len());
+        let _ = write!(out, " len={}", self.len());
         if let Some(mask) = self.missing() {
             let missing = mask.missing_count();
             if missing != 0 {
@@ -905,99 +936,33 @@ impl PyGeometryArray {
 impl PyGeometryArray {
     /// Dense fill from a scalar shape: packed columns stay column-native;
     /// mixed storage patches only missing rows. Never stages `PyGeometry`.
-    fn fill_missing_with_shape(&self, mask: &MissingMask, fill: &Shape) -> Self {
-        let frame = self.frame.clone();
-        match (self.storage(), fill) {
-            (GeometryArrayStorage::Points { coords, row_map }, Shape::Point(point))
-                if point.axes == coords.axes() =>
-            {
-                let mut builder = PointColumnBuilder::like_coords(coords, mask.len());
-                for (row, &missing) in mask.iter().enumerate() {
-                    if missing {
-                        builder.push(*point);
-                    } else {
-                        builder.push_at(coords, physical_row(row_map.as_deref(), row));
-                    }
-                }
-                Self::packed_points(builder.finish_infallible(), frame)
-            },
-            (GeometryArrayStorage::Mixed(shapes), _) => {
-                let mut out = shapes.clone();
-                for (row, &missing) in mask.iter().enumerate() {
-                    if missing {
-                        out[row] = fill.clone();
-                    }
-                }
-                Self::from_shapes(out, frame)
-            },
-            _ => {
-                let shapes: Vec<Shape> = self
-                    .storage()
-                    .iter_shapes()
-                    .enumerate()
-                    .map(|(row, shape)| {
-                        if mask[row] {
-                            fill.clone()
-                        } else {
-                            shape.into_owned()
-                        }
-                    })
-                    .collect();
-                Self::from_shapes(shapes, frame)
-            },
-        }
+    fn fill_missing_with_shape(&self, _mask: &ValidityMask, fill: &Shape) -> Self {
+        let shapes = self
+            .logical_shape_rows()
+            .map(|row| match row {
+                crate::array::LogicalShapeRow::Missing { .. } => fill.clone(),
+                crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+            })
+            .collect();
+        Self::from_shapes(shapes, self.frame.clone())
     }
 
     /// Dense fill from a row-aligned array: packed point×point stays columnar;
     /// otherwise collect shapes only (no `PyGeometry` staging).
-    fn fill_missing_with_array(&self, mask: &MissingMask, fill: &Self) -> Self {
-        let frame = self.frame.clone();
-        match (self.storage(), fill.storage()) {
-            (
-                GeometryArrayStorage::Points {
-                    coords: left_coords,
-                    row_map: left_map,
+    fn fill_missing_with_array(&self, _mask: &ValidityMask, fill: &Self) -> Self {
+        let shapes = self
+            .logical_shape_rows()
+            .zip(fill.logical_shape_rows())
+            .map(|(left, right)| match left {
+                crate::array::LogicalShapeRow::Missing { .. } => match right {
+                    crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+                    crate::array::LogicalShapeRow::Missing { .. } => {
+                        unreachable!("required fill rows were checked present")
+                    },
                 },
-                GeometryArrayStorage::Points {
-                    coords: right_coords,
-                    row_map: right_map,
-                },
-            ) if left_coords.axes() == right_coords.axes() => {
-                let mut builder = PointColumnBuilder::like_coords(left_coords, mask.len());
-                for (row, &missing) in mask.iter().enumerate() {
-                    if missing {
-                        builder.push_at(right_coords, physical_row(right_map.as_deref(), row));
-                    } else {
-                        builder.push_at(left_coords, physical_row(left_map.as_deref(), row));
-                    }
-                }
-                Self::packed_points(builder.finish_infallible(), frame)
-            },
-            (GeometryArrayStorage::Mixed(shapes), _) => {
-                let mut out = shapes.clone();
-                for (row, fill_shape) in fill.storage().iter_shapes().enumerate() {
-                    if mask[row] {
-                        out[row] = fill_shape.into_owned();
-                    }
-                }
-                Self::from_shapes(out, frame)
-            },
-            _ => {
-                let shapes: Vec<Shape> = self
-                    .storage()
-                    .iter_shapes()
-                    .zip(fill.storage().iter_shapes())
-                    .enumerate()
-                    .map(|(row, (shape, fill_shape))| {
-                        if mask[row] {
-                            fill_shape.into_owned()
-                        } else {
-                            shape.into_owned()
-                        }
-                    })
-                    .collect();
-                Self::from_shapes(shapes, frame)
-            },
-        }
+                crate::array::LogicalShapeRow::Present { shape, .. } => shape.into_owned(),
+            })
+            .collect();
+        Self::from_shapes(shapes, self.frame.clone())
     }
 }

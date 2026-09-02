@@ -35,7 +35,7 @@ impl PyGeometryArray {
             Some(mask) => {
                 let mut output = Vec::new();
                 for (row, value) in rows.into_iter().enumerate() {
-                    let value = if mask[row] {
+                    let value = if mask.is_missing(row) {
                         py.None()
                     } else {
                         value.into_py_any(py)?
@@ -57,18 +57,15 @@ impl PyGeometryArray {
     ) -> PyResult<Vec<String>> {
         let output_dimension = parse_wkt_output_dimension(output_dimension)?;
         let precision = precision.map(parse_precision).transpose()?;
-        let shapes = Arc::clone(self.storage_arc());
+        let array = self.clone();
         let crs = self.crs_ref().cloned();
-        let missing = self.missing().cloned();
         py.detach(move || {
-            shapes
-                .iter_shapes()
-                .enumerate()
-                .map(|shape| {
-                    let (row, shape) = shape;
-                    if missing.as_ref().is_some_and(|mask| mask[row]) {
+            array
+                .logical_shape_rows()
+                .map(|row| {
+                    let crate::array::LogicalShapeRow::Present { shape, .. } = row else {
                         return Ok(String::new());
-                    }
+                    };
                     let shape = match precision {
                         Some(precision) => std::borrow::Cow::Owned(shape.quantize(precision)),
                         None => shape,
@@ -100,7 +97,7 @@ impl PyGeometryArray {
         const FLUSH_BYTES: usize = 32 << 20;
         let precision = precision.map(parse_precision).transpose()?;
         let crs = self.crs_ref().cloned();
-        let len = self.storage().len();
+        let len = self.len();
         // An array CRS is uniform across present rows. Resolve it once, but
         // retain the old all-missing behavior by skipping validation when no
         // row can emit a payload. Attach the same first-present row note as
@@ -111,7 +108,7 @@ impl PyGeometryArray {
                 Ok(srid) => srid,
                 Err(error) => {
                     let row = self.missing().map_or(0, |mask| {
-                        mask.iter().position(|&missing| !missing).unwrap_or(0)
+                        mask.iter().position(|missing| !missing).unwrap_or(0)
                     });
                     return Err(rows_err((row, error)));
                 },
@@ -122,17 +119,19 @@ impl PyGeometryArray {
         let mut output: Vec<Py<PyBytes>> = crate::try_vec_with_capacity(len)?;
         let mut next_row = 0_usize;
         while next_row < len {
-            let storage = Arc::clone(self.storage_arc());
-            let missing = self.missing().cloned();
+            let array = self.clone();
             let start_row = next_row;
             let (buffer, ends) = py
                 .detach(
                     move || -> Result<(Vec<u8>, Vec<usize>), (usize, crate::error::Error)> {
                         let mut buffer: Vec<u8> = Vec::new();
                         let mut ends: Vec<usize> = Vec::new();
-                        for (offset, view) in storage.iter_rows().skip(start_row).enumerate() {
+                        for (offset, logical_row) in
+                            array.logical_storage_rows().skip(start_row).enumerate()
+                        {
                             let row = start_row + offset;
-                            if !missing.as_ref().is_some_and(|mask| mask[row]) {
+                            if let crate::array::LogicalRow::Present { row: view, .. } = logical_row
+                            {
                                 view.with_shape(|shape| {
                                     let shape = precision.map_or_else(
                                         || std::borrow::Cow::Borrowed(shape),
@@ -182,8 +181,7 @@ impl PyGeometryArray {
                 "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
             ));
         }
-        let shapes = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
+        let array = self.clone();
         // A WGS84-tagged frame opts into the RFC 7946 geographic rules (domain
         // validation, antimeridian cutting); CRS-free rows are planar. A
         // domain-invalid row is a spec violation, not a degradable data
@@ -192,11 +190,12 @@ impl PyGeometryArray {
         Ok(if include_z {
             py.detach(move || {
                 let mut out = Vec::new();
-                for (row, shape) in shapes.iter_shapes().enumerate() {
-                    let value = if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        String::new()
-                    } else {
-                        io::to_geojson_string::<true>(&shape, geographic)?
+                for row in array.logical_shape_rows() {
+                    let value = match row {
+                        crate::array::LogicalShapeRow::Missing { .. } => String::new(),
+                        crate::array::LogicalShapeRow::Present { shape, .. } => {
+                            io::to_geojson_string::<true>(&shape, geographic)?
+                        },
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
                 }
@@ -205,11 +204,12 @@ impl PyGeometryArray {
         } else {
             py.detach(move || {
                 let mut out = Vec::new();
-                for (row, shape) in shapes.iter_shapes().enumerate() {
-                    let value = if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        String::new()
-                    } else {
-                        io::to_geojson_string::<false>(&shape, geographic)?
+                for row in array.logical_shape_rows() {
+                    let value = match row {
+                        crate::array::LogicalShapeRow::Missing { .. } => String::new(),
+                        crate::array::LogicalShapeRow::Present { shape, .. } => {
+                            io::to_geojson_string::<false>(&shape, geographic)?
+                        },
                     };
                     crate::boundary::try_push_vec(&mut out, value)?;
                 }
@@ -221,7 +221,7 @@ impl PyGeometryArray {
     pub(crate) fn validate_impl(&self) -> PyResult<Vec<Option<PyValidationReport>>> {
         let geographic = geometry::is_geographic_frame(&self.frame);
         let mut reports = Vec::new();
-        for index in 0..self.storage().len() {
+        for index in 0..self.len() {
             let report = if self.is_row_missing(index) {
                 None
             } else {
@@ -236,19 +236,20 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
+        let array = self.clone();
         let geographic = geometry::is_geographic_frame(&self.frame);
         let repaired = py
             .detach(move || {
                 let mut all_present_valid = true;
                 let mut shapes = Vec::new();
-                for (row, shape) in storage.iter_shapes().enumerate() {
-                    if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        crate::boundary::try_push_vec(&mut shapes, shape.into_owned())
-                            .map_err(|error| (row, error))?;
+                for logical_row in array.logical_shape_rows() {
+                    let crate::array::LogicalShapeRow::Present {
+                        logical: row,
+                        shape,
+                    } = logical_row
+                    else {
                         continue;
-                    }
+                    };
                     match geometry::repair_shape_in_frame(&shape, geographic, method)
                         .map_err(|error| (row, error))?
                     {
@@ -270,10 +271,7 @@ impl PyGeometryArray {
             .map_err(rows_err)?;
         Ok(repaired.map_or_else(
             || self.clone(),
-            |shapes| {
-                Self::from_shapes(shapes, self.frame.clone())
-                    .with_missing_mask(self.missing().cloned())
-            },
+            |shapes| self.scatter_present_result(Self::from_shapes(shapes, self.frame.clone())),
         ))
     }
 
@@ -289,13 +287,13 @@ impl PyGeometryArray {
         include_z: bool,
         include_m: bool,
     ) -> PyResult<Py<PyAny>> {
-        let tolerance = tolerance.resolve(py, "tolerance", self.storage().len())?;
+        let tolerance = tolerance.resolve(py, "tolerance", self.len())?;
         tolerance.try_validate(|value| validate_equals_exact_tolerance(value).map(|_| ()))?;
         // Same preconditions as every binary op — the packed fast path used
         // to skip both, silently comparing across frames and truncating to
         // the shorter operand.
         if let Some(other_array) = exact_geometry_array(other) {
-            crate::broadcast::ensure_same_len(self.storage().len(), other_array.storage().len())?;
+            crate::broadcast::ensure_same_len(self.len(), other_array.len())?;
             Frame::compatible_parts(
                 self.crs_ref(),
                 self.epoch(),
@@ -314,6 +312,8 @@ impl PyGeometryArray {
         }
         if let Some(scalar_tol) = tolerance.as_scalar() {
             if let Some(other_array) = exact_geometry_array(other)
+                && !self.is_compact_nullable()
+                && !other_array.is_compact_nullable()
                 && let Some(mut results) = pair_packed_equals_exact(
                     py,
                     self,
@@ -324,14 +324,14 @@ impl PyGeometryArray {
                 )?
             {
                 if let Some(mask) = self.missing() {
-                    for (result, &is_missing) in results.iter_mut().zip(mask.iter()) {
+                    for (result, is_missing) in results.iter_mut().zip(mask.iter()) {
                         if is_missing {
                             *result = false;
                         }
                     }
                 }
                 if let Some(mask) = &other_array.missing() {
-                    for (result, &is_missing) in results.iter_mut().zip(mask.iter()) {
+                    for (result, is_missing) in results.iter_mut().zip(mask.iter()) {
                         if is_missing {
                             *result = false;
                         }
@@ -382,7 +382,7 @@ impl PyGeometryArray {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let model = resolve_metric(self.crs_str(), unit, "shortest_line")?;
-        if let crs::MetricModel::Geodesic { crs, state } = model {
+        if let crs::MetricModel::Geodesic { crs, frame, state } = model {
             if let Some(geometry) = exact_geometry(other) {
                 Frame::compatible_parts(
                     self.crs_ref(),
@@ -393,10 +393,10 @@ impl PyGeometryArray {
                 )?;
                 let lefts = self.clone();
                 let right = geometry.plan_or_transient();
-                let right_cache = Arc::clone(&geometry.frame_cache);
-                let missing = self.missing().cloned();
+                let right_cache = geometry.frame_cache();
                 let rows = Python::attach(|py| {
                     py.detach(move || {
+                        let mut products = lefts.row_products.operation();
                         crs::with_resolved_ellipsoid_metric_at(
                             &crs,
                             &[right.shape()],
@@ -411,16 +411,19 @@ impl PyGeometryArray {
                                     metric,
                                 )?;
                                 Ok(lefts
-                                    .storage()
-                                    .iter_rows()
-                                    .enumerate()
-                                    .map(|(row_index, row)| {
-                                        if missing.as_ref().is_some_and(|mask| mask[row_index]) {
-                                            return Ok(Self::missing_placeholder());
-                                        }
-                                        let left = lefts.prepared_row(row_index, row);
-                                        let left_cache = lefts.row_frame_cache(row_index);
-                                        Ok(crate::geometry::nearest_line(
+                                    .logical_storage_rows()
+                                    .map(|logical_row| {
+                                        let crate::array::LogicalRow::Present {
+                                            logical: row_index,
+                                            row,
+                                        } = logical_row
+                                        else {
+                                            return Ok(None);
+                                        };
+                                        let left =
+                                            lefts.prepared_row_with(&mut products, row_index, row);
+                                        let left_cache = products.frame_cache(row_index);
+                                        Ok(Some(crate::geometry::nearest_line(
                                             left.geodesic_nearest_points_cached_split(
                                                 &left_cache,
                                                 &right,
@@ -429,46 +432,56 @@ impl PyGeometryArray {
                                                 semi_major,
                                                 flattening,
                                                 metric,
+                                                frame,
                                             )?,
                                             crate::geometry::common_axes(
                                                 left.shape(),
                                                 right.shape(),
                                             ),
-                                        ))
+                                        )))
                                     })
                                     .collect_rows())
                             },
                         )
                     })
                 })?;
-                return Ok(
-                    Self::from_shapes(rows.map_err(rows_err)?, self.frame.clone())
-                        .with_missing_mask(self.missing().cloned()),
+                let present = Self::from_shapes(
+                    rows.map_err(rows_err)?.into_iter().flatten().collect(),
+                    self.frame.clone(),
                 );
+                return Ok(self.scatter_present_result(present));
             }
             if let Some(array) = exact_geometry_array(other) {
                 paired_arrays(self, array, "shortest_line")?;
                 let (lefts, rights) = (self.clone(), array.clone());
                 let missing = crate::array::missing::union_pair(self.missing(), array.missing());
-                let missing_rows = missing.clone();
                 let rows = Python::attach(|py| {
                     py.detach(move || {
+                        let mut left_products = lefts.row_products.operation();
+                        let mut right_products = rights.row_products.operation();
                         crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
                             Ok(lefts
-                                .storage()
-                                .iter_rows()
-                                .zip(rights.storage().iter_rows())
-                                .enumerate()
-                                .map(|(row, (left, right))| {
-                                    if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
-                                        return Ok(Self::missing_placeholder());
-                                    }
-                                    let left = lefts.prepared_row(row, left);
-                                    let right = rights.prepared_row(row, right);
-                                    let left_cache = lefts.row_frame_cache(row);
-                                    let right_cache = rights.row_frame_cache(row);
-                                    Ok(crate::geometry::nearest_line(
+                                .logical_storage_rows()
+                                .zip(rights.logical_storage_rows())
+                                .map(|(left, right)| {
+                                    let (
+                                        crate::array::LogicalRow::Present {
+                                            logical: row,
+                                            row: left,
+                                        },
+                                        crate::array::LogicalRow::Present { row: right, .. },
+                                    ) = (left, right)
+                                    else {
+                                        return Ok(None);
+                                    };
+                                    let left =
+                                        lefts.prepared_row_with(&mut left_products, row, left);
+                                    let right =
+                                        rights.prepared_row_with(&mut right_products, row, right);
+                                    let left_cache = left_products.frame_cache(row);
+                                    let right_cache = right_products.frame_cache(row);
+                                    Ok(Some(crate::geometry::nearest_line(
                                         left.geodesic_nearest_points_cached_split(
                                             &left_cache,
                                             &right,
@@ -477,18 +490,23 @@ impl PyGeometryArray {
                                             semi_major,
                                             flattening,
                                             metric,
+                                            frame,
                                         )?,
                                         crate::geometry::common_axes(left.shape(), right.shape()),
-                                    ))
+                                    )))
                                 })
                                 .collect_rows())
                         })
                     })
                 })?;
-                return Ok(
-                    Self::from_shapes(rows.map_err(rows_err)?, self.frame.clone())
-                        .with_missing_mask(missing),
+                let present = Self::from_shapes(
+                    rows.map_err(rows_err)?.into_iter().flatten().collect(),
+                    self.frame.clone(),
                 );
+                return Ok(missing.map_or_else(
+                    || present.clone(),
+                    |mask| Self::scatter_present_rows(&present, mask),
+                ));
             }
             return Err(expected_geometry_or_array());
         }
@@ -513,25 +531,33 @@ impl PyGeometryArray {
             let (lefts, rights) = (self.clone(), array.clone());
             let model = resolve_metric(self.crs_str(), unit, "nearest_points")?;
             let missing = crate::array::missing::union_pair(self.missing(), array.missing());
-            if let crs::MetricModel::Geodesic { crs, state } = model {
-                let missing_rows = missing.clone();
+            if let crs::MetricModel::Geodesic { crs, frame, state } = model {
                 let pairs = py
                     .detach(move || {
+                        let mut left_products = lefts.row_products.operation();
+                        let mut right_products = rights.row_products.operation();
                         crs::with_resolved_ellipsoid_metric_at(&crs, &[], &state, |crs, metric| {
                             let (semi_major, flattening) = metric.ellipsoid_parameters();
                             Ok(lefts
-                                .storage()
-                                .iter_rows()
-                                .zip(rights.storage().iter_rows())
-                                .enumerate()
-                                .map(|(row, (left, right))| {
-                                    if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
+                                .logical_storage_rows()
+                                .zip(rights.logical_storage_rows())
+                                .map(|(left, right)| {
+                                    let (
+                                        crate::array::LogicalRow::Present {
+                                            logical: row,
+                                            row: left,
+                                        },
+                                        crate::array::LogicalRow::Present { row: right, .. },
+                                    ) = (left, right)
+                                    else {
                                         return Ok((None, CoordinateAxes::XY));
-                                    }
-                                    let left = lefts.prepared_row(row, left);
-                                    let right = rights.prepared_row(row, right);
-                                    let left_cache = lefts.row_frame_cache(row);
-                                    let right_cache = rights.row_frame_cache(row);
+                                    };
+                                    let left =
+                                        lefts.prepared_row_with(&mut left_products, row, left);
+                                    let right =
+                                        rights.prepared_row_with(&mut right_products, row, right);
+                                    let left_cache = left_products.frame_cache(row);
+                                    let right_cache = right_products.frame_cache(row);
                                     let common =
                                         crate::geometry::common_axes(left.shape(), right.shape());
                                     left.geodesic_nearest_points_cached_split(
@@ -542,6 +568,7 @@ impl PyGeometryArray {
                                         semi_major,
                                         flattening,
                                         metric,
+                                        frame,
                                     )
                                     .map(|pair| (pair, common))
                                 })
@@ -555,20 +582,26 @@ impl PyGeometryArray {
                     missing,
                 )?);
             }
-            let missing_rows = missing.clone();
             let pairs = py
                 .detach(move || {
+                    let mut left_products = lefts.row_products.operation();
+                    let mut right_products = rights.row_products.operation();
                     lefts
-                        .storage()
-                        .iter_rows()
-                        .zip(rights.storage().iter_rows())
-                        .enumerate()
-                        .map(|(row, (left, right))| {
-                            if missing_rows.as_ref().is_some_and(|mask| mask[row]) {
+                        .logical_storage_rows()
+                        .zip(rights.logical_storage_rows())
+                        .map(|(left, right)| {
+                            let (
+                                crate::array::LogicalRow::Present {
+                                    logical: row,
+                                    row: left,
+                                },
+                                crate::array::LogicalRow::Present { row: right, .. },
+                            ) = (left, right)
+                            else {
                                 return Ok((None, CoordinateAxes::XY));
-                            }
-                            let left = lefts.prepared_row(row, left);
-                            let right = rights.prepared_row(row, right);
+                            };
+                            let left = lefts.prepared_row_with(&mut left_products, row, left);
+                            let right = rights.prepared_row_with(&mut right_products, row, right);
                             let common = crate::geometry::common_axes(left.shape(), right.shape());
                             metric_nearest_points(&model, &left, &right).map(|pair| (pair, common))
                         })
@@ -618,7 +651,7 @@ impl PyGeometryArray {
         min_angle: Option<&Bound<'_, PyAny>>,
         max_area: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<crate::py::vectors::Groups> {
-        let len = self.storage().len();
+        let len = self.len();
         let min_angle = min_angle
             .map(|value| F64Param::parse(value, "min_angle", len))
             .transpose()?;
@@ -670,7 +703,7 @@ impl PyGeometryArray {
         count: &Bound<'_, PyAny>,
         seed: &Bound<'_, PyAny>,
     ) -> PyResult<crate::py::vectors::Groups> {
-        let len = self.storage().len();
+        let len = self.len();
         let count = I64Param::parse(count, "count", len)?;
         count
             .try_validate(|value| non_negative_int("sample_points", "count", value).map(|_| ()))?;
@@ -683,11 +716,14 @@ impl PyGeometryArray {
         }
         let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
             .map_err(pyo3::PyErr::from)?;
-        for (row, (is_missing, shape)) in self.masked_shape_rows().enumerate() {
+        for logical_row in self.logical_shape_rows() {
+            let row = logical_row.logical();
             // An empty row yields an empty group rather than aborting: the
             // columnar contract is that one bad row never fails the batch. The
             // SCALAR surface still raises, per the ergonomic/columnar split.
-            if !is_missing && !shape.is_empty() {
+            if let crate::array::LogicalShapeRow::Present { shape, .. } = logical_row
+                && !shape.is_empty()
+            {
                 let count = usize::try_from(count.get(row)).expect("validated non-negative");
                 // One rule: a geometry seeded with `s` always draws
                 // `row_sample_seed(s, 0)`. A single seed spreads across rows by
@@ -782,33 +818,28 @@ impl PyGeometryArray {
                 "split",
             )?;
             let splitter_shape = Arc::clone(&splitter.shape);
-            let storage = Arc::clone(self.storage_arc());
-            let missing = self.missing().cloned();
+            let array = self.clone();
             py.detach(move || {
                 let mut shapes = Vec::new();
-                for (row, line) in storage.iter_shapes().enumerate() {
-                    if missing.as_ref().is_some_and(|mask| mask[row]) {
-                        continue;
-                    }
+                for (_, line) in array.present_shape_rows() {
                     shapes.extend(line.split(&splitter_shape, tolerance)?);
                 }
                 Ok::<_, Error>(shapes)
             })?
         } else if let Some(splitters) = exact_geometry_array(splitter) {
-            let (lines, cutters) = paired_arrays(self, splitters, "split")?;
-            let line_missing = self.missing().cloned();
-            let cutter_missing = splitters.missing();
+            paired_arrays(self, splitters, "split")?;
+            let lines = self.clone();
+            let cutters = splitters.clone();
             py.detach(move || {
                 let mut shapes = Vec::new();
-                for (row, (line, cutter)) in
-                    lines.iter_shapes().zip(cutters.iter_shapes()).enumerate()
-                {
-                    if line_missing.as_ref().is_some_and(|mask| mask[row])
-                        || cutter_missing.as_ref().is_some_and(|mask| mask[row])
+                for (line, cutter) in lines.logical_shape_rows().zip(cutters.logical_shape_rows()) {
+                    if let (
+                        crate::array::LogicalShapeRow::Present { shape: line, .. },
+                        crate::array::LogicalShapeRow::Present { shape: cutter, .. },
+                    ) = (line, cutter)
                     {
-                        continue;
+                        shapes.extend(line.split(&cutter, tolerance)?);
                     }
-                    shapes.extend(line.split(&cutter, tolerance)?);
                 }
                 Ok::<_, Error>(shapes)
             })?
@@ -915,8 +946,8 @@ mod voronoi_budget_tests {
         let observed = Arc::clone(&visits);
         let array = PyGeometryArray::from_shapes(
             vec![
-                Shape::Point(Point::new_unchecked_xy(0.0, 0.0)),
-                Shape::Point(Point::new_unchecked_xy(1.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 0.0)),
             ],
             Frame::new(None, None).unwrap(),
         );

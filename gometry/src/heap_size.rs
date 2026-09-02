@@ -96,7 +96,7 @@ impl<T: HeapSize> HeapSize for Box<[T]> {
 /// shared buffer reachable from this object). Views that select a subset of a
 /// parent must NOT route through these blanket impls for the parent's full
 /// slot table — they use logical/selected accounting instead (see
-/// `FrameCacheRows::heap_bytes`, `GeometryArrayStorage::logical_heap_bytes`).
+/// `RowProducts::heap_bytes`, `GeometryArrayStorage::logical_heap_bytes`).
 const ARC_CONTROL_BYTES: usize = size_of::<usize>() * 2;
 
 impl<T: HeapSize> HeapSize for Arc<T> {

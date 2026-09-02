@@ -24,8 +24,6 @@ fn packed_lines_equal_exact_columns_impl<const Z: bool, const M: bool>(
     use crate::geometry::columns_within;
     let left_coords = left.coords();
     let right_coords = right.coords();
-    let left_offsets = left.offsets();
-    let right_offsets = right.offsets();
     let rows = left.rows();
     if rows != right.rows()
         || (Z && left_coords.zs().is_some() != right_coords.zs().is_some())
@@ -33,10 +31,6 @@ fn packed_lines_equal_exact_columns_impl<const Z: bool, const M: bool>(
     {
         return vec![false; rows];
     }
-    // Length-exact reborrows: `windows(2)` over rows+1 offsets, so each row's
-    // CSR endpoints are proven in range (bounds-check elision).
-    let left_offsets = &left_offsets[..=rows];
-    let right_offsets = &right_offsets[..=rows];
     let left_xs = left_coords.xs();
     let left_ys = left_coords.ys();
     let right_xs = right_coords.xs();
@@ -51,12 +45,13 @@ fn packed_lines_equal_exact_columns_impl<const Z: bool, const M: bool>(
     } else {
         None
     };
-    left_offsets
-        .array_windows::<2>()
-        .zip(right_offsets.array_windows::<2>())
-        .map(|(lw, rw)| {
-            let lw = lw[0] as usize..lw[1] as usize;
-            let rw = rw[0] as usize..rw[1] as usize;
+    (0..rows)
+        .map(|row| {
+            if left.is_missing(row) || right.is_missing(row) {
+                return false;
+            }
+            let lw = left.row_window(row);
+            let rw = right.row_window(row);
             lw.len() == rw.len()
                 && columns_within(
                     column_window(left_xs, &lw),
@@ -89,8 +84,6 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
     let right_coords = right.coords();
     let left_rings = left.ring_offsets();
     let right_rings = right.ring_offsets();
-    let left_polys = left.polygon_offsets();
-    let right_polys = right.polygon_offsets();
     let rows = left.rows();
     if rows != right.rows()
         || (Z && left_coords.zs().is_some() != right_coords.zs().is_some())
@@ -98,9 +91,6 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
     {
         return vec![false; rows];
     }
-    // Length-exact reborrows: polygon CSR tops are rows+1 long (elision).
-    let left_polys = &left_polys[..=rows];
-    let right_polys = &right_polys[..=rows];
     let left_xs = left_coords.xs();
     let left_ys = left_coords.ys();
     let right_xs = right_coords.xs();
@@ -115,14 +105,15 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
     } else {
         None
     };
-    left_polys
-        .array_windows::<2>()
-        .zip(right_polys.array_windows::<2>())
-        .map(|(lp, rp)| {
-            let lr_start = lp[0] as usize;
-            let lr_end = lp[1] as usize;
-            let rr_start = rp[0] as usize;
-            let rr_end = rp[1] as usize;
+    (0..rows)
+        .map(|row| {
+            if left.is_missing(row) || right.is_missing(row) {
+                return false;
+            }
+            let lr = left.polygon_rings(row);
+            let rr = right.polygon_rings(row);
+            let (lr_start, lr_end) = (lr.start, lr.end);
+            let (rr_start, rr_end) = (rr.start, rr.end);
             if lr_end - lr_start != rr_end - rr_start
                 || (lr_start..lr_end).zip(rr_start..rr_end).any(|(l, r)| {
                     left_rings[l + 1] - left_rings[l] != right_rings[r + 1] - right_rings[r]
@@ -164,14 +155,60 @@ fn packed_points_equal_exact_columns_impl<const Z: bool, const M: bool>(
     {
         return vec![false; rows];
     }
+    if let (Some(left_xy), Some(right_xy)) = (left.contiguous_xy(), right.contiguous_xy()) {
+        return packed_points_equal_contiguous::<Z, M>(left, right, left_xy, right_xy, tolerance);
+    }
+    let mut out = Vec::with_capacity(rows);
+    let mut left_rows = left.rows().cursor();
+    let mut right_rows = right.rows().cursor();
+    for row in 0..rows {
+        let (left_logical, left_physical) =
+            left_rows.next().expect("left point rows length is exact");
+        let (right_logical, right_physical) =
+            right_rows.next().expect("right point rows length is exact");
+        debug_assert_eq!(left_logical, row);
+        debug_assert_eq!(right_logical, row);
+        let (Some(l), Some(r)) = (left_physical, right_physical) else {
+            out.push(false);
+            continue;
+        };
+        let mut equal = ordinate_equal(left_coords.xs()[l], right_coords.xs()[r], tolerance)
+            && ordinate_equal(left_coords.ys()[l], right_coords.ys()[r], tolerance);
+        if Z {
+            equal &= left_coords
+                .zs()
+                .zip(right_coords.zs())
+                .is_some_and(|(a, b)| ordinate_equal(a[l], b[r], tolerance));
+        }
+        if M {
+            equal &= left_coords
+                .ms()
+                .zip(right_coords.ms())
+                .is_some_and(|(a, b)| ordinate_equal(a[l], b[r], tolerance));
+        }
+        out.push(equal);
+    }
+    out
+}
+
+fn packed_points_equal_contiguous<const Z: bool, const M: bool>(
+    left: &PointColumns<'_>,
+    right: &PointColumns<'_>,
+    left_xy: XyColumns<'_>,
+    right_xy: XyColumns<'_>,
+    tolerance: f64,
+) -> Vec<bool> {
+    let left_coords = left.contiguous_coords().expect("contiguous point columns");
+    let right_coords = right.contiguous_coords().expect("contiguous point columns");
     let XyColumns {
         xs: left_xs,
         ys: left_ys,
-    } = left.xy();
+    } = left_xy;
     let XyColumns {
         xs: right_xs,
         ys: right_ys,
-    } = right.xy();
+    } = right_xy;
+    let rows = left_xs.len();
     let mut out = vec![false; rows];
     if tolerance == 0.0 && !Z && !M {
         pair_select_mask(

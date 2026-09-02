@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::HeapSize;
 use crate::array::storage_helpers::column_window;
 use crate::array::{
-    CoordSeq, CsrOffsetColumn, GeometryError, Point, PolygonLevel, PyResult, RingLevel, Shape,
-    ShapeRow,
+    CoordSeq, CsrOffsetColumn, GeometryError, GeometryKind, Point, PolygonLevel, PyResult,
+    RingLevel, Shape, ShapeRow,
 };
 use crate::geometry::{CoordWindow, LineSeq};
 
@@ -14,21 +14,8 @@ pub struct CheckedPhysicalRows {
 }
 
 impl CheckedPhysicalRows {
-    fn trusted(rows: Arc<[usize]>, physical_len: usize) -> Self {
-        debug_assert!(
-            rows.iter().all(|&physical| physical < physical_len),
-            "RowSelection::Gather index must reference an existing physical row",
-        );
-        Self { rows }
-    }
-
-    fn checked(rows: Arc<[usize]>, physical_len: usize, label: &str) -> PyResult<Self> {
-        if rows.iter().any(|&physical| physical >= physical_len) {
-            return Err(GeometryError::new_err(format!(
-                "{label} row_map references a nonexistent physical row"
-            )));
-        }
-        Ok(Self::trusted(rows, physical_len))
+    fn checked(rows: Arc<[usize]>, physical_len: usize) -> Option<Self> {
+        (!rows.iter().any(|&physical| physical >= physical_len)).then_some(Self { rows })
     }
 
     fn as_slice(&self) -> &[usize] {
@@ -54,12 +41,8 @@ impl RowWindow {
     /// `start + len` here, which made the assertion `start <= start + len &&
     /// len <= len` — vacuously true in every build, so it could never fire.
     /// Callers now pass the real length and the tripwire means something.
-    fn trusted(start: usize, len: usize, physical_len: usize) -> Self {
-        debug_assert!(
-            start <= physical_len && len <= physical_len - start,
-            "RowSelection::Window must reference existing physical rows",
-        );
-        Self { start, len }
+    fn checked(start: usize, len: usize, physical_len: usize) -> Option<Self> {
+        (start <= physical_len && len <= physical_len - start).then_some(Self { start, len })
     }
 
     pub(crate) const fn start(self) -> usize {
@@ -68,14 +51,6 @@ impl RowWindow {
 
     pub(crate) const fn len(self) -> usize {
         self.len
-    }
-
-    pub(crate) const fn end(self) -> usize {
-        self.start + self.len
-    }
-
-    pub(crate) const fn as_range(self) -> std::ops::Range<usize> {
-        self.start()..self.end()
     }
 }
 
@@ -95,8 +70,11 @@ pub enum RowSelectionRef<'a> {
 }
 
 impl RowSelection {
-    pub(crate) fn gather_trusted(map: Arc<[usize]>, physical_len: usize) -> Self {
-        Self::Gather(CheckedPhysicalRows::trusted(map, physical_len))
+    pub(crate) fn gather(map: Arc<[usize]>, physical_len: usize) -> Self {
+        Self::Gather(
+            CheckedPhysicalRows::checked(map, physical_len)
+                .expect("row selection must reference existing physical rows"),
+        )
     }
 
     pub(crate) fn gather_checked(
@@ -104,15 +82,19 @@ impl RowSelection {
         physical_len: usize,
         label: &str,
     ) -> PyResult<Self> {
-        Ok(Self::Gather(CheckedPhysicalRows::checked(
-            map,
-            physical_len,
-            label,
-        )?))
+        let rows = CheckedPhysicalRows::checked(map, physical_len).ok_or_else(|| {
+            GeometryError::new_err(format!(
+                "{label} row_map references a nonexistent physical row"
+            ))
+        })?;
+        Ok(Self::Gather(rows))
     }
 
-    pub fn window_trusted(start: usize, len: usize, physical_len: usize) -> Self {
-        Self::Window(RowWindow::trusted(start, len, physical_len))
+    pub fn window(start: usize, len: usize, physical_len: usize) -> Self {
+        Self::Window(
+            RowWindow::checked(start, len, physical_len)
+                .expect("row window must reference existing physical rows"),
+        )
     }
 
     pub fn as_deref(&self) -> RowSelectionRef<'_> {
@@ -145,14 +127,6 @@ impl RowSelection {
     pub(crate) fn explicit_indices(&self) -> Option<std::borrow::Cow<'_, [usize]>> {
         match self {
             Self::Identity | Self::Window(_) => None,
-            Self::Gather(map) => Some(std::borrow::Cow::Borrowed(map.as_slice())),
-        }
-    }
-
-    pub(crate) fn pickle_row_map_indices(&self) -> Option<std::borrow::Cow<'_, [usize]>> {
-        match self {
-            Self::Identity => None,
-            Self::Window(window) => Some(std::borrow::Cow::Owned(window.as_range().collect())),
             Self::Gather(map) => Some(std::borrow::Cow::Borrowed(map.as_slice())),
         }
     }
@@ -448,13 +422,13 @@ impl RowSelectionBuild {
     fn finish(self, physical_len: usize) -> RowSelection {
         match self.state {
             RowSelectionBuildState::Empty => {
-                RowSelection::gather_trusted(Arc::from([] as [usize; 0]), physical_len)
+                RowSelection::gather(Arc::from([] as [usize; 0]), physical_len)
             },
             RowSelectionBuildState::Contiguous { start, len } => {
-                RowSelection::window_trusted(start, len, physical_len)
+                RowSelection::window(start, len, physical_len)
             },
             RowSelectionBuildState::Gathered(indices) => {
-                RowSelection::gather_trusted(indices.into(), physical_len)
+                RowSelection::gather(indices.into(), physical_len)
             },
         }
     }
@@ -717,9 +691,18 @@ impl<'a> Iterator for ShapesIter<'a> {
         match self.rows.next()? {
             PhysicalRow::Mixed(shape) => Some(std::borrow::Cow::Borrowed(shape)),
             PhysicalRow::Point(point) => Some(std::borrow::Cow::Owned(Shape::Point(point))),
-            PhysicalRow::Line(coords, window) => Some(std::borrow::Cow::Owned(Shape::LineString(
-                LineSeq::from_trusted(coords.view(CoordWindow::trusted(window, coords.len()))),
-            ))),
+            PhysicalRow::Line(coords, window) => {
+                Some(std::borrow::Cow::Owned(if window.is_empty() {
+                    Shape::typed_empty(GeometryKind::LineString, coords.axes())
+                } else {
+                    Shape::LineString(
+                        LineSeq::try_new(
+                            coords.view(CoordWindow::from_range(window, coords.len())),
+                        )
+                        .expect("line coordinate sequence must contain at least two vertices"),
+                    )
+                }))
+            },
             PhysicalRow::Polygon(coords, ring_offsets, rings) => {
                 Some(std::borrow::Cow::Owned(Shape::Polygon(
                     GeometryArrayStorage::polygon_view(coords, ring_offsets, rings),
@@ -852,8 +835,8 @@ mod tests {
     #[test]
     fn shapes_iter_size_hint_exact_mixed() {
         let storage = GeometryArrayStorage::Mixed(vec![
-            Shape::Point(Point::new_unchecked_xy(0.0, 0.0)),
-            Shape::Point(Point::new_unchecked_xy(1.0, 1.0)),
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(1.0, 1.0)),
             Shape::typed_empty(
                 crate::geometry::GeometryKind::Point,
                 crate::geometry::CoordinateAxes::XY,
@@ -878,7 +861,7 @@ mod tests {
 
         let window = GeometryArrayStorage::Points {
             coords: Arc::clone(&coords),
-            row_map: RowSelection::window_trusted(1, 2, 3),
+            row_map: RowSelection::window(1, 2, 3),
         };
         assert_shapes_iter_exact(&window);
 
@@ -909,7 +892,7 @@ mod tests {
         let window = GeometryArrayStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
-            row_map: RowSelection::window_trusted(0, 2, 2),
+            row_map: RowSelection::window(0, 2, 2),
         };
         assert_shapes_iter_exact(&window);
 
@@ -953,7 +936,7 @@ mod tests {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
-            row_map: RowSelection::window_trusted(1, 1, 2),
+            row_map: RowSelection::window(1, 1, 2),
         };
         assert_shapes_iter_exact(&window);
 
@@ -981,25 +964,27 @@ mod tests {
 mod row_window_assertion_tests {
     use super::*;
 
-    /// The `RowWindow::trusted` tripwire must be able to FIRE.
+    /// Row-window admission rejects ranges beyond the physical storage.
     ///
     /// It previously could not: `RowSelection::window(start, len)` passed
     /// `start + len` as `physical_len`, reducing the assertion to
     /// `start <= start + len && len <= len`. This pins that a window past the
-    /// end of the backing storage is now rejected in a debug build.
-    // The tripwire is a `debug_assert!`, so it exists only where
-    // `debug-assertions` is on. Without this gate the test cannot pass under
-    // `cargo nextest run --release`, which CI runs as a second pass.
-    #[cfg(debug_assertions)]
+    /// end of the backing storage is now rejected without a Python runtime.
     #[test]
     #[should_panic(expected = "must reference existing physical rows")]
     fn window_assertion_is_not_vacuous() {
-        let _ = RowSelection::window_trusted(2, 5, 4);
+        let _ = RowSelection::window(2, 5, 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "row selection must reference existing physical rows")]
+    fn gather_assertion_is_not_vacuous() {
+        let _ = RowSelection::gather(Arc::from([4_usize]), 4);
     }
 
     #[test]
     fn window_inside_physical_rows_is_accepted() {
-        let selection = RowSelection::window_trusted(1, 2, 4);
+        let selection = RowSelection::window(1, 2, 4);
         assert!(matches!(selection, RowSelection::Window(_)));
     }
 }

@@ -28,11 +28,11 @@ impl Point {
         })
     }
 
-    /// Trusted constructor for already-validated coordinate flows (PROJ
-    /// output after the pipeline's own finite check) — no revalidation, so a
+    /// Raw-coordinate constructor for flows that intentionally bypass finite
+    /// input admission (including PROJ output after the pipeline's own check), so a
     /// projection failure surfaces as the projection error, never as
     /// `NonFiniteCoordinate`.
-    pub(crate) fn new_unchecked_axes(x: f64, y: f64, z: ZOrdinate, m: MOrdinate) -> Self {
+    pub(crate) fn new_raw_axes(x: f64, y: f64, z: ZOrdinate, m: MOrdinate) -> Self {
         let ZOrdinate(z) = z;
         let MOrdinate(m) = m;
         Self {
@@ -52,7 +52,7 @@ impl Point {
         }
     }
 
-    pub const fn new_unchecked_xy(x: f64, y: f64) -> Self {
+    pub const fn new_raw_xy(x: f64, y: f64) -> Self {
         Self {
             x,
             y,
@@ -68,7 +68,7 @@ impl Point {
     /// and witness pairs mix vertex copies with computed points, so their
     /// axes MUST be normalized before entering one `CoordSeq`.
     pub const fn to_xy(self) -> Self {
-        Self::new_unchecked_xy(self.x, self.y)
+        Self::new_raw_xy(self.x, self.y)
     }
 
     pub(crate) fn z(self) -> Option<f64> {
@@ -82,7 +82,7 @@ impl Point {
     /// [`with_xy`](Self::with_xy) without the finiteness validation — for
     /// callers whose coordinates are already validated (the fallible column
     /// maps, whose `op` owns the domain checking).
-    pub(crate) const fn with_xy_unchecked(self, x: f64, y: f64) -> Self {
+    pub(crate) const fn with_xy_raw(self, x: f64, y: f64) -> Self {
         Self { x, y, ..self }
     }
 

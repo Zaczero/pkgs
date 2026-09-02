@@ -4,6 +4,7 @@ use crate::array::{
     clip_lines_packed_xy, geometry, reverse_coord_windows, subdivide_line_columns,
     subdivide_polygon_columns, validate_densify_fraction, validate_max_segment_length,
 };
+use crate::geographic::GeographicFrame;
 use crate::geometry::ExpansionBudget;
 
 #[derive(Clone, Copy)]
@@ -57,7 +58,7 @@ impl PyGeometryArray {
     pub(crate) fn segmentize_unary_packed(
         &self,
         max_segment_length: &F64Param,
-        geodesic: Option<geographiclib_rs::Geodesic>,
+        geodesic: Option<(geographiclib_rs::Geodesic, GeographicFrame)>,
         to_metre: f64,
     ) -> PyResult<Self> {
         let for_columns = geodesic;
@@ -68,28 +69,36 @@ impl PyGeometryArray {
             max_segment_length,
             |value| validate_max_segment_length(value).map(|_| ()),
             move |points, length, budget| {
-                if for_columns.is_some() {
-                    crate::crs::ensure_geographic_columns(points.xs(), points.ys())?;
+                if let Some((_, frame)) = for_columns {
+                    crate::crs::ensure_geographic_columns_in_frame(
+                        frame,
+                        points.xs(),
+                        points.ys(),
+                    )?;
                 }
                 crate::geometry::segmentize_points_budgeted(
                     points,
                     length / to_metre,
                     for_columns.as_ref().map_or(
                         crate::geometry::SegmentPlacement::Planar,
-                        crate::geometry::SegmentPlacement::Geodesic,
+                        |(geodesic, frame)| {
+                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
+                        },
                     ),
                     budget,
                 )
             },
             move |shape, length, budget| {
-                if for_shapes.is_some() {
-                    crate::crs::ensure_geographic_domain(shape)?;
+                if let Some((_, frame)) = for_shapes {
+                    crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
                 shape.segmentize_budgeted(
                     length / to_metre,
                     for_shapes.as_ref().map_or(
                         crate::geometry::SegmentPlacement::Planar,
-                        crate::geometry::SegmentPlacement::Geodesic,
+                        |(geodesic, frame)| {
+                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
+                        },
                     ),
                     budget,
                 )
@@ -104,7 +113,7 @@ impl PyGeometryArray {
     pub(crate) fn densify_unary_packed(
         &self,
         fraction: &F64Param,
-        geodesic: Option<geographiclib_rs::Geodesic>,
+        geodesic: Option<(geographiclib_rs::Geodesic, GeographicFrame)>,
     ) -> PyResult<Self> {
         let for_columns = geodesic;
         let for_shapes = geodesic;
@@ -114,28 +123,36 @@ impl PyGeometryArray {
             fraction,
             |value| validate_densify_fraction(value).map(|_| ()),
             move |points, fraction, budget| {
-                if for_columns.is_some() {
-                    crate::crs::ensure_geographic_columns(points.xs(), points.ys())?;
+                if let Some((_, frame)) = for_columns {
+                    crate::crs::ensure_geographic_columns_in_frame(
+                        frame,
+                        points.xs(),
+                        points.ys(),
+                    )?;
                 }
                 crate::geometry::densify_points_budgeted_with_placement(
                     points,
                     fraction,
                     for_columns.as_ref().map_or(
                         crate::geometry::SegmentPlacement::Planar,
-                        crate::geometry::SegmentPlacement::Geodesic,
+                        |(geodesic, frame)| {
+                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
+                        },
                     ),
                     budget,
                 )
             },
             move |shape, fraction, budget| {
-                if for_shapes.is_some() {
-                    crate::crs::ensure_geographic_domain(shape)?;
+                if let Some((_, frame)) = for_shapes {
+                    crate::crs::ensure_geographic_domain_in_frame(frame, shape)?;
                 }
                 shape.densified_budgeted_with_placement(
                     fraction,
                     for_shapes.as_ref().map_or(
                         crate::geometry::SegmentPlacement::Planar,
-                        crate::geometry::SegmentPlacement::Geodesic,
+                        |(geodesic, frame)| {
+                            crate::geometry::SegmentPlacement::Geodesic(geodesic, *frame)
+                        },
                     ),
                     budget,
                 )
@@ -336,9 +353,20 @@ impl PyGeometryArray {
                 })
             }));
         }
+        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+            return None;
+        }
+        let axes = self
+            .uniform_axes()
+            .expect("packed storage has uniform axes");
         Python::attach(|py| {
-            self.map_packed_coordseq_detached(py, self.frame.clone(), move |coords| {
-                coords.try_snap_to_grid(size.tuple(), origin.tuple())
+            self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
+                let (sx, sy) = size.tuple();
+                let (ox, oy) = origin.tuple();
+                point.with_xy(
+                    geometry::stable_snap_ordinate(point.x, ox, sx),
+                    geometry::stable_snap_ordinate(point.y, oy, sy),
+                )
             })
             .transpose()
         })
@@ -349,11 +377,12 @@ impl PyGeometryArray {
             return Ok(self.clone());
         }
         Python::attach(|py| {
-            if let Some(array) =
-                self.map_packed_coordseq_detached(py, self.frame.clone(), |coords| {
-                    Ok(coords.force_2d())
-                })?
-            {
+            if let Some(array) = self.map_packed_points_detached(
+                py,
+                self.frame.clone(),
+                crate::CoordinateAxes::XY,
+                |point| Ok(point.force_2d()),
+            )? {
                 return Ok(array);
             }
             self.map_shapes_shared_detached(py, |shape| {
@@ -399,12 +428,16 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
-        if let Some(mapped) = Python::attach(|py| {
-            self.map_packed_coordseq_detached(py, self.frame.clone(), move |coords| {
-                Ok(coords.quantize(precision))
-            })
-        })? {
-            return Ok(mapped);
+        if let Some(axes) = self.uniform_axes()
+            && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
+        {
+            if let Some(mapped) = Python::attach(|py| {
+                self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
+                    Ok(point.quantize(precision))
+                })
+            })? {
+                return Ok(mapped);
+            }
         }
         Python::attach(|py| {
             self.map_shapes_shared_detached(py, move |shape| {
@@ -420,12 +453,14 @@ impl PyGeometryArray {
         rect: Bounds,
         drop: bool,
     ) -> PyResult<Self> {
-        let geographic = crate::geometry::is_geographic_frame(&self.frame);
-        if !geographic && matches!(self.storage(), GeometryArrayStorage::Lines { .. }) {
+        let geographic_frame = crate::geometry::geographic_frame(&self.frame)?;
+        if matches!(self.storage(), GeometryArrayStorage::Lines { .. }) {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
-                        PackedColumns::Lines(lines) => clip_lines_packed_xy(lines, rect),
+                        PackedColumns::Lines(lines) => {
+                            clip_lines_packed_xy(lines, rect, geographic_frame)
+                        },
                         _ => Ok(None),
                     }
                 })?;
@@ -438,8 +473,8 @@ impl PyGeometryArray {
             }
         }
         self.map_shapes(|shape| {
-            if geographic && shape.crosses_antimeridian() {
-                Ok(shape.split_antimeridian()?.clip_by_rect(rect, drop)?)
+            if let Some(frame) = geographic_frame {
+                Ok(shape.clip_by_rect_in_geographic_frame(rect, drop, shape.bounds(), frame)?)
             } else {
                 Ok(shape.clip_by_rect(rect, drop)?)
             }

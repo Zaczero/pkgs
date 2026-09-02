@@ -195,7 +195,7 @@ impl Bounds {
     /// Build bounds without validating ordering or finiteness. Use at audited
     /// reducer and antimeridian call sites where `minx > maxx` can be
     /// intentional.
-    pub const fn new_unchecked(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Self {
+    pub const fn new_raw(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Self {
         Self {
             minx,
             miny,
@@ -237,7 +237,7 @@ impl Bounds {
             return None;
         }
         let [minx, miny, maxx, maxy] = xy_bounds_columns(coords.xs(), coords.ys());
-        Some(Self::new_unchecked(minx, miny, maxx, maxy))
+        Some(Self::new_raw(minx, miny, maxx, maxy))
     }
 
     pub const fn include_bounds(&mut self, other: Self) {
@@ -298,7 +298,7 @@ impl XY {
 
     /// Lift back into the ordinate-carrying interchange (XY axes).
     pub const fn point(self) -> Point {
-        Point::new_unchecked_xy(self.x, self.y)
+        Point::new_raw_xy(self.x, self.y)
     }
 }
 
@@ -332,7 +332,7 @@ pub(crate) const fn segment_midpoint(segment: Segment) -> Point {
 /// scalar-vs-array distance reuse the fixed operand's set across every
 /// element rather than rebuilding per pair (the expensive part of a large
 /// fixed operand).
-pub struct DistanceParts {
+pub(crate) struct DistanceParts {
     pub point_only: Vec<Point>,
     /// The shape's segments flattened to packed XY columns + facet partition
     /// — what every distance phase (brute scans and BVH traversals) reads.

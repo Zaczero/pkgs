@@ -100,7 +100,7 @@ impl PackedColumnBuilder {
         subdivide: &impl Fn(&CoordSeq, &mut crate::geometry::ExpansionBudget) -> CrateResult<CoordSeq>,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> CrateResult<()> {
-        let row = coords.view(CoordWindow::trusted(window, coords.len()));
+        let row = coords.view(CoordWindow::from_range(window, coords.len()));
         let result = subdivide(&row, budget)?;
         self.try_reserve_columns(result.len())?;
         self.xs.extend_from_slice(result.xs());
@@ -123,7 +123,7 @@ impl PackedColumnBuilder {
         matrix: &[f64; 6],
     ) -> CrateResult<()> {
         let transformed = coords
-            .view(CoordWindow::trusted(window, coords.len()))
+            .view(CoordWindow::from_range(window, coords.len()))
             .try_affine(matrix)?;
         self.try_reserve_columns(transformed.len())?;
         self.xs.extend_from_slice(transformed.xs());
@@ -181,12 +181,6 @@ impl PackedColumnBuilder {
     /// index.
     pub(crate) const fn vertex_len(&self) -> usize {
         self.xs.len()
-    }
-
-    /// Build the `CoordSeq` without a CSR column — the affine no-offset polygon
-    /// path reuses the source ring/polygon offsets unchanged.
-    pub(crate) fn finish_coords_only(self) -> CrateResult<CoordSeq> {
-        CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
 
     /// Build the `CoordSeq` + the CSR column. `offset_cap` is what the original

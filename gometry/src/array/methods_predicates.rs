@@ -14,14 +14,13 @@ use crate::array::{
 impl PyGeometryArray {
     pub(crate) fn materialized_objects(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         use pyo3::IntoPyObjectExt as _;
-        self.masked_shape_rows()
-            .map(|(missing, shape)| {
-                if missing {
-                    Ok(py.None())
-                } else {
+        self.logical_shape_rows()
+            .map(|row| match row {
+                crate::array::LogicalShapeRow::Missing { .. } => Ok(py.None()),
+                crate::array::LogicalShapeRow::Present { shape, .. } => {
                     let geometry = PyGeometry::with_frame(shape.into_owned(), self.frame.clone());
                     Typed(geometry).into_py_any(py)
-                }
+                },
             })
             .collect()
     }
@@ -32,6 +31,25 @@ fn to_arrow_dense(
     py: Python<'_>,
     encoding: ArrowEncoding,
 ) -> PyResult<Py<PyAny>> {
+    if array.is_compact_nullable() && encoding == ArrowEncoding::Wkb {
+        let mut shapes = crate::try_vec_with_capacity(array.len())?;
+        for row in array.logical_shape_rows() {
+            let shape = match row {
+                crate::array::LogicalShapeRow::Missing { .. } => None,
+                crate::array::LogicalShapeRow::Present { shape, .. } => Some(shape.into_owned()),
+            };
+            crate::try_push(&mut shapes, shape)?;
+        }
+        return crate::py::arrow::nullable_shapes_to_wkb_arrow(
+            py,
+            &shapes,
+            array.crs_str(),
+            array.epoch(),
+        );
+    }
+    if let Some(coords) = array.materialized_compact_point_coords()? {
+        return packed_points_to_arrow(py, &coords, array.crs_str(), array.epoch());
+    }
     if encoding == ArrowEncoding::Wkb {
         // Packed storage has one frame by construction. Avoiding `items()` is
         // load-bearing: on packed arrays it would synthesize one `PyGeometry`
@@ -43,17 +61,18 @@ fn to_arrow_dense(
             array.epoch(),
         );
     }
-    // Gather materializes once via the shared memo; Identity/Window share
-    // parent coordinate Arcs (Window via `CoordSeq::view` / rebased CSR).
-    let storage =
-        crate::array::normalized_gather_storage(array.storage_arc(), &array.gathered_memo)
-            .map_err(crate::array::packed_columns_err)?;
-    match storage.as_ref() {
+    // Arrow requires separated contiguous columns. Gather materialization is
+    // owned by the returned Arrow arrays; Identity/Window retain zero-copy
+    // views over the source buffers.
+    let gathered = crate::array::materialized_gather(array.storage())
+        .map_err(crate::array::packed_columns_err)?;
+    let storage = gathered.as_ref().unwrap_or_else(|| array.storage());
+    match storage {
         GeometryArrayStorage::Points { coords, row_map } => {
             let seq = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.as_ref().clone(),
                 RowSelectionRef::Window { start, len } => coords.view(
-                    crate::geometry::CoordWindow::trusted(start..start + len, coords.len()),
+                    crate::geometry::CoordWindow::from_range(start..start + len, coords.len()),
                 ),
             };
             packed_points_to_arrow(py, &seq, array.crs_str(), array.epoch())
@@ -108,7 +127,7 @@ fn export_packed_lines_selection(
             let offset_slice = offsets.as_slice();
             let vertex_start = offset_slice[start] as usize;
             let vertex_end = offset_slice[start + len] as usize;
-            let viewed = coords.view(crate::geometry::CoordWindow::trusted(
+            let viewed = coords.view(crate::geometry::CoordWindow::from_range(
                 vertex_start..vertex_end,
                 coords.len(),
             ));
@@ -145,7 +164,7 @@ fn export_packed_polygons_selection(
             let ring_end = polygon_slice[start + len] as usize;
             let vertex_start = ring_slice[ring_start] as usize;
             let vertex_end = ring_slice[ring_end] as usize;
-            let viewed = coords.view(crate::geometry::CoordWindow::trusted(
+            let viewed = coords.view(crate::geometry::CoordWindow::from_range(
                 vertex_start..vertex_end,
                 coords.len(),
             ));
@@ -248,7 +267,7 @@ impl PyGeometryArray {
     /// >>> gm.GeometryArray([gm.Point(1, 2)]).to_numpy()[0].to_wkt()
     /// 'POINT (1 2)'
     pub fn to_numpy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let len = self.storage().len();
+        let len = self.len();
         let mut values = Vec::with_capacity(len);
         for index in 0..len {
             if self.is_row_missing(index) {
@@ -314,7 +333,7 @@ impl PyGeometryArray {
     pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         if let Some(mask) = self.missing() {
             let dense = to_arrow_dense(self, py, encoding)?;
-            let validity = crate::py::arrow::validity_bitmap_from_missing(mask)?;
+            let validity = crate::py::arrow::validity_bitmap_from_mask(mask);
             return Ok(crate::py::arrow::gometry_arrow_module(py)?
                 .call_method1(
                     "apply_missing",

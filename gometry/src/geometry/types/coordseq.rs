@@ -14,7 +14,7 @@ use crate::geometry::types::{
 };
 use crate::geometry::{REDUCE_LANES, ReduceSimd, column_all_finite, simd_mask_all};
 
-/// One sequence's shared column storage + row window (see
+/// One sequence's shared column storage + coordinate/M row windows (see
 /// [`CoordSeq::column_arcs`]).
 pub struct SharedColumns {
     pub xs: Arc<[f64]>,
@@ -22,6 +22,7 @@ pub struct SharedColumns {
     pub zs: Option<Arc<[f64]>>,
     pub ms: Option<Arc<[f64]>>,
     pub window: Range<usize>,
+    pub m_window: Range<usize>,
 }
 
 /// Checked coordinate-row window into a [`CoordSeq`]'s physical columns.
@@ -32,17 +33,6 @@ pub struct CoordWindow {
 }
 
 impl CoordWindow {
-    pub(crate) fn trusted(range: Range<usize>, physical_len: usize) -> Self {
-        debug_assert!(
-            range.start <= range.end && range.end <= physical_len,
-            "CoordWindow must reference an existing coordinate range",
-        );
-        Self {
-            start: range.start,
-            len: range.end - range.start,
-        }
-    }
-
     pub(crate) fn checked(range: Range<usize>, physical_len: usize) -> Result<Self> {
         if range.start > range.end || range.end > physical_len {
             return Err(GeometryErrorKind::CoordinateRange {
@@ -52,7 +42,17 @@ impl CoordWindow {
             }
             .into());
         }
-        Ok(Self::trusted(range, physical_len))
+        Ok(Self {
+            start: range.start,
+            len: range.end - range.start,
+        })
+    }
+
+    /// Construct a window at an internal boundary that already owns the range.
+    /// Invalid ranges fail here in every build rather than escaping into a
+    /// later slice operation.
+    pub(crate) fn from_range(range: Range<usize>, physical_len: usize) -> Self {
+        Self::checked(range, physical_len).expect("coordinate window must reference existing rows")
     }
 
     pub(crate) const fn start(self) -> usize {
@@ -111,12 +111,16 @@ fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f
 impl CoordSeq {
     /// Empty sequence with the given axes.
     pub fn empty(axes: CoordinateAxes) -> Self {
-        Self::from_columns_unchecked(
-            Arc::from([]),
-            Arc::from([]),
-            axes.has_z().then(|| Arc::from([])),
-            axes.has_m().then(|| Arc::from([])),
-        )
+        // SAFETY: every present column is empty, so lengths match and fit the
+        // coordinate-storage capacity.
+        unsafe {
+            Self::from_columns_unchecked(
+                Arc::from([]),
+                Arc::from([]),
+                axes.has_z().then(|| Arc::from([])),
+                axes.has_m().then(|| Arc::from([])),
+            )
+        }
     }
 
     /// Gather an array of `Point`s into columns in one pass. Trusted caller
@@ -239,11 +243,19 @@ impl CoordSeq {
         {
             return Err(GeometryErrorKind::CoordinateLength(xs.len(), other).into());
         }
-        Ok(Self::from_columns_unchecked(xs, ys, zs, ms))
+        // SAFETY: the preceding capacity and equal-length checks establish the
+        // parallel-column invariant.
+        Ok(unsafe { Self::from_columns_unchecked(xs, ys, zs, ms) })
     }
 
-    /// Infallible assembly when the caller already enforced the vertex cap.
-    pub(crate) fn from_columns_unchecked(
+    /// Infallible assembly from already-validated parallel columns.
+    ///
+    /// # Safety
+    ///
+    /// `xs`, `ys`, and every present Z/M column must have the same length, and
+    /// that length must satisfy [`ensure_coordseq_vertex_capacity`]. Downstream
+    /// hot geometry kernels rely on this to index column lanes unchecked.
+    pub(crate) unsafe fn from_columns_unchecked(
         xs: Arc<[f64]>,
         ys: Arc<[f64]>,
         zs: Option<Arc<[f64]>>,
@@ -263,16 +275,55 @@ impl CoordSeq {
         }
     }
 
-    /// Zero-copy sub-sequence: the same shared columns, a narrowed window —
-    /// what packed array storage hands out as row geometry.
+    /// Assemble shared coordinate columns with a local M column.
+    ///
+    /// # Safety
+    ///
+    /// `window` must reference equal-length X/Y/Z rows, and a present M column
+    /// must have exactly as many rows as `window`.
+    pub(crate) unsafe fn from_columns_unchecked_with_window(
+        xs: Arc<[f64]>,
+        ys: Arc<[f64]>,
+        zs: Option<Arc<[f64]>>,
+        ms: Option<Arc<[f64]>>,
+        window: CoordWindow,
+    ) -> Self {
+        debug_assert_eq!(xs.len(), ys.len());
+        debug_assert!(zs.as_ref().is_none_or(|column| column.len() == xs.len()));
+        debug_assert!(window.end() <= xs.len());
+        debug_assert!(
+            ms.as_ref()
+                .is_none_or(|column| { column.len() == window.end() - window.start() })
+        );
+        Self {
+            xs,
+            ys,
+            zs,
+            ms,
+            range: window.start() as u32..window.end() as u32,
+        }
+    }
+
+    /// Zero-copy coordinate sub-sequence: the same shared columns, a narrowed
+    /// window — what packed array storage hands out as row geometry. Transform
+    /// output's local M column copies only the visible M window.
     pub fn view(&self, window: CoordWindow) -> Self {
         let start = self.range.start + window.start() as u32;
         let end = self.range.start + window.end() as u32;
+        let ms = self.ms.as_ref().map(|column| {
+            if self.has_local_m_window(column)
+                && (window.start() != 0 || window.end() != self.len())
+            {
+                Arc::from(&column[window.start()..window.end()])
+            } else {
+                Arc::clone(column)
+            }
+        });
         Self {
             xs: Arc::clone(&self.xs),
             ys: Arc::clone(&self.ys),
             zs: self.zs.clone(),
-            ms: self.ms.clone(),
+            ms,
             range: start..end,
         }
     }
@@ -335,7 +386,12 @@ impl CoordSeq {
         &column[self.range.start as usize..self.range.end as usize]
     }
 
-    /// The shared column storage + this sequence's window — the zero-copy
+    fn has_local_m_window(&self, column: &[f64]) -> bool {
+        column.len() == self.len()
+            && (self.range.start != 0 || self.range.end as usize != self.xs.len())
+    }
+
+    /// The shared column storage + this sequence's windows — the zero-copy
     /// hand-off for buffer-protocol exports (Arrow coordinate buffers).
     pub fn column_arcs(&self) -> SharedColumns {
         SharedColumns {
@@ -344,6 +400,16 @@ impl CoordSeq {
             zs: self.zs.clone(),
             ms: self.ms.clone(),
             window: self.range.start as usize..self.range.end as usize,
+            m_window: self.ms.as_ref().map_or(
+                self.range.start as usize..self.range.end as usize,
+                |column| {
+                    if self.has_local_m_window(column) {
+                        0..self.len()
+                    } else {
+                        self.range.start as usize..self.range.end as usize
+                    }
+                },
+            ),
         }
     }
 
@@ -418,11 +484,16 @@ impl CoordSeq {
         concat_coord_columns(self, other).ok()
     }
 
-    /// Trusted-column constructor: copies the ranges with NO finite
+    /// Unchecked column copy with NO finite
     /// validation — for already-validated flows only (PROJ output is checked
     /// by the pipeline itself, and revalidating would misreport projection
-    /// failures as coordinate errors). Lengths must match (debug-checked).
-    pub fn copy_from_trusted_columns(
+    /// failures as coordinate errors).
+    ///
+    /// # Safety
+    ///
+    /// Every present column must have the same length as `xs`, and that length
+    /// must satisfy [`ensure_coordseq_vertex_capacity`].
+    pub unsafe fn copy_from_columns_unchecked(
         xs: &[f64],
         ys: &[f64],
         zs: Option<&[f64]>,
@@ -431,7 +502,15 @@ impl CoordSeq {
         debug_assert_eq!(xs.len(), ys.len());
         debug_assert!(zs.is_none_or(|column| column.len() == xs.len()));
         debug_assert!(ms.is_none_or(|column| column.len() == xs.len()));
-        Self::from_columns_unchecked(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+        // SAFETY: forwarded from this function's safety contract.
+        unsafe {
+            Self::from_columns_unchecked(
+                xs.into(),
+                ys.into(),
+                zs.map(Into::into),
+                ms.map(Into::into),
+            )
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -465,7 +544,13 @@ impl CoordSeq {
     }
 
     pub fn ms(&self) -> Option<&[f64]> {
-        self.ms.as_deref().map(|column| self.window(column))
+        self.ms.as_deref().map(|column| {
+            if self.has_local_m_window(column) {
+                &column[..self.len()]
+            } else {
+                self.window(column)
+            }
+        })
     }
 
     /// Whether this sequence's row window spans the whole backing column.
@@ -505,7 +590,13 @@ impl CoordSeq {
     /// The M column (if present) carried with zero copy on the full-window
     /// common case — for ops that rewrite XY but leave M untouched.
     pub(crate) fn carried_ms(&self) -> Option<Arc<[f64]>> {
-        self.ms.as_ref().map(|column| self.carried(column))
+        self.ms.as_ref().map(|column| {
+            if self.has_local_m_window(column) || self.is_full_window(column) {
+                Arc::clone(column)
+            } else {
+                Arc::from(self.window(column))
+            }
+        })
     }
 
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice
@@ -567,12 +658,16 @@ impl CoordSeq {
     /// Exact-final-Arc fill (no `Vec`/`Box` intermediate): allocate the
     /// column Arcs at the known length, write reversed values, `assume_init`.
     pub fn reversed(&self) -> Self {
-        Self::from_columns_unchecked(
-            reverse_column_arc(self.xs()),
-            reverse_column_arc(self.ys()),
-            self.zs().map(reverse_column_arc),
-            self.ms().map(reverse_column_arc),
-        )
+        // SAFETY: every output column is a one-for-one reversal of one valid
+        // input column, preserving lengths and the storage cap.
+        unsafe {
+            Self::from_columns_unchecked(
+                reverse_column_arc(self.xs()),
+                reverse_column_arc(self.ys()),
+                self.zs().map(reverse_column_arc),
+                self.ms().map(reverse_column_arc),
+            )
+        }
     }
 }
 
@@ -685,6 +780,8 @@ fn select_exact_or_grow(
                     &mut xs_v, &mut ys_v, &mut zs_v, &mut ms_v, xs_src, ys_src, zs_src, ms_src, row,
                 );
             }
+            // SAFETY: each row is copied into every present column in the same
+            // lockstep loop, preserving the source sequence's capacity bound.
             return CoordSeq::from_columns_unchecked(
                 xs_v.into(),
                 ys_v.into(),
@@ -693,6 +790,8 @@ fn select_exact_or_grow(
             );
         }
 
+        // SAFETY: every initialized column has exactly `expected` elements,
+        // and `expected` came from an allocation that fits usize.
         CoordSeq::from_columns_unchecked(
             xs.assume_init(),
             ys.assume_init(),
@@ -726,6 +825,8 @@ unsafe fn columns_from_partial_ptrs(
 ) -> CoordSeq {
     // SAFETY: caller guarantees `0..len` is initialized on each present column.
     unsafe {
+        // SAFETY: the caller guarantees each present pointer has the same
+        // initialized prefix length; copying preserves the storage cap.
         CoordSeq::from_columns_unchecked(
             ptr_prefix_to_vec(xs, len).into(),
             ptr_prefix_to_vec(ys, len).into(),
@@ -785,7 +886,15 @@ fn select_growable(
             &mut xs, &mut ys, &mut zs, &mut ms, xs_src, ys_src, zs_src, ms_src, row,
         );
     }
-    CoordSeq::from_columns_unchecked(xs.into(), ys.into(), zs.map(Into::into), ms.map(Into::into))
+    // SAFETY: `push_row` writes every present column in lockstep.
+    unsafe {
+        CoordSeq::from_columns_unchecked(
+            xs.into(),
+            ys.into(),
+            zs.map(Into::into),
+            ms.map(Into::into),
+        )
+    }
 }
 
 /// Exact-size reverse into a fresh shared ordinate column.
@@ -972,7 +1081,9 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
             .into());
         },
     };
-    Ok(CoordSeq::from_columns_unchecked(xs, ys, zs, ms))
+    // SAFETY: each output column is assembled from matching valid input
+    // columns, and concatenation retains the checked allocation limit.
+    Ok(unsafe { CoordSeq::from_columns_unchecked(xs, ys, zs, ms) })
 }
 
 /// Exact-capacity two-slice join into a shared ordinate column (one Arc
@@ -1020,7 +1131,7 @@ pub(crate) fn coerce_to_common_axes(start: Point, end: Point) -> (Point, Point) 
     let has_z = start.axes.has_z() && end.axes.has_z();
     let has_m = start.axes.has_m() && end.axes.has_m();
     let coerce = |point: Point| {
-        Point::new_unchecked_axes(
+        Point::new_raw_axes(
             point.x,
             point.y,
             ZOrdinate(has_z.then_some(point.z)),
@@ -1235,9 +1346,15 @@ impl CoordSeqBuilder {
     /// Callers must have validated all present-user coordinates before pushing
     /// and use non-finite values only for rows guarded by an external missing
     /// mask.
-    pub(crate) fn finish_unchecked(self) -> CoordSeq {
-        debug_assert!(self.mismatch_axes.is_none());
-        CoordSeq::from_columns_unchecked(
+    pub(crate) fn finish_with_missing_placeholders(self) -> CoordSeq {
+        assert!(
+            self.mismatch_axes.is_none(),
+            "missing-coordinate placeholders must preserve the builder axes"
+        );
+        // The builder always pushes every physical column in lockstep. Route
+        // through the checked boundary so a pathological length cannot truncate
+        // the stored u32 window.
+        CoordSeq::from_columns(
             self.xs.into(),
             self.ys.into(),
             self.zs.map(Into::into),
@@ -1372,12 +1489,15 @@ mod select_soundness_tests {
     }
 
     fn sample_seq() -> CoordSeq {
-        CoordSeq::from_columns_unchecked(
-            Arc::from([0.0, 1.0, 2.0, 3.0]),
-            Arc::from([10.0, 11.0, 12.0, 13.0]),
-            None,
-            None,
-        )
+        // SAFETY: the fixture supplies two equal-length columns below the cap.
+        unsafe {
+            CoordSeq::from_columns_unchecked(
+                Arc::from([0.0, 1.0, 2.0, 3.0]),
+                Arc::from([10.0, 11.0, 12.0, 13.0]),
+                None,
+                None,
+            )
+        }
     }
 
     /// Under-yielding with an inflated `size_hint` must not `assume_init`
@@ -1425,14 +1545,14 @@ mod coerce_tests {
     /// axis-homogeneous so `witness_pair` and `nearest_points` cannot diverge.
     #[test]
     fn coerce_to_common_axes_drops_to_intersection() {
-        let zm = Point::new_unchecked_axes(1.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0)));
-        let xy = Point::new_unchecked_axes(1.0, 3.0, ZOrdinate(None), MOrdinate(None));
+        let zm = Point::new_raw_axes(1.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0)));
+        let xy = Point::new_raw_axes(1.0, 3.0, ZOrdinate(None), MOrdinate(None));
         let (a, b) = coerce_to_common_axes(zm, xy);
         assert!(!a.axes.has_z() && !a.axes.has_m());
         assert!(!b.axes.has_z() && !b.axes.has_m());
         assert_eq!(
             a,
-            Point::new_unchecked_axes(1.0, 0.0, ZOrdinate(None), MOrdinate(None))
+            Point::new_raw_axes(1.0, 0.0, ZOrdinate(None), MOrdinate(None))
         );
         assert_eq!(b, xy);
     }
@@ -1440,8 +1560,8 @@ mod coerce_tests {
     /// Shared Z (no M on either) is preserved on both endpoints.
     #[test]
     fn coerce_to_common_axes_keeps_shared_z() {
-        let a = Point::new_unchecked_axes(1.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(None));
-        let b = Point::new_unchecked_axes(1.0, 3.0, ZOrdinate(Some(99.0)), MOrdinate(None));
+        let a = Point::new_raw_axes(1.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(None));
+        let b = Point::new_raw_axes(1.0, 3.0, ZOrdinate(Some(99.0)), MOrdinate(None));
         let (a2, b2) = coerce_to_common_axes(a, b);
         assert!(a2.axes.has_z() && !a2.axes.has_m());
         assert_eq!(a2, a);
@@ -1454,12 +1574,15 @@ mod coord_iter_tests {
     use super::*;
 
     fn sequence(zs: Option<Arc<[f64]>>, ms: Option<Arc<[f64]>>) -> CoordSeq {
-        CoordSeq::from_columns_unchecked(
-            Arc::from([1.0, 2.0, 3.0]),
-            Arc::from([4.0, 5.0, 6.0]),
-            zs,
-            ms,
-        )
+        // SAFETY: each test passes optional three-element ordinate columns.
+        unsafe {
+            CoordSeq::from_columns_unchecked(
+                Arc::from([1.0, 2.0, 3.0]),
+                Arc::from([4.0, 5.0, 6.0]),
+                zs,
+                ms,
+            )
+        }
     }
 
     #[test]

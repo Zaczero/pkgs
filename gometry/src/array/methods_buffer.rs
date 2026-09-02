@@ -20,6 +20,9 @@ impl PyGeometryArray {
         side: BufferSide,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Option<Self>> {
+        if self.is_compact_nullable() {
+            return Ok(None);
+        }
         if side != BufferSide::Both
             || !matches!(self.storage(), GeometryArrayStorage::Points { .. })
         {
@@ -45,7 +48,7 @@ impl PyGeometryArray {
                         &points,
                         distance,
                         quadrant_segments,
-                        missing_for_kernel.as_deref(),
+                        missing_for_kernel.as_ref(),
                     ),
                     PackedColumns::Lines(_) | PackedColumns::Polygons(_) => Ok(None),
                 }

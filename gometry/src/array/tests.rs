@@ -37,7 +37,7 @@ mod linref_array_degrade_tests {
         CoordSeq::from_points(
             &points
                 .iter()
-                .map(|&(x, y)| Point::new_unchecked_xy(x, y))
+                .map(|&(x, y)| Point::new_raw_xy(x, y))
                 .collect::<Vec<_>>(),
         )
     }
@@ -80,7 +80,7 @@ mod linref_array_degrade_tests {
     }
 
     fn query_point() -> Point {
-        Point::new_unchecked_xy(5.0, 0.0)
+        Point::new_raw_xy(5.0, 0.0)
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod linref_array_degrade_tests {
     #[test]
     fn linref_array_non_degradable_failures_still_abort() {
         let polygon = Shape::Polygon(Polygon::new(
-            Ring::from_trusted_closed(line_coordseq(&[
+            Ring::from_closed(line_coordseq(&[
                 (0.0, 0.0),
                 (1.0, 0.0),
                 (1.0, 1.0),
@@ -254,7 +254,7 @@ mod linref_array_degrade_tests {
 
 #[cfg(test)]
 mod multipart_storage_tests {
-    use super::super::{Frame, GeometryArrayStorage, MissingMask, PyGeometryArray};
+    use super::super::{Frame, GeometryArrayStorage, PyGeometryArray, ValidityMask};
     use crate::io::{parse_wkt, to_wkt};
 
     #[test]
@@ -274,7 +274,7 @@ mod multipart_storage_tests {
             "MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))"
         );
 
-        let masked = array.with_missing_mask(MissingMask::from_vec(2, vec![true, false]));
+        let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
         let selected = masked.gather_logical_rows(&[1, 0]);
         assert!(!selected.is_row_missing(0));
         assert!(selected.is_row_missing(1));

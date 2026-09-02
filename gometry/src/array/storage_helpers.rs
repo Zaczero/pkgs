@@ -12,7 +12,7 @@ pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Bounds {
     debug_assert!(!xs.is_empty());
     debug_assert_eq!(xs.len(), ys.len());
     let [minx, miny, maxx, maxy] = crate::geometry::xy_bounds_columns(xs, ys);
-    Bounds::new_unchecked(minx, miny, maxx, maxy)
+    Bounds::new_raw(minx, miny, maxx, maxy)
 }
 
 /// Borrow a CSR column window without `Range::clone()` — `std::ops::Range` is
@@ -84,14 +84,14 @@ where
 pub(crate) fn packed_centroid_xy(xy: Option<(f64, f64)>) -> Result<Point> {
     match xy {
         Some((x, y)) => Point::new(x, y),
-        None => Ok(Point::new_unchecked_xy(f64::NAN, f64::NAN)),
+        None => Ok(Point::new_raw_xy(f64::NAN, f64::NAN)),
     }
 }
 
 /// Map a packed point-on-surface column result to a validated point.
 pub(crate) fn packed_surface_point(point: Option<Point>) -> Result<Point> {
     point.map_or_else(
-        || Ok(Point::new_unchecked_xy(f64::NAN, f64::NAN)),
+        || Ok(Point::new_raw_xy(f64::NAN, f64::NAN)),
         |point| Point::new(point.x, point.y),
     )
 }

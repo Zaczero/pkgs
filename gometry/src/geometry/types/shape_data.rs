@@ -3,6 +3,8 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use std::fmt;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
@@ -20,6 +22,9 @@ use crate::geometry::{
 #[derive(Default)]
 pub(crate) struct FrameDependentCaches {
     entry: Mutex<Option<(GeodesicPartsKey, FrameDependentEntry)>>,
+    geographic_topology: Mutex<GeographicTopologySlot>,
+    #[cfg(test)]
+    geographic_topology_accesses: AtomicUsize,
 }
 
 impl fmt::Debug for FrameDependentCaches {
@@ -32,7 +37,48 @@ impl fmt::Debug for FrameDependentCaches {
 impl HeapSize for FrameDependentCaches {
     fn heap_bytes(&self) -> usize {
         self.entry.lock().ok().map_or(0, |entry| entry.heap_bytes())
+            + self.geographic_topology.lock().ok().map_or(0, |slot| {
+                slot.graph.as_ref().map_or(0, |graph| {
+                    std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes()
+                })
+            })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GeographicTopologyKey {
+    longitude_unit: u64,
+    longitude_period: u64,
+    latitude_unit: u64,
+    latitude_pole: u64,
+    prime_meridian: u64,
+}
+
+impl GeographicTopologyKey {
+    fn new(frame: crate::geographic::GeographicFrame) -> Self {
+        Self {
+            longitude_unit: canonical_bits(frame.longitude().unit().radians_per_unit()),
+            longitude_period: canonical_bits(frame.longitude().period()),
+            latitude_unit: canonical_bits(frame.latitude_unit().radians_per_unit()),
+            latitude_pole: canonical_bits(frame.pole()),
+            prime_meridian: canonical_bits(frame.prime_meridian_radians()),
+        }
+    }
+}
+
+fn canonical_bits(value: f64) -> u64 {
+    if value == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
+#[derive(Default)]
+struct GeographicTopologySlot {
+    key: Option<GeographicTopologyKey>,
+    generation: u64,
+    graph: Option<Arc<crate::geometry::topology::TopologyGraph>>,
 }
 
 #[derive(Clone, Default)]
@@ -42,6 +88,55 @@ struct FrameDependentEntry {
 }
 
 impl FrameDependentCaches {
+    pub(crate) fn geographic_topology_graph(
+        &self,
+        plan: &PreparedPlan,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Arc<crate::geometry::topology::TopologyGraph> {
+        #[cfg(test)]
+        self.geographic_topology_accesses
+            .fetch_add(1, Ordering::Relaxed);
+        let key = GeographicTopologyKey::new(frame);
+        let generation = {
+            let mut slot = self
+                .geographic_topology
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.key == Some(key) {
+                if let Some(graph) = &slot.graph {
+                    return Arc::clone(graph);
+                }
+                slot.generation
+            } else {
+                slot.generation = slot.generation.wrapping_add(1);
+                slot.key = Some(key);
+                slot.graph = None;
+                slot.generation
+            }
+        };
+
+        let built = Arc::new(crate::geometry::topology::TopologyGraph::geographic(
+            plan.shape(),
+            frame,
+        ));
+        let mut slot = self
+            .geographic_topology
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.key == Some(key) && slot.generation == generation {
+            if let Some(graph) = &slot.graph {
+                return Arc::clone(graph);
+            }
+            slot.graph = Some(Arc::clone(&built));
+        }
+        built
+    }
+
+    #[cfg(test)]
+    pub(crate) fn geographic_topology_accesses(&self) -> usize {
+        self.geographic_topology_accesses.load(Ordering::Relaxed)
+    }
+
     fn get(&self, key: &GeodesicPartsKey) -> Option<FrameDependentEntry> {
         self.entry
             .lock()
@@ -101,7 +196,8 @@ pub struct ShapeData {
 #[derive(Default)]
 struct TopologyPlan {
     cartesian_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
-    geographic_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
+    #[cfg(test)]
+    cartesian_graph_accesses: AtomicUsize,
     validity: OnceLock<Box<Option<ValidationIssue>>>,
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
@@ -204,7 +300,11 @@ impl PreparedPlan {
         self.metric.get_or_init(|| Box::new(MetricPlan::default()))
     }
 
-    pub(in crate::geometry) fn topology_graph(&self) -> &crate::geometry::topology::TopologyGraph {
+    pub(crate) fn topology_graph(&self) -> &crate::geometry::TopologyGraph {
+        #[cfg(test)]
+        self.topology()
+            .cartesian_graph_accesses
+            .fetch_add(1, Ordering::Relaxed);
         self.topology().cartesian_graph.get_or_init(|| {
             Box::new(crate::geometry::topology::TopologyGraph::cartesian(
                 self.shape(),
@@ -212,13 +312,10 @@ impl PreparedPlan {
         })
     }
 
-    pub(in crate::geometry) fn geographic_topology_graph(
-        &self,
-    ) -> &crate::geometry::topology::TopologyGraph {
-        self.topology().geographic_graph.get_or_init(|| {
-            Box::new(crate::geometry::topology::TopologyGraph::geographic(
-                self.shape(),
-            ))
+    #[cfg(test)]
+    pub(crate) fn topology_graph_accesses(&self) -> usize {
+        self.topology.get().map_or(0, |topology| {
+            topology.cartesian_graph_accesses.load(Ordering::Relaxed)
         })
     }
 
@@ -376,7 +473,6 @@ impl HeapSize for ShapeData {
 impl HeapSize for TopologyPlan {
     fn heap_bytes(&self) -> usize {
         self.cartesian_graph.heap_bytes()
-            + self.geographic_graph.heap_bytes()
             + self.validity.heap_bytes()
             + self.point_tester.heap_bytes()
     }
@@ -460,7 +556,7 @@ mod footprint_tests {
 
     #[test]
     fn retained_heap_bytes_does_not_force_caches() {
-        let data = PreparedPlan::new(Shape::Point(Point::new_unchecked_xy(1.0, 2.0)));
+        let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
         let cold = data.retained_heap_bytes();
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
@@ -531,9 +627,15 @@ mod frame_cache_tests {
 
     #[test]
     fn repeated_lrs_reuses_the_same_line_index_arc() {
-        let shape = PreparedPlan::new(Shape::LineString(LineSeq::from_trusted(
-            CoordSeq::from_vecs(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 0.0], None, None),
-        )));
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 1.0, 2.0],
+                vec![0.0, 1.0, 0.0],
+                None,
+                None,
+            ))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ));
         let cache = FrameDependentCaches::default();
         let first = shape
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
@@ -624,6 +726,25 @@ pub trait GeodesicMetric {
     /// Geometry-only test metrics use the default zero generation.
     fn runtime_generation(&self) -> u64 {
         0
+    }
+
+    /// Admit a shape in the metric's coordinate frame before any geodesic
+    /// working set is built. Geometry-only metrics leave admission to their
+    /// caller; CRS-backed metrics validate their native angular axes here.
+    fn ensure_shape(&self, _shape: &Shape) -> Result<()> {
+        Ok(())
+    }
+
+    /// Auxiliary-sphere location used only to partition the geodesic facet
+    /// tree. Implementations with a native angular frame convert here; the
+    /// default retains the historical degree-frame behavior for geometry-only
+    /// metrics.
+    fn auxiliary_unit(&self, point: Point) -> [f64; 3] {
+        let lon = point.x.to_radians();
+        let lat = point.y.to_radians();
+        let beta = f64::atan((1.0 - 1.0 / 298.257_223_563) * lat.tan())
+            .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+        [beta.cos() * lon.cos(), beta.cos() * lon.sin(), beta.sin()]
     }
 
     /// Precompute the ellipsoidal metadata shared by every exact probe of one

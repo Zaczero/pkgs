@@ -2,19 +2,23 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! Detached packed-column execution: resolve `row_map`, release the GIL, and hand logical contiguous columns to kernels in `packed_column_kernels.rs`.
+//! Detached packed-column execution over borrowed physical columns and a logical row selection.
+//!
+//! Kernels resolve logical rows through `RowSelectionRef`; only Identity and
+//! Window may expose contiguous slices. Gather never rebuilds an input CSR
+//! payload here. Output-producing kernels write logical rows once into their
+//! final coordinate and offset columns.
 
 use std::sync::Arc;
 
-use crate::array::packed_gather::{
-    gather_line_columns, gather_point_columns, gather_polygon_columns, normalized_gather_storage,
-};
+use crate::array::missing::ValidityCursor;
 use crate::array::{
-    CoordSeq, CoordinateReplacement, CsrOffsetColumn, Frame, GeometryArrayStorage, PolygonLevel,
-    PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis, Result, Ring, RingLevel,
-    RowSelectionRef, map_masked_point_columns_to_crs, rows_err,
+    CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder, CsrOffsetColumn, Frame,
+    GeometryArrayStorage, Point, PolygonLevel, PyErr, PyGeometryArray, PyResult, Python,
+    ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask, map_masked_point_columns_to_crs,
+    rows_err,
 };
-use crate::geometry::{CoordSeqBuilder, CoordWindow};
+use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate};
 
 pub(crate) enum PackedColumnError {
     Batch(crate::error::Error),
@@ -26,22 +30,106 @@ pub(crate) enum PackedColumnError {
 
 pub(crate) type PackedColumnResult<T> = std::result::Result<T, PackedColumnError>;
 
-pub(crate) enum ColumnSource<'a, T> {
-    Borrowed(&'a T),
-    Owned(T),
+/// Logical point rows over packed coordinates.
+///
+/// The cursor owns the only sequential validity/rank walk used by point
+/// kernels. Row-aligned masks map a present logical row directly; compact
+/// masks feed the present rank through the selected physical-row map.
+#[derive(Clone, Copy)]
+pub(crate) struct PointRows<'a> {
+    logical_len: usize,
+    row_map: RowSelectionRef<'a>,
+    missing: Option<&'a ValidityMask>,
+    compact: bool,
 }
 
-impl<T> ColumnSource<'_, T> {
-    const fn as_ref(&self) -> &T {
-        match self {
-            Self::Borrowed(value) => value,
-            Self::Owned(value) => value,
+impl<'a> PointRows<'a> {
+    pub(crate) fn new(
+        coords_len: usize,
+        row_map: RowSelectionRef<'a>,
+        missing: Option<&'a ValidityMask>,
+    ) -> Self {
+        let selected_len = row_map.len(coords_len);
+        let logical_len = missing.map_or(selected_len, ValidityMask::len);
+        debug_assert!(missing.is_none_or(|mask| mask.len() == logical_len));
+        Self {
+            logical_len,
+            row_map,
+            missing,
+            compact: missing.is_some_and(|mask| mask.len() != selected_len),
+        }
+    }
+
+    pub(crate) const fn len(self) -> usize {
+        self.logical_len
+    }
+
+    pub(crate) const fn present_count(self) -> usize {
+        match self.missing {
+            Some(mask) => mask.present_count(),
+            None => self.logical_len,
+        }
+    }
+
+    pub(crate) const fn is_compact(self) -> bool {
+        self.compact
+    }
+
+    pub(crate) fn cursor(self) -> PointRowCursor<'a> {
+        PointRowCursor {
+            logical: 0,
+            remaining: self.logical_len,
+            row_map: self.row_map,
+            compact: self.compact,
+            validity: self.missing.map(ValidityMask::cursor),
         }
     }
 }
 
+pub(crate) struct PointRowCursor<'a> {
+    logical: usize,
+    remaining: usize,
+    row_map: RowSelectionRef<'a>,
+    compact: bool,
+    validity: Option<ValidityCursor<'a>>,
+}
+
+impl Iterator for PointRowCursor<'_> {
+    type Item = (usize, Option<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let logical = self.logical;
+        self.logical += 1;
+        self.remaining -= 1;
+        let physical = match &mut self.validity {
+            Some(validity) => {
+                let (validity_logical, present) =
+                    validity.next().expect("point validity length is exact");
+                debug_assert_eq!(validity_logical, logical);
+                present.map(|present| {
+                    self.row_map
+                        .physical(if self.compact { present } else { logical })
+                })
+            },
+            None => Some(self.row_map.physical(logical)),
+        };
+        Some((logical, physical))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for PointRowCursor<'_> {}
+
 pub(crate) struct PointColumns<'a> {
-    coords: ColumnSource<'a, CoordSeq>,
+    coords: &'a CoordSeq,
+    row_map: RowSelectionRef<'a>,
+    missing: Option<&'a ValidityMask>,
 }
 
 pub(crate) struct XyColumns<'a> {
@@ -50,12 +138,14 @@ pub(crate) struct XyColumns<'a> {
 }
 
 impl PointColumns<'_> {
+    pub(crate) const fn selection(&self) -> RowSelectionRef<'_> {
+        self.row_map
+    }
     pub(crate) const fn coords(&self) -> &CoordSeq {
-        self.coords.as_ref()
+        self.coords
     }
 
-    /// Contiguous logical X/Y slices — row-map normalization already happened.
-    pub(crate) fn xy(&self) -> XyColumns<'_> {
+    pub(crate) fn physical_xy(&self) -> XyColumns<'_> {
         let coords = self.coords();
         XyColumns {
             xs: coords.xs(),
@@ -64,29 +154,88 @@ impl PointColumns<'_> {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.coords().len()
+        self.missing
+            .map_or_else(|| self.row_map.len(self.coords().len()), ValidityMask::len)
+    }
+
+    pub(crate) fn rows(&self) -> PointRows<'_> {
+        PointRows::new(self.coords.len(), self.row_map, self.missing)
+    }
+
+    pub(crate) fn contiguous_coords(&self) -> Option<CoordSeq> {
+        if self.missing.is_some() {
+            return None;
+        }
+        match self.row_map {
+            RowSelectionRef::Identity => Some(self.coords().clone()),
+            RowSelectionRef::Window { start, len } => Some(self.coords.view(
+                CoordWindow::from_range(start..start + len, self.coords.len()),
+            )),
+            RowSelectionRef::Gather(_) => None,
+        }
+    }
+
+    pub(crate) fn contiguous_xy(&self) -> Option<XyColumns<'_>> {
+        if self.missing.is_some() {
+            return None;
+        }
+        let range = match self.row_map {
+            RowSelectionRef::Identity => 0..self.coords.len(),
+            RowSelectionRef::Window { start, len } => start..start + len,
+            RowSelectionRef::Gather(_) => return None,
+        };
+        Some(XyColumns {
+            xs: &self.coords.xs()[range.clone()],
+            ys: &self.coords.ys()[range],
+        })
+    }
+
+    pub(crate) fn geodesic_xy_lanes(&self) -> crate::error::Result<(Vec<f64>, Vec<f64>)> {
+        debug_assert!(
+            self.missing.is_none(),
+            "geodesic lanes require present rows"
+        );
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        crate::try_reserve_vec(&mut xs, self.len())?;
+        crate::try_reserve_vec(&mut ys, self.len())?;
+        for (_, physical) in self.rows().cursor() {
+            let physical = physical.expect("geodesic lanes require present rows");
+            crate::try_push_vec(&mut xs, self.coords.xs()[physical])?;
+            crate::try_push_vec(&mut ys, self.coords.ys()[physical])?;
+        }
+        Ok((xs, ys))
+    }
+
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = Point> + '_ {
+        let coords = self.coords();
+        let axes = coords.axes();
+        self.rows().cursor().map(move |(_, physical)| {
+            physical.map_or_else(|| missing_point(axes), |physical| coords.point_at(physical))
+        })
     }
 }
 
 pub(crate) struct LineColumns<'a> {
-    coords: ColumnSource<'a, CoordSeq>,
-    offsets: ColumnSource<'a, CsrOffsetColumn>,
+    coords: &'a CoordSeq,
+    offsets: &'a CsrOffsetColumn,
+    row_map: RowSelectionRef<'a>,
+    missing: Option<&'a ValidityMask>,
 }
 
 impl LineColumns<'_> {
+    pub(crate) const fn selection(&self) -> RowSelectionRef<'_> {
+        self.row_map
+    }
     pub(crate) const fn coords(&self) -> &CoordSeq {
-        self.coords.as_ref()
+        self.coords
     }
 
     pub(crate) fn offsets(&self) -> &[i32] {
-        self.offsets.as_ref().as_slice()
+        self.offsets.as_slice()
     }
 
-    pub(crate) const fn offsets_column(&self) -> &CsrOffsetColumn {
-        self.offsets.as_ref()
-    }
-
-    pub(crate) fn xy(&self) -> XyColumns<'_> {
+    pub(crate) fn physical_xy(&self) -> XyColumns<'_> {
         let coords = self.coords();
         XyColumns {
             xs: coords.xs(),
@@ -95,14 +244,28 @@ impl LineColumns<'_> {
     }
 
     pub(crate) fn rows(&self) -> usize {
-        self.offsets().len().saturating_sub(1)
+        self.row_map.len(self.offsets().len().saturating_sub(1))
+    }
+
+    pub(crate) const fn physical_row(&self, logical: usize) -> usize {
+        self.row_map.physical(logical)
+    }
+
+    pub(crate) fn is_missing(&self, logical: usize) -> bool {
+        self.missing.is_some_and(|mask| mask.is_missing(logical))
+    }
+
+    pub(crate) fn row_window(&self, logical: usize) -> std::ops::Range<usize> {
+        self.row_map.csr_window(self.offsets(), logical)
     }
 }
 
 pub(crate) struct PolygonColumns<'a> {
-    coords: ColumnSource<'a, CoordSeq>,
-    ring_offsets: ColumnSource<'a, CsrOffsetColumn<RingLevel>>,
-    polygon_offsets: ColumnSource<'a, CsrOffsetColumn<PolygonLevel>>,
+    coords: &'a CoordSeq,
+    ring_offsets: &'a CsrOffsetColumn<RingLevel>,
+    polygon_offsets: &'a CsrOffsetColumn<PolygonLevel>,
+    row_map: RowSelectionRef<'a>,
+    missing: Option<&'a ValidityMask>,
 }
 
 /// Topology-only descriptor for dual-strategy columnar reduction over packed
@@ -121,15 +284,17 @@ pub(crate) struct SegmentedRuns<'a> {
     /// identity: group `i` owns only leaf `i`.
     pub group_offsets: Option<&'a [i32]>,
     /// Per-group missing mask (`None` = all present). Length = `n_groups`.
-    pub group_missing: Option<&'a [bool]>,
+    pub group_missing: Option<&'a ValidityMask>,
+    pub row_map: RowSelectionRef<'a>,
 }
 
 impl SegmentedRuns<'_> {
     pub(crate) fn n_groups(&self) -> usize {
-        self.group_offsets.map_or_else(
+        let physical = self.group_offsets.map_or_else(
             || self.n_leaves(),
             |offsets| offsets.len().saturating_sub(1),
-        )
+        );
+        self.row_map.len(physical)
     }
 
     pub(crate) const fn n_leaves(&self) -> usize {
@@ -138,6 +303,7 @@ impl SegmentedRuns<'_> {
 
     /// Leaf-index range owned by `group`.
     pub(crate) fn group_leaves(&self, group: usize) -> std::ops::Range<usize> {
+        let group = self.row_map.physical(group);
         self.group_offsets.map_or_else(
             || group..group + 1,
             |offsets| offsets[group] as usize..offsets[group + 1] as usize,
@@ -151,55 +317,59 @@ impl SegmentedRuns<'_> {
 
     /// True when the group is marked missing.
     pub(crate) fn is_missing(&self, group: usize) -> bool {
-        self.group_missing.is_some_and(|mask| mask[group])
+        self.group_missing
+            .is_some_and(|mask| mask.is_missing(group))
     }
 }
 
 impl LineColumns<'_> {
     /// Topology descriptor for planar line-length dual reduction. Group space
     /// is identity over leaves (one line row = one leaf).
-    pub(crate) fn segmented_runs<'a>(&'a self, missing: Option<&'a [bool]>) -> SegmentedRuns<'a> {
+    pub(crate) fn segmented_runs<'a>(
+        &'a self,
+        missing: Option<&'a ValidityMask>,
+    ) -> SegmentedRuns<'a> {
         SegmentedRuns {
             leaf_offsets: self.offsets(),
             group_offsets: None,
             group_missing: missing,
+            row_map: self.row_map,
         }
     }
 }
 
 impl PolygonColumns<'_> {
+    pub(crate) const fn selection(&self) -> RowSelectionRef<'_> {
+        self.row_map
+    }
     /// Topology descriptor for planar polygon perimeter dual reduction.
-    pub(crate) fn segmented_runs<'a>(&'a self, missing: Option<&'a [bool]>) -> SegmentedRuns<'a> {
+    pub(crate) fn segmented_runs<'a>(
+        &'a self,
+        missing: Option<&'a ValidityMask>,
+    ) -> SegmentedRuns<'a> {
         SegmentedRuns {
             leaf_offsets: self.ring_offsets(),
             group_offsets: Some(self.polygon_offsets()),
             group_missing: missing,
+            row_map: self.row_map,
         }
     }
 }
 
 impl PolygonColumns<'_> {
     pub(crate) const fn coords(&self) -> &CoordSeq {
-        self.coords.as_ref()
+        self.coords
     }
 
     pub(crate) fn ring_offsets(&self) -> &[i32] {
-        self.ring_offsets.as_ref().as_slice()
+        self.ring_offsets.as_slice()
     }
 
     pub(crate) fn polygon_offsets(&self) -> &[i32] {
-        self.polygon_offsets.as_ref().as_slice()
+        self.polygon_offsets.as_slice()
     }
 
-    pub(crate) const fn polygon_offsets_column(&self) -> &CsrOffsetColumn<PolygonLevel> {
-        self.polygon_offsets.as_ref()
-    }
-
-    pub(crate) const fn ring_offsets_column(&self) -> &CsrOffsetColumn<RingLevel> {
-        self.ring_offsets.as_ref()
-    }
-
-    pub(crate) fn xy(&self) -> XyColumns<'_> {
+    pub(crate) fn physical_xy(&self) -> XyColumns<'_> {
         let coords = self.coords();
         XyColumns {
             xs: coords.xs(),
@@ -208,7 +378,20 @@ impl PolygonColumns<'_> {
     }
 
     pub(crate) fn rows(&self) -> usize {
-        self.polygon_offsets().len().saturating_sub(1)
+        self.row_map
+            .len(self.polygon_offsets().len().saturating_sub(1))
+    }
+
+    pub(crate) const fn physical_row(&self, logical: usize) -> usize {
+        self.row_map.physical(logical)
+    }
+
+    pub(crate) fn is_missing(&self, logical: usize) -> bool {
+        self.missing.is_some_and(|mask| mask.is_missing(logical))
+    }
+
+    pub(crate) fn polygon_rings(&self, logical: usize) -> std::ops::Range<usize> {
+        self.row_map.csr_window(self.polygon_offsets(), logical)
     }
 }
 
@@ -221,14 +404,20 @@ pub(crate) enum PackedColumns<'a> {
 /// One logical row of packed homogeneous storage — encodes the per-variant
 /// offset walk shared by z/m extremes, bounds, centroid, and point-on-surface.
 pub(crate) enum PackedRow<'a> {
+    Missing {
+        logical: usize,
+    },
     Points {
+        logical: usize,
         row: usize,
     },
     Lines {
+        logical: usize,
         row: usize,
         offsets: &'a [i32],
     },
     Polygons {
+        logical: usize,
         row: usize,
         ring_offsets: &'a [i32],
         polygon_offsets: &'a [i32],
@@ -238,19 +427,30 @@ pub(crate) enum PackedRow<'a> {
 impl PackedRow<'_> {
     pub(crate) const fn index(&self) -> usize {
         match self {
-            Self::Points { row } | Self::Lines { row, .. } | Self::Polygons { row, .. } => *row,
+            Self::Missing { logical }
+            | Self::Points { logical, .. }
+            | Self::Lines { logical, .. }
+            | Self::Polygons { logical, .. } => *logical,
         }
+    }
+
+    pub(crate) const fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing { .. })
     }
 
     /// Point: ``row..row+1``; line: CSR window; polygon: all-ring vertex span.
     pub(crate) fn vertex_window(&self) -> Option<std::ops::Range<usize>> {
         match *self {
-            Self::Points { row } => Some(row..row + 1),
-            Self::Lines { row, offsets } => Some(offsets[row] as usize..offsets[row + 1] as usize),
+            Self::Missing { .. } => None,
+            Self::Points { row, .. } => Some(row..row + 1),
+            Self::Lines { row, offsets, .. } => {
+                Some(offsets[row] as usize..offsets[row + 1] as usize)
+            },
             Self::Polygons {
                 row,
                 ring_offsets,
                 polygon_offsets,
+                ..
             } => {
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
                 if rings.is_empty() {
@@ -265,6 +465,7 @@ impl PackedRow<'_> {
     /// Polygon rows only: ring-index range within ``ring_offsets``.
     pub(crate) const fn polygon_rings(&self) -> Option<std::ops::Range<usize>> {
         match *self {
+            Self::Missing { .. } => None,
             Self::Polygons {
                 row,
                 polygon_offsets,
@@ -280,10 +481,12 @@ impl PackedRow<'_> {
     /// Polygon rows only: exterior-ring vertex window.
     pub(crate) fn polygon_shell_window(&self) -> Option<std::ops::Range<usize>> {
         match *self {
+            Self::Missing { .. } => None,
             Self::Polygons {
                 row,
                 ring_offsets,
                 polygon_offsets,
+                ..
             } => {
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
                 if rings.is_empty() {
@@ -298,11 +501,11 @@ impl PackedRow<'_> {
 }
 
 impl PackedColumns<'_> {
-    pub(crate) fn xy(&self) -> XyColumns<'_> {
+    pub(crate) fn physical_xy(&self) -> XyColumns<'_> {
         match self {
-            Self::Points(columns) => columns.xy(),
-            Self::Lines(columns) => columns.xy(),
-            Self::Polygons(columns) => columns.xy(),
+            Self::Points(columns) => columns.physical_xy(),
+            Self::Lines(columns) => columns.physical_xy(),
+            Self::Polygons(columns) => columns.physical_xy(),
         }
     }
 
@@ -316,13 +519,31 @@ impl PackedColumns<'_> {
 
     pub(crate) fn map_rows<T>(&self, mut f: impl FnMut(PackedRow<'_>) -> T) -> Vec<T> {
         match self {
-            Self::Points(columns) => (0..columns.len())
-                .map(|row| f(PackedRow::Points { row }))
-                .collect(),
+            Self::Points(columns) => {
+                columns
+                    .rows()
+                    .cursor()
+                    .map(|(logical, physical)| {
+                        f(physical.map_or(PackedRow::Missing { logical }, |row| {
+                            PackedRow::Points { logical, row }
+                        }))
+                    })
+                    .collect()
+            },
             Self::Lines(columns) => {
                 let offsets = columns.offsets();
                 (0..columns.rows())
-                    .map(|row| f(PackedRow::Lines { row, offsets }))
+                    .map(|row| {
+                        f(if columns.is_missing(row) {
+                            PackedRow::Missing { logical: row }
+                        } else {
+                            PackedRow::Lines {
+                                logical: row,
+                                row: columns.physical_row(row),
+                                offsets,
+                            }
+                        })
+                    })
                     .collect()
             },
             Self::Polygons(columns) => {
@@ -330,10 +551,15 @@ impl PackedColumns<'_> {
                 let polygon_offsets = columns.polygon_offsets();
                 (0..columns.rows())
                     .map(|row| {
-                        f(PackedRow::Polygons {
-                            row,
-                            ring_offsets,
-                            polygon_offsets,
+                        f(if columns.is_missing(row) {
+                            PackedRow::Missing { logical: row }
+                        } else {
+                            PackedRow::Polygons {
+                                logical: row,
+                                row: columns.physical_row(row),
+                                ring_offsets,
+                                polygon_offsets,
+                            }
                         })
                     })
                     .collect()
@@ -370,79 +596,15 @@ pub(super) const fn row_err(row: usize, error: crate::error::Error) -> PackedCol
     PackedColumnError::Row { row, error }
 }
 
-fn rebase_csr_window(offsets: &[i32], start: usize, len: usize) -> Result<CsrOffsetColumn> {
-    let window = &offsets[start..=(start + len)];
-    let base = window[0] as usize;
-    let rebased: Vec<usize> = window
-        .iter()
-        .map(|&offset| {
-            (offset as usize)
-                .checked_sub(base)
-                .ok_or_else(|| crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into())
-        })
-        .collect::<Result<_>>()?;
-    let vertex_cap = *rebased.last().ok_or_else(|| -> crate::error::Error {
-        crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into()
-    })?;
-    CsrOffsetColumn::<()>::try_new(rebased, vertex_cap)
-}
-
-fn rebase_polygon_window(
-    ring_offsets: &[i32],
-    polygon_offsets: &[i32],
-    start: usize,
-    len: usize,
-) -> Result<(CsrOffsetColumn<RingLevel>, CsrOffsetColumn<PolygonLevel>)> {
-    let ring_start = polygon_offsets[start] as usize;
-    let ring_end = polygon_offsets[start + len] as usize;
-    let vertex_base = ring_offsets[ring_start] as usize;
-    let rebased_rings: Vec<usize> = ring_offsets[ring_start..=ring_end]
-        .iter()
-        .map(|&offset| {
-            (offset as usize)
-                .checked_sub(vertex_base)
-                .ok_or_else(|| crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into())
-        })
-        .collect::<Result<_>>()?;
-    let ring_cap = *rebased_rings.last().ok_or_else(|| -> crate::error::Error {
-        crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into()
-    })?;
-    let out_ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(rebased_rings, ring_cap)?;
-    let polygon_base = ring_start;
-    let rebased_polygons: Vec<usize> = polygon_offsets[start..=start + len]
-        .iter()
-        .map(|&offset| {
-            (offset as usize)
-                .checked_sub(polygon_base)
-                .ok_or_else(|| crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into())
-        })
-        .collect::<Result<_>>()?;
-    let polygon_cap = *rebased_polygons
-        .last()
-        .ok_or_else(|| -> crate::error::Error {
-            crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into()
-        })?;
-    let out_polygon_offsets =
-        CsrOffsetColumn::<PolygonLevel>::try_new(rebased_polygons, polygon_cap)?;
-    Ok((out_ring_offsets, out_polygon_offsets))
-}
-
 fn resolve_point_columns<'a>(
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
-) -> Result<PointColumns<'a>> {
-    match row_map {
-        RowSelectionRef::Identity => Ok(PointColumns {
-            coords: ColumnSource::Borrowed(coords),
-        }),
-        RowSelectionRef::Window { start, len } => Ok(PointColumns {
-            coords: ColumnSource::Owned(
-                coords.view(CoordWindow::trusted(start..start + len, coords.len())),
-            ),
-        }),
-        RowSelectionRef::Gather(map) => Ok(PointColumns {
-            coords: ColumnSource::Owned(gather_point_columns(coords, map)?),
-        }),
+    missing: Option<&'a ValidityMask>,
+) -> PointColumns<'a> {
+    PointColumns {
+        coords,
+        row_map,
+        missing,
     }
 }
 
@@ -450,30 +612,13 @@ fn resolve_line_columns<'a>(
     coords: &'a CoordSeq,
     offsets: &'a CsrOffsetColumn,
     row_map: RowSelectionRef<'a>,
-) -> Result<LineColumns<'a>> {
-    let offset_slice = offsets.as_slice();
-    match row_map {
-        RowSelectionRef::Identity => Ok(LineColumns {
-            coords: ColumnSource::Borrowed(coords),
-            offsets: ColumnSource::Borrowed(offsets),
-        }),
-        RowSelectionRef::Window { start, len } => {
-            let vertex_start = offset_slice[start] as usize;
-            let vertex_end = offset_slice[start + len] as usize;
-            Ok(LineColumns {
-                coords: ColumnSource::Owned(
-                    coords.view(CoordWindow::trusted(vertex_start..vertex_end, coords.len())),
-                ),
-                offsets: ColumnSource::Owned(rebase_csr_window(offset_slice, start, len)?),
-            })
-        },
-        RowSelectionRef::Gather(map) => {
-            let (out_coords, out_offsets) = gather_line_columns(coords, offset_slice, map)?;
-            Ok(LineColumns {
-                coords: ColumnSource::Owned(out_coords),
-                offsets: ColumnSource::Owned(out_offsets),
-            })
-        },
+    missing: Option<&'a ValidityMask>,
+) -> LineColumns<'a> {
+    LineColumns {
+        coords,
+        offsets,
+        row_map,
+        missing,
     }
 }
 
@@ -482,66 +627,48 @@ fn resolve_polygon_columns<'a>(
     ring_offsets: &'a CsrOffsetColumn<RingLevel>,
     polygon_offsets: &'a CsrOffsetColumn<PolygonLevel>,
     row_map: RowSelectionRef<'a>,
-) -> Result<PolygonColumns<'a>> {
-    let ring_offset_slice = ring_offsets.as_slice();
-    let polygon_offset_slice = polygon_offsets.as_slice();
-    match row_map {
-        RowSelectionRef::Identity => Ok(PolygonColumns {
-            coords: ColumnSource::Borrowed(coords),
-            ring_offsets: ColumnSource::Borrowed(ring_offsets),
-            polygon_offsets: ColumnSource::Borrowed(polygon_offsets),
-        }),
-        RowSelectionRef::Window { start, len } => {
-            let ring_start = polygon_offset_slice[start] as usize;
-            let ring_end = polygon_offset_slice[start + len] as usize;
-            let vertex_start = ring_offset_slice[ring_start] as usize;
-            let vertex_end = ring_offset_slice[ring_end] as usize;
-            let (out_ring_offsets, out_polygon_offsets) =
-                rebase_polygon_window(ring_offset_slice, polygon_offset_slice, start, len)?;
-            Ok(PolygonColumns {
-                coords: ColumnSource::Owned(
-                    coords.view(CoordWindow::trusted(vertex_start..vertex_end, coords.len())),
-                ),
-                ring_offsets: ColumnSource::Owned(out_ring_offsets),
-                polygon_offsets: ColumnSource::Owned(out_polygon_offsets),
-            })
-        },
-        RowSelectionRef::Gather(map) => {
-            let (out_coords, out_ring_offsets, out_polygon_offsets) =
-                gather_polygon_columns(coords, ring_offset_slice, polygon_offset_slice, map)?;
-            Ok(PolygonColumns {
-                coords: ColumnSource::Owned(out_coords),
-                ring_offsets: ColumnSource::Owned(out_ring_offsets),
-                polygon_offsets: ColumnSource::Owned(out_polygon_offsets),
-            })
-        },
+    missing: Option<&'a ValidityMask>,
+) -> PolygonColumns<'a> {
+    PolygonColumns {
+        coords,
+        ring_offsets,
+        polygon_offsets,
+        row_map,
+        missing,
     }
 }
 
-fn resolve_packed_columns(
-    storage: &GeometryArrayStorage,
-) -> PackedColumnResult<Option<PackedColumns<'_>>> {
+fn resolve_packed_columns<'a>(
+    storage: &'a GeometryArrayStorage,
+    missing: Option<&'a ValidityMask>,
+) -> PackedColumnResult<Option<PackedColumns<'a>>> {
     Ok(match storage {
         GeometryArrayStorage::Mixed(_) => None,
         GeometryArrayStorage::Points { coords, row_map } => Some(PackedColumns::Points(
-            resolve_point_columns(coords, row_map.as_deref()).map_err(PackedColumnError::Batch)?,
+            resolve_point_columns(coords, row_map.as_deref(), missing),
         )),
         GeometryArrayStorage::Lines {
             coords,
             offsets,
             row_map,
-        } => Some(PackedColumns::Lines(
-            resolve_line_columns(coords, offsets, row_map.as_deref()).map_err(batch_err)?,
-        )),
+        } => Some(PackedColumns::Lines(resolve_line_columns(
+            coords,
+            offsets,
+            row_map.as_deref(),
+            missing,
+        ))),
         GeometryArrayStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } => Some(PackedColumns::Polygons(
-            resolve_polygon_columns(coords, ring_offsets, polygon_offsets, row_map.as_deref())
-                .map_err(batch_err)?,
-        )),
+        } => Some(PackedColumns::Polygons(resolve_polygon_columns(
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map.as_deref(),
+            missing,
+        ))),
     })
 }
 
@@ -590,23 +717,20 @@ fn validate_replacement_ring(
     coords: &CoordSeq,
     window: std::ops::Range<usize>,
 ) -> PackedColumnResult<()> {
-    // Same active-ordinate closure as pack_admission::ring_seq_is_packable /
-    // dense identity validate_packed_replacement_rings / pickle (D05/N5):
-    // XY-only same_point would admit Z/M-open rings on sliced/gathered paths.
-    let len = window.end.saturating_sub(window.start);
-    if len < Ring::MIN_VERTICES_CLOSED {
-        return Err(PackedColumnError::Batch(
+    match crate::array::CheckedRingWindow::checked(coords, window) {
+        Ok(_) => Ok(()),
+        Err(crate::array::RingWindowError::TooShort(len)) => Err(PackedColumnError::Batch(
             crate::geometry::GeometryErrorKind::RingTooShort(len).into(),
-        ));
-    }
-    let first = coords.point_at(window.start);
-    let last = coords.point_at(window.end - 1);
-    if !crate::geometry::same_active_position(first, last) {
-        return Err(PackedColumnError::Batch(
+        )),
+        Err(crate::array::RingWindowError::Open) => Err(PackedColumnError::Batch(
             crate::geometry::GeometryErrorKind::message("polygon ring must be closed"),
-        ));
+        )),
+        Err(
+            crate::array::RingWindowError::Inverted | crate::array::RingWindowError::OutOfRange,
+        ) => Err(PackedColumnError::Batch(
+            crate::geometry::GeometryErrorKind::message("polygon ring range is invalid"),
+        )),
     }
-    Ok(())
 }
 
 fn finish_replacement_builder(
@@ -614,15 +738,17 @@ fn finish_replacement_builder(
     allow_mask_placeholders: bool,
 ) -> PackedColumnResult<CoordSeq> {
     if allow_mask_placeholders {
-        Ok(builder.finish_unchecked())
+        Ok(builder.finish_with_missing_placeholders())
     } else {
         builder.finish().map_err(batch_err)
     }
 }
 
-fn packed_row_missing<const HAS_MISSING: bool>(missing: Option<&[bool]>, row: usize) -> bool {
+fn packed_row_missing<const HAS_MISSING: bool>(missing: Option<&ValidityMask>, row: usize) -> bool {
     if HAS_MISSING {
-        missing.expect("HAS_MISSING rows carry a mask")[row]
+        missing
+            .expect("HAS_MISSING rows carry a mask")
+            .is_missing(row)
     } else {
         false
     }
@@ -632,79 +758,49 @@ fn replace_point_columns<const HAS_MISSING: bool>(
     point_columns: &PointColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-    missing: Option<&[bool]>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = point_columns.coords();
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), old.len());
-    for row in 0..old.len() {
-        if packed_row_missing::<HAS_MISSING>(missing, row) {
-            builder.push_at(old, row);
+    let rows = point_columns.rows();
+    let mut builder = CoordSeqBuilder::with_capacity(
+        old.axes(),
+        if rows.is_compact() {
+            rows.present_count()
         } else {
-            push_replacement_vertex(&mut builder, old, row, replacement, *replacement_index);
+            rows.len()
+        },
+    );
+    for (_row, physical) in rows.cursor() {
+        if let Some(physical) = physical {
+            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
             *replacement_index += 1;
+        } else if !rows.is_compact() {
+            debug_assert!(HAS_MISSING);
+            builder.push(missing_point(old.axes()));
         }
     }
-    Ok(PackedColumnOutput::Points(finish_replacement_builder(
-        builder,
-        HAS_MISSING,
-    )?))
+    let coords = if rows.is_compact() {
+        builder.finish().map_err(batch_err)?
+    } else {
+        finish_replacement_builder(builder, HAS_MISSING)?
+    };
+    Ok(PackedColumnOutput::Points(coords))
 }
 
 fn replace_line_columns<const HAS_MISSING: bool>(
     line_columns: &LineColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = line_columns.coords();
-    let offsets = line_columns.offsets();
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), old.len());
+    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
+    let mut offsets = crate::array::CsrOffsetBuilder::new();
     for row in 0..line_columns.rows() {
-        let window = offsets[row] as usize..offsets[row + 1] as usize;
         if packed_row_missing::<HAS_MISSING>(missing, row) {
-            for old_index in window {
-                builder.push_at(old, old_index);
-            }
+            // Missing rows carry no logical child coordinates.
         } else {
-            for old_index in window {
-                push_replacement_vertex(
-                    &mut builder,
-                    old,
-                    old_index,
-                    replacement,
-                    *replacement_index,
-                );
-                *replacement_index += 1;
-            }
-        }
-    }
-    Ok(PackedColumnOutput::Lines {
-        coords: finish_replacement_builder(builder, HAS_MISSING)?,
-        offsets: line_columns.offsets_column().clone(),
-    })
-}
-
-fn replace_polygon_columns<const HAS_MISSING: bool>(
-    polygon_columns: &PolygonColumns<'_>,
-    replacement: &CoordinateReplacement,
-    replacement_index: &mut usize,
-    missing: Option<&[bool]>,
-) -> PackedColumnResult<PackedColumnOutput> {
-    let old = polygon_columns.coords();
-    let ring_offsets = polygon_columns.ring_offsets();
-    let polygon_offsets = polygon_columns.polygon_offsets();
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), old.len());
-    let mut validate_windows = Vec::new();
-    for row in 0..polygon_columns.rows() {
-        let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
-        for ring in rings {
-            let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
-            if packed_row_missing::<HAS_MISSING>(missing, row) {
-                for old_index in window {
-                    builder.push_at(old, old_index);
-                }
-            } else {
-                validate_windows.push(window.clone());
+            let window = line_columns.row_window(row);
+            if window.len() >= 2 {
                 for old_index in window {
                     push_replacement_vertex(
                         &mut builder,
@@ -717,15 +813,77 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
                 }
             }
         }
+        offsets
+            .push_end(builder.len(), i32::MAX as usize)
+            .map_err(batch_err)?;
     }
     let coords = finish_replacement_builder(builder, HAS_MISSING)?;
+    let cap = coords.len();
+    Ok(PackedColumnOutput::Lines {
+        coords,
+        offsets: offsets.finish(cap).map_err(batch_err)?,
+    })
+}
+
+fn replace_polygon_columns<const HAS_MISSING: bool>(
+    polygon_columns: &PolygonColumns<'_>,
+    replacement: &CoordinateReplacement,
+    replacement_index: &mut usize,
+    missing: Option<&ValidityMask>,
+) -> PackedColumnResult<PackedColumnOutput> {
+    let old = polygon_columns.coords();
+    let ring_offsets = polygon_columns.ring_offsets();
+    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
+    let mut ring_builder = crate::array::CsrOffsetBuilder::new();
+    let mut polygon_builder = crate::array::CsrOffsetBuilder::new();
+    let mut ring_count = 0;
+    let mut validate_windows = Vec::new();
+    for row in 0..polygon_columns.rows() {
+        if packed_row_missing::<HAS_MISSING>(missing, row) {
+            polygon_builder
+                .push_end(ring_count, i32::MAX as usize)
+                .map_err(batch_err)?;
+            continue;
+        }
+        let rings = polygon_columns.polygon_rings(row);
+        for ring in rings {
+            let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
+            let output_start = builder.len();
+            for old_index in window {
+                push_replacement_vertex(
+                    &mut builder,
+                    old,
+                    old_index,
+                    replacement,
+                    *replacement_index,
+                );
+                *replacement_index += 1;
+            }
+            validate_windows.push(output_start..builder.len());
+            ring_count += 1;
+            ring_builder
+                .push_end(builder.len(), i32::MAX as usize)
+                .map_err(batch_err)?;
+        }
+        polygon_builder
+            .push_end(ring_count, i32::MAX as usize)
+            .map_err(batch_err)?;
+    }
+    let coords = finish_replacement_builder(builder, HAS_MISSING)?;
+    let coord_len = coords.len();
     for window in validate_windows {
         validate_replacement_ring(&coords, window)?;
     }
     Ok(PackedColumnOutput::Polygons {
         coords,
-        ring_offsets: polygon_columns.ring_offsets_column().clone(),
-        polygon_offsets: polygon_columns.polygon_offsets_column().clone(),
+        ring_offsets: ring_builder
+            .finish(coord_len)
+            .map_err(batch_err)?
+            .cast_level(),
+        polygon_offsets: polygon_builder
+            .finish(ring_count)
+            .map_err(batch_err)?
+            .cast_level(),
     })
 }
 
@@ -733,15 +891,12 @@ fn replace_packed_columns_for_mask<const HAS_MISSING: bool>(
     columns: PackedColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     match columns {
-        PackedColumns::Points(point_columns) => replace_point_columns::<HAS_MISSING>(
-            &point_columns,
-            replacement,
-            replacement_index,
-            missing,
-        ),
+        PackedColumns::Points(point_columns) => {
+            replace_point_columns::<HAS_MISSING>(&point_columns, replacement, replacement_index)
+        },
         PackedColumns::Lines(line_columns) => replace_line_columns::<HAS_MISSING>(
             &line_columns,
             replacement,
@@ -761,7 +916,7 @@ fn replace_packed_columns_dispatch(
     columns: PackedColumns<'_>,
     replacement: &CoordinateReplacement,
     replacement_index: &mut usize,
-    missing: Option<&[bool]>,
+    missing: Option<&ValidityMask>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     match missing {
         Some(mask) => replace_packed_columns_for_mask::<true>(
@@ -772,6 +927,293 @@ fn replace_packed_columns_dispatch(
         ),
         None => {
             replace_packed_columns_for_mask::<false>(columns, replacement, replacement_index, None)
+        },
+    }
+}
+
+fn finish_pointwise_coords(
+    builder: CoordSeqBuilder,
+    has_missing: bool,
+) -> PackedColumnResult<CoordSeq> {
+    if has_missing {
+        Ok(builder.finish_with_missing_placeholders())
+    } else {
+        builder.finish().map_err(batch_err)
+    }
+}
+
+fn missing_point(axes: CoordinateAxes) -> Point {
+    Point::new_raw_axes(
+        f64::NAN,
+        f64::NAN,
+        ZOrdinate(axes.has_z().then_some(f64::NAN)),
+        MOrdinate(axes.has_m().then_some(f64::NAN)),
+    )
+}
+
+fn map_selected_points(
+    columns: PackedColumns<'_>,
+    output_axes: CoordinateAxes,
+    mut map: impl FnMut(Point) -> crate::error::Result<Point>,
+) -> PackedColumnResult<PackedColumnOutput> {
+    match columns {
+        PackedColumns::Points(points) => {
+            let rows = points.rows();
+            let mut builder = CoordSeqBuilder::with_capacity(
+                output_axes,
+                if rows.is_compact() {
+                    rows.present_count()
+                } else {
+                    rows.len()
+                },
+            );
+            let mut has_missing = false;
+            for (logical, physical) in rows.cursor() {
+                let Some(physical) = physical else {
+                    if rows.is_compact() {
+                        continue;
+                    }
+                    has_missing = true;
+                    builder.push(missing_point(output_axes));
+                    continue;
+                };
+                builder.push(
+                    map(points.coords().point_at(physical))
+                        .map_err(|error| row_err(logical, error))?,
+                );
+            }
+            let coords = if rows.is_compact() {
+                builder.finish().map_err(batch_err)?
+            } else {
+                finish_pointwise_coords(builder, has_missing)?
+            };
+            Ok(PackedColumnOutput::Points(coords))
+        },
+        PackedColumns::Lines(lines) => {
+            let capacity = (0..lines.rows())
+                .filter(|&logical| !lines.is_missing(logical))
+                .map(|logical| lines.row_window(logical).len())
+                .filter(|&len| len >= 2)
+                .sum();
+            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
+            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows()).map_err(batch_err)?;
+            for logical in 0..lines.rows() {
+                if !lines.is_missing(logical) {
+                    let window = lines.row_window(logical);
+                    if window.len() >= 2 {
+                        for physical in window {
+                            builder.push(
+                                map(lines.coords().point_at(physical))
+                                    .map_err(|error| row_err(logical, error))?,
+                            );
+                        }
+                    }
+                }
+                offsets
+                    .push_end(builder.len(), i32::MAX as usize)
+                    .map_err(batch_err)?;
+            }
+            let coords = finish_pointwise_coords(builder, lines.missing.is_some())?;
+            let len = coords.len();
+            Ok(PackedColumnOutput::Lines {
+                coords,
+                offsets: offsets.finish(len).map_err(batch_err)?,
+            })
+        },
+        PackedColumns::Polygons(polygons) => {
+            let selected_rings = (0..polygons.rows())
+                .filter(|&logical| !polygons.is_missing(logical))
+                .flat_map(|logical| polygons.polygon_rings(logical));
+            let ring_count = selected_rings.clone().count();
+            let capacity = selected_rings
+                .map(|ring| {
+                    let source = polygons.ring_offsets();
+                    source[ring + 1] as usize - source[ring] as usize
+                })
+                .sum();
+            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
+            let mut rings = CsrOffsetBuilder::with_capacity(ring_count).map_err(batch_err)?;
+            let mut polygon_offsets =
+                CsrOffsetBuilder::with_capacity(polygons.rows()).map_err(batch_err)?;
+            let mut ring_count = 0;
+            for logical in 0..polygons.rows() {
+                if !polygons.is_missing(logical) {
+                    for ring in polygons.polygon_rings(logical) {
+                        let source = polygons.ring_offsets();
+                        for physical in source[ring] as usize..source[ring + 1] as usize {
+                            builder.push(
+                                map(polygons.coords().point_at(physical))
+                                    .map_err(|error| row_err(logical, error))?,
+                            );
+                        }
+                        ring_count += 1;
+                        rings
+                            .push_end(builder.len(), i32::MAX as usize)
+                            .map_err(batch_err)?;
+                    }
+                }
+                polygon_offsets
+                    .push_end(ring_count, i32::MAX as usize)
+                    .map_err(batch_err)?;
+            }
+            let coords = finish_pointwise_coords(builder, polygons.missing.is_some())?;
+            let len = coords.len();
+            Ok(PackedColumnOutput::Polygons {
+                coords,
+                ring_offsets: rings.finish(len).map_err(batch_err)?.cast_level(),
+                polygon_offsets: polygon_offsets
+                    .finish(ring_count)
+                    .map_err(batch_err)?
+                    .cast_level(),
+            })
+        },
+    }
+}
+
+fn transform_selected_coords(
+    transformer: &crate::crs::TransformPlan,
+    coords: &CoordSeq,
+    indices: impl IntoIterator<Item = usize>,
+    capacity: usize,
+) -> crate::error::Result<CoordSeq> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    let mut zs = coords.zs().map(|_| Vec::new());
+    let mut ms = coords.ms().map(|_| Vec::new());
+    crate::try_reserve_vec(&mut xs, capacity)?;
+    crate::try_reserve_vec(&mut ys, capacity)?;
+    if let Some(values) = zs.as_mut() {
+        crate::try_reserve_vec(values, capacity)?;
+    }
+    if let Some(values) = ms.as_mut() {
+        crate::try_reserve_vec(values, capacity)?;
+    }
+    for physical in indices {
+        crate::try_push_vec(&mut xs, coords.xs()[physical])?;
+        crate::try_push_vec(&mut ys, coords.ys()[physical])?;
+        if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
+            crate::try_push_vec(output, source[physical])?;
+        }
+        if let (Some(output), Some(source)) = (ms.as_mut(), coords.ms()) {
+            crate::try_push_vec(output, source[physical])?;
+        }
+    }
+    let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
+        crate::Zt::Z(values.as_mut_slice())
+    });
+    transformer.transform_coordinates(&mut xs, &mut ys, zt)?;
+    CoordSeq::try_from_vecs(xs, ys, zs, ms)
+}
+
+fn map_selected_to_crs(
+    columns: PackedColumns<'_>,
+    transformer: &crate::crs::TransformPlan,
+) -> PackedColumnResult<PackedColumnOutput> {
+    match columns {
+        PackedColumns::Points(points) => {
+            if points.missing.is_some() {
+                let missing = points.missing.expect("masked points");
+                let coords = map_masked_point_columns_to_crs(
+                    transformer,
+                    points.coords(),
+                    points.selection(),
+                    missing,
+                    missing.present_count(),
+                )
+                .map_err(batch_err)?;
+                return Ok(PackedColumnOutput::Points(coords));
+            }
+            let coords = transform_selected_coords(
+                transformer,
+                points.coords(),
+                points
+                    .rows()
+                    .cursor()
+                    .map(|(_, physical)| physical.expect("dense point rows are present")),
+                points.len(),
+            )
+            .map_err(batch_err)?;
+            Ok(PackedColumnOutput::Points(coords))
+        },
+        PackedColumns::Lines(lines) => {
+            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows()).map_err(batch_err)?;
+            let mut coordinate_count = 0;
+            for logical in 0..lines.rows() {
+                if !lines.is_missing(logical) {
+                    let len = lines.row_window(logical).len();
+                    if len >= 2 {
+                        coordinate_count += len;
+                    }
+                }
+                offsets
+                    .push_end(coordinate_count, i32::MAX as usize)
+                    .map_err(batch_err)?;
+            }
+            let indices = (0..lines.rows()).flat_map(|logical| {
+                if lines.is_missing(logical) || lines.row_window(logical).len() < 2 {
+                    0..0
+                } else {
+                    lines.row_window(logical)
+                }
+            });
+            let coords =
+                transform_selected_coords(transformer, lines.coords(), indices, coordinate_count)
+                    .map_err(batch_err)?;
+            let len = coords.len();
+            Ok(PackedColumnOutput::Lines {
+                coords,
+                offsets: offsets.finish(len).map_err(batch_err)?,
+            })
+        },
+        PackedColumns::Polygons(polygons) => {
+            let selected_ring_count = (0..polygons.rows())
+                .filter(|&logical| !polygons.is_missing(logical))
+                .map(|logical| polygons.polygon_rings(logical).len())
+                .sum();
+            let mut rings =
+                CsrOffsetBuilder::with_capacity(selected_ring_count).map_err(batch_err)?;
+            let mut polygon_offsets =
+                CsrOffsetBuilder::with_capacity(polygons.rows()).map_err(batch_err)?;
+            let mut ring_count = 0;
+            let mut coordinate_count = 0;
+            for logical in 0..polygons.rows() {
+                if !polygons.is_missing(logical) {
+                    for ring in polygons.polygon_rings(logical) {
+                        let source = polygons.ring_offsets();
+                        coordinate_count += source[ring + 1] as usize - source[ring] as usize;
+                        ring_count += 1;
+                        rings
+                            .push_end(coordinate_count, i32::MAX as usize)
+                            .map_err(batch_err)?;
+                    }
+                }
+                polygon_offsets
+                    .push_end(ring_count, i32::MAX as usize)
+                    .map_err(batch_err)?;
+            }
+            let indices = (0..polygons.rows())
+                .filter(|&logical| !polygons.is_missing(logical))
+                .flat_map(|logical| polygons.polygon_rings(logical))
+                .flat_map(|ring| {
+                    let source = polygons.ring_offsets();
+                    source[ring] as usize..source[ring + 1] as usize
+                });
+            let coords = transform_selected_coords(
+                transformer,
+                polygons.coords(),
+                indices,
+                coordinate_count,
+            )
+            .map_err(batch_err)?;
+            let len = coords.len();
+            Ok(PackedColumnOutput::Polygons {
+                coords,
+                ring_offsets: rings.finish(len).map_err(batch_err)?.cast_level(),
+                polygon_offsets: polygon_offsets
+                    .finish(ring_count)
+                    .map_err(batch_err)?
+                    .cast_level(),
+            })
         },
     }
 }
@@ -789,11 +1231,11 @@ impl PyGeometryArray {
             return Ok(None);
         }
         let storage = Arc::clone(self.storage_arc());
-        let memo = Arc::clone(&self.gathered_memo);
+        let missing = self.missing().cloned();
         let result = py
             .detach(move || {
-                let storage = normalized_gather_storage(&storage, &memo)?;
-                let columns = resolve_packed_columns(storage.as_ref())?.expect("not mixed");
+                let columns =
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
                 kernel(columns)
             })
             .map_err(packed_columns_err)?;
@@ -808,7 +1250,10 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Self>> {
         let output = self
             .reduce_packed_columns_detached(py, kernel)?
-            .map(|output| assemble_packed_output(output, output_frame));
+            .map(|output| {
+                assemble_packed_output(output, output_frame)
+                    .with_missing_mask(self.missing().cloned())
+            });
         Ok(output)
     }
 
@@ -828,45 +1273,28 @@ impl PyGeometryArray {
         let Some(output) = output else {
             return Ok(None);
         };
-        Ok(Some(assemble_packed_output(output, output_frame)))
+        Ok(Some(
+            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
+        ))
     }
 
-    pub(crate) fn map_packed_coordseq_detached(
+    pub(crate) fn map_packed_points_detached(
         &self,
         py: Python<'_>,
         output_frame: Frame,
-        kernel: impl FnOnce(&CoordSeq) -> crate::error::Result<CoordSeq> + Send,
+        output_axes: CoordinateAxes,
+        map: impl Fn(Point) -> crate::error::Result<Point> + Send,
     ) -> PyResult<Option<Self>> {
         if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             return Ok(None);
         }
         let storage = Arc::clone(self.storage_arc());
-        let memo = Arc::clone(&self.gathered_memo);
+        let missing = self.missing().cloned();
         let output = py
-            .detach(move || -> PackedColumnResult<PackedColumnOutput> {
-                let storage = normalized_gather_storage(&storage, &memo)?;
-                let columns = resolve_packed_columns(storage.as_ref())?.expect("not mixed");
-                match columns {
-                    PackedColumns::Points(point_columns) => {
-                        let out_coords = kernel(point_columns.coords()).map_err(batch_err)?;
-                        Ok(PackedColumnOutput::Points(out_coords))
-                    },
-                    PackedColumns::Lines(line_columns) => {
-                        let out_coords = kernel(line_columns.coords()).map_err(batch_err)?;
-                        Ok(PackedColumnOutput::Lines {
-                            coords: out_coords,
-                            offsets: line_columns.offsets_column().clone(),
-                        })
-                    },
-                    PackedColumns::Polygons(polygon_columns) => {
-                        let out_coords = kernel(polygon_columns.coords()).map_err(batch_err)?;
-                        Ok(PackedColumnOutput::Polygons {
-                            coords: out_coords,
-                            ring_offsets: polygon_columns.ring_offsets_column().clone(),
-                            polygon_offsets: polygon_columns.polygon_offsets_column().clone(),
-                        })
-                    },
-                }
+            .detach(move || {
+                let columns =
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                map_selected_points(columns, output_axes, map)
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
@@ -874,38 +1302,26 @@ impl PyGeometryArray {
         ))
     }
 
-    pub(crate) fn map_masked_points_to_crs_detached(
+    pub(crate) fn map_packed_to_crs_detached(
         &self,
         py: Python<'_>,
         output_frame: Frame,
         transformer: crate::crs::TransformPlan,
     ) -> PyResult<Option<Self>> {
-        if !matches!(self.storage(), GeometryArrayStorage::Points { .. }) {
+        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             return Ok(None);
         }
         let storage = Arc::clone(self.storage_arc());
-        let memo = Arc::clone(&self.gathered_memo);
-        let missing = self.missing().cloned().expect("masked point transform");
-        let missing_for_transform = missing.clone();
+        let missing = self.missing().cloned();
         let output = py
-            .detach(move || -> PackedColumnResult<PackedColumnOutput> {
-                let storage = normalized_gather_storage(&storage, &memo)?;
-                let columns = resolve_packed_columns(storage.as_ref())?.expect("not mixed");
-                let PackedColumns::Points(point_columns) = columns else {
-                    unreachable!("masked point transform requires point columns");
-                };
-                let coords = map_masked_point_columns_to_crs(
-                    &transformer,
-                    point_columns.coords(),
-                    &missing_for_transform,
-                    missing_for_transform.present_count(),
-                )
-                .map_err(batch_err)?;
-                Ok(PackedColumnOutput::Points(coords))
+            .detach(move || {
+                let columns =
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
+                map_selected_to_crs(columns, &transformer)
             })
             .map_err(packed_columns_err)?;
         Ok(Some(
-            assemble_packed_output(output, output_frame).with_missing_mask(Some(missing)),
+            assemble_packed_output(output, output_frame).with_missing_mask(self.missing().cloned()),
         ))
     }
 
@@ -919,18 +1335,17 @@ impl PyGeometryArray {
             return Ok(None);
         }
         let storage = Arc::clone(self.storage_arc());
-        let memo = Arc::clone(&self.gathered_memo);
         let missing = self.missing().cloned();
         let output = py
             .detach(move || -> PackedColumnResult<PackedColumnOutput> {
-                let storage = normalized_gather_storage(&storage, &memo)?;
-                let columns = resolve_packed_columns(storage.as_ref())?.expect("not mixed");
+                let columns =
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("not mixed");
                 let mut replacement_index = 0;
                 let output = replace_packed_columns_dispatch(
                     columns,
                     &replacement,
                     &mut replacement_index,
-                    missing.as_deref(),
+                    missing.as_ref(),
                 )?;
                 if replacement_index != replacement.len {
                     return Err(PackedColumnError::Batch(
@@ -964,17 +1379,17 @@ impl PyGeometryArray {
             return Ok(None);
         }
         let left_storage = Arc::clone(left.storage_arc());
-        let left_memo = Arc::clone(&left.gathered_memo);
         let right_storage = Arc::clone(right.storage_arc());
-        let right_memo = Arc::clone(&right.gathered_memo);
+        let left_missing = left.missing().cloned();
+        let right_missing = right.missing().cloned();
         let result = py
             .detach(move || {
-                let left_storage = normalized_gather_storage(&left_storage, &left_memo)?;
-                let right_storage = normalized_gather_storage(&right_storage, &right_memo)?;
                 let left_columns =
-                    resolve_packed_columns(left_storage.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(left_storage.as_ref(), left_missing.as_ref())?
+                        .expect("not mixed");
                 let right_columns =
-                    resolve_packed_columns(right_storage.as_ref())?.expect("not mixed");
+                    resolve_packed_columns(right_storage.as_ref(), right_missing.as_ref())?
+                        .expect("not mixed");
                 kernel(left_columns, right_columns)
             })
             .map_err(packed_columns_err)?;
@@ -985,7 +1400,7 @@ impl PyGeometryArray {
     pub(crate) fn reduce_packed_points_detached<R>(
         &self,
         py: Python<'_>,
-        kernel: impl FnOnce(&[f64], &[f64]) -> PackedColumnResult<R> + Send,
+        kernel: impl FnOnce(PointColumns<'_>) -> PackedColumnResult<R> + Send,
     ) -> PyResult<Option<R>>
     where
         R: Send,
@@ -994,16 +1409,15 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let storage = Arc::clone(self.storage_arc());
-        let memo = Arc::clone(&self.gathered_memo);
+        let missing = self.missing().cloned();
         let result = py
             .detach(move || -> PackedColumnResult<R> {
-                let storage = normalized_gather_storage(&storage, &memo)?;
-                let columns = resolve_packed_columns(storage.as_ref())?.expect("points");
+                let columns =
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref())?.expect("points");
                 let PackedColumns::Points(point_columns) = columns else {
                     unreachable!("reduce_packed_points_detached requires point storage");
                 };
-                let XyColumns { xs, ys } = point_columns.xy();
-                kernel(xs, ys)
+                kernel(point_columns)
             })
             .map_err(packed_columns_err)?;
         Ok(Some(result))
@@ -1024,34 +1438,33 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let left_storage = Arc::clone(self.storage_arc());
-        let left_memo = Arc::clone(&self.gathered_memo);
         let right_storage = Arc::clone(right.storage_arc());
-        let right_memo = Arc::clone(&right.gathered_memo);
+        let left_missing = self.missing().cloned();
+        let right_missing = right.missing().cloned();
         let values = py
-            .detach(move || -> PackedColumnResult<Vec<T>> {
-                let left_storage = normalized_gather_storage(&left_storage, &left_memo)?;
-                let right_storage = normalized_gather_storage(&right_storage, &right_memo)?;
-                let left_columns = resolve_packed_columns(left_storage.as_ref())?.expect("points");
+            .detach(move || -> PackedColumnResult<Option<Vec<T>>> {
+                let left_columns =
+                    resolve_packed_columns(left_storage.as_ref(), left_missing.as_ref())?
+                        .expect("points");
                 let right_columns =
-                    resolve_packed_columns(right_storage.as_ref())?.expect("points");
+                    resolve_packed_columns(right_storage.as_ref(), right_missing.as_ref())?
+                        .expect("points");
                 let PackedColumns::Points(left) = left_columns else {
                     unreachable!("pair_packed_points_detached requires point storage");
                 };
                 let PackedColumns::Points(right) = right_columns else {
                     unreachable!("pair_packed_points_detached requires point storage");
                 };
-                let XyColumns {
-                    xs: left_xs,
-                    ys: left_ys,
-                } = left.xy();
-                let XyColumns {
-                    xs: right_xs,
-                    ys: right_ys,
-                } = right.xy();
-                kernel(left_xs, left_ys, right_xs, right_ys).map_err(batch_err)
+                let (Some(left_xy), Some(right_xy)) = (left.contiguous_xy(), right.contiguous_xy())
+                else {
+                    return Ok(None);
+                };
+                kernel(left_xy.xs, left_xy.ys, right_xy.xs, right_xy.ys)
+                    .map(Some)
+                    .map_err(batch_err)
             })
             .map_err(packed_columns_err)?;
-        Ok(Some(values))
+        Ok(values)
     }
 
     /// O(1) packed-storage X/Y swap — narrow escape hatch, not a general scan.
@@ -1086,5 +1499,139 @@ impl PyGeometryArray {
             )),
             GeometryArrayStorage::Mixed(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::RowSelection;
+    use crate::test_support::allocation_count;
+
+    fn coords() -> CoordSeq {
+        CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![0.0, 1.0, 0.0, 3.0, 4.0, 3.0],
+            None,
+            None,
+        )
+        .expect("valid coordinates")
+    }
+
+    #[test]
+    fn selected_views_resolve_physical_rows_directly() {
+        let selection = || RowSelection::gather(Arc::from([1_usize, 0, 1]), 2);
+        let point_storage = GeometryArrayStorage::Points {
+            coords: Arc::new(coords()),
+            row_map: RowSelection::gather(Arc::from([2_usize, 0, 2]), 6),
+        };
+        let line_storage = GeometryArrayStorage::Lines {
+            coords: Arc::new(coords()),
+            offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
+            row_map: selection(),
+        };
+        let polygon_storage = GeometryArrayStorage::Polygons {
+            coords: Arc::new(coords()),
+            ring_offsets: CsrOffsetColumn::<RingLevel>::try_new(vec![0, 3, 6], 6)
+                .expect("valid ring offsets"),
+            polygon_offsets: CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1, 2], 2)
+                .expect("valid polygon offsets"),
+            row_map: selection(),
+        };
+
+        for storage in [&point_storage, &line_storage, &polygon_storage] {
+            let Ok(Some(columns)) = resolve_packed_columns(storage, None) else {
+                panic!("packed view resolution failed");
+            };
+            assert_eq!(columns.row_count(), 3);
+            assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
+            let _ = crate::array::packed_column_kernels::bounds_values_from_columns(&columns)
+                .expect("bounds");
+        }
+    }
+
+    #[test]
+    fn point_row_cursor_maps_present_ranks_only_for_compact_payloads() {
+        let compact_map = RowSelection::gather(Arc::from([5_usize, 2, 5]), 6);
+        let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
+            .expect("compact mask");
+        let compact = PointRows::new(6, compact_map.as_deref(), Some(&compact_mask));
+        assert!(compact.is_compact());
+        assert_eq!(compact.present_count(), 3);
+        assert_eq!(compact.cursor().collect::<Vec<_>>(), [
+            (0, None),
+            (1, Some(5)),
+            (2, None),
+            (3, None),
+            (4, Some(2)),
+            (5, Some(5))
+        ]);
+
+        let row_aligned_map = RowSelection::gather(Arc::from([2_usize, 0, 2]), 3);
+        let row_aligned_mask =
+            ValidityMask::from_vec(3, vec![false, true, false]).expect("row-aligned mask");
+        let row_aligned = PointRows::new(3, row_aligned_map.as_deref(), Some(&row_aligned_mask));
+        assert!(!row_aligned.is_compact());
+        assert_eq!(row_aligned.cursor().collect::<Vec<_>>(), [
+            (0, Some(2)),
+            (1, None),
+            (2, Some(2))
+        ]);
+    }
+
+    fn gathered_lines(rows: usize) -> GeometryArrayStorage {
+        GeometryArrayStorage::Lines {
+            coords: Arc::new(coords()),
+            offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
+            row_map: RowSelection::gather(
+                (0..rows).map(|row| row & 1).collect::<Vec<_>>().into(),
+                2,
+            ),
+        }
+    }
+
+    #[test]
+    fn selected_reduction_allocates_only_its_result() {
+        let storage = gathered_lines(32);
+        let columns = resolve_packed_columns(&storage, None)
+            .ok()
+            .flatten()
+            .expect("packed columns");
+        let (values, allocations) = allocation_count(|| {
+            crate::array::packed_column_kernels::bounds_values_from_columns(&columns)
+                .expect("bounds")
+        });
+        assert_eq!(values.len(), 32 * 4);
+        assert_eq!(allocations, 1);
+    }
+
+    #[test]
+    fn selected_pointwise_map_has_constant_output_owner_allocations() {
+        fn count(rows: usize) -> usize {
+            let storage = gathered_lines(rows);
+            let columns = resolve_packed_columns(&storage, None)
+                .ok()
+                .flatten()
+                .expect("packed columns");
+            let (output, allocations) = allocation_count(|| {
+                let Ok(output) = map_selected_points(columns, CoordinateAxes::XY, |point| {
+                    point.translate_xy(1.0, -1.0)
+                }) else {
+                    panic!("pointwise map failed");
+                };
+                output
+            });
+            let PackedColumnOutput::Lines { coords, offsets } = output else {
+                panic!("line input must produce line output");
+            };
+            assert_eq!(coords.len(), rows * 3);
+            assert_eq!(offsets.len(), rows + 1);
+            allocations
+        }
+
+        let small = count(2);
+        let large = count(128);
+        assert_eq!(small, 9);
+        assert_eq!(small, large);
     }
 }

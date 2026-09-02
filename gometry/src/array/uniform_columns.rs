@@ -102,7 +102,7 @@ impl PyGeometryArray {
             }
             let mut poly_rings = 0_usize;
             for seq in polygon.rings() {
-                debug_assert!(super::ring_seq_is_packable(seq));
+                debug_assert!(super::CheckedRingWindow::checked(seq, 0..seq.len()).is_ok());
                 total_vertices = total_vertices.checked_add(seq.len())?;
                 if total_vertices > vertex_cap {
                     return None;

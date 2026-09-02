@@ -12,7 +12,7 @@ pub(crate) use compare::{
     compare_shapes,
 };
 pub(crate) use reduce::{column_all_finite, column_minmax, *};
-pub(crate) use shape::{ShapePart, *};
+pub(crate) use shape::*;
 
 /// Logical SIMD vector width (bits) for the column kernels — the single source
 /// for SIMD lane sizing across gometry; per-type lane counts derive from it via

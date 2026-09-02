@@ -405,7 +405,7 @@ fn carry_or_degrade(
                     !axes.has_m() || m.is_some(),
                     "retained M is not reproducible at {point:?}; axes={axes:?}"
                 );
-                Ok(Point::new_unchecked_axes(
+                Ok(Point::new_raw_axes(
                     point.x,
                     point.y,
                     ZOrdinate(axes.has_z().then(|| z.expect("retained Z is sourced"))),
@@ -442,7 +442,7 @@ mod tests {
         let start =
             Point::new_axes(large, 0.0, ZOrdinate(Some(2.0)), MOrdinate(Some(4.0))).unwrap();
         let end = Point::new_axes(large, tiny, ZOrdinate(Some(6.0)), MOrdinate(Some(8.0))).unwrap();
-        let midpoint = Point::new_unchecked_xy(large, tiny / 2.0);
+        let midpoint = Point::new_raw_xy(large, tiny / 2.0);
         assert_eq!(
             segment_ordinate_at(start, end, midpoint, 0.0),
             Some((Some(4.0), Some(6.0)))
