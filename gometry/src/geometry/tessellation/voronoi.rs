@@ -6,7 +6,7 @@
 
 use crate::error::Result;
 use crate::geometry::tessellation::{CertifiedDelaunay, Site, exact};
-use crate::geometry::{GeometryErrorKind, HashMap, HashMapExt as _};
+use crate::geometry::{HashMap, HashMapExt as _};
 
 pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
     let ordered = |value: f64| {
@@ -108,21 +108,27 @@ pub(super) fn delaunay_complex(
         }
     }
 
-    let mut sites_by_root: HashMap<usize, Vec<usize>> = HashMap::new();
+    // A certified face is already non-collinear.  Keeping its canonical
+    // minimum triangle is enough both to name a component deterministically
+    // and to define its exact circumcenter; collecting every component site
+    // only recreated this state at a much higher allocation cost.
+    let mut component_faces: HashMap<usize, ([usize; 3], usize)> = HashMap::new();
     for (face, triangle) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
-        sites_by_root.entry(root).or_default().extend(triangle);
-    }
-    let mut roots: Vec<_> = sites_by_root.keys().copied().collect();
-    for root in &roots {
-        let component_sites = sites_by_root
-            .get_mut(root)
-            .expect("root was collected from this map");
-        component_sites.sort_unstable();
-        component_sites.dedup();
+        let mut key = *triangle;
+        key.sort_unstable();
+        component_faces
+            .entry(root)
+            .and_modify(|current| {
+                if key < current.0 {
+                    *current = (key, face);
+                }
+            })
+            .or_insert((key, face));
     }
 
-    roots.sort_unstable_by(|&left, &right| sites_by_root[&left].cmp(&sites_by_root[&right]));
+    let mut roots: Vec<_> = component_faces.keys().copied().collect();
+    roots.sort_unstable_by_key(|root| component_faces[root].0);
     let component_by_root: HashMap<_, _> = roots
         .iter()
         .enumerate()
@@ -130,31 +136,8 @@ pub(super) fn delaunay_complex(
         .collect();
     let mut centers = Vec::with_capacity(roots.len());
     for root in roots {
-        let component_sites = &sites_by_root[&root];
-        let mut defining = None;
-        'triples: for first in 0..component_sites.len() {
-            for second in first + 1..component_sites.len() {
-                for third in second + 1..component_sites.len() {
-                    let triple = [
-                        component_sites[first],
-                        component_sites[second],
-                        component_sites[third],
-                    ];
-                    if exact::orient2d(
-                        sites[triple[0]].point.xy(),
-                        sites[triple[1]].point.xy(),
-                        sites[triple[2]].point.xy(),
-                    ) != exact::ExactSign::Zero
-                    {
-                        defining = Some(triple);
-                        break 'triples;
-                    }
-                }
-            }
-        }
-        let [a, b, c] = defining.ok_or_else(|| {
-            GeometryErrorKind::voronoi("certified Delaunay component has no non-collinear face")
-        })?;
+        let face = component_faces[&root].1;
+        let [a, b, c] = triangles[face];
         centers.push(exact::circumcenter(
             sites[a].point.xy(),
             sites[b].point.xy(),

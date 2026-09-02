@@ -37,6 +37,50 @@ use crate::geometry::{
 #[cfg(test)]
 use crate::geometry::{GENERATED_ITEM_LIMIT, tessellation::shape};
 
+#[cfg(test)]
+thread_local! {
+    static DUAL_BUILD_WORK: std::cell::Cell<DualBuildWork> =
+        const { std::cell::Cell::new(DualBuildWork::ZERO) };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct DualBuildWork {
+    pub(super) component_allocation_units: usize,
+    pub(super) ring_allocation_units: usize,
+    pub(super) coverage_candidates: usize,
+    pub(super) fan_hits: usize,
+}
+
+#[cfg(test)]
+impl DualBuildWork {
+    const ZERO: Self = Self {
+        component_allocation_units: 0,
+        ring_allocation_units: 0,
+        coverage_candidates: 0,
+        fan_hits: 0,
+    };
+}
+
+#[cfg(test)]
+pub(super) fn take_dual_build_work() -> DualBuildWork {
+    DUAL_BUILD_WORK.with(|work| work.replace(DualBuildWork::ZERO))
+}
+
+#[cfg(test)]
+fn reset_dual_build_work() {
+    DUAL_BUILD_WORK.with(|work| work.set(DualBuildWork::ZERO));
+}
+
+#[cfg(test)]
+fn note_dual_build_work(update: impl FnOnce(&mut DualBuildWork)) {
+    DUAL_BUILD_WORK.with(|work| {
+        let mut current = work.get();
+        update(&mut current);
+        work.set(current);
+    });
+}
+
 macro_rules! dense_id {
     ($name:ident) => {
         #[repr(transparent)]
@@ -2803,21 +2847,19 @@ fn embed(
         .map(|(_, polygon)| polygon.clone())
         .collect();
     let embedded_ring = |ring: &[exact::ExactPoint]| -> Result<Ring> {
-        let mut coordinates = ring
-            .iter()
-            .map(|point| {
-                let vertex = subdivision
-                    .vertices
-                    .iter()
-                    .position(|candidate| candidate.point.same_position(point))
-                    .ok_or_else(|| voronoi_error("generated clip vertex is not live"))?;
-                let embedded = exact_to_embedded[vertex]
-                    .ok_or_else(|| voronoi_error("generated clip vertex is not embedded"))?;
-                let xy = points[embedded.0 as usize];
-                Ok(Point::new_raw_xy(xy.x, xy.y))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        coordinates.push(coordinates[0].clone());
+        let mut coordinates = Vec::with_capacity(ring.len() + 1);
+        for point in ring {
+            let vertex = subdivision
+                .vertices
+                .iter()
+                .position(|candidate| candidate.point.same_position(point))
+                .ok_or_else(|| voronoi_error("generated clip vertex is not live"))?;
+            let embedded = exact_to_embedded[vertex]
+                .ok_or_else(|| voronoi_error("generated clip vertex is not embedded"))?;
+            let xy = points[embedded.0 as usize];
+            coordinates.push(Point::new_raw_xy(xy.x, xy.y));
+        }
+        coordinates.push(coordinates[0]);
         Ring::closed(coordinates)
     };
     let shell = embedded_ring(&clip.rings[0])?;
@@ -2942,6 +2984,8 @@ pub(super) fn build(
     budget: &mut ExpansionBudget,
     combinatorial_dual: bool,
 ) -> Result<EmbeddedVoronoi> {
+    #[cfg(test)]
+    reset_dual_build_work();
     if sites
         .iter()
         .enumerate()
@@ -3428,6 +3472,121 @@ mod tests {
     }
 
     #[test]
+    fn central_fan_uses_the_certified_coverage_shortcut() {
+        let sites: Vec<_> = [
+            (5.0, 0.0),
+            (4.0, 3.0),
+            (0.0, 5.0),
+            (-4.0, 3.0),
+            (-5.0, 0.0),
+            (-4.0, -3.0),
+            (0.0, -5.0),
+            (4.0, -3.0),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (x, y))| Site {
+            id,
+            point: Point::new_raw_xy(x, y),
+        })
+        .collect();
+        let mut budget = ExpansionBudget::new("test", "central fan");
+        let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, &mut budget).unwrap();
+        let mesh = certified_delaunay(&sites).unwrap();
+        let complex = delaunay_complex(&mesh, &sites).unwrap();
+        let rings = dual_build_rings(&sites, &mesh, &complex, &clip, &mut budget).unwrap();
+        let diagram = dual_embed(&rings, &clip, &mut budget).unwrap();
+        assert_eq!(diagram.polygons.len(), sites.len());
+        let dual_work = take_dual_build_work();
+        assert_eq!(dual_work.fan_hits, 1);
+        assert_eq!(dual_work.coverage_candidates, 0);
+        let certification =
+            crate::geometry::tessellation::delaunay::take_voronoi_certification_work();
+        assert_eq!(certification.mapped_accepts, 1);
+        assert_eq!(certification.mapped_fallbacks, 0);
+        assert!(certification.robust_orientations > 0);
+        assert!(certification.robust_incircles > 0);
+        assert_eq!(certification.exact_incircles, 0);
+        assert!(certification.edge_incidences > 0);
+    }
+
+    #[test]
+    fn large_integer_circle_stays_on_the_central_fan_lane() {
+        let factors = [
+            (2_i64, 1_i64),
+            (3, 2),
+            (4, 1),
+            (5, 2),
+            (6, 1),
+            (5, 4),
+            (7, 2),
+        ];
+        let multiply = |left: (i64, i64), right: (i64, i64)| {
+            (
+                left.0 * right.0 - left.1 * right.1,
+                left.0 * right.1 + left.1 * right.0,
+            )
+        };
+        let power = |value: (i64, i64), exponent: usize| {
+            (0..exponent).fold((1_i64, 0_i64), |result, _| multiply(result, value))
+        };
+        let mut coordinates = Vec::with_capacity(8748);
+        for mut code in 0..3_usize.pow(factors.len() as u32) {
+            let mut point = (1_i64, 0_i64);
+            for &(x, y) in &factors {
+                let exponent = code % 3;
+                code /= 3;
+                point = multiply(
+                    point,
+                    multiply(power((x, y), exponent), power((x, -y), 2 - exponent)),
+                );
+            }
+            coordinates.extend([
+                point,
+                (-point.0, -point.1),
+                (-point.1, point.0),
+                (point.1, -point.0),
+            ]);
+            if coordinates.len() >= 8192 {
+                break;
+            }
+        }
+        coordinates.truncate(8192);
+        let sites: Vec<_> = coordinates
+            .into_iter()
+            .enumerate()
+            .map(|(id, (x, y))| Site {
+                id,
+                point: Point::new_raw_xy(x as f64, y as f64),
+            })
+            .collect();
+        let mut budget = ExpansionBudget::new("test", "large central fan");
+        let diagram = build(&sites, VoronoiBoundary::Envelope, &mut budget, true).unwrap();
+        assert_eq!(diagram.polygons.len(), sites.len());
+        let work = take_dual_build_work();
+        assert_eq!(work.fan_hits, 1);
+        assert_eq!(work.coverage_candidates, 0);
+    }
+
+    #[test]
+    fn cosine_circle_fails_open_to_generic_coverage() {
+        let sites: Vec<_> = (0..8)
+            .map(|index| {
+                let angle = index as f64 * std::f64::consts::TAU / 8.0;
+                Point::new_raw_xy(10.0 * angle.cos(), 10.0 * angle.sin())
+            })
+            .enumerate()
+            .map(|(id, point)| Site { id, point })
+            .collect();
+        let mut budget = ExpansionBudget::new("test", "cosine circle");
+        let diagram = build(&sites, VoronoiBoundary::Envelope, &mut budget, true).unwrap();
+        assert_eq!(diagram.polygons.len(), sites.len());
+        let work = take_dual_build_work();
+        assert_eq!(work.fan_hits, 0);
+        assert!(work.coverage_candidates > 0);
+    }
+
+    #[test]
     fn shifted_six_site_diagram_rejects_colliding_binary64_vertices() {
         let offset = 1e16;
         let sites: Vec<_> = [
@@ -3867,27 +4026,27 @@ const fn dual_next_halfedge(edge: usize) -> usize {
     if edge % 3 == 2 { edge - 2 } else { edge + 1 }
 }
 
-/// A dual ring vertex. `Center(c)` IS component `c`'s circumcenter, so its
-/// identity is the component id and its rounding can be memoised once per
-/// component instead of resolved by an exact positional sort. `Generated`
-/// covers frame corners, hull-ray caps and clip crossings.
+/// A dual ring vertex. `Center(c)` names the one exact center stored by the
+/// ring collection; generated vertices own only frame, ray, or clip points.
 #[derive(Clone)]
 enum DualVertex {
     Center(u32),
-    Generated,
+    Generated(exact::ExactPoint),
 }
 
 #[derive(Clone)]
 struct DualRings {
-    rings: Vec<Vec<(DualVertex, exact::ExactPoint)>>,
-    component_count: usize,
+    rings: Vec<Vec<DualVertex>>,
+    centers: Vec<exact::ExactPoint>,
+    all_sites_hull: bool,
 }
 
 /// The radial walk. `triangles[e]` is the origin of half-edge `e`; the walk
 /// `incoming -> halfedges[next(incoming)]` rotates around the shared endpoint.
 /// Starting from a hull half-edge when one exists makes an unbounded cell's
-/// walk begin and end on the hull.
-fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Vec<IncidentFaces> {
+/// walk begin and end on the hull. Faces for all sites share one flat backing
+/// allocation; the offsets are the only per-site state.
+fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentFaces {
     let triangles = mesh.triangles();
     let halfedges = mesh.halfedges();
     let flat = |edge: usize| triangles[edge / 3][edge % 3];
@@ -3898,37 +4057,62 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Vec<Incid
             start_edge[endpoint] = edge;
         }
     }
-    let mut out = Vec::with_capacity(site_count);
+    let mut offsets = Vec::with_capacity(site_count + 1);
+    let mut boundaries = Vec::with_capacity(site_count);
+    offsets.push(0);
     for site in 0..site_count {
         let start = start_edge[site];
-        let mut faces = Vec::new();
-        let mut boundary = None;
-        if start == usize::MAX {
-            out.push((faces, boundary));
-            continue;
-        }
-        let mut incoming = start;
-        loop {
-            faces.push(incoming / 3);
-            let outgoing = dual_next_halfedge(incoming);
-            let next = halfedges[outgoing];
-            if next == delaunator::EMPTY {
-                // `start` was a hull half-edge (q -> site) with no twin and
-                // `outgoing` is the hull half-edge (site -> r).
-                boundary = Some((start, outgoing));
-                break;
-            }
-            incoming = next;
-            if incoming == start {
-                break;
-            }
-        }
-        out.push((faces, boundary));
+        let (length, boundary) = incident_faces_for_site(start, halfedges, None);
+        offsets.push(offsets.last().copied().unwrap_or(0) + length);
+        boundaries.push(boundary);
     }
-    out
+    let mut faces = vec![0; offsets.last().copied().unwrap_or(0)];
+    for site in 0..site_count {
+        let start = start_edge[site];
+        let range = offsets[site]..offsets[site + 1];
+        incident_faces_for_site(start, halfedges, Some(&mut faces[range]));
+    }
+    IncidentFaces {
+        offsets,
+        faces,
+        boundaries,
+    }
 }
 
-type IncidentFaces = (Vec<usize>, Option<(usize, usize)>);
+struct IncidentFaces {
+    offsets: Vec<usize>,
+    faces: Vec<usize>,
+    boundaries: Vec<Option<(usize, usize)>>,
+}
+
+fn incident_faces_for_site(
+    start: usize,
+    halfedges: &[usize],
+    mut output: Option<&mut [usize]>,
+) -> (usize, Option<(usize, usize)>) {
+    if start == usize::MAX {
+        return (0, None);
+    }
+    let mut length = 0;
+    let mut incoming = start;
+    loop {
+        if let Some(output) = output.as_deref_mut() {
+            output[length] = incoming / 3;
+        }
+        length += 1;
+        let outgoing = dual_next_halfedge(incoming);
+        let next = halfedges[outgoing];
+        if next == delaunator::EMPTY {
+            // `start` was a hull half-edge (q -> site) with no twin and
+            // `outgoing` is the hull half-edge (site -> r).
+            return (length, Some((start, outgoing)));
+        }
+        incoming = next;
+        if incoming == start {
+            return (length, None);
+        }
+    }
+}
 
 /// Cap one unbounded dual ray on the private frame. Identical construction to
 /// the shipped hull-edge lane in `build_primitives`.
@@ -3956,16 +4140,22 @@ fn dual_ray_hit(
 }
 
 fn dual_close_hull_chain(
-    centers: &[(DualVertex, exact::ExactPoint)],
+    faces: &[usize],
+    complex: &DelaunayComplex,
+    center_points: &[exact::ExactPoint],
     entry_ray: &(u8, exact::ExactPoint),
     exit_ray: &(u8, exact::ExactPoint),
     frame: &[exact::ExactPoint; 4],
     exterior: bool,
-) -> Result<Vec<(DualVertex, exact::ExactPoint)>> {
-    let mut ring = Vec::with_capacity(centers.len() + 6);
-    ring.push((DualVertex::Generated, entry_ray.1.clone()));
-    ring.extend(centers.iter().cloned());
-    ring.push((DualVertex::Generated, exit_ray.1.clone()));
+) -> Result<Vec<DualVertex>> {
+    let mut ring = Vec::with_capacity(faces.len() + 6);
+    ring.push(DualVertex::Generated(entry_ray.1.clone()));
+    ring.extend(
+        faces
+            .iter()
+            .map(|&face| DualVertex::Center(complex.component_of_face(face) as u32)),
+    );
+    ring.push(DualVertex::Generated(exit_ray.1.clone()));
     let exit_side = exit_ray.0 as usize;
     let entry_side = entry_ray.0 as usize;
     if exterior {
@@ -3975,7 +4165,7 @@ fn dual_close_hull_chain(
         };
         let mut side = exit_side;
         for _ in 0..steps {
-            ring.push((DualVertex::Generated, frame[side].clone()));
+            ring.push(DualVertex::Generated(frame[side].clone()));
             side = (side + 3) % 4;
         }
     } else {
@@ -3983,18 +4173,103 @@ fn dual_close_hull_chain(
         let mut side = exit_side;
         for _ in 0..steps {
             side = (side + 1) % 4;
-            ring.push((DualVertex::Generated, frame[side].clone()));
+            ring.push(DualVertex::Generated(frame[side].clone()));
         }
     }
-    ring.dedup_by(|left, right| left.1.same_position(&right.1));
-    while ring.len() > 1 && ring[0].1.same_position(&ring.last().expect("non-empty").1) {
+    ring.dedup_by(|left, right| {
+        dual_vertex_point(left, center_points)
+            .zip(dual_vertex_point(right, center_points))
+            .is_some_and(|(left, right)| left.same_position(right))
+    });
+    if ring.len() > 1
+        && dual_vertex_point(&ring[0], center_points)
+            .zip(dual_vertex_point(
+                ring.last().expect("non-empty"),
+                center_points,
+            ))
+            .is_some_and(|(left, right)| left.same_position(right))
+    {
         ring.pop();
     }
-    let points: Vec<_> = ring.iter().map(|(_, point)| point.clone()).collect();
-    if exact::cycle_orientation(&points)? == exact::ExactSign::Negative {
+    if dual_cycle_orientation(&ring, center_points)? == exact::ExactSign::Negative {
         ring.reverse();
     }
     Ok(ring)
+}
+
+fn dual_vertex_point<'a>(
+    vertex: &'a DualVertex,
+    centers: &'a [exact::ExactPoint],
+) -> Option<&'a exact::ExactPoint> {
+    match vertex {
+        DualVertex::Center(component) => centers.get(*component as usize),
+        DualVertex::Generated(point) => Some(point),
+    }
+}
+
+fn dual_cycle_orientation(
+    ring: &[DualVertex],
+    centers: &[exact::ExactPoint],
+) -> Result<exact::ExactSign> {
+    if ring.len() < 3 {
+        return Err(voronoi_error("exact cycle has fewer than three vertices"));
+    }
+    for index in 0..ring.len() {
+        let left = dual_vertex_point(&ring[index], centers).expect("valid center id");
+        let center =
+            dual_vertex_point(&ring[(index + 1) % ring.len()], centers).expect("valid center id");
+        let right =
+            dual_vertex_point(&ring[(index + 2) % ring.len()], centers).expect("valid center id");
+        let sign = exact::orient_points(left, center, right);
+        if sign != exact::ExactSign::Zero {
+            return Ok(sign);
+        }
+    }
+    Err(voronoi_error("exact cycle has zero orientation"))
+}
+
+fn dual_point_in_cycle(
+    cycle: &[DualVertex],
+    centers: &[exact::ExactPoint],
+    point: &exact::ExactPoint,
+) -> exact::PointInCycle {
+    let mut winding = 0_i32;
+    let on_segment = |start: &exact::ExactPoint, end: &exact::ExactPoint| {
+        let between = |left: Ordering, right: Ordering| {
+            (left != Ordering::Less && right != Ordering::Greater)
+                || (right != Ordering::Less && left != Ordering::Greater)
+        };
+        exact::orient_points(start, end, point) == exact::ExactSign::Zero
+            && between(point.compare_x(start), point.compare_x(end))
+            && between(point.compare_y(start), point.compare_y(end))
+    };
+    for index in 0..cycle.len() {
+        let start = dual_vertex_point(&cycle[index], centers).expect("valid center id");
+        let end =
+            dual_vertex_point(&cycle[(index + 1) % cycle.len()], centers).expect("valid center id");
+        if on_segment(start, end) {
+            return exact::PointInCycle::Boundary;
+        }
+        let start_y = start.compare_y(point);
+        let end_y = end.compare_y(point);
+        let orientation = exact::orient_points(start, end, point);
+        if start_y != Ordering::Greater
+            && end_y == Ordering::Greater
+            && orientation == exact::ExactSign::Positive
+        {
+            winding += 1;
+        } else if end_y != Ordering::Greater
+            && start_y == Ordering::Greater
+            && orientation == exact::ExactSign::Negative
+        {
+            winding -= 1;
+        }
+    }
+    if winding == 0 {
+        exact::PointInCycle::Outside
+    } else {
+        exact::PointInCycle::Inside
+    }
 }
 
 /// Sutherland-Hodgman against a CCW convex rectangle, in exact arithmetic.
@@ -4012,10 +4287,11 @@ fn dual_close_hull_chain(
 /// six interval operations. A degenerate rectangle falls back to the general
 /// orientation test.
 fn dual_clip_convex(
-    ring: Vec<(DualVertex, exact::ExactPoint)>,
+    ring: Vec<DualVertex>,
     rect: &[exact::ExactPoint; 4],
     axis_aligned: bool,
-) -> Result<Vec<(DualVertex, exact::ExactPoint)>> {
+    centers: &[exact::ExactPoint],
+) -> Result<Vec<DualVertex>> {
     let mut current = ring;
     for side in 0..4 {
         if current.is_empty() {
@@ -4036,24 +4312,35 @@ fn dual_clip_convex(
         };
         let mut next = Vec::with_capacity(current.len() + 1);
         for index in 0..current.len() {
-            let this_in = inside(&current[index].1);
-            let prev_in = inside(&current[(index + current.len() - 1) % current.len()].1);
+            let this_in =
+                inside(dual_vertex_point(&current[index], centers).expect("valid center id"));
+            let previous = (index + current.len() - 1) % current.len();
+            let prev_in =
+                inside(dual_vertex_point(&current[previous], centers).expect("valid center id"));
             if this_in != prev_in {
                 let edge = exact::ExactLine::through_points(
-                    &current[(index + current.len() - 1) % current.len()].1,
-                    &current[index].1,
+                    dual_vertex_point(&current[previous], centers).expect("valid center id"),
+                    dual_vertex_point(&current[index], centers).expect("valid center id"),
                 )?;
                 let hit = exact::line_intersection(&boundary, &edge);
                 if hit.is_finite() {
-                    next.push((DualVertex::Generated, hit));
+                    next.push(DualVertex::Generated(hit));
                 }
             }
             if this_in {
                 next.push(current[index].clone());
             }
         }
-        next.dedup_by(|left, right| left.1.same_position(&right.1));
-        while next.len() > 1 && next[0].1.same_position(&next.last().expect("non-empty").1) {
+        next.dedup_by(|left, right| {
+            dual_vertex_point(left, centers)
+                .zip(dual_vertex_point(right, centers))
+                .is_some_and(|(left, right)| left.same_position(right))
+        });
+        while next.len() > 1
+            && dual_vertex_point(&next[0], centers)
+                .zip(dual_vertex_point(next.last().expect("non-empty"), centers))
+                .is_some_and(|(left, right)| left.same_position(right))
+        {
             next.pop();
         }
         current = next;
@@ -4068,12 +4355,17 @@ fn dual_build_rings(
     clip: &NormalizedClip<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<DualRings> {
+    let centers: Vec<_> = (0..complex.component_count())
+        .map(|id| complex.center(id).clone())
+        .collect();
+    #[cfg(test)]
+    note_dual_build_work(|work| work.component_allocation_units += centers.len());
     let mut frame_inputs: Vec<_> = sites
         .iter()
         .map(|site| exact::ExactPoint::from_xy(site.point.xy()))
         .collect();
     frame_inputs.extend(clip.rings.iter().flatten().cloned());
-    frame_inputs.extend((0..complex.component_count()).map(|id| complex.center(id).clone()));
+    frame_inputs.extend(centers.iter().cloned());
     let frame = match exact::enclosing_frame_binary64(&frame_inputs) {
         Some(frame) => frame,
         None => exact::enclosing_frame(&frame_inputs)?,
@@ -4098,8 +4390,12 @@ fn dual_build_rings(
     let incidence = dual_incident_faces(mesh, sites.len());
     let mut rings = Vec::with_capacity(sites.len());
 
-    for (site, (faces, boundary)) in incidence.into_iter().enumerate() {
+    for site in 0..sites.len() {
+        let faces = &incidence.faces[incidence.offsets[site]..incidence.offsets[site + 1]];
+        let boundary = incidence.boundaries[site];
         budget.add(faces.len().saturating_add(1))?;
+        #[cfg(test)]
+        note_dual_build_work(|work| work.ring_allocation_units += 1);
         let mut ring = if let Some((first_hull, last_hull)) = boundary {
             // (q -> site) and (site -> r): the two hull edges bounding the cell.
             let entry = [flat(first_hull), flat(dual_next_halfedge(first_hull))];
@@ -4110,32 +4406,23 @@ fn dual_build_rings(
             debug_assert_eq!(halfedges[last_hull], delaunator::EMPTY);
             let entry_ray = dual_ray_hit(sites, entry, entry_opposite, &frame)?;
             let exit_ray = dual_ray_hit(sites, exit, exit_opposite, &frame)?;
-            let centers: Vec<(DualVertex, exact::ExactPoint)> = faces
-                .iter()
-                .map(|&face| {
-                    let component = complex.component_of_face(face);
-                    (
-                        DualVertex::Center(component as u32),
-                        complex.center(component).clone(),
-                    )
-                })
-                .collect();
             let site_point = exact::ExactPoint::from_xy(sites[site].point.xy());
             // Positive topology fixes the open center chain. The two frame
             // paths are complementary clipped faces; exact ownership decides
             // only which one contains this site, including the zero-separator
             // isolated-ring case. Ring handedness is normalization, not a
             // second candidate.
-            let interior = dual_close_hull_chain(&centers, &entry_ray, &exit_ray, &frame, false)?;
-            let interior_points: Vec<_> = interior.iter().map(|(_, point)| point.clone()).collect();
-            if exact::point_in_cycle(&interior_points, &site_point) == exact::PointInCycle::Inside {
+            let interior = dual_close_hull_chain(
+                faces, complex, &centers, &entry_ray, &exit_ray, &frame, false,
+            )?;
+            if dual_point_in_cycle(&interior, &centers, &site_point) == exact::PointInCycle::Inside
+            {
                 interior
             } else {
-                let exterior =
-                    dual_close_hull_chain(&centers, &entry_ray, &exit_ray, &frame, true)?;
-                let exterior_points: Vec<_> =
-                    exterior.iter().map(|(_, point)| point.clone()).collect();
-                if exact::point_in_cycle(&exterior_points, &site_point)
+                let exterior = dual_close_hull_chain(
+                    faces, complex, &centers, &entry_ray, &exit_ray, &frame, true,
+                )?;
+                if dual_point_in_cycle(&exterior, &centers, &site_point)
                     != exact::PointInCycle::Inside
                 {
                     return Err(voronoi_error(
@@ -4146,26 +4433,30 @@ fn dual_build_rings(
             }
         } else {
             let mut ring = Vec::with_capacity(faces.len() + 6);
-            for &face in &faces {
+            for &face in faces {
                 let component = complex.component_of_face(face);
-                ring.push((
-                    DualVertex::Center(component as u32),
-                    complex.center(component).clone(),
-                ));
+                ring.push(DualVertex::Center(component as u32));
             }
             ring
         };
-        ring.dedup_by(|left, right| left.1.same_position(&right.1));
-        while ring.len() > 1 && ring[0].1.same_position(&ring.last().expect("non-empty").1) {
+        ring.dedup_by(|left, right| {
+            dual_vertex_point(left, &centers)
+                .zip(dual_vertex_point(right, &centers))
+                .is_some_and(|(left, right)| left.same_position(right))
+        });
+        while ring.len() > 1
+            && dual_vertex_point(&ring[0], &centers)
+                .zip(dual_vertex_point(ring.last().expect("non-empty"), &centers))
+                .is_some_and(|(left, right)| left.same_position(right))
+        {
             ring.pop();
         }
         if ring.len() >= 3 {
-            let points: Vec<_> = ring.iter().map(|(_, point)| point.clone()).collect();
-            if exact::cycle_orientation(&points)? == exact::ExactSign::Negative {
+            if dual_cycle_orientation(&ring, &centers)? == exact::ExactSign::Negative {
                 ring.reverse();
             }
         }
-        let clipped = dual_clip_convex(ring, &rect, axis_aligned)?;
+        let clipped = dual_clip_convex(ring, &rect, axis_aligned, &centers)?;
         if clipped.len() < 3 {
             return Err(voronoi_error(
                 "dual Voronoi cell degenerated under the clip",
@@ -4177,8 +4468,319 @@ fn dual_build_rings(
     }
     Ok(DualRings {
         rings,
-        component_count: complex.component_count(),
+        centers,
+        all_sites_hull: mesh.hull().len() == sites.len(),
     })
+}
+
+fn exact_rectangle_sides(point: &exact::ExactPoint, rect: &[exact::ExactPoint; 4]) -> u8 {
+    let mut sides = 0;
+    if point.compare_y(&rect[0]).is_eq()
+        && point.compare_x(&rect[0]).is_gt()
+        && point.compare_x(&rect[1]).is_lt()
+    {
+        sides |= 1;
+    }
+    if point.compare_x(&rect[1]).is_eq()
+        && point.compare_y(&rect[1]).is_gt()
+        && point.compare_y(&rect[2]).is_lt()
+    {
+        sides |= 2;
+    }
+    if point.compare_y(&rect[2]).is_eq()
+        && point.compare_x(&rect[2]).is_lt()
+        && point.compare_x(&rect[3]).is_gt()
+    {
+        sides |= 4;
+    }
+    if point.compare_x(&rect[3]).is_eq()
+        && point.compare_y(&rect[3]).is_lt()
+        && point.compare_y(&rect[0]).is_gt()
+    {
+        sides |= 8;
+    }
+    // A corner belongs to both adjacent sides. Keeping both bits lets the
+    // perimeter order handle a spoke that terminates exactly at a corner.
+    if point.same_position(&rect[0]) {
+        sides = 1 | 8;
+    } else if point.same_position(&rect[1]) {
+        sides = 1 | 2;
+    } else if point.same_position(&rect[2]) {
+        sides = 2 | 4;
+    } else if point.same_position(&rect[3]) {
+        sides = 4 | 8;
+    }
+    sides
+}
+
+fn rounded_rectangle_sides(point: XY, bounds: [f64; 4]) -> u8 {
+    let mut sides = 0;
+    if point.y == bounds[2] && point.x > bounds[0] && point.x < bounds[1] {
+        sides |= 1;
+    }
+    if point.x == bounds[1] && point.y > bounds[2] && point.y < bounds[3] {
+        sides |= 2;
+    }
+    if point.y == bounds[3] && point.x > bounds[0] && point.x < bounds[1] {
+        sides |= 4;
+    }
+    if point.x == bounds[0] && point.y > bounds[2] && point.y < bounds[3] {
+        sides |= 8;
+    }
+    if point == XY::new(bounds[0], bounds[2]) {
+        sides = 1 | 8;
+    } else if point == XY::new(bounds[1], bounds[2]) {
+        sides = 1 | 2;
+    } else if point == XY::new(bounds[1], bounds[3]) {
+        sides = 2 | 4;
+    } else if point == XY::new(bounds[0], bounds[3]) {
+        sides = 4 | 8;
+    }
+    sides
+}
+
+fn perimeter_cmp(left: XY, right: XY, bounds: [f64; 4]) -> Ordering {
+    let side = |point: XY| {
+        if point.y == bounds[2] {
+            (0_u8, point.x)
+        } else if point.x == bounds[1] {
+            (1, point.y)
+        } else if point.y == bounds[3] {
+            (2, -point.x)
+        } else {
+            (3, -point.y)
+        }
+    };
+    let (left_side, left_coordinate) = side(left);
+    let (right_side, right_coordinate) = side(right);
+    left_side
+        .cmp(&right_side)
+        .then_with(|| left_coordinate.total_cmp(&right_coordinate))
+}
+
+#[cfg(test)]
+fn coverage_candidate_count(polygons: &[Polygon]) -> usize {
+    let mut occurrences: HashMap<[PointKey; 2], usize> = HashMap::new();
+    for polygon in polygons {
+        for ring in polygon.rings() {
+            for index in 0..ring.len().saturating_sub(1) {
+                let left = PointKey::new(ring.point_at(index).xy());
+                let right = PointKey::new(ring.point_at(index + 1).xy());
+                let key = if left <= right {
+                    [left, right]
+                } else {
+                    [right, left]
+                };
+                *occurrences.entry(key).or_default() += 1;
+            }
+        }
+    }
+    let indexed = polygons
+        .iter()
+        .enumerate()
+        .filter_map(|(row, polygon)| {
+            let bounds = polygon.bounds()?;
+            Some(rstar::primitives::GeomWithData::new(
+                rstar::primitives::Rectangle::from_corners([bounds.minx(), bounds.miny()], [
+                    bounds.maxx(),
+                    bounds.maxy(),
+                ]),
+                row,
+            ))
+        })
+        .collect();
+    let tree: BulkRTree<_> = BulkRTree::bulk_load_with_params(indexed);
+    let mut count = 0;
+    for (row, polygon) in polygons.iter().enumerate() {
+        for ring in polygon.rings() {
+            for index in 0..ring.len().saturating_sub(1) {
+                let left = PointKey::new(ring.point_at(index).xy());
+                let right = PointKey::new(ring.point_at(index + 1).xy());
+                let key = if left <= right {
+                    [left, right]
+                } else {
+                    [right, left]
+                };
+                if occurrences[&key] == 2 {
+                    continue;
+                }
+                let query = AABB::from_corners(
+                    [left.xy().x.min(right.xy().x), left.xy().y.min(right.xy().y)],
+                    [left.xy().x.max(right.xy().x), left.xy().y.max(right.xy().y)],
+                );
+                count += tree
+                    .locate_in_envelope_intersecting(query)
+                    .filter(|entry| entry.data != row)
+                    .count();
+            }
+        }
+    }
+    count
+}
+
+/// Prove that the rounded cells are a central fan of the rectangle. Returning
+/// false is deliberately ordinary: all non-fan diagrams retain generic
+/// coverage validation rather than gaining a tolerance-based admission.
+fn central_fan_candidate(
+    rings: &DualRings,
+    polygons: &[Polygon],
+    center_rounded: Option<XY>,
+    clip: &NormalizedClip<'_>,
+) -> bool {
+    if !rings.all_sites_hull || rings.centers.len() != 1 || rings.rings.len() != polygons.len() {
+        return false;
+    }
+    let rect: [exact::ExactPoint; 4] = match clip.rings[0].clone().try_into() {
+        Ok(rect) => rect,
+        Err(_) => return false,
+    };
+    let center = &rings.centers[0];
+    if center.compare_x(&rect[0]) != Ordering::Greater
+        || center.compare_x(&rect[1]) != Ordering::Less
+        || center.compare_y(&rect[0]) != Ordering::Greater
+        || center.compare_y(&rect[2]) != Ordering::Less
+    {
+        return false;
+    }
+    for ring in &rings.rings {
+        let mut center_count = 0;
+        for (index, vertex) in ring.iter().enumerate() {
+            match vertex {
+                DualVertex::Center(0) => center_count += 1,
+                DualVertex::Center(_) => return false,
+                DualVertex::Generated(point) => {
+                    if point.same_position(center) {
+                        return false;
+                    }
+                    let sides = exact_rectangle_sides(point, &rect);
+                    if sides == 0 {
+                        return false;
+                    }
+                    let previous = &ring[(index + ring.len() - 1) % ring.len()];
+                    let next = &ring[(index + 1) % ring.len()];
+                    if !matches!(previous, DualVertex::Center(0))
+                        && !matches!(next, DualVertex::Center(0))
+                    {
+                        let previous_sides = dual_vertex_point(previous, &rings.centers)
+                            .map_or(0, |point| exact_rectangle_sides(point, &rect));
+                        if previous_sides & sides == 0 {
+                            return false;
+                        }
+                    }
+                },
+            }
+        }
+        if center_count != 1 {
+            return false;
+        }
+    }
+    let Some(center_rounded) = center_rounded else {
+        return false;
+    };
+    let bounds = [
+        clip.fixed[0]
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::INFINITY, f64::min),
+        clip.fixed[0]
+            .iter()
+            .map(|point| point.x)
+            .fold(f64::NEG_INFINITY, f64::max),
+        clip.fixed[0]
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min),
+        clip.fixed[0]
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max),
+    ];
+    if !(center_rounded.x > bounds[0]
+        && center_rounded.x < bounds[1]
+        && center_rounded.y > bounds[2]
+        && center_rounded.y < bounds[3])
+    {
+        return false;
+    }
+    let mut spokes = Vec::with_capacity(polygons.len().saturating_mul(2));
+    for polygon in polygons {
+        let open_len = polygon.shell.len().saturating_sub(1);
+        let Some(center_index) =
+            (0..open_len).find(|&index| polygon.shell.point_at(index).xy() == center_rounded)
+        else {
+            return false;
+        };
+        for index in 0..open_len {
+            let left = polygon.shell.point_at(index).xy();
+            let right = polygon.shell.point_at((index + 1) % open_len).xy();
+            let left_sides = rounded_rectangle_sides(left, bounds);
+            let right_sides = rounded_rectangle_sides(right, bounds);
+            if index != center_index
+                && (index + 1) % open_len != center_index
+                && (left_sides == 0 || right_sides == 0 || left_sides & right_sides == 0)
+            {
+                return false;
+            }
+        }
+        let left = polygon
+            .shell
+            .point_at((center_index + open_len - 1) % open_len)
+            .xy();
+        let right = polygon.shell.point_at((center_index + 1) % open_len).xy();
+        let left_sides = rounded_rectangle_sides(left, bounds);
+        let right_sides = rounded_rectangle_sides(right, bounds);
+        if left_sides == 0 || right_sides == 0 {
+            return false;
+        }
+        spokes.extend([PointKey::new(left), PointKey::new(right)]);
+    }
+    spokes.sort_unstable();
+    let mut unique = Vec::with_capacity(spokes.len() / 2);
+    let mut index = 0;
+    while index < spokes.len() {
+        let mut end = index + 1;
+        while end < spokes.len() && spokes[end] == spokes[index] {
+            end += 1;
+        }
+        if end - index != 2 {
+            return false;
+        }
+        unique.push(spokes[index]);
+        index = end;
+    }
+    if unique.len() < 3 {
+        return false;
+    }
+    unique.sort_unstable_by(|left, right| perimeter_cmp(left.xy(), right.xy(), bounds));
+    let positions: HashMap<_, _> = unique
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, key)| (key, index))
+        .collect();
+    for polygon in polygons {
+        let open_len = polygon.shell.len() - 1;
+        let center_index = (0..open_len)
+            .find(|&index| polygon.shell.point_at(index).xy() == center_rounded)
+            .expect("central fan center was found above");
+        let left = PointKey::new(
+            polygon
+                .shell
+                .point_at((center_index + open_len - 1) % open_len)
+                .xy(),
+        );
+        let right = PointKey::new(polygon.shell.point_at((center_index + 1) % open_len).xy());
+        let left = positions.get(&left).copied();
+        let right = positions.get(&right).copied();
+        let (Some(left), Some(right)) = (left, right) else {
+            return false;
+        };
+        let adjacent = (left + 1) % unique.len() == right || (right + 1) % unique.len() == left;
+        if !adjacent {
+            return false;
+        }
+    }
+    true
 }
 
 /// Round the dual once and run the certificates that survive the redesign.
@@ -4211,14 +4813,15 @@ fn dual_embed(
     // verdict the sort produced -- rounding is a function, so equal exact points
     // always land in the same bucket -- reached in O(V) instead of O(V log V)
     // exact comparisons.
-    let mut center_rounded: Vec<Option<XY>> = vec![None; rings.component_count];
+    let mut center_rounded: Vec<Option<XY>> = vec![None; rings.centers.len()];
     let mut interned: HashMap<PointKey, exact::ExactPoint> = HashMap::new();
-    let mut resolve = |vertex: &DualVertex, point: &exact::ExactPoint| -> Result<XY> {
+    let mut resolve = |vertex: &DualVertex| -> Result<XY> {
         if let DualVertex::Center(component) = *vertex
             && let Some(xy) = center_rounded[component as usize]
         {
             return Ok(xy);
         }
+        let point = dual_vertex_point(vertex, &rings.centers).expect("valid center id");
         let mut xy = point.round_nearest_even()?;
         let key = PointKey::new(xy);
         match interned.entry(key) {
@@ -4245,8 +4848,8 @@ fn dual_embed(
     let mut rounded_rings: Vec<Vec<XY>> = Vec::with_capacity(rings.rings.len());
     for ring in &rings.rings {
         let mut rounded = Vec::with_capacity(ring.len());
-        for (vertex, point) in ring {
-            rounded.push(resolve(vertex, point)?);
+        for vertex in ring {
+            rounded.push(resolve(vertex)?);
         }
         rounded_rings.push(rounded);
     }
@@ -4256,13 +4859,15 @@ fn dual_embed(
         let start = exact_ring
             .iter()
             .enumerate()
-            .min_by(|(_, left), (_, right)| left.1.compare_lex(&right.1))
+            .min_by(|(_, left), (_, right)| {
+                dual_vertex_point(left, &rings.centers)
+                    .expect("valid center id")
+                    .compare_lex(dual_vertex_point(right, &rings.centers).expect("valid center id"))
+            })
             .map_or(0, |(index, _)| index);
         rounded.rotate_left(start);
-        let mut coordinates: Vec<Point> = rounded
-            .iter()
-            .map(|xy| Point::new_raw_xy(xy.x, xy.y))
-            .collect();
+        let mut coordinates = Vec::with_capacity(rounded.len() + 1);
+        coordinates.extend(rounded.iter().map(|xy| Point::new_raw_xy(xy.x, xy.y)));
         let rounded_ring: Vec<_> = coordinates
             .iter()
             .map(|point| exact::ExactPoint::from_xy(point.xy()))
@@ -4272,7 +4877,7 @@ fn dual_embed(
                 "exact Voronoi subdivision has no topology-preserving binary64 embedding",
             ));
         }
-        coordinates.push(coordinates[0].clone());
+        coordinates.push(coordinates[0]);
         let polygon = Polygon::new(Ring::closed(coordinates)?, Vec::new());
         if !polygon_is_valid(&polygon) {
             return Err(voronoi_error(
@@ -4282,8 +4887,20 @@ fn dual_embed(
         budget.add(rounded.len())?;
         polygons.push(polygon);
     }
+    let central_fan = central_fan_candidate(
+        rings,
+        &polygons,
+        center_rounded.first().copied().flatten(),
+        clip,
+    );
     let shape_rows: Vec<_> = polygons.iter().cloned().map(Shape::Polygon).collect();
-    if !coverage_is_valid(&shape_rows, 0.0)? {
+    #[cfg(test)]
+    if !central_fan {
+        note_dual_build_work(|work| {
+            work.coverage_candidates += coverage_candidate_count(&polygons)
+        });
+    }
+    if !central_fan && !coverage_is_valid(&shape_rows, 0.0)? {
         return Err(voronoi_error(
             "exact Voronoi subdivision has no topology-preserving binary64 embedding",
         ));
@@ -4400,6 +5017,10 @@ fn dual_embed(
             ));
         }
     }
+    if central_fan {
+        #[cfg(test)]
+        note_dual_build_work(|work| work.fan_hits += 1);
+    }
     internal_edges.sort_unstable();
     let edges = internal_edges
         .into_iter()
@@ -4431,6 +5052,8 @@ pub(super) fn dual_build(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<EmbeddedVoronoi> {
+    #[cfg(test)]
+    reset_dual_build_work();
     let clip = normalize_clip(sites, boundary, budget)?;
     let mesh = certified_delaunay(sites)?;
     if mesh.collinear_order().is_some() {

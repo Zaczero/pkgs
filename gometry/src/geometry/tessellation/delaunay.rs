@@ -21,6 +21,8 @@ thread_local! {
     static CONSTRAINED_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EXACT_METRIC_WORK: std::cell::Cell<ExactMetricWork> =
         const { std::cell::Cell::new(ExactMetricWork::ZERO) };
+    static VORONOI_CERTIFICATION_WORK: std::cell::Cell<VoronoiCertificationWork> =
+        const { std::cell::Cell::new(VoronoiCertificationWork::ZERO) };
 }
 
 #[cfg(test)]
@@ -42,6 +44,121 @@ impl ExactMetricWork {
         edge_inspections: 0,
         queue_pops: 0,
     };
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct VoronoiCertificationWork {
+    pub(super) mapped_accepts: usize,
+    pub(super) mapped_fallbacks: usize,
+    pub(super) robust_orientations: usize,
+    pub(super) robust_incircles: usize,
+    pub(super) exact_orientations: usize,
+    pub(super) exact_incircles: usize,
+    pub(super) edge_incidences: usize,
+}
+
+#[cfg(test)]
+impl VoronoiCertificationWork {
+    const ZERO: Self = Self {
+        mapped_accepts: 0,
+        mapped_fallbacks: 0,
+        robust_orientations: 0,
+        robust_incircles: 0,
+        exact_orientations: 0,
+        exact_incircles: 0,
+        edge_incidences: 0,
+    };
+}
+
+#[cfg(test)]
+pub(super) fn take_voronoi_certification_work() -> VoronoiCertificationWork {
+    VORONOI_CERTIFICATION_WORK.with(|work| work.replace(VoronoiCertificationWork::ZERO))
+}
+
+#[cfg(test)]
+fn reset_voronoi_certification_work() {
+    VORONOI_CERTIFICATION_WORK.with(|work| work.set(VoronoiCertificationWork::ZERO));
+}
+
+#[cfg(test)]
+fn note_voronoi_certification_work(update: impl FnOnce(&mut VoronoiCertificationWork)) {
+    VORONOI_CERTIFICATION_WORK.with(|work| {
+        let mut current = work.get();
+        update(&mut current);
+        work.set(current);
+    });
+}
+
+#[derive(Clone, Copy)]
+enum CertificationCoordinates<'a> {
+    Mapped(&'a [XY]),
+    Source(&'a [Point]),
+}
+
+impl CertificationCoordinates<'_> {
+    fn xy(self, index: usize) -> XY {
+        match self {
+            Self::Mapped(points) => points[index],
+            Self::Source(points) => points[index].xy(),
+        }
+    }
+
+    fn orient(self, a: usize, b: usize, c: usize) -> exact::ExactSign {
+        let a = self.xy(a);
+        let b = self.xy(b);
+        let c = self.xy(c);
+        match self {
+            Self::Mapped(_) => {
+                #[cfg(test)]
+                note_voronoi_certification_work(|work| work.robust_orientations += 1);
+                robust_sign(robust::orient2d(
+                    robust::Coord { x: a.x, y: a.y },
+                    robust::Coord { x: b.x, y: b.y },
+                    robust::Coord { x: c.x, y: c.y },
+                ))
+            },
+            Self::Source(_) => {
+                #[cfg(test)]
+                note_voronoi_certification_work(|work| work.exact_orientations += 1);
+                exact::orient2d(a, b, c)
+            },
+        }
+    }
+
+    fn incircle(self, a: usize, b: usize, c: usize, d: usize) -> exact::ExactSign {
+        let a = self.xy(a);
+        let b = self.xy(b);
+        let c = self.xy(c);
+        let d = self.xy(d);
+        match self {
+            Self::Mapped(_) => {
+                #[cfg(test)]
+                note_voronoi_certification_work(|work| work.robust_incircles += 1);
+                robust_sign(robust::incircle(
+                    robust::Coord { x: a.x, y: a.y },
+                    robust::Coord { x: b.x, y: b.y },
+                    robust::Coord { x: c.x, y: c.y },
+                    robust::Coord { x: d.x, y: d.y },
+                ))
+            },
+            Self::Source(_) => {
+                #[cfg(test)]
+                note_voronoi_certification_work(|work| work.exact_incircles += 1);
+                exact::incircle(a, b, c, d)
+            },
+        }
+    }
+}
+
+fn robust_sign(value: f64) -> exact::ExactSign {
+    if value > 0.0 {
+        exact::ExactSign::Positive
+    } else if value < 0.0 {
+        exact::ExactSign::Negative
+    } else {
+        exact::ExactSign::Zero
+    }
 }
 
 #[cfg(test)]
@@ -328,10 +445,6 @@ impl CertifiedDelaunay {
         self.cocircular_halfedges[slot]
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Pass C consumes the certified hull topology")
-    )]
     pub(super) fn hull(&self) -> &[usize] {
         &self.topology.hull
     }
@@ -397,20 +510,32 @@ impl CandidateTriangulation {
         reason = "the sole certification transition keeps its complete invariant proof visible together"
     )]
     fn try_certify(self, sites: &[Site]) -> Result<CertifiedDelaunay> {
-        let topology = self.topology.0;
-        let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-        if let Some(mapped) = self.mapped_sites
-            && !proposal_mapping_is_admissible(&points, &mapped)
-        {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate coordinate mapping is not a bit-exact site bijection",
-            ));
-        }
+        let CandidateTriangulation {
+            topology: PositiveTopology(topology),
+            mapped_sites,
+        } = self;
+        let source_points = mapped_sites
+            .is_none()
+            .then(|| sites.iter().map(|site| site.point).collect::<Vec<_>>());
+        let predicates = if let Some(mapped) = mapped_sites.as_deref() {
+            if !proposal_mapping_is_admissible(sites, mapped) {
+                return Err(GeometryErrorKind::triangulation(
+                    "candidate coordinate mapping is not a bit-exact site bijection",
+                ));
+            }
+            CertificationCoordinates::Mapped(mapped)
+        } else {
+            CertificationCoordinates::Source(
+                source_points
+                    .as_deref()
+                    .expect("source coordinates exist for an unmapped candidate"),
+            )
+        };
         if sites
             .iter()
             .enumerate()
             .any(|(index, site)| site.id != index)
-            || !delaunay_euler_complete(points.len(), &topology)
+            || !delaunay_euler_complete(sites.len(), &topology)
             || !topology.triangles.len().is_multiple_of(3)
             || topology.triangles.len() != topology.halfedges.len()
             || topology.triangles.iter().any(|&site| site >= sites.len())
@@ -426,7 +551,7 @@ impl CandidateTriangulation {
             ));
         }
         let mut unique_triangles = HashSet::new();
-        let mut edge_incidence: HashMap<(usize, usize), Vec<(usize, usize)>> = HashMap::new();
+        let mut edge_incidence: HashMap<(usize, usize), EdgeIncidence> = HashMap::new();
         for (index, triangle) in topology.triangles.as_chunks::<3>().0.iter().enumerate() {
             let mut triangle_key = *triangle;
             triangle_key.sort_unstable();
@@ -442,10 +567,16 @@ impl CandidateTriangulation {
                 let edge = index * 3 + local;
                 let start = topology.triangles[edge];
                 let end = topology.triangles[delaunator::next_halfedge(edge)];
-                edge_incidence
+                let incidence = edge_incidence
                     .entry((start.min(end), start.max(end)))
-                    .or_default()
-                    .push((edge, index));
+                    .or_default();
+                if !incidence.push((edge, index)) {
+                    return Err(GeometryErrorKind::triangulation(
+                        "candidate edge has more than two incidences",
+                    ));
+                }
+                #[cfg(test)]
+                note_voronoi_certification_work(|work| work.edge_incidences += 1);
                 let reverse = topology.halfedges[edge];
                 if reverse != delaunator::EMPTY
                     && (reverse >= topology.halfedges.len()
@@ -462,22 +593,25 @@ impl CandidateTriangulation {
             }
         }
         if edge_incidence.values().any(|incidents| {
-            incidents.is_empty()
-                || incidents.len() > 2
-                || (incidents.len() == 1 && topology.halfedges[incidents[0].0] != delaunator::EMPTY)
-                || (incidents.len() == 2 && topology.halfedges[incidents[0].0] != incidents[1].0)
+            incidents.len == 0
+                || (incidents.len == 1
+                    && topology.halfedges[incidents.entries[0].expect("incidence exists").0]
+                        != delaunator::EMPTY)
+                || (incidents.len == 2
+                    && topology.halfedges[incidents.entries[0].expect("incidence exists").0]
+                        != incidents.entries[1].expect("second incidence exists").0)
         }) {
             return Err(GeometryErrorKind::triangulation(
                 "candidate is not a two-manifold disk",
             ));
         }
-        if candidate_has_crossing_edges(&points, &topology) {
+        if candidate_has_crossing_edges(predicates, &topology) {
             return Err(GeometryErrorKind::triangulation(
                 "candidate contains crossing non-incident edges",
             ));
         }
         let boundary = candidate_boundary_cycle(&topology)?;
-        if boundary != exact_hull_cycle(&points) {
+        if boundary != hull_cycle(predicates, false) {
             return Err(GeometryErrorKind::triangulation(
                 "candidate boundary does not equal the exact convex hull",
             ));
@@ -507,8 +641,8 @@ impl CandidateTriangulation {
             let b = topology.triangles[delaunator::next_halfedge(edge)];
             let c = topology.triangles[delaunator::prev_halfedge(edge)];
             let d = topology.triangles[delaunator::prev_halfedge(reverse)];
-            let side_c = exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy());
-            let side_d = exact::orient2d(points[a].xy(), points[b].xy(), points[d].xy());
+            let side_c = predicates.orient(a, b, c);
+            let side_d = predicates.orient(a, b, d);
             if side_c == exact::ExactSign::Zero
                 || side_d == exact::ExactSign::Zero
                 || side_c == side_d
@@ -517,12 +651,7 @@ impl CandidateTriangulation {
                     "candidate interior-edge opposite vertices are not on opposite sides",
                 ));
             }
-            let incircle = exact::incircle(
-                points[a].xy(),
-                points[b].xy(),
-                points[c].xy(),
-                points[d].xy(),
-            );
+            let incircle = predicates.incircle(a, b, c, d);
             if incircle == exact::ExactSign::Positive {
                 return Err(GeometryErrorKind::triangulation(
                     "candidate contains an exact non-Delaunay diagonal",
@@ -545,18 +674,24 @@ impl CandidateTriangulation {
 }
 
 pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
-    let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-    if points.len() < 3 {
-        return Ok(CertifiedDelaunay::empty((0..points.len()).collect()));
+    #[cfg(test)]
+    reset_voronoi_certification_work();
+    if sites.len() < 3 {
+        return Ok(CertifiedDelaunay::empty((0..sites.len()).collect()));
     }
+    if let Some(proposal) = scale_only_proposal(sites)
+        && let Ok(certified) = proposal.try_certify(sites)
+    {
+        #[cfg(test)]
+        note_voronoi_certification_work(|work| work.mapped_accepts += 1);
+        return Ok(certified);
+    }
+    #[cfg(test)]
+    note_voronoi_certification_work(|work| work.mapped_fallbacks += 1);
+    let points: Vec<_> = sites.iter().map(|site| site.point).collect();
     let corner_hull = exact_corner_hull_cycle(&points);
     if corner_hull.len() < 3 {
         return Ok(CertifiedDelaunay::empty(exact_collinear_order(&points)));
-    }
-    if let Some(proposal) = scale_only_proposal(&points)
-        && let Ok(certified) = proposal.try_certify(sites)
-    {
-        return Ok(certified);
     }
     // Cold deterministic seed: independent power-of-two axes retain every
     // stored ordinate, then sorted-edge exact Lawson flips choose the source
@@ -636,17 +771,17 @@ fn exact_incremental_seed(points: &[Point]) -> Option<delaunator::Triangulation>
     })
 }
 
-fn scale_only_proposal(points: &[Point]) -> Option<CandidateTriangulation> {
+fn scale_only_proposal(sites: &[Site]) -> Option<CandidateTriangulation> {
     const MIN_SPADE: f64 = 1.793_662_034_335_766e-43;
     const MAX_SPADE: f64 = 3.213_876_088_517_980_6e60;
-    let maximum = points
+    let maximum = sites
         .iter()
-        .flat_map(|point| [point.x.abs(), point.y.abs()])
+        .flat_map(|site| [site.point.x.abs(), site.point.y.abs()])
         .fold(0.0_f64, f64::max);
     let scale = axis_pow2_scale(maximum);
-    let mapped: Vec<_> = points
+    let mapped: Vec<_> = sites
         .iter()
-        .map(|point| XY::new(point.x * scale, point.y * scale))
+        .map(|site| XY::new(site.point.x * scale, site.point.y * scale))
         .collect();
     if mapped
         .iter()
@@ -659,24 +794,28 @@ fn scale_only_proposal(points: &[Point]) -> Option<CandidateTriangulation> {
         .iter()
         .map(|point| Point::new_raw_xy(point.x, point.y))
         .collect();
-    let topology = positive_topology(try_spade_delaunay(&mapped_points)?, points)?;
+    let topology = positive_topology(
+        try_spade_delaunay(&mapped_points)?,
+        CertificationCoordinates::Mapped(&mapped),
+    )?;
     Some(CandidateTriangulation {
         topology,
         mapped_sites: Some(mapped),
     })
 }
 
-fn proposal_mapping_is_admissible(points: &[Point], mapped: &[XY]) -> bool {
-    if points.len() != mapped.len() {
+fn proposal_mapping_is_admissible(sites: &[Site], mapped: &[XY]) -> bool {
+    if sites.len() != mapped.len() {
         return false;
     }
-    let maximum = points
+    let maximum = sites
         .iter()
-        .flat_map(|point| [point.x.abs(), point.y.abs()])
+        .flat_map(|site| [site.point.x.abs(), site.point.y.abs()])
         .fold(0.0_f64, f64::max);
     let scale = axis_pow2_scale(maximum);
     let mut keys = HashSet::with_capacity(mapped.len());
-    points.iter().zip(mapped).all(|(source, mapped)| {
+    sites.iter().zip(mapped).all(|(site, mapped)| {
+        let source = site.point.xy();
         let expected = XY::new(source.x * scale, source.y * scale);
         let roundtrip = XY::new(mapped.x / scale, mapped.y / scale);
         expected.x.to_bits() == mapped.x.to_bits()
@@ -691,14 +830,14 @@ fn proposal_mapping_is_admissible(points: &[Point], mapped: &[XY]) -> bool {
 
 fn positive_topology(
     topology: delaunator::Triangulation,
-    source: &[Point],
+    coordinates: CertificationCoordinates<'_>,
 ) -> Option<PositiveTopology> {
     if !topology.triangles.len().is_multiple_of(3) {
         return None;
     }
     let mut triangles = Vec::with_capacity(topology.triangles.len());
     for &[a, b, c] in topology.triangles.as_chunks::<3>().0 {
-        match exact::orient2d(source[a].xy(), source[b].xy(), source[c].xy()) {
+        match coordinates.orient(a, b, c) {
             exact::ExactSign::Positive => triangles.extend([a, b, c]),
             exact::ExactSign::Negative => triangles.extend([a, c, b]),
             exact::ExactSign::Zero => return None,
@@ -770,35 +909,60 @@ fn candidate_boundary_cycle(topology: &delaunator::Triangulation) -> Result<Vec<
 }
 
 fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
-    let mut order: Vec<_> = (0..points.len()).collect();
+    hull_cycle(CertificationCoordinates::Source(points), true)
+}
+
+fn hull_cycle(coordinates: CertificationCoordinates<'_>, corners: bool) -> Vec<usize> {
+    let count = match coordinates {
+        CertificationCoordinates::Mapped(points) => points.len(),
+        CertificationCoordinates::Source(points) => points.len(),
+    };
+    let mut order: Vec<_> = (0..count).collect();
     order.sort_unstable_by(|&a, &b| {
-        points[a]
+        coordinates
+            .xy(a)
             .x
-            .total_cmp(&points[b].x)
-            .then_with(|| points[a].y.total_cmp(&points[b].y))
+            .total_cmp(&coordinates.xy(b).x)
+            .then_with(|| coordinates.xy(a).y.total_cmp(&coordinates.xy(b).y))
     });
+    if !corners {
+        let Some(&last) = order.last() else {
+            return Vec::new();
+        };
+        if order.len() < 3
+            || order
+                .iter()
+                .all(|&site| coordinates.orient(order[0], last, site) == exact::ExactSign::Zero)
+        {
+            return coordinate_collinear_order(coordinates);
+        }
+    }
     let mut lower: Vec<usize> = Vec::new();
     for &site in &order {
-        while lower.len() >= 2
-            && exact::orient2d(
-                points[lower[lower.len() - 2]].xy(),
-                points[lower[lower.len() - 1]].xy(),
-                points[site].xy(),
-            ) != exact::ExactSign::Positive
-        {
+        while lower.len() >= 2 {
+            let sign = coordinates.orient(lower[lower.len() - 2], lower[lower.len() - 1], site);
+            if !(if corners {
+                sign != exact::ExactSign::Positive
+            } else {
+                sign == exact::ExactSign::Negative
+            }) {
+                break;
+            }
             lower.pop();
         }
         lower.push(site);
     }
     let mut upper: Vec<usize> = Vec::new();
     for &site in order.iter().rev() {
-        while upper.len() >= 2
-            && exact::orient2d(
-                points[upper[upper.len() - 2]].xy(),
-                points[upper[upper.len() - 1]].xy(),
-                points[site].xy(),
-            ) != exact::ExactSign::Positive
-        {
+        while upper.len() >= 2 {
+            let sign = coordinates.orient(upper[upper.len() - 2], upper[upper.len() - 1], site);
+            if !(if corners {
+                sign != exact::ExactSign::Positive
+            } else {
+                sign == exact::ExactSign::Negative
+            }) {
+                break;
+            }
             upper.pop();
         }
         upper.push(site);
@@ -822,54 +986,50 @@ fn rotate_cycle_to_minimum(mut cycle: Vec<usize>) -> Vec<usize> {
 }
 
 fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
-    let mut order: Vec<_> = (0..points.len()).collect();
-    order.sort_unstable_by(|&a, &b| {
-        points[a]
-            .x
-            .total_cmp(&points[b].x)
-            .then_with(|| points[a].y.total_cmp(&points[b].y))
-    });
-    let Some(&last) = order.last() else {
-        return Vec::new();
+    hull_cycle(CertificationCoordinates::Source(points), false)
+}
+
+fn coordinate_collinear_order(coordinates: CertificationCoordinates<'_>) -> Vec<usize> {
+    let count = match coordinates {
+        CertificationCoordinates::Mapped(points) => points.len(),
+        CertificationCoordinates::Source(points) => points.len(),
     };
-    if order.len() < 3
-        || order.iter().all(|&site| {
-            exact::orient2d(points[order[0]].xy(), points[last].xy(), points[site].xy())
-                == exact::ExactSign::Zero
-        })
-    {
-        return exact_collinear_order(points);
+    let mut order: Vec<_> = (0..count).collect();
+    let (minx, maxx, miny, maxy) = (0..count).fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(minx, maxx, miny, maxy), index| {
+            let point = coordinates.xy(index);
+            (
+                minx.min(point.x),
+                maxx.max(point.x),
+                miny.min(point.y),
+                maxy.max(point.y),
+            )
+        },
+    );
+    if maxx - minx >= maxy - miny {
+        order.sort_unstable_by(|&left, &right| {
+            coordinates
+                .xy(left)
+                .x
+                .total_cmp(&coordinates.xy(right).x)
+                .then_with(|| coordinates.xy(left).y.total_cmp(&coordinates.xy(right).y))
+        });
+    } else {
+        order.sort_unstable_by(|&left, &right| {
+            coordinates
+                .xy(left)
+                .y
+                .total_cmp(&coordinates.xy(right).y)
+                .then_with(|| coordinates.xy(left).x.total_cmp(&coordinates.xy(right).x))
+        });
     }
-    let mut lower: Vec<usize> = Vec::new();
-    for &site in &order {
-        while lower.len() >= 2
-            && exact::orient2d(
-                points[lower[lower.len() - 2]].xy(),
-                points[lower[lower.len() - 1]].xy(),
-                points[site].xy(),
-            ) == exact::ExactSign::Negative
-        {
-            lower.pop();
-        }
-        lower.push(site);
-    }
-    let mut upper: Vec<usize> = Vec::new();
-    for &site in order.iter().rev() {
-        while upper.len() >= 2
-            && exact::orient2d(
-                points[upper[upper.len() - 2]].xy(),
-                points[upper[upper.len() - 1]].xy(),
-                points[site].xy(),
-            ) == exact::ExactSign::Negative
-        {
-            upper.pop();
-        }
-        upper.push(site);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    rotate_cycle_to_minimum(lower)
+    order
 }
 
 fn exact_collinear_order(points: &[Point]) -> Vec<usize> {
@@ -908,7 +1068,27 @@ fn exact_collinear_order(points: &[Point]) -> Vec<usize> {
     order
 }
 
-fn candidate_has_crossing_edges(points: &[Point], topology: &delaunator::Triangulation) -> bool {
+#[derive(Clone, Copy, Default)]
+struct EdgeIncidence {
+    entries: [Option<(usize, usize)>; 2],
+    len: usize,
+}
+
+impl EdgeIncidence {
+    fn push(&mut self, value: (usize, usize)) -> bool {
+        let Some(slot) = self.entries.get_mut(self.len) else {
+            return false;
+        };
+        *slot = Some(value);
+        self.len += 1;
+        true
+    }
+}
+
+fn candidate_has_crossing_edges(
+    points: CertificationCoordinates<'_>,
+    topology: &delaunator::Triangulation,
+) -> bool {
     #[derive(Clone, Copy)]
     struct EdgeEnvelope {
         edge: (usize, usize),
@@ -936,8 +1116,14 @@ fn candidate_has_crossing_edges(points: &[Point], topology: &delaunator::Triangu
         .map(|edge @ (a, b)| EdgeEnvelope {
             edge,
             envelope: rstar::AABB::from_corners(
-                [points[a].x.min(points[b].x), points[a].y.min(points[b].y)],
-                [points[a].x.max(points[b].x), points[a].y.max(points[b].y)],
+                [
+                    points.xy(a).x.min(points.xy(b).x),
+                    points.xy(a).y.min(points.xy(b).y),
+                ],
+                [
+                    points.xy(a).x.max(points.xy(b).x),
+                    points.xy(a).y.max(points.xy(b).y),
+                ],
             ),
         })
         .collect();
@@ -953,15 +1139,15 @@ fn candidate_has_crossing_edges(points: &[Point], topology: &delaunator::Triangu
                 if a == c || a == d || b == c || b == d {
                     return false;
                 }
-                let ab_c = exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy());
-                let ab_d = exact::orient2d(points[a].xy(), points[b].xy(), points[d].xy());
-                let cd_a = exact::orient2d(points[c].xy(), points[d].xy(), points[a].xy());
-                let cd_b = exact::orient2d(points[c].xy(), points[d].xy(), points[b].xy());
+                let ab_c = points.orient(a, b, c);
+                let ab_d = points.orient(a, b, d);
+                let cd_a = points.orient(c, d, a);
+                let cd_b = points.orient(c, d, b);
                 let on_segment = |start: usize, end: usize, point: usize| {
-                    points[point].x >= points[start].x.min(points[end].x)
-                        && points[point].x <= points[start].x.max(points[end].x)
-                        && points[point].y >= points[start].y.min(points[end].y)
-                        && points[point].y <= points[start].y.max(points[end].y)
+                    points.xy(point).x >= points.xy(start).x.min(points.xy(end).x)
+                        && points.xy(point).x <= points.xy(start).x.max(points.xy(end).x)
+                        && points.xy(point).y >= points.xy(start).y.min(points.xy(end).y)
+                        && points.xy(point).y <= points.xy(start).y.max(points.xy(end).y)
                 };
                 (ab_c != ab_d && cd_a != cd_b)
                     || (ab_c == exact::ExactSign::Zero && on_segment(a, b, c))
@@ -1905,9 +2091,13 @@ mod certified_tests {
             halfedges: vec![delaunator::EMPTY; 3],
             hull: vec![0, 1, 2],
         };
-        assert_eq!(positive_topology(reversed, &points).unwrap().0.triangles, [
-            0, 1, 2
-        ]);
+        assert_eq!(
+            positive_topology(reversed, CertificationCoordinates::Source(&points))
+                .unwrap()
+                .0
+                .triangles,
+            [0, 1, 2]
+        );
     }
 
     #[test]
@@ -1956,10 +2146,15 @@ mod certified_tests {
             Point::new_raw_xy(0.0, 2.0),
         ];
         let restored_topology = candidate(&[[0, 1, 2], [0, 2, 3]]).topology;
-        let restored_crossing =
-            candidate_has_crossing_edges(&restored_points, &restored_topology.0);
+        let restored_crossing = candidate_has_crossing_edges(
+            CertificationCoordinates::Source(&restored_points),
+            &restored_topology.0,
+        );
         let crossing_topology = candidate(&[[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]]).topology;
-        let mutated_crossing = candidate_has_crossing_edges(&restored_points, &crossing_topology.0);
+        let mutated_crossing = candidate_has_crossing_edges(
+            CertificationCoordinates::Source(&restored_points),
+            &crossing_topology.0,
+        );
 
         // Positive oriented faces in a reciprocal connected disk with an
         // injective convex boundary cannot cross: a crossing would give a
@@ -2028,7 +2223,11 @@ mod certified_tests {
     fn certification_accepts_restored_and_rejects_missing_site_topology() {
         let sites = sites(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (1.0, 0.8)]);
         let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-        let topology = positive_topology(delaunay_triangulation_raw(&points), &points).unwrap();
+        let topology = positive_topology(
+            delaunay_triangulation_raw(&points),
+            CertificationCoordinates::Source(&points),
+        )
+        .unwrap();
         let restored = CandidateTriangulation {
             topology: PositiveTopology(delaunator::Triangulation {
                 triangles: topology.0.triangles.clone(),
@@ -2087,7 +2286,11 @@ mod certified_tests {
                 .len()
                 < sites.len()
         );
-        let topology = positive_topology(delaunay_triangulation_raw(&points), &points).unwrap();
+        let topology = positive_topology(
+            delaunay_triangulation_raw(&points),
+            CertificationCoordinates::Source(&points),
+        )
+        .unwrap();
         let mutated = CandidateTriangulation {
             topology: PositiveTopology(delaunator::Triangulation {
                 triangles: topology.0.triangles.clone(),
@@ -2118,13 +2321,34 @@ mod certified_tests {
         let scale = axis_pow2_scale(f64::MAX);
         let expected = points[0].x * scale;
         let mapped = vec![XY::new(expected, 0.0)];
-        assert!(proposal_mapping_is_admissible(&points, &mapped));
+        let sites = points
+            .iter()
+            .copied()
+            .map(|point| Site { id: 0, point })
+            .collect::<Vec<_>>();
+        assert!(proposal_mapping_is_admissible(&sites, &mapped));
         let alternate = f64::from_bits(expected.to_bits() - 1);
         let mutated = vec![XY::new(alternate, 0.0)];
-        let restored = proposal_mapping_is_admissible(&points, &mapped);
-        let mutated_accepted = proposal_mapping_is_admissible(&points, &mutated);
+        let restored = proposal_mapping_is_admissible(&sites, &mapped);
+        let mutated_accepted = proposal_mapping_is_admissible(&sites, &mutated);
         assert_ne!(alternate.to_bits(), expected.to_bits());
         assert_eq!((mutated_accepted, restored), (false, true));
+    }
+
+    #[test]
+    fn rejected_spade_mapping_uses_source_exact_predicates() {
+        let sites = sites(&[
+            (0.0, 0.0),
+            (1.0e200, 0.0),
+            (0.0, 1.0e-200),
+            (1.0e200, 2.0e-200),
+        ]);
+        certified_delaunay(&sites).expect("reciprocal source fallback");
+        let work = take_voronoi_certification_work();
+        assert_eq!(work.mapped_accepts, 0);
+        assert_eq!(work.mapped_fallbacks, 1);
+        assert_eq!(work.robust_incircles, 0);
+        assert!(work.exact_incircles > 0);
     }
 
     #[test]
@@ -2137,7 +2361,8 @@ mod certified_tests {
             Point::new_raw_xy(2.0, 2.0),
         ];
         let seed = exact_incremental_seed(&points).expect("forced exact fallback seed");
-        let restored = candidate_has_crossing_edges(&points, &seed);
+        let restored =
+            candidate_has_crossing_edges(CertificationCoordinates::Source(&points), &seed);
         let mut reversed = exact_corner_hull_cycle(&points);
         reversed.reverse();
         let mutated = exact::orient2d(
