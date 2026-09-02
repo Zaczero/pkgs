@@ -570,8 +570,8 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert in_core_bounds_3d[:2] + in_core_bounds_3d[3:5] == pytest.approx(
         gm.box(-1.0, 50.0, 1.0, 51.0, crs=4326).to_crs(3857).bounds
     )
-    assert in_core_bounds_3d[2] == 3.0
-    assert in_core_bounds_3d[5] == 7.0
+    assert in_core_bounds_3d[2] == pytest.approx(3.0)
+    assert in_core_bounds_3d[5] == pytest.approx(7.0)
     bounds_many_3d = gm.crs_transform_bounds(
         4326,
         3857,
@@ -606,10 +606,20 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
         -179.0,
         1.0,
     )
-    with pytest.raises(ValueError, match='antimeridian-crossing geographic bounds'):
-        gm.crs_transform_bounds(4326, 4326, (-181.0, -1.0, 1.0, 1.0))
-    with pytest.raises(ValueError, match='antimeridian-crossing geographic bounds'):
-        gm.crs_transform_bounds(4979, 4979, (-181.0, -1.0, 0.0, 1.0, 1.0, 2.0))
+    assert gm.crs_transform_bounds(4326, 4326, (-181.0, -1.0, 1.0, 1.0)) == (
+        -181.0,
+        -1.0,
+        1.0,
+        1.0,
+    )
+    assert gm.crs_transform_bounds(4979, 4979, (-181.0, -1.0, 0.0, 1.0, 1.0, 2.0)) == (
+        -181.0,
+        -1.0,
+        0.0,
+        1.0,
+        1.0,
+        2.0,
+    )
     with pytest.raises(
         gm.GeometryError, match='bounds densify must be between 0 and 10000, got -1'
     ) as excinfo:

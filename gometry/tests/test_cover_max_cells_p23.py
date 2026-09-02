@@ -75,6 +75,102 @@ def test_s2_fixed_level_max_cells_is_a_hard_cap_like_other_grids():
         _assert_not_panic(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    'factory',
+    [
+        lambda src, **kw: gm.geohash_cover(src, precision=4, **kw),
+        lambda src, **kw: gm.tile_cover(src, zoom=7, **kw),
+        lambda src, **kw: gm.s2_cover(src, level=8, **kw),
+    ],
+    ids=['geohash', 'tile', 's2'],
+)
+def test_within_budget_charges_only_visible_cells(factory):
+    source = gm.box(-20, -20, 20, 20, crs=4326)
+    visible = factory(source, cell_rule='within', max_cells=None)
+    overlap = factory(source, cell_rule='overlap', max_cells=None)
+    assert 0 < len(visible) < len(overlap)
+
+    assert len(factory(source, cell_rule='within', max_cells=len(visible))) == len(
+        visible
+    )
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        factory(source, cell_rule='within', max_cells=len(visible) - 1)
+
+
+@pytest.mark.parametrize('rule', ['within', 'center'])
+def test_s2_filtered_rules_budget_visible_emissions_only(rule):
+    source = gm.box(0, 0, 2, 2, crs=4326)
+    overlap = gm.s2_cover(source, level=8, cell_rule='overlap', max_cells=None)
+    visible = gm.s2_cover(source, level=8, cell_rule=rule, max_cells=None)
+    assert 0 < len(visible) < len(overlap)
+
+    exact = gm.s2_cover(source, level=8, cell_rule=rule, max_cells=len(visible))
+    assert list(exact) == list(visible)
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(source, level=8, cell_rule=rule, max_cells=len(visible) - 1)
+
+
+@pytest.mark.parametrize('rule', ['within', 'center'])
+def test_s2_adaptive_filtered_rules_coarsen_against_visible_cap(rule):
+    source = gm.box(-20, -20, 20, 20, crs=4326)
+    unlimited = gm.s2_cover(
+        source,
+        cell_rule=rule,
+        min_level=1,
+        max_level=12,
+        target_cells=1000,
+        max_cells=None,
+    )
+    capped = gm.s2_cover(
+        source,
+        cell_rule=rule,
+        min_level=1,
+        max_level=12,
+        target_cells=1000,
+        max_cells=16,
+    )
+    assert len(unlimited) == 1000
+    assert len(capped) <= 16
+    assert max(cell.level for cell in capped) < max(cell.level for cell in unlimited)
+
+
+@pytest.mark.parametrize('rule', ['within', 'center'])
+def test_s2_min_level_rejects_unavoidable_visible_overflow(rule):
+    source = gm.box(0, 0, 2, 2, crs=4326)
+    floor = gm.s2_cover(source, level=8, cell_rule=rule, max_cells=None)
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(
+            source,
+            cell_rule=rule,
+            min_level=8,
+            max_level=12,
+            target_cells=1000,
+            max_cells=len(floor) - 1,
+        )
+
+
+@pytest.mark.parametrize(
+    'factory',
+    [
+        lambda src, **kw: gm.geohash_cover(src, precision=3, **kw),
+        lambda src, **kw: gm.tile_cover(src, zoom=5, **kw),
+        lambda src, **kw: gm.h3_cover(src, resolution=3, **kw),
+        lambda src, **kw: gm.s2_cover(src, level=5, **kw),
+    ],
+    ids=['geohash', 'tile', 'h3', 's2'],
+)
+def test_grouped_cover_budget_is_cumulative(factory):
+    source = gm.box(-5, -5, 5, 5, crs=4326)
+    one = factory(source, max_cells=None)
+    grouped = gm.GeometryArray([source, source], crs=4326)
+    total = 2 * len(one)
+
+    result = factory(grouped, max_cells=total)
+    assert sum(len(group) for group in result) == total
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        factory(grouped, max_cells=total - 1)
+
+
 def test_s2_target_cells_quality_target_and_max_cells_ceiling():
     """target_cells seeks quality; max_cells is the output ceiling."""
     area = gm.box(0, 0, 2, 2, crs=4326)

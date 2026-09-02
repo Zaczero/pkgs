@@ -123,7 +123,38 @@ def test_empty_geometry_does_not_raise():
 def test_repr_html_contains_svg_and_header():
     html = gm.box(0, 0, 1, 1)._repr_html_()
     assert '<svg' in html
-    assert '&lt;POLYGON' in html or '<POLYGON' in html
+    assert '&lt;POLYGON' in html
+
+
+def test_repr_html_escapes_retained_crs_text_without_changing_repr_or_svg() -> None:
+    name = '<img src=x onerror=alert(1)>&unsafe<script>"\'>'
+    projjson = gm.CRS(3857).to_projjson_dict()
+    projjson['name'] = name
+    projjson.pop('id')
+    point = gm.Point(0, 0, crs=projjson)
+
+    repr_before = repr(point)
+    svg_before = point._repr_svg_()
+    html = point._repr_html_()
+
+    assert name.replace('"', r'\"') in repr_before
+    assert repr(point) == repr_before
+    assert point._repr_svg_() == svg_before
+    assert '<img' not in html
+    assert '<script>' not in html
+    escaped_repr = (
+        repr_before.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    )
+    assert f'<div>{escaped_repr}</div>' in html
+    assert '<circle cx="' in html
+
+
+@pytest.mark.parametrize('point', [gm.Point(1, 2), gm.Point(1, 2, crs=4326)])
+def test_repr_html_escapes_visible_scalar_header(point) -> None:
+    text = repr(point)
+    html = point._repr_html_()
+    escaped_text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    assert f'<div>{escaped_text}</div>' in html
 
 
 def test_array_repr_html_grids_and_caption():

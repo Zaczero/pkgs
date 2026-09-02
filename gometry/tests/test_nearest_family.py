@@ -1,9 +1,11 @@
 """Correctness/contract guards for the nearest/distance family.
 
-`shortest_line`, `nearest_points`, and `distance` accept ANY geometry pair and
-compute the true closest approach — the witness may land on an edge interior,
-not only a vertex. These tests lock that down across rotated/oblique inputs and
-cross-type pairs, and pin the two deliberate contracts:
+`shortest_line`, `nearest_points`, and `distance` accept any geometry pair in
+planar and projected modes and compute the true closest approach — the witness
+may land on an edge interior, not only a vertex. Geographic geodesic modes
+support point and linework operands; filled polygon interiors are unsupported.
+These tests lock that down across rotated/oblique inputs and cross-type pairs,
+and pin the two deliberate contracts:
 
 * empty operand -> output-type EMPTY sentinel (never raises, never aborts a
   batch): ``distance``->``inf``, ``dwithin``->``False``, ``nearest_points``->
@@ -341,7 +343,10 @@ class TestGeodesic:
         line_geom = gm.shortest_line(point, line)
         ends = _endpoints(line_geom)
         assert ends[0] == pytest.approx((0.5, 0.5))
-        assert ends[1][0] == pytest.approx(0.5, abs=1e-06)
+        # The closest point on the ellipsoidal stored edge is close to, but not
+        # exactly, the planar longitude projection.
+        assert ends[1][0] == pytest.approx(0.5, abs=2e-4)
+        assert ends[1][0] != pytest.approx(0.5, abs=1e-6)
         assert ends[1][1] == pytest.approx(0.0, abs=1e-06)
         assert gm.distance(point, line) == pytest.approx(55287.15, rel=0.0001)
 

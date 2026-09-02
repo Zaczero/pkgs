@@ -498,12 +498,12 @@ fn ordinary_nearest_rows_use_no_exact_fallback() {
 
 #[test]
 fn ordinary_public_nearest_rows_use_no_exact_fallback() {
-    let probe = Shape::Point(Point::new_unchecked_xy(7.25, 2.75));
+    let probe = Shape::Point(Point::new_raw_xy(7.25, 2.75));
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
     for row in 0..128 {
         let points = (0..17)
             .map(|column| {
-                Point::new_unchecked_xy(
+                Point::new_raw_xy(
                     f64::from(column),
                     (f64::from(column) * 0.37 + f64::from(row) * 0.03125).sin()
                         + f64::from(row) * 0.002,

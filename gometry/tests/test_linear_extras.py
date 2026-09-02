@@ -110,6 +110,27 @@ def test_is_convex_polygon_matrix() -> None:
     )
 
 
+def test_is_convex_missing_rows_skip_nan_placeholders() -> None:
+    convex = gm.box(0, 0, 1, 1)
+    np.testing.assert_array_equal(
+        gm.GeometryArray([convex, None, convex]).is_convex,
+        [True, False, True],
+    )
+
+    points = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 1)])
+    np.testing.assert_array_equal(points.is_convex, [False, False, False])
+    lines = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 1)]),
+        None,
+        gm.LineString([(2, 2), (3, 3)]),
+    ])
+    np.testing.assert_array_equal(lines.is_convex, [False, False, False])
+
+    empty = gm.from_wkt('POLYGON EMPTY')
+    mixed = gm.GeometryArray([convex, None, empty, gm.Point(5, 5)])
+    np.testing.assert_array_equal(mixed.is_convex, [True, False, True, False])
+
+
 def test_extremes_picks_first_tied_vertex_and_carries_zm() -> None:
     geom = gm.MultiPoint([(0, 1), (2, 3), (0, 3), (2, 1)])
     extremes = geom.extremes()

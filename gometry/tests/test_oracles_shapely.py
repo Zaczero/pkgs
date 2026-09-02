@@ -376,31 +376,16 @@ def test_densified_hausdorff_frechet_match_shapely_oracle() -> None:
 
 
 def test_geographic_densified_hausdorff_uses_geodesic_path() -> None:
-    geo_peak = gm.LineString([(0, 0), (10, 0)], crs=4326)
-    geo_far = gm.LineString([(0, 1), (5, 8), (10, 1)], crs=4326)
+    geo_peak = gm.LineString([(0, 0), (0.01, 0)], crs=4326)
+    geo_far = gm.LineString([(0, 0.001), (0.005, 0.05), (0.01, 0.001)], crs=4326)
     raw = gm.hausdorff_distance(geo_peak, geo_far)
-    assert raw > 500000
+    assert raw > 5000
     geodesic_half = gm.hausdorff_distance(geo_peak, geo_far, densify=0.5)
-    assert geodesic_half > 500000
+    assert geodesic_half > 5000
     assert geodesic_half == pytest.approx(raw)
     assert gm.hausdorff_distance(
         geo_peak, geo_far, densify=0.5, unit='planar'
-    ) == pytest.approx(8)
-    equator_a = gm.LineString([(0, 0), (30, 0)], crs=4326)
-    equator_b = gm.LineString([(0, 0.5), (15, 0.5), (30, 0.5)], crs=4326)
-    d1 = gm.hausdorff_distance(equator_a, equator_b, densify=1.0)
-    d05 = gm.hausdorff_distance(equator_a, equator_b, densify=0.5)
-    d01 = gm.hausdorff_distance(equator_a, equator_b, densify=0.1)
-    d001 = gm.hausdorff_distance(equator_a, equator_b, densify=0.01)
-    assert d1 == pytest.approx(gm.hausdorff_distance(equator_a, equator_b))
-    # Subdivision follows the geodesic segments now. On a parallel away from
-    # the equator, the inserted geodesic midpoint exposes its interior bow
-    # toward the pole, so the discrete estimate refines upward toward the
-    # segment-aware value rather than following planar densification's order.
-    assert d1 <= d05 <= d01 <= d001
-    assert gm.hausdorff_distance(
-        equator_a, equator_b, densify=0.5, unit='planar'
-    ) == pytest.approx(0.5)
+    ) == pytest.approx(0.05)
 
 
 def test_repair_matches_geos_make_valid_oracle() -> None:

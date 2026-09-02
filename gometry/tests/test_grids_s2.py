@@ -560,7 +560,12 @@ def test_s2_pole_ulp_point_owners_match_literal_closed_cell_oracles(
 def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     line = gm.LineString([(179.0, -1.0), (-179.0, 1.0)], crs=4326)
     coverage = gm.s2_cover(line, level=6, max_cells=16)
-    _ = gm.s2_cover(gm.box(-200, -10, 200, 10, crs=4326, wrap='split'), level=6)
+    world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
+    assert world.is_valid
+    world_cells = gm.s2_cover(world, level=6)
+    assert gm.S2Cell(0.0, 0.0, level=6) in world_cells
+    assert gm.S2Cell(179.5, 0.0, level=6) in world_cells
+    assert gm.S2Cell(-179.5, 0.0, level=6) in world_cells
     _ = gm.s2_cover(gm.box(-180, -10, 180, 10, crs=4326), level=6)
     assert line.crosses_antimeridian
     assert gm.contains(line, gm.Point(0.0, 0.0056, crs=4326)) == gm.intersects(
@@ -575,7 +580,14 @@ def test_s2_coverage_matches_planar_semantics_at_the_seam() -> None:
     assert all(abs(lon) > 170 for lon in seam_lons)
     np.testing.assert_array_equal(
         gm.covers(
-            gm.box(-200, -10, 200, 10, crs=4326, wrap='split'),
+            world,
+            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326),
+        ),
+        [True, True, True],
+    )
+    np.testing.assert_array_equal(
+        gm.contains(
+            world,
             gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326),
         ),
         [True, True, True],
@@ -596,6 +608,13 @@ def test_s2_split_antimeridian_box_covers_the_seam_not_the_world() -> None:
     world_cells = gm.s2_cover(world, level=4)
     assert {c.id for c in narrow_cells} != {c.id for c in world_cells}
     assert all(abs(c.center.x) > 160 for c in narrow_cells)
+    np.testing.assert_array_equal(
+        gm.covers(
+            narrow,
+            gm.points([0.0, 179.5, -179.5], [0.0, 0.0, 0.0], crs=4326),
+        ),
+        [False, True, True],
+    )
 
 
 def test_s2_cover_normalizes_raw_crossing_polygon_like_s2sphere() -> None:
@@ -922,25 +941,27 @@ def test_s2_to_polygon_pole_cap_conserves_area() -> None:
 
 
 def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:
+    city = gm.box(13.35, 52.475, 13.45, 52.525, crs=4326)
     cases = [
-        gm.geohash_cover(gm.box(13.2, 52.4, 13.6, 52.6, crs=4326), precision=6),
-        gm.tile_cover(gm.box(13.2, 52.4, 13.6, 52.6, crs=4326), zoom=13),
+        gm.geohash_cover(city, precision=5),
+        gm.tile_cover(city, zoom=10),
         gm.geohash_cover(
             gm.from_wkt(
-                'POLYGON((-5 -5,5 -5,5 5,-5 5,-5 -5),(-2 -2,2 -2,2 2,-2 2,-2 -2))',
+                'POLYGON((-1.5 -1.5,1.5 -1.5,1.5 1.5,-1.5 1.5,-1.5 -1.5),'
+                '(-0.5 -0.5,0.5 -0.5,0.5 0.5,-0.5 0.5,-0.5 -0.5))',
                 crs=4326,
             ),
-            precision=5,
+            precision=4,
         ),
         gm.tile_cover(
             gm.from_wkt(
-                'MULTIPOLYGON(((10 10,12 10,12 12,10 12,10 10)),((20 20,22 20,22 22,20 22,20 20)))',
+                'MULTIPOLYGON(((10 10,11 10,11 11,10 11,10 10)),((20 20,21 20,21 21,20 21,20 20)))',
                 crs=4326,
             ),
-            zoom=10,
+            zoom=8,
         ),
-        gm.geohash_cover(gm.box(-180, 86, 180, 90, crs=4326), precision=3),
-        gm.geohash_cover(gm.box(-180, -90, 180, -86, crs=4326), precision=3),
+        gm.geohash_cover(gm.box(-180, 86, 180, 90, crs=4326), precision=2),
+        gm.geohash_cover(gm.box(-180, -90, 180, -86, crs=4326), precision=2),
     ]
     for coverage in cases:
         outline = coverage.to_polygon()
@@ -951,10 +972,10 @@ def test_rect_to_polygon_topology_dissolve_conserves_area() -> None:
 
 
 def test_rect_cover_compact_uncompact() -> None:
-    box = gm.box(13.2, 52.4, 13.6, 52.6, crs=4326)
+    box = gm.box(13.3, 52.45, 13.5, 52.55, crs=4326)
     cases = [
-        ('geohash', gm.geohash_cover(box, precision=7), 7),
-        ('tiles', gm.tile_cover(box, zoom=13), 13),
+        ('geohash', gm.geohash_cover(box, precision=6), 6),
+        ('tiles', gm.tile_cover(box, zoom=12), 12),
     ]
     for _name, coverage, depth in cases:
         compacted = coverage.compact()

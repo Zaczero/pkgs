@@ -524,7 +524,7 @@ def test_d3_cellarray_equality_uses_visible_values():
 def test_b4_spatial_index_geodesic_caps_survive_crs_clear_cache():
     """Warm caps, clear CRS caches, nearest must stay correct (no mixed ellipsoid)."""
     rows = [
-        gm.box(lon, lat, lon + 1.0, lat + 1.0, crs=4326)
+        gm.LineString([(lon, lat), (lon + 1.0, lat + 1.0)], crs=4326)
         for lon, lat in ((-10.0, 40.0), (0.0, 50.0), (20.0, 0.0), (-170.0, -40.0))
     ]
     idx = gm.SpatialIndex(rows)

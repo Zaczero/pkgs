@@ -132,7 +132,7 @@ def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() ->
     [
         (
             [(179.0, 10.0), (-179.0, 10.0)],
-            (180.0, 10.001502283693659),
+            (-180.0, 10.001502283693659),
             [
                 (179.49999885157385, 10.001126705155835),
                 (-179.49999885157385, 10.001126705155837),
@@ -141,7 +141,7 @@ def test_geographic_refinement_validates_coordinates_and_skips_missing_rows() ->
         (
             [(0.0, 80.0), (180.0, 80.0)],
             (0.0, 90.0),
-            [(0.0, 85.00038196538807), (180.0, 85.00038196538809)],
+            [(0.0, 85.00038196538807), (-180.0, 85.00038196538809)],
         ),
     ],
 )
@@ -169,3 +169,14 @@ def test_geographic_lrs_scalar_and_bulk_keep_the_same_seam_or_pole_path(
     assert array.line_locate(gm.GeometryArray([expected]), basis='m')[
         0
     ] == pytest.approx(50.0, abs=1e-7)
+
+
+def test_geographic_lrs_substring_preserves_original_seam_endpoint_spelling() -> None:
+    line = gm.LineString([(0.0, 80.0), (180.0, 80.0)], crs=4326, m=[0.0, 100.0])
+    expected = [(0.0, 80.0, 0.0), (180.0, 80.0, 100.0)]
+    scalar = line.line_substring(0.0, 100.0, basis='m')
+    bulk = gm.GeometryArray([line]).line_substring(0.0, 100.0, basis='m')[0]
+    assert scalar.coords.to_nested() == expected
+    assert bulk.coords.to_nested() == expected
+    assert line.line_interpolate(100.0, basis='m').x == 180.0
+    assert gm.GeometryArray([line]).line_interpolate([100.0], basis='m')[0].x == 180.0

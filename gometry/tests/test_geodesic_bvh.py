@@ -26,17 +26,26 @@ def _geodesic_dense_line(
     return gm.LineString(coords, crs=4326)
 
 
-def _wavy_dense_line(start_lon: float, start_lat: float, count: int) -> gm.LineString:
+def _wavy_dense_line(
+    start_lon: float,
+    start_lat: float,
+    count: int,
+    *,
+    width: float = 4.0,
+    amplitude: float = 0.25,
+) -> gm.LineString:
     coords = []
     for index in range(count):
         t = index / (count - 1)
-        lon = start_lon + t * 4.0
-        lat = start_lat + math.sin(t * math.tau) * 0.25
+        lon = start_lon + t * width
+        lat = start_lat + math.sin(t * math.tau) * amplitude
         coords.append((lon, lat))
     return gm.LineString(coords, crs=4326)
 
 
-def _dense_ring_line(cx: float, cy: float, radius: float, vertices: int) -> gm.LineString:
+def _dense_ring_line(
+    cx: float, cy: float, radius: float, vertices: int
+) -> gm.LineString:
     ring = []
     for index in range(vertices):
         angle = index / vertices * math.tau
@@ -65,10 +74,13 @@ def test_geodesic_distance_dense_line_matches_coarse_same_shape() -> None:
 
 
 def test_geodesic_distance_two_dense_lines_is_commutative() -> None:
-    left = _wavy_dense_line(-2.0, 1.0, 96)
-    right = _wavy_dense_line(-2.0, 0.0, 96)
-    assert gm.distance(left, right) == gm.distance(right, left)
-    assert math.isfinite(gm.distance(left, right))
+    left = _wavy_dense_line(-2.0, 1.0, 65, width=1.0, amplitude=0.1)
+    right = _wavy_dense_line(-2.0, 0.0, 65, width=1.0, amplitude=0.1)
+    assert len(list(left.coords)) - 1 >= MIN_BVH_SEGMENTS
+    forward = gm.distance(left, right)
+    reverse = gm.distance(right, left)
+    assert forward == reverse
+    assert math.isfinite(forward)
 
 
 def test_geodesic_distance_dense_ring_line_matches_coarser_circle() -> None:
@@ -112,3 +124,13 @@ def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
         gm.distance(probe, target)
     with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
         gm.dwithin(probe, target, 100000.0)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.hausdorff_distance(probe, target)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.nearest_points(probe, target)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.shortest_line(probe, target)
+
+    # The explicit planar escape still measures filled polygon interiors.
+    assert gm.distance(probe, target, unit='planar') == 0.0
+    assert gm.dwithin(probe, target, 0.0, unit='planar')

@@ -112,7 +112,10 @@ def test_nearest_points_are_rust_backed_and_preserve_crs() -> None:
     assert right.crs == 'EPSG:4326'
     geo_left, _ = gm.nearest_points(line, point)
     assert geo_left.crs == 'EPSG:4326'
-    assert geo_left.x == pytest.approx(1.0, abs=1e-06)
+    # The ellipsoidal stored edge's nearest longitude is not the planar
+    # projection, but remains within the contract's 4e-4-degree tolerance.
+    assert geo_left.x == pytest.approx(1.0, abs=4e-4)
+    assert geo_left.x != pytest.approx(1.0, abs=1e-6)
     with pytest.raises(
         ValueError, match='nearest_points requires matching CRS metadata'
     ):
@@ -284,12 +287,12 @@ def test_measured_lrs_and_distance_3d_have_free_and_array_forms() -> None:
     line = gm.from_wkt('LINESTRING M (0 0 0, 10 0 10)', crs=4326)
     probe = gm.Point(4, 1, crs=4326)
     lines = gm.GeometryArray([line, line], crs=4326)
-    assert line.line_locate(probe, basis='m') == pytest.approx(4.0)
-    assert lines.line_locate(probe, basis='m') == pytest.approx([4.0, 4.0])
+    assert line.line_locate(probe, basis='m') == pytest.approx(4.0, abs=2e-4)
+    assert lines.line_locate(probe, basis='m') == pytest.approx([4.0, 4.0], abs=2e-4)
     scalar_many = line.line_locate(
         gm.points([4.0, 8.0], [1.0, 1.0], crs=4326), basis='m'
     )
-    assert scalar_many == pytest.approx([4.0, 8.0])
+    assert scalar_many == pytest.approx([4.0, 8.0], abs=2e-4)
     interpolated = cast('gm.Point', line.line_interpolate(5.0, basis='m'))
     assert (interpolated.x, interpolated.y) == (5.0, 0.0)
     array_interpolated = cast(

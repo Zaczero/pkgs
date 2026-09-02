@@ -40,10 +40,29 @@ def test_array_covers_return_groups() -> None:
         assert len(groups[1]) == 0
 
 
+def test_interleaved_missing_cover_rows_keep_logical_alignment() -> None:
+    first = gm.box(-3, -3, -2, -2, crs=4326)
+    second = gm.box(2, 2, 3, 3, crs=4326)
+    cases = [
+        (gm.h3_cover, {'resolution': 2}),
+        (gm.s2_cover, {'level': 3}),
+        (gm.geohash_cover, {'precision': 3}),
+        (gm.tile_cover, {'zoom': 3}),
+    ]
+    values = gm.GeometryArray([first, None, second, None], crs=4326)
+    for cover, depth in cases:
+        groups = cover(values, max_cells=None, **depth)
+        assert len(groups) == 4
+        assert list(groups[0]) == list(cover(first, max_cells=None, **depth))
+        assert len(groups[1]) == 0
+        assert list(groups[2]) == list(cover(second, max_cells=None, **depth))
+        assert len(groups[3]) == 0
+
+
 @pytest.mark.parametrize(
     'cover, depth, bounds',
     [
-        (gm.h3_cover, {'resolution': 3}, (-10, -10, 10, 10)),
+        (gm.h3_cover, {'resolution': 2}, (-2, -2, 2, 2)),
         (gm.geohash_cover, {'precision': 3}, (-170, -70, 170, 70)),
         (gm.tile_cover, {'zoom': 3}, (-170, -70, 170, 70)),
         (gm.s2_cover, {'level': 3}, (-170, -70, 170, 70)),
@@ -61,15 +80,37 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
             cover(polygon, cell_rule=rule, max_cells=len(keys) - 1, **depth)
 
         groups = cover(
-            gm.GeometryArray([polygon, polygon, None], crs=4326),
+            gm.GeometryArray([polygon, None], crs=4326),
             cell_rule=rule,
             max_cells=None,
             **depth,
         )
-        assert len(groups) == 3
+        assert len(groups) == 2
         assert list(groups[0]) == list(cells)
-        assert list(groups[1]) == list(cells)
-        assert len(groups[2]) == 0
+        assert len(groups[1]) == 0
+
+
+@pytest.mark.parametrize(
+    'cover, depth',
+    [
+        (gm.geohash_cover, {'precision': 1}),
+        (gm.s2_cover, {'level': 1}),
+    ],
+    ids=['geohash', 's2'],
+)
+def test_cover_propagates_dissolved_area_error(cover, depth) -> None:
+    xyz = gm.Polygon(
+        [(0, 0, 1), (2, 0, 1), (2, 2, 1), (0, 2, 1), (0, 0, 1)],
+        crs=4326,
+    )
+    xy = gm.box(1, 1, 3, 3, crs=4326)
+    source = gm.GeometryCollection([xyz, xy], crs=4326)
+
+    with pytest.raises(gm.InvalidGeometryError) as raised:
+        cover(source, **depth)
+
+    assert type(raised.value) is gm.InvalidGeometryError
+    assert type(raised.value).__name__ != 'PanicException'
 
 
 def test_cover_cells_use_free_geometry_predicate() -> None:

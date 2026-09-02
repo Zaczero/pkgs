@@ -5,6 +5,7 @@ Oracle values are hardcoded from the upstream test fixtures
 differential-tested against all of them at port time.
 """
 
+import math
 from typing import cast
 
 import gometry as gm
@@ -30,6 +31,41 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     east, west = (list(part.coords) for part in gm.parts(measured))
     assert east[-1] == (180.0, 0.0, 15.0, 2.0)
     assert west[0] == (-180.0, 0.0, 15.0, 2.0)
+
+
+def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
+    left = gm.from_wkt(
+        'POLYGON ((-10 -10, 10 -10, 10 10, -10 10, -10 -10))', crs=4326
+    )
+    right = gm.from_wkt(
+        'POLYGON ((350 -10, 370 -10, 370 10, 350 10, 350 -10))', crs=4326
+    )
+    spelling = right.to_wkb()
+
+    outputs = [
+        gm.union(left, right),
+        gm.union_all([left, right]),
+        gm.GeometryArray([left, right]).union_all(),
+    ]
+    for output in outputs:
+        assert len(gm.parts(output)) == 1
+        assert gm.parts(output)[0].geometry_type == 'Polygon'
+        assert gm.equals(output, left)
+
+    for output in [
+        gm.symmetric_difference(left, right),
+        gm.symmetric_difference_all([left, right]),
+        gm.GeometryArray([left, right]).symmetric_difference_all(),
+    ]:
+        assert output.is_empty
+    assert right.to_wkb() == spelling
+
+    seam_union = gm.union(
+        gm.box(179.5, -1.0, 180.0, 1.0, crs=4326),
+        gm.box(-180.0, -1.0, -179.5, 1.0, crs=4326),
+    )
+    assert len(gm.parts(seam_union)) == 1
+    assert not seam_union.is_empty
 
 
 def test_split_antimeridian_polygons_match_upstream_oracles() -> None:
@@ -129,11 +165,8 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
 def test_split_antimeridian_gates() -> None:
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.LineString([(170, 0), (-170, 0)], crs=3857).split_antimeridian()
-    with pytest.raises(
-        gm.InvalidGeometryError,
-        match=r'invalid longitude/latitude \(190, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
-    ):
-        gm.LineString([(190, 0), (200, 0)]).split_antimeridian()
+    periodic = gm.LineString([(190, 0), (200, 0)]).split_antimeridian()
+    assert periodic.to_wkt() == 'LINESTRING (-170 0, -160 0)'
     zm_ring = gm.from_wkt(
         'POLYGON Z ((-45 40 1, 45 40 1, 135 40 1, -135 40 1, -45 40 1))'
     )
@@ -141,15 +174,96 @@ def test_split_antimeridian_gates() -> None:
         zm_ring.split_antimeridian()
     nad = gm.LineString([(170, -10), (-170, 10)], crs=4269).split_antimeridian()
     assert nad.geometry_type == 'MultiLineString'
-    with pytest.raises(
-        gm.InvalidGeometryError,
-        match=r'invalid longitude/latitude \(181, 0\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
-    ) as info:
-        gm.GeometryArray([
-            gm.LineString([(0, 0), (1, 1)]),
-            gm.LineString([(181, 0), (1, 1)]),
-        ]).split_antimeridian()
-    assert 'array element 1' in ''.join(info.value.__notes__)
+    rows = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 1)]),
+        gm.LineString([(181, 0), (1, 1)]),
+        None,
+    ]).split_antimeridian()
+    assert rows[1].to_wkt() == 'LINESTRING (-179 0, 1 1)'
+    assert rows[2] is None
+
+
+@pytest.mark.parametrize(
+    ('wkt', 'axes', 'seam'),
+    [
+        ('LINESTRING Z (170 0 10, -170 0 20)', 'XYZ', (15.0,)),
+        ('LINESTRING M (170 0 1, -170 0 3)', 'XYM', (2.0,)),
+        ('LINESTRING ZM (170 0 10 1, -170 0 20 3)', 'XYZM', (15.0, 2.0)),
+    ],
+)
+def test_split_antimeridian_ordinate_policy(
+    wkt: str, axes: str, seam: tuple[float, ...]
+) -> None:
+    split = gm.from_wkt(wkt, crs=4326).split_antimeridian()
+    assert split.coordinate_axes == axes
+    east = list(gm.parts(split)[0].coords)[-1]
+    assert east[2:] == seam
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+    # Explicit polygon fixtures keep the policy assertion readable below.
+    pole_wkt = {
+        'XYZ': 'POLYGON Z ((-45 40 1,45 40 1,135 40 1,-135 40 1,-45 40 1))',
+        'XYM': 'POLYGON M ((-45 40 1,45 40 1,135 40 1,-135 40 1,-45 40 1))',
+        'XYZM': 'POLYGON ZM ((-45 40 1 2,45 40 1 2,135 40 1 2,-135 40 1 2,-45 40 1 2))',
+    }[axes]
+    with pytest.raises(gm.InvalidGeometryError, match='cannot preserve Z/M'):
+        gm.from_wkt(pole_wkt, crs=4326).split_antimeridian()
+
+
+def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
+    band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
+    split = band.split_antimeridian()
+    assert split.to_wkt() == 'POLYGON ((-180 -30, 180 -30, 180 30, -180 30, -180 -30))'
+    for longitude in (-179, 0, 179):
+        assert gm.contains(split.set_crs(None), gm.Point(longitude, 0))
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+    cap = gm.Polygon([(-45, 40), (45, 40), (135, 40), (-135, 40)], crs=4326)
+    fixed = cap.split_antimeridian()
+    assert gm.contains(fixed.set_crs(None), gm.Point(0, 89))
+
+
+_RADIAN_CRS = (
+    'GEOGCS["WGS 84 rad",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+
+
+@pytest.mark.parametrize(
+    'crs',
+    [4326, _RADIAN_CRS, 4807],
+    ids=['degree', 'radian', 'grad'],
+)
+@pytest.mark.parametrize('north', [False, True], ids=['south', 'north'])
+def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
+    crs: int | str, *, north: bool
+) -> None:
+    factor = cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor'])
+    half_turn = math.pi / factor
+    pole = math.pi / 2.0 / factor
+    sign = 1.0 if north else -1.0
+    exterior = math.nextafter(sign * pole, math.copysign(math.inf, sign))
+    interior = sign * (pole - half_turn / 18.0)
+    line = gm.LineString(
+        [(half_turn - half_turn / 18.0, exterior), (-half_turn + half_turn / 18.0, interior)],
+        crs=crs,
+    )
+    split = line.split_antimeridian()
+    assert any(
+        y == sign * pole
+        for part in gm.parts(split)
+        for _, y in part.coords
+    )
+    assert split.split_antimeridian().to_wkt() == split.to_wkt()
+
+    two_outside = math.nextafter(exterior, math.copysign(math.inf, sign))
+    invalid = gm.LineString(
+        [(half_turn - half_turn / 18.0, two_outside), (-half_turn + half_turn / 18.0, interior)],
+        crs=crs,
+    )
+    with pytest.raises(gm.InvalidGeometryError, match='outside the physical axis limits'):
+        invalid.split_antimeridian()
 
 
 def test_split_antimeridian_review_regressions() -> None:
@@ -341,6 +455,25 @@ def test_crossing_polygon_clip_by_rect_scalar_and_array() -> None:
     )
 
 
+def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
+    noncanonical = gm.Point(360, 0, crs=4326)
+    pole = gm.Point(0, 90, crs=4326)
+    cases = [
+        (noncanonical, (-1, -1, 1, 1), gm.Point(0, 0, crs=4326)),
+        (pole, (10, 80, 20, 90), gm.Point(10, 90, crs=4326)),
+        (
+            gm.LineString([(170, 0), (-170, 0)], crs=4326),
+            (175, -1, 180, 1),
+            gm.LineString([(175, 0), (180, 0)], crs=4326),
+        ),
+        (gm.Point(0, 0, crs=4326), (-1, -1, 1, 1), gm.Point(0, 0, crs=4326)),
+    ]
+    for shape, rect, expected in cases:
+        clipped = shape.clip_by_rect(*rect)
+        assert gm.equals(clipped, expected)
+        assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
+
+
 def test_crossing_line_and_multiline_predicates_and_planar_ops() -> None:
     """Crossing linework uses geographic predicates; simplify/hull stay planar."""
     line = gm.LineString([(170, 10), (-170, 10)], crs=4326)
@@ -360,18 +493,25 @@ def test_crossing_line_geographic_distance_to_seam_is_zero() -> None:
     assert gm.distance(crossing, seam) == 0.0
 
 
-def test_split_crossing_polygon_distance_to_east_lobe_is_zero() -> None:
+def test_geodesic_distance_rejects_split_crossing_polygon() -> None:
     split = _crossing_band_polygon().split_antimeridian()
     east_lobe = gm.box(172, 42, 178, 48, crs=4326)
-    assert gm.distance(split, east_lobe) == 0.0
-    assert gm.distance(split, gm.Point(175, 45, crs=4326)) == 0.0
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.distance(split, east_lobe)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.distance(split, gm.Point(175, 45, crs=4326))
+    assert gm.distance(split, east_lobe, unit='planar') == 0.0
+    assert gm.distance(split, gm.Point(175, 45, crs=4326), unit='planar') == 0.0
 
 
-def test_unsplit_crossing_polygon_distance_to_interior_is_zero() -> None:
+def test_geodesic_distance_rejects_unsplit_crossing_polygon() -> None:
     poly = _crossing_band_polygon()
-    assert gm.distance(poly, gm.Point(175, 45, crs=4326)) == 0.0
-    assert gm.distance(poly, gm.box(172, 42, 178, 48, crs=4326)) == 0.0
-    assert gm.dwithin(poly, gm.Point(175, 45, crs=4326), 1.0) is True
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.distance(poly, gm.Point(175, 45, crs=4326))
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.distance(poly, gm.box(172, 42, 178, 48, crs=4326))
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.dwithin(poly, gm.Point(175, 45, crs=4326), 1.0)
 
 
 def test_nad83_crossing_polygon_predicates_match_split_form() -> None:
@@ -725,20 +865,15 @@ def test_derived_points_and_bounds_handle_pole_enclosure() -> None:
     assert gm.contains(band, band.point_on_surface())
 
 
-def test_nearest_and_shortest_line_parity_across_paths() -> None:
+def test_geodesic_shortest_line_rejects_filled_polygon_operands() -> None:
     poly = _crossing_band()
     probe = gm.Point(179, 12, crs=4326)
-    oracle = gm.shortest_line(poly.split_antimeridian(), probe).to_wkt()
-    assert gm.shortest_line(poly, probe).to_wkt() == oracle
-    assert gm.shortest_line(poly, probe).to_wkt() == oracle
-    assert gm.shortest_line(gm.GeometryArray([poly]), probe)[0].to_wkt() == oracle
-    assert gm.shortest_line(poly, gm.GeometryArray([probe]))[0].to_wkt() == oracle
-    assert (
-        gm.shortest_line(gm.GeometryArray([poly]), gm.GeometryArray([probe]))[
-            0
-        ].to_wkt()
-        == oracle
-    )
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.shortest_line(poly, probe)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.shortest_line(poly.split_antimeridian(), probe)
+    with pytest.raises(gm.CRSError, match='polygon interiors is unsupported'):
+        gm.shortest_line(gm.GeometryArray([poly]), probe)
 
 
 def test_zm_polygon_crossing_antimeridian_overlay() -> None:

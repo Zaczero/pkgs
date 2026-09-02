@@ -73,6 +73,38 @@ def test_point_scalar_predicate_executor_handles_antimeridian_and_missing_rows()
     np.testing.assert_array_equal(gm.covered_by(points, crossing), expected)
 
 
+def test_relate_scalar_array_uses_logical_rows_for_compact_nulls() -> None:
+    scalar = gm.Point(0.0, 0.0)
+    values = gm.GeometryArray([
+        gm.Point(float(row), 0.0) if row % 2 == 0 else None for row in range(65)
+    ])
+    expected_left = [
+        None if row % 2 else gm.relate(scalar, gm.Point(float(row), 0.0))
+        for row in range(65)
+    ]
+    expected_right = [
+        None if row % 2 else gm.relate(gm.Point(float(row), 0.0), scalar)
+        for row in range(65)
+    ]
+
+    present = gm.GeometryArray([
+        gm.Point(float(row), 0.0) for row in range(0, 65, 2)
+    ])
+    present_before = present.__sizeof__()
+    gm.relate(scalar, present)
+    present_growth = present.__sizeof__() - present_before
+    values_before = values.__sizeof__()
+    gm.relate(scalar, values)
+    assert values.__sizeof__() - values_before > present_growth
+
+    assert values.is_missing.tolist() == [row % 2 == 1 for row in range(65)]
+    assert gm.relate(scalar, values) == expected_left
+    assert gm.relate(values, scalar) == expected_right
+    assert gm.relate(values, values) == [
+        None if row % 2 else '0FFFFFFF2' for row in range(65)
+    ]
+
+
 def test_equals_exact_rejects_non_finite_or_negative_tolerance() -> None:
     a, b = (gm.Point(0, 0), gm.Point(1, 1))
     for bad in (float('inf'), float('nan'), -1.0):

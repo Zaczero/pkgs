@@ -1,4 +1,9 @@
-"""Equivalence helpers for the untimed cross-library oracle (Lane 1)."""
+"""Test oracle mechanics and registry completeness without release workloads.
+
+The deliberate ``benches/python/bench_oracle.py --all`` command owns
+production-scale workload equivalence; ordinary pytest covers its registry,
+dispatch, and failure contracts with local cases.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +43,8 @@ normalized_tile_set = _bench_oracles.normalized_tile_set
 normalized_uint64_set = _bench_oracles.normalized_uint64_set
 rowwise_geometry_exact = _bench_oracles.rowwise_geometry_exact
 RELEASE_OPERATIONS = _bench_registry.RELEASE_OPERATIONS
+SCALING_OPERATIONS = _bench_registry.SCALING_OPERATIONS
+ALL_PUBLIC_OPERATIONS = _bench_registry.ALL_PUBLIC_OPERATIONS
 validate_builders = _bench_oracle.validate_builders
 run_oracle = _bench_oracle.run_oracle
 
@@ -287,9 +294,71 @@ def test_validate_builders_rejects_orphan() -> None:
         validate_builders(list(RELEASE_OPERATIONS), bloated)
 
 
-def test_public_oracle_executes_every_case_once() -> None:
-    """The ordinary gate executes every public pair through the oracle path."""
-    assert run_oracle(list(RELEASE_OPERATIONS)) == 0
+def test_public_oracle_registries_cover_every_operation_once() -> None:
+    release_identities = tuple(operation.gometry for operation in RELEASE_OPERATIONS)
+    scaling_identities = tuple(operation.gometry for operation in SCALING_OPERATIONS)
+    identities = (*release_identities, *scaling_identities)
+    assert identities == tuple(operation.gometry for operation in ALL_PUBLIC_OPERATIONS)
+    assert len(identities) == len(set(identities))
+    assert set(PUBLIC_CASE_BUILDERS) == set(release_identities)
+    assert set(PUBLIC_SCALING_CASE_BUILDERS) == set(scaling_identities)
+
+
+def test_run_oracle_dispatches_local_release_and_scaling_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_operation = RELEASE_OPERATIONS[0]
+    scaling_operation = SCALING_OPERATIONS[0]
+    observed: list[str] = []
+
+    class LocalCase:
+        kind = 'local'
+
+        def __init__(self, label: str, operation: object) -> None:
+            self.label = label
+            self.operation = operation
+
+        def verify(self, context: OracleContext) -> None:
+            assert context.operation is self.operation
+            observed.append(self.label)
+
+    def release_builder() -> LocalCase:
+        return LocalCase('release', release_operation)
+
+    def scaling_builder() -> LocalCase:
+        return LocalCase('scaling', scaling_operation)
+
+    monkeypatch.setattr(
+        _bench_oracle,
+        'PUBLIC_CASE_BUILDERS',
+        {release_operation.gometry: release_builder},
+    )
+    monkeypatch.setattr(
+        _bench_oracle,
+        'PUBLIC_SCALING_CASE_BUILDERS',
+        {scaling_operation.gometry: scaling_builder},
+    )
+
+    assert run_oracle([release_operation, scaling_operation]) == 0
+    assert observed == ['release', 'scaling']
+
+
+def test_public_oracle_returns_nonzero_on_mismatch() -> None:
+    operation = RELEASE_OPERATIONS[0]
+
+    class FailingCase:
+        kind = 'test'
+
+        def verify(self, context: OracleContext) -> None:
+            raise OracleMismatch('intentional mismatch')
+
+    assert (
+        run_oracle(
+            [operation],
+            builders={operation.gometry: FailingCase},
+        )
+        == 1
+    )
 
 
 def test_oracle_mismatch_message_is_rich() -> None:

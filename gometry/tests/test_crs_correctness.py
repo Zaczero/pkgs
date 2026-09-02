@@ -18,6 +18,12 @@ from tests._support import bools, floats, ids
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192
 GEOD = Geod(ellps='WGS84')
+RADIAN_CRS = (
+    'GEOGCS["WGS 84 rad",'
+    'DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
 
 
 def test_huge_coordinate_distance_is_panic_free() -> None:
@@ -39,34 +45,28 @@ def test_epsg4326_scalar_vs_many_geodesic_broadcast_reuses_fixed_state() -> None
     """Scalar-vs-array geodesic broadcasts match scalar row kernels exactly."""
     scalar = gm.MultiLineString(
         [
-            [(-1.0, 0.0), (1.0, 0.0)],
-            [(179.0, 0.0), (-179.0, 0.0)],
-            [(-45.0, 88.5), (45.0, 88.5)],
+            [(0.0, 0.0), (0.1, 0.0)],
+            [(0.2, 0.0), (0.2, 0.1)],
         ],
         crs=4326,
     )
     rows = gm.GeometryArray([
-        gm.Point(0.0, 0.0, crs=4326),
-        gm.LineString([(180.0, -1.0), (180.0, 1.0)], crs=4326),
-        gm.MultiPoint([(12.0, -4.0), (12.5, -3.5)], crs=4326),
-        gm.Point(0.0, 87.0, crs=4326),
-        gm.Polygon([(2.0, 0.2), (3.0, 0.2), (2.5, 1.0), (2.0, 0.2)], crs=4326),
+        gm.Point(0.05, 0.0, crs=4326),
+        gm.LineString([(0.0, 0.01), (0.1, 0.01)], crs=4326),
+        gm.MultiPoint([(0.3, 0.0), (0.31, 0.01)], crs=4326),
     ])
     row_list = list(rows)
     expected_distances = [gm.distance(row, scalar) for row in row_list]
     assert floats(gm.distance(rows, scalar)) == pytest.approx(expected_distances)
-    assert floats(gm.distance(scalar, rows)) == pytest.approx([
-        gm.distance(scalar, row) for row in row_list
-    ])
-    assert bools(gm.dwithin(rows, scalar, 0.0)) == [
-        gm.dwithin(row, scalar, 0.0) for row in row_list
-    ]
-    assert bools(gm.dwithin(rows, scalar, 250000.0)) == [
-        gm.dwithin(row, scalar, 250000.0) for row in row_list
-    ]
-    assert list(zip(*gm.nearest_points(rows, scalar), strict=True)) == [
-        gm.nearest_points(row, scalar) for row in row_list
-    ]
+    assert floats(gm.distance(scalar, rows)) == pytest.approx(expected_distances)
+    expected_dwithin = [gm.dwithin(row, scalar, 0.0) for row in row_list]
+    assert bools(gm.dwithin(rows, scalar, 0.0)) == expected_dwithin
+    assert bools(gm.dwithin(scalar, rows, 0.0)) == expected_dwithin
+    expected_dwithin = [gm.dwithin(row, scalar, 2000.0) for row in row_list]
+    assert bools(gm.dwithin(rows, scalar, 2000.0)) == expected_dwithin
+    assert bools(gm.dwithin(scalar, rows, 2000.0)) == expected_dwithin
+    expected_nearest = [gm.nearest_points(row, scalar) for row in row_list]
+    assert list(zip(*gm.nearest_points(rows, scalar), strict=True)) == expected_nearest
     assert list(zip(*gm.nearest_points(scalar, rows), strict=True)) == [
         gm.nearest_points(scalar, row) for row in row_list
     ]
@@ -532,17 +532,86 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
         gm.GeometryCollection([bare], epoch=2020.0)
 
 
-def test_non_degree_geographic_crs_rejected_for_geodesic_metrics() -> None:
-    """Grad-unit geographic CRS are rejected instead of misread as degrees."""
+def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> None:
+    """Grad-unit geographic coordinates are admitted and normalized at kernels."""
     grad_crs = gm.CRS(4807)
     assert grad_crs.is_geographic
     assert [axis['unit_name'] for axis in grad_crs.axes[:2]] == ['grad', 'grad']
-    with pytest.raises(ValueError, match='degree angular axis units'):
-        gm.distance(gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807))
-    with pytest.raises(ValueError, match='degree angular axis units'):
-        gm.SpatialIndex([gm.Point(0, 0, crs=4807)]).query(
-            gm.Point(0, 0, crs=4807), predicate='dwithin', distance=1.0
-        )
+    assert gm.distance(gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)) == pytest.approx(
+        100189.3, rel=1e-6
+    )
+
+
+def test_bound_geographic_crs_uses_its_typed_frame_for_metrics() -> None:
+    """A bound geographic CRS keeps its source angular frame and ellipsoid."""
+    bound_crs = '+proj=longlat +ellps=clrk80ign +pm=paris +towgs84=0,0,0 +type=crs'
+    origin = gm.Point(0.0, 0.0, crs=bound_crs)
+    east = gm.Point(1.0, 0.0, crs=bound_crs)
+
+    assert gm.CRS(bound_crs).kind == 'bound'
+    assert gm.distance(origin, east) == pytest.approx(111321.44905269431, rel=1e-12)
+    index = gm.SpatialIndex([origin])
+    aliases = gm.GeometryArray([gm.Point(360.0, 0.0, crs=bound_crs)])
+    assert ids(index.candidates(origin)) == [0]
+    assert [row.tolist() for row in index.candidates(aliases)] == [[0]]
+    with pytest.raises(ValueError, match='invalid longitude/latitude'):
+        gm.crs_transform(bound_crs, bound_crs, [0.0], [101.0])
+
+
+@pytest.mark.parametrize(
+    ('crs', 'period'),
+    [(4326, 360.0), (4807, 400.0), (RADIAN_CRS, math.tau)],
+    ids=['degree', 'grad', 'radian'],
+)
+def test_geographic_native_aliases_reach_scalar_array_and_index_paths(
+    crs: object, period: float
+) -> None:
+    """One native periodic turn is one location through every metric path."""
+    origin = gm.Point(0.0, 0.0, crs=crs)
+    aliases = gm.GeometryArray(
+        [gm.Point(period, 0.0, crs=crs), gm.Point(-period, 0.0, crs=crs)]
+    )
+
+    assert gm.distance(origin, aliases).tolist() == pytest.approx([0.0, 0.0])
+    assert bools(gm.dwithin(origin, aliases, 1.0)) == [True, True]
+
+    index = gm.SpatialIndex([origin, gm.Point(1.0, 0.0, crs=crs)])
+    alias = aliases[0]
+    assert ids(index.candidates(alias)) == [0]
+    assert ids(index.query(alias, predicate='intersects')) == [0]
+    assert ids(index.query(alias, predicate='dwithin', distance=1.0)) == [0]
+    assert ids(index.nearest(alias)) == [0]
+
+
+def test_grad_alias_transform_uses_the_same_prime_meridian_location() -> None:
+    """EPSG:4807 aliases transform to the same Greenwich location."""
+    origin = gm.Point(0.0, 0.0, crs=4807)
+    alias = gm.Point(400.0, 0.0, crs=4807)
+    greenwich = origin.to_crs(4326)
+    alias_greenwich = alias.to_crs(4326)
+
+    assert (alias_greenwich.x, alias_greenwich.y) == pytest.approx(
+        (greenwich.x, greenwich.y)
+    )
+
+
+def test_geographic_native_aliases_preserve_empty_missing_and_epoch_contracts() -> None:
+    """Frame admission does not turn empty or missing rows into coordinates."""
+    origin = gm.Point(0.0, 0.0, crs=4807)
+    empty = gm.Point(crs=4807)
+    rows = gm.GeometryArray([gm.Point(400.0, 0.0, crs=4807), None, empty])
+
+    distances = gm.distance(rows, origin).tolist()
+    assert distances[0] == pytest.approx(0.0)
+    assert math.isnan(distances[1])
+    assert math.isinf(distances[2])
+    assert bools(gm.dwithin(rows, origin, 1.0)) == [True, False, False]
+
+    first = gm.Point(0.0, 0.0, crs=9000, epoch=2020.0)
+    same_epoch = gm.Point(360.0, 0.0, crs=9000, epoch=2020.0)
+    assert gm.distance(first, same_epoch) == pytest.approx(0.0)
+    with pytest.raises(gm.CRSMismatchError, match='requires matching coordinate epoch'):
+        gm.distance(first, gm.Point(0.0, 0.0, crs=9000, epoch=2021.0))
 
 
 def test_to_wkb_wire_aliases_crs84_and_rejects_unknown() -> None:

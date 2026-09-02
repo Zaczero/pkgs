@@ -8,6 +8,8 @@ from itertools import pairwise
 import gometry as gm
 import pytest
 
+from tests._support import ids, pair_rows
+
 
 def test_coverage_signed_zero_shared_edge_valid_and_union() -> None:
     """+0/-0 on coincident polygons: validator rejects; if only shared-edge
@@ -83,6 +85,48 @@ def test_relate_antimeridian_seam_matches_contains() -> None:
     rel = gm.relate(pole_box, pole)
     assert len(rel) == 9
     assert gm.covers(pole_box, pole) or gm.touches(pole_box, pole)
+
+
+def test_exact_aggregate_faces_reach_every_de9im_consumer() -> None:
+    left = gm.box(-1.01e-7, -1e-9, -0.99e-7, 1e-9)
+    right = gm.box(0.99e-7, -1e-9, 1.01e-7, 1e-9)
+    areas = gm.GeometryCollection([left, right])
+    probe = gm.Point(0.0, 0.0)
+    expected = 'FF2FF10F2'
+
+    assert gm.relate(areas, probe) == expected
+    assert gm.relate(probe, areas) == 'FF0FFF212'
+    assert gm.relate(areas.prepare(), probe) == expected
+    assert gm.relate(probe.prepare(), areas) == 'FF0FFF212'
+    assert gm.relate(gm.GeometryArray([areas]), probe) == [expected]
+    assert gm.relate(areas, gm.GeometryArray([probe])) == [expected]
+    assert gm.relate_pattern(areas, probe, 'FF*FF****')
+    assert ids(gm.SpatialIndex([areas]).query(probe, predicate='intersects')) == []
+    assert pair_rows(gm.join([probe], [areas], predicate='intersects')) == []
+    assert gm.intersection(areas, probe).is_empty
+
+
+def test_geographic_aggregate_contacts_keep_pre_quotient_locations() -> None:
+    adjacent = gm.GeometryCollection(
+        [gm.box(0.0, 0.0, 1.0, 1.0), gm.box(1.0, 0.0, 2.0, 1.0)],
+        crs=4326,
+    )
+    pinch = gm.GeometryCollection(
+        [
+            gm.Polygon([(0.0, 0.0), (-2.0, -1.0), (-2.0, 1.0)], crs=4326),
+            gm.Polygon([(0.0, 0.0), (2.0, 1.0), (2.0, -1.0)], crs=4326),
+        ],
+        crs=4326,
+    )
+    for geometry, point, expected in [
+        (adjacent, gm.Point(1.0, 0.5, crs=4326), '0F2FF1FF2'),
+        (adjacent, gm.Point(1.0, 0.0, crs=4326), 'FF20F1FF2'),
+        (pinch, gm.Point(0.0, 0.0, crs=4326), 'FF20F1FF2'),
+    ]:
+        assert gm.relate(geometry, point) == expected
+        assert gm.relate(geometry.prepare(), point) == expected
+        assert gm.intersects(geometry, point) is True
+        assert gm.intersects(geometry.prepare(), point) is True
 
 
 def test_voronoi_edges_honors_clip() -> None:

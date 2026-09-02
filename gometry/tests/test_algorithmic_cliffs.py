@@ -166,8 +166,9 @@ def _big_polygon(n_edge: int = 5000) -> gm.Polygon:
     return gm.Polygon(coords)
 
 
-# Frozen probe corpus: each prefix exercises the 1/8/63/64 dispatch boundary
-# without a seeded generator becoming a second, unreviewed test input source.
+# Frozen probe corpus shared by the prepared/free parity checks. Keeping the
+# coordinates explicit prevents a seeded generator from becoming a second,
+# unreviewed test input source.
 _PREPARED_PROBES = np.array(
     [
         (-1.4, -1.3),
@@ -238,17 +239,21 @@ _PREPARED_PROBES = np.array(
     dtype=np.float64,
 )
 
+# EdgeYIndex leaves its linear plan above 32 edges. This is the smallest even
+# regular ring that keeps the prepared indexed-plan path without benchmark
+# scale coordinate work.
+_INDEXED_POLYGON_EDGES = 34
+
 
 def test_prepared_contains_xy_matches_free_at_every_probe_count():
     """Prepared receiver uses its tester at every count: results match free.
 
-    Pre-fix cliff discarded the prepared tester below 64 probes (572x).
-    The retained policy is plan-aware: this 10,000-edge shape crosses over
-    at four one-shot probes. Observable without a clock: identical results
-    at 1/2/3/4 probes. Wall-clock scale lives in
+    Pre-fix cliff discarded the prepared tester below 64 probes. The indexed
+    34-edge shape keeps the production plan while making the result agreement
+    observable without a clock at 1/2/3/4 probes. Wall-clock scale lives in
     ``benches/cases/case_prepared_contains_xy_scale.py``.
     """
-    big = _big_polygon(10_000)
+    big = _big_polygon(_INDEXED_POLYGON_EDGES)
     prep = big.prepare()
 
     for n in (1, 2, 3, 4):
@@ -266,7 +271,7 @@ def test_prepared_contains_xy_matches_free_at_every_probe_count():
 
 
 def test_prepared_and_free_contains_xy_results_match():
-    big = _big_polygon(2000)
+    big = _big_polygon(_INDEXED_POLYGON_EDGES)
     prep = big.prepare()
     xs, ys = _PREPARED_PROBES.T
     np.testing.assert_array_equal(
@@ -286,7 +291,7 @@ def test_free_fn_contains_xy_agrees_across_threshold():
     The timing shape lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
     Here only result agreement with prepared (and across the threshold).
     """
-    big = _big_polygon(10_000)
+    big = _big_polygon(_INDEXED_POLYGON_EDGES)
     prep = big.prepare()
     xs64, ys64 = _PREPARED_PROBES.T
     xs3, ys3 = xs64[:3], ys64[:3]

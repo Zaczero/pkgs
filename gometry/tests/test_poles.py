@@ -30,6 +30,17 @@ def test_pole_encircling_hexagon_contains_and_covers() -> None:
     assert gm.within(south_pole, hex_south)
 
 
+def test_noncanonical_polar_cap_contains_and_index_agree_in_both_orders() -> None:
+    ring = [(0.1, 80.0), (90.1, 80.0), (-179.8, 80.0), (-89.7, 80.0)]
+    point = gm.Point(50.0, 89.5, crs=4326)
+    for coordinates in (ring, list(reversed(ring))):
+        cap = gm.Polygon(coordinates, crs=4326)
+        assert gm.contains(cap, point)
+        index = gm.SpatialIndex([cap])
+        assert index.candidates(point).tolist() == [0]
+        assert index.query(point, predicate='intersects').tolist() == [0]
+
+
 def test_pole_encircling_hexagon_array_predicates() -> None:
     hex_north, hex_south = _pole_hexagons()
     rows = gm.GeometryArray([hex_north, hex_south])

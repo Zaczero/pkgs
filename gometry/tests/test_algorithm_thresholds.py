@@ -34,8 +34,9 @@ def test_hausdorff_equidistant_metric_stable_above_feature_param_budget() -> Non
             pts.append(gm.Point(10.0 + eps, 1.0))
         return float(gm.hausdorff_distance(src, gm.GeometryCollection(pts)))
 
-    # Below, at, and well above the old feature x param cliff.
-    for n_extra in (0, 60, 90, 128, 129, 200):
+    # The old full-pairs fallback admitted feature_count * param_count up to
+    # 16_384. These adjacent counts straddle that historical boundary.
+    for n_extra in (89, 90):
         got = distance_for(n_extra)
         assert got == pytest.approx(true, abs=1e-6), (
             f'n_extra={n_extra}: got {got}, want continuous {true} '

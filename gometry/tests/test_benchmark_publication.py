@@ -823,28 +823,3 @@ def test_publication_rejects_changed_analysis_summary(tmp_path: Path) -> None:
             output_dir=tmp_path / 'stage',
             current_dir=tmp_path / 'current',
         )
-
-
-def test_publication_rolls_back_when_current_replacement_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-    current = tmp_path / 'current'
-    current.mkdir()
-    (current / 'sentinel').write_text('keep', encoding='utf-8')
-    original_rename = Path.rename
-
-    def fail_stage_rename(path: Path, target: Path | str) -> Path:
-        if path.name.startswith('.publication-') and Path(target) == current:
-            raise OSError('injected replacement failure')
-        return original_rename(path, target)
-
-    monkeypatch.setattr(Path, 'rename', fail_stage_rename)
-    with pytest.raises(OSError, match='injected replacement failure'):
-        bench_driver.publish_current_run(
-            analysis_manifest,
-            output_dir=tmp_path / 'stage',
-            current_dir=current,
-        )
-    assert (current / 'sentinel').read_text(encoding='utf-8') == 'keep'
-    assert not (tmp_path / '.current.previous').exists()

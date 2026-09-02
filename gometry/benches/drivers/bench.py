@@ -1212,7 +1212,7 @@ def publish_current_run(
     output_dir: Path | None = None,
     current_dir: Path | None = None,
 ) -> Path:
-    """Atomically publish one explicitly named, validated analysis manifest."""
+    """Publish one explicitly named, validated analysis manifest."""
     (
         analysis_path,
         analysis,
@@ -1320,27 +1320,14 @@ def publish_current_run(
         )
         (stage / 'summary.md').write_text(summary_md, encoding='utf-8')
 
-        # Ensure the normalized transaction is complete before replacing the
-        # current directory.  Missing one required file is never a partial
-        # publication.
+        # Build and validate the complete replacement before touching the
+        # tracked publication directory.
         required = (stage / 'identity.json', stage / 'summary.json', stage / 'summary.md', raw_dir)
         if not all(path.exists() for path in required) or not any(raw_dir.iterdir()):
             raise SystemExit('publication rejected: staged output is incomplete')
-        backup = current_dir.with_name(f'.{current_dir.name}.previous')
-        if backup.exists():
-            shutil.rmtree(backup)
-        moved_old = False
-        try:
-            if current_dir.exists():
-                current_dir.rename(backup)
-                moved_old = True
-            stage.rename(current_dir)
-        except Exception:
-            if moved_old and backup.exists() and not current_dir.exists():
-                backup.rename(current_dir)
-            raise
-        if backup.exists():
-            shutil.rmtree(backup)
+        if current_dir.exists():
+            shutil.rmtree(current_dir)
+        stage.rename(current_dir)
     except Exception:
         if stage.exists():
             shutil.rmtree(stage)

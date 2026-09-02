@@ -312,7 +312,8 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
     assert not near.coverage_is_valid()
     unchanged_default = near.coverage_clean()
     assert unchanged_default.coverage_is_valid()
-    assert sorted(set(gm.get_coordinates(unchanged_default)[:, 0])) == [
+    coordinates = gm.get_coordinates(unchanged_default)
+    assert sorted(set(coordinates.values[:, 0])) == [
         0.0,
         1.0,
         1.0000001,

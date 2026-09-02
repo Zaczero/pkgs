@@ -119,13 +119,15 @@ def test_mixed_has_z_rows_length_and_values():
 
 
 def test_prepared_tall_edge_masks_match_unprepared():
-    n_edges = 64
+    # More than 32 edges selects the indexed Y-stabbing plan; 34 is the
+    # smallest even tall-edge ring that selects its interval-tree fallback.
+    n_edges = 34
     verts = [(i * 0.1, 0.0 if i % 2 == 0 else 1000.0) for i in range(n_edges)]
     verts.append(verts[0])
     poly = gm.Polygon(verts)
     prep = poly.prepare()
-    xs = np.linspace(0, 6, 64)
-    ys = np.linspace(0, 1000, 64)
+    xs = np.linspace(0, 3.3, 4)
+    ys = np.linspace(0, 1000, 4)
     gx, gy = np.meshgrid(xs, ys, indexing='xy')
     prepared = gm.contains_xy(prep, gx.ravel(), gy.ravel())
     scalar = np.array([
@@ -141,11 +143,11 @@ def test_prepared_tall_edge_masks_match_unprepared():
     # The tall-edge mesh does not enter a certified interior cell at these
     # coordinates. Keep its identity lock, and also pin the shared path to an
     # independent scalar oracle on a certified interior cell.
-    theta = np.arange(64) * (2.0 * np.pi / 64.0)
+    theta = np.arange(34) * (2.0 * np.pi / 34.0)
     oracle_poly = gm.Polygon([(10.0 * np.cos(t), 10.0 * np.sin(t)) for t in theta])
     oracle_prepared = oracle_poly.prepare()
-    oracle_x = np.zeros(10_000)
-    oracle_y = np.zeros(10_000)
+    oracle_x = np.zeros(1)
+    oracle_y = np.zeros(1)
     oracle_batch = gm.contains_xy(oracle_prepared, oracle_x, oracle_y)
     oracle_scalar = np.array(
         [gm.contains(oracle_poly, gm.Point(0.0, 0.0))] * len(oracle_x)

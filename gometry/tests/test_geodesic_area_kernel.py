@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import gometry as gm
 import numpy as np
 import pytest
-
-import gometry as gm
 
 
 def test_geodesic_area_is_ellipsoidal_and_keeps_holes() -> None:

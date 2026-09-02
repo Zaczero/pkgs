@@ -743,9 +743,9 @@ def test_geometry_array_prepared_contains_and_index() -> None:
             assert getattr(gm, predicate)(prepared, probe) == getattr(gm, predicate)(
                 polygon, probe
             ), (predicate, (probe).to_wkt())
-    assert gm.dwithin(prepared, gm.Point(2, 0, crs=4326), 1.5, unit='planar') == gm.dwithin(
-        polygon, gm.Point(2, 0, crs=4326), 1.5, unit='planar'
-    )
+    assert gm.dwithin(
+        prepared, gm.Point(2, 0, crs=4326), 1.5, unit='planar'
+    ) == gm.dwithin(polygon, gm.Point(2, 0, crs=4326), 1.5, unit='planar')
     np.testing.assert_array_equal(
         gm.dwithin(prepared, values, 0.0, unit='planar'),
         [gm.dwithin(polygon, item, 0.0, unit='planar') for item in list(values)],
@@ -1357,12 +1357,11 @@ def test_geodesic_index_paths_raise_the_same_domain_errors_as_scalars() -> None:
         match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
     ):
         idx.nearest(bad_query)
-    bad_index = gm.SpatialIndex([gm.Point(0.0, 95.0, crs=4326)])
     with pytest.raises(
         gm.InvalidGeometryError,
-        match=r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = \(lon, lat\) — use swap_xy\(\) for latitude-first data',
+        match=r'latitude 95 is outside the physical axis limits',
     ):
-        bad_index.query(gm.Point(0.0, 0.0, crs=4326), predicate='dwithin', distance=1.0)
+        gm.SpatialIndex([gm.Point(0.0, 95.0, crs=4326)])
 
 
 def test_exact_query_and_join_reject_a_stray_distance_argument() -> None:
@@ -1625,8 +1624,26 @@ def test_array_dwithin_query_widens_an_antimeridian_crossing_row() -> None:
     assert match_rows(matches) == [[0]]
 
 
+def test_packed_point_dwithin_deduplicates_geographic_aliases() -> None:
+    seam_line = gm.LineString([(170.0, 0.0), (-170.0, 0.0)], crs=4326)
+    seam_point = gm.Point(180.0, 0.0, crs=4326)
+    pole_line = gm.LineString([(-10.0, 80.0), (10.0, 90.0)], crs=4326)
+    rows = [seam_line, seam_point, pole_line]
+    index = gm.SpatialIndex(rows)
+    tombstone = index.insert(gm.Point(0.0, 0.0, crs=4326))
+    assert index.remove(tombstone)
+
+    queries = gm.points([180.0, -180.0, 0.0, 0.0], [0.0, 0.0, 90.0, 0.0], crs=4326)
+    assert match_rows(index.query(queries, predicate='dwithin', distance=0.0)) == [
+        [0, 1],
+        [0, 1],
+        [2],
+        [],
+    ]
+
+
 def test_self_join_intersects_agrees_with_brute_force_convex_and_concave() -> None:
-    """The symmetric ``intersects`` self-join must agree with an O(n^2) brute
+    """The symmetric ``intersects`` self-join must agree with an O(n²) brute
     force across mixed convex (overlapping boxes) and concave (L-shaped) rows.
     """
     import itertools

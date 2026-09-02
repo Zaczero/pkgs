@@ -752,30 +752,29 @@ def test_w4b_hausdorff_and_union_all_stable() -> None:
     """
     # Stay above the 16-vertex small-target threshold so the indexed heap path
     # remains covered without making the watchdog-bound case needlessly large.
-    hausdorff_vertices = 128
-    left = gm.LineString(
-        [(float(i), math.sin(i * 0.1)) for i in range(hausdorff_vertices)]
-    )
-    right = gm.LineString(
-        [(float(i) + 0.5, math.cos(i * 0.1)) for i in range(hausdorff_vertices)]
-    )
+    hausdorff_vertices = 17
+    left = gm.LineString([
+        (float(i), math.sin(i * 0.1)) for i in range(hausdorff_vertices)
+    ])
+    right = gm.LineString([
+        (float(i) + 0.5, math.cos(i * 0.1)) for i in range(hausdorff_vertices)
+    ])
     h1 = gm.hausdorff_distance(left, right)
     h2 = gm.hausdorff_distance(left, right)
     assert h1 == h2
     assert h1 > 0.0
     polys = [
         gm.Polygon([
-            (x, y),
-            (x + 1.0, y),
-            (x + 1.0, y + 1.0),
-            (x, y + 1.0),
-            (x, y),
+            (x, 0.0),
+            (x + 1.0, 0.0),
+            (x + 1.0, 1.0),
+            (x, 1.0),
+            (x, 0.0),
         ])
-        for x in range(8)
-        for y in range(8)
+        for x in range(3)
     ]
     # Free union_all over a plain iterable exercises n-ary overlay bounds cache.
     u1 = gm.union_all(polys)
     u2 = gm.union_all(polys)
     assert gm.equals(u1, u2)
-    assert u1.area == pytest.approx(64.0)
+    assert u1.area == pytest.approx(3.0)

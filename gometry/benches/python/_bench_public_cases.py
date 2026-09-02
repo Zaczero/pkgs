@@ -254,12 +254,26 @@ def _compare_to_wkb(left: object, right: object | None, context: OracleContext) 
             )
 
 
+def _grouped_coordinate_values_and_indices(
+    value: object, operation: str
+) -> tuple[object, np.ndarray]:
+    import gometry as gm
+
+    if not isinstance(value, gm.Groups):
+        raise OracleMismatch(f'{operation} array result must be Groups')
+    offsets = value.offsets
+    return value.values, np.repeat(
+        np.arange(offsets.size - 1, dtype=np.int64),
+        np.diff(offsets),
+    )
+
+
 def _compare_get_coordinates(
     left: object, right: object | None, context: OracleContext
 ) -> None:
     if right is None:
         raise OracleMismatch('get_coordinates requires competitor')
-    l_coords, l_idx = left  # type: ignore[misc]
+    l_coords, l_idx = _grouped_coordinate_values_and_indices(left, 'get_coordinates')
     r_coords, r_idx = right  # type: ignore[misc]
     exact_coordinates(
         l_coords,
@@ -343,7 +357,8 @@ def _compare_simplify(
 
     if right is None:
         raise OracleMismatch('simplify requires competitor')
-    l_coords, l_idx = gm.get_coordinates(left, return_index=True)
+    l_groups = gm.get_coordinates(left, return_index=True)
+    l_coords, l_idx = _grouped_coordinate_values_and_indices(l_groups, 'simplify')
     r_coords, r_idx = shapely.get_coordinates(right, include_z=False, return_index=True)
     if len(l_coords) != len(r_coords):
         raise OracleMismatch(

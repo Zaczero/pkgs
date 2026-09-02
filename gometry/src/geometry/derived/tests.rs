@@ -51,7 +51,7 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
 }
 
 fn point(x: f64, y: f64) -> Point {
-    Point::new_unchecked_xy(x, y)
+    Point::new_raw_xy(x, y)
 }
 
 fn hull_points() -> Vec<Point> {
