@@ -154,6 +154,17 @@ mod binary_areal_overlay_tests {
         crate::io::to_wkb(shape, None, false).expect("overlay WKB")
     }
 
+    fn circle(vertex_count: usize, center_x: f64, radius: f64) -> Shape {
+        let mut points: Vec<_> = (0..vertex_count)
+            .map(|index| {
+                let angle = 2.0 * std::f64::consts::PI * index as f64 / vertex_count as f64;
+                (center_x + radius * angle.cos(), radius * angle.sin())
+            })
+            .collect();
+        points.push(points[0]);
+        Shape::Polygon(polygon(&points))
+    }
+
     fn assert_disjoint_certificate_matches_graph(inputs: &[&Shape], op: OverlayOp) {
         let certified = overlay_all(
             inputs,
@@ -938,5 +949,55 @@ mod binary_areal_overlay_tests {
             .unwrap();
         assert_eq!(wkb(&direct), wkb(&left));
         assert_eq!(wkb(&direct), wkb(&right));
+    }
+
+    #[test]
+    #[ignore = "production-scale diagnostic; run explicitly without the nextest 10s timeout"]
+    fn overlay_work_scales_at_production_sizes() {
+        for vertex_count in [4_096, 8_192, 16_384, 32_768] {
+            let left = circle(vertex_count, 0.0, 1.0);
+            let right = circle(vertex_count, 0.1, 1.0);
+            crate::geometry::overlay_work::reset();
+            let result = overlay_all(
+                &[&left, &right],
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Intersection,
+                Strictness::Strict,
+            )
+            .expect("production-scale overlay");
+            assert!(!result.is_empty());
+            let counts = crate::geometry::overlay_work::snapshot();
+            let output_edges = result.coord_count().saturating_sub(1);
+            // Positions follow OverlayWorkPhase; the two legacy products are
+            // estimated without executing their removed scans.
+            println!(
+                "overlay-work n={vertex_count} counts={counts:?} legacy_line_source_edges={} legacy_output_ring_edges={}",
+                counts[21].saturating_mul(counts[24]),
+                counts[22].saturating_mul(output_edges),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "production-scale diagnostic; run explicitly without the nextest 10s timeout"]
+    fn hole_assignment_work_scales_at_production_sizes() {
+        for vertex_count in [4_096, 8_192, 16_384, 32_768] {
+            let outer = circle(vertex_count, 0.0, 1.0);
+            let inner = circle(vertex_count, 0.0, 0.5);
+            crate::geometry::overlay_work::reset();
+            let result = overlay_all(
+                &[&outer, &inner],
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Difference,
+                Strictness::Strict,
+            )
+            .expect("production-scale difference");
+            let Shape::Polygon(polygon) = &result else {
+                panic!("expected holed polygon, got {result:?}");
+            };
+            assert_eq!(polygon.holes.len(), 1);
+            let counts = crate::geometry::overlay_work::snapshot();
+            println!("hole-work n={vertex_count} counts={counts:?}");
+        }
     }
 }

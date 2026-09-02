@@ -242,6 +242,10 @@ pub(crate) fn self_node_segments_sourced(
         return (Vec::new(), SegmentProvenance::empty());
     }
     let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique);
+    crate::geometry::overlay_work::add(
+        crate::geometry::OverlayWorkPhase::NodingAtomic,
+        atomic.len(),
+    );
     let multi = expand_provenance_to_atoms(&unique_sources, &provenance);
     (atomic, multi)
 }
@@ -271,6 +275,7 @@ pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Vec<Segment> {
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Vec<(u32, XY)> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let _ = for_each_candidate_pair::<CHAIN_MIN_SEGMENTS>(segments, single_chain, |left, right| {
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::NodingCandidate, 1);
         let (a, b) = (segments[left], segments[right]);
         let orientations = PairOrientations::new(a, b);
         if orientations.right_start == Orientation::Collinear
@@ -346,6 +351,7 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32
     // behind union/difference fallback, symmetric_difference, intersection,
     // relate, and polygonize all flow through here).
     let _ = for_each_candidate_pair::<RUN_NODING_MIN>(segments, single_chain, |left, right| {
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::NodingCandidate, 1);
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
         // produce are collinear-overlap endpoints, decided by the robust

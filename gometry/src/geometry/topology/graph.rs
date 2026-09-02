@@ -161,6 +161,8 @@ pub(crate) struct TopologyGraph {
     pub(crate) line_boundary: Box<[TopologyNodeId]>,
     pub(crate) is_collection: bool,
     pub(crate) lineal_overlap_collection: bool,
+    /// Exact quotient-node/source-row line incidence for overlay point tests.
+    line_source_nodes: HashSet<(TopologyKey, u32)>,
     node_lookup: HashMap<TopologyKey, TopologyNodeId>,
     support: TopologySupport,
 }
@@ -173,6 +175,8 @@ impl HeapSize for TopologyGraph {
             + self.source_points.heap_bytes()
             + self.area_support.heap_bytes()
             + self.line_boundary.heap_bytes()
+            + self.line_source_nodes.capacity()
+                * std::mem::size_of::<(TopologyKey, u32)>()
             + self.support.heap_bytes()
             // `HashMap` has no crate-wide accounting implementation; charge
             // its key/value arrays conservatively without exposing its table
@@ -276,6 +280,7 @@ impl TopologyGraph {
         Some(location)
     }
 
+    #[cfg(test)]
     pub(crate) fn equivalent(&self, left: XY, right: XY) -> bool {
         self.key(left) == self.key(right)
     }
@@ -369,10 +374,12 @@ impl TopologyGraph {
     }
 
     pub(crate) fn has_line_source_at_node(&self, point: XY, source_row: u32) -> bool {
-        self.edges.iter().any(|edge| {
-            (self.equivalent(edge.segment.start, point) || self.equivalent(edge.segment.end, point))
-                && self.edge_has_line_source_for_row(edge, source_row)
-        })
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::TopologyLineSourceProbe,
+            1,
+        );
+        self.line_source_nodes
+            .contains(&(self.key(point), source_row))
     }
 
     pub(crate) fn edge_has_area_source(&self, edge: &TopologyEdge) -> bool {
@@ -801,6 +808,10 @@ impl AreaMembership {
     ) -> Option<B> {
         match self {
             Self::Cartesian { polygons, .. } => polygons.for_each_at_y(point.y, |candidate| {
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::TopologyPolygonVisit,
+                    1,
+                );
                 self.note_polygon_visit();
                 if candidate.index.contains_xy(point.x, point.y) {
                     visit(candidate.polygon)
@@ -822,6 +833,10 @@ impl AreaMembership {
                     if !candidate.may_contain(point.y, &copies, frame.pole(), period) {
                         return std::ops::ControlFlow::Continue(());
                     }
+                    crate::geometry::overlay_work::add(
+                        crate::geometry::OverlayWorkPhase::TopologyPolygonVisit,
+                        1,
+                    );
                     self.note_polygon_visit();
                     if polygon_contains_interior(
                         TopologySpace::Geographic,
@@ -958,6 +973,10 @@ impl TopologySupport {
                         {
                             continue;
                         }
+                        crate::geometry::overlay_work::add(
+                            crate::geometry::OverlayWorkPhase::TopologyEdgeRefinement,
+                            1,
+                        );
                         let edge = &edges[candidate.ordinal];
                         self.note_edge_refinement();
                         if point_on_graph_segment(domain, point, edge.segment)
@@ -980,6 +999,10 @@ impl TopologySupport {
                     end: point,
                 };
                 for candidate in self.edge_index.intersecting_candidates(query) {
+                    crate::geometry::overlay_work::add(
+                        crate::geometry::OverlayWorkPhase::TopologyEdgeRefinement,
+                        1,
+                    );
                     let edge = &edges[candidate.ordinal];
                     self.note_edge_refinement();
                     if point_on_graph_segment(domain, point, edge.segment)
@@ -1628,6 +1651,18 @@ impl GraphBuilder {
         for &id in &line_boundary {
             self.nodes[id.index()].support.line_boundary = true;
         }
+        let mut line_source_nodes = HashSet::new();
+        for edge in &edges {
+            for &source in &edge.sources {
+                let source = self.source_edges[source as usize];
+                if !matches!(source.support, SourceSupport::Line) {
+                    continue;
+                }
+                for point in [edge.segment.start, edge.segment.end] {
+                    line_source_nodes.insert((self.key(point), source.source_row));
+                }
+            }
+        }
         let lineal_overlap_collection = is_collection
             && !has_polygonal_members
             && has_cross_component_line_overlap(&self.source_edges);
@@ -1670,13 +1705,20 @@ impl GraphBuilder {
             line_boundary,
             is_collection,
             lineal_overlap_collection,
+            line_source_nodes,
             node_lookup: self.node_lookup,
             support,
         };
         let node_locations: Vec<_> = graph
             .nodes
             .iter()
-            .map(|node| graph.locate_point(node.point))
+            .map(|node| {
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::TopologyNodeLocation,
+                    1,
+                );
+                graph.locate_point(node.point)
+            })
             .collect();
         for (node, location) in graph.nodes.iter_mut().zip(node_locations) {
             node.location = location;

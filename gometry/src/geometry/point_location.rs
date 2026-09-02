@@ -15,8 +15,8 @@ use std::ops::ControlFlow;
 use crate::HeapSize;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, Point, Polygon, RingClass, RingEdgeMembership, Shape, ring_edge_membership,
-    xy_bounds_columns,
+    Bounds, Contact, Point, Polygon, RingClass, RingEdgeMembership, Segment, SegmentIndex, Shape,
+    line_segments, ring_edge_membership, segment_projection, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -82,6 +82,10 @@ impl RingPointIndex {
         if let Some(edges) = self.edges.dense_band_edges(y) {
             let mut inside = false;
             for &edge in edges {
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::PointEdgeCandidate,
+                    1,
+                );
                 let (ax, ay, bx, by) = self.edge_xy(edge);
                 match ring_edge_membership(ax, ay, bx, by, x, y) {
                     RingEdgeMembership::Boundary => return RingClass::Boundary,
@@ -98,6 +102,10 @@ impl RingPointIndex {
 
         let mut inside = false;
         if self.edges.for_each_edge(y, |edge| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::PointEdgeCandidate,
+                1,
+            );
             let (ax, ay, bx, by) = self.edge_xy(edge);
             match ring_edge_membership(ax, ay, bx, by, x, y) {
                 RingEdgeMembership::Boundary => return ControlFlow::Break(RingClass::Boundary),
@@ -128,11 +136,13 @@ pub(crate) struct PolygonPointIndex {
     bounds: Option<Bounds>,
     shell: RingPointIndex,
     holes: YStabbingIndex<RingPointIndex>,
+    boundary: SegmentIndex,
 }
 
 impl PolygonPointIndex {
     pub(crate) fn build(polygon: &Polygon) -> Self {
         let shell = RingPointIndex::build(polygon.shell.coords().xs(), polygon.shell.coords().ys());
+        let boundary = SegmentIndex::build_from_iter(line_segments(&polygon.shell));
         let hole_rings: Vec<RingPointIndex> = polygon
             .holes
             .iter()
@@ -144,6 +154,7 @@ impl PolygonPointIndex {
             bounds: Bounds::from_coords(polygon.shell.coords()),
             shell,
             holes,
+            boundary,
         }
     }
 
@@ -167,6 +178,10 @@ impl PolygonPointIndex {
             return false;
         }
         !self.hole_hits_xy(x, y, |class| class != RingClass::Exterior)
+    }
+
+    pub(crate) fn covers_point(&self, point: Point) -> bool {
+        self.covers_xy(point.x, point.y)
     }
 
     fn covers_xy(&self, x: f64, y: f64) -> bool {
@@ -272,11 +287,80 @@ impl PolygonPointIndex {
         }
         hit
     }
+
+    /// Boundary-inclusive coverage for a linework chain. Endpoint tests alone
+    /// are insufficient for a concave shell: a segment can leave and re-enter
+    /// between two covered vertices. The boundary index supplies exact contact
+    /// intervals, and one classified midpoint per interval settles each open
+    /// portion without constructing a source topology graph.
+    pub(crate) fn covers_line(&self, points: &[crate::geometry::XY]) -> bool {
+        if points.len() < 2 {
+            return true;
+        }
+        if points.iter().any(|point| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::ContainmentPoint,
+                1,
+            );
+            !self.covers_xy(point.x, point.y)
+        }) {
+            return false;
+        }
+        points.array_windows::<2>().all(|[start, end]| {
+            let segment = Segment {
+                start: *start,
+                end: *end,
+            };
+            let mut contacts = Vec::new();
+            for entry in self.boundary.intersecting_candidates(segment) {
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::ContainmentRefinement,
+                    1,
+                );
+                match crate::geometry::segment_contact_exact(segment, entry.segment) {
+                    Contact::Disjoint => {},
+                    Contact::Cross { .. } => return false,
+                    Contact::Touch { point } => {
+                        contacts.push((segment_projection(point, segment), point));
+                    },
+                    Contact::Collinear { span } => {
+                        contacts.push((segment_projection(span.start, segment), span.start));
+                        contacts.push((segment_projection(span.end, segment), span.end));
+                    },
+                }
+            }
+            contacts.push((crate::geometry::segment_projection(*start, segment), *start));
+            contacts.push((crate::geometry::segment_projection(*end, segment), *end));
+            contacts.sort_unstable_by(|(left, _), (right, _)| left.cmp_along(right));
+
+            let mut previous_projection = &contacts[0].0;
+            let mut previous_point = contacts[0].1;
+            for (projection, point) in contacts.iter().skip(1) {
+                if projection.cmp_along(previous_projection).is_eq() {
+                    continue;
+                }
+                let midpoint = crate::geometry::segment_midpoint(Segment {
+                    start: previous_point,
+                    end: *point,
+                });
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::ContainmentPoint,
+                    1,
+                );
+                if !self.covers_xy(midpoint.x, midpoint.y) {
+                    return false;
+                }
+                previous_projection = projection;
+                previous_point = *point;
+            }
+            true
+        })
+    }
 }
 
 impl HeapSize for PolygonPointIndex {
     fn heap_bytes(&self) -> usize {
-        self.shell.heap_bytes() + self.holes.heap_bytes()
+        self.shell.heap_bytes() + self.holes.heap_bytes() + self.boundary.heap_bytes()
     }
 }
 

@@ -8,8 +8,9 @@ use crate::geometry::overlay::{
 use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
-    GeometryKind, Point, Segment, Shape, TopologyDomain, TopologyGraph, XY,
-    carry_overlay_ordinates, point_on_segment, same_point, segment_midpoint,
+    GeometryKind, HashMap, HashMapExt as _, Point, PointKey, Segment, Shape, TopologyDomain,
+    TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment, same_point,
+    segment_midpoint,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -74,9 +75,19 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             if let TopologyDomain::Geographic(frame) = domain
                 && crate::geometry::crosses_antimeridian_in_frame(shape, frame)
             {
-                Ok(shape.split_antimeridian_in_frame(frame)?.normalize())
+                let normalized = shape.split_antimeridian_in_frame(frame)?.normalize();
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::InputNormalize,
+                    normalized.coord_count(),
+                );
+                Ok(normalized)
             } else {
-                Ok(shape.normalize())
+                let normalized = shape.normalize();
+                crate::geometry::overlay_work::add(
+                    crate::geometry::OverlayWorkPhase::InputNormalize,
+                    normalized.coord_count(),
+                );
+                Ok(normalized)
             }
         })
         .collect::<Result<_>>()?;
@@ -116,7 +127,12 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         // Normalize before carrying ordinates: canonical geometry ordering is
         // XY-defined, while ordinate restoration is a separate provenance pass.
-        shape.normalize()
+        let normalized = shape.normalize();
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::OutputNormalize,
+            normalized.coord_count(),
+        );
+        normalized
     };
     carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
@@ -230,8 +246,21 @@ fn assemble_overlay(
         })
         .collect();
     let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible);
-    let lines = overlay_lines(&graph, &source_graphs, &polygons, op);
-    let points = overlay_points(&graph, &source_graphs, &polygons, &lines, op);
+    // Overlay edges and candidate points are numerous for high-resolution
+    // boundaries; prepare the retained polygons once instead of rescanning
+    // every output ring for each candidate.
+    let polygon_indexes: Vec<crate::geometry::PolygonPointIndex> = polygons
+        .iter()
+        .map(|polygon| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::OutputPolygonIndexBuild,
+                1,
+            );
+            crate::geometry::PolygonPointIndex::build(polygon)
+        })
+        .collect();
+    let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, op);
+    let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
     Ok(build_overlay_shape(points, lines, polygons))
 }
 
@@ -320,6 +349,25 @@ fn overlay_polygons(
         TopologyDomain::Geographic(_) => area_edges.clone(),
     };
     let segments: Vec<Segment> = arranged_edges.iter().map(|(_, segment)| *segment).collect();
+    let mut edge_by_endpoints: HashMap<(PointKey, PointKey), usize> =
+        HashMap::with_capacity(arranged_edges.len());
+    #[cfg(test)]
+    let mut edge_position_by_graph_edge: HashMap<usize, usize> =
+        HashMap::with_capacity(arranged_edges.len());
+    for (position, &(edge_index, segment)) in arranged_edges.iter().enumerate() {
+        #[cfg(not(test))]
+        let _ = position;
+        edge_by_endpoints
+            .entry(ordered_edge(
+                PointKey::new(segment.start),
+                PointKey::new(segment.end),
+            ))
+            .or_insert(edge_index);
+        #[cfg(test)]
+        edge_position_by_graph_edge
+            .entry(edge_index)
+            .or_insert(position);
+    }
 
     // The joint graph already split every area edge at every source contact.
     // The arrangement below is therefore the one and only face assembly for
@@ -336,8 +384,21 @@ fn overlay_polygons(
                 .iter()
                 .enumerate()
                 .map(|(source_row, source)| {
-                    face_area_side(&face.ring, graph, source_row as u32, &arranged_edges)
-                        .unwrap_or_else(|| source.contains_area_interior(probe))
+                    face_area_side(
+                        &face.ring,
+                        graph,
+                        source_row as u32,
+                        &edge_by_endpoints,
+                        #[cfg(test)]
+                        &edge_position_by_graph_edge,
+                    )
+                    .unwrap_or_else(|| {
+                        crate::geometry::overlay_work::add(
+                            crate::geometry::OverlayWorkPhase::FaceMembershipFallback,
+                            1,
+                        );
+                        source.contains_area_interior(probe)
+                    })
                 })
                 .collect();
             if keep_area_face(&area_membership, op) {
@@ -456,16 +517,24 @@ fn face_area_side(
     ring: &[XY],
     graph: &TopologyGraph,
     source_row: u32,
-    arranged_edges: &[(usize, Segment)],
+    edge_by_endpoints: &HashMap<(PointKey, PointKey), usize>,
+    #[cfg(test)] edge_position_by_graph_edge: &HashMap<usize, usize>,
 ) -> Option<bool> {
     ring.array_windows::<2>().find_map(|[start, end]| {
-        arranged_edges.iter().find_map(|&(edge_index, segment)| {
-            let same_edge = (same_point(segment.start, *start) && same_point(segment.end, *end))
-                || (same_point(segment.start, *end) && same_point(segment.end, *start));
-            same_edge.then(|| {
-                graph.area_source_side_for_row(&graph.edges[edge_index], *start, *end, source_row)
-            })?
-        })
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::FaceEndpointProbe, 1);
+        let key = ordered_edge(PointKey::new(*start), PointKey::new(*end));
+        let edge_index = *edge_by_endpoints.get(&key)?;
+        #[cfg(test)]
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::FaceLegacyProbe,
+            edge_position_by_graph_edge
+                .get(&edge_index)
+                .copied()
+                .unwrap_or_default()
+                + 1,
+        );
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::FaceEndpointHit, 1);
+        graph.area_source_side_for_row(&graph.edges[edge_index], *start, *end, source_row)
     })
 }
 
@@ -596,11 +665,12 @@ fn keep_area_face(membership: &[bool], op: OverlayOp) -> bool {
 fn overlay_lines(
     graph: &TopologyGraph,
     sources: &[TopologyGraph],
-    polygons: &[crate::geometry::Polygon],
+    polygon_indexes: &[crate::geometry::PolygonPointIndex],
     op: OverlayOp,
 ) -> Vec<crate::geometry::CoordSeq> {
     let mut lines = Vec::new();
     for edge in &graph.edges {
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::OverlayLineEdge, 1);
         let line_source = graph.edge_has_line_source(edge);
         if !line_source && op != OverlayOp::Intersection {
             continue;
@@ -622,9 +692,13 @@ fn overlay_lines(
                     || graph.edge_has_line_source_for_row(edge, source_row as u32)
             })
             .collect();
-        let result_covers = polygons
-            .iter()
-            .any(|polygon| polygon.covers_point(midpoint));
+        let result_covers = polygon_indexes.iter().any(|polygon| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::OutputPolygonPoint,
+                1,
+            );
+            polygon.covers_point(midpoint)
+        });
         let keep = match op {
             OverlayOp::Intersection => covered.iter().all(|&present| present) && !result_covers,
             OverlayOp::Union => line_membership.iter().any(|&present| present) && !result_covers,
@@ -651,7 +725,7 @@ fn overlay_lines(
 fn overlay_points(
     graph: &TopologyGraph,
     sources: &[TopologyGraph],
-    polygons: &[crate::geometry::Polygon],
+    polygon_indexes: &[crate::geometry::PolygonPointIndex],
     lines: &[crate::geometry::CoordSeq],
     op: OverlayOp,
 ) -> Vec<Point> {
@@ -665,6 +739,10 @@ fn overlay_points(
         candidates.extend(graph.nodes.iter().map(|node| node.point.point()));
     }
     candidates.retain(|point| {
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::OverlayPointCandidate,
+            1,
+        );
         let membership: Vec<bool> = sources
             .iter()
             .enumerate()
@@ -687,11 +765,16 @@ fn overlay_points(
                 membership.iter().filter(|&&present| present).count() % 2 == 1
             },
         };
-        keep && !polygons.iter().any(|polygon| polygon.covers_point(*point))
-            && !lines.iter().any(|line| {
-                line.segment_pairs()
-                    .any(|[start, end]| point_on_segment(*point, start, end))
-            })
+        keep && !polygon_indexes.iter().any(|polygon| {
+            crate::geometry::overlay_work::add(
+                crate::geometry::OverlayWorkPhase::OutputPolygonPoint,
+                1,
+            );
+            polygon.covers_point(*point)
+        }) && !lines.iter().any(|line| {
+            line.segment_pairs()
+                .any(|[start, end]| point_on_segment(*point, start, end))
+        })
     });
     dedup_points(&mut candidates);
     candidates

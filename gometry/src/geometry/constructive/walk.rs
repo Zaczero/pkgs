@@ -7,10 +7,10 @@ use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::constructive::{Result, emit_arc, line_intersection, unit_right_normal};
 use crate::geometry::{
-    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, CoordSeq,
-    ExpansionBudget, LineSeq, Ordering, Orientation, Point, Polygon, PreparedPlan, Ring, Segment,
-    SegmentProjection, Shape, XY, graph_relate_data, open_xy_cycle_decision, orientation,
-    same_point, segment_cross_point, segment_projection, segments_intersect, wrap_index,
+    AreaSign, Arrangement, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, ExpansionBudget,
+    Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment, SegmentProjection, XY,
+    open_xy_cycle_decision, orientation, same_point, segment_cross_point, segment_projection,
+    segments_intersect, wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset
@@ -708,6 +708,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
     let mut shells: Vec<(Vec<XY>, f64, Bounds)> = Vec::new();
     let mut holes: Vec<Vec<XY>> = Vec::new();
     for ring in rings {
+        crate::geometry::overlay_work::add(crate::geometry::OverlayWorkPhase::RegionRing, 1);
         let decision = open_xy_cycle_decision(&ring);
         let (sign, magnitude) = (decision.sign(), decision.magnitude());
         match sign {
@@ -720,16 +721,16 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
         }
     }
     shells.sort_by(|left, right| left.1.total_cmp(&right.1));
-    let shell_plans: Vec<PreparedPlan> = if holes.is_empty() {
+    let shell_indexes: Vec<PolygonPointIndex> = if holes.is_empty() {
         Vec::new()
     } else {
         shells
             .iter()
             .map(|(shell, ..)| {
-                PreparedPlan::new(Shape::Polygon(Polygon::new(
+                PolygonPointIndex::build(&Polygon::new(
                     Ring::from_closed(shell.clone()),
                     Vec::new(),
-                )))
+                ))
             })
             .collect()
     };
@@ -758,26 +759,26 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
             .flat_map(|probe| {
                 shell_tree
                     .locate_in_envelope_intersecting(AABB::from_point([probe.x, probe.y]))
-                    .map(|entry| entry.data)
+                    .map(|entry| {
+                        crate::geometry::overlay_work::add(
+                            crate::geometry::OverlayWorkPhase::ShellCandidate,
+                            1,
+                        );
+                        entry.data
+                    })
             })
             .collect();
         candidates.sort_unstable();
         candidates.dedup();
-        // Covers is boundary-inclusive, so a pinch vertex may lie on the shell.
-        // The complete line relation also rejects a hole edge that leaves and
-        // re-enters a concave shell between two covered vertices.
+        // Coverage is boundary-inclusive, so a pinch vertex may lie on the
+        // shell. Exact boundary contacts split every hole edge into intervals,
+        // which also rejects an edge that leaves and re-enters a concave shell.
         let owner = if candidates.is_empty() {
             None
         } else {
-            let hole_line = Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(hole.clone())).expect("hole has linework"),
-            );
-            let hole_plan = PreparedPlan::transient(&hole_line);
-            candidates.into_iter().find(|&index| {
-                let (_, _, bounds) = &shells[index];
-                hole.iter().all(|probe| bounds.contains_xy(*probe))
-                    && graph_relate_data(&shell_plans[index], &hole_plan).is_covers()
-            })
+            candidates
+                .into_iter()
+                .find(|&index| shell_indexes[index].covers_line(&hole))
         };
         if let Some(owner) = owner {
             assigned[owner].push(Ring::from_closed(hole));
@@ -793,7 +794,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::GENERATED_ITEM_LIMIT;
+    use crate::geometry::{GENERATED_ITEM_LIMIT, Shape};
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64, clockwise: bool) -> Vec<XY> {
         let mut ring = vec![
@@ -906,5 +907,26 @@ mod tests {
 
         assert_eq!(polygon.len(), 1);
         assert!(polygon[0].holes.is_empty());
+    }
+
+    #[test]
+    fn indexed_shell_coverage_keeps_boundary_and_rejects_boundary_exit() {
+        let shell = vec![
+            XY::new(0.0, 0.0),
+            XY::new(6.0, 0.0),
+            XY::new(6.0, 2.0),
+            XY::new(2.0, 2.0),
+            XY::new(2.0, 6.0),
+            XY::new(0.0, 6.0),
+            XY::new(0.0, 0.0),
+        ];
+        let index = PolygonPointIndex::build(&Polygon::new(Ring::from_closed(shell), Vec::new()));
+        assert!(index.covers_line(&[
+            XY::new(0.0, 0.0),
+            XY::new(6.0, 0.0),
+            XY::new(6.0, 2.0),
+            XY::new(2.0, 2.0),
+        ]));
+        assert!(!index.covers_line(&[XY::new(5.0, 1.0), XY::new(1.0, 5.0), XY::new(5.5, 1.0),]));
     }
 }

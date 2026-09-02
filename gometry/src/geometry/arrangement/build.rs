@@ -376,6 +376,10 @@ impl<W: WindingWeight> Arrangement<W> {
         } = columns;
         let vertex_count = points.len();
         let half_edge_count = targets.len();
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::ArrangementEdge,
+            half_edge_count / 2,
+        );
         // Components over vertices — skipped entirely when the construction
         // already PROVED connectivity (one chained closed loop).
         let (component_of, component_count) = if connected {
@@ -416,6 +420,10 @@ impl<W: WindingWeight> Arrangement<W> {
             &twins,
             &component_of,
             std::mem::take(&mut spares.face_of),
+        );
+        crate::geometry::overlay_work::add(
+            crate::geometry::OverlayWorkPhase::ArrangementFace,
+            faces.len(),
         );
         // CSR by face for the winding fill.
         let mut face_starts = std::mem::take(&mut spares.face_starts);
