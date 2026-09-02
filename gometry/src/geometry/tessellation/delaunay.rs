@@ -445,6 +445,7 @@ impl CertifiedDelaunay {
         self.cocircular_halfedges[slot]
     }
 
+    #[cfg(test)]
     pub(super) fn hull(&self) -> &[usize] {
         &self.topology.hull
     }
