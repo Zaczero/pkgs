@@ -11,7 +11,10 @@ the stored coordinate plane without transforming coordinates or measuring
 distance. They are model-sensitive: the
 planar edge model must match the intended geometry (projection, densification,
 seams, and domains can change realized topology). That planar computation does
-**not** relax metadata rules — operand CRS and coordinate-epoch tags must still
+not mean geographic longitude is limited to degrees: the CRS-native periodic longitude
+axis, pole, and prime meridian define the quotient topology before planar tests.
+This is the same exact topology used by scalar, array, prepared, and index paths.
+It does **not** relax metadata rules — operand CRS and coordinate-epoch tags must still
 match, or you get [`CRSMismatchError`][gometry.CRSMismatchError] like every other binary op. It is also
 **robust**: the orientation and intersection tests underneath are
 adaptive-precision, so boundary-touching and near-degenerate input answer
@@ -52,12 +55,15 @@ import gometry as gm
 
 a = gm.box(0, 0, 4, 4)
 cases = [
-    ("contains(A, B)", gm.box(1, 1, 3, 3)),
-    ("overlaps(A, B)", gm.box(2, 2, 6, 6)),
-    ("touches(A, B)", gm.box(4, 0, 7, 4)),
-    ("disjoint(A, B)", gm.box(6, 6, 9, 9)),
+    ("contains(A, B)", gm.box(1, 1, 3, 3), "A surrounds B, and their interiors overlap."),
+    ("overlaps(A, B)", gm.box(2, 2, 6, 6), "A and B share an interior region, but neither contains the other."),
+    ("touches(A, B)", gm.box(4, 0, 7, 4), "A and B share one boundary edge while their interiors remain separate."),
+    ("disjoint(A, B)", gm.box(6, 6, 9, 9), "A and B share no interior or boundary points."),
 ]
-print(panels([(caption, [a.exterior, b]) for caption, b in cases]))
+print(panels(
+    [(caption, {'source': a.exterior, 'query': b}, alt) for caption, b, alt in cases],
+    labels={'source': 'A', 'query': 'B'},
+))
 
 ```
 
@@ -117,7 +123,7 @@ print(repr(gm.intersects_xy(region, [5, 30], [5, 5])))
 The coordinates are interpreted in the geometry's CRS. Geographic inputs use
 the same antimeridian and pole topology as predicates against explicit
 `Point` objects, including strict interior versus boundary
-contact at ±180° and ±90°.
+contact at the frame's periodic seam and poles (±180°/±90° for EPSG:4326).
 
 ## Robust predicates
 
@@ -301,9 +307,10 @@ patterns without recomputing the relationship for each named predicate.
 !!! note "Planar computation, strict metadata"
     Predicates read ordinates as a flat plane and require matching CRS and
     coordinate-epoch metadata. Reprojection can change vertices, seams, and the
-    realized topology. On a geographic CRS, antimeridian-crossing input is
-    split-normalized at the predicate boundary; pole-enclosing rings are handled
-    too. Metric behavior is documented in [CRS, units & measurement](crs.md).
+    realized topology. On a geographic CRS, topology resolves longitude aliases
+    and seam and pole equivalence in the CRS-native frame; seam-crossing input is
+    split into chart pieces before construction. Metric behavior is documented in
+    [CRS, units & measurement](crs.md).
 
 ## See also
 

@@ -5,11 +5,13 @@ description: Migrating to gometry from Shapely, pyproj, h3-py, s2sphere, and rtr
 # Migrating to gometry
 
 gometry provides geometry, CRS, geodesy, grid, and spatial-index APIs for workflows
-commonly split across **Shapely + pyproj + h3-py + s2sphere + rtree**. Canonical
-symbol mappings are in the [cheatsheet](cheatsheet.md).
+commonly split across **Shapely + pyproj + h3-py + s2sphere + rtree**.
 
-[CRS, units & measurement](../guide/crs.md), [Spatial indexing & joins](../guide/indexing.md),
-and [Grids & geocodes](../guide/grids.md) define the core contracts.
+[:octicons-arrow-right-24: Migration cheatsheet](cheatsheet.md){ .md-button .md-button--primary }
+
+The cheatsheet is the canonical old-symbol → gometry-name lookup. This guide owns
+workflow migration and links the behavior contracts for [CRS, units & measurement](../guide/crs.md),
+[Spatial indexing & joins](../guide/indexing.md), and [Grids & geocodes](../guide/grids.md).
 
 ## Coming from Shapely
 
@@ -52,7 +54,7 @@ job across `is_valid`, `explain_validity`, and `make_valid`.
 
 ### CRS-aware `.area`, `.distance`, and `.buffer`
 
-On lon/lat data Shapely's bare
+On degree-valued lon/lat data Shapely's bare
 `.area` returns degrees², `.distance` returns degrees, and `.buffer(100)` buffers
 by 100 *degrees*. gometry has one [`geom.area`][gometry.Geometry.area] (and one [`gm.distance`][gometry.distance] /
 [`Geometry.buffer`][gometry.Geometry.buffer]) whose answer is decided by the geometry's CRS and is native by
@@ -75,9 +77,9 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
     area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
     a = gm.Point(21.0, 52.0, crs=4326)
     b = gm.Point(22.0, 52.0, crs=4326)
-    print("geodesic area (m^2):", round(area.area))
+    print("geodesic area (m²):", round(area.area))
     print("geodesic distance (m):", round(gm.distance(a, b)))
-    print("projected area (m^2):", round(area.to_crs(area.estimate_local_crs()).area))
+    print("projected area (m²):", round(area.to_crs(area.estimate_local_crs()).area))
     ```
 
 ### STRtree → SpatialIndex (+ PreparedGeometry)
@@ -129,9 +131,7 @@ free functions ([`gm.from_wkb`][gometry.from_wkb], [`gm.from_wkt`][gometry.from_
 geometry ([`geom.to_wkb(include_srid=True)`][gometry.Geometry.to_wkb], [`geom.to_wkt()`][gometry.Geometry.to_wkt], [`geom.to_geojson()`][gometry.Geometry.to_geojson],
 [`geom.to_arrow()`][gometry.Geometry.to_arrow] for [GeoArrow](https://geoarrow.org/) columnar interchange).
 Vertex-subset ops (`simplify`, `convex_hull`, triangulation) preserve Z/M where
-Shapely drops it. The Shapely symbol table — construction, inspection,
-predicates, constructive ops, linear referencing, validation, and IO — is in the
-[cheatsheet](cheatsheet.md#shapely).
+Shapely drops it.
 
 ## Coming from pyproj
 
@@ -210,13 +210,12 @@ geodesic problem on that CRS's own ellipsoid.
     print("bearing (deg):", round(gm.bearing(a, b), 1))
     print("destination:", a.destination(90.0, 1000.0))
     print("midpoint:", gm.point_between(a, b, 0.5, normalized=True))
-    print("area (m^2):", round(area.area))
+    print("area (m²):", round(area.area))
     print("perimeter (m):", round(area.length))
     ```
 
-The `gm.CRS` surface (`is_*` classification, standards export, catalog discovery,
-and coordinate operations) and the common `Geod` mappings are in the
-[cheatsheet](cheatsheet.md#pyproj).
+The `gm.CRS` surface includes `is_*` classification, standards export, catalog
+discovery, and coordinate operations.
 
 ## Coming from h3-py & s2sphere
 
@@ -252,9 +251,9 @@ gometry names the rule and returns a typed [`CellArray`][gometry.CellArray].
     print("covers:", gm.covers(area, gm.Point(21.0, 52.0, crs=4326)))
     ```
 
-`cell_rule` is `"center"` (h3-py's binning behavior), `"within"` (cells the area
-fully owns), `"overlap"` (default — a complete-coverage superset, safe candidate
-keys), or `"bbox"` (loosest). Use the free predicates
+`cell_rule` is `"within"` (cells the area fully owns), `"center"` (h3-py's
+binning behavior), `"overlap"` (default — a complete-coverage superset, safe
+candidate keys), or `"bbox"` (loosest). Use the free predicates
 [`gm.covers(...)`][gometry.covers] / [`gm.contains(...)`][gometry.contains] / [`gm.intersects(...)`][gometry.intersects] against the source
 geometry when exact geometry answers are needed. [`gm.s2_cover(geom, level=...)`][gometry.s2_cover]
 is the S2 analogue.
@@ -289,9 +288,8 @@ _ = gm.h3_union(h3_a_present, h3_b_present)
 `local_ij`, `base_cell`), with resolution metadata in the H3 function family
 ([`gm.h3_pentagons(resolution)`][gometry.h3_pentagons], [`gm.h3_base_cells()`][gometry.h3_base_cells]); `.polygon` returns one
 cell's boundary polygon and `cells.polygon` a whole [`GeometryArray`][gometry.GeometryArray].
-The h3-py and s2sphere symbol tables — point → cell, boundaries, and
-compact/uncompact — are in the
-[cheatsheet](cheatsheet.md#h3-py).
+The cell classes provide point-to-cell construction, boundaries, and
+compact/uncompact operations.
 
 ## Coming from rtree & STRtree
 
@@ -409,8 +407,7 @@ returning matched **index pairs** (not a joined DataFrame). `gm.join` provides:
 static, query-heavy workloads — while [`idx.insert(geometry)`][gometry.SpatialIndex.insert] / [`idx.remove(...)`][gometry.SpatialIndex.remove]
 handle dynamic sets without a full rebuild. The index is always in memory; gometry
 never writes index files, so persisting across processes means rebuilding from the
-source geometries (or their stored WKB/EWKB bytes). The index/join symbol
-table is in the [cheatsheet](cheatsheet.md#rtree-strtree-geopandas).
+source geometries (or their stored WKB/EWKB bytes).
 
 ## What gometry covers
 

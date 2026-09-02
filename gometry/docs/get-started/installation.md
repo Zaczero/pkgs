@@ -49,7 +49,7 @@ and imported lazily; see [DataFrames](../ecosystem/dataframes.md).
 
 [PyArrow](https://arrow.apache.org/docs/python/) is enabled through the `arrow`
 extra. The extra lets gometry materialize or consume `pyarrow` arrays, chunked
-arrays, tables, and record batches:
+arrays, tables, record batches, and record batch readers:
 
 === "uv"
 
@@ -90,7 +90,7 @@ import gometry as gm
 print("gometry", md.version("gometry"))
 print("PROJ", gm.crs_engine()["version"])
 poly = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-print(f"geodesic area: {poly.area:,.0f} m^2")
+print(f"geodesic area: {poly.area:,.0f} m²")
 
 ```
 

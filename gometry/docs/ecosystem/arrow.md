@@ -72,9 +72,9 @@ multilinestring, polygon, and multipolygon arrays without explicit empty
 multipart members use the native GeoArrow coordinate layout with separated
 `x`/`y`/`z`/`m` children. Gometry exports may
 share immutable gometry-owned buffers with a consumer. Import does not retain
-shared views of foreign memory. PyArrow arrays, chunked arrays, tables, and
-record batches are imported through PyArrow’s buffer-copy APIs. Other
-`__arrow_c_array__` and `__arrow_c_stream__` providers use the native Arrow-C
+shared views of foreign memory. PyArrow arrays, chunked arrays, tables, record
+batches, and record batch readers are imported through PyArrow’s buffer-copy
+APIs. Other `__arrow_c_array__` and `__arrow_c_stream__` providers use the native Arrow-C
 path: gometry moves the one-shot base structure, snapshots the selected schema
 plus visible validity, offset, view, referenced variadic-size, coordinate, and WKB spans,
 invokes the producer release callback, and validates and decodes only the owned
@@ -85,8 +85,8 @@ PyArrow export path also uses WKB when explicit multipart member slots cannot
 be represented by its selected native layout; the Arrow-C nested layout
 retains explicit empty line and polygon slots.
 
-`from_arrow` handles PyArrow-shaped arrays, chunked arrays, tables, and record
-batches through the PyArrow path. Other objects implementing
+`from_arrow` handles PyArrow arrays, chunked arrays, tables, record batches, and
+record batch readers through the PyArrow path. Other objects implementing
 `__arrow_c_array__` or `__arrow_c_stream__` use the dependency-free native
 capsule path; the provider's data contents are still validated after gometry
 copies the admitted spans into owned storage.

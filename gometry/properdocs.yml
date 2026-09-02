@@ -150,6 +150,7 @@ nav:
     - Quickstart: get-started/quickstart.md
     - The mental model: get-started/mental-model.md
   - Guide:
+    - Guide overview: guide/index.md
     - Geometry & dimensions: guide/geometry.md
     - Spatial predicates: guide/predicates.md
     - Constructive operations: guide/constructive.md

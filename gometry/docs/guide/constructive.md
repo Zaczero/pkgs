@@ -8,8 +8,12 @@ Constructive operations take geometries and produce **new** geometries:
 buffers, set-theoretic overlays, simplifications, hulls, and tessellations.
 All inputs are immutable, so every operation returns a fresh value.
 
-Overlays and shape operations use stored XY coordinates after strict frame
-matching; reprojecting can change vertices, seams, and topology. [`buffer`][gometry.Geometry.buffer] and
+Overlays require matching CRS and coordinate epoch and preserve that frame. They
+use coordinate-plane topology: in a geographic CRS, the CRS-native frame first
+resolves longitude aliases, seam spellings, and pole longitudes, while
+seam-crossing inputs are split into chart pieces before construction. Overlay is
+not a geodesic operation, and reprojecting can change vertices, seams, and
+topology. [`buffer`][gometry.Geometry.buffer] and
 [`offset_curve`][gometry.Geometry.offset_curve] take distances in the CRS-natural units described in [CRS, units
 & measurement](crs.md). Geographic buffers use a local projection and are not
 exact ellipsoidal offsets.
@@ -33,7 +37,12 @@ print(corridor.geometry_type, "area:", round(corridor.area, 3))
 from _figures import before_after
 import gometry as gm
 line = gm.LineString([(0, 0), (5, 0), (5, 5)])
-print(before_after(line, line.buffer(1.0), after_caption="buffer(1.0)"))
+print(before_after(
+    line, line.buffer(1.0),
+    before_caption="route centerline", after_caption="1-unit corridor",
+    before_alt="The route is an L-shaped centerline in a CRS-free unit plane.",
+    after_alt="A one-unit buffer surrounds both sides and both ends of the route.",
+))
 
 ```
 
@@ -65,10 +74,10 @@ import gometry as gm
 
 line = gm.LineString([(0, 0), (5, 0)])
 print(panels([
-    (caption, [line.buffer(1.0, **kwargs), line])
-    for caption, kwargs in [
-        ('cap_style="round"', {"cap_style": "round"}),
-        ('cap_style="flat"', {"cap_style": "flat", "join_style": "miter"}),
+    (caption, {'source': line, 'result': line.buffer(1.0, **kwargs)}, alt)
+    for caption, kwargs, alt in [
+        ('cap_style="round"', {"cap_style": "round"}, "The buffer extends past each endpoint with a semicircular cap."),
+        ('cap_style="flat"', {"cap_style": "flat", "join_style": "miter"}, "The buffer stops perpendicular to the line at each endpoint."),
     ]
 ]))
 
@@ -127,12 +136,15 @@ import gometry as gm
 
 a, b = gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3)
 frame = [a.exterior, b.exterior]
-print(panels([
-    ("a & b (intersection)", frame + [a & b]),
-    ("a | b (union)", frame + [a | b]),
-    ("a - b (difference)", frame + [a - b]),
-    ("a ^ b (symmetric_difference)", frame + [a ^ b]),
-]))
+print(panels(
+    [
+        ("a & b (intersection)", {'source': frame, 'result': a & b}, "The intersection keeps only the square shared by A and B."),
+        ("a | b (union)", {'source': frame, 'result': a | b}, "The union keeps every region covered by A or B as one polygon."),
+        ("a - b (difference)", {'source': frame, 'result': a - b}, "The difference removes B's overlapping corner from A."),
+        ("a ^ b (symmetric difference)", {'source': frame, 'result': a ^ b}, "The symmetric difference removes the shared square and keeps the non-overlapping parts."),
+    ],
+    labels={'source': 'A and B outlines'},
+))
 
 ```
 
@@ -143,10 +155,10 @@ print(panels([
 
 ### Dissolving many geometries: `union_all`
 
-Unioning a list pairwise grows intermediate results and misses cascaded
-optimization (and can accumulate floating-point fuzz).
-[`union_all`][gometry.union_all] dissolves an entire sequence in one
-cascaded pass:
+Unioning a list pairwise grows intermediate results and can accumulate
+floating-point fuzz. [`union_all`][gometry.union_all] aggregates the entire
+sequence; strictly disjoint inputs can be assembled independently, while
+inputs that can meet use one joint overlay construction:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -161,6 +173,11 @@ For a [`GeometryArray`][gometry.GeometryArray], [`array.union_all()`][gometry.Ge
 Grouped aggregation is a separate operation: [`array.dissolve(by=groups)`][gometry.GeometryArray.dissolve] returns
 one geometry per first-seen group with the corresponding group keys. `dissolve`
 requires `by`; whole-column aggregation uses `union_all()`.
+
+[`intersection_all`][gometry.intersection_all] returns its typed empty directly
+when sound coordinate bounds prove inputs disjoint. In a geographic CRS, that
+shortcut applies only when every input is seam-free, pole-free, and has canonical
+longitude bounds; otherwise the geographic topology path is used.
 
 !!! note "`union_all([])` raises"
     An empty sequence has no CRS, no dimensionality, and no natural identity
@@ -189,11 +206,14 @@ xs = np.linspace(0, 10, 41)
 ys = 0.8 * np.sin(xs * 1.2) + 0.18 * np.sin(xs * 7)
 noisy = gm.LineString(list(zip(xs.tolist(), ys.tolist())))
 panes = []
-for tolerance in (0.0, 0.05, 0.2, 0.6):
+for tolerance in (0.0, 0.2, 0.6):
     simple = noisy.simplify(tolerance)
-    panes.append((f"tolerance={tolerance} ({len(simple.coords)} vertices)",
-                  with_vertices(simple)))
-print(panels(panes))
+    panes.append((
+        f"tolerance={tolerance} ({len(simple.coords)} vertices)",
+        {'source': noisy, 'result': with_vertices(simple)},
+        f"At tolerance {tolerance}, simplification retains {len(simple.coords)} vertices; increasing tolerance removes progressively larger zigzags while retaining both endpoints.",
+    ))
+print(panels(panes, labels={'source': 'original track', 'result': 'retained vertices'}))
 
 ```
 
@@ -226,8 +246,8 @@ import gometry as gm
 
 line = gm.LineString([(0, 0), (3, 0), (3, 3)])
 print(panels([
-    ("offset_curve(0.5) (left)", [line, line.offset_curve(0.5)]),
-    ("offset_curve(-0.5) (right)", [line, line.offset_curve(-0.5)]),
+    ("offset_curve(0.5) (left)", {'source': line, 'result': line.offset_curve(0.5)}, "The positive offset follows the left side of the directed L-shaped line."),
+    ("offset_curve(-0.5) (right)", {'source': line, 'result': line.offset_curve(-0.5)}, "The negative offset follows the right side of the directed L-shaped line."),
 ]))
 
 ```
@@ -251,11 +271,14 @@ exactly coincident:
 from _figures import before_after, with_vertices
 import gometry as gm
 
-noisy = gm.LineString([(0.08, 0.05), (1.95, 0.1), (4.05, -0.06)])
+noisy = gm.LineString([(0.16, 0.12), (1.86, -0.14), (4.14, 0.14)])
 grid = gm.MultiPoint([(0, 0), (2, 0), (4, 0)])
 snapped = gm.snap(noisy, grid, tolerance=0.3)
 print(before_after(with_vertices(noisy), with_vertices(snapped),
-                   after_caption="snap(tolerance=0.3)"))
+                   before_caption="misaligned parcel boundary",
+                   after_caption="boundary snapped within 0.3 units",
+                   before_alt="Three parcel-boundary vertices sit near, but not on, the reference points in a CRS-free unit plane.",
+                   after_alt="Snapping moves all three boundary vertices exactly onto nearby reference points."))
 
 ```
 
@@ -271,11 +294,15 @@ from _figures import panels, with_vertices
 import gometry as gm
 
 line = gm.LineString([(0, 0), (10, 0), (10, 6)])
-print(panels([
-    (f"original ({len(line.coords)} vertices)", with_vertices(line)),
-    ("segmentize(3.0)", with_vertices(line.segmentize(3.0))),
-    ("segmentize(fraction=0.25)", with_vertices(line.segmentize(fraction=0.25))),
-]))
+print(panels(
+    [
+        (f"original ({len(line.coords)} vertices)", {'source': with_vertices(line)}, "The original L-shaped line has three vertices and two long segments."),
+        ("segmentize(3.0)", {'result': with_vertices(line.segmentize(3.0))}, "Segmentizing to a maximum length of 3 units adds vertices without changing the L shape."),
+        ("segmentize(fraction=0.25)", {'result': with_vertices(line.segmentize(fraction=0.25))}, "Segmentizing by one-quarter splits each original segment into four equal pieces without changing the L shape."),
+    ],
+    caption="Both constraints raise vertex density without moving the line.",
+    alt="All three panels draw the same L-shaped path; only the number and spacing of its vertices change.",
+))
 
 ```
 
@@ -333,10 +360,12 @@ from _figures import panels
 import gometry as gm
 
 cloud = gm.MultiPoint([(0, 0), (4, 0), (4, 4), (0, 4), (2, 1.2), (2, 0.8)])
-print(panels([
-    ("convex hull (encloses all points)", [cloud.convex_hull(), cloud]),
-    ("concave hull (follows inward points)", [cloud.concave_hull(concavity=0.5), cloud]),
-]))
+print(panels(
+    [
+        ("convex hull (encloses all points)", {'source': cloud, 'result': cloud.convex_hull()}, "The convex hull spans the outer points and bridges across the inward pair."),
+        ("concave hull (follows inward points)", {'source': cloud, 'result': cloud.concave_hull(concavity=0.5)}, "The concave hull bends inward to follow the interior pair while still enclosing every point."),
+    ],
+))
 
 ```
 

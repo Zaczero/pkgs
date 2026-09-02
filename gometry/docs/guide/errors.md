@@ -112,8 +112,8 @@ for catch in (TypeError, gm.GeometryTypeError):
 | `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call [`drop_missing()`][gometry.GeometryArray.drop_missing] first or [`fill_missing(...)`][gometry.GeometryArray.fill_missing] with an explicit replacement |
 | `GeometryError: ... must be between ... got ...` | a parameter value is out of its documented range | the message names the kwarg and the valid range |
 | `GeometryError: unknown ... did you mean ...?` | a token typo (`'mitter'` vs `'miter'`, …) | take the suggestion; tokens are also `Literal`-typed, so a type checker catches this before runtime |
-| `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside ±180/±90 | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)`; [`swap_xy()`][gometry.Geometry.swap_xy] repairs latitude-first data |
-| metric looks unexpectedly large or small | degrees treated as meters somewhere | let the CRS drive (no `unit=`), and check the geometry carries the intended CRS |
+| `InvalidGeometryError: invalid longitude/latitude (...)` | geographic input outside the CRS-native longitude period or latitude/pole domain | check axis order — gometry is always `(x, y)`; under a geographic CRS that is `(lon, lat)` in native angular units; [`swap_xy()`][gometry.Geometry.swap_xy] repairs latitude-first data |
+| metric looks unexpectedly large or small | raw angular coordinates were mistaken for a metric unit | let the CRS drive (no `unit=`), and check the geometry carries the intended CRS |
 
 ## Error attributes
 

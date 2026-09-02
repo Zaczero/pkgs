@@ -16,7 +16,7 @@ day-to-day stack of **Shapely + pyproj + h3-py + s2sphere + rtree** with one coh
 package — no GEOS, no GDAL, no system PROJ.
 
 [Get started :material-arrow-right:](get-started/quickstart.md){ .md-button .md-button--primary }
-[Why gometry](#why-gometry){ .md-button }
+[User guide](guide/index.md){ .md-button }
 
 </div>
 
@@ -27,18 +27,22 @@ uv add gometry
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-stop = gm.Point(2.3479, 48.8589, crs=4326)
-catchment = stop.buffer(500)
-neighborhoods = gm.GeometryArray([
-    gm.box(2.344, 48.857, 2.349, 48.861, crs=4326),
-    gm.box(2.360, 48.865, 2.366, 48.870, crs=4326),
-])
-nearby = gm.SpatialIndex(neighborhoods).query(catchment, predicate="intersects")
+# A one-degree tile over Paris. The CRS travels with the geometry.
+tile = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 
-print("catchment area m^2:", round(catchment.area))
-print("nearby neighborhood rows:", nearby.tolist())
+print(f"geodesic area:  {tile.area / 1e6:>8,.0f} km²")
+print(f"planar area:    {gm.area(tile, unit='planar'):>8.4f} degree²")
+print(f"Web Mercator:   {tile.to_crs(3857).area / 1e6:>8,.0f} km²")
 
 ```
+
+One square degree is three different answers, and the CRS carried by the
+geometry decides which one you asked for. On a geographic CRS,
+[`area`][gometry.Geometry.area] is geodesic and returns m²; `unit="planar"`
+measures the raw coordinates as they stand; and reprojecting first returns that
+frame's own answer, which at this latitude Web Mercator inflates 2.3 times.
+[`length`][gometry.Geometry.length], [`distance`][gometry.distance], and
+[`buffer`][gometry.Geometry.buffer] follow the same rule.
 
 <div class="grid cards" markdown>
 
@@ -48,6 +52,7 @@ print("nearby neighborhood rows:", nearby.tolist())
 
     The CRS decides every metric, and the result is **native** for that CRS. No guessing whether
     [`area`][gometry.Geometry.area] is degrees² or m², or whether [`buffer(100)`][gometry.Geometry.buffer] means meters.
+    Geographic coordinates also retain their CRS-native angular units and periodic seam.
 
     [:octicons-arrow-right-24: Measurement & the CRS](guide/crs.md)
 
@@ -80,7 +85,9 @@ The usual stack makes you remember whether a metric means degrees or meters. gom
 [`geom.area`][gometry.Geometry.area], one [`geom.length`][gometry.Geometry.length], one [`gm.distance(a, b)`][gometry.distance] — the geometry's CRS decides how
 they are computed and the result is **native** for that CRS: a geographic CRS measures
 geodesically in meters, a projected CRS uses its native linear units (feet stay feet;
-meters stay meters), and a CRS-free geometry stays in coordinate units. Pass
+meters stay meters), and a CRS-free geometry stays in coordinate units. Geographic
+longitude and latitude values remain in the CRS's native angular units; the periodic
+seam, pole, and prime meridian come from that same frame. Pass
 `unit='meters'` for forced SI, or reproject with [`geom.to_crs(...)`][gometry.Geometry.to_crs] to change the frame.
 
 ### Fast without awkwardness
@@ -92,10 +99,15 @@ use free geometry predicates for exact source checks.
 
 ### Declare, transform, refine
 
-[`set_crs`][gometry.Geometry.set_crs] declares; `to_crs` transforms — and they can't be confused. Spatial indexes
-expose [`candidates`][gometry.SpatialIndex.candidates] vs [`query`][gometry.SpatialIndex.query] (exact refine) instead of hiding the prefilter. Grid
-cover factories materialize cells with an explicit `cell_rule`; a cover is a set of
-candidate cells, and exact membership stays a predicate on the source geometry.
+[`set_crs`][gometry.Geometry.set_crs] declares metadata without moving numeric
+coordinates; [`to_crs`][gometry.Geometry.to_crs] transforms X/Y into another frame.
+See [when to declare or transform](guide/crs.md#set-crs-vs-to-crs). Spatial indexes
+expose [`candidates`][gometry.SpatialIndex.candidates] as a bbox prefilter and
+[`query`][gometry.SpatialIndex.query] as exact refinement. Grid cover factories
+materialize cells with an explicit `cell_rule`. A cover or index candidate narrows
+the search; it is not an exact geometry answer. Retain the source geometry and use
+an exact predicate to refine those candidates into exact matches. See [index candidates and queries](guide/indexing.md#candidates-vs-query)
+and [grid source membership](guide/grids.md#exact-membership-with-the-source-geometry).
 
 ### One spelling per operation
 
@@ -104,40 +116,27 @@ spelling, documented and searchable in the migration guide.
 
 </div>
 
-## Find your way
+## Start with what you need
 
-<div class="grid cards" markdown>
-
--   **New here?** :material-rocket-launch:
-
-    ---
-
-    Build a real spatial query step by step.
-
-    [:octicons-arrow-right-24: Quickstart tutorial](get-started/quickstart.md)
-
--   **Get something done** :material-wrench:
-
-    ---
-
-    The day-to-day API, one guide per topic.
-
-    [:octicons-arrow-right-24: User guide](guide/geometry.md)
-
--   **Understand it** :material-lightbulb:
-
-    ---
-
-    The models and design behind the API.
-
-    [:octicons-arrow-right-24: The mental model](get-started/mental-model.md)
-
--   **Look it up** :material-book-open-variant:
-
-    ---
-
-    Every public callable, grouped by concept with precise signatures and links.
-
-    [:octicons-arrow-right-24: API reference](api/index.md)
-
-</div>
+<nav class="docs-map" aria-label="Documentation starting points">
+  <a href="get-started/quickstart/">
+    <strong>Quickstart tutorial</strong>
+    <span>Build your first spatial query.</span>
+    <small>Installation, geometry, indexing, and exact refinement</small>
+  </a>
+  <a href="guide/">
+    <strong>User guide</strong>
+    <span>Solve a geometry task.</span>
+    <small>Focused guides for everyday operations</small>
+  </a>
+  <a href="get-started/mental-model/">
+    <strong>Mental model</strong>
+    <span>Understand CRS, units, and refinement.</span>
+    <small>The concepts that govern results</small>
+  </a>
+  <a href="api/">
+    <strong>API reference</strong>
+    <span>Look up a public callable.</span>
+    <small>Signatures and behavior grouped by concept</small>
+  </a>
+</nav>

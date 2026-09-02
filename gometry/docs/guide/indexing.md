@@ -17,14 +17,16 @@ The index exposes the distinction between *candidates* (bounding-box matches) an
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
-    actually intersect — especially for sparse multipolygons and diagonal lines. If
-    you treat candidates as answers, you get false positives. [`idx.query(q,
-    predicate=...)`][gometry.SpatialIndex.query] runs the **exact** predicate on those candidates and returns only
-    true matches. Use `query` when exact matches are required.
+    actually intersect — especially for sparse multipolygons and diagonal lines.
+    A cover or index candidate narrows the search; it is not an exact geometry
+    answer. Retain the source geometry and use an exact predicate to refine those
+    candidates into exact matches.
+    [`idx.query(q, predicate=...)`][gometry.SpatialIndex.query] performs that
+    exact predicate refinement and returns only true matches.
 
 ## Candidates vs query
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" session="index-candidates"
 import gometry as gm
 
 query = gm.box(0.0, 0.0, 1.0, 1.0)
@@ -39,8 +41,11 @@ idx = gm.SpatialIndex(geoms)
 cands = idx.candidates(query)                     # bbox prefilter — candidate superset
 hits = idx.query(query, predicate="intersects")   # exact refine — matching rows
 
-print("candidates (bbox):", list(cands))
-print("exact intersects:", list(hits))
+assert cands.tolist() == [0, 1, 2]
+assert hits.tolist() == [0, 2]
+
+print("candidates (bbox):", cands.tolist())
+print("exact intersects:", hits.tolist())
 
 ```
 
@@ -50,31 +55,69 @@ predicate, so it is always a subset. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
 
-```python exec="on" html="true"
-from _figures import panels
-import gometry as gm
+```python exec="on" html="true" session="index-candidates"
+from _figures import figure
 
-query = gm.box(0.0, 0.0, 1.0, 1.0)
-geoms = gm.GeometryArray([
-    gm.box(0.2, 0.2, 0.8, 0.8),
-    gm.Polygon([(0.5, 2.0), (2.0, 2.0), (2.0, 0.5)]),
-    gm.box(0.9, 0.9, 1.6, 1.6),
-    gm.box(3.0, 3.0, 4.0, 4.0),
-])
-idx = gm.SpatialIndex(geoms)
-
-print(panels([
-    (label, [query.exterior, *(geoms[i] for i in picks)])
-    for label, picks in [
-        ("candidates", idx.candidates(query)),
-        ("query intersects", idx.query(query, predicate="intersects")),
-    ]
-]))
+candidate_rows, hit_rows = cands.tolist(), hits.tolist()
+print(figure(
+    {
+        'query': query,
+        'candidate': [geoms[row].envelope() for row in candidate_rows],
+        'result': [geoms[row] for row in hit_rows],
+        'excluded': [geoms[row] for row in candidate_rows if row not in hit_rows],
+        'source': [geoms[row] for row in range(len(geoms)) if row not in candidate_rows],
+    },
+    'The prefilter admits rows 0, 1, 2; refinement keeps rows 0 and 2.',
+    alt=(
+        'The envelopes of rows 0, 1, and 2 overlap the query envelope, so all '
+        'three become candidates. Exact intersects keeps rows 0 and 2 and rejects '
+        'the diagonal triangle in row 1; row 3 never becomes a candidate.'
+    ),
+    # Both rejected rows are 'not a match', for different reasons; naming the
+    # reason is the whole point of drawing them apart.
+    labels={
+        'candidate': 'candidate envelopes',
+        'result': 'exact matches',
+        'excluded': 'bbox false positive',
+        'source': 'never a candidate',
+    },
+))
 
 ```
 
 `candidates` supplies rows for caller-owned refinement or a coarse spatial key.
 `query` performs the exact predicate refinement.
+
+### Periodic geographic bounds
+
+For a geographic index, the candidate envelope uses the CRS-native longitude
+period and pole. Exact refinement then uses the same frame-aware topology as a
+direct predicate. EPSG:4807 is a public grad-unit example: one turn is 400 grads,
+and its north pole is 100 grads.
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+pole = 100.0
+# Exercise the tiny admitted floating-point sliver at the north pole.
+for _ in range(7):
+    pole = math.nextafter(pole, math.inf)
+
+source = gm.Point(0.0, pole, crs=4807)
+alias = gm.Point(200.0, pole, crs=4807)
+index = gm.SpatialIndex([source])
+
+print("periodic candidates:", index.candidates(alias).tolist())
+print("exact intersects:", index.query(alias, predicate="intersects").tolist())
+assert index.candidates(alias).tolist() == [0]
+assert index.query(alias, predicate="intersects").tolist() == [0]
+
+```
+
+The bounds gate reaches the pole's alternate longitude spelling, and the exact
+predicate confirms that both spellings identify the same geographic point.
 
 ## Predicates
 
@@ -94,7 +137,7 @@ idx = gm.SpatialIndex(pts)
 box = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 
 for pred in ("intersects", "contains", "contains_properly", "covers"):
-    print(f"{pred:>17}:", list(idx.query(box, predicate=pred)))
+    print(f"{pred:>17}:", idx.query(box, predicate=pred).tolist())
 
 ```
 
@@ -113,7 +156,7 @@ pts = gm.points([21.0, 21.5, 30.0], [52.0, 52.1, 52.0], crs=4326)
 idx = gm.SpatialIndex(pts)
 probe = gm.Point(21.0, 52.0, crs=4326)
 
-print("within 1 deg:", list(idx.query(probe, predicate="dwithin", distance=1.0, unit="planar")))
+print("within 1 deg:", idx.query(probe, predicate="dwithin", distance=1.0, unit="planar").tolist())
 
 ```
 
@@ -138,7 +181,7 @@ idx = gm.SpatialIndex(stations)
 me = gm.Point(21.01, 52.0, crs=4326)
 
 ids = idx.nearest(me, k=2, unit="meters")
-print("nearest 2 indices (closest first):", list(ids))
+print("nearest 2 indices (closest first):", ids.tolist())
 
 ```
 
@@ -212,7 +255,7 @@ areas = gm.GeometryArray([
 ])
 
 left, right = gm.join(points, areas, predicate="within")
-print("matched (point, area) pairs:", list(zip(left, right, strict=True)))
+print("matched (point, area) pairs:", list(zip(left.tolist(), right.tolist(), strict=True)))
 for li, ri in zip(left, right, strict=True):
     print(f"point {li} within area {ri}")
 
@@ -248,10 +291,10 @@ idx = gm.SpatialIndex(pts)
 print("bulk rows:", len(idx))
 handle = idx.insert(gm.Point(21.5, 52.1, crs=4326))
 print("after insert:", len(idx), "| handle:", handle)
-print("nearest:", list(idx.nearest(gm.Point(21.0, 52.0, crs=4326), k=2, unit="planar")))
+print("nearest:", idx.nearest(gm.Point(21.0, 52.0, crs=4326), k=2, unit="planar").tolist())
 idx.remove(handle)
 print("after remove handle", handle, "→ nearest still works:",
-      list(idx.nearest(gm.Point(21.0, 52.0, crs=4326), k=2, unit="planar")))
+      idx.nearest(gm.Point(21.0, 52.0, crs=4326), k=2, unit="planar").tolist())
 
 ```
 

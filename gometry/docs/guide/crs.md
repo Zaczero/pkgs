@@ -10,6 +10,8 @@ A coordinate reference system (CRS) is the contract that says what your numbers
 some local origin." The CRS is also gometry's metric selector: geographic CRSs
 use geodesic metres and square metres, projected CRSs use native linear units
 and their squared area units, and CRS-free geometries use coordinate units.
+Geographic coordinates themselves remain in the CRS-native angular units, which
+may be degrees, radians, grads, or another admitted angular unit.
 
 CRS assignment and transformation have different effects:
 
@@ -24,17 +26,18 @@ CRS assignment and transformation have different effects:
 
 A geometry's *frame* is its CRS plus (optionally) a coordinate epoch. Ops fall
 into a few families rather than one exception-free slogan. The first family is
-the only one that computes geodesic measures. Topology remains a planar X/Y
-operation after any documented geographic seam normalization; it is not a
+the only one that computes geodesic measures. Topology remains a coordinate-plane
+X/Y operation: in a geographic CRS it resolves longitude aliases, seam spellings,
+and pole longitudes in the CRS-native frame before construction, and is not a
 geodesic operation. Metric constructive operations use CRS-native distance
 inputs but can construct in a local projection. Coordinate edits and planar
 construction operate on stored coordinates.
 
 | Family | Examples | Frame / unit / seam behavior |
 |---|---|---|
-| **Exact geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian |
+| **Exact geodesic measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], LRS | CRS-natural units (ellipsoidal metres on a geographic CRS); optional `unit=` override; short-way geodesic across the antimeridian; pairwise distance operations use points and linework on geographic CRSs |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
-| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic seams auto-split-normalize |
+| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into chart pieces. `clip_by_rect` uses frame-aware overlay for a seam-crossing, polar, or non-canonical subject or rectangle; otherwise it clips directly, and its geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `max_length` and distances follow the CRS metric; `fraction=` is unitless; original vertices are retained |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
@@ -73,6 +76,72 @@ distance is metres, but the produced outline is a local-projection approximation
   `epoch=`, and clearing the CRS clears the epoch. See
   [Coordinate epochs](#coordinate-epochs).
 
+### Native geographic units and periodic aliases
+
+The geographic frame is read from the CRS, not assumed to be WGS 84 degrees. It
+owns the longitude and latitude angular units, the longitude period and pole, and
+the prime meridian. For example, EPSG:4326 uses degrees, EPSG:4807 uses grads,
+and a CRS expressed with radian axes uses radians. A full native longitude turn
+therefore has a different numeric spelling in each frame, but the aliases denote
+the same location in topology, metrics, arrays, prepared geometries, indexes, and
+grid-source transforms.
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+radian_crs = (
+    'GEOGCS["WGS 84 radians",DATUM["WGS_1984",'
+    'SPHEROID["WGS 84",6378137,298.257223563]],'
+    'PRIMEM["Greenwich",0],UNIT["radian",1],'
+    'AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]'
+)
+cases = (
+    ("degree", 4326, 360.0),
+    ("grad", 4807, 400.0),
+    ("radian", radian_crs, math.tau),
+)
+
+for name, crs, period in cases:
+    origin = gm.Point(0.0, 0.0, crs=crs)
+    alias = gm.Point(period, 0.0, crs=crs)
+    units = [axis["unit_name"] for axis in gm.CRS(crs).axes[:2]]
+    print(f"{name}: {units}, one turn distance: {gm.distance(origin, alias)} m")
+    assert gm.distance(origin, alias) == 0.0
+    assert gm.distance(origin, gm.GeometryArray([alias])).tolist() == [0.0]
+
+```
+
+The native values are admitted and canonicalized in their own frame. The
+geodesic kernels receive a normalized degree/Greenwich value only at the metric
+boundary; callers do not convert geometry coordinates before using `area`,
+`length`, `distance`, `dwithin`, or exact geographic topology.
+
+The prime meridian is part of the same frame. EPSG:4807's 400-grad alias reaches
+the same physical location as its zero-grad spelling when transformed to WGS 84:
+
+```python exec="on" source="block" result="text"
+import math
+
+import gometry as gm
+
+origin = gm.Point(0.0, 0.0, crs=4807).to_crs(4326)
+alias = gm.Point(400.0, 0.0, crs=4807).to_crs(4326)
+same_location = math.isclose(origin.x, alias.x, abs_tol=1e-12) and math.isclose(
+    origin.y, alias.y, abs_tol=1e-12
+)
+print("same WGS 84 location:", same_location)
+assert same_location
+
+```
+
+The raw [`CRS.geodesic_inverse`][gometry.CRS.geodesic_inverse] and related
+coordinate APIs retain their documented degree/radian argument switch; the
+native-frame rule above describes geometry metrics and topology.
+
+<a id="set-crs-vs-to-crs"></a>
+
 ## `set_crs` vs `to_crs`
 
 !!! warning "Relabeling is not reprojection"
@@ -82,19 +151,24 @@ distance is metres, but the produced outline is a local-projection approximation
 
 Consider a point digitized as lon/lat but handed to you with no CRS attached.
 
-```python exec="on" source="block" result="text"
+```python exec="on" source="block" result="text" session="declare-transform"
+from math import isclose
+
 import gometry as gm
 
 raw = gm.Point(21.0, 52.0)
-print("crs before:", raw.crs)
+print('crs before:', raw.crs)
 
 declared = raw.set_crs(4326)
-print("crs after set_crs:", declared.crs)
-print("coords after set_crs:", list(declared.coords))
+print('crs after set_crs:', declared.crs)
+print('coords after set_crs:', list(declared.coords))
+assert declared.coords.to_nested() == raw.coords.to_nested() == [21.0, 52.0]
 
 projected = declared.to_crs(3857)
-print("crs after to_crs:", projected.crs)
-print("coords after to_crs:", list(projected.coords))
+print('crs after to_crs:', projected.crs)
+print('coords after to_crs:', list(projected.coords))
+assert isclose(projected.x, 2_337_709.307, rel_tol=0.0, abs_tol=0.001)
+assert isclose(projected.y, 6_800_125.454, rel_tol=0.0, abs_tol=0.001)
 
 ```
 
@@ -131,8 +205,8 @@ except Exception as e:
 ```
 
 A `crs=` argument on any constructor is a `set_crs`, not a `to_crs`. It attaches
-metadata to the coordinates you supplied — the bounds stay the lon/lat degrees you
-passed:
+metadata to the coordinates you supplied — the bounds stay the native coordinates
+you passed:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -195,7 +269,8 @@ paths** that take `unit=`; they are not a second vectorized API. Binary
 ## Geographic CRS → geodesic, automatically
 
 Attach a geographic CRS and the *same* [`geom.area`][gometry.Geometry.area] / [`geom.length`][gometry.Geometry.length] / [`distance()`][gometry.distance]
-measure geodesically on that ellipsoid
+measure geodesically on that ellipsoid, regardless of whether its stored angular
+coordinates use degrees, radians, or grads
 ([Karney's algorithm](https://geographiclib.sourceforge.io/)) and return meters.
 
 ```python exec="on" source="block" result="text"
@@ -222,18 +297,27 @@ route = gm.LineString(
 print(f"route length: {route.length/1000:.1f} km")
 
 city = gm.box(2, 48, 3, 49, crs=4326)
-print(f"city area: {city.area/1e6:.0f} km^2")
+print(f"city area: {city.area/1e6:.0f} km²")
 
 ```
 
-For geographic line and polygon metrics, each stored edge is interpreted as the
-shortest ellipsoidal geodesic between its endpoints (the stored-edge model —
-not necessarily a constant-latitude parallel). WKT and GeoJSON store only
+For geographic line metrics and polygon perimeters, each stored edge is
+interpreted as the shortest ellipsoidal geodesic between its endpoints (the
+stored-edge model — not necessarily a constant-latitude parallel). WKT and GeoJSON store only
 vertices; they do not encode an edge model. When the source means a rhumb line
 or a path in a particular projected frame, **generate intermediate vertices with
 that intended algorithm** before construction — ordinary densify interpolates the
 stored edge model and does not synthesize a rhumb route. Split or otherwise
 disambiguate antipodal and antimeridian-sensitive paths.
+
+Geographic pairwise metrics — [`distance`][gometry.distance],
+[`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance],
+[`nearest_points`][gometry.nearest_points], and
+[`shortest_line`][gometry.shortest_line] — support point and linework operands.
+Filled `Polygon` and `MultiPolygon` interiors raise `CRSError` because a
+geodesic point-in-polygon certificate is not implemented. Use
+`polygon.boundary()` for its geodesic boundary linework, `unit='planar'` for
+coordinate-space areal distance, or reproject to a suitable projected CRS.
 
 !!! note "Why geodesic and projected answers differ"
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) is a
@@ -281,6 +365,45 @@ The same operations on a *projected* geometry are planar arithmetic in the CRS's
 **appropriate projected CRS first**, then measure. Pass `unit='meters'` when you
 need SI meters or square meters from a non-meter projected CRS.
 
+### Projection comparison
+
+The same Earth coordinates can produce different planar maps because each
+projection chooses a different distortion trade-off. Use this comparison to
+understand the chosen CRS, not as a measurement recommendation: a projection's
+units and distortion determine what a planar result means.
+
+```python exec="on" html="true"
+import gometry as gm
+from _figures import panels
+
+meridians = [
+    gm.LineString([(lon, lat) for lat in range(0, 91, 2)], crs=4326)
+    for lon in range(-180, 181, 30)
+]
+parallels = [
+    gm.LineString([(lon, lat) for lon in range(-180, 181, 2)], crs=4326)
+    for lat in range(0, 90, 15)
+]
+graticule = gm.GeometryArray([*meridians, *parallels])
+
+print(panels(
+    [
+        ('North-polar orthographic', graticule.to_crs('ESRI:102035')),
+        ('Mollweide equal-area', graticule.to_crs('ESRI:54009')),
+    ],
+    caption='The same northern-hemisphere coordinates take different planar shapes in each projection.',
+    alt='In the orthographic projection, meridians meet at the centered north pole and the equator forms an outer circle. In the Mollweide projection, the same graticule spans a curved half-ellipse that preserves area.',
+    share_frame=False,
+))
+```
+
+This is a comparison of 2D coordinate frames, not a 3D globe or spherical
+topology. The orthographic frame places the north pole near `(0, 0)` and its
+equator near radius `6,378,137`; Mollweide keeps local area scale near `1` at
+both 0° and 60° latitude while changing shape. Choose a CRS for the operation:
+use a local projected CRS for local planar work, and use geographic CRS metrics
+when the geodesic result is the intended answer.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -288,7 +411,7 @@ city = gm.box(2, 48, 3, 49, crs=4326)
 projected = city.to_crs(32631)
 
 print("crs:", projected.crs)
-print(f"area: {projected.area/1e6:.0f} km^2")
+print(f"area: {projected.area/1e6:.0f} km²")
 
 ```
 
@@ -304,30 +427,18 @@ print(f"area: {projected.area/1e6:.0f} km^2")
     web = city.to_crs(3857).area / 1e6
     utm = city.to_crs(32631).area / 1e6
 
-    print(f"geodesic: {geo:.0f} km^2")
-    print(f"Web Mercator: {web:.0f} km^2")
-    print(f"UTM 31N: {utm:.0f} km^2")
+    print(f"geodesic: {geo:.0f} km²")
+    print(f"Web Mercator: {web:.0f} km²")
+    print(f"UTM 31N: {utm:.0f} km²")
     ```
 
     [Web Mercator](https://epsg.org/crs_3857/WGS-84-Pseudo-Mercator.html) has
     latitude-dependent scale. Reprojecting selects the coordinate frame used for
     the result.
 
-Web Mercator stretches the box vertically away from the equator, inflating its
-area, while UTM keeps true local proportions:
-
-```python exec="on" html="true"
-from _figures import panels
-import gometry as gm
-
-city = gm.box(2, 48, 3, 49, crs=4326)
-print(panels([
-    ("EPSG:4326 (geodesic lon/lat)", city),
-    ("EPSG:3857 (north-south stretch)", city.to_crs(3857)),
-    ("EPSG:32631 (local metric proportions)", city.to_crs(32631)),
-]))
-
-```
+Web Mercator stretches the box away from the equator, more than doubling its
+area at this latitude, while the UTM zone stays within a tenth of a percent of
+the geodesic figure.
 
 !!! tip "Choose the projection for the job"
     Local area/length operations use a UTM zone or national grid covering the
@@ -357,17 +468,21 @@ geometry — comparable with a geodesic answer:
 import gometry as gm
 
 city = gm.box(2.3, 48.8, 2.4, 48.9, crs=4326)
-print("geodesic m^2:", round(city.area))
-print("planar deg^2:", gm.area(city, unit='planar'))
+print("geodesic m²:", round(city.area))
+print("planar deg²:", gm.area(city, unit='planar'))
 
 ```
 
-Every distance is *realized* by an actual pair of points —
+For a supported metric pair, every distance is *realized* by an actual pair of points —
 [`nearest_points`][gometry.nearest_points] returns it, and
 [`shortest_line`][gometry.shortest_line] returns the same answer as the connecting
-[`LineString`][gometry.LineString] (its [`length`][gometry.length] is exactly [`distance(a, b)`][gometry.distance]). All three work on **any**
-geometry pair and find the closest approach: the witness
+[`LineString`][gometry.LineString] (its [`length`][gometry.length] is exactly [`distance(a, b)`][gometry.distance]). These operations accept areal operands in planar and projected modes and find the closest approach: the witness
 can land on an **edge interior**, not only a vertex.
+
+In the geographic geodesic mode, the same operations accept points and
+linework only. A filled polygon interior raises `CRSError`; pass
+`unit='planar'`, use `polygon.boundary()`, or reproject when that is the
+intended operation.
 
 ```python exec="on" html="true"
 from _figures import figure
@@ -377,7 +492,12 @@ a = gm.from_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")
 b = gm.from_wkt("POLYGON ((4 1, 5 0, 6 1, 5 2, 4 1))")
 pa, pb = gm.nearest_points(a, b)
 bridge = gm.shortest_line(a, b)
-print(figure([a, b, bridge, pa, pb], f"shortest_line(a, b) = {bridge.to_wkt()}"))
+print(figure(
+    {'source': [a, b], 'result': bridge, 'anchor': [pa, pb]},
+    f"shortest_line(a, b) = {bridge.to_wkt()}",
+    alt="The shortest line runs between the two nearest boundary points, one on each polygon.",
+    labels={'source': 'a and b', 'result': 'shortest_line', 'anchor': 'nearest_points'},
+))
 
 ```
 
@@ -394,8 +514,8 @@ and an `XY` point) the witnesses drop to the ordinates both carry.
     [`simplify`][gometry.Geometry.simplify], [`snap`][gometry.snap],
     [`snap_to_grid`][gometry.Geometry.snap_to_grid],
     [`quantize`][gometry.Geometry.quantize], and
-    [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]. On lon/lat
-    data such a tolerance is in degrees; reproject with
+    [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]. On geographic
+    data such a tolerance is in the CRS's native angular units; reproject with
     [`to_crs`][gometry.Geometry.to_crs] first if you need it in meters. Every
     distance- or area-returning metric — including
     [`hausdorff_distance`][gometry.hausdorff_distance],
@@ -438,8 +558,8 @@ import gometry as gm
 warsaw = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 local = warsaw.estimate_local_crs()
 print("local:", local)
-print("geodesic area m^2:", round(warsaw.area))
-print("projected area m^2:", round(warsaw.to_crs(local).area))
+print("geodesic area m²:", round(warsaw.area))
+print("projected area m²:", round(warsaw.to_crs(local).area))
 
 ```
 
@@ -461,7 +581,7 @@ local = area.estimate_local_crs()
 projected = area.to_crs(local)
 
 print('local CRS:', local.to_authority())
-print('planar area m^2:', round(projected.area))
+print('planar area m²:', round(projected.area))
 
 ```
 
@@ -472,18 +592,22 @@ area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)
 projected = area.to_crs(area.estimate_local_crs())
 
 ring = projected.buffer(500)
-print('500 m buffer area m^2:', round(ring.area))
+print('500 m buffer area m²:', round(ring.area))
 
 ```
 
 ```python exec="on" html="true"
-from _figures import result_over_input
+from _figures import before_after
 import gometry as gm
 
 area = gm.box(2.30, 48.84, 2.39, 48.89, crs=4326)
 projected = area.to_crs(area.estimate_local_crs())
-ring = projected.buffer(500)
-print(result_over_input(projected, ring, before_caption="projected input", after_caption="buffer(500 m)"))
+print(before_after(
+    projected, projected.buffer(500),
+    before_caption="projected input", after_caption="buffer(500 m)",
+    before_alt="The area is a rectangle in the estimated local metric frame.",
+    after_alt="The 500 metre buffer stands off the rectangle by the same distance on every side.",
+))
 
 ```
 
@@ -495,18 +619,37 @@ a degree of longitude shortens toward the poles:
 ```python exec="on" html="true"
 from _figures import panels
 import gometry as gm
-print(panels([(f'250 km buffer at {lat}°N (drawn in lon/lat)', gm.Point(3, lat, crs=4326).buffer(250000)) for lat in (0, 55)]))
+print(panels(
+    [
+        (
+            f'250 km buffer at {lat}°N (drawn in lon/lat)',
+            {'anchor': gm.Point(3, lat, crs=4326), 'result': gm.Point(3, lat, crs=4326).buffer(250000)},
+            f'At {lat} degrees north the same 250 kilometre buffer spans '
+            f'{"as many degrees of longitude as of latitude" if lat == 0 else "far more degrees of longitude than of latitude"}.',
+        )
+        for lat in (0, 55)
+    ],
+    caption='The same metric radius covers more longitude the further it sits from the equator.',
+    alt='Drawn in degrees, the equatorial buffer is round while the buffer at 55 degrees north is a wide ellipse.',
+    # Degrees as numbers: correcting the aspect here would redraw both as
+    # circles and erase the distortion this figure is about.
+    aspect='raw',
+    share_frame=False,
+))
 
 ```
 
 ## Across the antimeridian
 
-On a geographic CRS, gometry's **topology** ops — predicates, relate, overlay,
+On a geographic CRS, the physical seam is represented by the CRS-native periodic
+longitude axis. It is ±180° for EPSG:4326, ±200 grads for EPSG:4807, and ±π for
+a radian frame with Greenwich as its prime meridian. gometry's **topology** ops —
+predicates, relate, overlay,
 [`clip_by_rect`][gometry.Geometry.clip_by_rect], centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds, distance/[`dwithin`][gometry.dwithin], the
 spatial index, [`PreparedGeometry`][gometry.PreparedGeometry], and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — **auto-split-normalize**
-antimeridian-crossing input at their chokepoints. Geodesic measures (`distance`,
+seam-crossing input at their chokepoints. Geodesic measures (`distance`,
 [`length`][gometry.length], [`area`][gometry.area], …) take the short way across the seam. The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call
@@ -546,10 +689,12 @@ print("point matches:", matches.values.tolist())
 
 ```
 
-Spatial indexes widen antimeridian-crossing envelopes before candidate search and
+Spatial indexes widen periodic seam-crossing envelopes before candidate search and
 still run exact refinement, so the middle-of-map false positives are removed by the
-predicate step. Topology and indexing normalize for you; the planar constructive
-ops listed in the operation-family table are the places manual splitting is still
+predicate step. Topology and indexing normalize for you; supported geographic
+linework metrics also take the short geodesic way. Filled polygon interiors are
+not supported by those geodesic pairwise metrics. The planar constructive ops
+listed in the operation-family table are the places manual splitting is still
 required.
 
 ## Z and M under transformation

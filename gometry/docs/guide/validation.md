@@ -84,10 +84,11 @@ are all `None`; they carry detail when topology validation finds a problem.
 
 Geographic validity follows the same frame-aware topology as predicates. When
 a geometry has a geographic CRS and crosses the antimeridian, gometry validates
-its seam-normalized shape; this includes pole-enclosing shells and polar holes.
+its frame-aware seam-normalized shape; this includes pole-enclosing shells and
+polar holes.
 The same coordinates without a CRS, or under a projected CRS, remain ordinary
-planar coordinates. Attaching a geographic frame changes what ±180° means, while
-a planar frame has no identified seam.
+planar coordinates. Attaching a geographic frame supplies its periodic longitude
+seam and pole, while a planar frame has no identified seam.
 `is_valid`, [`is_simple`][gometry.Geometry.is_simple], [`is_ring`][gometry.Geometry.is_ring], `validate`, [`require`][gometry.require], and
 [`self_intersections`][gometry.Geometry.self_intersections] all share that rule. `repair` uses the same normalized
 validity verdict before rebuilding, and [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid] checks
@@ -130,7 +131,9 @@ import gometry as gm
 
 bowtie = gm.Polygon([(0, 0), (2, 2), (2, 0), (0, 2)])
 print(before_after(with_vertices(bowtie), with_vertices(bowtie.repair()),
-                   before_caption="invalid input", after_caption="repair(bowtie)"))
+                   before_caption="invalid parcel", after_caption="repaired parcel pieces",
+                   before_alt="The parcel boundary crosses itself at the center, making the bowtie polygon invalid.",
+                   after_alt="Repair splits the self-crossing bowtie into valid polygonal pieces."))
 
 ```
 
@@ -153,7 +156,7 @@ Already-valid input is returned as-is after the validation check on every surfac
 `geom.repair()` and `array.repair()` reuse valid rows. Z/M ordinates are carried
 through the rebuild.
 
-For a geographic antimeridian crossing, the validity check runs before any
+For a geographic periodic-seam crossing, the validity check runs before any
 rebuild. A valid input therefore keeps its original coordinates exactly; an
 invalid crossing is repaired from the seam-split topology. The same
 rule powers `snap_to_grid(..., repair=True)`.
@@ -182,7 +185,7 @@ def geodesic_area_km2(poly):
     return poly.area / 1e6
 
 ok = gm.box(2, 48, 3, 49, crs=4326)
-print(f"{geodesic_area_km2(ok):.1f} km^2")
+print(f"{geodesic_area_km2(ok):.1f} km²")
 
 try:
     geodesic_area_km2(gm.box(2, 48, 3, 49))
@@ -236,7 +239,12 @@ from _figures import before_after, with_vertices
 import gometry as gm
 noisy = gm.LineString([(0, 0), (1.111, 2.222), (3.333, 4.444)])
 cleaned = (noisy.remove_repeated_points()).quantize(2)
-print(before_after(with_vertices(noisy), with_vertices(cleaned), before_caption='noisy input', after_caption='quantize(2)'))
+print(before_after(
+    with_vertices(noisy), with_vertices(cleaned),
+    before_caption="survey track coordinates", after_caption="coordinates rounded to 2 decimals",
+    before_alt="The CRS-free survey track contains vertices with three decimal places.",
+    after_alt="Quantization moves each track vertex to two-decimal coordinates without removing vertices.",
+))
 
 ```
 
@@ -258,7 +266,9 @@ import gometry as gm
 dup = gm.LineString([(0, 0), (0, 0), (1, 1), (1, 1), (2, 2)])
 cleaned = dup.remove_repeated_points()
 print(before_after(with_vertices(dup), with_vertices(cleaned),
-                   before_caption="input", after_caption="remove_repeated_points"))
+                   before_caption="track with repeated vertices", after_caption="consecutive repeats removed",
+                   before_alt="The five-coordinate track repeats its first and middle positions consecutively.",
+                   after_alt="Removing consecutive repeats leaves the same line path represented by three distinct vertices."))
 
 ```
 
@@ -304,7 +314,8 @@ geometry from ever reaching your [predicates](predicates.md),
 produce subtly wrong answers. See [Security](../about/security.md) for the
 no-panic posture on malformed bytes.
 
-Geometry that **crosses the ±180° antimeridian** is a separate kind of "broken":
+Geometry that crosses a geographic frame's periodic seam (±180° for EPSG:4326)
+is a separate kind of "broken":
 individually valid coordinates that stored naively draw a band the wrong way
 around the globe. gometry's topology ops auto-split crossing geographic input;
 see [Working across the antimeridian](crs.md#across-the-antimeridian) for when

@@ -21,7 +21,9 @@ ordinates.
 
 !!! tip "Always (x, y) — lon/lat only under a geographic CRS"
     Every constructor takes coordinates in **(x, y)** order. Under a
-    **geographic** CRS those axes are **(longitude, latitude)**; under a
+    **geographic** CRS those axes are **(longitude, latitude) in that CRS's
+    native angular units** (degrees, radians, grads, or another admitted angular
+    unit); under a
     projected CRS they are the projection's easting/northing (or other linear
     axes); CRS-free geometries stay in raw coordinate units. The lon/lat
     reading is not universal — it is the geographic case. Pass `crs=4326` (or
@@ -31,7 +33,7 @@ ordinates.
 ## Points
 
 Construct a point with [`gm.Point(x, y)`][gometry.Point]; under a geographic CRS, `(x, y)` is
-`(longitude, latitude)`.
+`(longitude, latitude)` in that CRS's native angular units.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -43,16 +45,9 @@ print("crs:", paris.crs, "coordinate_axes:", paris.coordinate_axes)
 
 ```
 
-```python exec="on" html="true"
-from _figures import figure
-import gometry as gm
-print(figure(gm.Point(2.3522, 48.8566, crs=4326), "Point (longitude, latitude)"))
-
-```
-
 !!! note "`.x` / `.y` are for single points only"
     A `Point` exposes [`.x`][gometry.Point.x], [`.y`][gometry.Point.y] (and [`.z`][gometry.Point.z] / [`.m`][gometry.Point.m] when present) for scalar
-    scalar access. For any other geometry, pull every vertex out with
+    access. For any other geometry, pull every vertex out with
     [`geom.coords`][gometry.Geometry.coords] (see
     [Inspecting geometries](#inspecting-geometries)).
 
@@ -75,9 +70,13 @@ print("length:", line.length)
 ```
 
 ```python exec="on" html="true"
-from _figures import figure
+from _figures import figure, with_vertices
 import gometry as gm
-print(figure(gm.LineString([(0, 0), (1, 2), (3, 1), (4, 3)]), "LineString vertices"))
+print(figure(
+    with_vertices(gm.LineString([(0, 0), (1, 2), (3, 1), (4, 3)])),
+    "Four ordered LineString vertices",
+    alt="The LineString follows all four vertices in order from left to right.",
+))
 
 ```
 
@@ -106,7 +105,7 @@ import gometry as gm
 print(figure(gm.Polygon(
     [(0, 0), (4, 0), (4, 4), (0, 4)],
     holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
-), "Polygon shell with a hole"))
+), "Shell and interior ring", alt="The polygon shell encloses one square hole."))
 
 ```
 
@@ -555,7 +554,9 @@ track = gm.LineString(
     z=[10.0, 20.0, 30.0], m=[0.0, 1.0, 2.0], crs=4326,
 )
 print(before_after(track, track.centroid(),
-                   before_caption="XYZM input", after_caption="centroid (2D)"))
+                   before_caption="XYZM survey track", after_caption="2D centroid",
+                   before_alt="The survey track has three XY vertices carrying Z and M ordinates.",
+                   after_alt="The computed centroid is a new 2D point, so Z and M are absent."))
 
 ```
 

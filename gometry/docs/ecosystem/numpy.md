@@ -1,5 +1,5 @@
 ---
-description: NumPy interchange in gometry — read-only typed ndarrays for every bulk result, zero-copy coordinate columns, the buffer protocol, and SciPy handoffs.
+description: NumPy interchange in gometry — read-only typed ndarrays for every bulk result, accepted PEP-3118 input buffers, zero-copy coordinate columns, and SciPy handoffs.
 ---
 
 # NumPy arrays & coordinates
@@ -38,12 +38,20 @@ per-row views are `int64` ndarrays. Text outputs ([`to_wkt`][gometry.Geometry.to
 outputs ([`to_wkb`][gometry.Geometry.to_wkb]), and ragged diagnostics stay Python lists because they have no
 single dense ndarray shape.
 
+Numeric input columns also accept PEP-3118 buffers when the operation accepts a
+`FloatColumn` or integer column. This is input admission, not an output-buffer
+promise: gometry does not export geometry containers as PEP-3118 numeric buffers.
+Input buffers are copied into native storage. The native coordinate representation
+is float64, so a float32 `FloatColumn` is accepted but converted to float64 during
+ingestion; `FloatColumn` input is not zero-copy.
+
 ## Coordinate columns, zero-copy
 
 [`geom.coords`][gometry.Coordinates] exposes per-axis columns directly. [`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]
-are always read-only `float64` ndarrays; [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m] appear when any coordinate
-carries that ordinate, with `NaN` for rows that lack it on a mixed-dimension
-[`GeometryArray`][gometry.GeometryArray].
+are always read-only `float64` ndarrays. [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m]
+are also always read-only `float64` ndarrays of the view length; they contain
+`NaN` when no coordinate carries that ordinate, and mixed-dimension rows use
+`NaN` for the rows that lack it.
 
 ```python exec="on" source="block" result="text"
 import numpy as np
@@ -56,17 +64,33 @@ print("x column:", repr(xs), "| shares storage:", np.asarray(xs).base is not Non
 arr = gm.GeometryArray([gm.Point(1, 2), gm.LineString([(0, 0), (1, 1)])])
 coords = gm.get_coordinates(arr)
 print("coords by row:\n", [row.tolist() for row in coords])
-print("source-row offsets:", coords.offsets.tolist())
+print("source-row index:", arr.coords.row_index.tolist())
+print("group boundaries:", coords.offsets.tolist())
 ```
 
 `coords.x` shares storage; `np.asarray(coords)` materializes a dense
 `(N, dims)` matrix (a copy, since storage is column-major) with `NaN`
-for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns read-only ndarray columns such as
-`{'x': ndarray, 'y': ndarray}` for direct pandas/Polars construction (forced
-Z/M columns use `NaN` where absent). [`get_coordinates`][gometry.get_coordinates] takes
-`axes=` for scalar extraction and returns [`Groups`][gometry.Groups] for a
-`GeometryArray`; its offsets are the source-row map, including empty and
+for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns
+read-only ndarray columns such as `{'x': ndarray, 'y': ndarray}` for direct
+pandas/Polars construction. It omits Z/M when the view does not carry those
+axes; call `coords.select('XYZ')` or `coords.select('XYZM')` to force those
+columns, which use `NaN` where absent. For a flattened `GeometryArray.coords`
+view, use [`.row_index`][gometry.Coordinates.row_index] to map each coordinate
+back to its source geometry row. [`get_coordinates`][gometry.get_coordinates]
+takes `axes=` for scalar extraction and returns [`Groups`][gometry.Groups] for
+a `GeometryArray`; its `.offsets` delimit each source row, including empty and
 missing rows. Raw iterables retain the dense bulk extraction path.
+
+## Coordinate matrices
+
+[`Geometry.set_coordinates`][gometry.Geometry.set_coordinates] and
+[`GeometryArray.set_coordinates`][gometry.GeometryArray.set_coordinates] accept
+one rank-2 coordinate matrix. Its shape is `(N, 2)` for XY, `(N, 3)` for XYZ
+or XYM, or `(N, 4)` for XYZM, and `N` must match the receiver's coordinate
+count (or the flattened present-row count for an array). The matrix width must
+match the receiver's axes. A rank other than 2, an unsupported width, or a
+row-count mismatch raises an error. The matrix is converted to native float64
+values, so this is a validated replacement input rather than a zero-copy view.
 
 ## The geometry ↔ object-array bridge
 
@@ -138,13 +162,14 @@ is the contract, so anything in the scientific stack consumes it directly.
 
 ## Python Array API compatibility
 
-gometry implements the NumPy interchange protocols (`__array__`,
-`__array_ufunc__ = None`, and the buffer protocol) and returns typed ndarrays, but
-it is **not** a [Python Array API](https://data-apis.org/array-api/) provider and
-does not expose `__array_namespace__`. The Array API standard targets numeric
-array libraries for elementwise math and linear algebra; gometry arrays hold
-geometries or cells, not numbers. Use gometry to produce coordinate arrays, then
-pass them to NumPy, SciPy, or scikit-learn.
+gometry implements the NumPy interchange protocols (`__array__` and
+`__array_ufunc__ = None`) and returns typed ndarrays. Numeric input columns can
+consume PEP-3118 buffers, but geometry and cell containers do not export numeric
+PEP-3118 buffers. gometry is **not** a [Python Array API](https://data-apis.org/array-api/)
+provider and does not expose `__array_namespace__`. The Array API standard
+targets numeric array libraries for elementwise math and linear algebra; gometry
+arrays hold geometries or cells, not numbers. Use gometry to produce coordinate
+arrays, then pass them to NumPy, SciPy, or scikit-learn.
 
 ## See also
 

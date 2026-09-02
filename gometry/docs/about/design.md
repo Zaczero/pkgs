@@ -111,8 +111,8 @@ corner properties (read `tile.polygon.bounds`), and no geohash
 interpolation are out of scope: scikit-learn/scipy and scikit-gstat
 own those domains, and gometry hands off through
 [`get_coordinates`][gometry.get_coordinates] NumPy views. Cheap pre-grouping
-before exact predicate work is what [`SpatialIndex.query`][gometry.SpatialIndex.query]
-candidates are for.
+before exact predicate work is what [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates]
+is for.
 
 [`normalize()`][gometry.Geometry.normalize] is gometry's own canonical form: the lexicographically smallest
 equivalent presentation (pointwise coordinates, then shorter-first; parts
@@ -150,7 +150,8 @@ Python *protocol* integrations are not aliases — `a & b`, `str(geom)`,
 `format(geom, '.2f')`, `bool(geom)`, and `match` patterns are the language's
 own spellings, adopted where the ecosystem already agrees on the meaning — the
 operators, WKT `str`, format specs, and emptiness truthiness are established
-Python-geometry conventions. Sugar that would *hide* a choice is rejected because
+Python-geometry conventions. A prepared geometry preserves its source geometry's
+emptiness truth value. Sugar that would *hide* a choice is rejected because
 the wire or operation semantics would be implicit: no `bytes(geom)` (which WKB flavor? the CRS would vanish
 silently — say [`to_wkb(...)`][gometry.Geometry.to_wkb]), no `round(geom, n)` ([`quantize`][gometry.Geometry.quantize] is coordinate
 quantization, not numeric rounding), no cell-set operator aliases (cell-set vs

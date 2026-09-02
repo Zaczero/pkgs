@@ -60,12 +60,13 @@ declarations:
 
 - Arrow providers must obey the exported structures, readable spans, capsule
   names, and release callbacks; see [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsule-trust-model).
-- Coverage factories expose one overridable size knob, `max_cells` (default
-  `1_000_000` on H3, S2, geohash, and tile cover; pass `None` for unlimited).
+- Coverage factories and H3 traversal methods expose one overridable output
+  size knob, `max_cells` (default `1_000_000`; pass `None` for unlimited). It
+  bounds retained result allocation, not classification or traversal CPU work.
   Parsers impose no flat byte or feature-count ceiling,
   but WKT, WKB, and GeoJSON ingestion reject excessive recursive nesting.
-  Generated-work and result-count limits protect grid collection,
-  transform-bounds densification, and CRS search. [`CellArray.uncompact`][gometry.CellArray.uncompact] is a
+  Separate generated-work limits protect transform-bounds densification and
+  CRS search. [`CellArray.uncompact`][gometry.CellArray.uncompact] is a
   caller-directed, unlimited transform and is not protected by factory
   result-count limits; its output can therefore be much larger than its input.
 

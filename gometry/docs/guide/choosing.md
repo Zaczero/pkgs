@@ -40,7 +40,7 @@ edge is *not* contained — use `covers` for boundary-inclusive membership. See
 
 | Situation | Use |
 | --- | --- |
-| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand |
+| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, seam-crossing, polar, or non-canonical inputs use frame-aware topology and rectangle parallels match [`box`][gometry.box] |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
 There is no separate `clip(mask)`: use [`clip_by_rect`][gometry.Geometry.clip_by_rect] for a
@@ -63,27 +63,11 @@ pass `repair=True` to `snap_to_grid` (or follow `quantize` with
 [`repair`][gometry.Geometry.repair]) when downstream code needs validity, and use
 [`validate`][gometry.Geometry.validate] to see exactly what broke.
 
-```python exec="on" html="true"
-from _figures import before_after, with_vertices
-import gometry as gm
-
-zigzag = gm.LineString([(0, 0), (0.5, 2), (1, 0), (1.5, 2), (2, 0)])
-simplified = zigzag.simplify(tolerance=0.5)
-print(before_after(with_vertices(zigzag), with_vertices(simplified),
-                   before_caption="input", after_caption="simplify(tolerance=0.5)"))
-
-```
-
-```python exec="on" html="true"
-from _figures import before_after, with_vertices
-import gometry as gm
-
-off_grid = gm.LineString([(0.12, 0.34), (1.67, 0.89), (2.45, 1.23)])
-snapped = off_grid.snap_to_grid(size=0.5)
-print(before_after(with_vertices(off_grid), with_vertices(snapped),
-                   before_caption="input", after_caption="snap_to_grid(size=0.5)"))
-
-```
+See the [worked simplification comparison](constructive.md#simplify-and-offset)
+for how tolerance removes progressively larger zigzags, and the [precision and
+repeat-cleaning examples](validation.md#cleaning-quantize-and-remove_repeated_points)
+for coordinate cleanup. To align one geometry to another rather than to a fixed
+grid, see the [worked snapping example](constructive.md#snap-and-segmentize).
 
 ## Alignment between two geometries
 
@@ -137,12 +121,15 @@ input_rows = gm.GeometryArray([
 invalid_edges = input_rows.coverage_invalid_edges()
 cleaned = input_rows.coverage_clean(overlap_rule="longest_border")
 
-print(panels([
-    ("input polygons", list(input_rows)),
-    ("invalid shared edges", [*input_rows, *invalid_edges]),
-    ("cleaned coverage", [item for row in cleaned for item in with_vertices(row)]),
-    ("coverage union", cleaned.coverage_union()),
-]))
+print(panels(
+    [
+        ("two parcel rows", {'source': input_rows}, "The two input parcels overlap along a narrow strip instead of forming a valid coverage."),
+        ("invalid shared edges", {'source': input_rows, 'result': invalid_edges}, "Diagnostic edges mark the mismatched parcel border around the overlap."),
+        ("cleaned parcel coverage", {'source': input_rows, 'result': [item for row in cleaned for item in with_vertices(row)]}, "Coverage cleaning aligns the shared border and leaves two non-overlapping parcel rows."),
+        ("coverage union", {'result': cleaned.coverage_union()}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
+    ],
+    labels={'source': 'input parcels', 'result': 'what the call returns'},
+))
 ```
 
 ## See also

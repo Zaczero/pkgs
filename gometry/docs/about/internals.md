@@ -56,10 +56,11 @@ for the trust and resource boundaries.
 
 ## Runtime concurrency
 
-On standard CPython, bulk array operations can release the interpreter lock for
-their native pass; scalar calls retain ordinary Python call behavior. On a
-[free-threaded build](compatibility.md#runtime-and-platform-matrix), the same
-public API is used without separate thread-specific entry points.
+On standard CPython, native work can release the interpreter lock after Python
+inputs are admitted, including bulk array work and scalar topology predicate and
+nearest-point evaluation. Lock release is an implementation detail, not a
+per-API parallelism guarantee. On a [free-threaded build](compatibility.md#runtime-and-platform-matrix),
+the same public API is used without separate thread-specific entry points.
 
 Immutable geometries, arrays, cells, CRS values, and grouped containers can be
 shared after construction. [`PreparedGeometry`][gometry.PreparedGeometry] retains immutable source state

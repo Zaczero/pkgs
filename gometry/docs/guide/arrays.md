@@ -45,7 +45,7 @@ print("coordinate_axes:", arr.coordinate_axes)
 print("common_coordinate_axes:", arr.common_coordinate_axes)
 print("element types:", arr.geometry_type)
 print("combined bounds:", arr.total_bounds)
-print("areas (geodesic m^2):", repr(arr.area))
+print("areas (geodesic m²):", repr(arr.area))
 
 ```
 
@@ -361,7 +361,9 @@ as empty groups, so `offsets` remains a source-row map.
 
 ## Missing rows
 
-`None` is a missing row; empty geometry is a real geometry value. [`GeometryArray`][gometry.GeometryArray] carries
+`None` is a missing row; a typed empty geometry is a real geometry value. For
+example, `POINT Z EMPTY` retains its point kind and `XYZ` axes even though it has
+no coordinates. [`GeometryArray`][gometry.GeometryArray] carries
 missing rows natively using a validity model. A dense array stores packed columns
 without a missing-row marker when no row is missing. This
 distinction is preserved across arrays, dataframe handoff, Arrow, GeoParquet, and most
@@ -369,22 +371,28 @@ vectorized operations. Batch ingest ([`from_wkt`][gometry.from_wkt] / [`from_wkb
 `GeometryArray([...])`) keeps native GeoArrow typing when some rows are missing rather
 than downgrading the whole column to WKB:
 
+The following three-row flow puts every row-preserving lane beside its source.
+The columns after `geometry` are `is_missing`, `area`, and `contains(window)`:
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
-geoms = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 1, 2, 2)])
-window = gm.box(-1, -1, 2, 2)
+geoms = gm.GeometryArray([gm.Point(1, 1), None, gm.from_wkt('POINT EMPTY')])
+window = gm.box(0, 0, 2, 2)
+areas = geoms.area
+contains = gm.contains(window, geoms)
+coordinates = gm.get_coordinates(geoms, return_index=True)
 
-print("missing:", geoms.is_missing.tolist())
-print("wkt:", geoms.to_wkt())
-print("area:", geoms.area.tolist())
-print("contains:", gm.contains(window, geoms).tolist())
-print("buffer:", geoms.buffer(0.5).is_missing.tolist())
-print("union:", geoms.union_all().geometry_type)
-print("drop:", geoms.drop_missing())
-print("fill:", geoms.fill_missing(gm.box(9, 9, 10, 10)).to_wkt())
-
+for row, geometry in enumerate(geoms.to_wkt()):
+    print(row, geometry, geoms.is_missing[row], areas[row], contains[row])
+print('coordinate values:', coordinates.values.tolist())
+print('coordinate offsets:', coordinates.offsets.tolist())
 ```
+
+`coordinates.values` is the flattened coordinate matrix. The CSR offsets delimit
+the values for source rows 0, 1, and 2: `[0, 1, 1, 1]` gives one coordinate for
+row 0 and empty groups for both the missing and typed-empty rows. Thus offsets
+preserve source-row provenance even where no coordinate exists.
 
 One rule set everywhere: **predicates → `False`, measures → `NaN`, geometry results stay
 missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
@@ -444,6 +452,8 @@ When you test **one** geometry against **many** others with the same predicate, 
 [`PreparedGeometry`][gometry.PreparedGeometry] once with
 [`geom.prepare()`][gometry.Geometry.prepare]. The prepared object keeps
 [`geometry`][gometry.PreparedGeometry.geometry] as a handle back to the source.
+It is false when that source geometry is empty and true otherwise, so preparing
+a geometry preserves its truth value.
 It precomputes
 an edge index so each subsequent predicate reuses prepared geometry state instead of
 re-analysing the geometry from scratch.
@@ -563,7 +573,7 @@ overhead.
 
 | Ingest | Per-item or expanded form | Batched/direct form |
 | --- | --- | --- |
-| GeoJSON | [`from_geojson`][gometry.from_geojson](<a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a>(s)) | `from_geojson(s)` — `str`/`bytes` |
+| GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
 | Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
@@ -591,13 +601,17 @@ converters accept whole columns.
   the import side for capsule-producing sources (`polars`, `duckdb`, `nanoarrow`). It avoids
   decoding row-by-row through WKB.
 
+For dataframe geometry columns, see [DataFrames](../ecosystem/dataframes.md). For
+portable GeoArrow interchange or GeoParquet storage, see [Arrow & storage](../ecosystem/arrow.md).
+
 ## See also
 
 - [Mental model](../get-started/mental-model.md) — the three operation models.
 - [Spatial indexing & joins](indexing.md) — [`Groups`][gometry.Groups] from array queries, index reuse.
 - [CRS, units & measurement](crs.md) — projecting for planar speed and metric units.
 - [Grids](grids.md) — [`CellArray`][gometry.CellArray], coverages, and grid pre-filtering.
-- [Arrow & interop](../ecosystem/index.md) — zero-copy GeoArrow / dataframe handoff.
+- [DataFrames](../ecosystem/dataframes.md) — dataframe geometry columns.
+- [Arrow & storage](../ecosystem/arrow.md) — portable GeoArrow interchange and GeoParquet storage.
 - [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
 - [Benchmarks](../about/benchmarks.md) — current release status.
 - [API: GeometryArray][gometry.GeometryArray] · [points][gometry.points] · [Groups][gometry.Groups] · [CellArray][gometry.CellArray] · [from_wkb][gometry.from_wkb]

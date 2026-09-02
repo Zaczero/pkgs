@@ -4,12 +4,15 @@ description: Searchable old-symbol → gometry-spelling reference tables, groupe
 
 # Migration cheatsheet
 
-Conventions:
+Use this page only to look up an old source-library symbol and its gometry name.
+For a migration workflow, read [Migrating to gometry](index.md). For behavior,
+defaults, units, errors, and output shapes, use the canonical owners:
+[CRS, units & measurement](../guide/crs.md),
+[Spatial indexing & joins](../guide/indexing.md), [Grids & geocodes](../guide/grids.md),
+[Arrays & performance](../guide/arrays.md), and the linked generated API reference.
 
-- `import gometry as gm`
-- `geom` is any gometry geometry; `idx = gm.SpatialIndex(...)`.
-- Binary operations are **free functions** (`gm.contains(a, b)`); unary operations are **methods** (`geom.buffer(d)`).
-  Measurement accessors (`.area`, `.length`) stay on the geometry object.
+Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
+`idx = gm.SpatialIndex(...)`.
 
 ## Shapely
 
@@ -36,9 +39,9 @@ Conventions:
 | `geom.geom_type` | [`geom.geometry_type`][gometry.Geometry.geometry_type] | |
 | `geom.bounds` | [`geom.bounds`][gometry.Geometry.bounds] | Bulk collections use [`gm.bounds(values)`][gometry.bounds]. |
 | `geom.has_z` | [`geom.has_z`][gometry.Geometry.has_z] / [`geom.has_m`][gometry.Geometry.has_m] | |
-| — | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | `"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"`. |
-| — | [`geom.epoch`][gometry.Geometry.epoch] | Coordinate epoch. |
-| `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | CRS is metadata. |
+| — | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | |
+| — | [`geom.epoch`][gometry.Geometry.epoch] | |
+| `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | |
 | `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | |
 | `parts(...)` / `rings(...)` | [`gm.parts(...)`][gometry.parts] / [`gm.rings(...)`][gometry.rings] | |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
@@ -61,33 +64,33 @@ Conventions:
 | `a.relate(b)` / `a.relate_pattern(b, p)` | [`gm.relate(a, b)`][gometry.relate] / [`gm.relate_pattern(a, b, p)`][gometry.relate_pattern] |
 | `shapely.contains_xy(g, x, y)` | [`gm.contains_xy(g, x, y)`][gometry.contains_xy] |
 | `shapely.intersects_xy(g, x, y)` | [`gm.intersects_xy(g, x, y)`][gometry.intersects_xy] |
-| `a.dwithin(b, d)` | [`gm.dwithin(a, b, distance, unit=…)`][gometry.dwithin] — CRS-native by default (geodesic m on geographic); optional `unit=`. Indexed: [`idx.query(..., predicate="dwithin", distance=..., unit=...)`][gometry.SpatialIndex.query] |
+| `a.dwithin(b, d)` | [`gm.dwithin(a, b, distance, unit=…)`][gometry.dwithin] / [`idx.query(..., predicate="dwithin", distance=..., unit=...)`][gometry.SpatialIndex.query] |
 
-### Measurement (the CRS decides; results are native)
+### Measurement
 
 | Shapely | gometry | Notes |
 |---|---|---|
-| `geom.area` | [`geom.area`][gometry.Geometry.area] / [`geoms.area`][gometry.GeometryArray.area] | Geographic CRS → geodesic m²; projected → planar **native linear units** (feet stay feet); none → coordinate units. Free [`gm.area(geom, unit=…)`][gometry.area] is override-only. |
-| `geom.length` | [`geom.length`][gometry.Geometry.length] / [`geoms.length`][gometry.GeometryArray.length] | Same CRS rule. Free [`gm.length(..., unit=…)`][gometry.length] is override-only. |
-| `a.distance(b)` / `shapely.distance(a, b)` | [`gm.distance(a, b)`][gometry.distance] | Same CRS rule. |
-| change the metric frame / units | [`geom.to_crs(target)`][gometry.Geometry.to_crs] | Reproject for a new frame; or `unit='planar'` / `unit='meters'` for unit overrides. |
-| `minimum_clearance(g)` | [`g.minimum_clearance()`][gometry.Geometry.minimum_clearance] | CRS-aware; `unit='planar'` for coordinate units. |
-| `hausdorff_distance` / `frechet_distance` | [`gm.hausdorff_distance(...)`][gometry.hausdorff_distance] / [`gm.frechet_distance(...)`][gometry.frechet_distance] | CRS-aware; `unit='planar'` forces coordinate units. |
+| `geom.area` | [`geom.area`][gometry.Geometry.area] / [`geoms.area`][gometry.GeometryArray.area] |
+| `geom.length` | [`geom.length`][gometry.Geometry.length] / [`geoms.length`][gometry.GeometryArray.length] |
+| `a.distance(b)` / `shapely.distance(a, b)` | [`gm.distance(a, b)`][gometry.distance] |
+| change the metric frame / units | [`geom.to_crs(target)`][gometry.Geometry.to_crs] / [`gm.area(geom, unit=…)`][gometry.area] |
+| `minimum_clearance(g)` | [`g.minimum_clearance()`][gometry.Geometry.minimum_clearance] |
+| `hausdorff_distance` / `frechet_distance` | [`gm.hausdorff_distance(...)`][gometry.hausdorff_distance] / [`gm.frechet_distance(...)`][gometry.frechet_distance] |
 
 ### Constructive operations
 
 | Shapely | gometry | Notes |
 |---|---|---|
 | `a.intersection(b)` / `shapely.intersection(a, b)` / `a & b` | [`gm.intersection(a, b)`][gometry.intersection] / `a & b` | |
-| `a.union(b)` / `shapely.union(a, b)` / <code>a \| b</code> | [`gm.union(a, b)`][gometry.union] / <code>a \| b</code> | Requires matching CRS and coordinate epoch. |
+| `a.union(b)` / `shapely.union(a, b)` / <code>a \| b</code> | [`gm.union(a, b)`][gometry.union] / <code>a \| b</code> | |
 | `a.difference(b)` / `shapely.difference(a, b)` / `a - b` | [`gm.difference(a, b)`][gometry.difference] / `a - b` | |
 | `a.symmetric_difference(b)` / `a ^ b` | [`gm.symmetric_difference(a, b)`][gometry.symmetric_difference] / `a ^ b` | |
 | `unary_union(geoms)` | [`gm.union_all(geoms)`][gometry.union_all] | Rejects conflicting CRS. |
 | `intersection_all(geoms)` | [`gm.intersection_all(geoms)`][gometry.intersection_all] | Common region of all inputs. |
 | `symmetric_difference_all(geoms)` | [`gm.symmetric_difference_all(geoms)`][gometry.symmetric_difference_all] | Region in an odd number of inputs. |
-| `geom.buffer(d)` / `shapely.buffer(geom, d)` | [`geom.buffer(d)`][gometry.Geometry.buffer] | Distance follows the CRS (geographic → meters; projected → native linear units). |
-| `geom.simplify(t)` / `shapely.simplify(geom, t)` | [`geom.simplify(t)`][gometry.Geometry.simplify] | Tolerance is coordinate units. |
-| `geom.offset_curve(d)` | [`geom.offset_curve(d)`][gometry.Geometry.offset_curve] | Distance follows the CRS. |
+| `geom.buffer(d)` / `shapely.buffer(geom, d)` | [`geom.buffer(d)`][gometry.Geometry.buffer] | |
+| `geom.simplify(t)` / `shapely.simplify(geom, t)` | [`geom.simplify(t)`][gometry.Geometry.simplify] | |
+| `geom.offset_curve(d)` | [`geom.offset_curve(d)`][gometry.Geometry.offset_curve] | |
 | `clip_by_rect(g, ...)` | `g.clip_by_rect(...)` | |
 | `geom.convex_hull` | [`geom.convex_hull()`][gometry.Geometry.convex_hull] | |
 | `concave_hull(g, ratio=...)` | [`geom.concave_hull(concavity=..., length_threshold=...)`][gometry.Geometry.concave_hull] | Different algorithm and knobs: `concavity` is an edge-length ratio, not Shapely's `ratio`. |
@@ -105,7 +108,7 @@ Conventions:
 | `line_merge(...)` | `(...).line_merge()` | |
 | `shared_paths(...)` | [`gm.shared_paths(...)`][gometry.shared_paths] | |
 | `snap(g, ref, tol)` | [`gm.snap(g, ref, tol)`][gometry.snap] | |
-| `segmentize(g, max_len)` | `g.segmentize(max_len)` | `max_length` follows the CRS metric (geographic metres, projected native units, CRS-free coordinate units); `fraction=` is unitless. |
+| `segmentize(g, max_len)` | `g.segmentize(max_len)` | |
 | `remove_repeated_points(...)` | `(...).remove_repeated_points()` | |
 | `minimum_rotated_rectangle(g)` | `g.minimum_rotated_rectangle()` | |
 | `geom.reverse()` / `shapely.reverse(geom)` | [`geom.reverse()`][gometry.Geometry.reverse] | |
@@ -155,8 +158,8 @@ Conventions:
 | Shapely | gometry | Notes |
 |---|---|---|
 | `STRtree(geoms)` | [`gm.SpatialIndex(geoms)`][gometry.SpatialIndex] | |
-| `tree.query(g)` | [`idx.candidates(g)`][gometry.SpatialIndex.candidates] | bbox candidates |
-| `tree.query(g, predicate=...)` | `idx.query(g, predicate=...)` | exact refine |
+| `tree.query(g)` | [`idx.candidates(g)`][gometry.SpatialIndex.candidates] | |
+| `tree.query(g, predicate=...)` | [`idx.query(g, predicate=...)`][gometry.SpatialIndex.query] | |
 | `tree.nearest(g)` | [`idx.nearest(g, unit=...)`][gometry.SpatialIndex.nearest] | |
 | `tree.query_nearest(g, exclusive=True)` | `idx.nearest(g, exclusive=True)` | skip self-matches |
 | `prepare(g)` + predicate | `gm.<predicate>(g.prepare(), geom)` or `idx.query(g, predicate=...)` | The prepared geometry may be either operand. |
@@ -166,11 +169,11 @@ Conventions:
 | pyproj | gometry | Notes |
 |---|---|---|
 | `CRS.from_epsg(4326)` | [`gm.CRS(4326)`][gometry.CRS] | CRS object; [`geom.crs`][gometry.Geometry.crs] returns one. |
-| `gdf.set_crs(c)` | [`geom.set_crs(c)`][gometry.Geometry.set_crs] | Declare meaning. |
-| `gdf.to_crs(c)` | [`geom.to_crs(c)`][gometry.Geometry.to_crs] | Transform coordinates. |
-| `Transformer.from_crs(a, b)` + `.transform(x, y)` | [`gm.crs_transform(a, b, x, y, z=..., t=...)`][gometry.crs_transform] | Stateless; always X/Y. Scalar inputs return a tuple; bulk inputs return one `(N, 2)` / `(N, 3)` NumPy matrix (`t` is input-only). |
-| `transformer.transform_bounds(...)` | [`gm.crs_transform_bounds(a, b, (xmin, ymin, xmax, ymax), densify=...)`][gometry.crs_transform_bounds] | |
-| `always_xy=True` | (default) | gometry is always X/Y. |
+| `gdf.set_crs(c)` | [`geom.set_crs(c)`][gometry.Geometry.set_crs] | |
+| `gdf.to_crs(c)` | [`geom.to_crs(c)`][gometry.Geometry.to_crs] | |
+| `Transformer.from_crs(a, b)` + `.transform(x, y)` | [`gm.crs_transform(a, b, x, y, z=..., t=...)`][gometry.crs_transform] | |
+| `transformer.transform_bounds(...)` | [`gm.crs_transform_bounds(...)`][gometry.crs_transform_bounds] | |
+| `always_xy=True` | gometry X/Y coordinates | |
 | `query_utm_crs_info(...)` | [`geom.estimate_local_crs()`][gometry.Geometry.estimate_local_crs] / `geoms.estimate_local_crs()` | Scalar and array receiver methods → `CRS`. |
 | polar/UPS selection | `geom.estimate_local_crs()` | |
 | `crs.is_geographic` / `is_projected` | [`gm.CRS(c).is_geographic`][gometry.CRS.is_geographic] / `.is_projected` | `is_*` property family. |
@@ -188,12 +191,9 @@ Conventions:
 
 ### Geodesy (`Geod`)
 
-On a **geographic** CRS the geometry metrics and point navigation free functions are
-geodesic, so there is no `Geod` object to construct.
-
 | pyproj `Geod` | gometry (geometry on a geographic CRS) | Notes |
 |---|---|---|
-| `g.inv(...)` distance | [`gm.distance(a, b)`][gometry.distance] | Ellipsoidal meters. |
+| `g.inv(...)` distance | [`gm.distance(a, b)`][gometry.distance] | |
 | `g.inv(...)` azimuth | [`gm.bearing(a, b)`][gometry.bearing] | |
 | `g.fwd(lon, lat, az, d)` | `point.destination(bearing, distance)` | |
 | `g.line_length(...)` | `line.length` | |
@@ -206,43 +206,43 @@ geodesic, so there is no `Geod` object to construct.
 
 | h3-py | gometry | Notes |
 |---|---|---|
-| `latlng_to_cell(lat, lng, r)` | [`gm.H3Cell(point, resolution=r)`][gometry.H3Cell] | Pass a `Point`; returns a typed `H3Cell`. |
-| `cell_to_boundary(h)` | [`cell.polygon`][gometry.Cell.polygon] / `cells.polygon` | Cell → polygon geometry; array form on [`CellArray`][gometry.CellArray]. |
-| `polygon_to_cells(poly, r)` / `polyfill` | [`gm.h3_cover(geom, resolution=r, cell_rule="center")`][gometry.h3_cover] | Returns a `CellArray`; default `"overlap"` gives complete-coverage superset keys. |
-| `compact_cells` / `uncompact_cells` | `cells.compact()` / `cells.uncompact(r)` | Hierarchy-aware `CellArray` operations. |
-| per-point exact membership | [`gm.covers(geom, points)`][gometry.covers] | Keep the source geometry and refine cell candidates explicitly. |
+| `latlng_to_cell(lat, lng, r)` | [`gm.H3Cell(point, resolution=r)`][gometry.H3Cell] | |
+| `cell_to_boundary(h)` | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
+| `polygon_to_cells(poly, r)` / `polyfill` | [`gm.h3_cover(geom, resolution=r, cell_rule="center")`][gometry.h3_cover] | |
+| `compact_cells` / `uncompact_cells` | `cells.compact()` / `cells.uncompact(r)` | |
+| per-point membership | [`gm.covers(geom, points)`][gometry.covers] | |
 
 ## s2sphere
 
 | s2sphere | gometry | Notes |
 |---|---|---|
-| `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | Typed `S2Cell` with `.level`. |
-| `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / `cells.polygon` | Cell → polygon geometry; array form on `CellArray`. |
+| `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | |
+| `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
 | `RegionCoverer().get_covering(region)` | [`gm.s2_cover(geom, level=..., max_cells=...)`][gometry.s2_cover] | |
-| `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | Hierarchy-aware cell-set algebra. |
-| `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | On `CellArray`. |
-| exact geometry predicate for a cell candidate | [`gm.covers(geometry, probe)`][gometry.covers] | Keep the source geometry and call the free predicate explicitly. |
+| `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | |
+| `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | |
+| geometry membership | [`gm.covers(geometry, probe)`][gometry.covers] | |
 
 ## rtree / STRtree / GeoPandas
 
 | Old | gometry | Notes |
 |---|---|---|
 | `rtree.index.Index()` + `insert(id, bbox)` | [`gm.SpatialIndex(geoms)`][gometry.SpatialIndex] | Geometry-aware, bulk-loaded. |
-| `list(idx.intersection(bbox))` | [`idx.candidates(geom)`][gometry.SpatialIndex.candidates] | bbox candidates |
-| candidates + manual refine | [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] | exact refine |
+| `list(idx.intersection(bbox))` | [`idx.candidates(geom)`][gometry.SpatialIndex.candidates] | |
+| candidates + manual refine | [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] | |
 | `idx.nearest(bbox, n)` | [`idx.nearest(geom, k=n, unit=...)`][gometry.SpatialIndex.nearest] | |
 | `STRtree(geoms)` | `gm.SpatialIndex(geoms)` | |
-| `geopandas.sjoin(a, b, predicate=...)` | [`gm.join(a, b, predicate=...)`][gometry.join] | Prefilter + refine; returns index pairs. |
+| `geopandas.sjoin(a, b, predicate=...)` | [`gm.join(a, b, predicate=...)`][gometry.join] | |
 
 ## python-geohash / pygeohash
 
 | Old | gometry | Notes |
 |---|---|---|
-| `geohash.encode(lat, lon, precision=p)` | [`gm.GeohashCell(lon, lat, precision=p).token`][gometry.GeohashCell] | Pass `Point`/array too; returns a typed `GeohashCell`. |
-| `geohash.decode(token)` | [`cell.center`][gometry.Cell.center] | Cell centroid as a `Point`. |
+| `geohash.encode(lat, lon, precision=p)` | [`gm.GeohashCell(lon, lat, precision=p).token`][gometry.GeohashCell] | |
+| `geohash.decode(token)` | [`cell.center`][gometry.Cell.center] | |
 | `geohash.bbox(token)` | [`cell.polygon.bounds`][gometry.Cell.polygon] | |
 | `geohash.neighbors(token)` | [`cell.neighbors`][gometry.Cell.neighbors] | 8-neighborhood, seam-wrapping. |
-| coverage of a polygon | [`gm.geohash_cover(geom, precision=p)`][gometry.geohash_cover] | Returns candidate `CellArray` keys; keep the source geometry and use free predicates ([`gm.covers`][gometry.covers] / [`gm.contains`][gometry.contains] / [`gm.intersects`][gometry.intersects]) for exact relations. |
+| coverage of a polygon | [`gm.geohash_cover(geom, precision=p)`][gometry.geohash_cover] | |
 
 ## mercantile
 
@@ -253,7 +253,7 @@ geodesic, so there is no `Geod` object to construct.
 | `mercantile.quadkey_to_tile(qk)` | `gm.Tile(qk)` | |
 | `mercantile.bounds(tile)` | `tile.polygon.bounds` | Tile footprint bounds. |
 | `mercantile.parent/children(tile)` | `tile.parent()` / `tile.children()` | |
-| `mercantile.tiles(*bbox, zooms)` | [`gm.tile_cover(geom, zoom=z)`][gometry.tile_cover] | Cell set exact w.r.t. the selected factory rule; refine candidates against the source geometry. |
+| `mercantile.tiles(*bbox, zooms)` | [`gm.tile_cover(geom, zoom=z)`][gometry.tile_cover] | |
 
 ## polyline / openlocationcode / OSM shortlink
 
@@ -272,21 +272,3 @@ geodesic, so there is no `Geod` object to construct.
 |---|---|---|
 | `DBSCAN(...).fit(coords)` / k-means / hierarchical clustering | feed [`gm.get_coordinates`][gometry.get_coordinates] (or `.coords.x`/`.y`) to scikit-learn / scipy | gometry stays a geometry engine; cluster in coordinate space via NumPy handoff. |
 | scattered-data interpolation (IDW, kriging, …) | scipy / scikit-gstat over `gm.get_coordinates` | Project to a suitable CRS first when planar XY is wrong. |
-
-## No-alias policy
-
-These names are **not** registered in the public API. Use the canonical
-spelling:
-
-| You typed | Use instead |
-|---|---|
-| `make_valid` | `g.repair()` |
-| `STRtree` / `Rtree` | [`gm.SpatialIndex`][gometry.SpatialIndex] |
-| `polyfill` | [`gm.h3_cover(geom, ...)`][gometry.h3_cover] |
-| `Geod` | [`gm.bearing`][gometry.bearing] / `point.destination` (geographic CRS) / [`gm.CRS(c).geodesic_inverse`][gometry.CRS.geodesic_inverse], [`geodesic_direct`][gometry.CRS.geodesic_direct], [`geodesic_interpolate`][gometry.CRS.geodesic_interpolate] |
-| `Transformer` | [`geom.to_crs`][gometry.Geometry.to_crs] / [`gm.crs_transform`][gometry.crs_transform] |
-| `sjoin` | [`gm.join`][gometry.join] |
-| `unary_union` | [`gm.union_all`][gometry.union_all] |
-| `polyfill` (tiles/geohash) | [`gm.tile_cover(geom, ...)`][gometry.tile_cover] / [`gm.geohash_cover(geom, ...)`][gometry.geohash_cover] |
-
-These naming choices are defined on the [design page](../about/design.md).

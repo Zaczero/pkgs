@@ -18,17 +18,22 @@
 <p align="center">
   <a href="https://gometry.monicz.dev/">Documentation</a> ·
   <a href="https://gometry.monicz.dev/get-started/quickstart/">Quickstart</a> ·
+  <a href="https://gometry.monicz.dev/guide/">User guide</a> ·
   <a href="https://gometry.monicz.dev/api/">API reference</a> ·
   <a href="https://gometry.monicz.dev/migrating/">Migrating</a>
 </p>
 
 ---
 
-- **One package instead of six** — Shapely, pyproj, h3-py, s2sphere, rtree,
-  mercantile, and pygeohash, with no GEOS, no GDAL, and no system PROJ
+- **One package for a specialist stack** — geometry, CRS transforms, H3/S2,
+  geohash/tile keys, and spatial indexing, with no GEOS, no GDAL, and no system
+  PROJ
 - **The CRS decides the measure** — geodesic metres on a geographic CRS, native
   linear units on a projected one, raw coordinate units without one. See the
   [CRS, units & measurement guide](https://gometry.monicz.dev/guide/crs/)
+- **Geographic coordinates keep native angular units** — degrees, radians, grads,
+  and their CRS-defined periodic seam, pole, and prime meridian are respected;
+  geodesic kernels normalize them only at the metric boundary
 - **Vectorized in Rust** — predicates, overlays, buffering, geodesics, and
   coverage run as batched kernels over packed buffers and return NumPy arrays.
   The same names work on a `Geometry` or on a Rust-owned `GeometryArray`
@@ -48,30 +53,32 @@
 
 One `area` call, two answers: the geometry carries `crs=4326`, so it measures in
 geodesic **square metres**, and `unit='planar'` drops to raw coordinate units.
+Likewise, `buffer(500)` on a geographic CRS treats `500` as metres through its
+metric behavior.
 
 ```python
 import gometry as gm
+
 city = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 station = gm.Point(2.35, 48.85, crs=4326)
-print(gm.contains(city, station))                         # True
-print(f"{city.area / 1_000_000.0:.1f} km^2")              # 8217.6 km^2
-print(f"{gm.area(city, unit='planar'):.4f} degree^2")     # 1.0000 degree^2
-
+print(gm.contains(city, station))  # True
+print(f'{city.area / 1_000_000.0:.1f} km²')  # 8217.6 km²
+print(f'{gm.area(city, unit="planar"):.4f} degree²')  # 1.0000 degree²
 ```
 
 Arrays return NumPy ndarrays instead of Python-object lists:
 
 ```python
 import gometry as gm
-area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-points = gm.points([2.35, 30.0], [48.85, 52.0], crs=4326)
-mask = gm.contains(area, points)
-print(type(mask).__name__, mask.tolist())                  # ndarray [True, False]
-bounds = points.bounds
-print(type(bounds).__name__, bounds.shape, bounds.dtype)   # ndarray (2, 4) float64
-cover = gm.s2_cover(area, level=10, max_cells=None)
-print(len(cover), gm.covers(area, points).tolist())         # 160 [True, False]
 
+area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
+mask = gm.contains(area, points)
+print(type(mask).__name__, mask.tolist())  # ndarray [True, False]
+bounds = points.bounds
+print(type(bounds).__name__, bounds.shape, bounds.dtype)  # ndarray (2, 4) float64
+cover = gm.s2_cover(area, level=10, max_cells=None)
+print(cover.grid, gm.covers(area, points).tolist())  # s2 [True, False]
 ```
 
 ## Install
@@ -115,8 +122,8 @@ mappings.
 gometry is a good choice when:
 
 - you work with CRS-aware geometry and want the metric to follow the data
-- you want one dependency rather than a stack of six, with no GEOS, GDAL, or
-  system PROJ to install
+- you want one dependency instead of several specialist packages, with no GEOS,
+  GDAL, or system PROJ to install
 - you process geometry in bulk and want packed arrays instead of Python-object
   loops
 - you need H3, S2, geohash, or tile covers alongside ordinary geometry, and

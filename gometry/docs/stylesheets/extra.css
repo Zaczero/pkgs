@@ -9,6 +9,19 @@
   --gometry-invalid: #ef4444;
   --md-text-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --md-code-font: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  --gometry-lattice-line: rgba(15, 118, 110, 0.035);
+}
+
+[data-md-color-scheme="slate"] {
+  --gometry-lattice-line: rgba(45, 212, 191, 0.025);
+}
+
+.md-main {
+  background-image:
+    linear-gradient(to right, var(--gometry-lattice-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--gometry-lattice-line) 1px, transparent 1px);
+  background-position: 50% 0;
+  background-size: 64px 64px;
 }
 
 .md-typeset h1,
@@ -145,19 +158,18 @@
   margin: 0.25rem;
 }
 
-/* Inline geometry SVG figures emitted by the _repr_svg_ examples. Keep them
-   readable on both schemes: a light card so the green/red strokes never sit on
-   a clashing background, and a sane max size in the content column. */
-.md-typeset .gometry-figure svg,
+/* Figure surface. The drawing carries its own intrinsic size, so it scales down
+   with the column instead of being capped at a fixed pixel width. The surface
+   is a tint of the page's own foreground rather than a white card, so it stays
+   a quiet panel on both schemes. */
+.md-typeset .gometry-canvas,
 .md-typeset svg.gometry-geom {
   display: block;
-  margin: 0.6rem auto;
-  max-width: 320px;
+  margin: 0.4rem auto;
+  max-width: 100%;
   height: auto;
-  background: #ffffff;
-  border: 1px solid var(--md-default-fg-color--lightest);
+  background: color-mix(in srgb, var(--md-default-fg-color) 3.5%, transparent);
   border-radius: 6px;
-  padding: 0.4rem;
 }
 
 /* Pygments paints bare numbers (addresses, EPSG codes) as error-red in shell/
@@ -166,19 +178,201 @@
   color: inherit;
 }
 
-/* Captioned geometry panels (the shared _figures helper). One consistent layout
-   for every figure across the guide pages. */
+/* Captioned geometry figures (the shared _figures helper). One consistent
+   layout for every visual across the guide pages. */
 .md-typeset .gometry-figure {
-  margin: 0.8rem 0;
+  width: 100%;
+  max-width: 32rem;
+  margin: 0.9rem auto;
 }
 .md-typeset .gometry-figure figcaption {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   text-align: center;
   color: var(--md-default-fg-color--light);
   margin-bottom: 0.2rem;
 }
+/* A grid, not a flex row: a comparison is only readable when every panel is the
+   same size, and a flex line that wraps stretches its last panel wider than the
+   ones it is meant to be compared against. Grid tracks stay uniform whether or
+   not the final row is full. */
 .md-typeset .gometry-panels {
-  margin: 0.8rem 0;
+  margin: 0.9rem 0;
+}
+.md-typeset .gometry-panels__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 1rem 1.5rem;
+  align-items: start;
+}
+.md-typeset .gometry-panels__row > .gometry-figure {
+  max-width: none;
+  margin: 0;
+}
+.md-typeset .gometry-panels > .gometry-legend {
+  margin: 0.35rem 0 0;
+}
+.md-typeset .gometry-panels__caption {
+  margin: 0.35rem 0 0;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* Homepage intent index: one continuous map of destinations, not a set of
+   containers with partial click targets. */
+.md-typeset .docs-map {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1rem 0 2rem;
+  border-block: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .docs-map a {
+  display: grid;
+  gap: 0.18rem;
+  padding: 1.05rem 0.85rem;
+  color: var(--md-default-fg-color);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .docs-map a:nth-child(odd) {
+  border-right: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset .docs-map a:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+.md-typeset .docs-map a:hover {
+  background: color-mix(in srgb, var(--md-typeset-a-color) 5%, transparent);
+}
+.md-typeset .docs-map strong {
+  color: var(--md-typeset-a-color);
+  font-size: 0.72rem;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+.md-typeset .docs-map span {
+  font-weight: 650;
+}
+.md-typeset .docs-map small {
+  color: var(--md-default-fg-color--light);
+  line-height: 1.4;
+}
+
+/* Figure roles. Each role owns one ink; its outline and its fill tint derive
+   from that single value. A legend swatch is itself a `.gometry-role` drawing,
+   so a key is painted by these same rules and cannot drift from the figure it
+   is read against. Shape carries the role as well as colour: a query is
+   dashed, a candidate finely dashed, an excluded row dotted. */
+.gometry-role {
+  --gometry-fill: color-mix(in srgb, var(--gometry-ink) 16%, transparent);
+}
+.gometry-role--source {
+  --gometry-ink: #6d28d9;
+}
+.gometry-role--query {
+  --gometry-ink: #1d4ed8;
+}
+.gometry-role--candidate {
+  --gometry-ink: #b45309;
+}
+.gometry-role--result {
+  --gometry-ink: #047857;
+}
+.gometry-role--excluded {
+  --gometry-ink: #64748b;
+}
+.gometry-role--anchor {
+  --gometry-ink: var(--md-default-fg-color);
+}
+/* Dark scheme: lift each ink so it reads against a dark surface, and carry a
+   little more fill, since a tint over dark shows less than the same tint over
+   light. */
+[data-md-color-scheme="slate"] .gometry-role {
+  --gometry-fill: color-mix(in srgb, var(--gometry-ink) 22%, transparent);
+}
+[data-md-color-scheme="slate"] .gometry-role--source {
+  --gometry-ink: #c4b5fd;
+}
+[data-md-color-scheme="slate"] .gometry-role--query {
+  --gometry-ink: #93c5fd;
+}
+[data-md-color-scheme="slate"] .gometry-role--candidate {
+  --gometry-ink: #fcd34d;
+}
+[data-md-color-scheme="slate"] .gometry-role--result {
+  --gometry-ink: #6ee7b7;
+}
+[data-md-color-scheme="slate"] .gometry-role--excluded {
+  --gometry-ink: #94a3b8;
+}
+
+.gometry-role {
+  vector-effect: non-scaling-stroke;
+  stroke: var(--gometry-ink);
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  fill: var(--gometry-fill);
+}
+.gometry-line {
+  fill: none;
+}
+.gometry-mark {
+  fill: var(--gometry-ink);
+  stroke: none;
+}
+.gometry-role--query {
+  stroke-dasharray: 9 5;
+}
+.gometry-role--candidate {
+  stroke-width: 1.25px;
+  stroke-dasharray: 5 4;
+}
+.gometry-role--result {
+  stroke-width: 2px;
+}
+.gometry-role--excluded {
+  stroke-dasharray: 1 4;
+}
+.gometry-role--anchor {
+  stroke-width: 2px;
+}
+
+/* Inline-flex items so the roles flow and wrap like a caption line rather than
+   stacking one per row. */
+.md-typeset .gometry-legend {
+  display: block;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color--light);
+}
+.md-typeset .gometry-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0 0.5rem 0.15rem;
+}
+/* The swatch is a drawing carrying its own intrinsic size, painted by the role
+   rules above. Nothing about the encoding is restated here, so no key can end
+   up heavier or differently dashed than the figure it is read against. */
+.md-typeset .gometry-key {
+  flex: 0 0 auto;
+}
+
+@media (forced-colors: active) {
+  .md-main { background-image: none; }
+  .md-typeset .docs-map a:hover { background: transparent; }
+  /* Outlines only: a system-color fill would paint each role as one opaque
+     block and hide every overlap the figure exists to show. Dash pattern and
+     the legend text carry the roles here. */
+  .md-typeset .gometry-canvas,
+  .md-typeset svg.gometry-geom { background: Canvas; }
+  .gometry-role { fill: none; stroke: CanvasText; }
+  .gometry-mark { fill: CanvasText; }
+  /* Without its fill, a result separates from its input by weight alone. */
+  .gometry-role--source { stroke-width: 1px; }
+  .gometry-role--result { stroke-width: 3px; }
 }
 
 /* A visible keyboard-focus ring everywhere interactive (WCAG 2.2 AA). */
@@ -192,6 +386,13 @@
   outline: 2px solid var(--md-accent-fg-color);
   outline-offset: 2px;
   border-radius: 3px;
+}
+
+/* Tabs sit on teal, so the page's accent ring is not reliably visible there. */
+@media screen and (min-width: 60em) {
+  .md-tabs__link:focus-visible {
+    outline-color: #ffffff;
+  }
 }
 
 /* API signatures: show the practical call immediately and keep static-typing
@@ -232,12 +433,36 @@
     margin-inline: -0.2rem;
   }
 
+  .md-typeset .docs-map {
+    grid-template-columns: 1fr;
+  }
+  .md-typeset .docs-map a,
+  .md-typeset .docs-map a:nth-child(odd),
+  .md-typeset .docs-map a:nth-last-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  }
+  .md-typeset .docs-map a:last-child {
+    border-bottom: 0;
+  }
+
 }
 
 @media print {
+  .md-main { background-image: none; }
+  .md-typeset .highlight {
+    break-inside: avoid-page;
+  }
+
   .doc-overloads-details:not([open]) > .doc-overloads {
     display: grid;
   }
+
+  /* Ink on paper: the dash patterns and the legend keep the roles apart. */
+  .gometry-role { stroke: #000; fill: rgba(0, 0, 0, 0.12); }
+  .gometry-line { fill: none; }
+  .gometry-mark { fill: #000; }
+  .md-typeset .gometry-canvas { background: transparent; }
 }
 
 /* Benchmark evidence stays readable at narrow widths without hiding columns.
