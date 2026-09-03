@@ -91,7 +91,7 @@ pub(super) fn geographic_to_polar_stereo_unframed(
     };
 
     if phi <= -std::f64::consts::FRAC_PI_2 {
-        return Err(GeometryErrorKind::projection(
+        return Err(GeometryErrorKind::projection_domain(
             "coordinate is outside the polar stereographic domain",
         ));
     }
@@ -140,7 +140,9 @@ pub(super) fn polar_stereo_to_geographic_unframed(
         std::f64::consts::FRAC_PI_2
     } else {
         phi2(rho / setup.akm1, setup.e).ok_or_else(|| {
-            GeometryErrorKind::projection("coordinate is outside the polar stereographic domain")
+            GeometryErrorKind::projection_domain(
+                "coordinate is outside the polar stereographic domain",
+            )
         })?
     };
 

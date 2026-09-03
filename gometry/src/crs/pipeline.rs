@@ -16,6 +16,16 @@ use crate::crs::{
 };
 use crate::error::Result;
 
+/// Preserve PROJ's structured coordinate-domain errno while retaining its
+/// existing rendered error message for every other transform failure.
+fn map_proj_transform_error(error: i32) -> crate::error::Error {
+    if error == proj_sys::PROJ_ERR_COORD_TRANSFM_OUTSIDE_PROJECTION_DOMAIN as i32 {
+        GeometryErrorKind::projection_domain(proj_transform_error(error))
+    } else {
+        GeometryErrorKind::projection(proj_transform_error(error))
+    }
+}
+
 impl ProjPipeline {
     pub(crate) fn new_with_state(
         source: &str,
@@ -254,7 +264,7 @@ impl ProjPipeline {
                 Ok(())
             } else {
                 let error = proj_sys::proj_errno(transform);
-                Err(GeometryErrorKind::projection(proj_transform_error(error)))
+                Err(map_proj_transform_error(error))
             };
             if let Some(message) = self.context.take_diagnostic() {
                 execution.record_diagnostic(message);
@@ -292,7 +302,7 @@ impl ProjPipeline {
                 if let Some(message) = self.context.take_diagnostic() {
                     execution.record_diagnostic(message);
                 }
-                return Err(GeometryErrorKind::projection(proj_transform_error(error)));
+                return Err(map_proj_transform_error(error));
             }
         }
         if let Some(message) = self.context.take_diagnostic() {

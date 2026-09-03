@@ -235,7 +235,7 @@ pub(super) fn geographic_to_tmerc_unframed(
     let cn = cn + d_cn;
     let ce = ce + d_ce;
     if ce.abs() > ETMERC_DOMAIN {
-        return Err(GeometryErrorKind::projection(
+        return Err(GeometryErrorKind::projection_domain(
             "coordinate is outside the transverse Mercator domain (more than 150 degrees from \
              the central meridian)",
         ));
@@ -256,7 +256,7 @@ pub(super) fn tmerc_to_geographic_unframed(
     let cn = (northing - setup.y_origin) * setup.inv_a_qn;
     let ce = easting * setup.inv_a_qn;
     if ce.abs() > ETMERC_DOMAIN {
-        return Err(GeometryErrorKind::projection(
+        return Err(GeometryErrorKind::projection_domain(
             "coordinate is outside the transverse Mercator domain (more than 150 degrees from \
              the central meridian)",
         ));

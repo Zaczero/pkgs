@@ -110,7 +110,7 @@ pub(super) fn geographic_to_lcc_unframed(
 
     let rho = if (phi.abs() - std::f64::consts::FRAC_PI_2).abs() < EPS10 {
         if phi * setup.n <= 0.0 {
-            return Err(GeometryErrorKind::projection(
+            return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Lambert Conformal Conic domain",
             ));
         }
@@ -147,7 +147,7 @@ pub(super) fn lcc_to_geographic_unframed(
             y = -y;
         }
         let phi = phi2((rho / setup.f).powf(setup.inv_n), setup.e).ok_or_else(|| {
-            GeometryErrorKind::projection(
+            GeometryErrorKind::projection_domain(
                 "coordinate is outside the Lambert Conformal Conic domain",
             )
         })?;

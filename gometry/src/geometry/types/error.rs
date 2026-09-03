@@ -38,6 +38,8 @@ pub enum GeometryErrorKind {
     WebMercatorLatitude(f64),
     #[error("projection failed: {0}")]
     Projection(Box<str>),
+    #[error("projection failed: {0}")]
+    ProjectionDomain(Box<str>),
     #[error("polygon rings require at least three coordinates, got {0}")]
     RingTooShort(usize),
     #[error("clip rectangle bounds must be finite and ordered min <= max")]
@@ -142,6 +144,14 @@ impl GeometryErrorKind {
     )]
     pub fn projection(message: impl Into<Box<str>>) -> CrateError {
         Self::Projection(message.into()).into()
+    }
+
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
+    pub fn projection_domain(message: impl Into<Box<str>>) -> CrateError {
+        Self::ProjectionDomain(message.into()).into()
     }
 
     #[expect(

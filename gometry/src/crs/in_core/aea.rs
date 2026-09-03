@@ -156,7 +156,7 @@ impl ProjectionKernel for Aea {
         // instead of imposing an arbitrary canonical seam side.
         let r = s.c - s.n * s.auth.q(phi.sin());
         if r < 0.0 {
-            return Err(GeometryErrorKind::projection(
+            return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Albers Equal Area domain",
             ));
         }
@@ -192,7 +192,7 @@ impl ProjectionKernel for Aea {
         let qs = (s.c - (rho / s.dd).powi(2)) / s.n;
         let phi = if (s.auth.qp - qs.abs()).abs() > 1e-7 {
             if qs.abs() > s.auth.qp {
-                return Err(GeometryErrorKind::projection(
+                return Err(GeometryErrorKind::projection_domain(
                     "coordinate is outside the Albers Equal Area domain",
                 ));
             }

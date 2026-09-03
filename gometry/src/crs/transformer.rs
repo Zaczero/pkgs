@@ -513,13 +513,12 @@ impl TransformPlan {
 }
 
 fn in_core_pole_domain_miss(error: &crate::error::Error) -> bool {
-    match error.kind() {
-        ErrorKind::Geometry(GeometryErrorKind::WebMercatorLatitude(_)) => true,
-        ErrorKind::Geometry(GeometryErrorKind::Projection(message)) => {
-            message.starts_with("coordinate is outside ")
-        },
-        _ => false,
-    }
+    matches!(
+        error.kind(),
+        ErrorKind::Geometry(
+            GeometryErrorKind::WebMercatorLatitude(_) | GeometryErrorKind::ProjectionDomain(_),
+        )
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -601,5 +600,16 @@ mod tests {
                 .entries,
             0
         );
+    }
+
+    #[test]
+    fn pole_domain_classifier_uses_typed_projection_domain() {
+        let message = "coordinate is outside the projection domain";
+        let domain = GeometryErrorKind::projection_domain(message);
+        let generic = GeometryErrorKind::projection(message);
+
+        assert_eq!(domain.to_string(), format!("projection failed: {message}"));
+        assert!(in_core_pole_domain_miss(&domain));
+        assert!(!in_core_pole_domain_miss(&generic));
     }
 }

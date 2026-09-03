@@ -125,7 +125,7 @@ impl ProjectionKernel for Laea {
         // coordinate. Reject that single point consistently in every aspect;
         // adjacent representable coordinates remain valid.
         if phi == -s.lat_0 && l.abs() == std::f64::consts::PI {
-            return Err(GeometryErrorKind::projection(
+            return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Lambert Azimuthal Equal Area domain",
             ));
         }
@@ -139,7 +139,7 @@ impl ProjectionKernel for Laea {
                 let d = 0.5
                     * ((s.cos_b1 + cb * cl).powi(2) + (cb * sl).powi(2) + (s.sin_b1 + sb).powi(2));
                 if d == 0.0 {
-                    return Err(GeometryErrorKind::projection(
+                    return Err(GeometryErrorKind::projection_domain(
                         "coordinate is outside the Lambert Azimuthal Equal Area domain",
                     ));
                 }
@@ -152,7 +152,7 @@ impl ProjectionKernel for Laea {
             Mode::Equatorial => {
                 let d = 0.5 * ((1.0 + cb * cl).powi(2) + (cb * sl).powi(2) + sb.powi(2));
                 if d == 0.0 {
-                    return Err(GeometryErrorKind::projection(
+                    return Err(GeometryErrorKind::projection_domain(
                         "coordinate is outside the Lambert Azimuthal Equal Area domain",
                     ));
                 }
@@ -166,7 +166,7 @@ impl ProjectionKernel for Laea {
                     phi - std::f64::consts::FRAC_PI_2
                 };
                 if at_antipode == 0.0 {
-                    return Err(GeometryErrorKind::projection(
+                    return Err(GeometryErrorKind::projection_domain(
                         "coordinate is outside the Lambert Azimuthal Equal Area domain",
                     ));
                 }
@@ -193,7 +193,7 @@ impl ProjectionKernel for Laea {
                 }
                 let arg = 0.5 * rho / s.rq;
                 if arg > 1.0 {
-                    return Err(GeometryErrorKind::projection(
+                    return Err(GeometryErrorKind::projection_domain(
                         "coordinate is outside the Lambert Azimuthal Equal Area domain",
                     ));
                 }
@@ -227,7 +227,7 @@ impl ProjectionKernel for Laea {
             },
         };
         if ab.abs() > 1.0 + 1e-12 {
-            return Err(GeometryErrorKind::projection(
+            return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Lambert Azimuthal Equal Area domain",
             ));
         }

@@ -261,9 +261,11 @@ fn validate_geographic_coordinate(lon_deg: f64, lat_deg: f64) -> Result<()> {
     // unbounded: PROJ normalizes every finite longitude around the central
     // meridian, while latitude has a closed physical domain.
     if lat_deg.abs() > 90.0 {
-        return Err(crate::geometry::GeometryErrorKind::projection(format!(
-            "latitude {lat_deg:e} is outside the geographic coordinate domain required by Web Mercator and other projections"
-        )));
+        return Err(crate::geometry::GeometryErrorKind::projection_domain(
+            format!(
+                "latitude {lat_deg:e} is outside the geographic coordinate domain required by Web Mercator and other projections"
+            ),
+        ));
     }
     Ok(())
 }

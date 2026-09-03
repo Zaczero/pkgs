@@ -129,7 +129,7 @@ impl ProjectionKernel for Sterea {
         let (si, co) = chi.sin_cos();
         let denom = 1.0 + s.sin_chi0 * si + s.cos_chi0 * co * l.cos();
         if denom == 0.0 {
-            return Err(GeometryErrorKind::projection(
+            return Err(GeometryErrorKind::projection_domain(
                 "coordinate is outside the Oblique Stereographic domain",
             ));
         }
@@ -173,7 +173,7 @@ impl ProjectionKernel for Sterea {
             }
             phi = next;
         }
-        Err(GeometryErrorKind::projection(
+        Err(GeometryErrorKind::projection_domain(
             "coordinate is outside the Oblique Stereographic domain",
         ))
     }
