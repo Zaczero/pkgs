@@ -85,6 +85,32 @@ impl RingDecisionArea {
     pub(crate) const fn magnitude(self) -> AreaMeasure {
         self.magnitude
     }
+}
+
+/// Face-walk classification stores a magnitude only for consumers that keep
+/// the walk itself. Winding-only consumers need the exact sign, but never use
+/// the magnitude to seed a component's exterior face.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FaceDecisionArea {
+    Sign(AreaSign),
+    Exact(RingDecisionArea),
+}
+
+impl FaceDecisionArea {
+    pub(crate) const fn sign(self) -> AreaSign {
+        match self {
+            Self::Sign(sign) => sign,
+            Self::Exact(area) => area.sign(),
+        }
+    }
+
+    pub(crate) const fn sign_only(sign: AreaSign) -> Self {
+        Self::Sign(sign)
+    }
+
+    pub(crate) const fn exact(area: RingDecisionArea) -> Self {
+        Self::Exact(area)
+    }
 
     /// True when `self` is a better outer-face candidate than `other`.
     pub(crate) fn prefers_as_outer_face_than(self, other: Self) -> bool {
@@ -97,8 +123,13 @@ impl RingDecisionArea {
         }
         match (self_sign, other_sign) {
             (AreaSign::Zero, AreaSign::Positive) => true,
-            (AreaSign::Positive, AreaSign::Positive) => {
-                self.magnitude().abs_cmp(other.magnitude()).is_lt()
+            (AreaSign::Positive, AreaSign::Positive) => match (self, other) {
+                (Self::Exact(left), Self::Exact(right)) => {
+                    left.magnitude().abs_cmp(right.magnitude()).is_lt()
+                },
+                // A nondegenerate component has a negative outer walk. If
+                // every walk is nonnegative, all of its enclosed area is zero.
+                _ => false,
             },
             _ => false,
         }
@@ -915,7 +946,11 @@ pub(crate) fn closed_columns_winding(xs: &[f64], ys: &[f64], pairs: usize) -> Ri
 }
 
 pub(crate) fn open_xy_cycle_winding(points: &[XY]) -> RingWinding {
-    area_sign_to_winding(exact_open_xy_sign(points))
+    area_sign_to_winding(open_xy_cycle_sign(points))
+}
+
+pub(crate) fn open_xy_cycle_sign(points: &[XY]) -> AreaSign {
+    exact_open_xy_sign(points)
 }
 
 pub(crate) fn open_point_cycle_winding(points: &[Point]) -> RingWinding {

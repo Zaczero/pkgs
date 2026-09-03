@@ -1,4 +1,4 @@
-use crate::geometry::{HashMap, PointKey, RingDecisionArea, XY};
+use crate::geometry::{FaceDecisionArea, HashMap, PointKey, XY};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
@@ -56,14 +56,14 @@ impl WindingWeight for [i32; 2] {
 }
 
 /// One face of the arrangement: its boundary ring (closed, first point
-/// repeated), exact signed-area decision (orientation + magnitude for
-/// outer-face seeding), and component id.
+/// repeated), exact face decision (sign-only for winding consumers, signed-area
+/// magnitude when rings are retained), and component id.
 pub(crate) struct Face {
     /// Materialized only by [`Arrangement::new_with_rings`] — empty under
     /// every other constructor (winding consumers walk boundaries through
     /// [`Arrangement::region_rings`] instead).
     pub ring: Vec<XY>,
-    pub decision_area: RingDecisionArea,
+    pub decision_area: FaceDecisionArea,
     pub component: u32,
 }
 

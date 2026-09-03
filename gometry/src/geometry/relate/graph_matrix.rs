@@ -1319,6 +1319,16 @@ mod tests {
                 Shape::Polygon(rectangle(1.0, -1.0, 3.0, 1.0)),
             ),
             (
+                "exact sign near cancellation",
+                Shape::Polygon(polygon(&[
+                    [0.0, 0.0],
+                    [1.0, 1.0 + 2.0_f64.powi(-27)],
+                    [1.0 - 2.0_f64.powi(-27), 1.0],
+                    [0.0, 0.0],
+                ])),
+                Shape::Polygon(rectangle(3.0, 0.0, 4.0, 1.0)),
+            ),
+            (
                 "huge finite",
                 Shape::Polygon(rectangle(1e150, 1e150, 2e150, 2e150)),
                 Shape::Polygon(rectangle(1.5e150, 1.5e150, 2.5e150, 2.5e150)),

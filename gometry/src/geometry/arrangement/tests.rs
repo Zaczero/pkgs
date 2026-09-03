@@ -46,9 +46,9 @@ fn assert_bit_parity(fast: &mut Arrangement<i32>, slow: &mut Arrangement<i32>) {
         assert_eq!(bits(&left.ring), bits(&right.ring), "face ring diverges");
         assert_eq!(left.decision_area.sign(), right.decision_area.sign());
         assert_eq!(
-            left.decision_area.magnitude().get().to_bits(),
-            right.decision_area.magnitude().get().to_bits(),
-            "face area diverges"
+            matches!(left.decision_area, FaceDecisionArea::Exact(_)),
+            matches!(right.decision_area, FaceDecisionArea::Exact(_)),
+            "face area availability diverges"
         );
         assert_eq!(left.component, right.component);
     }
@@ -255,6 +255,32 @@ fn positional_fan_order_survives_opposite_finite_extremes() {
     ));
     assert_eq!(targets[..4], [1, 2, 4, 3]);
     assert_eq!(multiplicities[..4], [1, 2, 4, 3]);
+}
+
+#[test]
+fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
+    let e = 2.0_f64.powi(-27);
+    let segments = loop_segments(&[(0.0, 0.0), (1.0, 1.0 + e), (1.0 - e, 1.0)]);
+    assert!(segments.iter().all(|segment| {
+        segment.start.x * segment.end.y - segment.end.x * segment.start.y == 0.0
+    }));
+    let mut winding = Arrangement::new(&segments);
+    assert!(
+        winding
+            .faces
+            .iter()
+            .all(|face| matches!(face.decision_area, FaceDecisionArea::Sign(_)))
+    );
+    assert!(winding.faces.iter().any(|face| matches!(
+        face.decision_area,
+        FaceDecisionArea::Sign(AreaSign::Positive)
+    )));
+
+    let mut rings = Arrangement::new_with_rings(&segments);
+    assert!(rings.faces.iter().all(|face| {
+        matches!(face.decision_area, FaceDecisionArea::Exact(area) if area.magnitude().get() > 0.0)
+    }));
+    assert_eq!(winding.face_windings(&[0]), rings.face_windings(&[0]));
 }
 
 #[test]

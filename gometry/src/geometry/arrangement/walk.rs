@@ -6,8 +6,8 @@ use std::cmp::Ordering;
 
 use crate::geometry::arrangement::{Face, WindingWeight};
 use crate::geometry::{
-    HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_decision, orientation, same_point,
-    wrap_index,
+    FaceDecisionArea, HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_decision,
+    open_xy_cycle_sign, orientation, same_point, wrap_index,
 };
 
 pub(crate) fn split_ring_at_pinches(
@@ -48,9 +48,9 @@ pub(crate) fn split_ring_at_pinches(
 /// Face walks over the CSR adjacency: the successor of arriving `u -> v`
 /// departs `v` along the neighbor immediately clockwise of the reversal
 /// `v -> u`. Every directed half-edge lands on exactly one face. `RINGS`
-/// gates ring materialization: the winding consumers read only areas and
-/// the face CSR (boundaries come from [`Arrangement::region_rings`]), so
-/// their walks skip the per-face ring allocation entirely.
+/// gates ring and exact-magnitude materialization: winding consumers read only
+/// exact signs and the face CSR (boundaries come from
+/// [`Arrangement::region_rings`]), so their walks skip both costs.
 pub(crate) fn walk_faces<const RINGS: bool>(
     points: &[XY],
     starts: &[u32],
@@ -65,7 +65,7 @@ pub(crate) fn walk_faces<const RINGS: bool>(
     face_of.clear();
     face_of.resize(targets.len(), u32::MAX);
     let mut faces: Vec<Face> = Vec::new();
-    // One cycle scratch for the decision-area walk when rings are not kept
+    // One cycle scratch for sign classification when rings are not kept
     // (`RINGS=false`); for `RINGS=true` each completed cycle is moved into the
     // face and the next face reuses a fresh buffer (no free-list needed —
     // faces own their rings for the arrangement lifetime).
@@ -98,7 +98,11 @@ pub(crate) fn walk_faces<const RINGS: bool>(
                 break;
             }
         }
-        let decision_area = open_xy_cycle_decision(&cycle);
+        let decision_area = if RINGS {
+            FaceDecisionArea::exact(open_xy_cycle_decision(&cycle))
+        } else {
+            FaceDecisionArea::sign_only(open_xy_cycle_sign(&cycle))
+        };
         faces.push(Face {
             ring: if RINGS {
                 cycle
