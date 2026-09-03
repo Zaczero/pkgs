@@ -31,16 +31,27 @@ pub(crate) fn sqrt_distance_squared(squared: f64) -> f64 {
     }
 }
 
-/// Loose 1-Lipschitz upper bound for the shape-level directed sweep (non-column
-/// path). Column kernels use [`hausdorff_segment_tight_upper_bound_squared`].
+/// The 1-Lipschitz envelope maximum over a source segment, for the shape-level
+/// directed sweep. Distance to the target is 1-Lipschitz along the segment, so
+/// it is bounded by `min(d_start + t·L, d_end + (1 − t)·L)`, whose maximum over
+/// `t` is `(d_start + d_end + L) / 2` — the exact envelope peak, reached where
+/// the two ramps cross.
+///
+/// This is never worse than the `min(d_start, d_end) + L` form it replaces
+/// (which is the envelope's value at an endpoint of the wrong ramp), because
+/// `|d_start − d_end| ≤ L` is exactly what 1-Lipschitz means. Column kernels use
+/// [`hausdorff_segment_tight_upper_bound_squared`], which refines this further
+/// with a midpoint probe and a single-witness exact case; both need per-segment
+/// probe results the shape-level sweep does not have.
 pub(crate) fn hausdorff_segment_upper_bound_squared(
     dist_start_sq: f64,
     dist_end_sq: f64,
     length_sq: f64,
 ) -> f64 {
-    let nearer = sqrt_distance_squared(dist_start_sq.min(dist_end_sq));
+    let start = sqrt_distance_squared(dist_start_sq);
+    let end = sqrt_distance_squared(dist_end_sq);
     let length = sqrt_distance_squared(length_sq);
-    let bound = nearer + length;
+    let bound = 0.5 * (start + end + length);
     bound * bound
 }
 
