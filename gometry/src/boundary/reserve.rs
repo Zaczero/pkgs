@@ -443,20 +443,6 @@ pub(crate) fn grow_sequence_error() -> PyErr {
     PyMemoryError::new_err(GROW_SEQUENCE_OOM)
 }
 
-/// Checked sum of untrusted lengths. Overflow becomes a clean value error.
-pub(crate) fn checked_length_sum(
-    lengths: impl IntoIterator<Item = PyResult<usize>>,
-) -> PyResult<usize> {
-    let mut total = 0_usize;
-    for length in lengths {
-        let length = length?;
-        total = total
-            .checked_add(length)
-            .ok_or_else(|| PyValueError::new_err("total length from untrusted inputs overflows"))?;
-    }
-    Ok(total)
-}
-
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
 /// (which allocates from a lying `__len__` before any Rust length check).
 ///

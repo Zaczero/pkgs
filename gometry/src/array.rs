@@ -387,9 +387,7 @@ mod packed_equal;
 mod packed_ops;
 mod streaming;
 mod uniform_columns;
-pub(crate) use pack_admission::{
-    CheckedRingWindow, RingCoordinateColumns, RingWindowError, polygon_pack_axes,
-};
+pub(crate) use pack_admission::{CheckedRingWindow, RingWindowError, polygon_pack_axes};
 pub(crate) use packed::sparse_missing_mask;
 pub(crate) use streaming::StreamingShapes;
 mod shape_row;

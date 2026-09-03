@@ -2,20 +2,22 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use crate::py::arrow::{
-    ArrowStorage, Bound, GeometryEncoding, ParseFormat, PyAny, PyAnyMethods as _, PyBytes, PyErr,
-    PyModule, PyResult, PyTypeError, PyTypeMethods as _, Python, Value, WkbOffsetWidth,
-    parse_error, pyfunction,
-};
+use pyo3::pyfunction;
+use pyo3::types::PyBytes;
+use serde_json::Value;
 
-pub(crate) fn arrow_storage_array(
+use crate::py::arrow::{
+    Bound, GeometryEncoding, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
+    PyTypeMethods as _, Python, WkbOffsetWidth,
+};
+use crate::py::arrow_c::NativeArrowClassification;
+use crate::py::errors::{ParseFormat, parse_error};
+
+pub(crate) fn arrow_classification(
     pa: &Bound<'_, PyModule>,
     value: &Bound<'_, PyAny>,
     field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<ArrowStorage> {
-    if crate::py::arrow_c::is_native_arrow_array(value) {
-        return native_arrow_storage_array(value);
-    }
+) -> PyResult<NativeArrowClassification> {
     let value_type = value.getattr("type")?;
     // Keystone: ExtensionType and field metadata are reconciled in ONE place.
     let type_source = type_extension_source(&value_type)?;
@@ -31,13 +33,14 @@ pub(crate) fn arrow_storage_array(
         let Some(encoding) = GeometryEncoding::from_extension_name(&extension_name) else {
             return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
         };
-        // ExtensionType roots expose `.storage`; field-metadata-only arrays are storage.
-        let storage = if from_extension_type {
-            value.getattr("storage")?
+        // ExtensionType roots expose storage_type; field-metadata-only arrays
+        // already are physical storage. Classification is type-only so it can
+        // happen before the selected value's Arrow-C protocol is consumed.
+        let storage_type = if from_extension_type {
+            value_type.getattr("storage_type")?
         } else {
-            storage_or_self(value)?
+            value_type.clone()
         };
-        let storage_type = storage.getattr("type")?;
         // Exact encoding-shape gate (list and large_list at each legitimate
         // list level; interleaved FixedSizeList coords). Do NOT recursively
         // walk the whole type tree first — pathological list nesting would
@@ -53,12 +56,11 @@ pub(crate) fn arrow_storage_array(
             WkbOffsetWidth::Int32
         };
         let (crs, epoch) = parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
-        return Ok(ArrowStorage {
-            storage: storage.unbind(),
-            crs,
-            epoch,
+        return Ok(NativeArrowClassification {
             encoding,
             wkb_offset_width,
+            crs,
+            epoch,
         });
     }
 
@@ -69,12 +71,11 @@ pub(crate) fn arrow_storage_array(
     let is_large_binary = arrow_type_is_large_binary(pa, &value_type)?;
     let is_binary_view = arrow_type_is_binary_view(pa, &value_type)?;
     if is_binary || is_large_binary || is_binary_view {
-        return Ok(ArrowStorage {
-            storage: value.clone().unbind(),
-            crs: None,
-            epoch: None,
+        return Ok(NativeArrowClassification {
             encoding: GeometryEncoding::Wkb,
             wkb_offset_width: wkb_offset_width(is_large_binary, is_binary_view),
+            crs: None,
+            epoch: None,
         });
     }
     Err(PyTypeError::new_err(
@@ -82,69 +83,12 @@ pub(crate) fn arrow_storage_array(
     ))
 }
 
-pub(crate) fn arrow_value_frame(
-    pa: &Bound<'_, PyModule>,
+pub(crate) fn arrow_classification_for_value(
     value: &Bound<'_, PyAny>,
     field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(Option<String>, Option<f64>)> {
-    let value_type = value.getattr("type")?;
-    arrow_type_frame(pa, &value_type, field)
-}
-
-pub(crate) fn arrow_type_frame(
-    pa: &Bound<'_, PyModule>,
-    value_type: &Bound<'_, PyAny>,
-    field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<(Option<String>, Option<f64>)> {
-    // Empty/zero-chunk shares the non-empty encoding classifier: admit only
-    // supported extension+storage pairs (or bare binary WKB). Same reconciliation
-    // keystone as non-empty import (ExtensionType vs field metadata).
-    let type_source = type_extension_source(value_type)?;
-    let field_source = match field {
-        Some(field) => field_extension_source(field)?,
-        None => None,
-    };
-    let from_extension_type = type_source.is_some() && extension_name_present(value_type)?;
-    if let Some((extension_name, metadata)) =
-        reconcile_extension_sources(type_source, field_source)?
-    {
-        let Some(encoding) = GeometryEncoding::from_extension_name(&extension_name) else {
-            return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
-        };
-        // ExtensionType: validate storage_type; field-metadata-only: type is storage.
-        let storage_type = if from_extension_type {
-            match value_type.getattr("storage_type") {
-                Ok(storage_type) => storage_type,
-                Err(err)
-                    if err
-                        .is_instance_of::<pyo3::exceptions::PyAttributeError>(value_type.py()) =>
-                {
-                    value_type.clone()
-                },
-                Err(err) => return Err(err),
-            }
-        } else {
-            value_type.clone()
-        };
-        // Exact shape classification only — see arrow_storage_array (P01).
-        ensure_pyarrow_encoding_storage(pa, &storage_type, encoding)?;
-        return parse_geoarrow_extension_metadata_for(&metadata, Some(encoding));
-    }
-
-    let types = pa.getattr("types")?;
-    let is_binary = types
-        .call_method1("is_binary", (value_type,))?
-        .extract::<bool>()?;
-    // Zero-chunk BinaryView must match non-empty acceptance (WKB storage).
-    if is_binary
-        || arrow_type_is_large_binary(pa, value_type)?
-        || arrow_type_is_binary_view(pa, value_type)?
-    {
-        return Ok((None, None));
-    }
-    Err(PyTypeError::new_err(
-        "expected a geoarrow point, multipoint, linestring, multilinestring, polygon, multipolygon, WKB, binary, or large_binary Arrow array",
-    ))
+) -> PyResult<NativeArrowClassification> {
+    let pa = crate::py::arrow::pyarrow_module(value.py())?;
+    arrow_classification(pa, value, field)
 }
 
 /// Empty/non-empty shared storage shape gate for PyArrow types.
@@ -344,18 +288,6 @@ fn pyarrow_type_is_float64(
         .is_some_and(|f| f == "g"))
 }
 
-pub(crate) fn arrow_extension_metadata(
-    value_type: &Bound<'_, PyAny>,
-    field: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<(String, Vec<u8>)>> {
-    let type_source = type_extension_source(value_type)?;
-    let field_source = match field {
-        Some(field) => field_extension_source(field)?,
-        None => None,
-    };
-    reconcile_extension_sources(type_source, field_source)
-}
-
 /// True when the type exposes a present ExtensionType `extension_name`.
 ///
 /// Missing attribute → not an ExtensionType. A property that raises for any
@@ -365,29 +297,6 @@ fn extension_name_present(value_type: &Bound<'_, PyAny>) -> PyResult<bool> {
         Ok(name) => Ok(name.extract::<Option<String>>()?.is_some()),
         Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(value_type.py()) => {
             Ok(false)
-        },
-        Err(err) => Err(err),
-    }
-}
-
-/// Storage array for field-metadata-only geometry columns: prefer `.storage`
-/// when present; otherwise the value itself is storage.
-///
-/// - `AttributeError` → not an ExtensionType root (use `value`)
-/// - native non-extension `_NativeArrowArray.storage` raises `TypeError`
-///   ("not an extension array") with the same meaning
-/// - any other exception propagates
-fn storage_or_self<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    match value.getattr("storage") {
-        Ok(storage) => Ok(storage),
-        Err(err) if err.is_instance_of::<pyo3::exceptions::PyAttributeError>(value.py()) => {
-            Ok(value.clone())
-        },
-        Err(err)
-            if crate::py::arrow_c::is_native_arrow_array(value)
-                && err.is_instance_of::<pyo3::exceptions::PyTypeError>(value.py()) =>
-        {
-            Ok(value.clone())
         },
         Err(err) => Err(err),
     }
@@ -453,8 +362,9 @@ pub(crate) fn reconcile_extension_sources(
                     type_src.0, field_src.0
                 )));
             }
-            let type_frame = parse_geoarrow_extension_metadata(&type_src.1)?;
-            let field_frame = parse_geoarrow_extension_metadata(&field_src.1)?;
+            let encoding = GeometryEncoding::from_extension_name(&type_src.0);
+            let type_frame = parse_geoarrow_extension_metadata_for(&type_src.1, encoding)?;
+            let field_frame = parse_geoarrow_extension_metadata_for(&field_src.1, encoding)?;
             if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
                 type_frame.0.as_deref(),
                 field_frame.0.as_deref(),
@@ -1101,15 +1011,6 @@ fn normalize_geoparquet_crs(reference: &str, column_name: &str) -> PyResult<Stri
         .map_err(|error| geoparquet_column_error(column_name, format!("{error}")))
 }
 
-pub(crate) fn arrow_extension_meta(
-    value_type: &Bound<'_, PyAny>,
-) -> PyResult<(Option<String>, Option<f64>)> {
-    let metadata = value_type
-        .call_method0("__arrow_ext_serialize__")?
-        .extract::<Vec<u8>>()?;
-    parse_geoarrow_extension_metadata(&metadata)
-}
-
 pub(crate) fn arrow_type_is_large_binary(
     pa: &Bound<'_, PyModule>,
     value_type: &Bound<'_, PyAny>,
@@ -1165,78 +1066,6 @@ fn arrow_type_is_binary_view(
         .extract()
 }
 
-pub(crate) fn native_arrow_storage_array(value: &Bound<'_, PyAny>) -> PyResult<ArrowStorage> {
-    // Prefer the shared schema classifier (same admission as stream/empty)
-    // before any coordinate buffer is read.
-    if let Some(storage) = crate::py::arrow_c::native_arrow_storage_via_classifier(value)? {
-        return Ok(storage);
-    }
-    let value_type = value.getattr("type")?;
-    if let Ok(extension_name) = value_type.getattr("extension_name")
-        && let Some(extension_name) = extension_name.extract::<Option<String>>()?
-    {
-        // Present name must classify or error — never fall through.
-        let Some(encoding) = GeometryEncoding::from_extension_name(&extension_name) else {
-            return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
-        };
-        let storage = value.getattr("storage")?;
-        crate::py::arrow_c::validate_native_encoding_root_format(&storage, encoding)?;
-        let wkb_offset_width = if matches!(encoding, GeometryEncoding::Wkb) {
-            wkb_offset_width(
-                crate::py::arrow_c::native_schema_format_is_large_binary(&storage)?,
-                crate::py::arrow_c::native_schema_format_is_binary_view(&storage)?,
-            )
-        } else {
-            WkbOffsetWidth::Int32
-        };
-        let (crs, epoch) = arrow_extension_meta(&value_type)?;
-        return Ok(ArrowStorage {
-            storage: storage.unbind(),
-            crs,
-            epoch,
-            encoding,
-            wkb_offset_width,
-        });
-    }
-    if let Some((extension_name, metadata)) = arrow_extension_metadata(&value_type, None)? {
-        let Some(encoding) = GeometryEncoding::from_extension_name(&extension_name) else {
-            return Err(PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION));
-        };
-        let storage = storage_or_self(value)?;
-        crate::py::arrow_c::validate_native_encoding_root_format(&storage, encoding)?;
-        let wkb_offset_width = if matches!(encoding, GeometryEncoding::Wkb) {
-            wkb_offset_width(
-                crate::py::arrow_c::native_schema_format_is_large_binary(&storage)?,
-                crate::py::arrow_c::native_schema_format_is_binary_view(&storage)?,
-            )
-        } else {
-            WkbOffsetWidth::Int32
-        };
-        let (crs, epoch) = parse_geoarrow_extension_metadata(&metadata)?;
-        return Ok(ArrowStorage {
-            storage: storage.unbind(),
-            crs,
-            epoch,
-            encoding,
-            wkb_offset_width,
-        });
-    }
-    if crate::py::arrow_c::native_schema_format_is_binary(value)? {
-        let is_large_binary = crate::py::arrow_c::native_schema_format_is_large_binary(value)?;
-        let is_binary_view = crate::py::arrow_c::native_schema_format_is_binary_view(value)?;
-        return Ok(ArrowStorage {
-            storage: value.clone().unbind(),
-            crs: None,
-            epoch: None,
-            encoding: GeometryEncoding::Wkb,
-            wkb_offset_width: wkb_offset_width(is_large_binary, is_binary_view),
-        });
-    }
-    Err(PyTypeError::new_err(
-        "expected a geoarrow point, multipoint, linestring, multilinestring, polygon, multipolygon, WKB, binary, or large_binary Arrow array",
-    ))
-}
-
 const fn wkb_offset_width(is_large_binary: bool, is_binary_view: bool) -> WkbOffsetWidth {
     if is_binary_view {
         WkbOffsetWidth::View
@@ -1245,29 +1074,4 @@ const fn wkb_offset_width(is_large_binary: bool, is_binary_view: bool) -> WkbOff
     } else {
         WkbOffsetWidth::Int32
     }
-}
-
-/// Build [`ArrowStorage`] from a native geometry array already classified by
-/// the shared stream/empty path (encoding + frame known from the schema plan).
-///
-/// For extension roots, prefers the array itself as storage (native extension
-/// arrays return `self` from `.storage`); for bare binary WKB, the value is
-/// storage. CRS/epoch come from the classifier so table field metadata is not
-/// lost when the native type previously read only the struct root.
-pub(crate) fn arrow_storage_from_native_geometry(
-    value: &Bound<'_, PyAny>,
-    encoding: GeometryEncoding,
-    wkb_offset_width: WkbOffsetWidth,
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> PyResult<ArrowStorage> {
-    // Nested geoarrow or WKB: use `.storage` when present (extension root), else self.
-    let storage = storage_or_self(value)?.unbind();
-    Ok(ArrowStorage {
-        storage,
-        crs,
-        epoch,
-        encoding,
-        wkb_offset_width,
-    })
 }

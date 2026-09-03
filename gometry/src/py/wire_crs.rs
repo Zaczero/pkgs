@@ -96,12 +96,6 @@ impl SridFrameAdmission {
         }
     }
 
-    pub(crate) fn set_storage_crs(&mut self, storage: Option<Crs>) {
-        if self.explicit.is_none() {
-            self.storage = storage;
-        }
-    }
-
     /// Admit one present row's normalized embedded SRID (`None` = plain WKB).
     /// Null/missing rows must not call this (they establish no CRS).
     ///

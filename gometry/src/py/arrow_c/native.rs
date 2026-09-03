@@ -1,5 +1,4 @@
-//! Native Arrow C Data Interface import — PyArrow-shaped views over imported
-//! capsules so the existing GeoArrow decode lane runs without ``pyarrow``.
+//! Native Arrow C Data Interface admission into owned Arrow batches.
 #![allow(
     clippy::too_many_lines,
     clippy::type_complexity,
@@ -28,27 +27,23 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyMemoryError, PyTypeError};
-use pyo3::prelude::{Bound, Py, PyAny, PyResult, Python};
-#[cfg(test)]
-use pyo3::types::PyBytesMethods as _;
-use pyo3::types::{PyBytes, PyTuple};
-use pyo3::{IntoPyObjectExt as _, pyclass, pymethods};
+use pyo3::exceptions::PyTypeError;
+use pyo3::prelude::{Bound, PyAny, PyResult};
 
-use crate::HeapSize;
 use crate::collections::{HashMap, HashMapExt as _};
-use crate::py::arrow::{
-    ArrowStorage, arrow_storage_from_native_geometry, geometries_from_arrow_storages,
-};
+use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::admitted::{
     AdmittedArrowSchema, MovedArrowShell, classify_admitted_geometry_schema,
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, GeometryEncoding,
-    IntoPyObject as _, PyAnyMethods as _, PyModule, PyModuleMethods as _, array_capsule_name,
+    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, array_capsule_name,
     capsule_pointer, schema_capsule_name,
 };
+
+#[path = "native_decode.rs"]
+mod decode;
+pub(crate) use decode::{NativeArrowDecodeError, NativeDecodedBatch};
 
 /// Arrow C Data Interface `null_count`: `-1` means unknown; known counts must
 /// not exceed the logical length.
@@ -79,14 +74,6 @@ impl NullCount {
             ));
         }
         Ok(Self::Known(known))
-    }
-
-    /// Python/Arrow view: `-1` unknown, else the known non-negative count.
-    const fn as_i64(self) -> i64 {
-        match self {
-            Self::Unknown => -1,
-            Self::Known(n) => n as i64,
-        }
     }
 }
 
@@ -538,53 +525,6 @@ pub(crate) unsafe fn drop_moved_arrow<T: ArrowReleaseSlot>(shell: *mut T) {
     }
 }
 
-/// Design-1 direct-capsule admission: move schema → owned snapshot → release
-/// schema → classify → move array → selected capture → release array → owned node.
-///
-/// No `ImportedCapsules` / `Arrow*Ptr` survives this function.
-fn admit_geometry_from_capsules(
-    schema_capsule: &Bound<'_, PyAny>,
-    array_capsule: &Bound<'_, PyAny>,
-) -> PyResult<(NativeNode, ClassifiedGeometrySchema)> {
-    let schema = capsule_pointer::<ArrowSchema>(schema_capsule, schema_capsule_name())?;
-    let array = capsule_pointer::<ArrowArray>(array_capsule, array_capsule_name())?;
-    // SAFETY: capsules resolved to live named pointers with release still set.
-    let schema_shell = unsafe { MovedArrowShell::take(schema) }?;
-    // SAFETY: shell pins producer schema for capture only.
-    let admitted_schema = unsafe { AdmittedArrowSchema::capture(&schema_shell) }?;
-    drop(schema_shell); // release producer schema before array work
-    let classified = classify_admitted_geometry_schema(&admitted_schema)?;
-    // SAFETY: array capsule still live; move one-shot.
-    let array_shell = unsafe { MovedArrowShell::take(array) }?;
-    // SAFETY: shell pins the array; producer quiescent for selected-span
-    // snapshot; only owned NativeNode escapes.
-    let node =
-        unsafe { capture_selected_node(&array_shell, &admitted_schema, classified.struct_child) }?;
-    drop(array_shell); // release producer array before decode
-    Ok((node, classified))
-}
-
-/// Design-1 stream-batch admission: array only, formats from owned schema.
-///
-/// # Safety
-///
-/// `array` must be a live producer batch base structure (release non-null).
-/// On return the producer array has been moved and released.
-unsafe fn admit_array_with_admitted_schema(
-    array: *mut ArrowArray,
-    admitted_schema: &AdmittedArrowSchema,
-    select_struct_child: Option<usize>,
-) -> PyResult<NativeNode> {
-    // SAFETY: caller guarantees live batch array.
-    let array_shell = unsafe { MovedArrowShell::take(array) }?;
-    // SAFETY: shell pins the batch array; producer quiescent for selected-span
-    // snapshot; only owned NativeNode escapes.
-    let node =
-        unsafe { capture_selected_node(&array_shell, admitted_schema, select_struct_child) }?;
-    drop(array_shell);
-    Ok(node)
-}
-
 /// Snapshot selected array subtree into owned `NativeNode` while shell is live.
 ///
 /// # Safety
@@ -615,18 +555,145 @@ unsafe fn capture_selected_node(
     let mut layout = unsafe {
         CaptureLayout::new(array_shell, array_shell.as_ptr(), format, schema_n_children)
     }?;
-    let ext_name = schema
-        .extension_name()?
-        .map(|s| Arc::<str>::from(s.as_str()));
-    let ext_meta = Arc::from(schema.extension_metadata_bytes()?.into_boxed_slice());
-    build_owned_node_admitted(
-        &mut layout,
+    build_owned_node_admitted(&mut layout, schema, None)
+}
+
+impl NativeArrowBatch {
+    pub(crate) fn decode(self) -> Result<NativeDecodedBatch, NativeArrowDecodeError> {
+        decode::decode_batch(self)
+    }
+}
+
+/// Admit a direct PyArrow export after its type and field metadata have been
+/// reconciled by the attached caller.  The exported schema is physical
+/// storage, not a table wrapper, so a bare `+s` is captured as coordinates.
+pub(crate) fn native_arrow_batch_from_capsules_with_classification(
+    schema_capsule: &Bound<'_, PyAny>,
+    array_capsule: &Bound<'_, PyAny>,
+    classification: NativeArrowClassification,
+) -> PyResult<NativeArrowBatch> {
+    let schema = capsule_pointer::<ArrowSchema>(schema_capsule, schema_capsule_name())?;
+    let array = capsule_pointer::<ArrowArray>(array_capsule, array_capsule_name())?;
+    // SAFETY: capsules resolved to live named pointers with release still set.
+    let schema_shell = unsafe { MovedArrowShell::take(schema) }?;
+    // SAFETY: the moved schema shell pins the physical schema for capture only.
+    let admitted_schema = unsafe { AdmittedArrowSchema::capture_geometry(&schema_shell) }?;
+    drop(schema_shell);
+    validate_direct_physical_schema(&admitted_schema, &classification)?;
+    // SAFETY: the array capsule is a live one-shot producer shell.
+    let array_shell = unsafe { MovedArrowShell::take(array) }?;
+    // SAFETY: only owned buffers escape this capture.
+    let node = unsafe { capture_selected_node(&array_shell, &admitted_schema, None) }?;
+    drop(array_shell);
+    Ok(NativeArrowBatch {
+        node,
+        classification,
+    })
+}
+
+/// Admit a stream or pure Arrow-C array whose schema was captured and
+/// classified independently.  `struct_child` is consumed here and nowhere in
+/// the owned batch, keeping table selection an admission-only concern.
+pub(crate) unsafe fn native_arrow_batch_from_raw_array(
+    array: *mut ArrowArray,
+    admitted_schema: &AdmittedArrowSchema,
+    classification: NativeArrowClassification,
+    struct_child: Option<usize>,
+) -> PyResult<NativeArrowBatch> {
+    // SAFETY: caller guarantees a live producer batch array.
+    let array_shell = unsafe { MovedArrowShell::take(array) }?;
+    // SAFETY: the shell pins every selected buffer and child table until the
+    // recursive owned snapshot completes.
+    let node = unsafe { capture_selected_node(&array_shell, admitted_schema, struct_child) }?;
+    drop(array_shell);
+    Ok(NativeArrowBatch {
+        node,
+        classification,
+    })
+}
+
+/// Admit and classify a pure Arrow-C array/stream schema, then build one owned
+/// batch.  Direct PyArrow callers use the classification-aware sibling above
+/// so field metadata is resolved before their protocol call.
+pub(crate) fn native_arrow_batch_from_capsules(
+    schema_capsule: &Bound<'_, PyAny>,
+    array_capsule: &Bound<'_, PyAny>,
+) -> PyResult<(NativeArrowBatch, ClassifiedGeometrySchema)> {
+    let schema = capsule_pointer::<ArrowSchema>(schema_capsule, schema_capsule_name())?;
+    let array = capsule_pointer::<ArrowArray>(array_capsule, array_capsule_name())?;
+    // SAFETY: capsule points at a live producer schema shell.
+    let schema_shell = unsafe { MovedArrowShell::take(schema) }?;
+    // SAFETY: shell pins the schema tree through owned capture.
+    let admitted_schema = unsafe { AdmittedArrowSchema::capture(&schema_shell) }?;
+    drop(schema_shell);
+    let classified = classify_admitted_geometry_schema(&admitted_schema)?;
+    let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
+    // SAFETY: capsule points at a live producer array shell.
+    let array_shell = unsafe { MovedArrowShell::take(array) }?;
+    // SAFETY: only the owned node escapes.
+    let node = unsafe { capture_selected_node(&array_shell, &admitted_schema, struct_child) }?;
+    drop(array_shell);
+    Ok((
+        NativeArrowBatch {
+            node,
+            classification,
+        },
+        classified,
+    ))
+}
+
+fn validate_direct_physical_schema(
+    schema: &AdmittedArrowSchema,
+    classification: &NativeArrowClassification,
+) -> PyResult<()> {
+    let actual_extension = schema.extension_name()?;
+    if let Some(actual_extension) = actual_extension {
+        if actual_extension != classification.encoding.extension_name() {
+            return Err(PyTypeError::new_err(format!(
+                "Arrow C physical schema extension '{actual_extension}' conflicts with admitted '{}'",
+                classification.encoding.extension_name()
+            )));
+        }
+        let metadata = schema.extension_metadata_bytes()?;
+        let (crs, epoch) = crate::py::arrow::parse_geoarrow_extension_metadata_for(
+            &metadata,
+            Some(classification.encoding),
+        )?;
+        if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
+            classification.crs.as_deref(),
+            crs.as_deref(),
+        )? || !crate::boundary::metadata::optional_epochs_equal(classification.epoch, epoch)
+        {
+            return Err(crate::py::arrow::geoarrow_parse_error(
+                "Arrow C physical schema metadata conflicts with admitted Arrow metadata",
+            ));
+        }
+    }
+    crate::py::arrow_c::admitted::validate_admitted_encoding_storage(
         schema,
-        Arc::clone(&schema.format),
-        ext_name,
-        ext_meta,
-        None,
-    )
+        classification.encoding,
+    )?;
+    if matches!(
+        classification.encoding,
+        crate::py::geoarrow::GeometryEncoding::Wkb
+    ) {
+        let actual_width = match schema.format() {
+            "vz" => WkbOffsetWidth::View,
+            "Z" => WkbOffsetWidth::Int64,
+            "z" => WkbOffsetWidth::Int32,
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "geoarrow.wkb storage must be binary, large_binary, or binary_view",
+                ));
+            },
+        };
+        if actual_width != classification.wkb_offset_width {
+            return Err(PyTypeError::new_err(
+                "Arrow C physical schema offset width conflicts with admitted Arrow metadata",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Selected-span table root → own only the geometry child.
@@ -722,94 +789,125 @@ unsafe fn admit_selected_struct_geometry(
             child_schema_n,
         )?
     };
-    let child_ext_name = child_schema
-        .extension_name()?
-        .map(|s| Arc::<str>::from(s.as_str()));
-    let child_ext_meta = Arc::from(child_schema.extension_metadata_bytes()?.into_boxed_slice());
-    build_owned_node_admitted(
-        &mut child_layout,
-        child_schema,
-        Arc::clone(&child_schema.format),
-        child_ext_name,
-        child_ext_meta,
-        parent_missing,
-    )
+    build_owned_node_admitted(&mut child_layout, child_schema, parent_missing)
 }
 
 /// Owned native array node: buffers + children snapshotted at admission.
 /// No producer shells, no raw buffer pointers after construction.
-#[derive(Clone)]
 struct NativeNode {
     length: usize,
     /// Every owned payload is rebased to its visible logical origin.
-    offset: usize,
     /// The physical bit alignment retained with the copied validity bytes.
     validity_offset: usize,
-    null_count: NullCount,
     n_buffers: usize,
     format: ArrowFormat,
     buffers: OwnedBufferSlots,
     children: Arc<[NativeNode]>,
-    /// Schema format string for this node.
-    schema_format: Arc<str>,
     /// This node's own schema field name (used by fixed-size-list dimensions).
     schema_name: Arc<str>,
     /// Field names for struct children (empty otherwise).
     field_names: Arc<[String]>,
-    /// Root extension metadata (shared by identity across tree).
-    extension_name: Option<Arc<str>>,
-    extension_metadata: Arc<[u8]>,
     /// Combined ancestor + self missing mask (`true` = null).
     effective_missing: Option<Arc<[bool]>>,
 }
 
+/// Classification resolved at the attached ingress boundary and carried with
+/// one fully-owned batch.  `struct_child` deliberately does not live here: it
+/// is only an admission instruction for table/record-batch roots.
+#[derive(Clone, Debug)]
+pub(crate) struct NativeArrowClassification {
+    pub(crate) encoding: crate::py::geoarrow::GeometryEncoding,
+    pub(crate) wkb_offset_width: WkbOffsetWidth,
+    pub(crate) crs: Option<String>,
+    pub(crate) epoch: Option<f64>,
+}
+
+/// One selected Arrow batch after producer-owned shells and buffers have been
+/// detached from the protocol.  The decoder never needs Python or a raw Arrow
+/// pointer after this value is constructed.
+pub(crate) struct NativeArrowBatch {
+    node: NativeNode,
+    classification: NativeArrowClassification,
+}
+
+impl NativeArrowClassification {
+    pub(crate) fn from_schema(classified: &ClassifiedGeometrySchema) -> (Self, Option<usize>) {
+        (
+            Self {
+                encoding: classified.encoding,
+                wkb_offset_width: classified.wkb_offset_width,
+                crs: classified.crs.clone(),
+                epoch: classified.epoch,
+            },
+            classified.struct_child,
+        )
+    }
+}
+
 impl NativeNode {
-    #[expect(
-        clippy::same_name_method,
-        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
-    )]
-    fn heap_bytes(&self) -> usize {
-        HeapSize::heap_bytes(self)
+    fn child(&self, index: usize) -> Option<&Self> {
+        self.children.get(index)
     }
 
-    fn child(&self, index: usize) -> PyResult<Self> {
-        self.children.get(index).cloned().ok_or_else(|| {
-            crate::py::errors::parse_error(
-                format!(
-                    "Arrow child index {index} is out of range for n_children={}",
-                    self.children.len()
-                ),
-                crate::error::ParseFormat::GeoArrow,
-            )
-        })
+    fn missing_at(&self, index: usize) -> bool {
+        debug_assert!(self.validity_offset < 8);
+        self.effective_missing
+            .as_ref()
+            .and_then(|missing| missing.get(index))
+            .copied()
+            .unwrap_or(false)
     }
 
-    fn struct_field(&self, index: usize) -> PyResult<Self> {
-        self.child(index)
+    fn bytes_at(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.n_buffers {
+            return None;
+        }
+        match self.buffers.get(index)? {
+            OwnedBuffer::Bytes(bytes) => Some(bytes),
+            OwnedBuffer::F64(_) => None,
+        }
     }
 
-    const fn effective_offset(&self) -> usize {
-        self.offset
+    fn f64_values(&self) -> Option<&Arc<[f64]>> {
+        match self.buffers.get(1) {
+            Some(OwnedBuffer::F64(values)) => Some(values),
+            _ => None,
+        }
     }
 
-    fn format(&self) -> &str {
-        self.schema_format.as_ref()
+    fn offset_at(&self, index: usize) -> Option<usize> {
+        let width = self.format.offset_width()?;
+        let start = index.checked_mul(width)?;
+        let end = start.checked_add(width)?;
+        let bytes = self.bytes_at(1)?.get(start..end)?;
+        let value = if width == 4 {
+            let bytes = bytes.first_chunk::<4>()?;
+            i64::from(i32::from_le_bytes(*bytes))
+        } else {
+            let bytes = bytes.first_chunk::<8>()?;
+            i64::from_le_bytes(*bytes)
+        };
+        usize::try_from(value).ok()
     }
 
-    fn field_index(&self, name: &str) -> PyResult<usize> {
-        self.field_names
-            .iter()
-            .position(|n| n == name)
-            .ok_or_else(|| {
-                PyTypeError::new_err(format!("Arrow struct has no field named '{name}'"))
-            })
-    }
-
-    fn into_py_any(self, py: Python<'_>, is_extension_root: bool) -> PyResult<Py<PyAny>> {
-        Ok(NativeArrowArray::from_node(self, is_extension_root)
-            .into_pyobject(py)?
-            .into_any()
-            .unbind())
+    fn list_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        if !matches!(self.format, ArrowFormat::List | ArrowFormat::LargeList) {
+            return None;
+        }
+        let end_index = index.checked_add(1)?;
+        if end_index > self.length {
+            return None;
+        }
+        let start = self.offset_at(index)?;
+        let end = self.offset_at(end_index)?;
+        if start > end {
+            return None;
+        }
+        let child_len = self.children.first().map_or(0, |child| child.length);
+        if end > child_len {
+            return None;
+        }
+        Some(start..end)
     }
 }
 
@@ -818,9 +916,6 @@ impl NativeNode {
 fn build_owned_node_admitted(
     validated: &mut CaptureLayout,
     schema: &AdmittedArrowSchema,
-    schema_format: Arc<str>,
-    extension_name: Option<Arc<str>>,
-    extension_metadata: Arc<[u8]>,
     effective_missing: Option<Arc<[bool]>>,
 ) -> PyResult<NativeNode> {
     let (buffers, _) = snapshot_native_buffers(validated)?;
@@ -913,27 +1008,19 @@ fn build_owned_node_admitted(
             children.push(build_owned_node_admitted(
                 &mut child_validated,
                 child_schema,
-                Arc::clone(&child_schema.format),
-                extension_name.clone(),
-                Arc::clone(&extension_metadata),
                 child_missing,
             )?);
         }
     }
     Ok(NativeNode {
         length: validated.length,
-        offset: 0,
         validity_offset: validated.offset % 8,
-        null_count: validated.null_count,
         n_buffers: validated.n_buffers,
         format: validated.format,
         buffers,
         children: Arc::from(children),
-        schema_format,
         schema_name: Arc::from(schema.name()),
         field_names: Arc::from(field_names),
-        extension_name,
-        extension_metadata,
         effective_missing,
     })
 }
@@ -1138,243 +1225,6 @@ fn owned_or_raw_row_valid(
     }
 }
 
-#[pyclass(
-    name = "_NativeArrowType",
-    module = "gometry._lib",
-    immutable_type,
-    frozen,
-    skip_from_py_object
-)]
-#[derive(Clone)]
-struct NativeArrowType {
-    node: NativeNode,
-    extension_name: Option<String>,
-    extension_metadata: Vec<u8>,
-    names: Vec<String>,
-    name: String,
-}
-
-#[pymethods]
-impl NativeArrowType {
-    #[getter]
-    fn extension_name(&self) -> Option<&str> {
-        self.extension_name.as_deref()
-    }
-
-    #[getter]
-    fn names(&self) -> PyResult<Vec<String>> {
-        let mut names = crate::try_vec_with_capacity(self.names.len())?;
-        for name in &self.names {
-            let name = match crate::boundary::try_string_from_str(name) {
-                Ok(name) => name,
-                Err(()) => {
-                    drop(names);
-                    return Err(crate::boundary::string_alloc_error());
-                },
-            };
-            crate::try_push(&mut names, name)?;
-        }
-        Ok(names)
-    }
-
-    #[getter]
-    fn format(&self) -> String {
-        self.node.format().to_owned()
-    }
-
-    #[getter]
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[getter]
-    fn list_size(&self) -> PyResult<usize> {
-        match self.node.format {
-            ArrowFormat::FixedSizeList(size) => Ok(size),
-            _ => Err(PyTypeError::new_err("Arrow type is not a fixed-size list")),
-        }
-    }
-
-    #[getter]
-    fn value_field(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        NativeArrowType::from_node(&self.node.child(0)?)?.into_py_any(py)
-    }
-
-    fn __arrow_ext_serialize__(&self) -> Vec<u8> {
-        self.extension_metadata.clone()
-    }
-
-    fn __sizeof__(&self) -> usize {
-        self.total_size()
-    }
-}
-
-#[pyclass(
-    name = "_NativeArrowArray",
-    module = "gometry._lib",
-    immutable_type,
-    frozen,
-    skip_from_py_object
-)]
-#[derive(Clone)]
-struct NativeArrowArray {
-    node: NativeNode,
-    /// When true, ``storage`` returns ``self`` (GeoArrow extension top-level).
-    is_extension_root: bool,
-}
-
-#[pymethods]
-impl NativeArrowArray {
-    const fn __len__(&self) -> usize {
-        self.node.length
-    }
-
-    fn __sizeof__(&self) -> usize {
-        self.total_size()
-    }
-
-    #[getter]
-    const fn offset(&self) -> usize {
-        self.node.effective_offset()
-    }
-
-    #[getter]
-    fn null_count(&self) -> i64 {
-        self.node.effective_missing.as_ref().map_or_else(
-            || self.node.null_count.as_i64(),
-            |missing| missing.iter().filter(|&&is_missing| is_missing).count() as i64,
-        )
-    }
-
-    #[getter]
-    #[pyo3(name = "type")]
-    fn arrow_type(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        NativeArrowType::from_node(&self.node)?.into_py_any(py)
-    }
-
-    #[getter]
-    fn storage(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if self.is_extension_root {
-            Ok(self.clone().into_pyobject(py)?.into_any().unbind())
-        } else {
-            Err(PyTypeError::new_err(
-                "native Arrow array is not an extension array",
-            ))
-        }
-    }
-
-    #[getter]
-    fn values(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.node.child(0)?.into_py_any(py, false)
-    }
-
-    fn field(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        let index = self.node.field_index(name)?;
-        self.node.struct_field(index)?.into_py_any(py, false)
-    }
-
-    /// Single buffer by index from owned admission storage only.
-    fn buffer(&self, py: Python<'_>, index: usize) -> PyResult<Py<PyAny>> {
-        if index == 0
-            && let Some(missing) = self.node.effective_missing.as_ref()
-        {
-            let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing)?;
-            return PyBytes::new(py, &bitmap).into_py_any(py);
-        }
-        native_buffer_at(py, &self.node, index)
-    }
-
-    fn buffers(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let count = self.node.n_buffers;
-        let mut items = crate::try_vec_with_capacity(count)?;
-        for index in 0..count {
-            if index == 0
-                && let Some(missing) = self.node.effective_missing.as_ref()
-            {
-                let bitmap = crate::py::arrow::validity_bitmap_from_missing(missing)?;
-                items.push(PyBytes::new(py, &bitmap).into_py_any(py)?);
-            } else {
-                items.push(native_buffer_at(py, &self.node, index)?);
-            }
-        }
-        PyTuple::new(py, items)?.into_py_any(py)
-    }
-}
-
-impl HeapSize for NativeNode {
-    fn heap_bytes(&self) -> usize {
-        let mut total = std::mem::size_of::<Self>();
-        total = total.saturating_add(self.buffers.heap_bytes());
-        for child in self.children.iter() {
-            total = total.saturating_add(child.heap_bytes());
-        }
-        total
-    }
-}
-
-impl HeapSize for NativeArrowType {
-    fn heap_bytes(&self) -> usize {
-        self.node.heap_bytes()
-            + self.extension_name.heap_bytes()
-            + self.extension_metadata.heap_bytes()
-            + self.names.heap_bytes()
-    }
-}
-
-impl HeapSize for NativeArrowArray {
-    fn heap_bytes(&self) -> usize {
-        self.node.heap_bytes()
-    }
-}
-
-impl NativeArrowType {
-    fn into_py_any(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(self.into_pyobject(py)?.into_any().unbind())
-    }
-
-    fn from_node(node: &NativeNode) -> PyResult<Self> {
-        let extension_name = match node.extension_name.as_ref() {
-            Some(name) => Some(
-                crate::boundary::try_string_from_str(name)
-                    .map_err(|()| crate::boundary::string_alloc_error())?,
-            ),
-            None => None,
-        };
-        let mut extension_metadata = crate::try_vec_with_capacity(node.extension_metadata.len())?;
-        extension_metadata.extend_from_slice(&node.extension_metadata);
-        let mut names = crate::try_vec_with_capacity(node.field_names.len())?;
-        for name in node.field_names.iter() {
-            let name = match crate::boundary::try_string_from_str(name) {
-                Ok(name) => name,
-                Err(()) => {
-                    drop(names);
-                    drop(extension_metadata);
-                    return Err(crate::boundary::string_alloc_error());
-                },
-            };
-            crate::try_push(&mut names, name)?;
-        }
-        let name = crate::boundary::try_string_from_str(&node.schema_name)
-            .map_err(|()| crate::boundary::string_alloc_error())?;
-        Ok(Self {
-            node: node.clone(),
-            extension_name,
-            extension_metadata,
-            names,
-            name,
-        })
-    }
-}
-
-impl NativeArrowArray {
-    const fn from_node(node: NativeNode, is_extension_root: bool) -> Self {
-        Self {
-            node,
-            is_extension_root,
-        }
-    }
-}
-
 /// Snapshot every schema-sized buffer once for this native node, then run
 /// content validation **only on the owned copies** (design-1: never
 /// `from_raw_parts` over producer memory for null_count / BinaryView scans).
@@ -1386,23 +1236,6 @@ impl NativeArrowArray {
 enum OwnedBuffer {
     Bytes(Arc<[u8]>),
     F64(Arc<[f64]>),
-}
-
-impl OwnedBuffer {
-    #[cfg(test)]
-    fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            Self::Bytes(b) => Some(b.as_ref()),
-            Self::F64(_) => None,
-        }
-    }
-
-    fn heap_bytes(&self) -> usize {
-        match self {
-            Self::Bytes(b) => b.len(),
-            Self::F64(v) => v.len() * 8,
-        }
-    }
 }
 
 /// Owned Arrow buffers. Ordinary formats have a fixed small dense layout;
@@ -1435,22 +1268,6 @@ impl OwnedBufferSlots {
                 1 => Some(views),
                 index if index >= 2 && index + 1 < *n_buffers => data.get(&(index - 2)),
                 _ => None,
-            },
-        }
-    }
-
-    fn heap_bytes(&self) -> usize {
-        match self {
-            Self::Dense(slots) => slots.iter().flatten().map(OwnedBuffer::heap_bytes).sum(),
-            Self::BinaryView {
-                validity,
-                views,
-                data,
-                ..
-            } => {
-                validity.heap_bytes()
-                    + views.heap_bytes()
-                    + data.values().map(OwnedBuffer::heap_bytes).sum::<usize>()
             },
         }
     }
@@ -1507,6 +1324,7 @@ fn snapshot_native_buffers(
                 snapshot_one_buffer_range(array, data_index + 2, range.start, len)?,
             );
         }
+        validate_binary_view_prefixes(&validity, &views, &data, array)?;
         let slots = OwnedBufferSlots::BinaryView {
             validity,
             views,
@@ -1679,6 +1497,11 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
         let value = usize::try_from(read(index)?).map_err(|_| {
             crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
         })?;
+        if value < last {
+            return Err(crate::py::arrow::geoarrow_parse_error(
+                "Arrow offsets must be ordered",
+            ));
+        }
         let local = value.checked_sub(first).ok_or_else(|| {
             crate::py::arrow::geoarrow_parse_error("Arrow offsets must be ordered")
         })?;
@@ -1697,6 +1520,62 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
         }
     }
     Ok((OwnedBuffer::Bytes(Arc::from(rebased)), first, last))
+}
+
+/// Validate the four-byte BinaryView inline prefix against the selected owned
+/// payload.  The descriptor and data are already copied, so this check never
+/// re-borrows producer memory and remains safe for sparse high-index buffers.
+fn validate_binary_view_prefixes(
+    validity: &OwnedBuffer,
+    views: &OwnedBuffer,
+    data: &HashMap<usize, OwnedBuffer>,
+    array: &CaptureLayout,
+) -> PyResult<()> {
+    let OwnedBuffer::Bytes(validity) = validity else {
+        return Ok(());
+    };
+    let OwnedBuffer::Bytes(views) = views else {
+        return Ok(());
+    };
+    let validity_buffer = OwnedBuffer::Bytes(Arc::clone(validity));
+    let (descriptors, _) = views.as_chunks::<16>();
+    for (row, view) in descriptors.iter().take(array.length).enumerate() {
+        if !owned_binary_view_row_is_valid(array, &validity_buffer, row)? {
+            continue;
+        }
+        let length = i32::from_le_bytes([view[0], view[1], view[2], view[3]]);
+        if length <= 12 {
+            continue;
+        }
+        let buffer_index =
+            usize::try_from(i32::from_le_bytes([view[8], view[9], view[10], view[11]]))
+                .map_err(|_| PyTypeError::new_err("Arrow binary-view buffer index is negative"))?;
+        let byte_offset =
+            usize::try_from(i32::from_le_bytes([view[12], view[13], view[14], view[15]]))
+                .map_err(|_| PyTypeError::new_err("Arrow binary-view byte offset is negative"))?;
+        // `views` has already been rebased to the selected data envelope, so
+        // the descriptor's offset is directly an index into the owned payload.
+        let local = byte_offset;
+        let prefix_end = local
+            .checked_add(4)
+            .ok_or_else(|| PyTypeError::new_err("Arrow binary-view prefix range overflows"))?;
+        let payload = match data.get(&buffer_index) {
+            Some(OwnedBuffer::Bytes(bytes)) => bytes
+                .get(local..prefix_end)
+                .ok_or_else(|| PyTypeError::new_err("Arrow binary-view prefix is out of bounds"))?,
+            _ => {
+                return Err(PyTypeError::new_err(
+                    "Arrow binary-view data buffer is missing",
+                ));
+            },
+        };
+        if payload != &view[4..8] {
+            return Err(PyTypeError::new_err(
+                "Arrow binary-view prefix does not match referenced data",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<[f64]>> {
@@ -1734,104 +1613,6 @@ fn validate_owned_null_count(array: &CaptureLayout, buffers: &OwnedBufferSlots) 
         )));
     }
     Ok(())
-}
-
-fn native_buffer_at(py: Python<'_>, node: &NativeNode, index: usize) -> PyResult<Py<PyAny>> {
-    if index >= node.n_buffers {
-        return Ok(py.None());
-    }
-    let Some(slot) = node.buffers.get(index) else {
-        return Ok(py.None());
-    };
-    match slot {
-        OwnedBuffer::Bytes(bytes) => PyBytes::new(py, bytes).into_py_any(py),
-        OwnedBuffer::F64(values) => {
-            let byte_len = values.len().checked_mul(size_of::<f64>()).ok_or_else(|| {
-                PyMemoryError::new_err("Arrow float buffer byte length overflows")
-            })?;
-            let mut out = crate::try_vec_with_capacity(byte_len)?;
-            for &v in values.iter() {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            PyBytes::new(py, &out).into_py_any(py)
-        },
-    }
-}
-
-/// Admit a native buffer as owned [`AdmittedBuffer`] (design-1: no producer view,
-/// no separate lease type — only admission Arc spans).
-pub(crate) fn try_native_admitted_buffer(
-    value: &Bound<'_, PyAny>,
-    index: usize,
-) -> Option<crate::py::arrow::AdmittedBuffer> {
-    let Ok(array) = value.cast::<NativeArrowArray>() else {
-        return None;
-    };
-    let node = &array.get().node;
-    // Ancestor-OR validity for buffer 0 is a logical bitmap owned by the node,
-    // not a producer buffer — force the provider-copy path for that slot.
-    if index == 0 && node.effective_missing.is_some() {
-        return None;
-    }
-    if index >= node.n_buffers {
-        return None;
-    }
-    let slot = node.buffers.get(index)?;
-    match slot {
-        OwnedBuffer::Bytes(bytes) => Some(crate::py::arrow::AdmittedBuffer::from_arc_range(
-            Arc::clone(bytes),
-            0..bytes.len(),
-        )),
-        // Float64 values are typed at admission — re-encode LE for the generic
-        // byte path only when a caller asks for raw buffer bytes.
-        OwnedBuffer::F64(values) => {
-            let byte_len = values.len().checked_mul(size_of::<f64>())?;
-            let mut out = crate::try_vec_with_capacity(byte_len).ok()?;
-            for &v in values.iter() {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
-            Some(crate::py::arrow::AdmittedBuffer::from_vec(out))
-        },
-    }
-}
-
-/// Prefer typed float64 admission Arc for native coordinate leaves (no dual
-/// byte+f64 retention). Returns `None` when the value is not a native float
-/// values buffer.
-pub(crate) fn try_native_f64_values_arc(
-    value: &Bound<'_, PyAny>,
-    start: usize,
-    count: usize,
-) -> Option<PyResult<Arc<[f64]>>> {
-    let Ok(array) = value.cast::<NativeArrowArray>() else {
-        return None;
-    };
-    let node = &array.get().node;
-    if !matches!(node.format, ArrowFormat::Float64) {
-        return None;
-    }
-    let Some(OwnedBuffer::F64(values)) = node.buffers.get(1) else {
-        return None;
-    };
-    let end = start.checked_add(count)?;
-    if end > values.len() {
-        return Some(Err(PyTypeError::new_err(
-            "Arrow values buffer is shorter than the visible coordinate span",
-        )));
-    }
-    if start == 0 && end == values.len() {
-        return Some(Ok(Arc::clone(values)));
-    }
-    let mut copied = match crate::try_vec_with_capacity(count) {
-        Ok(values) => values,
-        Err(error) => return Some(Err(error)),
-    };
-    for &value in &values[start..end] {
-        if let Err(error) = crate::try_push_vec(&mut copied, value) {
-            return Some(Err(error.into()));
-        }
-    }
-    Some(Ok(Arc::from(copied)))
 }
 
 /// Checked byte span for every `from_raw_parts` length: reject `usize`
@@ -2043,198 +1824,6 @@ fn owned_binary_view_row_is_valid(
     }
 }
 
-/// Build a native Arrow view for one stream batch from an owned admitted schema
-/// and a one-shot array capsule (design-1: no borrowed raw schema).
-pub(crate) fn native_arrow_from_array_capsule_with_schema(
-    py: Python<'_>,
-    array_capsule: &Bound<'_, PyAny>,
-    admitted_schema: &AdmittedArrowSchema,
-    select_struct_child: Option<usize>,
-) -> PyResult<Py<PyAny>> {
-    let array = capsule_pointer::<ArrowArray>(array_capsule, array_capsule_name())?;
-    // SAFETY: one-shot batch capsule; released inside admit.
-    let node =
-        unsafe { admit_array_with_admitted_schema(array, admitted_schema, select_struct_child) }?;
-    let has_extension = node.extension_name.is_some();
-    node.into_py_any(py, has_extension)
-}
-
-/// Classify a direct Arrow-C array capsule through owned admission, then build storage.
-pub(crate) fn geometries_from_native_capsules_classified(
-    py: Python<'_>,
-    schema_capsule: &Bound<'_, PyAny>,
-    array_capsule: &Bound<'_, PyAny>,
-    crs: Option<&Bound<'_, PyAny>>,
-    epoch: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Py<PyAny>> {
-    let (node, classified) = admit_geometry_from_capsules(schema_capsule, array_capsule)?;
-    let has_extension = node.extension_name.is_some();
-    let geometry = node.into_py_any(py, has_extension)?;
-    let storage = arrow_storage_from_native_geometry(
-        geometry.bind(py),
-        classified.encoding,
-        classified.wkb_offset_width,
-        classified.crs,
-        classified.epoch,
-    )?;
-    geometries_from_arrow_storages(py, vec![storage], crs, epoch)
-}
-
-/// Check only the root storage token for a native fallback view.
-///
-/// Full child layout was already admitted from the owned schema tree. This
-/// fallback therefore verifies exactly the part it can observe, rather than
-/// pretending a root-format check validates a nested GeoArrow encoding.
-pub(crate) fn validate_native_encoding_root_format(
-    value: &Bound<'_, PyAny>,
-    encoding: GeometryEncoding,
-) -> PyResult<()> {
-    let array = value.cast::<NativeArrowArray>().map_err(|_| {
-        PyTypeError::new_err("expected a native Arrow array for encoding storage validation")
-    })?;
-    // Layout already validated at owned admission against the producer schema.
-    // Re-check encoding vs stored format string only.
-    let format = array.get().node.format();
-    match encoding {
-        crate::py::geoarrow::GeometryEncoding::Wkb => {
-            if !matches!(format, "z" | "Z" | "vz") {
-                return Err(PyTypeError::new_err(
-                    "geoarrow.wkb storage must be binary, large_binary, or binary_view",
-                ));
-            }
-        },
-        crate::py::geoarrow::GeometryEncoding::Point => {
-            if format != "+s" && !format.starts_with("+w:") {
-                return Err(PyTypeError::new_err(
-                    "unsupported Arrow schema format for geometry storage (expected +s or +w:N)",
-                ));
-            }
-        },
-        _ if matches!(format, "+l" | "+L") => {},
-        _ => {
-            return Err(PyTypeError::new_err(
-                "geoarrow list geometry storage must be list (+l) or large_list (+L)",
-            ));
-        },
-    }
-    Ok(())
-}
-
-/// Prefer full schema classification for a native array node (returns `None`
-/// when the value is not a native Arrow array).
-pub(crate) fn native_arrow_storage_via_classifier(
-    value: &Bound<'_, PyAny>,
-) -> PyResult<Option<ArrowStorage>> {
-    let Ok(array) = value.cast::<NativeArrowArray>() else {
-        return Ok(None);
-    };
-    // Classify the node's own schema (geometry array, not a multi-column root —
-    // table roots are resolved to the geometry child before this is called).
-    let node = &array.get().node;
-    let Ok((encoding, width, crs, epoch)) = classify_owned_node_geometry(node) else {
-        // Fall through to the legacy attribute walk when the node is a bare
-        // intermediate (e.g. storage child) without extension/binary.
-        return Ok(None);
-    };
-    Ok(Some(arrow_storage_from_native_geometry(
-        value, encoding, width, crs, epoch,
-    )?))
-}
-
-/// Combined ancestor+self missing mask for a native array view, when present.
-/// `true` means the logical row is null. Used by `arrow_validity` so import
-/// never consults only the raw child bitmap after a struct re-root.
-pub(crate) fn native_arrow_effective_missing(value: &Bound<'_, PyAny>) -> Option<Arc<[bool]>> {
-    value
-        .cast::<NativeArrowArray>()
-        .ok()
-        .and_then(|array| array.get().node.effective_missing.clone())
-}
-
-/// Bit alignment of the copied visible validity-byte window. All other owned
-/// payloads are offset-zero; only this physical bitmap prefix needs retention.
-pub(crate) fn native_arrow_validity_offset(value: &Bound<'_, PyAny>) -> Option<usize> {
-    value
-        .cast::<NativeArrowArray>()
-        .ok()
-        .map(|array| array.get().node.validity_offset)
-}
-
-pub(crate) fn is_native_arrow_array(value: &Bound<'_, PyAny>) -> bool {
-    // Exact PyO3 class only — never match an arbitrary type by class-name string.
-    value.is_instance_of::<NativeArrowArray>()
-}
-
-pub(crate) fn native_schema_format_is_large_binary(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    native_schema_format(value).map(|format| format == "Z")
-}
-
-pub(crate) fn native_schema_format_is_binary_view(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    native_schema_format(value).map(|format| format == "vz")
-}
-
-pub(crate) fn native_schema_format_is_binary(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    native_schema_format(value).map(|format| format == "z" || format == "Z" || format == "vz")
-}
-
-fn native_schema_format(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    value.getattr("type")?.getattr("format")?.extract()
-}
-
-/// Classify an already-owned native node from format + extension metadata.
-fn classify_owned_node_geometry(
-    node: &NativeNode,
-) -> PyResult<(
-    crate::py::geoarrow::GeometryEncoding,
-    crate::py::arrow::WkbOffsetWidth,
-    Option<String>,
-    Option<f64>,
-)> {
-    use crate::py::arrow::WkbOffsetWidth;
-    use crate::py::geoarrow::GeometryEncoding;
-    let format = node.format();
-    let (crs, epoch) = if let Some(meta) = node.extension_metadata.as_ref().get(..) {
-        if !meta.is_empty() {
-            crate::py::arrow::parse_geoarrow_extension_metadata(meta)?
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
-    if let Some(name) = node.extension_name.as_ref() {
-        let encoding = GeometryEncoding::from_extension_name(name)
-            .ok_or_else(|| PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION))?;
-        let width = if matches!(encoding, GeometryEncoding::Wkb) {
-            match format {
-                "vz" => WkbOffsetWidth::View,
-                "Z" => WkbOffsetWidth::Int64,
-                _ => WkbOffsetWidth::Int32,
-            }
-        } else {
-            WkbOffsetWidth::Int32
-        };
-        return Ok((encoding, width, crs, epoch));
-    }
-    if matches!(format, "z" | "Z" | "vz") {
-        let width = match format {
-            "vz" => WkbOffsetWidth::View,
-            "Z" => WkbOffsetWidth::Int64,
-            _ => WkbOffsetWidth::Int32,
-        };
-        return Ok((GeometryEncoding::Wkb, width, None, None));
-    }
-    Err(PyTypeError::new_err(
-        "expected a geoarrow point, multipoint, linestring, multilinestring, polygon, multipolygon, WKB, binary, or large_binary Arrow array",
-    ))
-}
-
-pub(crate) fn register_native_arrow_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<NativeArrowArray>()?;
-    m.add_class::<NativeArrowType>()?;
-    Ok(())
-}
-
 /// Layout-validation unit tests — drive the shipped pure validation path
 /// without pyarrow, so a broken `NullCount` / buffer-length / struct-child
 /// gate fails this battery even when Python round-trips still pass.
@@ -2252,6 +1841,7 @@ mod layout_validation_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use pyo3::ffi;
+    use pyo3::prelude::Python;
 
     use super::*;
 
@@ -2323,8 +1913,6 @@ mod layout_validation_tests {
         assert_eq!(NullCount::parse(3, 10).unwrap(), NullCount::Known(3));
         assert_eq!(NullCount::parse(10, 10).unwrap(), NullCount::Known(10));
         assert_eq!(NullCount::parse(0, 0).unwrap(), NullCount::Known(0));
-        assert_eq!(NullCount::Unknown.as_i64(), -1);
-        assert_eq!(NullCount::Known(4).as_i64(), 4);
     }
 
     #[test]
@@ -2430,7 +2018,7 @@ mod layout_validation_tests {
         let mut array = stack_array(4, 0, -1, 3, 0, bufs.as_ptr(), ptr::null_mut());
         with_stack_layout(&mut array, ArrowFormat::Binary, 0, |validated| {
             assert_eq!(validated.null_count, NullCount::Unknown);
-            assert_eq!(validated.null_count.as_i64(), -1);
+            assert_eq!(validated.null_count, NullCount::Unknown);
         });
     }
 
@@ -2511,12 +2099,13 @@ mod layout_validation_tests {
                 )
             };
             // Design-1: admit moves+releases both shells; no ImportedCapsules.
-            let (node, _) = admit_geometry_from_capsules(&schema_capsule, &array_capsule).unwrap();
+            let (batch, _) =
+                native_arrow_batch_from_capsules(&schema_capsule, &array_capsule).unwrap();
             assert!(schema.release.is_none());
             assert!(array.release.is_none());
             // Second admit on already-released capsules must fail.
-            assert!(admit_geometry_from_capsules(&schema_capsule, &array_capsule).is_err());
-            drop(node);
+            assert!(native_arrow_batch_from_capsules(&schema_capsule, &array_capsule).is_err());
+            drop(batch);
         });
         assert_eq!(
             MOVED_SCHEMA_RELEASES.load(Ordering::Relaxed),
@@ -2580,15 +2169,32 @@ mod layout_validation_tests {
                 release: Some(count_moved_array_release),
                 private_data: ptr::null_mut(),
             };
-            // SAFETY: one-shot batch arrays with owned schema.
-            let n1 =
-                unsafe { admit_array_with_admitted_schema(&raw mut first_array, &admitted, None) }
-                    .unwrap();
+            let classification = NativeArrowClassification {
+                encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                wkb_offset_width: WkbOffsetWidth::Int32,
+                crs: None,
+                epoch: None,
+            };
+            let n1 = unsafe {
+                native_arrow_batch_from_raw_array(
+                    &raw mut first_array,
+                    &admitted,
+                    classification.clone(),
+                    None,
+                )
+            }
+            .unwrap();
             assert!(first_array.release.is_none());
             drop(n1);
-            let n2 =
-                unsafe { admit_array_with_admitted_schema(&raw mut second_array, &admitted, None) }
-                    .unwrap();
+            let n2 = unsafe {
+                native_arrow_batch_from_raw_array(
+                    &raw mut second_array,
+                    &admitted,
+                    classification,
+                    None,
+                )
+            }
+            .unwrap();
             assert!(second_array.release.is_none());
             drop(n2);
         });
@@ -2745,24 +2351,30 @@ mod layout_validation_tests {
             let array_ptr =
                 capsule_pointer::<ArrowArray>(&array_capsule, array_capsule_name()).unwrap();
             // SAFETY: one-shot array capsule.
-            let node =
-                unsafe { admit_array_with_admitted_schema(array_ptr, &admitted, Some(0)) }.unwrap();
-            let output = NativeArrowArray::from_node(node, false);
-            assert_eq!(output.__len__(), 3);
+            let batch = unsafe {
+                native_arrow_batch_from_raw_array(
+                    array_ptr,
+                    &admitted,
+                    NativeArrowClassification {
+                        encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                        wkb_offset_width: WkbOffsetWidth::Int32,
+                        crs: None,
+                        epoch: None,
+                    },
+                    Some(0),
+                )
+            }
+            .unwrap();
+            let output = batch.node;
+            assert_eq!(output.length, 3);
             // Admission re-roots the selected child span: its three values
             // are [3, 4, 5], not a retained physical prefix plus offset 3.
-            assert_eq!(output.offset(), 0);
-            let bytes = output.buffer(py, 1).unwrap();
-            let bytes = bytes.bind(py).cast::<PyBytes>().unwrap().as_bytes();
-            assert_eq!(bytes.len(), 24);
-            assert_eq!(
-                f64::from_ne_bytes(bytes[0..8].try_into().unwrap()).to_bits(),
-                3.0_f64.to_bits()
-            );
-            assert_eq!(
-                f64::from_ne_bytes(bytes[16..24].try_into().unwrap()).to_bits(),
-                5.0_f64.to_bits()
-            );
+            let OwnedBuffer::F64(values) = output.buffers.get(1).unwrap() else {
+                panic!("expected f64 values");
+            };
+            assert_eq!(values.len(), 3);
+            assert_eq!(values[0].to_bits(), 3.0_f64.to_bits());
+            assert_eq!(values[2].to_bits(), 5.0_f64.to_bits());
         });
     }
 
@@ -2941,6 +2553,7 @@ mod layout_validation_tests {
         let n_buffers = data_index + 4;
         let mut view = [0_u8; 16];
         view[0..4].copy_from_slice(&20_i32.to_le_bytes());
+        view[4..8].copy_from_slice(&[7, 7, 7, 7]);
         view[8..12].copy_from_slice(&(data_index as i32).to_le_bytes());
         let data = [7_u8; 20];
         let mut sizes = vec![0_i64; n_buffers - 3];
@@ -2960,13 +2573,14 @@ mod layout_validation_tests {
         );
         try_with_stack_layout(&mut array, ArrowFormat::BinaryView, 0, |layout| {
             let (owned, _) = snapshot_native_buffers(layout)?;
-            assert_eq!(
-                owned.get(data_index + 2).and_then(OwnedBuffer::as_bytes),
-                Some(&data[..])
-            );
+            assert!(matches!(
+                owned.get(data_index + 2),
+                Some(OwnedBuffer::Bytes(bytes)) if bytes.as_ref() == &data[..]
+            ));
+            assert!(owned.get(2).is_none(), "unreferenced low slot was retained");
             assert!(
-                owned.heap_bytes() < 128,
-                "unselected size table was retained"
+                owned.get(data_index + 3).is_none(),
+                "the high-index sizes slot was exposed as payload"
             );
             Ok(())
         })
@@ -3057,6 +2671,7 @@ mod layout_validation_tests {
         // Present non-inline: length=20, buffer_index=0, byte_offset=2 → end=22.
         let mut view = [0_u8; 16];
         view[0..4].copy_from_slice(&20_i32.to_le_bytes());
+        view[4..8].copy_from_slice(&[0, 0, 0, 0]);
         view[8..12].copy_from_slice(&0_i32.to_le_bytes());
         view[12..16].copy_from_slice(&2_i32.to_le_bytes());
         let data = [0_u8; 32];
@@ -3071,10 +2686,10 @@ mod layout_validation_tests {
         try_with_stack_layout(&mut array, ArrowFormat::BinaryView, 0, |layout| {
             let (owned, ranges) = snapshot_native_buffers(layout)?;
             assert_eq!(ranges.as_ref().unwrap().get(&0), Some(&(2..22)));
-            assert_eq!(
-                owned.get(2).and_then(OwnedBuffer::as_bytes),
-                Some(&data[2..22])
-            );
+            let Some(OwnedBuffer::Bytes(payload)) = owned.get(2) else {
+                panic!("selected payload slot was not retained");
+            };
+            assert_eq!(payload.as_ref(), &data[2..22]);
             Ok(())
         })
         .unwrap();
@@ -3090,6 +2705,7 @@ mod layout_validation_tests {
         // mutation guard for `rebase_owned_binary_view_offsets`.
         let mut view = [0_u8; 16];
         view[0..4].copy_from_slice(&20_i32.to_le_bytes());
+        view[4..8].copy_from_slice(&[2, 3, 4, 5]);
         view[8..12].copy_from_slice(&0_i32.to_le_bytes());
         view[12..16].copy_from_slice(&2_i32.to_le_bytes());
         let data: [u8; 32] = std::array::from_fn(|index| index as u8);
@@ -3105,13 +2721,19 @@ mod layout_validation_tests {
             let (owned, _) = snapshot_native_buffers(layout)?;
             let view = owned
                 .get(1)
-                .and_then(OwnedBuffer::as_bytes)
+                .and_then(|buffer| match buffer {
+                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_ref()),
+                    OwnedBuffer::F64(_) => None,
+                })
                 .expect("owned BinaryView descriptors");
             let offset = i32::from_le_bytes(view[12..16].try_into().expect("view offset"));
             assert_eq!(offset, 0, "selected payload origin must be rebased");
             let payload = owned
                 .get(2)
-                .and_then(OwnedBuffer::as_bytes)
+                .and_then(|buffer| match buffer {
+                    OwnedBuffer::Bytes(bytes) => Some(bytes.as_ref()),
+                    OwnedBuffer::F64(_) => None,
+                })
                 .expect("owned BinaryView payload");
             assert_eq!(payload, &data[2..22]);
             Ok(())
@@ -3139,5 +2761,58 @@ mod layout_validation_tests {
         ];
         let mut array = stack_array(1, 0, 0, 4, 0, buffers.as_ptr(), ptr::null_mut());
         assert!(layout_with_owned_content(&mut array, ArrowFormat::BinaryView, 0).is_err());
+    }
+
+    #[test]
+    fn owned_batch_decoder_runs_detached() {
+        ensure_python();
+        let leaf = |value: f64| NativeNode {
+            length: 1,
+            validity_offset: 0,
+            n_buffers: 2,
+            format: ArrowFormat::Float64,
+            buffers: OwnedBufferSlots::Dense(Arc::from([
+                Some(OwnedBuffer::Bytes(Arc::from([]))),
+                Some(OwnedBuffer::F64(Arc::from([value]))),
+            ])),
+            children: Arc::from([]),
+            schema_name: Arc::from(""),
+            field_names: Arc::from([]),
+            effective_missing: None,
+        };
+        let node = NativeNode {
+            length: 1,
+            validity_offset: 0,
+            n_buffers: 1,
+            format: ArrowFormat::Struct,
+            buffers: OwnedBufferSlots::Dense(Arc::from([Some(OwnedBuffer::Bytes(Arc::from([])))])),
+            children: Arc::from([leaf(1.0), leaf(2.0)]),
+            schema_name: Arc::from(""),
+            field_names: Arc::from([String::from("x"), String::from("y")]),
+            effective_missing: None,
+        };
+        let batch = NativeArrowBatch {
+            node,
+            classification: NativeArrowClassification {
+                encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                wkb_offset_width: WkbOffsetWidth::Int32,
+                crs: None,
+                epoch: None,
+            },
+        };
+        Python::attach(|py| {
+            let attached = py.detach(move || {
+                // PyO3 0.29 has no public `Python::is_attached`; the C API
+                // check is the same observation without attaching again.
+                let detached = unsafe { ffi::PyGILState_Check() != 0 };
+                let decoded = batch.decode();
+                (detached, decoded)
+            });
+            let (detached, decoded) = attached;
+            let decoded = decoded.expect("owned batch decoder");
+            assert!(!detached);
+            assert_eq!(decoded.length, 1);
+            assert_eq!(decoded.shapes.len(), 1);
+        });
     }
 }

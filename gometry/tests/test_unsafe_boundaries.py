@@ -307,7 +307,7 @@ def test_stream_import_peak_tracks_one_batch_not_full_stream() -> None:
 
     Multi-batch table stream must match direct import bit-for-bit on WKT and
     produce a result whose size is independent of batch count (same total rows).
-    Reversion: retain ``NativeNode`` / ArrowStorage per batch across get_next.
+    Reversion: retain raw Arrow state per batch across get_next.
     """
 
     class _StreamOnly:

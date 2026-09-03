@@ -9,7 +9,7 @@ use pyo3::types::PyString;
 
 use crate::py::support::{
     Bound, CRSError, Crs, Frame, FromPyObject, GeometryError, PyAny, PyAnyMethods as _, PyErr,
-    PyGeometry, PyResult, PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
+    PyResult, PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
 };
 
 /// Borrow ``value`` as UTF-8 text when it is a Python ``str``.
@@ -81,39 +81,6 @@ pub(crate) fn require_antimeridian_crs(crs: Option<&str>) -> PyResult<()> {
         ));
     }
     Ok(())
-}
-
-pub(crate) fn common_crs_required<'a>(
-    items: impl IntoIterator<Item = &'a PyGeometry>,
-    context: &str,
-) -> PyResult<Option<Crs>> {
-    let mut items = items.into_iter();
-    let Some(first) = items.next().map(|item| item.crs_ref().cloned()) else {
-        return Ok(None);
-    };
-    for (offset, item) in items.enumerate() {
-        // Same rule as `Frame::common`: items must name one frame, and the
-        // first item's label is the one carried forward.
-        let agrees = match (first.as_ref(), item.crs_ref()) {
-            (None, None) => true,
-            (Some(left), Some(right)) => crate::crs_operationally_equal(left, right)?,
-            _ => false,
-        };
-        if !agrees {
-            let index = offset + 1;
-            return Err(crate::py::errors::crs_mismatch_error(
-                format!(
-                    "{context} requires one shared CRS; item 0 has {}, item {index} has {}. Use to_crs(...) or pass crs=... explicitly before building the array",
-                    crs_label(first.as_deref()),
-                    crs_label(item.crs_str()),
-                ),
-                first.as_deref(),
-                item.crs_str(),
-                Some(index),
-            ));
-        }
-    }
-    Ok(first)
 }
 
 pub(crate) fn crs_label(crs: Option<&str>) -> String {

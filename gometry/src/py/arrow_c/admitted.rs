@@ -126,6 +126,19 @@ impl AdmittedArrowSchema {
         unsafe { Self::capture_for_geometry_admission(owner, owner.as_ptr()) }
     }
 
+    /// Capture a schema that is already known to be the selected geometry
+    /// storage.  A bare `+s` is a valid point coordinate struct in this mode;
+    /// table/record-batch selection is an attached caller concern and must use
+    /// [`Self::capture`] instead.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Self::capture`].
+    pub(crate) unsafe fn capture_geometry(owner: &MovedArrowShell<ArrowSchema>) -> PyResult<Self> {
+        // SAFETY: shell is live for this call; owner witnesses the root pointer.
+        unsafe { Self::capture_node(owner, owner.as_ptr(), CaptureDepth::Deep, 0) }
+    }
+
     /// Root-aware capture: deep only along the geometry selection path.
     ///
     /// # Safety
@@ -493,10 +506,11 @@ fn classify_admitted_geometry_array(
     }
     let format = schema.format();
     if let Some(name) = schema.extension_name()? {
-        let metadata = schema.extension_metadata_bytes()?;
-        let (crs, epoch) = crate::py::arrow::parse_geoarrow_extension_metadata(&metadata)?;
         let encoding = GeometryEncoding::from_extension_name(&name)
             .ok_or_else(|| PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION))?;
+        let metadata = schema.extension_metadata_bytes()?;
+        let (crs, epoch) =
+            crate::py::arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
         validate_admitted_encoding_storage(schema, encoding)?;
         let width = if matches!(encoding, GeometryEncoding::Wkb) {
             wkb_width_from_format(format)?
@@ -577,7 +591,7 @@ fn select_admitted_geometry_child(
     })
 }
 
-fn validate_admitted_encoding_storage(
+pub(crate) fn validate_admitted_encoding_storage(
     schema: &AdmittedArrowSchema,
     encoding: crate::py::geoarrow::GeometryEncoding,
 ) -> PyResult<()> {

@@ -13,16 +13,15 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 
-use pyo3::exceptions::PyTypeError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyCapsule, PyTuple};
+use pyo3::types::{PyAny, PyTuple};
 use serde_json::{Map, Number, Value};
 
 use crate::geometry::{CoordSeq, CoordinateAxes, Polygon, Shape};
 use crate::py::errors::{GeometryError, ParseError};
 use crate::py::geoarrow::GeometryEncoding;
-use crate::{PyGeometry, PyGeometryArray, crs_arc};
+use crate::{PyGeometry, PyGeometryArray};
 
 #[repr(C)]
 pub(crate) struct ArrowSchema {
@@ -144,7 +143,7 @@ pub(crate) use build::{
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
     capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
-    geometry_to_stream_capsule, owned_capsule, release_imported,
+    geometry_to_stream_capsule, release_imported,
 };
 pub(crate) use export::{
     export_from_geometries, export_from_geometry_array, schema_from_geometries,
@@ -152,12 +151,9 @@ pub(crate) use export::{
 };
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
 pub(crate) use native::{
-    geometries_from_native_capsules_classified, is_native_arrow_array,
-    native_arrow_effective_missing, native_arrow_from_array_capsule_with_schema,
-    native_arrow_storage_via_classifier, native_arrow_validity_offset,
-    native_schema_format_is_binary, native_schema_format_is_binary_view,
-    native_schema_format_is_large_binary, register_native_arrow_classes,
-    try_native_admitted_buffer, try_native_f64_values_arc, validate_native_encoding_root_format,
+    NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
+    native_arrow_batch_from_capsules, native_arrow_batch_from_capsules_with_classification,
+    native_arrow_batch_from_raw_array,
 };
 pub(crate) use release::{
     array_capsule_destructor, release_array, release_schema, release_stream,

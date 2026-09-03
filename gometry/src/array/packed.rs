@@ -681,19 +681,6 @@ impl PyGeometryArray {
         Self::from_storage(GeometryArrayStorage::Mixed(shapes), frame)
     }
 
-    /// Wrap `PyGeometry` elements as `Mixed` storage with an explicit frame.
-    /// Extracts shapes only (prepared state is not retained — use
-    /// [`Self::from_shapes`] / [`Self::mixed_shapes`] at bulk sinks).
-    pub(crate) fn mixed(items: Vec<PyGeometry>, frame: Frame) -> Self {
-        Self::mixed_shapes(
-            items
-                .into_iter()
-                .map(|item| item.shape.shape().clone())
-                .collect(),
-            frame,
-        )
-    }
-
     /// Wrap a homogeneous point column as packed `Points` storage — no per-row
     /// `PyGeometry` allocation. The shared frame applies to every row.
     pub(crate) fn packed_points(seq: CoordSeq, frame: Frame) -> Self {

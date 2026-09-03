@@ -1,4 +1,4 @@
-use crate::py::arrow::{CoordinateAxes, Shape};
+use crate::geometry::{CoordinateAxes, Shape};
 
 /// Fold a shape's coordinate axes into `axes`, returning `false` on the first
 /// axes mismatch (the array is not packable into one fixed-layout `GeoArrow`

@@ -3,25 +3,16 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use pyo3::exceptions::PyOverflowError;
+use pyo3::prelude::{Py, PyAny, PyResult, Python};
+use pyo3::types::{PyAnyMethods as _, PyBytes};
 
-use crate::GeometryArrayStorage;
 use crate::array::ValidityMask;
+use crate::geometry::{CoordSeq, CoordinateAxes, Polygon, Shape};
 use crate::py::arrow::{
-    ArrowCoordinateBuffers, CoordSeq, CoordinateAxes, Polygon, Py, PyAny, PyAnyMethods as _,
-    PyBytes, PyResult, Python, Shape, accumulate_geometry_axes, columns_to_pybytes,
-    gometry_arrow_module, io, push_i32_le,
+    ArrowCoordinateBuffers, accumulate_geometry_axes, columns_to_pybytes, gometry_arrow_module,
+    push_i32_le,
 };
-
-pub(crate) fn validity_bitmap_from_missing(mask: &[bool]) -> PyResult<Vec<u8>> {
-    let mut validity = crate::try_vec_with_capacity(mask.len().div_ceil(8))?;
-    validity.resize(mask.len().div_ceil(8), 0);
-    for (row, &missing) in mask.iter().enumerate() {
-        if !missing {
-            validity[row / 8] |= 1 << (row % 8);
-        }
-    }
-    Ok(validity)
-}
+use crate::{GeometryArrayStorage, io};
 
 pub(crate) fn validity_bitmap_from_mask(mask: &ValidityMask) -> Vec<u8> {
     let mut validity = vec![0; mask.len().div_ceil(8)];

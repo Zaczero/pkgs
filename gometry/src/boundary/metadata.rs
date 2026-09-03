@@ -621,10 +621,6 @@ pub(crate) fn crs_arc(value: impl Into<Crs>) -> Crs {
     value.into()
 }
 
-pub(crate) fn crs_arc_str(value: &str) -> Crs {
-    SmolStr::new(value)
-}
-
 pub(crate) const fn crs_arc_static(value: &'static str) -> Crs {
     SmolStr::new_inline(value)
 }

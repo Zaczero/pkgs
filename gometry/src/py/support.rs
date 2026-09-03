@@ -88,8 +88,8 @@ pub(crate) use extract::{
     parse_owned_geometry_item, parts, rings,
 };
 pub(crate) use frame_args::{
-    Wgs84DefaultCrs, common_crs_required, crs_label, deserialized_epoch, guard_epoch_frame,
-    parse_crs, parse_crs_epoch, py_text_borrow, require_antimeridian_crs,
+    Wgs84DefaultCrs, crs_label, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
+    py_text_borrow, require_antimeridian_crs,
 };
 pub(crate) use geojson::{
     GeoJsonDecodeContext, ScalarOrIterator, classify_scalar_or_iterator,
