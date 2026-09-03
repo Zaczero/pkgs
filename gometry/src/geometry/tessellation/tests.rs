@@ -41,7 +41,7 @@ use crate::geometry::tessellation::sampling::triangle_corners;
 use crate::geometry::{
     CdtRefinement, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
     MOrdinate, Point, Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision,
-    orientation, ring_contains_interior, same_point,
+    orientation, ring_contains_interior,
 };
 
 fn xy(x: f64, y: f64) -> Point {
@@ -311,10 +311,25 @@ fn triangle_area_for_oracle(triangle: &Shape) -> f64 {
 }
 
 fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shape> {
-    let input_vertices = polygon_vertices(&polygon);
+    // Membership by canonical bits: the corner check below runs three times
+    // per triangle, and a linear scan of it made the largest fixtures
+    // quadratic in an oracle that proves nothing about ordering.
+    let input_vertices: std::collections::HashSet<(u64, u64)> = polygon_vertices(&polygon)
+        .into_iter()
+        .map(|point| {
+            (
+                crate::geometry::canonical_f64_bits(point.x),
+                crate::geometry::canonical_f64_bits(point.y),
+            )
+        })
+        .collect();
     let holes = polygon_holes(&polygon);
     let source_area = polygon_area_for_oracle(&polygon);
     let source = Shape::Polygon(polygon);
+    // One prepared source for every centroid: the shape-level predicate
+    // rebuilds both topology graphs per call, so the oracle otherwise pays a
+    // full graph construction per triangle.
+    let source_plan = crate::geometry::PreparedPlan::transient(&source);
     let triangles = source
         .polygon_triangles()
         .expect("earcut triangulates test polygon");
@@ -341,9 +356,10 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         );
         for corner in corners {
             assert!(
-                input_vertices
-                    .iter()
-                    .any(|input| same_point(*input, corner)),
+                input_vertices.contains(&(
+                    crate::geometry::canonical_f64_bits(corner.x),
+                    crate::geometry::canonical_f64_bits(corner.y),
+                )),
                 "triangle vertex {corner:?} was not an input vertex"
             );
         }
@@ -353,7 +369,11 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         );
         let centroid = Shape::Point(centroid_point);
         assert!(
-            source.contains(&centroid),
+            crate::geometry::graph_relate_data(
+                &source_plan,
+                &crate::geometry::PreparedPlan::transient(&centroid),
+            )
+            .is_contains(),
             "triangle centroid outside source"
         );
         for hole in &holes {
