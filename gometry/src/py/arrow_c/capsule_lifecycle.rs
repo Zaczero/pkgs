@@ -297,10 +297,13 @@ pub(crate) fn pyarrow_array_from_export(
     py: Python<'_>,
     export: ExportedArray,
 ) -> PyResult<Py<PyAny>> {
+    // PyArrow must be loaded before the existing registry hook runs. This is
+    // the attached materialization boundary; direct capsule exports remain
+    // dependency-free.
+    let pyarrow = crate::py::arrow::pyarrow_module(py)?;
     register_loaded_pyarrow_extension_types(py)?;
     let capsules = array_capsules(py, export)?;
     let tuple = capsules.bind(py).cast::<PyTuple>()?;
-    let pyarrow = crate::py::arrow::pyarrow_module(py)?;
     pyarrow
         .getattr(pyo3::intern!(py, "Array"))?
         .call_method1(

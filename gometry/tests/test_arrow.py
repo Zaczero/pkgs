@@ -237,6 +237,38 @@ def test_to_arrow_forced_wkb_encoding_roundtrips() -> None:
     assert canon(scalar_restored) == canon(gm.GeometryArray([scalar]))
 
 
+@pytest.mark.parametrize('import_order', ['cold', 'warm'])
+def test_to_arrow_registers_extensions_before_capsule_materialization(
+    import_order: str,
+) -> None:
+    preamble = (
+        "import gometry as gm\nimport sys\nassert 'pyarrow' not in sys.modules\n"
+        if import_order == 'cold'
+        else 'import pyarrow\nimport gometry as gm\n'
+    )
+    code = f"""
+{preamble}
+point = gm.Point(1, 2, crs=4326)
+native_scalar = point.to_arrow()
+native_array = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326).to_arrow()
+wkb_scalar = point.to_arrow(encoding='wkb')
+wkb_array = gm.GeometryArray([point, None]).to_arrow(encoding='wkb')
+for arrow, extension_name in (
+    (native_scalar, 'geoarrow.point'),
+    (native_array, 'geoarrow.point'),
+    (wkb_scalar, 'geoarrow.wkb'),
+    (wkb_array, 'geoarrow.wkb'),
+):
+    assert type(arrow.type).__module__ == 'gometry._arrow'
+    assert arrow.type.extension_name == extension_name
+assert gm.from_arrow(native_scalar).to_wkt() == ['POINT (1 2)']
+assert gm.from_arrow(native_array).to_wkt() == ['POINT (1 3)', 'POINT (2 4)']
+assert gm.from_arrow(wkb_scalar).to_wkt() == ['POINT (1 2)']
+assert gm.from_arrow(wkb_array).to_wkt() == ['POINT (1 2)', None]
+"""
+    subprocess.run([sys.executable, '-c', code], check=True)
+
+
 def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
     from gometry._arrow import apply_missing
 
