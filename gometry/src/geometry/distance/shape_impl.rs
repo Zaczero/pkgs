@@ -427,18 +427,18 @@ impl Shape {
         if let Some(distance) = hausdorff_segment_graph(other, self) {
             return distance;
         }
-        let source_distance = robust_continuous_hausdorff(self, other);
-        let framed_distance = hausdorff_continuous_framed(self, other);
-        if framed_distance.is_finite()
-            && framed_distance
-                .to_bits()
-                .abs_diff(source_distance.to_bits())
-                <= 1
-        {
-            framed_distance
-        } else {
-            source_distance
-        }
+        // The power-of-two similarity is an exact coordinate change for
+        // Euclidean distance, so the indexed kernel's answer in that frame is
+        // the answer; `hausdorff_continuous_framed` already falls back to the
+        // guarded source-space sweep when the frame cannot be built or its
+        // squared arithmetic is not normal. That sweep is quadratic in the
+        // feature count and cubic in it per source segment, so running it as a
+        // per-call cross-check made an ordinary pair of 400-vertex lines take
+        // fourteen seconds — and picked the less accurate of the two answers,
+        // since the framed kernel conditions the coordinates once and takes a
+        // single square root while the sweep accumulates guarded hypots across
+        // every feature.
+        hausdorff_continuous_framed(self, other)
     }
 
     pub fn frechet_distance(&self, other: &Self) -> Result<f64> {

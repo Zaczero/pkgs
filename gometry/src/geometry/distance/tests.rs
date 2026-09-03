@@ -607,6 +607,38 @@ fn assert_hausdorff_close(actual: f64, expected: f64) {
     );
 }
 
+/// The guarded source-space sweep used to run on **every** call as a cross-check
+/// of the framed kernel, which made an ordinary pair of 400-vertex lines take
+/// fourteen seconds. It is now only the fallback for a pair whose squared
+/// arithmetic is not representable, so the agreement it used to assert per call
+/// is asserted here instead — as a tolerance, since the one-ULP form it used
+/// could not pass once rounding accumulated across more than a few features.
+#[test]
+fn the_framed_kernel_agrees_with_the_guarded_sweep_on_dense_linework() {
+    fn densified(from: (f64, f64), to: (f64, f64), count: usize) -> Shape {
+        let step = |a: f64, b: f64, i: usize| a + (b - a) * (i as f64) / ((count - 1) as f64);
+        line(
+            (0..count)
+                .map(|i| p(step(from.0, to.0, i), step(from.1, to.1, i)))
+                .collect(),
+        )
+    }
+
+    // The guarded sweep is cubic in the target feature count per source
+    // segment, so the corpus stays small enough to run unoptimized; the
+    // release-build behaviour on dense linework is pinned by
+    // `tests/test_algorithmic_cliffs.py`.
+    for count in [9, 17, 33] {
+        let left = densified((0.0, 0.0), (10.0, 3.0), count);
+        let right = densified((0.0, 1.0), (7.0, 9.0), count);
+        let framed = left.hausdorff_distance(&right);
+        let guarded = shape_impl::robust_directed_hausdorff(&left, &right)
+            .max(shape_impl::robust_directed_hausdorff(&right, &left));
+        assert_hausdorff_close(framed, guarded);
+        assert_hausdorff_close(right.hausdorff_distance(&left), guarded);
+    }
+}
+
 #[test]
 fn segment_aware_hausdorff_matches_brute_oracle_on_fixtures() {
     let parallel = (

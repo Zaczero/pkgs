@@ -324,3 +324,28 @@ def test_frechet_densify_refuses_an_unreachable_dp() -> None:
 
     # Hausdorff shares the `densify` parameter but not the quadratic DP.
     assert gm.hausdorff_distance(left, right, densify=1e-2) > 0.0
+
+
+def test_hausdorff_does_not_run_a_brute_force_oracle_per_call() -> None:
+    """The exact continuous kernel is the implementation, not a cross-check.
+
+    `hausdorff_distance` used to compute the answer twice — once with the
+    indexed kernel in a similarity frame, once with a guarded source-space
+    sweep that is quadratic in the target feature count and cubic in it per
+    source segment — and return whichever the one-ULP tiebreak preferred. Two
+    400-vertex skew linestrings took fourteen seconds and returned the *less*
+    accurate of the two answers. This test's operands would not finish inside
+    the suite's per-test timeout under that structure.
+    """
+    count = 401
+    t = np.linspace(0.0, 1.0, count)
+    left = gm.LineString(np.column_stack([10.0 * t, 3.0 * t]))
+    right = gm.LineString(np.column_stack([7.0 * t, 1.0 + 8.0 * t]))
+
+    # 6.60900136802594491... is the exact continuous Hausdorff distance for
+    # this pair. The tolerance is tight enough to exclude the guarded sweep's
+    # answer, which sat about 1.8e-14 away — the change is a precision gain as
+    # well as a cost removal.
+    exact = 6.609001368025945
+    assert abs(gm.hausdorff_distance(left, right) - exact) < 5e-15
+    assert abs(gm.hausdorff_distance(right, left) - exact) < 5e-15
