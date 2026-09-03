@@ -554,7 +554,24 @@ pub(crate) fn metric_frechet_densified(
     b: &Shape,
     densify: Option<f64>,
 ) -> crate::error::Result<f64> {
-    metric_densified(model, a, b, densify, metric_frechet)
+    metric_densified(model, a, b, densify, |model, a, b| {
+        charge_frechet_dp(a, b)?;
+        metric_frechet(model, a, b)
+    })
+}
+
+/// The discrete Fréchet DP is `n · m` cells, so `densify` amplifies
+/// quadratically: on a pair of two-vertex lines, `1e-5` is 10¹⁰ cells and
+/// `1e-6` is 10¹². Charge the product so an unreachable answer is a typed
+/// error naming the parameter to raise, rather than an uninterruptible wait.
+/// Undensified operands are input-sized and stay uncharged.
+fn charge_frechet_dp(a: &Shape, b: &Shape) -> crate::error::Result<()> {
+    crate::geometry::ExpansionBudget::pairwise(
+        "frechet_distance",
+        "densify",
+        a.coord_count(),
+        b.coord_count(),
+    )
 }
 
 pub(crate) fn metric_frechet_densified_with_scratch(
@@ -570,6 +587,7 @@ pub(crate) fn metric_frechet_densified_with_scratch(
             crs::MetricModel::Planar { .. } => {
                 let a = a.densified(fraction)?;
                 let b = b.densified(fraction)?;
+                charge_frechet_dp(&a, &b)?;
                 metric_frechet_with_scratch(model, &a, &b, scratch)
             },
             crs::MetricModel::Geodesic { .. } => metric_frechet_densified(model, a, b, densify),

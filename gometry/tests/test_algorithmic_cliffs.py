@@ -301,3 +301,26 @@ def test_free_fn_contains_xy_agrees_across_threshold():
     np.testing.assert_array_equal(free3, gm.contains_xy(prep, xs3, ys3))
     np.testing.assert_array_equal(free4, gm.contains_xy(prep, xs4, ys4))
     np.testing.assert_array_equal(free3, free4[:3])
+
+
+def test_frechet_densify_refuses_an_unreachable_dp() -> None:
+    """`densify` amplifies the Fréchet DP quadratically.
+
+    The DP is n·m cells, so on two-vertex operands `densify=1e-4` is 10^8
+    cells (a sixth of a second) while `1e-5` is 10^10 and `1e-6` is 10^12 —
+    minutes to hours of uninterruptible work from a parameter the caller picks
+    blind. Past the work ceiling it is a typed error naming `densify`.
+    """
+    left = gm.LineString([(0.0, 0.0), (10.0, 3.0)])
+    right = gm.LineString([(0.0, 1.0), (7.0, 9.0)])
+
+    # Well inside the ceiling: a real answer, and the same one undensified.
+    assert gm.frechet_distance(left, right, densify=1e-3) == pytest.approx(
+        6.708203932499369, rel=1e-9
+    )
+
+    with pytest.raises(gm.GeometryError, match=r'densify'):
+        gm.frechet_distance(left, right, densify=1e-5)
+
+    # Hausdorff shares the `densify` parameter but not the quadratic DP.
+    assert gm.hausdorff_distance(left, right, densify=1e-2) > 0.0

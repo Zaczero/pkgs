@@ -8,6 +8,16 @@ use crate::geometry::GeometryErrorKind;
 /// items. Input-sized ingestion is deliberately not charged here.
 pub(crate) const GENERATED_ITEM_LIMIT: usize = 16_000_000;
 
+/// Ceiling for the *pairwise* work a generated item count implies, when an
+/// operation is quadratic in it. Two orders above [`GENERATED_ITEM_LIMIT`]
+/// because a cell here is one compare rather than one stored coordinate: the
+/// discrete Fréchet DP runs about 6·10⁸ cells per second, so this is roughly a
+/// second and a half of work. Charged only against a caller-supplied
+/// amplification parameter, never against the operand's own vertex count —
+/// input size is the caller's business, `densify=1e-6` on a two-vertex line is
+/// not.
+pub(crate) const PAIRWISE_WORK_LIMIT: usize = 1_000_000_000;
+
 /// Checked cumulative counter used before allocation or iterative expansion.
 pub(crate) struct ExpansionBudget {
     operation: &'static str,
@@ -22,6 +32,28 @@ impl ExpansionBudget {
             parameter,
             used: 0,
         }
+    }
+
+    /// The quadratic sibling of [`Self::product`]: `left * right` against
+    /// [`PAIRWISE_WORK_LIMIT`], for an operation whose cost is the product of
+    /// two generated counts rather than their sum.
+    pub(crate) fn pairwise(
+        operation: &'static str,
+        parameter: &'static str,
+        left: usize,
+        right: usize,
+    ) -> Result<()> {
+        let produced = left.saturating_mul(right);
+        if produced > PAIRWISE_WORK_LIMIT {
+            return Err(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation,
+                parameter,
+                produced,
+                limit: PAIRWISE_WORK_LIMIT,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     pub(crate) fn check(
