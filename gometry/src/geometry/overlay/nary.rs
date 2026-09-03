@@ -674,6 +674,33 @@ fn assemble_overlay(
     // own rings. So the joint graph and the per-source graphs below are built
     // and then read for nothing but those rings, which is the whole noding
     // pipeline charged to a lane that does not need it.
+    // Two areal operands are what `binary_areal_overlay` is for: both operands'
+    // rings noded into ONE arrangement whose faces carry `[left, right]`
+    // winding numbers. It is already the engine behind `clip_by_rect` and the
+    // native areal relate; the public binary overlay path never reached it and
+    // paid the n-ary topology graph instead.
+    //
+    // Not for intersection. Two areal operands that meet along a boundary
+    // intersect in a *line*, and an area-only answer would drop it — the rule
+    // `binary_areal_overlay`'s own clean lane encodes in its `op` guard, that
+    // `overlay_lines` encodes by admitting a non-line-source edge only for
+    // intersection, and that `convex_intersection_defers_contacts_and_
+    // concavity_to_joint_graph` exists to hold. The other three operations on
+    // two areal operands are areal.
+    if domain == TopologyDomain::Cartesian
+        && op != OverlayOp::Intersection
+        && let [left, right] = inputs
+        && let (Some(left_polygons), Some(right_polygons)) =
+            (areal_only_polygons(left), areal_only_polygons(right))
+        && !left_polygons.is_empty()
+        && !right_polygons.is_empty()
+    {
+        return build_overlay_shape(
+            Vec::new(),
+            Vec::new(),
+            crate::geometry::binary_areal_overlay(&left_polygons, &right_polygons, op),
+        );
+    }
     if raw_polygon_loops_eligible {
         let loops = shape_polygon_loops(inputs);
         if !loops.is_empty() {
@@ -1005,6 +1032,33 @@ fn unwrap_geographic_area_edges(
             })
         })
         .collect()
+}
+
+/// The shape's polygons, when it carries area and nothing else. `None` for an
+/// operand with any point or lineal support, which the joint winding
+/// arrangement has no representation for.
+fn areal_only_polygons(shape: &Shape) -> Option<Vec<&crate::geometry::Polygon>> {
+    fn visit<'a>(shape: &'a Shape, out: &mut Vec<&'a crate::geometry::Polygon>) -> bool {
+        match shape {
+            Shape::Polygon(polygon) => {
+                out.push(polygon);
+                true
+            },
+            Shape::MultiPolygon(polygons) => {
+                out.extend(polygons.iter());
+                true
+            },
+            Shape::GeometryCollection(parts) => parts.iter().all(|part| visit(part, out)),
+            Shape::Empty(..) => true,
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_) => false,
+        }
+    }
+
+    let mut out = Vec::new();
+    visit(shape, &mut out).then_some(out)
 }
 
 /// The operands' own polygon rings as winding loops, in the order the graph
