@@ -1,5 +1,5 @@
 use crate::geometry::{
-    CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
+    LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
     same_topological_coordinate, scaled_residual,
 };
 /// Reduce an open monotone-chain hull (0–2 vertices degenerate to
@@ -8,10 +8,7 @@ pub(crate) fn shape_from_open_hull(hull: &[Point], empty: impl FnOnce() -> Shape
     match hull {
         [] => empty(),
         [point] => Shape::Point(*point),
-        [first, second] => Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![*first, *second]))
-                .expect("two hull vertices form a line"),
-        ),
+        [first, second] => Shape::LineString(LineSeq::segment(*first, *second)),
         _ => {
             let mut ring = hull.to_vec();
             ring.push(ring[0]);

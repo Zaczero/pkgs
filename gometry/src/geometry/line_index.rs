@@ -456,10 +456,7 @@ impl LineIndex {
         Ok(match result.len() {
             0 => Shape::Point(self.interpolate(start, false, metric)),
             1 => Shape::Point(result[0]),
-            _ => Shape::LineString(
-                LineSeq::try_new(CoordSeq::from(result))
-                    .expect("substring with two or more vertices forms a line"),
-            ),
+            _ => Shape::LineString(LineSeq::from_proven(CoordSeq::from(result))),
         })
     }
 

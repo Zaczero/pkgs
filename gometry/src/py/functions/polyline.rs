@@ -172,9 +172,7 @@ fn shape_from_decoded_polyline(coords: CoordSeq) -> Shape {
     match coords.len() {
         0 => Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY),
         1 => Shape::Point(coords.point_at(0)),
-        _ => {
-            Shape::LineString(LineSeq::try_new(coords).expect("polyline has two or more vertices"))
-        },
+        _ => Shape::LineString(LineSeq::from_proven(coords)),
     }
 }
 

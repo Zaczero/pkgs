@@ -184,12 +184,10 @@ pub(crate) fn clip_lines_packed_xy(
         }
         let bounds = Bounds::new_raw(row_bounds[0], row_bounds[1], row_bounds[2], row_bounds[3]);
         if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-            let shape = Shape::LineString(
-                LineSeq::try_new(
-                    coords.view(CoordWindow::from_range(window.clone(), coords.len())),
-                )
-                .expect("packed line rows contain at least two vertices"),
-            );
+            let shape = Shape::LineString(LineSeq::row_view(
+                coords,
+                CoordWindow::from_range(window.clone(), coords.len()),
+            ));
             if !crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
                 Some(&shape),
                 bounds,
@@ -1016,12 +1014,10 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                 let bounds = if window.is_empty() {
                     [f64::NAN; 4]
                 } else {
-                    let shape = Shape::LineString(
-                        LineSeq::try_new(
-                            coords.view(CoordWindow::from_range(window.clone(), coords.len())),
-                        )
-                        .expect("line coordinate sequence must contain at least two vertices"),
-                    );
+                    let shape = Shape::LineString(LineSeq::row_view(
+                        coords,
+                        CoordWindow::from_range(window.clone(), coords.len()),
+                    ));
                     if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
                         crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)

@@ -557,12 +557,9 @@ impl Shape {
         Ok(match self {
             Self::LineString(points) => offset(points)?.map_or_else(
                 || Self::typed_empty(GeometryKind::LineString, points.axes()),
-                |line| {
-                    Self::LineString(
-                        LineSeq::try_new(CoordSeq::from(line))
-                            .expect("offset curve has at least two vertices"),
-                    )
-                },
+                // An offset curve is emitted only when it has vertices to
+                // offset; `offset` returns `None` for a collapsed result.
+                |line| Self::LineString(LineSeq::from_proven(CoordSeq::from(line))),
             ),
             Self::MultiLineString(lines) => {
                 let members = lines
@@ -574,10 +571,9 @@ impl Shape {
                         crate::geometry::MultiMember::Value(index) => {
                             offset(lines.as_slice()[index].as_coords()).map(|line| {
                                 line.map_or(crate::geometry::MultiMember::Empty, |line| {
-                                    crate::geometry::MultiMember::Value(
-                                        LineSeq::try_new(CoordSeq::from(line))
-                                            .expect("offset curve has at least two vertices"),
-                                    )
+                                    crate::geometry::MultiMember::Value(LineSeq::from_proven(
+                                        CoordSeq::from(line),
+                                    ))
                                 })
                             })
                         },

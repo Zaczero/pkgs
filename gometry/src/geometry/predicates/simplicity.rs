@@ -36,13 +36,16 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
         return false;
     }
     let ring_pairs: Vec<(&CoordSeq, &CoordSeq)> = match (original, simplified) {
-        (Shape::Polygon(before), Shape::Polygon(after)) => {
-            before.rings().zip(after.rings()).collect()
-        },
+        (Shape::Polygon(before), Shape::Polygon(after)) => before
+            .rings()
+            .map(Ring::coords)
+            .zip(after.rings().map(Ring::coords))
+            .collect(),
         (Shape::MultiPolygon(before), Shape::MultiPolygon(after)) => before
             .iter()
             .flat_map(Polygon::rings)
-            .zip(after.iter().flat_map(Polygon::rings))
+            .map(Ring::coords)
+            .zip(after.iter().flat_map(Polygon::rings).map(Ring::coords))
             .collect(),
         _ => return false,
     };

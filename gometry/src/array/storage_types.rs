@@ -675,12 +675,10 @@ impl<'a> Iterator for ShapesIter<'a> {
                 Some(std::borrow::Cow::Owned(if window.is_empty() {
                     Shape::typed_empty(GeometryKind::LineString, coords.axes())
                 } else {
-                    Shape::LineString(
-                        LineSeq::try_new(
-                            coords.view(CoordWindow::from_range(window, coords.len())),
-                        )
-                        .expect("line coordinate sequence must contain at least two vertices"),
-                    )
+                    Shape::LineString(LineSeq::row_view(
+                        coords,
+                        CoordWindow::from_range(window, coords.len()),
+                    ))
                 }))
             },
             PhysicalRow::Polygon(coords, ring_offsets, rings) => {

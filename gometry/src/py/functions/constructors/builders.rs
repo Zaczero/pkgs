@@ -713,9 +713,7 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
 pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPolygon", |item| {
         let polygons = extract_polygons(item)?;
-        let axes = polygons
-            .first()
-            .map_or(CoordinateAxes::XY, Polygon::axes);
+        let axes = polygons.first().map_or(CoordinateAxes::XY, Polygon::axes);
         let shape = Shape::multi_polygon(axes, polygons);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)

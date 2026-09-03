@@ -646,7 +646,10 @@ impl Shape {
         // Native heap-driven Visvalingam-Whyatt — no geo round-trip, and
         // surviving vertices KEEP their Z/M (matching the DP route). Area
         // threshold is derived inside `vw_keep` after any scale frame.
-        let vw_line = |points: &CoordSeq| -> CoordSeq { vw_filter(points, tolerance) };
+        // Visvalingam removes interior vertices only, never an endpoint, so a
+        // line stays a line.
+        let vw_line =
+            |points: &LineSeq| -> LineSeq { LineSeq::from_proven(vw_filter(points, tolerance)) };
         let vw_ring = |ring: &Ring| -> Option<Ring> {
             let coords = vw_filter(ring.coords(), tolerance);
             (coords.len() >= Ring::MIN_VERTICES_CLOSED).then(|| Ring::from_closed(coords))
@@ -659,16 +662,10 @@ impl Shape {
         };
         let simplified = match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => return Ok(self.clone()),
-            Self::LineString(points) => Self::LineString(
-                LineSeq::try_new(vw_line(points))
-                    .expect("line simplification keeps at least two vertices"),
-            ),
+            Self::LineString(points) => Self::LineString(vw_line(points)),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(
-                        LineSeq::try_new(vw_line(line))
-                            .expect("line simplification keeps at least two vertices"),
-                    )
+                    Ok::<_, crate::error::Error>(vw_line(line))
                 })?)
             },
             Self::Polygon(polygon) => vw_polygon(polygon).map_or_else(

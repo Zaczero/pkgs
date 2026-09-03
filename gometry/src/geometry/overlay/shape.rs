@@ -144,8 +144,7 @@ impl Shape {
         let noded = graph
             .edges
             .iter()
-            .map(|edge| CoordSeq::from(vec![edge.segment.start.point(), edge.segment.end.point()]))
-            .map(|line| LineSeq::try_new(line).expect("noded segment has two vertices"))
+            .map(|edge| LineSeq::segment(edge.segment.start.point(), edge.segment.end.point()))
             .collect::<Vec<_>>();
         let noded = Self::multi_line_string(self.axes(), noded);
         carry_ordinates(noded, &[self], "node", strictness.is_strict())
@@ -159,21 +158,17 @@ impl Shape {
                 // nodes, splitting every Y/T/X junction (degree `>= 3`) — the
                 // JTS LineMerger contract, shared verbatim with the overlay line
                 // sink via [`merge_chains`].
-                let mut chains =
+                let chains =
                     merge_chains(lines.iter().map(|line| line.as_coords().clone()).collect());
-                match chains.len() {
-                    0 => Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
-                    1 => Self::LineString(
-                        LineSeq::try_new(chains.pop().expect("len == 1"))
-                            .expect("merged chain is lineal"),
-                    ),
-                    _ => Self::multi_line_string(
+                // A merge that produced nothing keeps the lineal type
+                // (`MULTILINESTRING EMPTY`), unlike the general narrowing.
+                if chains.is_empty() {
+                    Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
+                } else {
+                    Self::narrow_lines(
                         lines.axes(),
-                        chains
-                            .into_iter()
-                            .map(|line| LineSeq::try_new(line).expect("merged chain is lineal"))
-                            .collect(),
-                    ),
+                        chains.into_iter().map(LineSeq::from_proven).collect(),
+                    )
                 }
             },
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
@@ -191,11 +186,11 @@ impl Shape {
         let (same, opposite) = shared_paths_from_graph(&graph);
         let same = same
             .into_iter()
-            .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
+            .map(LineSeq::from_proven)
             .collect::<Vec<_>>();
         let opposite = opposite
             .into_iter()
-            .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
+            .map(LineSeq::from_proven)
             .collect::<Vec<_>>();
         let result = Self::geometry_collection(vec![
             Self::multi_line_string(CoordinateAxes::XY, same),

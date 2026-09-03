@@ -4,8 +4,8 @@ use crate::error::Result;
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
     Bounds, Bounds3D, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryKind, HasM, HasZ,
-    HashSet, LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon,
-    Shape, line_length_3d,
+    HashSet, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
+    line_length_3d,
 };
 
 impl Shape {
@@ -294,11 +294,11 @@ impl Shape {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => {},
             Self::LineString(points) => visit(points),
             Self::MultiLineString(lines) => lines.iter().for_each(|line| visit(line)),
-            Self::Polygon(polygon) => polygon.rings().for_each(&mut *visit),
+            Self::Polygon(polygon) => polygon.rings().for_each(|ring| visit(ring)),
             Self::MultiPolygon(polygons) => polygons
                 .iter()
                 .flat_map(Polygon::rings)
-                .for_each(&mut *visit),
+                .for_each(|ring| visit(ring)),
             Self::GeometryCollection(geometries) => {
                 for geometry in geometries {
                     geometry.for_each_segment_chain_inner(visit);
@@ -420,7 +420,7 @@ impl Shape {
         clippy::impl_trait_in_params,
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
-    pub fn for_each_ring(&self, mut visit: impl FnMut(&CoordSeq)) {
+    pub fn for_each_ring(&self, mut visit: impl FnMut(&Ring)) {
         match self {
             Self::Polygon(polygon) => polygon.rings().for_each(&mut visit),
             Self::MultiPolygon(polygons) => polygons
@@ -435,10 +435,7 @@ impl Shape {
     /// other geometry kind (callers gate on `Shape::Polygon`).
     pub fn exterior(&self) -> Option<Self> {
         match self {
-            Self::Polygon(polygon) => Some(Self::LineString(
-                LineSeq::try_new(polygon.shell.coords().clone())
-                    .expect("polygon shell is a valid line"),
-            )),
+            Self::Polygon(polygon) => Some(Self::LineString(polygon.shell.as_line())),
             // `POLYGON EMPTY` has an (empty) shell, mirroring Shapely's
             // `Polygon().exterior == LINEARRING EMPTY`; the shell carries the
             // empty polygon's declared axes.
@@ -456,12 +453,7 @@ impl Shape {
             Self::Polygon(polygon) => polygon
                 .holes
                 .iter()
-                .map(|hole| {
-                    Self::LineString(
-                        LineSeq::try_new(hole.coords().clone())
-                            .expect("polygon hole is a valid line"),
-                    )
-                })
+                .map(|hole| Self::LineString(hole.as_line()))
                 .collect(),
             _ => Vec::new(),
         }

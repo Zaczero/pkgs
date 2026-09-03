@@ -643,37 +643,25 @@ impl Shape {
         let engine = SnapReference::build(&reference_points, tolerance);
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
-            Self::MultiPoint(points) => Self::MultiPoint(
-                points
-                    .try_map_values(|point| {
-                        Ok::<_, std::convert::Infallible>(engine.snap_point(point))
-                    })
-                    .expect("snap preserves multipart members"),
-            ),
+            Self::MultiPoint(points) => {
+                Self::MultiPoint(points.map_values(|point| engine.snap_point(point)))
+            },
             Self::LineString(points) => Self::LineString(
                 LineSeq::try_new(CoordSeq::from(snap_line_to_reference(points, &engine)))
                     .expect("line coordinate sequence must contain at least two vertices"),
             ),
-            Self::MultiLineString(lines) => Self::MultiLineString(
-                lines
-                    .try_map_values(lines.axes(), |line| {
-                        Ok::<_, std::convert::Infallible>(
-                            LineSeq::try_new(CoordSeq::from(snap_line_to_reference(line, &engine)))
-                                .expect(
-                                    "line coordinate sequence must contain at least two vertices",
-                                ),
-                        )
-                    })
-                    .expect("snap preserves multipart members"),
-            ),
+            Self::MultiLineString(lines) => {
+                Self::MultiLineString(lines.map_values(lines.axes(), |line| {
+                    LineSeq::try_new(CoordSeq::from(snap_line_to_reference(line, &engine)))
+                        .expect("line coordinate sequence must contain at least two vertices")
+                }))
+            },
             Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)),
-            Self::MultiPolygon(polygons) => Self::MultiPolygon(
-                polygons
-                    .try_map_values(polygons.axes(), |polygon| {
-                        Ok::<_, std::convert::Infallible>(polygon.snap_to_reference(&engine))
-                    })
-                    .expect("snap preserves multipart members"),
-            ),
+            Self::MultiPolygon(polygons) => {
+                Self::MultiPolygon(polygons.map_values(polygons.axes(), |polygon| {
+                    polygon.snap_to_reference(&engine)
+                }))
+            },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.snap(reference, tolerance))?,
             ),

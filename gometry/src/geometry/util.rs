@@ -27,13 +27,10 @@ pub(crate) fn bounds_to_shape(bounds: Bounds) -> Shape {
     if same_topological_coordinate(bounds.minx(), bounds.maxx())
         || same_topological_coordinate(bounds.miny(), bounds.maxy())
     {
-        return Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(vec![
-                Point::new_raw_xy(bounds.minx(), bounds.miny()),
-                Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-            ]))
-            .expect("degenerate rectangle line has two vertices"),
-        );
+        return Shape::LineString(LineSeq::from_proven(CoordSeq::from(vec![
+            Point::new_raw_xy(bounds.minx(), bounds.miny()),
+            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
+        ])));
     }
     Shape::Polygon(rect_polygon(bounds))
 }
@@ -73,9 +70,9 @@ pub(crate) fn geographic_bounds_to_shape(
     }
     points.push(Point::new_raw_xy(bounds.maxx(), bounds.miny()));
     if same_topological_coordinate(bounds.miny(), bounds.maxy()) {
-        return Ok(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(points)).expect("geographic rectangle edge is lineal"),
-        ));
+        return Ok(Shape::LineString(LineSeq::from_proven(CoordSeq::from(
+            points,
+        ))));
     }
     points.push(Point::new_raw_xy(bounds.maxx(), bounds.maxy()));
     for index in (1..segments).rev() {

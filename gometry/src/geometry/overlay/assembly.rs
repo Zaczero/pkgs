@@ -206,15 +206,12 @@ pub(crate) fn build_overlay_shape(
     let line_part = (!lines.is_empty()).then(|| {
         Shape::narrow_lines(
             CoordinateAxes::XY,
-            lines
-                .into_iter()
-                .map(|line| LineSeq::try_new(line).expect("assembled overlay chain is lineal"))
-                .collect(),
+            lines.into_iter().map(LineSeq::from_proven).collect(),
         )
     });
 
-    let point_part = (!surviving.is_empty())
-        .then(|| Shape::narrow_points(CoordinateAxes::XY, surviving));
+    let point_part =
+        (!surviving.is_empty()).then(|| Shape::narrow_points(CoordinateAxes::XY, surviving));
     let polygon_part =
         (!polygons.is_empty()).then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons));
 

@@ -50,7 +50,7 @@ pub(crate) use types::{
     PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape,
     ShapeData, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
     canonical_f64_bits, coerce_to_common_axes, concat_coord_columns, ordered_edge,
-    reverse_column_arc, segment_midpoint, witness_pair,
+    reverse_column_arc, segment_midpoint,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
@@ -281,10 +281,7 @@ pub(crate) fn common_axes(a: &Shape, b: &Shape) -> CoordinateAxes {
 )]
 pub(crate) fn nearest_line(pair: Option<(Point, Point)>, common: CoordinateAxes) -> Shape {
     match pair {
-        Some((start, end)) => Shape::LineString(
-            LineSeq::try_new(witness_pair(start, end))
-                .expect("nearest-line witness has two vertices"),
-        ),
+        Some((start, end)) => Shape::LineString(LineSeq::segment(start, end)),
         None => Shape::typed_empty(GeometryKind::LineString, common),
     }
 }
@@ -470,11 +467,11 @@ impl Shape {
             Self::MultiPoint(seq) => seq.coordinate_bytes(),
             Self::LineString(seq) => seq.coordinate_bytes(),
             Self::MultiLineString(lines) => lines.iter().map(|line| line.coordinate_bytes()).sum(),
-            Self::Polygon(polygon) => polygon.rings().map(CoordSeq::coordinate_bytes).sum(),
+            Self::Polygon(polygon) => polygon.rings().map(|ring| ring.coordinate_bytes()).sum(),
             Self::MultiPolygon(polygons) => polygons
                 .iter()
                 .flat_map(Polygon::rings)
-                .map(CoordSeq::coordinate_bytes)
+                .map(|ring| ring.coordinate_bytes())
                 .sum(),
             Self::GeometryCollection(geometries) => {
                 geometries.iter().map(Self::coordinate_bytes).sum()
@@ -586,8 +583,8 @@ impl Polygon {
     }
 
     /// The shell followed by every hole, each as a borrowed coordinate column.
-    pub fn rings(&self) -> impl Iterator<Item = &CoordSeq> + '_ {
-        std::iter::once(self.shell.coords()).chain(self.holes.iter().map(Ring::coords))
+    pub fn rings(&self) -> impl Iterator<Item = &Ring> + '_ {
+        std::iter::once(&self.shell).chain(self.holes.iter())
     }
 
     /// Apply a per-ring coordinate transform to the shell and every hole. The

@@ -392,13 +392,7 @@ fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
     let mut failure = None;
     shape.for_each_ring(|ring| {
         if failure.is_none() {
-            if let Err(error) = crate::try_push_vec(
-                &mut rings,
-                Shape::LineString(
-                    crate::geometry::LineSeq::try_new(ring.clone())
-                        .expect("ring has at least two vertices"),
-                ),
-            ) {
+            if let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line())) {
                 failure = Some(error);
             }
         }

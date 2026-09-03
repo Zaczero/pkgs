@@ -7,10 +7,9 @@ use crate::geometry::antimeridian::{
     collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq,
-    MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness,
-    ZOrdinate, open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding,
-    same_point,
+    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
+    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness, ZOrdinate,
+    open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
 };
 
 impl Shape {
@@ -50,10 +49,9 @@ impl Shape {
                         pieces
                             .into_iter()
                             .map(CoordSeq::from)
-                            .map(|piece| {
-                                LineSeq::try_new(piece)
-                                    .expect("antimeridian split pieces are lineal")
-                            })
+                            // Splitting a line at meridian crossings yields
+                            // pieces of at least two vertices each.
+                            .map(LineSeq::from_proven)
                             .collect(),
                     ))
                 }
@@ -69,12 +67,13 @@ impl Shape {
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
                             } else {
-                                split.extend(pieces.into_iter().map(CoordSeq::from).map(|piece| {
-                                    MultiMember::Value(
-                                        LineSeq::try_new(piece)
-                                            .expect("antimeridian split pieces are lineal"),
-                                    )
-                                }));
+                                split.extend(
+                                    pieces
+                                        .into_iter()
+                                        .map(CoordSeq::from)
+                                        .map(LineSeq::from_proven)
+                                        .map(MultiMember::Value),
+                                );
                             }
                         },
                     }
@@ -567,10 +566,7 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         .collect::<Vec<_>>();
     let mut assigned_holes = vec![Vec::<Ring>::new(); polygons.len()];
     for hole in kept_holes {
-        let hole_shape = Shape::LineString(
-            LineSeq::try_new(hole.coords().clone())
-                .expect("line coordinate sequence must contain at least two vertices"),
-        );
+        let hole_shape = Shape::LineString(hole.as_line());
         let owner = candidate_shapes
             .iter()
             .position(|candidate| candidate.contains(&hole_shape));

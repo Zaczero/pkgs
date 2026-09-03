@@ -101,24 +101,14 @@ impl Shape {
                 pieces.extend(
                     split_line_by_points(line, splitters.as_slice(), tolerance)
                         .into_iter()
-                        .map(|part| {
-                            Self::LineString(
-                                LineSeq::try_new(CoordSeq::from(part))
-                                    .expect("line split part is lineal"),
-                            )
-                        }),
+                        .map(|part| Self::LineString(LineSeq::from_proven(CoordSeq::from(part)))),
                 );
             },
             Self::MultiLineString(lines) => {
                 pieces.extend(lines.iter().flat_map(|line| {
                     split_line_by_points(line, splitters.as_slice(), tolerance)
                         .into_iter()
-                        .map(|part| {
-                            Self::LineString(
-                                LineSeq::try_new(CoordSeq::from(part))
-                                    .expect("line split part is lineal"),
-                            )
-                        })
+                        .map(|part| Self::LineString(LineSeq::from_proven(CoordSeq::from(part))))
                 }));
             },
             _ => return Err(GeometryErrorKind::LineStringRequired.into()),
@@ -486,10 +476,12 @@ impl Shape {
             } else {
                 part.zs().map(Into::into)
             };
-            measured.push(
-                LineSeq::try_new(CoordSeq::from_columns(xs, ys, zs, Some(measures.into())))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-            );
+            measured.push(LineSeq::from_proven(CoordSeq::from_columns(
+                xs,
+                ys,
+                zs,
+                Some(measures.into()),
+            )));
         }
         if measured.is_empty() {
             return Ok(Shape::typed_empty(GeometryKind::of(self), self.axes()));
@@ -656,9 +648,7 @@ impl Shape {
         Ok(match result.len() {
             0 => self.line_interpolate_point_m_with(start, metric)?,
             1 => Self::Point(result[0]),
-            _ => Self::LineString(
-                LineSeq::try_new(CoordSeq::from(result)).expect("M substring is lineal"),
-            ),
+            _ => Self::LineString(LineSeq::from_proven(CoordSeq::from(result))),
         })
     }
 }

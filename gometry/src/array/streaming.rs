@@ -301,10 +301,7 @@ impl StreamingLines {
                 if row.is_empty() {
                     Shape::typed_empty(GeometryKind::LineString, coords.axes())
                 } else {
-                    Shape::LineString(
-                        LineSeq::try_new(row)
-                            .expect("streamed present line contains at least two vertices"),
-                    )
+                    Shape::LineString(LineSeq::from_proven(row))
                 }
             })
             .collect()
@@ -332,10 +329,7 @@ fn line_shapes_from_parts(coords: &CoordSeq, offsets: &[usize]) -> Vec<Shape> {
             if row.is_empty() {
                 Shape::typed_empty(GeometryKind::LineString, coords.axes())
             } else {
-                Shape::LineString(
-                    LineSeq::try_new(row)
-                        .expect("streamed present line contains at least two vertices"),
-                )
+                Shape::LineString(LineSeq::from_proven(row))
             }
         })
         .collect()

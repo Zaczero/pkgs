@@ -12,7 +12,7 @@ use crate::geometry::predicates::{
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
     MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
-    emit_from_original, finish_planar_squared_min, point_distance, unique_xy_points, witness_pair,
+    emit_from_original, finish_planar_squared_min, point_distance, unique_xy_points,
 };
 
 impl Shape {
@@ -130,10 +130,7 @@ impl Shape {
                 let [a, b] = emitted.as_slice() else {
                     unreachable!("minimum_clearance witness plan has two vertices");
                 };
-                Self::LineString(
-                    LineSeq::try_new(witness_pair(*a, *b))
-                        .expect("minimum-clearance witness has two vertices"),
-                )
+                Self::LineString(LineSeq::segment(*a, *b))
             },
         )
     }

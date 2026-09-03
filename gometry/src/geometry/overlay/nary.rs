@@ -367,7 +367,9 @@ fn direct_multipoint_intersection(
     }
     dedup_points(&mut candidates);
     candidates.sort_by(crate::geometry::compare_points);
-    let axes = candidates.first().map_or(CoordinateAxes::XY, |point| point.axes);
+    let axes = candidates
+        .first()
+        .map_or(CoordinateAxes::XY, |point| point.axes);
     let output = Shape::narrow_points(axes, candidates);
     Ok(Some(carry_direct_points_ordinates(
         output,

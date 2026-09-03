@@ -260,7 +260,7 @@ fn reverse(&self) -> Self {
             .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
             .collect();
         PyGeometry::typed_wgs84(Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(points)).expect("H3 edge boundary is lineal"),
+            LineSeq::from_proven(CoordSeq::from(points)),
         ))
     }
 

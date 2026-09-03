@@ -26,10 +26,7 @@ pub enum ShapeRow<'a> {
 impl ShapeRow<'_> {
     fn line_shape(coords: &CoordSeq, start: usize, end: usize) -> Shape {
         let window = CoordWindow::from_range(start..end, coords.len());
-        Shape::LineString(
-            LineSeq::try_new(coords.view(window))
-                .expect("line coordinate sequence must contain at least two vertices"),
-        )
+        Shape::LineString(LineSeq::row_view(coords, window))
     }
 
     #[expect(

@@ -47,12 +47,9 @@ fn ring_as_open_linework(ring: &CoordSeq) -> Option<LineSeq> {
         0 => None,
         1 => {
             let point = line.point_at(0);
-            Some(
-                LineSeq::try_new(CoordSeq::from(vec![point, point]))
-                    .expect("duplicated point forms zero-length linework"),
-            )
+            Some(LineSeq::segment(point, point))
         },
-        _ => Some(LineSeq::try_new(line).expect("open ring linework is lineal")),
+        _ => Some(LineSeq::from_proven(line)),
     }
 }
 
@@ -64,7 +61,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
             let lines = polygon
                 .rings()
-                .filter_map(ring_as_open_linework)
+                .filter_map(|ring| ring_as_open_linework(ring))
                 .collect::<Vec<_>>();
             Shape::multi_line_string(polygon.shell.coords().axes(), lines)
         },
@@ -356,11 +353,7 @@ fn simple_stroke_polygon(
     ring_ys.push(ys[0]);
     let ring = CoordSeq::from_columns(ring_xs.into(), ring_ys.into(), None, None);
     Ok((ring_winding(&ring).is_ccw()
-        && Shape::LineString(
-            LineSeq::try_new(ring.clone())
-                .expect("line coordinate sequence must contain at least two vertices"),
-        )
-        .is_simple())
+        && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple())
     .then(|| Polygon {
         shell: Ring::from_closed(ring),
         holes: Vec::new().into(),

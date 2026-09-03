@@ -2,9 +2,9 @@ use ahash::HashSetExt as _;
 
 use crate::geometry::coverage::{AABB, HashMap, HashMapExt as _, HashSet, RTreeObject, Result};
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point,
-    PointKey, Polygon, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, line_segments,
-    same_point, segment_cross_point, undirected_segment_edge_key,
+    Bounds, BulkRTree, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, PointKey,
+    Polygon, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, line_segments, same_point,
+    segment_cross_point, undirected_segment_edge_key,
 };
 
 /// One row's boundary segments plus the prepared per-row machinery the
@@ -406,10 +406,7 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
             }
             let lines: Vec<LineSeq> = segments
                 .into_iter()
-                .map(|segment| {
-                    LineSeq::try_new(CoordSeq::from(vec![segment.start, segment.end]))
-                        .expect("coverage invalid segment has two vertices")
-                })
+                .map(|segment| LineSeq::segment(segment.start.point(), segment.end.point()))
                 .collect();
             Shape::multi_line_string(CoordinateAxes::XY, lines).line_merge()
         })

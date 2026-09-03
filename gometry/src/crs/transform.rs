@@ -1533,28 +1533,20 @@ fn rebuild_shape_columns(shape: &Shape, cursor: &mut TransformCursor) -> Result<
         Shape::MultiPoint(points) => {
             Shape::MultiPoint(points.with_coords(rebuild_seq_columns(points, cursor)))
         },
-        Shape::LineString(points) => Shape::LineString(
-            LineSeq::try_new(rebuild_seq_columns(points, cursor))
-                .expect("transformed line remains empty or >=2 vertices"),
-        ),
-        Shape::MultiLineString(lines) => Shape::MultiLineString(
-            lines
-                .try_map_values(lines.axes(), |line| {
-                    Ok::<_, std::convert::Infallible>(
-                        LineSeq::try_new(rebuild_seq_columns(line, cursor))
-                            .expect("transformed line remains at least two vertices"),
-                    )
-                })
-                .expect("transformed multipart preserves members"),
-        ),
+        Shape::LineString(points) => {
+            Shape::LineString(LineSeq::from_proven(rebuild_seq_columns(points, cursor)))
+        },
+        Shape::MultiLineString(lines) => {
+            Shape::MultiLineString(lines.map_values(lines.axes(), |line| {
+                LineSeq::from_proven(rebuild_seq_columns(line, cursor))
+            }))
+        },
         Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon_columns(polygon, cursor)),
-        Shape::MultiPolygon(polygons) => Shape::MultiPolygon(
-            polygons
-                .try_map_values(polygons.axes(), |polygon| {
-                    Ok::<_, std::convert::Infallible>(rebuild_polygon_columns(polygon, cursor))
-                })
-                .expect("transformed multipart preserves members"),
-        ),
+        Shape::MultiPolygon(polygons) => {
+            Shape::MultiPolygon(polygons.map_values(polygons.axes(), |polygon| {
+                rebuild_polygon_columns(polygon, cursor)
+            }))
+        },
         Shape::GeometryCollection(geometries) => Shape::GeometryCollection(
             geometries.try_map_members(|geometry| rebuild_shape_columns(geometry, cursor))?,
         ),

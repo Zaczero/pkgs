@@ -900,10 +900,7 @@ impl PyH3EdgeArray {
                 }
                 crate::try_push(
                     &mut shapes,
-                    Shape::LineString(
-                        LineSeq::try_new(CoordSeq::try_from_points(&points)?)
-                            .expect("H3 edge boundary is lineal"),
-                    ),
+                    Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&points)?)),
                 )?;
             }
             Ok::<_, PyErr>(shapes)

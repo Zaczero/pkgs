@@ -322,9 +322,7 @@ fn diagnostic_line(segment: crate::geometry::Segment, closed: bool) -> Shape {
     if closed {
         points.push(segment.start);
     }
-    Shape::LineString(
-        LineSeq::try_new(CoordSeq::from(points)).expect("diagnostic line has two vertices"),
-    )
+    Shape::LineString(LineSeq::from_proven(CoordSeq::from(points)))
 }
 
 pub(crate) fn polygon_segment_keys(

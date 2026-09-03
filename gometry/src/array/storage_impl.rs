@@ -600,10 +600,9 @@ impl GeometryArrayStorage {
                 coords,
                 offsets,
                 row_map,
-            } => Arc::new(ShapeData::new(Shape::LineString(
-                LineSeq::try_new(Self::line_view(coords, offsets, row_map.as_deref(), index))
-                    .expect("line coordinate sequence must contain at least two vertices"),
-            ))),
+            } => Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_proven(
+                Self::line_view(coords, offsets, row_map.as_deref(), index),
+            )))),
         }
     }
 }

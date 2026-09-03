@@ -129,12 +129,10 @@ where
                 packed_point_row(
                     crosses,
                     move || {
-                        Shape::LineString(
-                            LineSeq::try_new(
-                                coords.view(CoordWindow::from_range(shape_window, coords.len())),
-                            )
-                            .expect("line coordinate sequence must contain at least two vertices"),
-                        )
+                        Shape::LineString(LineSeq::row_view(
+                            coords,
+                            CoordWindow::from_range(shape_window, coords.len()),
+                        ))
                     },
                     domain,
                     strategy,

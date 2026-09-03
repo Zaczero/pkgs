@@ -87,9 +87,7 @@ pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {
         .map_or(CoordinateAxes::XY, |point| point.axes);
     match parts.len() {
         0 => Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
-        1 => Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(parts.remove(0))).expect("line part is lineal"),
-        ),
+        1 => Shape::LineString(LineSeq::from_proven(CoordSeq::from(parts.remove(0)))),
         _ => Shape::multi_line_string(
             axes,
             parts

@@ -403,27 +403,25 @@ impl Shape {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => Self::MultiPoint(points.clone()),
             Self::LineString(points) => Self::LineString(
-                LineSeq::try_new(smooth_coord_seq::<false>(
+                // Smoothing repositions and inserts vertices; it never drops
+                // one, and returns the input unchanged when too short to act.
+                LineSeq::from_proven(smooth_coord_seq::<false>(
                     points,
                     iterations,
                     method,
                     keep_endpoints,
                     budget,
-                )?)
-                .expect("line coordinate sequence must contain at least two vertices"),
+                )?),
             ),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    Ok::<_, crate::error::Error>(
-                        LineSeq::try_new(smooth_coord_seq::<false>(
-                            line,
-                            iterations,
-                            method,
-                            keep_endpoints,
-                            budget,
-                        )?)
-                        .expect("line coordinate sequence must contain at least two vertices"),
-                    )
+                    Ok::<_, crate::error::Error>(LineSeq::from_proven(smooth_coord_seq::<false>(
+                        line,
+                        iterations,
+                        method,
+                        keep_endpoints,
+                        budget,
+                    )?))
                 })?)
             },
             Self::Polygon(polygon) => Self::Polygon(smooth_polygon_rings(

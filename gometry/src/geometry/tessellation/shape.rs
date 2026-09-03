@@ -227,11 +227,14 @@ impl Shape {
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
         match self {
-            Self::Polygon(polygon) => {
-                constrained_triangle_vertices(polygon.rings(), self.area(), refinement, budget)
-            },
+            Self::Polygon(polygon) => constrained_triangle_vertices(
+                polygon.rings().map(Ring::coords),
+                self.area(),
+                refinement,
+                budget,
+            ),
             Self::MultiPolygon(polygons) => constrained_triangle_vertices(
-                polygons.iter().flat_map(Polygon::rings),
+                polygons.iter().flat_map(Polygon::rings).map(Ring::coords),
                 self.area(),
                 refinement,
                 budget,
@@ -459,10 +462,16 @@ impl Shape {
             // coordinate columns straight into the result (one `LineString`, or
             // a `MultiLineString` when there are holes / parts) — no per-vertex
             // `Point` round-trip through `to_vec` + column rebuild.
-            Self::Polygon(polygon) => rings_to_boundary(polygon.rings().cloned().collect()),
-            Self::MultiPolygon(polygons) => {
-                rings_to_boundary(polygons.iter().flat_map(Polygon::rings).cloned().collect())
+            Self::Polygon(polygon) => {
+                rings_to_boundary(polygon.rings().map(Ring::as_line).collect())
             },
+            Self::MultiPolygon(polygons) => rings_to_boundary(
+                polygons
+                    .iter()
+                    .flat_map(Polygon::rings)
+                    .map(Ring::as_line)
+                    .collect(),
+            ),
             Self::GeometryCollection(geometries) => {
                 let boundaries: Vec<_> = geometries
                     .iter()

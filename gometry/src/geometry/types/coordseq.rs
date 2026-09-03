@@ -1142,12 +1142,9 @@ fn concat_f64_slices(left: &[f64], right: &[f64]) -> Arc<[f64]> {
 /// The two-point sequence of a witness line, keeping the ordinate columns
 /// BOTH endpoints carry — the axes intersection.
 ///
-/// Backs `shortest_line`, `minimum_clearance_line`, and the circle-radius
-/// lines. A vertex copy or interpolated foot keeps its resolvable Z/M when
-/// the other side has them too, while a 2D endpoint never gets fabricated
-/// zeros (sequences are axis-homogeneous, so a mixed pair cannot be stored
-/// verbatim).
-pub(crate) fn witness_pair(start: Point, end: Point) -> CoordSeq {
+/// A two-vertex sequence on the axes both endpoints carry. Reached through
+/// [`crate::geometry::LineSeq::segment`], which is where the rule is documented.
+pub(crate) fn coerced_pair(start: Point, end: Point) -> CoordSeq {
     let (start, end) = coerce_to_common_axes(start, end);
     let mut builder = CoordSeqBuilder::with_capacity(start.axes, 2);
     builder.push(start);
@@ -1158,7 +1155,7 @@ pub(crate) fn witness_pair(start: Point, end: Point) -> CoordSeq {
 /// Coerce a witness pair to the ordinate columns BOTH endpoints carry (the axes
 /// intersection) — a 2D endpoint never gets fabricated Z/M. The single source of
 /// the common-dimensionality rule for `nearest_points`/`shortest_line`, so the
-/// witness `LineString` ([`witness_pair`]) and the point pair cannot diverge:
+/// witness `LineString` ([`crate::geometry::LineSeq::segment`]) and the point pair cannot diverge:
 /// `nearest_points(left, right)` returns exactly `shortest_line`'s endpoints,
 /// dimensionality included (an XYZM line vs an XY point yields XY witnesses).
 pub(crate) fn coerce_to_common_axes(start: Point, end: Point) -> (Point, Point) {
@@ -1581,7 +1578,7 @@ mod coerce_tests {
 
     /// The witness pair drops to the axes BOTH endpoints carry: a Z/M endpoint
     /// vs a bare XY endpoint becomes XY (no fabricated Z/M), and the result is
-    /// axis-homogeneous so `witness_pair` and `nearest_points` cannot diverge.
+    /// axis-homogeneous so `LineSeq::segment` and `nearest_points` cannot diverge.
     #[test]
     fn coerce_to_common_axes_drops_to_intersection() {
         let zm = Point::new_raw_axes(1.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0)));

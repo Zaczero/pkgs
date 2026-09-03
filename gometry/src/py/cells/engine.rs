@@ -472,12 +472,11 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
         Shape::build_area_all(
             &[&Shape::multi_line_string(
                 crate::geometry::CoordinateAxes::XY,
-                crate::try_collect_results(outline.into_iter().map(|line| {
-                    Ok::<_, PyErr>(
-                        LineSeq::try_new(line)
-                            .expect("line coordinate sequence must contain at least two vertices"),
-                    )
-                }))?,
+                crate::try_collect_results(
+                    outline
+                        .into_iter()
+                        .map(|line| Ok::<_, PyErr>(LineSeq::from_proven(line))),
+                )?,
             )],
             true,
         )?

@@ -5,7 +5,8 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::GeometryKind;
 use crate::geometry::types::{
-    CoordIter, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon,
+    CoordIter, CoordSeq, CoordWindow, CoordinateAxes, Coordinates, GeometryErrorKind, Point,
+    Polygon,
 };
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
@@ -162,6 +163,8 @@ impl HeapSize for Shape {
 pub struct LineSeq(CoordSeq);
 
 impl LineSeq {
+    /// Admit a coordinate sequence of unknown length — parsed input, a noded
+    /// or merged chain, anything whose vertex count is not already proven.
     pub(crate) fn try_new(coords: CoordSeq) -> Result<Self> {
         if coords.len() < 2 {
             return Err(GeometryErrorKind::LineStringTooShort.into());
@@ -169,8 +172,48 @@ impl LineSeq {
         Ok(Self(coords))
     }
 
+    /// Wrap a sequence whose length this crate already knows to be at least
+    /// two: a length-preserving edit, a pass that keeps both endpoints, a ring,
+    /// a stored row, a caller-side `len()` match. **Parsed or otherwise
+    /// untrusted input uses [`Self::try_new`]**, whose typed error says what is
+    /// wrong with the input instead of aborting on our own bug. The check
+    /// stays in release builds — one comparison against a column allocation
+    /// that just happened.
+    pub(crate) fn from_proven(coords: CoordSeq) -> Self {
+        assert!(
+            coords.len() >= 2,
+            "LineSeq::from_proven requires at least two vertices",
+        );
+        Self(coords)
+    }
+
+    /// The two-vertex line through `start` and `end`. Endpoints are coerced to
+    /// the ordinate columns both carry, so a 2D endpoint never gains fabricated
+    /// Z/M; this is the one owner of that rule for `shortest_line`,
+    /// `minimum_clearance_line`, and the circle-radius lines.
+    pub(crate) fn segment(start: Point, end: Point) -> Self {
+        Self(crate::geometry::types::coordseq::coerced_pair(start, end))
+    }
+
+    /// A stored line row addressed by `window` into packed columns. Line
+    /// storage admits its rows at ingress, so a stored row is never shorter
+    /// than two vertices.
+    pub(crate) fn row_view(coords: &CoordSeq, window: CoordWindow) -> Self {
+        Self::from_proven(coords.view(window))
+    }
+
     pub(crate) const fn as_coords(&self) -> &CoordSeq {
         &self.0
+    }
+
+    /// Per-vertex map. The vertex count is unchanged, so the invariant holds
+    /// without a recheck.
+    pub(crate) fn try_map_points<E>(
+        &self,
+        map: impl FnMut(Point) -> Result<Point, E>,
+    ) -> Result<Self, E> {
+        let points = self.iter().map(map).collect::<Result<Vec<_>, E>>()?;
+        Ok(Self(CoordSeq::from_points(&points)))
     }
 }
 
@@ -697,6 +740,19 @@ macro_rules! impl_multipart {
                 self.members.has_empty_members()
             }
 
+            /// [`Self::try_map_values`] for a map that cannot fail. The
+            /// members and their order are preserved, so the result is a
+            /// multipart of the same shape.
+            pub(crate) fn map_values(
+                &self,
+                axes: CoordinateAxes,
+                mut map: impl FnMut(&$member) -> $member,
+            ) -> Self {
+                let Ok(mapped) = self
+                    .try_map_values(axes, |value| Ok::<_, std::convert::Infallible>(map(value)));
+                mapped
+            }
+
             pub(crate) fn try_map_values<E>(
                 &self,
                 axes: CoordinateAxes,
@@ -897,6 +953,12 @@ impl MultiPoint {
             coords,
             members: self.members.clone(),
         })
+    }
+
+    /// [`Self::try_map_values`] for a map that cannot fail.
+    pub(crate) fn map_values(&self, mut map: impl FnMut(Point) -> Point) -> Self {
+        let Ok(mapped) = self.try_map_values(|point| Ok::<_, std::convert::Infallible>(map(point)));
+        mapped
     }
 
     pub(crate) fn try_map_values<E>(

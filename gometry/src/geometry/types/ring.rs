@@ -1,5 +1,7 @@
 use crate::error::Result;
-use crate::geometry::types::{CoordIter, CoordSeq, CoordSeqBuilder, GeometryErrorKind, Point, XY};
+use crate::geometry::types::{
+    CoordIter, CoordSeq, CoordSeqBuilder, GeometryErrorKind, LineSeq, Point, XY,
+};
 use crate::geometry::{same_active_position, same_point};
 
 /// A polygon ring: a closed (first == last) vertex sequence with ≥3 corners,
@@ -92,36 +94,28 @@ impl Ring {
         &self.0
     }
 
+    /// The ring as a closed line. A `Ring` holds at least
+    /// [`Self::MIN_VERTICES_CLOSED`] vertices, so this cannot fail.
+    pub(crate) fn as_line(&self) -> LineSeq {
+        LineSeq::from_proven(self.0.clone())
+    }
+
     pub fn into_vec(self) -> Vec<Point> {
         self.0.to_vec()
     }
+}
 
-    pub fn len(&self) -> usize {
-        self.0.len()
+impl std::ops::Deref for Ring {
+    type Target = CoordSeq;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
+}
 
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn point_at(&self, index: usize) -> Point {
-        self.0.point_at(index)
-    }
-
-    pub fn get(&self, index: usize) -> Option<Point> {
-        self.0.get(index)
-    }
-
-    pub fn first(&self) -> Option<Point> {
-        self.0.first()
-    }
-
-    pub fn last(&self) -> Option<Point> {
-        self.0.last()
-    }
-
-    pub fn iter(&self) -> CoordIter<'_> {
-        self.0.iter()
+impl AsRef<CoordSeq> for Ring {
+    fn as_ref(&self) -> &CoordSeq {
+        &self.0
     }
 }
 

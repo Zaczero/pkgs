@@ -13,6 +13,28 @@ pub(crate) trait RingCoordinateColumns {
     fn m(&self, index: usize) -> Option<f64>;
 }
 
+impl RingCoordinateColumns for crate::geometry::Ring {
+    fn width(&self) -> usize {
+        self.coords().width()
+    }
+
+    fn x(&self, index: usize) -> f64 {
+        self.coords().x(index)
+    }
+
+    fn y(&self, index: usize) -> f64 {
+        self.coords().y(index)
+    }
+
+    fn z(&self, index: usize) -> Option<f64> {
+        self.coords().z(index)
+    }
+
+    fn m(&self, index: usize) -> Option<f64> {
+        self.coords().m(index)
+    }
+}
+
 impl RingCoordinateColumns for CoordSeq {
     fn width(&self) -> usize {
         self.len()

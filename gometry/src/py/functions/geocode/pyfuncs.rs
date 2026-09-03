@@ -118,8 +118,7 @@ fn geocode_array_codes(
         crate::geometry::CoordinateAxes::XY,
         crate::geometry::CoordSeq::from_xy(&source),
     );
-    let Shape::MultiPoint(transformed) =
-        crate::crs::transform(&source, source_crs, "EPSG:4326")?
+    let Shape::MultiPoint(transformed) = crate::crs::transform(&source, source_crs, "EPSG:4326")?
     else {
         unreachable!("transform preserves the MultiPoint kind")
     };

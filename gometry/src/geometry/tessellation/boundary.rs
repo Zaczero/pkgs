@@ -10,26 +10,15 @@ use crate::geometry::{
 /// [`line_parts_to_shape`]: nothing → empty, one ring → `LineString`, more →
 /// `MultiLineString`. Takes owned `CoordSeq`s so polygon boundaries clone their
 /// coordinate columns once with no `Point` staging.
-pub(crate) fn rings_to_boundary(mut rings: Vec<CoordSeq>) -> Shape {
-    let axes = rings.first().map_or(CoordinateAxes::XY, CoordSeq::axes);
+pub(crate) fn rings_to_boundary(mut rings: Vec<LineSeq>) -> Shape {
+    let axes = rings.first().map_or(CoordinateAxes::XY, |ring| ring.axes());
     match rings.len() {
         // An (empty) polygon's boundary is still linework: `MULTILINESTRING
         // EMPTY`, keeping the type contract stable instead of collapsing to an
         // untyped collection.
         0 => Shape::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY),
-        1 => Shape::LineString(
-            LineSeq::try_new(rings.remove(0))
-                .expect("line coordinate sequence must contain at least two vertices"),
-        ),
-        _ => Shape::multi_line_string(
-            axes,
-            rings
-                .into_iter()
-                .map(|coords| {
-                    LineSeq::try_new(coords).expect("ring boundary has at least two vertices")
-                })
-                .collect(),
-        ),
+        1 => Shape::LineString(rings.remove(0)),
+        _ => Shape::multi_line_string(axes, rings),
     }
 }
 

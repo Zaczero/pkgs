@@ -17,7 +17,7 @@ mod shape_data;
 
 pub(crate) use coordseq::{
     CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, coerce_to_common_axes, concat_coord_columns,
-    reverse_column_arc, witness_pair,
+    reverse_column_arc,
 };
 pub(crate) use csr::{
     CsrOffsetBuilder, CsrOffsetColumn, GeometryKind, PolygonLevel, RingLevel,

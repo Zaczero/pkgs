@@ -12,7 +12,7 @@ use crate::broadcast::metrics::{
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
-use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, witness_pair};
+use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan};
 use crate::py::errors::InvalidGeometryError;
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
@@ -749,10 +749,7 @@ pub(crate) fn metric_minimum_clearance_line(
                         let [a, b] = points.as_slice() else {
                             unreachable!("minimum_clearance witness plan has two vertices");
                         };
-                        Shape::LineString(
-                            LineSeq::try_new(witness_pair(*a, *b))
-                                .expect("minimum-clearance witness has two vertices"),
-                        )
+                        Shape::LineString(LineSeq::segment(*a, *b))
                     })
                 },
             )

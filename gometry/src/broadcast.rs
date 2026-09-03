@@ -27,7 +27,6 @@ mod element;
 pub(crate) use element::BulkElement;
 
 use crate::error::Result;
-use crate::geometry::LineSeq;
 use crate::predicates::PredicateSpec;
 use crate::py::numpy::bool_array;
 
@@ -287,9 +286,7 @@ pub(crate) fn push_ring_shapes(shape: &Shape, rings: &mut Vec<Shape>) -> PyResul
         ));
     }
     shape.for_each_ring(|ring| {
-        rings.push(Shape::LineString(LineSeq::try_new(ring.clone()).expect(
-            "line coordinate sequence must contain at least two vertices",
-        )));
+        rings.push(Shape::LineString(ring.as_line()));
     });
     Ok(())
 }

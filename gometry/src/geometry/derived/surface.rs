@@ -1,5 +1,5 @@
 use crate::geometry::{
-    Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Shape, column_mean2,
+    Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, column_mean2,
     held_axis_interpolate, interpolate_segment_point, line_length, line_length_columns,
     point_distance, simd_argmin_f64,
 };
@@ -243,9 +243,11 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
             return Some(point);
         }
         // Degenerate areal: its boundary rings carry the representative point.
-        if let Some(point) =
-            lineal_surface_point(polygons.iter().flat_map(|polygon| polygon.rings()))
-        {
+        if let Some(point) = lineal_surface_point(
+            polygons
+                .iter()
+                .flat_map(|polygon| polygon.rings().map(Ring::coords)),
+        ) {
             return Some(point);
         }
     }
