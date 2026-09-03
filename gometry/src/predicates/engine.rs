@@ -671,10 +671,17 @@ pub(crate) fn topology_scalar_pair(
     {
         return verdict;
     }
+    if let PreparedTopologyPair::Cartesian { left, right } = &operands
+        && let Some(verdict) =
+            crate::geometry::direct_linework_predicate(spec, left.shape(), right.shape())
+    {
+        return verdict;
+    }
     predicate_matrix_value(spec, operands.relate())
 }
 
-fn predicate_matrix_value(spec: &PredicateSpec, matrix: crate::geometry::De9im) -> bool {
+/// A named predicate read off a fully decided matrix.
+pub(crate) fn predicate_matrix_value(spec: &PredicateSpec, matrix: crate::geometry::De9im) -> bool {
     match spec.predicate {
         Predicate::Intersects => matrix.is_intersects(),
         Predicate::Disjoint => matrix.is_disjoint(),

@@ -174,6 +174,24 @@ impl LineworkChains {
         }
     }
 
+    pub(crate) const fn line_count(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// The two ends of an OPEN staged line — its OGC boundary candidates —
+    /// or `None` for a closed one, whose ends cancel. Read off the staged
+    /// segments, so a duplicated first or last vertex elided at staging still
+    /// yields the source coordinate.
+    pub(crate) fn line_ends(&self, line: usize) -> Option<(XY, XY)> {
+        let span = &self.spans[line];
+        if span.closed || span.count == 0 {
+            return None;
+        }
+        let first = span.first as usize;
+        let last = first + span.count as usize - 1;
+        Some((self.segments[first].start, self.segments[last].end))
+    }
+
     /// The semantic per-segment view, composed on demand.
     pub(crate) fn at(&self, ordinal: usize) -> IndexedSegment {
         let line = self.line_of[ordinal] as usize;
@@ -187,3 +205,4 @@ impl LineworkChains {
         }
     }
 }
+

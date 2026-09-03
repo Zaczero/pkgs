@@ -75,12 +75,17 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De
     if let Some(matrix) = try_cartesian_polygon_line_relate(left, right) {
         return matrix;
     }
+    if let Some(matrix) = super::direct_linework_relate(left.shape(), right.shape()) {
+        return matrix;
+    }
     graph_relate_data_oracle(left, right)
 }
 
 /// The source-graph relation path, retained as the complete fallback and the
-/// direct arrangement fold's test oracle.
-fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
+/// direct folds' test oracle. Tests must reach the graph THROUGH this, never
+/// through `graph_relate_data`, which now admits the direct engines first and
+/// would compare an engine with itself.
+pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
     graph_relate_data_with_graphs(left, right, left.topology_graph(), right.topology_graph())
 }
 
