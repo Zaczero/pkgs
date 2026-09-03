@@ -330,6 +330,65 @@ impl Shape {
         Self::Empty(kind, axes)
     }
 
+    /// A dense `MULTIPOINT`, or `MULTIPOINT EMPTY` carrying `empty_axes` when
+    /// the sequence has no coordinates. An empty multipart is a distinct
+    /// variant, so admitting the sequence here is what stops every caller from
+    /// re-deriving that rule — and from constructing the unrepresentable one.
+    pub(crate) fn multi_point(empty_axes: CoordinateAxes, coords: CoordSeq) -> Self {
+        MultiPoint::from_coordseq(coords).map_or_else(
+            |_| Self::Empty(GeometryKind::MultiPoint, empty_axes),
+            Self::MultiPoint,
+        )
+    }
+
+    /// A dense `MULTILINESTRING`, or `MULTILINESTRING EMPTY` carrying
+    /// `empty_axes` when there are no members.
+    pub(crate) fn multi_line_string(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Self {
+        MultiLineString::from_dense(values).map_or_else(
+            || Self::Empty(GeometryKind::MultiLineString, empty_axes),
+            Self::MultiLineString,
+        )
+    }
+
+    /// A dense `MULTIPOLYGON`, or `MULTIPOLYGON EMPTY` carrying `empty_axes`
+    /// when there are no members.
+    pub(crate) fn multi_polygon(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Self {
+        MultiPolygon::from_dense(values).map_or_else(
+            || Self::Empty(GeometryKind::MultiPolygon, empty_axes),
+            Self::MultiPolygon,
+        )
+    }
+
+    /// The narrowest shape for a point decomposition: `POINT EMPTY` for none,
+    /// the bare point for one, a dense multipoint otherwise.
+    pub(crate) fn narrow_points(empty_axes: CoordinateAxes, values: Vec<Point>) -> Self {
+        match <[Point; 1]>::try_from(values) {
+            Ok([point]) => Self::Point(point),
+            Err(values) if values.is_empty() => Self::Empty(GeometryKind::Point, empty_axes),
+            Err(values) => Self::multi_point(empty_axes, CoordSeq::from_points(&values)),
+        }
+    }
+
+    /// The narrowest shape for a lineal decomposition: `LINESTRING EMPTY` for
+    /// none, the bare linestring for one, a dense multilinestring otherwise.
+    pub(crate) fn narrow_lines(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Self {
+        match <[LineSeq; 1]>::try_from(values) {
+            Ok([line]) => Self::LineString(line),
+            Err(values) if values.is_empty() => Self::Empty(GeometryKind::LineString, empty_axes),
+            Err(values) => Self::multi_line_string(empty_axes, values),
+        }
+    }
+
+    /// The narrowest shape for a polygonal decomposition: `POLYGON EMPTY` for
+    /// none, the bare polygon for one, a dense multipolygon otherwise.
+    pub(crate) fn narrow_polygons(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Self {
+        match <[Polygon; 1]>::try_from(values) {
+            Ok([polygon]) => Self::Polygon(polygon),
+            Err(values) if values.is_empty() => Self::Empty(GeometryKind::Polygon, empty_axes),
+            Err(values) => Self::multi_polygon(empty_axes, values),
+        }
+    }
+
     /// Visit every line segment — linework edges of (multi)linestrings, ring
     /// edges of (multi)polygons, recursively through collections — without
     /// materializing a `Vec`. Point-only shapes have no segments.

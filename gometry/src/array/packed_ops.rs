@@ -881,7 +881,7 @@ impl PyGeometryArray {
             return Ok(None);
         }
         Ok(Some(if row_map.is_identity() {
-            Shape::MultiPoint((**coords).clone().into())
+            Shape::multi_point(coords.axes(), (**coords).clone())
         } else {
             let map = row_map.as_deref();
             let mut points = Vec::new();

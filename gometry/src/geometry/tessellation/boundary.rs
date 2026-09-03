@@ -11,6 +11,7 @@ use crate::geometry::{
 /// `MultiLineString`. Takes owned `CoordSeq`s so polygon boundaries clone their
 /// coordinate columns once with no `Point` staging.
 pub(crate) fn rings_to_boundary(mut rings: Vec<CoordSeq>) -> Shape {
+    let axes = rings.first().map_or(CoordinateAxes::XY, CoordSeq::axes);
     match rings.len() {
         // An (empty) polygon's boundary is still linework: `MULTILINESTRING
         // EMPTY`, keeping the type contract stable instead of collapsing to an
@@ -20,7 +21,8 @@ pub(crate) fn rings_to_boundary(mut rings: Vec<CoordSeq>) -> Shape {
             LineSeq::try_new(rings.remove(0))
                 .expect("line coordinate sequence must contain at least two vertices"),
         ),
-        _ => Shape::MultiLineString(
+        _ => Shape::multi_line_string(
+            axes,
             rings
                 .into_iter()
                 .map(|coords| {
@@ -37,7 +39,7 @@ pub(crate) fn line_boundary<C: Coordinates + ?Sized>(points: &C) -> Shape {
     // stable for callers.
     match (points.first_coord(), points.last_coord()) {
         (Some(start), Some(end)) if points.coord_count() > 1 && !same_point(start, end) => {
-            Shape::MultiPoint(vec![start, end].into())
+            Shape::multi_point(start.axes, CoordSeq::from_points(&[start, end]))
         },
         _ => Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY),
     }
@@ -72,9 +74,5 @@ pub(crate) fn multiline_boundary<L: AsRef<CoordSeq>>(lines: &[L]) -> Shape {
         .into_iter()
         .filter_map(|(point, odd)| odd.then_some(point))
         .collect::<Vec<_>>();
-    if points.is_empty() {
-        Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
-    } else {
-        Shape::MultiPoint(points.into())
-    }
+    Shape::multi_point(CoordinateAxes::XY, CoordSeq::from_points(&points))
 }

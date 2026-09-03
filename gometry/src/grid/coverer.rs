@@ -331,11 +331,8 @@ impl AreaRectClassifier {
 }
 
 fn area_shape(polygons: Vec<Polygon>) -> Option<Shape> {
-    match polygons.len() {
-        0 => None,
-        1 => polygons.into_iter().next().map(Shape::Polygon),
-        _ => Some(Shape::MultiPolygon(polygons.into())),
-    }
+    (!polygons.is_empty())
+        .then(|| Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons))
 }
 
 fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::error::Error> {

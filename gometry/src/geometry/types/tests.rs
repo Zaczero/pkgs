@@ -3,6 +3,68 @@ use std::sync::Arc;
 use crate::geometry::types::*;
 use crate::test_support::allocation_count;
 
+// Test fixtures only. These panic on an empty payload, which is exactly what a
+// test wants and exactly what production must not have: gating them on
+// `cfg(test)` means a production caller reaching for `.into()` fails to
+// compile and is pushed to `Shape::multi_point`/`narrow_points`, which admit
+// the empty case as `Shape::Empty`.
+/// Test fixtures only. These panic on an empty payload, which is exactly what
+/// a test wants and exactly what production must not have: keeping them in the
+/// test tree means a production caller reaching for `.into()` fails to compile
+/// and is pushed to `Shape::multi_point`/`narrow_points`, which admit the empty
+/// case as `Shape::Empty`.
+mod fixture_conversions {
+    use super::*;
+
+    impl From<CoordSeq> for MultiPoint {
+        fn from(coords: CoordSeq) -> Self {
+            Self::from_coordseq(coords).expect("test multipoint payload is nonempty")
+        }
+    }
+
+    impl From<Vec<Point>> for MultiPoint {
+        fn from(points: Vec<Point>) -> Self {
+            CoordSeq::from_points(&points).into()
+        }
+    }
+
+    impl From<Vec<XY>> for MultiPoint {
+        fn from(points: Vec<XY>) -> Self {
+            CoordSeq::from_xy(&points).into()
+        }
+    }
+
+    impl FromIterator<Point> for MultiPoint {
+        fn from_iter<T: IntoIterator<Item = Point>>(iter: T) -> Self {
+            iter.into_iter().collect::<Vec<_>>().into()
+        }
+    }
+
+    impl From<Vec<LineSeq>> for MultiLineString {
+        fn from(lines: Vec<LineSeq>) -> Self {
+            Self::from_dense(lines).expect("test multilinestring payload is nonempty")
+        }
+    }
+
+    impl FromIterator<LineSeq> for MultiLineString {
+        fn from_iter<T: IntoIterator<Item = LineSeq>>(iter: T) -> Self {
+            iter.into_iter().collect::<Vec<_>>().into()
+        }
+    }
+
+    impl From<Vec<Polygon>> for MultiPolygon {
+        fn from(polygons: Vec<Polygon>) -> Self {
+            Self::from_dense(polygons).expect("test multipolygon payload is nonempty")
+        }
+    }
+
+    impl FromIterator<Polygon> for MultiPolygon {
+        fn from_iter<T: IntoIterator<Item = Polygon>>(iter: T) -> Self {
+            iter.into_iter().collect::<Vec<_>>().into()
+        }
+    }
+}
+
 mod multipoint_iteration_tests {
     use super::*;
 
@@ -57,10 +119,11 @@ mod multipoint_iteration_tests {
 
     #[test]
     fn borrowed_iteration_and_shape_scans_do_not_allocate() {
-        let multipoint = MultiPoint::from(vec![
+        let multipoint = MultiPoint::from_coordseq(CoordSeq::from_points(&[
             Point::new_raw_xy(1.0, 2.0),
             Point::new_raw_xy(3.0, 4.0),
-        ]);
+        ]))
+        .expect("nonempty");
         let (sum, allocations) =
             allocation_count(|| (&multipoint).into_iter().map(|p| p.x).sum::<f64>());
         assert_eq!(sum, 4.0);
@@ -82,11 +145,12 @@ mod multipoint_iteration_tests {
 
     #[test]
     fn borrowed_iteration_short_circuits_and_owned_collection_remains_available() {
-        let multipoint = MultiPoint::from(vec![
+        let multipoint = MultiPoint::from_coordseq(CoordSeq::from_points(&[
             Point::new_raw_xy(1.0, 2.0),
             Point::new_raw_xy(3.0, 4.0),
             Point::new_raw_xy(5.0, 6.0),
-        ]);
+        ]))
+        .expect("nonempty");
         let mut visited = 0;
         let result: Result<(), ()> =
             Shape::MultiPoint(multipoint.clone()).try_for_each_point(|_| {

@@ -66,11 +66,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
                 .rings()
                 .filter_map(ring_as_open_linework)
                 .collect::<Vec<_>>();
-            if lines.is_empty() {
-                Shape::typed_empty(GeometryKind::MultiLineString, polygon.shell.coords().axes())
-            } else {
-                Shape::MultiLineString(lines.into())
-            }
+            Shape::multi_line_string(polygon.shell.coords().axes(), lines)
         },
         Shape::MultiPolygon(polygons) => Shape::geometry_collection(
             polygons

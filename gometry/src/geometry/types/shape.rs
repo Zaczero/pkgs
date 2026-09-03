@@ -5,7 +5,7 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::GeometryKind;
 use crate::geometry::types::{
-    CoordIter, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon, XY,
+    CoordIter, CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Polygon,
 };
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
@@ -662,6 +662,25 @@ macro_rules! impl_multipart {
                 Self::try_new(axes, members).expect("homogeneous nonempty multipart payload")
             }
 
+            /// A dense multipart from members that are all present, declaring
+            /// the axes of the first. Axis-homogeneity is a payload invariant
+            /// (the DbC boundary rule [`CoordSeq::from_points`] follows);
+            /// external members are admitted through [`Self::try_new`], which
+            /// checks. Returns `None` for an empty payload — that is
+            /// `Shape::Empty`, not a multipart with no members.
+            pub(crate) fn from_dense(values: Vec<$member>) -> Option<Self> {
+                let axes = shape_member_axes(values.first()?);
+                debug_assert!(
+                    values.iter().all(|value| shape_member_axes(value) == axes),
+                    "from_dense requires an axis-homogeneous payload",
+                );
+                Some(Self {
+                    axes,
+                    values,
+                    members: MultipartMembers::Dense,
+                })
+            }
+
             pub(crate) const fn axes(&self) -> CoordinateAxes {
                 self.axes
             }
@@ -886,7 +905,10 @@ impl MultiPoint {
     ) -> Result<Self, E> {
         if matches!(self.members, MultipartMembers::Dense) {
             let points = self.points().map(&mut map).collect::<Result<Vec<_>, _>>()?;
-            return Ok(Self::from(points));
+            return Ok(Self {
+                coords: CoordSeq::from_points(&points),
+                members: MultipartMembers::Dense,
+            });
         }
         let members = self
             .members()
@@ -958,81 +980,6 @@ impl IntoIterator for MultiPoint {
 
     fn into_iter(self) -> Self::IntoIter {
         self.to_vec().into_iter()
-    }
-}
-
-impl From<CoordSeq> for MultiPoint {
-    fn from(coords: CoordSeq) -> Self {
-        Self::from_coordseq(coords).expect("MultiPoint payload must not be empty")
-    }
-}
-
-impl From<Vec<Point>> for MultiPoint {
-    fn from(points: Vec<Point>) -> Self {
-        Self::from_coordseq(CoordSeq::from_points(&points))
-            .expect("MultiPoint payload must not be empty")
-    }
-}
-
-impl From<Vec<XY>> for MultiPoint {
-    fn from(points: Vec<XY>) -> Self {
-        Self::from_coordseq(CoordSeq::from_xy(&points))
-            .expect("MultiPoint payload must not be empty")
-    }
-}
-
-impl FromIterator<Point> for MultiPoint {
-    fn from_iter<T: IntoIterator<Item = Point>>(iter: T) -> Self {
-        let points = iter.into_iter().collect::<Vec<_>>();
-        Self::from(points)
-    }
-}
-
-impl FromIterator<LineSeq> for MultiLineString {
-    fn from_iter<T: IntoIterator<Item = LineSeq>>(iter: T) -> Self {
-        let values = iter.into_iter().collect::<Vec<_>>();
-        let axes = values
-            .first()
-            .map_or(CoordinateAxes::XY, |line| line.axes());
-        assert!(!values.is_empty(), "shape payload must not be empty");
-        assert!(
-            values.iter().all(|line| line.axes() == axes),
-            "homogeneous nonempty multipart payload"
-        );
-        Self {
-            axes,
-            values,
-            members: MultipartMembers::Dense,
-        }
-    }
-}
-
-impl From<Vec<LineSeq>> for MultiLineString {
-    fn from(lines: Vec<LineSeq>) -> Self {
-        lines.into_iter().collect()
-    }
-}
-
-impl FromIterator<Polygon> for MultiPolygon {
-    fn from_iter<T: IntoIterator<Item = Polygon>>(iter: T) -> Self {
-        let values = iter.into_iter().collect::<Vec<_>>();
-        let axes = values.first().map_or(CoordinateAxes::XY, Polygon::axes);
-        assert!(!values.is_empty(), "shape payload must not be empty");
-        assert!(
-            values.iter().all(|polygon| polygon.axes() == axes),
-            "homogeneous nonempty multipart payload"
-        );
-        Self {
-            axes,
-            values,
-            members: MultipartMembers::Dense,
-        }
-    }
-}
-
-impl From<Vec<Polygon>> for MultiPolygon {
-    fn from(polygons: Vec<Polygon>) -> Self {
-        polygons.into_iter().collect()
     }
 }
 

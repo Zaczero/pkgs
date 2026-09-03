@@ -7,7 +7,7 @@ use crate::geometry::antimeridian::{
     collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, LineSeq,
+    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq,
     MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness,
     ZOrdinate, open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding,
     same_point,
@@ -45,7 +45,8 @@ impl Shape {
                 if pieces.is_empty() {
                     Ok(self.clone())
                 } else {
-                    Ok(Self::MultiLineString(
+                    Ok(Self::multi_line_string(
+                        CoordinateAxes::XY,
                         pieces
                             .into_iter()
                             .map(CoordSeq::from)
@@ -85,10 +86,7 @@ impl Shape {
             },
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
-                Ok(match <[Polygon; 1]>::try_from(polygons) {
-                    Ok([polygon]) => Self::Polygon(polygon),
-                    Err(polygons) => Self::MultiPolygon(polygons.into()),
-                })
+                Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
@@ -141,10 +139,7 @@ impl Shape {
         match self {
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, closure)?;
-                Ok(match <[Polygon; 1]>::try_from(polygons) {
-                    Ok([polygon]) => Self::Polygon(polygon),
-                    Err(polygons) => Self::MultiPolygon(polygons.into()),
-                })
+                Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.len());
@@ -505,12 +500,8 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     }
 }
 
-fn shape_from_polygons(mut polygons: Vec<Polygon>, axes: CoordinateAxes) -> Shape {
-    match polygons.len() {
-        0 => Shape::typed_empty(GeometryKind::Polygon, axes),
-        1 => Shape::Polygon(polygons.pop().expect("one polygon")),
-        _ => Shape::MultiPolygon(polygons.into()),
-    }
+fn shape_from_polygons(polygons: Vec<Polygon>, axes: CoordinateAxes) -> Shape {
+    Shape::narrow_polygons(axes, polygons)
 }
 
 fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {

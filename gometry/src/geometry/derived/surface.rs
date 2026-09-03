@@ -235,7 +235,10 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
     let mut points: Vec<Point> = Vec::new();
     gather_surface_components(parts, &mut polygons, &mut lines, &mut points);
     if !polygons.is_empty() {
-        let areal = Shape::MultiPolygon(polygons.iter().map(|&polygon| polygon.clone()).collect());
+        let areal = Shape::multi_polygon(
+            crate::geometry::CoordinateAxes::XY,
+            polygons.iter().map(|&polygon| polygon.clone()).collect(),
+        );
         if let Some(point) = polygonal_surface_point(&areal) {
             return Some(point);
         }

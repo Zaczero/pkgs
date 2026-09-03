@@ -141,7 +141,7 @@ fn decode_coordseq_rows(
             )
         } else {
             match encoding {
-                GeometryEncoding::MultiPoint => Shape::MultiPoint(coords.into()),
+                GeometryEncoding::MultiPoint => Shape::multi_point(coords.axes(), coords),
                 GeometryEncoding::LineString => Shape::LineString(
                     LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
                 ),

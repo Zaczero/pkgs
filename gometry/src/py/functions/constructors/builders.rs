@@ -374,26 +374,12 @@ pub(crate) fn build_multi_point(
     }
     if x.is_some() || y.is_some() || z.is_some() || m.is_some() {
         let points = coordinate_vertices(coordinates, x, y, z, m)?;
-        if points.is_empty() {
-            return geometry_with_crs_epoch(
-                Shape::typed_empty(GeometryKind::MultiPoint, points.axes()),
-                crs,
-                epoch,
-            );
-        }
-        return geometry_with_crs_epoch(Shape::MultiPoint(points.into()), crs, epoch);
+        return geometry_with_crs_epoch(Shape::multi_point(points.axes(), points), crs, epoch);
     }
     let coordinates = coordinates.expect("non-empty multipart input checked above");
     // N×D buffer is a flat multipoint, not a sequence of Point members.
     if let Some(seq) = crate::try_coordseq_from_nd_buffer(coordinates, None, None)? {
-        if seq.is_empty() {
-            return geometry_with_crs_epoch(
-                Shape::typed_empty(GeometryKind::MultiPoint, seq.axes()),
-                crs,
-                epoch,
-            );
-        }
-        return geometry_with_crs_epoch(Shape::MultiPoint(seq.into()), crs, epoch);
+        return geometry_with_crs_epoch(Shape::multi_point(seq.axes(), seq), crs, epoch);
     }
     let (members, frame) = multipart_members(
         coordinates,
@@ -413,6 +399,9 @@ pub(crate) fn build_multi_point(
             })
         },
     )?;
+    if members.is_empty() {
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
+    }
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
     if members.iter().all(|shape| matches!(shape, Shape::Point(_))) {
         let mut points = crate::try_vec_with_capacity(members.len())?;
@@ -423,7 +412,7 @@ pub(crate) fn build_multi_point(
             crate::try_push(&mut points, point)?;
         }
         return Ok(PyGeometry::with_frame(
-            Shape::MultiPoint(MultiPoint::from(points)),
+            Shape::multi_point(axes, CoordSeq::from_points(&points)),
             frame,
         ));
     }
@@ -495,7 +484,7 @@ pub(crate) fn build_multi_line_string(
             };
             crate::try_push(&mut lines, line)?;
         }
-        let shape = Shape::MultiLineString(MultiLineString::from(lines));
+        let shape = Shape::multi_line_string(axes, lines);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
@@ -560,7 +549,7 @@ pub(crate) fn build_multi_polygon(
             };
             crate::try_push(&mut polygons, polygon)?;
         }
-        let shape = Shape::MultiPolygon(MultiPolygon::from(polygons));
+        let shape = Shape::multi_polygon(axes, polygons);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
@@ -676,11 +665,7 @@ pub(super) fn line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Sh
 pub(super) fn multi_point_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPoint", |item| {
         let points = coordinate_vertices(Some(item), None, None, None, None)?;
-        Ok(if points.is_empty() {
-            Shape::typed_empty(GeometryKind::MultiPoint, points.axes())
-        } else {
-            Shape::MultiPoint(points.into())
-        })
+        Ok(Shape::multi_point(points.axes(), points))
     })
 }
 
@@ -728,13 +713,10 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
 pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPolygon", |item| {
         let polygons = extract_polygons(item)?;
-        if polygons.is_empty() {
-            return Ok(Shape::typed_empty(
-                GeometryKind::MultiPolygon,
-                CoordinateAxes::XY,
-            ));
-        }
-        let shape = Shape::MultiPolygon(polygons.into());
+        let axes = polygons
+            .first()
+            .map_or(CoordinateAxes::XY, Polygon::axes);
+        let shape = Shape::multi_polygon(axes, polygons);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)
     })

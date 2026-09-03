@@ -268,7 +268,7 @@ impl Shape {
     pub fn unique_points(&self) -> Self {
         // A point atom is already its own unique set — no hashing.
         if let Self::Point(point) = self {
-            return Self::MultiPoint(vec![*point].into());
+            return Self::multi_point(point.axes, CoordSeq::from_points(&[*point]));
         }
         let capacity = self.coord_count();
         let mut seen = HashSet::with_capacity(capacity);
@@ -278,11 +278,7 @@ impl Shape {
                 unique.push(point);
             }
         });
-        if unique.is_empty() {
-            Self::typed_empty(GeometryKind::MultiPoint, self.axes())
-        } else {
-            Self::MultiPoint(unique.into())
-        }
+        Self::multi_point(self.axes(), CoordSeq::from_points(&unique))
     }
 
     /// Visit every segment-bearing coordinate chain — linestrings,

@@ -203,32 +203,20 @@ pub(crate) fn build_overlay_shape(
     // result reads as the cleanest lines representing its point set rather than
     // a `MultiLineString` of one segment per span.
     let lines = merge_chains(lines);
-    let line_part = match lines.len() {
-        0 => None,
-        1 => Some(Shape::LineString(
-            LineSeq::try_new(lines.into_iter().next().expect("len == 1"))
-                .expect("assembled overlay chain is lineal"),
-        )),
-        _ => Some(Shape::MultiLineString(
+    let line_part = (!lines.is_empty()).then(|| {
+        Shape::narrow_lines(
+            CoordinateAxes::XY,
             lines
                 .into_iter()
                 .map(|line| LineSeq::try_new(line).expect("assembled overlay chain is lineal"))
                 .collect(),
-        )),
-    };
+        )
+    });
 
-    let point_part = match surviving.len() {
-        0 => None,
-        1 => Some(Shape::Point(surviving[0])),
-        _ => Some(Shape::MultiPoint(surviving.into())),
-    };
-    let polygon_part = match polygons.len() {
-        0 => None,
-        1 => Some(Shape::Polygon(
-            polygons.into_iter().next().expect("len checked == 1"),
-        )),
-        _ => Some(Shape::MultiPolygon(polygons.into())),
-    };
+    let point_part = (!surviving.is_empty())
+        .then(|| Shape::narrow_points(CoordinateAxes::XY, surviving));
+    let polygon_part =
+        (!polygons.is_empty()).then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons));
 
     let parts: Vec<Shape> = [point_part, line_part, polygon_part]
         .into_iter()

@@ -470,14 +470,14 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     }
     let polygons = crate::try_collect_results(
         Shape::build_area_all(
-            &[&Shape::MultiLineString(
+            &[&Shape::multi_line_string(
+                crate::geometry::CoordinateAxes::XY,
                 crate::try_collect_results(outline.into_iter().map(|line| {
                     Ok::<_, PyErr>(
                         LineSeq::try_new(line)
                             .expect("line coordinate sequence must contain at least two vertices"),
                     )
-                }))?
-                .into(),
+                }))?,
             )],
             true,
         )?
@@ -490,11 +490,7 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     if polygons.is_empty() {
         return Ok(None);
     }
-    let shape = if polygons.len() == 1 {
-        Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
-    } else {
-        Shape::MultiPolygon(polygons.into())
-    };
+    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
     Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 

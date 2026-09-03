@@ -55,8 +55,12 @@ fn geocode_array_codes(
         for &(_, point) in &present {
             crate::try_push(&mut source, point.xy()).map_err(pyo3::PyErr::from)?;
         }
+        let source = Shape::multi_point(
+            crate::geometry::CoordinateAxes::XY,
+            crate::geometry::CoordSeq::from_xy(&source),
+        );
         let Shape::MultiPoint(transformed) =
-            crate::crs::transform(&Shape::MultiPoint(source.into()), source_crs, "EPSG:4326")?
+            crate::crs::transform(&source, source_crs, "EPSG:4326")?
         else {
             unreachable!("transform preserves the MultiPoint kind")
         };
@@ -110,8 +114,12 @@ fn geocode_array_codes(
     let source_crs = array
         .crs_str()
         .expect("non-lonlat point array carries a CRS");
+    let source = Shape::multi_point(
+        crate::geometry::CoordinateAxes::XY,
+        crate::geometry::CoordSeq::from_xy(&source),
+    );
     let Shape::MultiPoint(transformed) =
-        crate::crs::transform(&Shape::MultiPoint(source.into()), source_crs, "EPSG:4326")?
+        crate::crs::transform(&source, source_crs, "EPSG:4326")?
     else {
         unreachable!("transform preserves the MultiPoint kind")
     };

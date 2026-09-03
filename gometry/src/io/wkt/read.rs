@@ -525,10 +525,18 @@ fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<MultiPoin
         );
     }
     match (axes.has_z(), axes.has_m()) {
-        (false, false) => parse_wkt_points_impl::<false, false>(value).map(MultiPoint::from),
-        (true, false) => parse_wkt_points_impl::<true, false>(value).map(MultiPoint::from),
-        (false, true) => parse_wkt_points_impl::<false, true>(value).map(MultiPoint::from),
-        (true, true) => parse_wkt_points_impl::<true, true>(value).map(MultiPoint::from),
+        (false, false) => {
+            parse_wkt_points_impl::<false, false>(value).and_then(MultiPoint::from_coordseq)
+        },
+        (true, false) => {
+            parse_wkt_points_impl::<true, false>(value).and_then(MultiPoint::from_coordseq)
+        },
+        (false, true) => {
+            parse_wkt_points_impl::<false, true>(value).and_then(MultiPoint::from_coordseq)
+        },
+        (true, true) => {
+            parse_wkt_points_impl::<true, true>(value).and_then(MultiPoint::from_coordseq)
+        },
     }
 }
 

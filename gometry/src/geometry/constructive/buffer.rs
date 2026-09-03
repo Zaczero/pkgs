@@ -303,11 +303,7 @@ impl Shape {
         // symmetric buffer, and matching what the repair lanes produce — so
         // the surfaces' synthesizing-op contract (`'auto'` yields 2D) holds on
         // every path.
-        let shape = if strips.len() == 1 {
-            Self::Polygon(strips.into_iter().next().expect("one strip"))
-        } else {
-            Self::MultiPolygon(strips.into())
-        };
+        let shape = Self::narrow_polygons(crate::geometry::CoordinateAxes::XY, strips);
         let shape = shape.force_2d()?;
         if strips_are_pairwise_strictly_disjoint(&shape) || shape.validate().is_none() {
             Ok(shape)

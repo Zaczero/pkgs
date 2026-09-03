@@ -532,11 +532,10 @@ impl Shape {
                 _ => unreachable!("build_area_all yields only polygons"),
             })
             .collect();
-        Ok(match polygons.len() {
-            0 => Self::empty_polygon(),
-            1 => Self::Polygon(polygons.into_iter().next().expect("one polygon")),
-            _ => Self::MultiPolygon(polygons.into()),
-        })
+        Ok(Self::narrow_polygons(
+            crate::geometry::CoordinateAxes::XY,
+            polygons,
+        ))
     }
 
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for

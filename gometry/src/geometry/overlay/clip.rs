@@ -81,12 +81,17 @@ pub(crate) fn clipped_line_parts<C: Coordinates + ?Sized>(
 
 pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {
     parts.retain(|part| part.len() != 1);
+    let axes = parts
+        .first()
+        .and_then(|part| part.first())
+        .map_or(CoordinateAxes::XY, |point| point.axes);
     match parts.len() {
         0 => Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
         1 => Shape::LineString(
             LineSeq::try_new(CoordSeq::from(parts.remove(0))).expect("line part is lineal"),
         ),
-        _ => Shape::MultiLineString(
+        _ => Shape::multi_line_string(
+            axes,
             parts
                 .into_iter()
                 .map(CoordSeq::from)
@@ -98,12 +103,8 @@ pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> Shape {
 
 /// Collapse a polygonal decomposition to its narrowest shape: `POLYGON EMPTY`
 /// for none, the bare polygon for one, a multipolygon otherwise.
-pub(crate) fn polygon_parts_to_shape(mut parts: Vec<Polygon>) -> Shape {
-    match parts.len() {
-        0 => Shape::empty_polygon(),
-        1 => Shape::Polygon(parts.remove(0)),
-        _ => Shape::MultiPolygon(parts.into()),
-    }
+pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> Shape {
+    Shape::narrow_polygons(CoordinateAxes::XY, parts)
 }
 
 /// Narrow the surviving merged chains: one chain IS the line, several

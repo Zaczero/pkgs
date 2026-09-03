@@ -433,3 +433,34 @@ def test_m05_mixed_multipart_rejects_at_construction() -> None:
     mpoly_coords = np.asarray(mpoly.coords)
     np.testing.assert_allclose(mpoly_coords[0, 2], 0.0)
     np.testing.assert_allclose(mpoly_coords[4, 2], 1.0)
+
+
+def test_empty_multipart_sequences_construct_typed_empties() -> None:
+    """Every spelling of "no members" is the typed empty, on every ingress.
+
+    The member-sequence path used to reach an infallible Rust conversion that
+    asserted a non-empty payload, so `MultiPoint([])` raised `PanicException`
+    while `MultiPoint()`, `MultiPoint(np.zeros((0, 2)))` and the two sibling
+    multipart constructors all returned `... EMPTY`.
+    """
+    empties: dict[str, gm.Geometry] = {
+        'MULTIPOINT EMPTY': gm.MultiPoint([]),
+        'MULTILINESTRING EMPTY': gm.MultiLineString([]),
+        'MULTIPOLYGON EMPTY': gm.MultiPolygon([]),
+    }
+    for expected, geometry in empties.items():
+        assert geometry.to_wkt() == expected
+        assert geometry.is_empty
+
+    for empty in (
+        gm.MultiPoint(()),
+        gm.MultiPoint(iter([])),
+        gm.MultiPoint(np.zeros((0, 2))),
+        gm.MultiPoint(x=[], y=[]),
+        gm.MultiPoint(),
+    ):
+        assert empty.to_wkt() == 'MULTIPOINT EMPTY'
+
+    tagged = gm.MultiPoint([], crs=4326)
+    assert tagged.to_wkt() == 'MULTIPOINT EMPTY'
+    assert tagged.crs == 'EPSG:4326'

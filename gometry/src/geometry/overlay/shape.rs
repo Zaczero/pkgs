@@ -147,11 +147,7 @@ impl Shape {
             .map(|edge| CoordSeq::from(vec![edge.segment.start.point(), edge.segment.end.point()]))
             .map(|line| LineSeq::try_new(line).expect("noded segment has two vertices"))
             .collect::<Vec<_>>();
-        let noded = if noded.is_empty() {
-            Self::typed_empty(GeometryKind::MultiLineString, self.axes())
-        } else {
-            Self::MultiLineString(noded.into())
-        };
+        let noded = Self::multi_line_string(self.axes(), noded);
         carry_ordinates(noded, &[self], "node", strictness.is_strict())
     }
 
@@ -171,7 +167,8 @@ impl Shape {
                         LineSeq::try_new(chains.pop().expect("len == 1"))
                             .expect("merged chain is lineal"),
                     ),
-                    _ => Self::MultiLineString(
+                    _ => Self::multi_line_string(
+                        lines.axes(),
                         chains
                             .into_iter()
                             .map(|line| LineSeq::try_new(line).expect("merged chain is lineal"))
@@ -201,16 +198,8 @@ impl Shape {
             .map(|line| LineSeq::try_new(line).expect("shared path is lineal"))
             .collect::<Vec<_>>();
         let result = Self::geometry_collection(vec![
-            if same.is_empty() {
-                Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
-            } else {
-                Self::MultiLineString(same.into())
-            },
-            if opposite.is_empty() {
-                Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
-            } else {
-                Self::MultiLineString(opposite.into())
-            },
+            Self::multi_line_string(CoordinateAxes::XY, same),
+            Self::multi_line_string(CoordinateAxes::XY, opposite),
         ])?;
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }

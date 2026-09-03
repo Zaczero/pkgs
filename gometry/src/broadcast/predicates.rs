@@ -216,28 +216,23 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
                     _ => unreachable!("compact point storage yields point rows"),
                 })
                 .collect::<Vec<_>>();
-            return Ok(if points.is_empty() {
-                Shape::typed_empty(GeometryKind::MultiPoint, coords.axes())
-            } else {
-                Shape::MultiPoint(points.into())
-            });
+            return Ok(Shape::multi_point(
+                coords.axes(),
+                CoordSeq::from_points(&points),
+            ));
         }
         if row_map.is_identity() && !splitters.has_missing() {
-            if coords.is_empty() {
-                return Ok(Shape::typed_empty(GeometryKind::MultiPoint, coords.axes()));
-            }
-            return Ok(Shape::MultiPoint(coords.as_ref().clone().into()));
+            return Ok(Shape::multi_point(coords.axes(), coords.as_ref().clone()));
         }
         let map = row_map.as_deref();
         let points: Vec<_> = (0..crate::array::point_logical_len(coords, map))
             .filter(|&logical| !splitters.is_row_missing(logical))
             .map(|logical| coords.point_at(crate::array::physical_row(map, logical)))
             .collect();
-        return Ok(if points.is_empty() {
-            Shape::typed_empty(GeometryKind::MultiPoint, coords.axes())
-        } else {
-            Shape::MultiPoint(CoordSeq::from_points(&points).into())
-        });
+        return Ok(Shape::multi_point(
+            coords.axes(),
+            CoordSeq::from_points(&points),
+        ));
     }
     let mut points = Vec::new();
     for row in splitters.row_operation().present_rows() {
@@ -258,11 +253,10 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
                 }
             })?;
     }
-    Ok(if points.is_empty() {
-        Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
-    } else {
-        Shape::MultiPoint(points.into())
-    })
+    Ok(Shape::multi_point(
+        CoordinateAxes::XY,
+        CoordSeq::from_points(&points),
+    ))
 }
 
 pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {

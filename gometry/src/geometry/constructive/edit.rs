@@ -847,12 +847,7 @@ impl Shape {
         let clipped = match self {
             Self::Point(point) if rect.contains_point(*point) => self.clone(),
             Self::MultiPoint(points) => {
-                let clipped = clip_multipoint_columns(points, rect);
-                if clipped.is_empty() {
-                    Self::typed_empty(GeometryKind::MultiPoint, points.axes())
-                } else {
-                    Self::MultiPoint(clipped.into())
-                }
+                Self::multi_point(points.axes(), clip_multipoint_columns(points, rect))
             },
             Self::Point(_) => empty_clip_shape(self),
             Self::LineString(_)

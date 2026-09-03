@@ -411,7 +411,7 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
                         .expect("coverage invalid segment has two vertices")
                 })
                 .collect();
-            Shape::MultiLineString(lines.into()).line_merge()
+            Shape::multi_line_string(CoordinateAxes::XY, lines).line_merge()
         })
         .collect()
 }

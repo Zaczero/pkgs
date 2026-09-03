@@ -554,7 +554,8 @@ fn rebuild_row(
     };
     match shape {
         Shape::Polygon(polygon) => Shape::Polygon(rebuild_polygon(polygon, &rebuild_ring)),
-        Shape::MultiPolygon(polygons) => Shape::MultiPolygon(
+        Shape::MultiPolygon(polygons) => Shape::multi_polygon(
+            polygons.axes(),
             polygons
                 .iter()
                 .map(|polygon| rebuild_polygon(polygon, &rebuild_ring))
