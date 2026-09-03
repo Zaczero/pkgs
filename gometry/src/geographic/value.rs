@@ -296,6 +296,19 @@ impl GeographicFrame {
         Ok(())
     }
 
+    pub(crate) fn to_geodesic_lanes_indexed(
+        self,
+        xs: &mut [f64],
+        ys: &mut [f64],
+    ) -> Result<(), (usize, GeographicError)> {
+        for (index, (longitude, latitude)) in std::iter::zip(xs, ys).enumerate() {
+            (*longitude, *latitude) = self
+                .to_geodesic_xy(*longitude, *latitude)
+                .map_err(|error| (index, error))?;
+        }
+        Ok(())
+    }
+
     /// Convert mutable canonical Greenwich-degree XY lanes to this CRS's
     /// native axes. Z/T lanes are not part of geographic angular conversion.
     pub(crate) fn from_geodesic_lanes(
@@ -305,6 +318,23 @@ impl GeographicFrame {
     ) -> Result<(), GeographicError> {
         for (longitude, latitude) in std::iter::zip(xs, ys) {
             (*longitude, *latitude) = self.from_geodesic_xy(*longitude, *latitude)?;
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::wrong_self_convention,
+        reason = "the frame value selects the native angular axes for this conversion"
+    )]
+    pub(crate) fn from_geodesic_lanes_indexed(
+        self,
+        xs: &mut [f64],
+        ys: &mut [f64],
+    ) -> Result<(), (usize, GeographicError)> {
+        for (index, (longitude, latitude)) in std::iter::zip(xs, ys).enumerate() {
+            (*longitude, *latitude) = self
+                .from_geodesic_xy(*longitude, *latitude)
+                .map_err(|error| (index, error))?;
         }
         Ok(())
     }

@@ -5,12 +5,12 @@
 //! WGS84 Web Mercator (EPSG:3857) — spherical closed-form formulas.
 
 use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
-use crate::crs::WEB_MERCATOR_RADIUS;
 use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
     admit_projection, epsg, param_assume_degrees, param_assume_unity,
 };
+use crate::crs::{TransformFailure, WEB_MERCATOR_RADIUS};
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
 
@@ -45,12 +45,22 @@ pub(super) fn web_mercator_to_lonlat_xy(x: f64, y: f64) -> (f64, f64) {
 }
 
 pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
+    raw_forward_batch_indexed(x, y).map_err(|failure| failure.error)
+}
+
+pub(super) fn raw_forward_batch_indexed(
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
     const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
-    for (lon, lat) in std::iter::zip(x, y) {
+    for (index, (lon, lat)) in std::iter::zip(x, y).enumerate() {
         let lat_rad = *lat * DEG_TO_RAD;
         let lat_deg = lat_rad * RAD_TO_DEG;
         if !(-WEB_MERCATOR_MAX_LATITUDE..=WEB_MERCATOR_MAX_LATITUDE).contains(&lat_deg) {
-            return Err(GeometryErrorKind::WebMercatorLatitude(lat_deg).into());
+            return Err(TransformFailure::at(
+                GeometryErrorKind::WebMercatorLatitude(lat_deg).into(),
+                index,
+            ));
         }
         let out_y = if lat_rad == 0.0 {
             lat_rad
@@ -59,7 +69,10 @@ pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
         };
         let out_x = *lon * METRES_PER_DEGREE;
         if !out_x.is_finite() || !out_y.is_finite() {
-            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+            return Err(TransformFailure::at(
+                GeometryErrorKind::NonFiniteCoordinate.into(),
+                index,
+            ));
         }
         (*lon, *lat) = (out_x, out_y);
     }
@@ -67,8 +80,15 @@ pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
 }
 
 pub(super) fn raw_inverse_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
+    raw_inverse_batch_indexed(x, y).map_err(|failure| failure.error)
+}
+
+pub(super) fn raw_inverse_batch_indexed(
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
     const METRES_PER_DEGREE: f64 = WEB_MERCATOR_RADIUS * DEG_TO_RAD;
-    for (lon, lat) in std::iter::zip(x, y) {
+    for (index, (lon, lat)) in std::iter::zip(x, y).enumerate() {
         let out_lon = *lon / METRES_PER_DEGREE;
         let lat_rad = if *lat == 0.0 {
             *lat
@@ -77,7 +97,10 @@ pub(super) fn raw_inverse_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
         };
         let out_lat = lat_rad * RAD_TO_DEG;
         if !out_lon.is_finite() || !out_lat.is_finite() {
-            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+            return Err(TransformFailure::at(
+                GeometryErrorKind::NonFiniteCoordinate.into(),
+                index,
+            ));
         }
         (*lon, *lat) = (out_lon, out_lat);
     }

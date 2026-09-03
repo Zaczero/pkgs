@@ -7,8 +7,8 @@ use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformOptions,
-    UnitInfo, WktVersion, proj_env, runtime_state_snapshot,
+    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
+    TransformOptions, UnitInfo, WktVersion, proj_env, runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -356,6 +356,20 @@ pub(super) fn with_proj_pipeline_at<R>(
     execution: &TransformExecution,
     transform: impl FnOnce(&ProjPipeline) -> Result<R>,
 ) -> Result<R> {
+    with_proj_pipeline_indexed_at(source, target, options, state, execution, |pipeline| {
+        transform(pipeline).map_err(TransformFailure::from)
+    })
+    .map_err(|failure| failure.error)
+}
+
+pub(super) fn with_proj_pipeline_indexed_at<R>(
+    source: &str,
+    target: &str,
+    options: &TransformOptions,
+    state: &RuntimeState,
+    execution: &TransformExecution,
+    transform: impl FnOnce(&ProjPipeline) -> std::result::Result<R, TransformFailure>,
+) -> std::result::Result<R, TransformFailure> {
     ensure_thread_caches_current(state);
     PROJ_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -382,16 +396,24 @@ pub(super) fn with_proj_pipeline_at<R>(
             // pipelines so the next call gets a coordinate-correct selection;
             // a batch still makes one FFI call and one failed attempt total.
             cache.remove(index);
-            result.map_err(|error| {
+            result.map_err(|failure| {
                 let message = execution.diagnostic().unwrap_or_default();
-                if message.is_empty() {
-                    CrsError::transform(source, target, error.to_string())
+                let error = if message.is_empty() {
+                    CrsError::transform(source, target, failure.error.to_string())
                 } else {
-                    CrsError::transform(source, target, format!("{error}; {message}"))
+                    CrsError::transform(source, target, format!("{}; {message}", failure.error))
+                };
+                TransformFailure {
+                    error,
+                    coordinate: failure.coordinate,
                 }
             })
         } else {
-            result.map_err(|error| CrsError::transform(source, target, error.to_string()))
+            result.map_err(|failure| {
+                let coordinate = failure.coordinate;
+                let error = CrsError::transform(source, target, failure.error.to_string());
+                TransformFailure { error, coordinate }
+            })
         }
     })
 }

@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use crate::crs::{
     CoordSeq, CrsError, GeometryErrorKind, Point, ProjDirection, ProjPipeline, RuntimeState, Shape,
-    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformOptions, TransformPlan,
-    info_with_state, proj_error_message, runtime_state_snapshot, transform_in_core_xy_batch,
-    with_proj_operation_at,
+    TRANSFORM_BOUNDS_MAX_DENSIFY, TransformExecution, TransformFailure, TransformOptions,
+    TransformPlan, info_with_state, proj_error_message, runtime_state_snapshot,
+    transform_in_core_xy_batch, transform_in_core_xy_batch_indexed, with_proj_operation_at,
 };
 use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
@@ -268,6 +268,33 @@ pub(super) fn transform_in_core_xy_with_domains(
         frame
             .from_geodesic_lanes(x, y)
             .map_err(map_geographic_conversion_error)?;
+    }
+    Ok(())
+}
+
+pub(super) fn transform_in_core_xy_with_domains_indexed(
+    operation: &crate::crs::InCoreTransform,
+    source_domain: TopologyDomain,
+    target_domain: TopologyDomain,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    if let TopologyDomain::Geographic(frame) = source_domain
+        && frame != GeographicFrame::crs84()
+    {
+        frame
+            .to_geodesic_lanes_indexed(x, y)
+            .map_err(|(coordinate, error)| {
+                TransformFailure::at(map_geographic_conversion_error(error), coordinate)
+            })?;
+    }
+    transform_in_core_xy_batch_indexed(operation, x, y)?;
+    if let TopologyDomain::Geographic(frame) = target_domain {
+        frame
+            .from_geodesic_lanes_indexed(x, y)
+            .map_err(|(coordinate, error)| {
+                TransformFailure::at(map_geographic_conversion_error(error), coordinate)
+            })?;
     }
     Ok(())
 }
@@ -1059,6 +1086,32 @@ pub(crate) fn transform_proj_shapes(
     output.finish(shapes)
 }
 
+pub(crate) fn transform_proj_shapes_indexed(
+    transformer: &ProjPipeline,
+    shapes: &[&Shape],
+    source_epoch: Option<f64>,
+    execution: &crate::crs::TransformExecution,
+) -> std::result::Result<Vec<Shape>, TransformFailure> {
+    let mut output = TransformOutputPlan::try_new(shapes)?;
+    if source_epoch.is_none() {
+        transformer
+            .require_epoch_lane()
+            .map_err(TransformFailure::from)?;
+    }
+    output.execute_indexed(|x, y, z| {
+        let mut epoch = source_epoch.map(|epoch| [epoch]);
+        transformer.transform_lanes_indexed(
+            x,
+            y,
+            z,
+            epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
+            ProjDirection::Forward,
+            execution,
+        )
+    })?;
+    Ok(output.finish(shapes)?)
+}
+
 const TRANSFORM_CHUNK_BYTES: usize = 1024 * 1024;
 const XY_CHUNK_VERTICES: usize = TRANSFORM_CHUNK_BYTES / (2 * size_of::<f64>());
 const XYZ_CHUNK_VERTICES: usize = TRANSFORM_CHUNK_BYTES / (3 * size_of::<f64>());
@@ -1217,6 +1270,7 @@ impl OutputColumns {
 struct OutputCoordSeq {
     batch: OutputBatch,
     range: Range<usize>,
+    shape: usize,
     ms: Option<Arc<[f64]>>,
 }
 
@@ -1240,13 +1294,13 @@ impl TransformOutputPlan {
             sequences: Vec::new(),
         };
         crate::try_reserve_vec(&mut plan.sequences, counts.sequences)?;
-        for shape in shapes {
-            visit_shape_sequences(shape, &mut |source| plan.push_source(source))?;
+        for (shape_index, shape) in shapes.iter().enumerate() {
+            visit_shape_sequences(shape, &mut |source| plan.push_source(source, shape_index))?;
         }
         Ok(plan)
     }
 
-    fn push_source(&mut self, source: OutputCoordSource<'_>) -> Result<()> {
+    fn push_source(&mut self, source: OutputCoordSource<'_>, shape: usize) -> Result<()> {
         let batch = source.batch();
         let range = match batch {
             OutputBatch::Xy => self.xy.append(source),
@@ -1255,6 +1309,7 @@ impl TransformOutputPlan {
         crate::try_push_vec(&mut self.sequences, OutputCoordSeq {
             batch,
             range,
+            shape,
             ms: source.carried_ms(),
         })
     }
@@ -1264,6 +1319,17 @@ impl TransformOutputPlan {
         mut transform: impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
     ) -> Result<()> {
         self.execute_with_capacities(XY_CHUNK_VERTICES, XYZ_CHUNK_VERTICES, &mut transform)
+    }
+
+    pub(crate) fn execute_indexed(
+        &mut self,
+        mut transform: impl FnMut(
+            &mut [f64],
+            &mut [f64],
+            Option<&mut [f64]>,
+        ) -> std::result::Result<(), TransformFailure>,
+    ) -> std::result::Result<(), TransformFailure> {
+        self.execute_with_capacities_indexed(XY_CHUNK_VERTICES, XYZ_CHUNK_VERTICES, &mut transform)
     }
 
     fn execute_with_capacities(
@@ -1276,6 +1342,36 @@ impl TransformOutputPlan {
         self.execute_axes(true, xyz_capacity, transform)
     }
 
+    fn execute_with_capacities_indexed(
+        &mut self,
+        xy_capacity: usize,
+        xyz_capacity: usize,
+        transform: &mut impl FnMut(
+            &mut [f64],
+            &mut [f64],
+            Option<&mut [f64]>,
+        ) -> std::result::Result<(), TransformFailure>,
+    ) -> std::result::Result<(), TransformFailure> {
+        // Reconstruction runs XY before XYZ. If XY identifies a coordinate
+        // failure, one XYZ pass is still needed so the earliest input shape,
+        // rather than lane order, owns the displayed error.
+        match self.execute_axes_indexed(false, xy_capacity, transform) {
+            Ok(()) => self.execute_axes_indexed(true, xyz_capacity, transform),
+            Err(xy_failure) if xy_failure.coordinate.is_some() => {
+                match self.execute_axes_indexed(true, xyz_capacity, transform) {
+                    Err(xyz_failure)
+                        if xyz_failure.coordinate.is_some()
+                            && xyz_failure.coordinate < xy_failure.coordinate =>
+                    {
+                        Err(xyz_failure)
+                    },
+                    _ => Err(xy_failure),
+                }
+            },
+            Err(failure) => Err(failure),
+        }
+    }
+
     fn execute_axes(
         &mut self,
         has_z: bool,
@@ -1284,6 +1380,37 @@ impl TransformOutputPlan {
     ) -> Result<()> {
         let columns = if has_z { &mut self.xyz } else { &mut self.xy };
         execute_batch(columns, capacity, transform)
+    }
+
+    fn execute_axes_indexed(
+        &mut self,
+        has_z: bool,
+        capacity: usize,
+        transform: &mut impl FnMut(
+            &mut [f64],
+            &mut [f64],
+            Option<&mut [f64]>,
+        ) -> std::result::Result<(), TransformFailure>,
+    ) -> std::result::Result<(), TransformFailure> {
+        let columns = if has_z { &mut self.xyz } else { &mut self.xy };
+        execute_batch_indexed(columns, capacity, transform).map_err(|failure| {
+            let shape = failure.coordinate.and_then(|coordinate| {
+                self.sequences
+                    .iter()
+                    .find(|sequence| {
+                        sequence.batch
+                            == if has_z {
+                                OutputBatch::Xyz
+                            } else {
+                                OutputBatch::Xy
+                            }
+                            && sequence.range.contains(&coordinate)
+                    })
+                    .map(|sequence| sequence.shape)
+            });
+            debug_assert!(failure.coordinate.is_none_or(|_| shape.is_some()));
+            failure.with_coordinate(shape)
+        })
     }
 
     pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
@@ -1337,6 +1464,32 @@ fn execute_batch(
             &mut ys[offset..end],
             zs.as_deref_mut().map(|values| &mut values[offset..end]),
         )?;
+        offset = end;
+    }
+    Ok(())
+}
+
+fn execute_batch_indexed(
+    columns: &mut OutputColumns,
+    capacity: usize,
+    transform: &mut impl FnMut(
+        &mut [f64],
+        &mut [f64],
+        Option<&mut [f64]>,
+    ) -> std::result::Result<(), TransformFailure>,
+) -> std::result::Result<(), TransformFailure> {
+    let capacity = capacity.max(1);
+    let OutputColumns { xs, ys, zs } = columns;
+    let mut zs = zs.as_mut().map(Vec::as_mut_slice);
+    let mut offset = 0;
+    while offset < xs.len() {
+        let end = xs.len().min(offset.saturating_add(capacity));
+        transform(
+            &mut xs[offset..end],
+            &mut ys[offset..end],
+            zs.as_deref_mut().map(|values| &mut values[offset..end]),
+        )
+        .map_err(|failure| failure.offset_coordinate(offset, end))?;
         offset = end;
     }
     Ok(())
@@ -1512,6 +1665,58 @@ mod lane_tests {
             (107.0, 108.0, Some(109.0)),
             (110.0, 111.0, Some(112.0)),
         ]);
+    }
+
+    #[test]
+    fn indexed_execution_prefers_the_earliest_shape_across_axes() {
+        let shapes = [
+            Shape::Point(Point::new_raw_axes(
+                0.0,
+                0.0,
+                ZOrdinate(Some(1.0)),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let failure = plan
+            .execute_indexed(|_, _, z| {
+                Err(TransformFailure::at(
+                    GeometryErrorKind::projection(if z.is_some() {
+                        "xyz failed"
+                    } else {
+                        "xy failed"
+                    }),
+                    0,
+                ))
+            })
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(0));
+        assert_eq!(failure.error.to_string(), "projection failed: xyz failed");
+    }
+
+    #[test]
+    fn indexed_execution_rejects_a_backend_ordinal_outside_the_current_chunk() {
+        let sequence =
+            CoordSeq::from_columns([0.0, 1.0, 2.0].into(), [0.0, 1.0, 2.0].into(), None, None);
+        let shape = Shape::MultiPoint(MultiPoint::from_coordseq(sequence).unwrap());
+        let refs = [&shape];
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let mut calls = 0;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            plan.execute_with_capacities_indexed(2, 2, &mut |x, _, _| {
+                calls += 1;
+                Err(TransformFailure::at(
+                    GeometryErrorKind::projection("invalid chunk ordinal"),
+                    x.len(),
+                ))
+            })
+        }));
+
+        result.unwrap_err();
+        assert_eq!(calls, 1);
     }
 
     #[test]

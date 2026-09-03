@@ -25,7 +25,7 @@ use webmerc::WGS84_WEB_MERCATOR;
 
 use crate::crs::in_core::kernel::{DEG_TO_RAD, ProjectionKernel, RAD_TO_DEG};
 use crate::crs::local::UtmZone as LocalUtmZone;
-use crate::crs::parse_epsg;
+use crate::crs::{TransformFailure, parse_epsg};
 use crate::error::Result;
 
 pub(super) fn lonlat_to_web_mercator_xy(lon: f64, lat: f64) -> Result<(f64, f64)> {
@@ -161,6 +161,14 @@ pub(super) fn transform_in_core_xy_batch(
     resolve_in_core_xy(operation).apply_batch(x, y)
 }
 
+pub(super) fn transform_in_core_xy_batch_indexed(
+    operation: &InCoreTransform,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    resolve_in_core_xy(operation).apply_batch_indexed(x, y)
+}
+
 /// Resolved in-core XY kernel — the `One`/`Two` + `Forward`/`Inverse` +
 /// `ProjSetup` matches happen once per batch; [`apply`](Self::apply) is a
 /// single flat dispatch.
@@ -220,6 +228,42 @@ impl ResolvedInCoreXy<'_> {
             Self::TwoGeneric { inverse, forward } => two_generic_batch(inverse, forward, x, y),
         }
     }
+
+    fn apply_batch_indexed(
+        self,
+        x: &mut [f64],
+        y: &mut [f64],
+    ) -> std::result::Result<(), TransformFailure> {
+        match self {
+            Self::RawWebMercFwd => webmerc::raw_forward_batch_indexed(x, y),
+            Self::RawWebMercInv => webmerc::raw_inverse_batch_indexed(x, y),
+            Self::WebMercFwd(p) => projected_batch_indexed::<webmerc::WebMerc, true>(p, x, y),
+            Self::WebMercInv(p) => projected_batch_indexed::<webmerc::WebMerc, false>(p, x, y),
+            Self::TmercFwd(p) => projected_batch_indexed::<tmerc::Tmerc, true>(p, x, y),
+            Self::TmercInv(p) => projected_batch_indexed::<tmerc::Tmerc, false>(p, x, y),
+            Self::LccFwd(p) => projected_batch_indexed::<lcc::Lcc, true>(p, x, y),
+            Self::LccInv(p) => projected_batch_indexed::<lcc::Lcc, false>(p, x, y),
+            Self::LaeaFwd(p) => projected_batch_indexed::<laea::Laea, true>(p, x, y),
+            Self::LaeaInv(p) => projected_batch_indexed::<laea::Laea, false>(p, x, y),
+            Self::AeaFwd(p) => projected_batch_indexed::<aea::Aea, true>(p, x, y),
+            Self::AeaInv(p) => projected_batch_indexed::<aea::Aea, false>(p, x, y),
+            Self::PolarStereoFwd(p) => projected_batch_indexed::<stere::PolarStereo, true>(p, x, y),
+            Self::PolarStereoInv(p) => {
+                projected_batch_indexed::<stere::PolarStereo, false>(p, x, y)
+            },
+            Self::StereaFwd(p) => projected_batch_indexed::<sterea::Sterea, true>(p, x, y),
+            Self::StereaInv(p) => projected_batch_indexed::<sterea::Sterea, false>(p, x, y),
+            Self::WebMercToUtm { webmerc, tmerc } => {
+                webmerc_to_utm_batch_indexed(webmerc, tmerc, x, y)
+            },
+            Self::UtmToWebMerc { tmerc, webmerc } => {
+                utm_to_webmerc_batch_indexed(tmerc, webmerc, x, y)
+            },
+            Self::TwoGeneric { inverse, forward } => {
+                two_generic_batch_indexed(inverse, forward, x, y)
+            },
+        }
+    }
 }
 
 fn projected_batch<K: ProjectionKernel, const FORWARD: bool>(
@@ -227,11 +271,21 @@ fn projected_batch<K: ProjectionKernel, const FORWARD: bool>(
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
-    for (x, y) in std::iter::zip(x, y) {
+    projected_batch_indexed::<K, FORWARD>(projected, x, y).map_err(|failure| failure.error)
+}
+
+fn projected_batch_indexed<K: ProjectionKernel, const FORWARD: bool>(
+    projected: &Projected<K>,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    for (index, (x, y)) in std::iter::zip(x, y).enumerate() {
         (*x, *y) = if FORWARD {
-            validate_geographic_coordinate(*x, *y)?;
+            validate_geographic_coordinate(*x, *y)
+                .map_err(|error| TransformFailure::at(error, index))?;
             let lam_rel = *x * DEG_TO_RAD - projected.frame.lon_0_rad;
-            let (out_x, out_y) = K::forward_unframed(&projected.setup, lam_rel, *y * DEG_TO_RAD)?;
+            let (out_x, out_y) = K::forward_unframed(&projected.setup, lam_rel, *y * DEG_TO_RAD)
+                .map_err(|error| TransformFailure::at(error, index))?;
             (
                 params::apply_false_origin(out_x, projected.frame.x_0)
                     * projected.frame.axis_scale.inverse(),
@@ -243,7 +297,8 @@ fn projected_batch<K: ProjectionKernel, const FORWARD: bool>(
                 &projected.setup,
                 projected.frame.axis_scale.unframe(*x, projected.frame.x_0),
                 projected.frame.axis_scale.unframe(*y, projected.frame.y_0),
-            )?;
+            )
+            .map_err(|error| TransformFailure::at(error, index))?;
             (
                 adjlon(projected.frame.lon_0_rad + lam_rel) * RAD_TO_DEG,
                 lat_rad * RAD_TO_DEG,
@@ -276,10 +331,23 @@ fn webmerc_to_utm_batch(
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
-    for (x, y) in std::iter::zip(x, y) {
-        let (lon, lat) = webmerc.inverse_xy(*x, *y)?;
+    webmerc_to_utm_batch_indexed(webmerc, tmerc, x, y).map_err(|failure| failure.error)
+}
+
+fn webmerc_to_utm_batch_indexed(
+    webmerc: &Projected<webmerc::WebMerc>,
+    tmerc: &Projected<tmerc::Tmerc>,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    for (index, (x, y)) in std::iter::zip(x, y).enumerate() {
+        let (lon, lat) = webmerc
+            .inverse_xy(*x, *y)
+            .map_err(|error| TransformFailure::at(error, index))?;
         let lat = snap_webmerc_to_utm_latitude(lat);
-        (*x, *y) = tmerc.forward_xy(lon, lat)?;
+        (*x, *y) = tmerc
+            .forward_xy(lon, lat)
+            .map_err(|error| TransformFailure::at(error, index))?;
     }
     Ok(())
 }
@@ -290,9 +358,22 @@ fn utm_to_webmerc_batch(
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
-    for (x, y) in std::iter::zip(x, y) {
-        let (lon, lat) = tmerc.inverse_xy(*x, *y)?;
-        (*x, *y) = webmerc.forward_xy(lon, lat)?;
+    utm_to_webmerc_batch_indexed(tmerc, webmerc, x, y).map_err(|failure| failure.error)
+}
+
+fn utm_to_webmerc_batch_indexed(
+    tmerc: &Projected<tmerc::Tmerc>,
+    webmerc: &Projected<webmerc::WebMerc>,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
+    for (index, (x, y)) in std::iter::zip(x, y).enumerate() {
+        let (lon, lat) = tmerc
+            .inverse_xy(*x, *y)
+            .map_err(|error| TransformFailure::at(error, index))?;
+        (*x, *y) = webmerc
+            .forward_xy(lon, lat)
+            .map_err(|error| TransformFailure::at(error, index))?;
     }
     Ok(())
 }
@@ -303,13 +384,24 @@ fn two_generic_batch(
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
+    two_generic_batch_indexed(inverse, forward, x, y).map_err(|failure| failure.error)
+}
+
+fn two_generic_batch_indexed(
+    inverse: &ProjSetup,
+    forward: &ProjSetup,
+    x: &mut [f64],
+    y: &mut [f64],
+) -> std::result::Result<(), TransformFailure> {
     let snap_latitude = is_webmerc_to_utm_composition(inverse, forward);
-    for (x, y) in std::iter::zip(x, y) {
-        let (out_x, mut out_y) = inverse_setup(inverse, *x, *y)?;
+    for (index, (x, y)) in std::iter::zip(x, y).enumerate() {
+        let (out_x, mut out_y) =
+            inverse_setup(inverse, *x, *y).map_err(|error| TransformFailure::at(error, index))?;
         if snap_latitude {
             out_y = snap_webmerc_to_utm_latitude(out_y);
         }
-        (*x, *y) = forward_setup(forward, out_x, out_y)?;
+        (*x, *y) = forward_setup(forward, out_x, out_y)
+            .map_err(|error| TransformFailure::at(error, index))?;
     }
     Ok(())
 }

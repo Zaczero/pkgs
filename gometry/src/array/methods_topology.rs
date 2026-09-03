@@ -4,9 +4,25 @@
 )]
 use crate::array::{
     Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryArrayStorage, GeometryTransformFrame,
-    Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape,
-    coordinate_epoch_option, crs, parse_crs, parse_geometry_transform_options, pymethods,
+    Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, ValidityMask,
+    coordinate_epoch_option, crs, note_array_row, parse_crs, parse_geometry_transform_options,
+    pymethods,
 };
+
+fn transform_failure_pyerr(failure: crate::crs::TransformFailure) -> PyErr {
+    let error: PyErr = failure.error.into();
+    match failure.coordinate {
+        Some(row) => note_array_row(error, row),
+        None => error,
+    }
+}
+
+fn present_rank_to_logical(mask: &ValidityMask, rank: usize) -> Option<usize> {
+    mask.iter()
+        .enumerate()
+        .filter_map(|(logical, missing)| (!missing).then_some(logical))
+        .nth(rank)
+}
 
 #[pymethods]
 impl PyGeometryArray {
@@ -196,31 +212,40 @@ impl PyGeometryArray {
             }
             let execution = transformer.execution();
             let storage = Arc::clone(self.storage_arc());
-            let transformed = py.detach(move || {
-                let present: Vec<_> = storage
-                    .iter_shapes()
-                    .zip(mask.iter())
-                    .filter_map(|(shape, missing)| (!missing).then(|| shape.into_owned()))
-                    .collect();
-                let borrowed: Vec<_> = present.iter().collect();
-                let transformed = transformer.transform_shapes(&borrowed)?;
-                let mut transformed = transformed.into_iter();
-                let rows = mask
-                    .iter()
-                    .map(|missing| {
-                        if missing {
-                            Self::missing_placeholder()
-                        } else {
-                            transformed.next().expect("present row count is stable")
-                        }
-                    })
-                    .collect();
-                Ok::<_, crate::error::Error>((rows, mask))
-            })?;
+            let converted_rows = py
+                .detach(move || {
+                    let present: Vec<_> = storage
+                        .iter_shapes()
+                        .zip(mask.iter())
+                        .filter_map(|(shape, missing)| (!missing).then(|| shape.into_owned()))
+                        .collect();
+                    let borrowed: Vec<_> = present.iter().collect();
+                    let converted =
+                        transformer
+                            .transform_shapes_indexed(&borrowed)
+                            .map_err(|failure| {
+                                let coordinate = failure
+                                    .coordinate
+                                    .and_then(|rank| present_rank_to_logical(&mask, rank));
+                                failure.with_coordinate(coordinate)
+                            })?;
+                    let mut converted = converted.into_iter();
+                    let rows = mask
+                        .iter()
+                        .map(|missing| {
+                            if missing {
+                                Self::missing_placeholder()
+                            } else {
+                                converted.next().expect("present row count is stable")
+                            }
+                        })
+                        .collect();
+                    Ok::<_, crate::crs::TransformFailure>((rows, mask))
+                })
+                .map_err(transform_failure_pyerr)?;
             crate::py::crs::drain_accuracy_warning(py, &execution)?;
-            return Ok(
-                Self::from_shapes(transformed.0, output).with_missing_mask(Some(transformed.1))
-            );
+            return Ok(Self::from_shapes(converted_rows.0, output)
+                .with_missing_mask(Some(converted_rows.1)));
         }
         let target =
             parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
@@ -253,13 +278,15 @@ impl PyGeometryArray {
             // Borrow array-owned shapes — no deep clone before the batched
             // PROJ transform; land outputs in array-owned mixed/packed.
             let storage = Arc::clone(self.storage_arc());
-            let shapes = py.detach(move || {
-                let GeometryArrayStorage::Mixed(shapes) = storage.as_ref() else {
-                    unreachable!("matched Mixed");
-                };
-                let borrowed: Vec<_> = shapes.iter().collect();
-                transformer.transform_shapes(&borrowed)
-            })?;
+            let shapes = py
+                .detach(move || {
+                    let GeometryArrayStorage::Mixed(shapes) = storage.as_ref() else {
+                        unreachable!("matched Mixed");
+                    };
+                    let borrowed: Vec<_> = shapes.iter().collect();
+                    transformer.transform_shapes_indexed(&borrowed)
+                })
+                .map_err(transform_failure_pyerr)?;
             crate::py::crs::drain_accuracy_warning(py, &execution)?;
             Ok(Self::from_storage(
                 GeometryArrayStorage::Mixed(shapes),

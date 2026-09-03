@@ -1,6 +1,6 @@
 //! Public CRS data-transfer objects: `CrsInfo` and the metadata/options/
-//! catalog structs returned across the CRS API. Pure data — no logic, FFI, or
-//! caches; the engine in the sibling modules produces and consumes them.
+//! catalog structs returned across the CRS API, plus the internal transform
+//! failure carrier. FFI and cache logic stays in the sibling engine modules.
 //!
 //! Result DTOs mostly derive [`IntoPyObject`], which converts a named struct
 //! into a `PyDict` keyed by field names — the field names and order ARE the
@@ -328,6 +328,51 @@ pub(crate) struct TransformOptions {
     pub allow_ballpark: Option<bool>,
     pub only_best: Option<bool>,
     pub force_over: bool,
+}
+
+/// A transform failure plus the coordinate ordinal that caused it, when the
+/// backend can identify one. Setup, cardinality, allocation, and other
+/// operation-wide failures deliberately carry no ordinal.
+#[derive(Debug)]
+pub(crate) struct TransformFailure {
+    pub(crate) error: crate::error::Error,
+    pub(crate) coordinate: Option<usize>,
+}
+
+impl TransformFailure {
+    pub(crate) const fn at(error: crate::error::Error, coordinate: usize) -> Self {
+        Self {
+            error,
+            coordinate: Some(coordinate),
+        }
+    }
+
+    pub(crate) fn with_coordinate(self, coordinate: Option<usize>) -> Self {
+        Self {
+            error: self.error,
+            coordinate,
+        }
+    }
+
+    pub(crate) fn offset_coordinate(mut self, offset: usize, chunk_end: usize) -> Self {
+        self.coordinate = self.coordinate.map(|coordinate| {
+            assert!(
+                offset <= chunk_end && coordinate < chunk_end - offset,
+                "transform returned a coordinate outside its batch"
+            );
+            offset + coordinate
+        });
+        self
+    }
+}
+
+impl From<crate::error::Error> for TransformFailure {
+    fn from(error: crate::error::Error) -> Self {
+        Self {
+            error,
+            coordinate: None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]

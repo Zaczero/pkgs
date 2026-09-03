@@ -10,9 +10,9 @@
 
 use crate::crs::{
     CrsError, GeometryErrorKind, OperationInfo, OwnedPj, ProjArea, ProjContext, ProjDirection,
-    ProjPipeline, ProjTransformOptions, RuntimeState, TransformExecution, TransformOptions,
-    coordinates_are_finite, create_crs_transform_object, cstring, operation_info_from_pj,
-    proj_context_error_message, proj_transform_error, ptr,
+    ProjPipeline, ProjTransformOptions, RuntimeState, TransformExecution, TransformFailure,
+    TransformOptions, coordinates_are_finite, create_crs_transform_object, cstring,
+    operation_info_from_pj, proj_context_error_message, proj_transform_error, ptr,
 };
 use crate::error::Result;
 
@@ -189,25 +189,38 @@ impl ProjPipeline {
         &self,
         x: &mut [f64],
         y: &mut [f64],
+        z: Option<&mut [f64]>,
+        t: Option<&mut [f64]>,
+        direction: ProjDirection,
+        execution: &TransformExecution,
+    ) -> Result<()> {
+        self.transform_lanes_indexed(x, y, z, t, direction, execution)
+            .map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn transform_lanes_indexed(
+        &self,
+        x: &mut [f64],
+        y: &mut [f64],
         mut z: Option<&mut [f64]>,
         mut t: Option<&mut [f64]>,
         direction: ProjDirection,
         execution: &TransformExecution,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), TransformFailure> {
         // The `unsafe` `proj_trans_generic` call below reads/writes each lane
         // up to `x.len()` elements, so a length mismatch would be an
         // out-of-bounds FFI access (UB). Keep those safety preconditions
         // fallible across the public path; callers pass equal-length CoordSeq
         // columns by construction, so these do not fire in normal use.
         if x.len() != y.len() {
-            return Err(GeometryErrorKind::projection(
+            return Err(TransformFailure::from(GeometryErrorKind::projection(
                 "transform lane length mismatch",
-            ));
+            )));
         }
         if z.as_deref().is_some_and(|z| z.len() != x.len()) {
-            return Err(GeometryErrorKind::projection(
+            return Err(TransformFailure::from(GeometryErrorKind::projection(
                 "transform z lane length mismatch",
-            ));
+            )));
         }
         // A length-1 time lane is a valid PROJ broadcast constant: PROJ reads
         // (and writes) only its single element, never advancing the pointer,
@@ -216,9 +229,9 @@ impl ProjPipeline {
         if t.as_deref()
             .is_some_and(|t| t.len() != x.len() && t.len() != 1)
         {
-            return Err(GeometryErrorKind::projection(
+            return Err(TransformFailure::from(GeometryErrorKind::projection(
                 "transform t lane length mismatch",
-            ));
+            )));
         }
         if x.is_empty() {
             return Ok(());
@@ -264,7 +277,11 @@ impl ProjPipeline {
                 Ok(())
             } else {
                 let error = proj_sys::proj_errno(transform);
-                Err(map_proj_transform_error(error))
+                let coordinate = first_nonfinite_coordinate(x, y, z.as_deref(), t.as_deref());
+                Err(TransformFailure {
+                    error: map_proj_transform_error(error),
+                    coordinate,
+                })
             };
             if let Some(message) = self.context.take_diagnostic() {
                 execution.record_diagnostic(message);
@@ -395,4 +412,18 @@ impl ProjPipeline {
             roundtrip_t.as_deref(),
         ))
     }
+}
+
+fn first_nonfinite_coordinate(
+    x: &[f64],
+    y: &[f64],
+    z: Option<&[f64]>,
+    t: Option<&[f64]>,
+) -> Option<usize> {
+    (0..x.len()).find(|&index| {
+        !x[index].is_finite()
+            || !y[index].is_finite()
+            || z.is_some_and(|z| !z[index].is_finite())
+            || t.is_some_and(|t| !t[if t.len() == 1 { 0 } else { index }].is_finite())
+    })
 }

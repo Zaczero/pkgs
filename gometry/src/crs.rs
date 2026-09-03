@@ -66,7 +66,7 @@ use cache::{
     CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
     NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
     ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
-    with_proj_operation_at, with_proj_pipeline_at,
+    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_resolve};
 pub(crate) use catalog::{
@@ -103,7 +103,8 @@ pub(crate) use geodesic::{
 pub(crate) use grids::grid_info;
 use in_core::{
     InCoreTransform, lonlat_to_web_mercator_xy, transform_in_core_xy_batch,
-    try_in_core_transform_with_state, utm_crs, web_mercator_to_lonlat_xy,
+    transform_in_core_xy_batch_indexed, try_in_core_transform_with_state, utm_crs,
+    web_mercator_to_lonlat_xy,
 };
 pub(crate) use info::{
     AngularUnit, engine_info_with_state, ensure_same_geodesic_len, factor_columns, factors,
@@ -152,8 +153,8 @@ pub(crate) use types::{
     GeodesicInverseInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo, OperationInfo,
     OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo, ProjDirection,
     ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors, RuntimeConfig,
-    RuntimeState, TransformExecution, TransformOptions, UnitInfo, UtmCatalogOptions, WktAxisRule,
-    WktVersion,
+    RuntimeState, TransformExecution, TransformFailure, TransformOptions, UnitInfo,
+    UtmCatalogOptions, WktAxisRule, WktVersion,
 };
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;

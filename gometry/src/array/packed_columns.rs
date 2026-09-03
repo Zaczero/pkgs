@@ -18,6 +18,7 @@ use crate::array::{
     Python, ReplacementAxis, RingLevel, RowSelectionRef, ValidityMask,
     map_masked_point_columns_to_crs, rows_err,
 };
+use crate::crs::TransformFailure;
 use crate::geometry::{CoordSeqBuilder, CoordWindow, MOrdinate, ZOrdinate};
 
 pub(crate) enum PackedColumnError {
@@ -1093,7 +1094,7 @@ fn transform_selected_coords(
     coords: &CoordSeq,
     indices: impl IntoIterator<Item = usize>,
     capacity: usize,
-) -> crate::error::Result<CoordSeq> {
+) -> std::result::Result<CoordSeq, TransformFailure> {
     let mut xs = Vec::new();
     let mut ys = Vec::new();
     let mut zs = coords.zs().map(|_| Vec::new());
@@ -1119,8 +1120,37 @@ fn transform_selected_coords(
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
         crate::Zt::Z(values.as_mut_slice())
     });
-    transformer.transform_coordinates(&mut xs, &mut ys, zt)?;
-    CoordSeq::try_from_vecs(xs, ys, zs, ms)
+    transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
+    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
+}
+
+fn packed_transform_failure(failure: TransformFailure, row: Option<usize>) -> PackedColumnError {
+    match (failure.coordinate, row) {
+        (Some(_), Some(row)) => row_err(row, failure.error),
+        _ => batch_err(failure.error),
+    }
+}
+
+fn point_row_for_coordinate(rows: PointRows<'_>, coordinate: usize) -> Option<usize> {
+    rows.cursor()
+        .filter_map(|(logical, physical)| physical.map(|_| logical))
+        .nth(coordinate)
+}
+
+fn offset_row_for_coordinate(offsets: &[i32], coordinate: usize) -> Option<usize> {
+    offsets
+        .partition_point(|&end| end as usize <= coordinate)
+        .checked_sub(1)
+        .filter(|&row| row + 1 < offsets.len())
+}
+
+fn polygon_row_for_coordinate(
+    ring_offsets: &[i32],
+    polygon_offsets: &[i32],
+    coordinate: usize,
+) -> Option<usize> {
+    let ring = offset_row_for_coordinate(ring_offsets, coordinate)?;
+    offset_row_for_coordinate(polygon_offsets, ring)
 }
 
 fn map_selected_to_crs(
@@ -1129,6 +1159,7 @@ fn map_selected_to_crs(
 ) -> PackedColumnResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(points) => {
+            let rows = points.rows();
             if points.missing.is_some() {
                 let missing = points.missing.expect("masked points");
                 let coords = map_masked_point_columns_to_crs(
@@ -1139,7 +1170,12 @@ fn map_selected_to_crs(
                     missing.present_count(),
                     points.row_layout(),
                 )
-                .map_err(batch_err)?;
+                .map_err(|failure| {
+                    let row = failure
+                        .coordinate
+                        .and_then(|coordinate| point_row_for_coordinate(rows, coordinate));
+                    packed_transform_failure(failure, row)
+                })?;
                 return Ok(PackedColumnOutput::Points(coords));
             }
             let coords = transform_selected_coords(
@@ -1151,7 +1187,12 @@ fn map_selected_to_crs(
                     .map(|(_, physical)| physical.expect("dense point rows are present")),
                 points.len(),
             )
-            .map_err(batch_err)?;
+            .map_err(|failure| {
+                let row = failure
+                    .coordinate
+                    .and_then(|coordinate| point_row_for_coordinate(rows, coordinate));
+                packed_transform_failure(failure, row)
+            })?;
             Ok(PackedColumnOutput::Points(coords))
         },
         PackedColumns::Lines(lines) => {
@@ -1168,6 +1209,7 @@ fn map_selected_to_crs(
                     .push_end(coordinate_count, i32::MAX as usize)
                     .map_err(batch_err)?;
             }
+            let offsets = offsets.finish(coordinate_count).map_err(batch_err)?;
             let indices = (0..lines.rows()).flat_map(|logical| {
                 if lines.is_missing(logical) || lines.row_window(logical).len() < 2 {
                     0..0
@@ -1177,12 +1219,13 @@ fn map_selected_to_crs(
             });
             let coords =
                 transform_selected_coords(transformer, lines.coords(), indices, coordinate_count)
-                    .map_err(batch_err)?;
-            let len = coords.len();
-            Ok(PackedColumnOutput::Lines {
-                coords,
-                offsets: offsets.finish(len).map_err(batch_err)?,
-            })
+                    .map_err(|failure| {
+                    let row = failure.coordinate.and_then(|coordinate| {
+                        offset_row_for_coordinate(offsets.as_slice(), coordinate)
+                    });
+                    packed_transform_failure(failure, row)
+                })?;
+            Ok(PackedColumnOutput::Lines { coords, offsets })
         },
         PackedColumns::Polygons(polygons) => {
             let selected_ring_count = (0..polygons.rows())
@@ -1210,6 +1253,8 @@ fn map_selected_to_crs(
                     .push_end(ring_count, i32::MAX as usize)
                     .map_err(batch_err)?;
             }
+            let ring_offsets = rings.finish(coordinate_count).map_err(batch_err)?;
+            let polygon_offsets = polygon_offsets.finish(ring_count).map_err(batch_err)?;
             let indices = (0..polygons.rows())
                 .filter(|&logical| !polygons.is_missing(logical))
                 .flat_map(|logical| polygons.polygon_rings(logical))
@@ -1223,15 +1268,20 @@ fn map_selected_to_crs(
                 indices,
                 coordinate_count,
             )
-            .map_err(batch_err)?;
-            let len = coords.len();
+            .map_err(|failure| {
+                let row = failure.coordinate.and_then(|coordinate| {
+                    polygon_row_for_coordinate(
+                        ring_offsets.as_slice(),
+                        polygon_offsets.as_slice(),
+                        coordinate,
+                    )
+                });
+                packed_transform_failure(failure, row)
+            })?;
             Ok(PackedColumnOutput::Polygons {
                 coords,
-                ring_offsets: rings.finish(len).map_err(batch_err)?.cast_level(),
-                polygon_offsets: polygon_offsets
-                    .finish(ring_count)
-                    .map_err(batch_err)?
-                    .cast_level(),
+                ring_offsets: ring_offsets.cast_level(),
+                polygon_offsets: polygon_offsets.cast_level(),
             })
         },
     }

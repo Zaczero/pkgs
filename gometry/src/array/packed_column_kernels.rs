@@ -800,7 +800,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
     missing: &ValidityMask,
     present_count: usize,
     layout: PointRowLayout,
-) -> crate::error::Result<CoordSeq> {
+) -> std::result::Result<CoordSeq, crate::crs::TransformFailure> {
     let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
     debug_assert_eq!(rows.len(), missing.len());
     debug_assert_eq!(rows.present_count(), present_count);
@@ -834,11 +834,11 @@ pub(crate) fn map_masked_point_columns_to_crs(
         crate::Zt::Z(values.as_mut_slice())
     });
     if !xs.is_empty() {
-        transformer.transform_coordinates(&mut xs, &mut ys, zt)?;
+        transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
     }
 
     if compact {
-        return CoordSeq::try_from_vecs(xs, ys, zs, ms);
+        return Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?);
     }
 
     let mut output = CoordSeqBuilder::try_with_capacity(coords.axes(), rows.len())?;
