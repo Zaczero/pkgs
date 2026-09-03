@@ -262,16 +262,7 @@ fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
 }
 
 #[test]
-fn non_tabulated_flattening_uses_exact_oblate_or_disabled_lane() {
-    let prolate = Geodesic::new(6_378_137.0, -0.01);
-    let prolate_metric = EllipsoidMetric::for_crs84_geometry_test(&prolate);
-    assert_eq!(
-        prolate_metric
-            .point_distance_lower_bound(p(0.0, 0.0), p(1.0, 0.0))
-            .to_bits(),
-        0.0_f64.to_bits()
-    );
-
+fn non_tabulated_flattening_uses_exact_oblate_lane() {
     let high_flattening = Geodesic::new(6_378_137.0, 0.2);
     let exact_metric = EllipsoidMetric::for_crs84_geometry_test(&high_flattening);
     let a = p(-12.0, -45.0);
@@ -282,73 +273,39 @@ fn non_tabulated_flattening_uses_exact_oblate_or_disabled_lane() {
     );
 }
 
-fn brute_directed_geodesic_distance(
-    probes: &[Point],
-    target_edges: &[GeodesicSegment],
-    target_points: &[Point],
-    metric: &impl GeodesicMetric,
-    mut best: f64,
-) -> f64 {
-    for &probe in probes {
-        for &segment in target_edges {
-            best = best.min(
-                metric
-                    .point_to_segment(probe, segment, f64::INFINITY)
-                    .expect("point-to-segment proof should close"),
-            );
-        }
-        for &target in target_points {
-            best = best.min(metric.segment_length(probe, target));
-        }
+#[test]
+fn disabled_lower_bound_is_zero_across_latitudes() {
+    let geodesic = Geodesic::new(6_378_137.0, -0.01);
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let cases = [
+        ("equatorial", p(0.0, 0.0), p(1.0, 0.0)),
+        ("southern_midlatitude", p(-12.0, -45.0), p(78.0, -41.0)),
+        ("northern_midlatitude", p(-12.0, 45.0), p(78.0, 41.0)),
+        ("polar", p(0.0, 90.0), p(180.0, 89.0)),
+    ];
+    for (name, a, b) in cases {
+        assert_eq!(
+            metric.point_distance_lower_bound(a, b).to_bits(),
+            0.0_f64.to_bits(),
+            "{name}: disabled lower bound"
+        );
     }
-    best
 }
 
-fn brute_geodesic_distance(left: &Shape, right: &Shape, metric: &impl GeodesicMetric) -> f64 {
-    let left_points = left.points_vec();
-    let right_points = right.points_vec();
-    if left_points.is_empty() || right_points.is_empty() {
-        return f64::INFINITY;
-    }
-    if left.intersects(right) {
-        return 0.0;
-    }
-    let left_edges = full_edges(left, metric);
-    let right_edges = full_edges(right, metric);
-    if left_edges.iter().any(|left| {
-        right_edges.iter().any(|right| {
-            metric
-                .segments_cross(left.start, left.end, right.start, right.end)
-                .expect("intersection supported")
-        })
-    }) {
-        return 0.0;
-    }
-    let left_point_only = point_only_points(left);
-    let right_point_only = point_only_points(right);
-    let mut best = f64::INFINITY;
-    best = brute_directed_geodesic_distance(
-        &left_points,
-        &right_edges,
-        &right_point_only,
-        metric,
-        best,
-    );
-    brute_directed_geodesic_distance(&right_points, &left_edges, &left_point_only, metric, best)
-}
-
-fn brute_geodesic_nearest_points(
+fn brute_geodesic_distance_and_nearest_points(
     left: &Shape,
     right: &Shape,
     metric: &impl GeodesicMetric,
-) -> Option<(Point, Point)> {
+) -> Option<(f64, (Point, Point))> {
     let left_points = left.points_vec();
     let right_points = right.points_vec();
     if left_points.is_empty() || right_points.is_empty() {
         return None;
     }
     if left.intersects(right) {
-        return left.nearest_points(right);
+        return left
+            .nearest_points(right)
+            .map(|pair| (metric.segment_length(pair.0, pair.1), pair));
     }
     let left_edges = full_edges(left, metric);
     let right_edges = full_edges(right, metric);
@@ -392,7 +349,7 @@ fn brute_geodesic_nearest_points(
             }
         }
     }
-    pair
+    pair.map(|pair| (best, pair))
 }
 
 #[test]
@@ -410,31 +367,39 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
 
     let equator_a = p(0.0, 0.0);
     let equator_b = p(1.0, 0.0);
-    assert_eq!(metric.point_distance_lower_bound(equator_a, equator_b), 0.0);
     assert!(
         (metric.segment_length(equator_a, equator_b) - semi_major * 1.0_f64.to_radians()).abs()
             < 1e-9
     );
 
-    let left = multipoint(
-        (0..96)
-            .map(|index| {
-                let t = f64::from(index) / 95.0;
-                p(-18.0 + t * 36.0, -3.0 + (t * std::f64::consts::TAU).sin())
-            })
-            .chain([p(0.011, 0.0)])
-            .collect(),
-    );
-    let right = line(
-        (0..128)
-            .map(|index| {
-                let t = f64::from(index) / 127.0;
-                p(0.0, -2.5 + t * 5.0)
-            })
-            .collect(),
-    );
+    let left_table = [
+        ("t0", p(-18.0, -3.0)),
+        ("t1_7", p(-12.8571428571, -2.2181685175)),
+        ("t2_7", p(-7.7142857143, -2.0250720878)),
+        ("t3_7", p(-2.5714285714, -2.5661162609)),
+        ("t4_7", p(2.5714285714, -3.4338837391)),
+        ("t5_7", p(7.7142857143, -3.9749279122)),
+        ("t6_7", p(12.8571428571, -3.7818314825)),
+        ("t7_7", p(18.0, -3.0)),
+        ("special", p(0.011, 0.0)),
+    ];
+    let left = multipoint(left_table.into_iter().map(|(_, point)| point).collect());
+    let right_table = [
+        ("south_endpoint", p(0.0, -2.5)),
+        ("south_outer", p(0.0, -1.875)),
+        ("south_inner", p(0.0, -1.25)),
+        ("south_near", p(0.0, -0.625)),
+        ("central_south", p(0.0, -0.125)),
+        ("central_north", p(0.0, 0.625)),
+        ("north_inner", p(0.0, 1.25)),
+        ("north_outer", p(0.0, 1.875)),
+        ("north_endpoint", p(0.0, 2.5)),
+    ];
+    let right = line(right_table.into_iter().map(|(_, point)| point).collect());
 
-    let expected_distance = brute_geodesic_distance(&left, &right, &metric);
+    let (expected_distance, expected_nearest) =
+        brute_geodesic_distance_and_nearest_points(&left, &right, &metric)
+            .expect("non-empty shapes");
     let left_data = PreparedPlan::new(left.clone());
     let right_data = PreparedPlan::new(right.clone());
     let left_cache = FrameDependentCaches::default();
@@ -471,8 +436,6 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
         assert_eq!(actual, expected_distance <= limit, "dwithin {limit}");
     }
 
-    let expected_nearest =
-        brute_geodesic_nearest_points(&left, &right, &metric).expect("non-empty shapes");
     let actual_nearest = left_data
         .geodesic_nearest_points_cached(
             &left_cache,
