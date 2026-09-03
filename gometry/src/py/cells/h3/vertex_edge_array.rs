@@ -202,29 +202,11 @@ macro_rules! h3_index_array_common {
 
             fn slice(&self, start: isize, stop: isize, step: isize) -> Self {
                 if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
-                    let len = logical.end - logical.start;
-                    let selection = match self.selection_ref() {
-                        RowSelectionRef::Identity => RowSelection::window_checked(
-                            logical.start,
-                            len,
-                            self.ids.len(),
-                            "cell array",
-                        )
-                        .expect("normalized cell slice is in bounds"),
-                        RowSelectionRef::Window {
-                            start: base,
-                            len: base_len,
-                        } if logical.start <= base_len && logical.end <= base_len => {
-                            RowSelection::window_checked(
-                                base + logical.start,
-                                len,
-                                self.ids.len(),
-                                "cell array",
-                            )
-                            .expect("normalized cell slice is in bounds")
-                        },
-                        map => row_selection_from_logical_rows(map, self.ids.len(), logical),
-                    };
+                    let selection = row_selection_from_logical_rows(
+                        self.selection_ref(),
+                        self.ids.len(),
+                        logical,
+                    );
                     return self.with_selection(selection);
                 }
                 let mut rows = Vec::new();

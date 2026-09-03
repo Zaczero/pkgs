@@ -362,6 +362,22 @@ def _indexing_receivers() -> list[tuple[object, object]]:
     ]
 
 
+def test_cell_array_slices_compose_logical_rows_with_physical_ids() -> None:
+    source_cell = gm.H3Cell(13.4, 52.5, resolution=5)
+    values = list(source_cell.grid_ring(1))[:5]
+    cells = gm.CellArray(values, type=gm.H3Cell)
+
+    selected = cells[[4, 1]]
+    assert [value.id for value in selected[0:1]] == [cells[4].id]
+
+    masked = cells[np.array([False, True, False, False, True])]
+    assert [value.id for value in masked[0:1]] == [cells[1].id]
+
+    assert list(cells[5:]) == []
+    assert list(cells[5:5]) == []
+    assert [value.id for value in cells[4:5]] == [cells[4].id]
+
+
 @pytest.mark.parametrize('signed', [True, False], ids=['signed', 'unsigned'])
 def test_opposite_endian_numpy_integer_indices_cover_all_receivers(signed: bool) -> None:
     byteorder = '>' if sys.byteorder == 'little' else '<'

@@ -481,6 +481,7 @@ def test_h3_vertices_canonical_identity() -> None:
     assert vertices.token == [v.token for v in vertices]
     assert vertices.point.to_wkt() == [v.point.to_wkt() for v in vertices]
     assert list(vertices[1:3]) == list(vertices)[1:3]
+    assert list(vertices[[4, 1]][:1]) == [vertices[4]]
     assert next(reversed(vertices)) == vertices[-1]
     assert vertices.count(vertices[0]) == 1
     assert vertices.index(vertices[0]) == 0
@@ -559,6 +560,7 @@ def test_h3_directed_edges() -> None:
     assert not hasattr(edges, 'cells')
     assert list(edges.reverse()) == [e.reverse() for e in edges]
     assert edges.line.to_wkt() == [e.line.to_wkt() for e in edges]
+    assert list(edges[[4, 1]][:1]) == [edges[4]]
     np.testing.assert_allclose(edges.length, [e.length for e in edges])
     assert list(edges[1:3]) == list(edges)[1:3]
     assert next(reversed(edges)) == edges[-1]

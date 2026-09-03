@@ -36,13 +36,6 @@ pub struct RowWindow {
 }
 
 impl RowWindow {
-    /// `physical_len` is the backing storage's true row count. Passing the
-    /// selected range's end instead would make an out-of-range window appear
-    /// valid, so every caller supplies the physical length explicitly.
-    fn checked(start: usize, len: usize, physical_len: usize) -> Option<Self> {
-        (start <= physical_len && len <= physical_len - start).then_some(Self { start, len })
-    }
-
     pub(crate) const fn start(self) -> usize {
         self.start
     }
@@ -79,20 +72,6 @@ impl RowSelection {
             ))
         })?;
         Ok(Self::Gather(rows))
-    }
-
-    pub(crate) fn window_checked(
-        start: usize,
-        len: usize,
-        physical_len: usize,
-        label: &str,
-    ) -> PyResult<Self> {
-        let window = RowWindow::checked(start, len, physical_len).ok_or_else(|| {
-            GeometryError::new_err(format!(
-                "{label} row window references nonexistent physical rows"
-            ))
-        })?;
-        Ok(Self::Window(window))
     }
 
     pub fn as_deref(&self) -> RowSelectionRef<'_> {
@@ -417,21 +396,18 @@ impl RowSelectionBuild {
         }
     }
 
-    fn finish(self, physical_len: usize) -> RowSelection {
+    fn finish(self) -> RowSelection {
         match self.state {
-            RowSelectionBuildState::Empty => RowSelection::gather_checked(
-                Arc::from([] as [usize; 0]),
-                physical_len,
-                "internal row selection",
-            )
-            .expect("empty row selection is always in bounds"),
+            RowSelectionBuildState::Empty => RowSelection::Gather(CheckedPhysicalRows {
+                rows: Arc::from([] as [usize; 0]),
+            }),
             RowSelectionBuildState::Contiguous { start, len } => {
-                RowSelection::window_checked(start, len, physical_len, "internal row selection")
-                    .expect("contiguous row selection is always in bounds")
+                RowSelection::Window(RowWindow { start, len })
             },
             RowSelectionBuildState::Gathered(indices) => {
-                RowSelection::gather_checked(indices.into(), physical_len, "internal row selection")
-                    .expect("gathered row selection is always in bounds")
+                RowSelection::Gather(CheckedPhysicalRows {
+                    rows: indices.into(),
+                })
             },
         }
     }
@@ -444,9 +420,18 @@ pub(crate) fn row_selection_from_logical_rows(
 ) -> RowSelection {
     let mut build = RowSelectionBuild::default();
     for logical in rows {
-        build.push(physical_row(row_map, logical));
+        assert!(
+            logical < row_map.len(physical_len),
+            "logical row is outside selected row map"
+        );
+        let physical = physical_row(row_map, logical);
+        assert!(
+            physical < physical_len,
+            "physical row is outside backing storage"
+        );
+        build.push(physical);
     }
-    build.finish(physical_len)
+    build.finish()
 }
 
 pub(crate) fn contiguous_physical_range(
@@ -864,7 +849,7 @@ mod tests {
 
         let window = GeometryArrayStorage::Points {
             coords: Arc::clone(&coords),
-            row_map: RowSelection::window_checked(1, 2, 3, "test").unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3),
         };
         assert_shapes_iter_exact(&window);
 
@@ -895,7 +880,7 @@ mod tests {
         let window = GeometryArrayStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
-            row_map: RowSelection::window_checked(0, 2, 2, "test").unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 3, 0..2),
         };
         assert_shapes_iter_exact(&window);
 
@@ -939,7 +924,7 @@ mod tests {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
-            row_map: RowSelection::window_checked(1, 1, 2, "test").unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 2, 1..2),
         };
         assert_shapes_iter_exact(&window);
 
@@ -964,28 +949,46 @@ mod tests {
 }
 
 #[cfg(test)]
-mod row_window_assertion_tests {
+mod row_selection_admission_tests {
     use super::*;
 
-    /// Row-window admission rejects ranges beyond the physical storage.
-    ///
-    /// It previously could not: the old `RowSelection::window(start, len)` passed
-    /// `start + len` as `physical_len`, reducing the assertion to
-    /// `start <= start + len && len <= len`. This pins that a window past the
-    /// end of the backing storage is now rejected without a Python runtime.
     #[test]
-    fn window_assertion_is_not_vacuous() {
-        assert!(RowSelection::window_checked(2, 5, 4, "test").is_err());
-    }
-
-    #[test]
-    fn gather_assertion_is_not_vacuous() {
+    fn checked_gather_rejects_out_of_range_physical_rows() {
         assert!(RowSelection::gather_checked(Arc::from([4_usize]), 4, "test").is_err());
     }
 
     #[test]
-    fn window_inside_physical_rows_is_accepted() {
-        let selection = RowSelection::window_checked(1, 2, 4, "test").unwrap();
+    fn logical_row_composition_builds_a_private_window() {
+        let selection = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3);
         assert!(matches!(selection, RowSelection::Window(_)));
+    }
+
+    #[test]
+    fn logical_row_composition_preserves_empty_range_at_physical_end() {
+        let selection = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 4..4);
+        assert_eq!(selection.as_deref().len(4), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "logical row is outside selected row map")]
+    fn logical_row_composition_rejects_identity_logical_end() {
+        let _ = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, [4]);
+    }
+
+    #[test]
+    #[should_panic(expected = "logical row is outside selected row map")]
+    fn logical_row_composition_rejects_window_logical_end_before_resolution() {
+        let row_map = RowSelectionRef::Window {
+            start: usize::MAX - 1,
+            len: 1,
+        };
+        let _ = row_selection_from_logical_rows(row_map, usize::MAX, [1]);
+    }
+
+    #[test]
+    #[should_panic(expected = "physical row is outside backing storage")]
+    fn logical_row_composition_rejects_gathered_physical_end() {
+        let row_map = RowSelectionRef::Gather(&[4]);
+        let _ = row_selection_from_logical_rows(row_map, 4, [0]);
     }
 }
