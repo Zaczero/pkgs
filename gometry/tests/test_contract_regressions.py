@@ -166,19 +166,34 @@ def test_pickle_empty_packed_selection_and_permutation() -> None:
 
 def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
     # Bad mask bytes (value 2) at the untrusted mixed unpickler boundary.
-    with pytest.raises(
-        (gm.GeometryError, ValueError, TypeError), match=r'mask|malformed'
-    ):
+    with pytest.raises(gm.GeometryError, match=r'mask|malformed') as excinfo:
         _lib._unpickle_geometry_array([b'\x01', b'\x01'], None, None, bytes([2, 0]))
+    assert type(excinfo.value) is gm.GeometryError
+    assert str(excinfo.value) == 'malformed mixed-array pickle missing mask'
+
+    # A one-vertex line is a packed CSR contract failure, not a geometry
+    # validity result from a successfully admitted line.
+    with pytest.raises(gm.GeometryError, match='line-array pickle offsets') as excinfo:
+        _lib._unpickle_line_array(
+            struct.pack('<4d', 0.0, 1.0, 2.0, 3.0),
+            struct.pack('<4d', 0.0, 1.0, 2.0, 3.0),
+            None,
+            None,
+            struct.pack('<3i', 0, 1, 4),
+            None,
+            None,
+            None,
+            None,
+        )
+    assert type(excinfo.value) is gm.GeometryError
+    assert str(excinfo.value) == 'line-array pickle offsets are not a valid line CSR'
 
     poly_offsets = struct.pack('<2i', 0, 1)
 
     # Too short: 2 coords — below MIN_VERTICES_OPEN (still reject).
     xs2 = struct.pack('<2d', 0.0, 1.0)
     ys2 = struct.pack('<2d', 0.0, 0.0)
-    with pytest.raises(
-        (gm.GeometryError, ValueError, TypeError), match=r'ring|closed|short|three'
-    ):
+    with pytest.raises(gm.GeometryError, match=r'ring|closed|short|three') as excinfo:
         _lib._unpickle_polygon_array(
             xs2,
             ys2,
@@ -191,6 +206,7 @@ def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
             None,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError
 
     # Open 3-corner and open 4-vertex rings silent-close (A1 = WKT/WKB policy).
     xs3 = struct.pack('<3d', 0.0, 1.0, 0.0)
@@ -229,21 +245,19 @@ def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
     xs_ok = struct.pack('<4d', 0.0, 1.0, 1.0, 0.0)
     ys_ok = struct.pack('<4d', 0.0, 0.0, 1.0, 0.0)
     bad_ring = struct.pack('<2i', 0, 99)
-    with pytest.raises(
-        (gm.GeometryError, ValueError, TypeError), match=r'CSR|offset|ring'
-    ):
+    with pytest.raises(gm.GeometryError, match=r'CSR|offset|ring') as excinfo:
         _lib._unpickle_polygon_array(
             xs_ok, ys_ok, None, None, bad_ring, poly_offsets, None, None, None, None
         )
+    assert type(excinfo.value) is gm.GeometryError
+    assert str(excinfo.value) == 'polygon-array pickle ring offsets are not a valid CSR'
 
     # Empty-ring payload: zero coords, ring window [0,0].
     empty_xs = b''
     empty_ys = b''
     empty_ring = struct.pack('<2i', 0, 0)
     empty_poly = struct.pack('<2i', 0, 1)
-    with pytest.raises(
-        (gm.GeometryError, ValueError, TypeError), match=r'ring|short|four'
-    ):
+    with pytest.raises(gm.GeometryError, match=r'ring|short|four') as excinfo:
         _lib._unpickle_polygon_array(
             empty_xs,
             empty_ys,
@@ -256,14 +270,13 @@ def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
             None,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError
 
     # No-shell polygon: ring_offsets=[0], polygon_offsets=[0,0] (panicked
     # in polygon_view before the shell cardinality gate).
     no_shell_ring = struct.pack('<i', 0)
     no_shell_poly = struct.pack('<2i', 0, 0)
-    with pytest.raises(
-        (gm.GeometryError, ValueError, TypeError), match=r'shell|ring|CSR'
-    ):
+    with pytest.raises(gm.GeometryError, match=r'shell|ring|CSR') as excinfo:
         _lib._unpickle_polygon_array(
             empty_xs,
             empty_ys,
@@ -276,6 +289,7 @@ def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
             None,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError
 
     # Zero-row packed polygon remains valid: [0]/[0] offsets, empty columns.
     zero_ring = struct.pack('<i', 0)

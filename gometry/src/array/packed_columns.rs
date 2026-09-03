@@ -1566,10 +1566,10 @@ mod tests {
     #[test]
     fn selected_views_resolve_physical_rows_directly() {
         let selection =
-            || RowSelection::gather_checked(Arc::from([1_usize, 0, 1]), 2, "test").unwrap();
+            || RowSelection::gather_checked_native(Arc::from([1_usize, 0, 1]), 2).unwrap();
         let point_storage = GeometryArrayStorage::Points {
             coords: Arc::new(coords()),
-            row_map: RowSelection::gather_checked(Arc::from([2_usize, 0, 2]), 6, "test").unwrap(),
+            row_map: RowSelection::gather_checked_native(Arc::from([2_usize, 0, 2]), 6).unwrap(),
         };
         let line_storage = GeometryArrayStorage::Lines {
             coords: Arc::new(coords()),
@@ -1600,7 +1600,7 @@ mod tests {
     #[test]
     fn point_row_cursor_maps_present_ranks_only_for_compact_payloads() {
         let compact_map =
-            RowSelection::gather_checked(Arc::from([5_usize, 2, 5]), 6, "test").unwrap();
+            RowSelection::gather_checked_native(Arc::from([5_usize, 2, 5]), 6).unwrap();
         let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
             .expect("compact mask");
         let compact = PointRows::new(
@@ -1621,7 +1621,7 @@ mod tests {
         ]);
 
         let row_aligned_map =
-            RowSelection::gather_checked(Arc::from([2_usize, 0, 2]), 3, "test").unwrap();
+            RowSelection::gather_checked_native(Arc::from([2_usize, 0, 2]), 3).unwrap();
         let row_aligned_mask =
             ValidityMask::from_vec(3, vec![false, true, false]).expect("row-aligned mask");
         let row_aligned = PointRows::new(
@@ -1639,7 +1639,7 @@ mod tests {
 
         let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1]).expect("compact mask");
         let equal_length_compact_map =
-            RowSelection::gather_checked(Arc::from([0_usize, 1, 0]), 2, "test").unwrap();
+            RowSelection::gather_checked_native(Arc::from([0_usize, 1, 0]), 2).unwrap();
         let equal_length_compact = PointRows::new(
             2,
             equal_length_compact_map.as_deref(),
@@ -1658,10 +1658,9 @@ mod tests {
         GeometryArrayStorage::Lines {
             coords: Arc::new(coords()),
             offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
-            row_map: RowSelection::gather_checked(
+            row_map: RowSelection::gather_checked_native(
                 (0..rows).map(|row| row & 1).collect::<Vec<_>>().into(),
                 2,
-                "test",
             )
             .unwrap(),
         }

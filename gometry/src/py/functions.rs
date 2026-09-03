@@ -12,9 +12,8 @@ pub(crate) use geocode::{
 };
 pub(crate) use geometry_io::{
     _unpickle_geometry, _unpickle_geometry_array, _unpickle_line_array, _unpickle_point_array,
-    _unpickle_polygon_array, f64_column_le_bytes, from_features, from_geojson, from_wkb, from_wkt,
-    i32_column_le_bytes, rebased_i32_offsets_le_bytes, selected_f64_column_le_bytes,
-    selected_f64_windows_le_bytes, to_feature, to_feature_collection,
+    _unpickle_polygon_array, from_features, from_geojson, from_wkb, from_wkt, reduce_geometry,
+    reduce_geometry_array, to_feature, to_feature_collection,
 };
 pub(crate) use overlay::{
     OverlayOp, coverage_clean, coverage_invalid_edges, coverage_is_valid, coverage_simplify,

@@ -199,11 +199,6 @@ impl ValidityMask {
     pub(crate) fn arrow_bitmap(&self) -> (Arc<[u8]>, usize) {
         (Arc::clone(&self.bytes), self.bit_offset)
     }
-
-    /// Current logical pickle/public mask (`0 = present`, `1 = missing`).
-    pub(crate) fn to_missing_bytes(&self) -> Vec<u8> {
-        self.iter().map(u8::from).collect()
-    }
 }
 
 impl PartialEq for ValidityMask {

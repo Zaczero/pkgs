@@ -133,6 +133,11 @@ pub enum GeometryErrorKind {
     OffsetCapacityExceeded,
     #[error("offset buffer is malformed: CSR offsets must start at 0 and be non-decreasing")]
     MalformedCsrOffsets,
+    /// A serialized pickle payload violated the private packed-storage
+    /// contract. This is a Python `GeometryError`, not a geometry validity
+    /// failure: the payload itself is the malformed value.
+    #[error("{0}")]
+    PicklePayload(Box<str>),
     #[error("{0}")]
     Invalid(Box<str>),
 }
@@ -237,5 +242,13 @@ impl GeometryErrorKind {
     )]
     pub fn message(message: impl Into<Box<str>>) -> CrateError {
         Self::Invalid(message.into()).into()
+    }
+
+    #[expect(
+        clippy::impl_trait_in_params,
+        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
+    )]
+    pub fn pickle_payload(message: impl Into<Box<str>>) -> CrateError {
+        Self::PicklePayload(message.into()).into()
     }
 }

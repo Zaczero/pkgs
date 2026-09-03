@@ -314,7 +314,8 @@ impl From<Error> for PyErr {
                 | G::SubstringMeasureOrder(..)
                 | G::SnapGridTooFine
                 | G::InvalidDe9imPattern(_)
-                | G::OffsetCapacityExceeded => GeometryError::new_err(message),
+                | G::OffsetCapacityExceeded
+                | G::PicklePayload(_) => GeometryError::new_err(message),
                 G::GeneratedOutputTooLarge {
                     operation,
                     parameter,
@@ -448,6 +449,9 @@ impl From<Error> for PyErr {
             ErrorKind::Resource(kind) => match kind {
                 crate::error::ResourceError::Allocation => PyMemoryError::new_err(message),
                 crate::error::ResourceError::SizeOverflow => PyOverflowError::new_err(message),
+                crate::error::ResourceError::SizeOverflowContext(_) => {
+                    PyOverflowError::new_err(message)
+                },
             },
         }
     }

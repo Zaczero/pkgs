@@ -28,6 +28,8 @@ pub(crate) enum ResourceError {
     Allocation,
     #[error("resource size arithmetic overflowed")]
     SizeOverflow,
+    #[error("{0}")]
+    SizeOverflowContext(&'static str),
 }
 
 /// Crate-wide result alias. The error parameter defaults to [`Error`] so core

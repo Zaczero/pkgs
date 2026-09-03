@@ -6,9 +6,7 @@ use std::fmt::Write as _;
 
 use pyo3::exceptions::PyMemoryError;
 
-use crate::py::classes::geometry_methods::{
-    Bound, Py, PyAny, PyAnyMethods as _, PyBytes, PyErr, PyGeometry, PyResult, Python,
-};
+use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
 use crate::{
     ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
     overlay_operator, py_bool,
@@ -194,11 +192,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     }
 
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        let wkb = io::to_wkb(&self.shape, None, false)?;
-        let unpickle =
-            crate::gometry_lib_module(py)?.getattr(pyo3::intern!(py, "_unpickle_geometry"))?;
-        let args = (PyBytes::new(py, &wkb), self.crs_str(), self.epoch()).into_py_any(py)?;
-        Ok((unpickle.unbind(), args))
+        crate::py::functions::reduce_geometry(py, self)
     }
 
     pub fn __and__(
@@ -373,4 +367,3 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     }
 }
 }
-use pyo3::IntoPyObjectExt as _;

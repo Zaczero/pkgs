@@ -192,7 +192,7 @@ def test_old_row_map_payloads_remain_readable_and_validated() -> None:
     invalid = struct.pack('<Q', 3)
     with pytest.raises(
         gm.GeometryError, match='row_map references a nonexistent physical row'
-    ):
+    ) as excinfo:
         _lib._unpickle_point_array(
             doubles([1, 2, 3]),
             doubles([11, 12, 13]),
@@ -203,9 +203,11 @@ def test_old_row_map_payloads_remain_readable_and_validated() -> None:
             invalid,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError
+    assert str(excinfo.value) == 'point-array pickle row_map references a nonexistent physical row'
     with pytest.raises(
         gm.GeometryError, match='row_map references a nonexistent physical row'
-    ):
+    ) as excinfo:
         _lib._unpickle_line_array(
             doubles([0, 1, 2, 3, 4, 5]),
             doubles([10, 11, 12, 13, 14, 15]),
@@ -217,9 +219,10 @@ def test_old_row_map_payloads_remain_readable_and_validated() -> None:
             invalid,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError
     with pytest.raises(
         gm.GeometryError, match='row_map references a nonexistent physical row'
-    ):
+    ) as excinfo:
         _lib._unpickle_polygon_array(
             doubles([0, 1, 0, 0, 2, 3, 2, 2, 4, 5, 4, 4]),
             doubles([0, 0, 1, 0, 2, 2, 3, 2, 4, 4, 5, 4]),
@@ -232,3 +235,4 @@ def test_old_row_map_payloads_remain_readable_and_validated() -> None:
             invalid,
             None,
         )
+    assert type(excinfo.value) is gm.GeometryError

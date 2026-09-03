@@ -3,8 +3,7 @@ use std::sync::Arc;
 use crate::HeapSize;
 use crate::array::storage_helpers::column_window;
 use crate::array::{
-    CoordSeq, CsrOffsetColumn, GeometryError, GeometryKind, Point, PolygonLevel, PyResult,
-    RingLevel, Shape, ShapeRow,
+    CoordSeq, CsrOffsetColumn, GeometryKind, Point, PolygonLevel, RingLevel, Shape, ShapeRow,
 };
 use crate::geometry::{CoordWindow, LineSeq};
 
@@ -61,17 +60,10 @@ pub enum RowSelectionRef<'a> {
 }
 
 impl RowSelection {
-    pub(crate) fn gather_checked(
-        map: Arc<[usize]>,
-        physical_len: usize,
-        label: &str,
-    ) -> PyResult<Self> {
-        let rows = CheckedPhysicalRows::checked(map, physical_len).ok_or_else(|| {
-            GeometryError::new_err(format!(
-                "{label} row_map references a nonexistent physical row"
-            ))
-        })?;
-        Ok(Self::Gather(rows))
+    /// Admit a physical row map while leaving error classification to its
+    /// serialized-input owner.
+    pub(crate) fn gather_checked_native(map: Arc<[usize]>, physical_len: usize) -> Option<Self> {
+        CheckedPhysicalRows::checked(map, physical_len).map(Self::Gather)
     }
 
     pub fn as_deref(&self) -> RowSelectionRef<'_> {
@@ -809,12 +801,12 @@ mod tests {
 
     #[test]
     fn checked_gather_rejects_out_of_range_physical_rows() {
-        let _ = RowSelection::gather_checked(Arc::from([0_usize, 3]), 3, "test").unwrap_err();
+        assert!(RowSelection::gather_checked_native(Arc::from([0_usize, 3]), 3).is_none());
     }
 
     #[test]
     fn checked_gather_preserves_valid_physical_rows() {
-        let row_map = RowSelection::gather_checked(Arc::from([2_usize, 0]), 3, "test").unwrap();
+        let row_map = RowSelection::gather_checked_native(Arc::from([2_usize, 0]), 3).unwrap();
         assert_eq!(row_map.as_deref().len(3), 2);
         assert_eq!(physical_row(row_map.as_deref(), 0), 2);
         assert_eq!(physical_row(row_map.as_deref(), 1), 0);
@@ -855,7 +847,7 @@ mod tests {
 
         let gather = GeometryArrayStorage::Points {
             coords,
-            row_map: RowSelection::gather_checked(Arc::from([3_usize, 0, 2]), 4, "test").unwrap(),
+            row_map: RowSelection::gather_checked_native(Arc::from([3_usize, 0, 2]), 4).unwrap(),
         };
         assert_shapes_iter_exact(&gather);
     }
@@ -887,7 +879,7 @@ mod tests {
         let gather = GeometryArrayStorage::Lines {
             coords,
             offsets,
-            row_map: RowSelection::gather_checked(Arc::from([2_usize, 0]), 3, "test").unwrap(),
+            row_map: RowSelection::gather_checked_native(Arc::from([2_usize, 0]), 3).unwrap(),
         };
         assert_shapes_iter_exact(&gather);
     }
@@ -932,7 +924,7 @@ mod tests {
             coords,
             ring_offsets,
             polygon_offsets,
-            row_map: RowSelection::gather_checked(Arc::from([1_usize, 0]), 2, "test").unwrap(),
+            row_map: RowSelection::gather_checked_native(Arc::from([1_usize, 0]), 2).unwrap(),
         };
         assert_shapes_iter_exact(&gather);
     }
@@ -954,7 +946,7 @@ mod row_selection_admission_tests {
 
     #[test]
     fn checked_gather_rejects_out_of_range_physical_rows() {
-        assert!(RowSelection::gather_checked(Arc::from([4_usize]), 4, "test").is_err());
+        assert!(RowSelection::gather_checked_native(Arc::from([4_usize]), 4).is_none());
     }
 
     #[test]

@@ -199,8 +199,23 @@ def test_d25_ewkb_srid_kept_when_frame_absent():
 
 def test_d25_invalid_frame_rejected_at_unpickle():
     # Exact audit repro: "NOT_A_CRS" fails AT unpickle (typed CRSError).
-    with pytest.raises(gm.CRSError):
+    with pytest.raises(gm.CRSError) as excinfo:
         _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), 'NOT_A_CRS', None)
+    assert type(excinfo.value) is gm.CRSError
+
+
+def test_d25_pickle_error_classes_remain_distinct():
+    # WKB syntax remains a ParseError; pickle-owned validation remains the
+    # generic GeometryError used by the pre-detachment boundary.
+    with pytest.raises(gm.ParseError) as wkb_exc:
+        _lib._unpickle_geometry(b'\x01', None, None)
+    assert type(wkb_exc.value) is gm.ParseError
+    assert wkb_exc.value.format == 'wkb'
+
+    with pytest.raises(gm.GeometryError) as epoch_exc:
+        _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), None, float('inf'))
+    assert type(epoch_exc.value) is gm.GeometryError
+    assert str(epoch_exc.value) == 'coordinate epoch must be a finite decimal year'
 
 
 def test_d25_positive_geometry_pickle_roundtrip():

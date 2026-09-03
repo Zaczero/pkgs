@@ -8,7 +8,7 @@
 //! transform, linref, ordinate, io serialization).
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyDict, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyTuple};
 
 use crate::py::errors::{CRSError, InvalidGeometryError};
 
