@@ -22,6 +22,7 @@ pub(crate) use graph_matrix::{
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
+    line_scalar_prefers_direct_polygon_relate,
 };
 pub(crate) use operands::{
     line_has_nonzero_segment, multiline_has_nonzero_segment, polygon_has_nondegenerate_area,

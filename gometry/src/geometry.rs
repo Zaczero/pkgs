@@ -217,6 +217,7 @@ pub(crate) use relate::{
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
+    line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
     CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,

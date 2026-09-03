@@ -10,6 +10,7 @@ use std::cell::OnceCell;
 
 use crate::geometry::{
     Bounds, GeographicPrepared, PreparedPlan, TopologyDomain, graph_relate_data,
+    line_scalar_prefers_direct_polygon_relate,
 };
 
 #[derive(Clone, Copy)]
@@ -510,13 +511,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
             }
             if domain == TopologyDomain::Cartesian
                 && row.with_shape(|shape| {
-                    matches!(
-                        (scalar.shape(), shape),
-                        (
-                            crate::geometry::Shape::LineString(_),
-                            crate::geometry::Shape::Polygon(_)
-                        )
-                    )
+                    line_scalar_prefers_direct_polygon_relate(scalar.shape(), shape)
                 })
             {
                 return None;
@@ -569,12 +564,9 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     // scalar graph, so this path never constructs a line graph
                     // only to transpose the polygon-side result.
                     if domain == TopologyDomain::Cartesian
-                        && matches!(
-                            (scalar.shape(), element.shape()),
-                            (
-                                crate::geometry::Shape::LineString(_),
-                                crate::geometry::Shape::Polygon(_)
-                            )
+                        && line_scalar_prefers_direct_polygon_relate(
+                            scalar.shape(),
+                            element.shape(),
                         )
                     {
                         let matrix = if scalar_is_left {

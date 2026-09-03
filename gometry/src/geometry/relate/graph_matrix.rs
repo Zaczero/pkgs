@@ -247,6 +247,17 @@ fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     try_convex_relate(left, right).or_else(|| try_areal_relate(left, right))
 }
 
+/// Whether a scalar operand broadcast against `row` reaches the direct
+/// polygon/line fold instead of two source topology graphs.
+///
+/// The asymmetry is the point: a polygon scalar keeps a reusable graph across
+/// the whole broadcast, so caching it is right, while a line scalar has no
+/// reusable support and would build a graph only for the fold to transpose the
+/// polygon-side answer. Batch seams ask this before resolving that graph.
+pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, row: &Shape) -> bool {
+    matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
+}
+
 fn try_cartesian_polygon_line_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
     try_cartesian_polygon_line_relate_with_graphs(left, right, None, None)
 }
