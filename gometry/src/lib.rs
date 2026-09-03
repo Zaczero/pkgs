@@ -326,27 +326,55 @@ mod above_gate_parity_tests {
         value.call_method0("tolist")?.extract()
     }
 
+    /// One scalar verdict per probe, which is the oracle both batched paths
+    /// are checked against. Computing it inside each check ran the same loop
+    /// twice over the same coordinates.
+    fn exact_verdicts(
+        module: &Bound<'_, PyModule>,
+        geometry: &Bound<'_, PyAny>,
+        xs: &[f64],
+        ys: &[f64],
+    ) -> PyResult<Vec<bool>> {
+        let contains_xy = module.getattr("contains_xy")?;
+        xs.iter()
+            .zip(ys)
+            .map(|(&x, &y)| contains_xy.call1((geometry, x, y))?.extract::<bool>())
+            .collect()
+    }
+
+    fn first_mismatch(
+        label: &str,
+        xs: &[f64],
+        ys: &[f64],
+        fast: &[bool],
+        exact: &[bool],
+    ) -> Option<String> {
+        xs.iter()
+            .zip(ys)
+            .zip(fast)
+            .zip(exact)
+            .enumerate()
+            .find(|(_, ((_, fast), exact))| fast != exact)
+            .map(|(index, (((&x, &y), &fast), &exact))| {
+                format!(
+                    "{label} mismatch at probe {index} coordinate ({x}, {y}): fast={fast}, exact={exact}"
+                )
+            })
+    }
+
     fn xy_mismatch(
         py: Python<'_>,
         module: &Bound<'_, PyModule>,
         geometry: &Bound<'_, PyAny>,
         xs: &[f64],
         ys: &[f64],
+        exact: &[bool],
         label: &str,
     ) -> PyResult<Option<String>> {
-        let contains_xy = module.getattr("contains_xy")?;
         let x = PyList::new(py, xs)?;
         let y = PyList::new(py, ys)?;
-        let fast = bools(&contains_xy.call1((geometry, &x, &y))?)?;
-        for (index, ((&x, &y), &fast_verdict)) in xs.iter().zip(ys).zip(&fast).enumerate() {
-            let exact = contains_xy.call1((geometry, x, y))?.extract::<bool>()?;
-            if fast_verdict != exact {
-                return Ok(Some(format!(
-                    "{label} mismatch at probe {index} coordinate ({x}, {y}): fast={fast_verdict}, exact={exact}"
-                )));
-            }
-        }
-        Ok(None)
+        let fast = bools(&module.getattr("contains_xy")?.call1((geometry, &x, &y))?)?;
+        Ok(first_mismatch(label, xs, ys, &fast, exact))
     }
 
     fn packed_mismatch(
@@ -355,6 +383,7 @@ mod above_gate_parity_tests {
         from_wkt: &Bound<'_, PyAny>,
         xs: &[f64],
         ys: &[f64],
+        exact: &[bool],
     ) -> PyResult<Option<String>> {
         let point_wkts: Vec<String> = xs
             .iter()
@@ -363,16 +392,7 @@ mod above_gate_parity_tests {
             .collect();
         let points = from_wkt.call1((point_wkts,))?;
         let fast = bools(&module.getattr("contains")?.call1((geometry, &points))?)?;
-        let contains_xy = module.getattr("contains_xy")?;
-        for (index, ((&x, &y), &fast_verdict)) in xs.iter().zip(ys).zip(&fast).enumerate() {
-            let exact = contains_xy.call1((geometry, x, y))?.extract::<bool>()?;
-            if fast_verdict != exact {
-                return Ok(Some(format!(
-                    "packed mismatch at probe {index} coordinate ({x}, {y}): fast={fast_verdict}, exact={exact}"
-                )));
-            }
-        }
-        Ok(None)
+        Ok(first_mismatch("packed", xs, ys, &fast, exact))
     }
 
     #[test]
@@ -389,13 +409,23 @@ mod above_gate_parity_tests {
             let geometry = from_wkt.call1((regular_polygon_wkt(),))?;
 
             let (xs, ys) = probes(PROBE_COUNT_BELOW_GATE);
-            let below_mismatch = xy_mismatch(py, &module, &geometry, &xs, &ys, "XY below gate")?;
+            let exact_below = exact_verdicts(&module, &geometry, &xs, &ys)?;
+            let below_mismatch = xy_mismatch(
+                py,
+                &module,
+                &geometry,
+                &xs,
+                &ys,
+                &exact_below,
+                "XY below gate",
+            )?;
             assert!(
                 below_mismatch.is_none(),
                 "below-gate parity unexpectedly failed: {}",
                 below_mismatch.unwrap_or_default()
             );
-            let packed_below = packed_mismatch(&module, &geometry, &from_wkt, &xs, &ys)?;
+            let packed_below =
+                packed_mismatch(&module, &geometry, &from_wkt, &xs, &ys, &exact_below)?;
             assert!(
                 packed_below.is_none(),
                 "packed below-gate parity unexpectedly failed: {}",
@@ -403,6 +433,7 @@ mod above_gate_parity_tests {
             );
 
             let (xs_above, ys_above) = probes(PROBE_COUNT_ABOVE_GATE);
+            let exact_above = exact_verdicts(&module, &geometry, &xs_above, &ys_above)?;
             let mut failures = Vec::new();
             if let Some(failure) = xy_mismatch(
                 py,
@@ -410,14 +441,20 @@ mod above_gate_parity_tests {
                 &geometry,
                 &xs_above,
                 &ys_above,
+                &exact_above,
                 "XY above gate",
             )? {
                 failures.push(failure);
             }
 
-            if let Some(failure) =
-                packed_mismatch(&module, &geometry, &from_wkt, &xs_above, &ys_above)?
-            {
+            if let Some(failure) = packed_mismatch(
+                &module,
+                &geometry,
+                &from_wkt,
+                &xs_above,
+                &ys_above,
+                &exact_above,
+            )? {
                 failures.push(failure);
             }
             assert!(failures.is_empty(), "{}", failures.join("\n"));
