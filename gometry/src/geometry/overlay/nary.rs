@@ -667,6 +667,23 @@ fn assemble_overlay(
     op: OverlayOp,
     raw_polygon_loops_eligible: bool,
 ) -> Result<Shape> {
+    // `raw_polygon_loops_eligible` already means: a union, of operands with no
+    // point or line support, whose raw coordinate bounds are sound. Such a
+    // union is purely areal — neither the line sink nor the point sink can
+    // emit anything — and the winding region is computed from the operands'
+    // own rings. So the joint graph and the per-source graphs below are built
+    // and then read for nothing but those rings, which is the whole noding
+    // pipeline charged to a lane that does not need it.
+    if raw_polygon_loops_eligible {
+        let loops = shape_polygon_loops(inputs);
+        if !loops.is_empty() {
+            let polygons = crate::geometry::winding_region(&loops, |winding| winding >= 1)
+                .into_iter()
+                .map(|polygon| canonicalize_polygon(polygon, domain))
+                .collect();
+            return build_overlay_shape(Vec::new(), Vec::new(), polygons);
+        }
+    }
     let graph = match domain {
         TopologyDomain::Cartesian => TopologyGraph::cartesian_many(inputs),
         TopologyDomain::Geographic(frame) => TopologyGraph::geographic_many(inputs, frame),
@@ -988,6 +1005,53 @@ fn unwrap_geographic_area_edges(
             })
         })
         .collect()
+}
+
+/// The operands' own polygon rings as winding loops, in the order the graph
+/// builder would collect them. [`source_polygon_loops`] reads the same rings
+/// back out of built graphs; this reads them from the shapes, so the
+/// winding-union lane never has to build one.
+fn shape_polygon_loops(inputs: &[&Shape]) -> Vec<(Vec<f64>, Vec<f64>)> {
+    fn visit(shape: &Shape, out: &mut Vec<(Vec<f64>, Vec<f64>)>) {
+        match shape {
+            Shape::Polygon(polygon) => push_polygon_loops(polygon, out),
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    push_polygon_loops(polygon, out);
+                }
+            },
+            Shape::GeometryCollection(parts) => {
+                for part in parts {
+                    visit(part, out);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    let mut out = Vec::new();
+    for input in inputs {
+        visit(input, &mut out);
+    }
+    out
+}
+
+fn push_polygon_loops(polygon: &crate::geometry::Polygon, out: &mut Vec<(Vec<f64>, Vec<f64>)>) {
+    for ring in polygon.rings() {
+        if let Some(loop_columns) = ring_loop_columns(ring) {
+            out.push(loop_columns);
+        }
+    }
+}
+
+/// One ring as open `(xs, ys)` columns — the closing repeat dropped, and
+/// nothing shorter than a triangle.
+fn ring_loop_columns(ring: &crate::geometry::Ring) -> Option<(Vec<f64>, Vec<f64>)> {
+    let mut points: Vec<Point> = ring.iter_coords().collect();
+    if points.len() > 1 && same_point(points[0], *points.last().expect("non-empty ring")) {
+        points.pop();
+    }
+    (points.len() >= 3).then(|| points.into_iter().map(|point| (point.x, point.y)).unzip())
 }
 
 fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> {
