@@ -1331,11 +1331,6 @@ fn locate_node_with_hint(
     };
     match (location, hint) {
         (TopologyLocation::Exterior, Some(hint)) => hint,
-        // Oblique noding can round an intersection just inside an area; the
-        // source edge label is the exact topological incidence at that node.
-        (TopologyLocation::Interior, Some(TopologyLocation::Boundary)) if !owns_node => {
-            TopologyLocation::Boundary
-        },
         (location, _) => location,
     }
 }

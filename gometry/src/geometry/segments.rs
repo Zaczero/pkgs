@@ -21,7 +21,8 @@ mod exact;
 pub(crate) use exact::orientation;
 pub(super) use exact::{CCW_ERRBOUND_A, orientation_xy, ray_crossing_is_right};
 use exact::{
-    certified_projection, dd_cross, dd_diff, dd_div, exact_power_of_two, segment_pair_scale_shifts,
+    certified_projection, dd_clamp_unit, dd_cross, dd_diff, dd_interpolate, dd_quotient,
+    exact_power_of_two, segment_pair_scale_shifts,
 };
 
 fn projection_difference(left: f64, right: f64) -> ExactDyadic {
@@ -1990,11 +1991,11 @@ fn segment_cross_placement(a: Segment, b: Segment, x_scale: f64, y_scale: f64) -
     if denominator == (0.0, 0.0) {
         return None;
     }
-    let along_a = dd_div(numerator, denominator);
-    if !along_a.is_finite() {
+    let along_a = dd_quotient(numerator, denominator);
+    if !along_a.0.is_finite() {
         return None;
     }
-    let along_a = along_a.clamp(0.0, 1.0);
+    let along_a = dd_clamp_unit(along_a);
     // Snap to an axis-aligned segment's fixed ordinate so a crossing on a
     // vertical/horizontal edge lands exactly on it (no `-1e-16` drift) — this
     // covers the common rectilinear polygon-boundary case; diagonals fall back
@@ -2004,14 +2005,14 @@ fn segment_cross_placement(a: Segment, b: Segment, x_scale: f64, y_scale: f64) -
     } else if a_dx == (0.0, 0.0) {
         a.start.x
     } else {
-        interpolate_f64(a.start.x, a.end.x, along_a)
+        dd_interpolate(a.start.x, a.end.x, along_a)
     };
     let y = if b_dy == (0.0, 0.0) {
         b.start.y
     } else if a_dy == (0.0, 0.0) {
         a.start.y
     } else {
-        interpolate_f64(a.start.y, a.end.y, along_a)
+        dd_interpolate(a.start.y, a.end.y, along_a)
     };
     (x.is_finite() && y.is_finite()).then_some(XY::new(x, y))
 }

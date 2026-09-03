@@ -384,7 +384,9 @@ def test_polygon_intersection_absorbs_retained_boundary_lines() -> None:
         (
             'POLYGON ((0.5 0.5, -2 1.5, -1.5 -1.5, 0.5 0.5))',
             'POLYGON ((0 1, -1 0.5, 0 0, 0 1))',
-            'POLYGON ((-1 0.5, 0 0, 0 0.7, -0.33333333333333337 0.8333333333333333, -1 0.5))',
+            # The crossing is exactly (-1/3, 5/6); both ordinates are the
+            # nearest float to it.
+            'POLYGON ((-1 0.5, 0 0, 0 0.7, -0.3333333333333333 0.8333333333333334, -1 0.5))',
         ),
         (
             'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))',

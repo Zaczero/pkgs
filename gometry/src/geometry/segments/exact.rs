@@ -2,7 +2,9 @@
 //! Orientation uses an outward interval and exact stored-dyadic fallback over
 //! the complete finite binary64 domain.
 
-use crate::geometry::segments::{Orientation, Segment, XY, interpolate_segment_point};
+use crate::geometry::segments::{
+    Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
+};
 use crate::geometry::tessellation::exact::{Interval, two_sum};
 
 #[path = "exact_orientation.rs"]
@@ -132,6 +134,11 @@ fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     two_sum(head, head_err + (lhs.0 * rhs.1 + lhs.1 * rhs.0))
 }
 
+fn dd_add(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
+    let (head, head_err) = two_sum(lhs.0, rhs.0);
+    two_sum(head, head_err + (lhs.1 + rhs.1))
+}
+
 pub(super) fn dd_cross(
     left_a: (f64, f64),
     left_b: (f64, f64),
@@ -144,12 +151,52 @@ pub(super) fn dd_cross(
     two_sum(sum, sum_err + (left.1 - right.1))
 }
 
-pub(super) fn dd_div(numerator: (f64, f64), denominator: (f64, f64)) -> f64 {
+/// Quotient carrying its residual. A caller that keeps computing with the
+/// ratio needs the tail: rounding it to binary64 first is what pushes an
+/// exactly representable crossing an ulp off itself.
+pub(super) fn dd_quotient(numerator: (f64, f64), denominator: (f64, f64)) -> (f64, f64) {
     let estimate = numerator.0 / denominator.0;
     let product = dd_mul((estimate, 0.0), denominator);
     let (residual, residual_err) = two_sum(numerator.0, -product.0);
     let residual = residual + (residual_err + (numerator.1 - product.1));
-    estimate + residual / denominator.0
+    two_sum(estimate, residual / denominator.0)
+}
+
+fn dd_div(numerator: (f64, f64), denominator: (f64, f64)) -> f64 {
+    dd_quotient(numerator, denominator).0
+}
+
+/// Clamp a double-double parameter into `[0, 1]`. A zero head carries a zero
+/// tail (an exact `two_sum` cancellation), so only the upper endpoint needs
+/// its tail inspected.
+pub(super) fn dd_clamp_unit(value: (f64, f64)) -> (f64, f64) {
+    if value.0 <= 0.0 {
+        return (0.0, 0.0);
+    }
+    if value.0 > 1.0 || (value.0 >= 1.0 && value.1 > 0.0) {
+        return (1.0, 0.0);
+    }
+    value
+}
+
+/// [`interpolate_f64`] with a double-double fraction, rounded exactly once.
+///
+/// The convex form keeps every product bounded by `max(|start|, |end|)` for a
+/// fraction in `[0, 1]`, so it inherits that function's overflow behaviour and
+/// its endpoint exactness; what it removes is the two intermediate roundings
+/// (the fraction, then the product) that placed a representable crossing such
+/// as `(0, 1)` one ulp away from itself.
+pub(super) fn dd_interpolate(start: f64, end: f64, fraction: (f64, f64)) -> f64 {
+    let complement = dd_add((1.0, 0.0), (-fraction.0, -fraction.1));
+    let value = dd_add(
+        dd_mul((start, 0.0), complement),
+        dd_mul((end, 0.0), fraction),
+    );
+    if value.0.is_finite() {
+        value.0
+    } else {
+        interpolate_f64(start, end, fraction.0)
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -239,6 +239,63 @@ fn segment_nearest_points_uses_intersection_for_crossing() {
     assert_eq!(left, right);
 }
 
+/// Placement rounds once. The parametric solve has three roundings available
+/// to it — the fraction, the product, and the sum — and a crossing whose exact
+/// ordinates are representable must survive all of them. Interpolating from a
+/// binary64 fraction placed this pair at `(-0.333_333_333_333_333_37,
+/// 0.833_333_333_333_333_3)`, an ulp off on both axes.
+#[test]
+fn segment_cross_point_is_the_correctly_rounded_crossing() {
+    // Exactly (-1/3, 5/6).
+    let left = Segment {
+        start: XY::new(0.5, 0.5),
+        end: XY::new(-2.0, 1.5),
+    };
+    let right = Segment {
+        start: XY::new(0.0, 1.0),
+        end: XY::new(-1.0, 0.5),
+    };
+    let point = segment_cross_point(left, right).expect("certified crossing");
+    assert_eq!(
+        point,
+        segment_cross_point(right, left).expect("symmetric crossing")
+    );
+    assert_eq!(point.x.to_bits(), (-1.0_f64 / 3.0).to_bits());
+    assert_eq!(point.y.to_bits(), (5.0_f64 / 6.0).to_bits());
+}
+
+/// An axis-aligned operand pins its own ordinate exactly, so the crossing of a
+/// diagonal with a vertical edge is representable on both axes.
+#[test]
+fn segment_cross_point_meets_an_axis_aligned_edge_exactly() {
+    let diagonal = Segment {
+        start: XY::new(-1.0, 2.0),
+        end: XY::new(2.0, -1.0),
+    };
+    for (name, edge, expected) in [
+        (
+            "vertical",
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(0.0, 4.0),
+            },
+            XY::new(0.0, 1.0),
+        ),
+        (
+            "horizontal",
+            Segment {
+                start: XY::new(-4.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            },
+            XY::new(1.0, 0.0),
+        ),
+    ] {
+        let point = segment_cross_point(diagonal, edge).expect("certified crossing");
+        assert_eq!(point.x.to_bits(), expected.x.to_bits(), "{name}: x");
+        assert_eq!(point.y.to_bits(), expected.y.to_bits(), "{name}: y");
+    }
+}
+
 /// The split-product crossing solver must keep the robust predicate's
 /// near-parallel crossing and place it symmetrically, without relying on a
 /// target-specific fused multiply-add path.
