@@ -613,5 +613,5 @@ portable GeoArrow interchange or GeoParquet storage, see [Arrow & storage](../ec
 - [DataFrames](../ecosystem/dataframes.md) — dataframe geometry columns.
 - [Arrow & storage](../ecosystem/arrow.md) — portable GeoArrow interchange and GeoParquet storage.
 - [NumPy handoff](../ecosystem/numpy.md) — zero-copy numeric lanes.
-- [Benchmarks](../about/benchmarks.md) — current release status.
+- [Benchmarks](../about/benchmarks.md) — the published release run, and how one is produced.
 - [API: GeometryArray][gometry.GeometryArray] · [points][gometry.points] · [Groups][gometry.Groups] · [CellArray][gometry.CellArray] · [from_wkb][gometry.from_wkb]
