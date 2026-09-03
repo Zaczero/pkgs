@@ -24,7 +24,7 @@
 
 use crate::collections::{HashMap, HashSet};
 use crate::geometry::overlay::{OverlayOp, polygon_parts_to_shape};
-use crate::geometry::segment_index::{RUN_NODING_MIN, for_each_candidate_pair};
+use crate::geometry::segment_index::for_each_candidate_pair;
 pub(in crate::geometry) use crate::geometry::topology::{
     self, Cut, Operand, OperandPool, OrientedRing, SectionEnd, add_cut, compare_along_segment,
     operand_covers_boundary, other_contains, section_end, sort_dedup_cuts,

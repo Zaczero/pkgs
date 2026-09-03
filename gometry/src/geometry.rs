@@ -220,9 +220,9 @@ pub(crate) use relate::{
     line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
-    CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,
-    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(crate) use segments::clip_segment;

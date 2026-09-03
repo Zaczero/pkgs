@@ -1,8 +1,7 @@
 use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
-    CHAIN_MIN_SEGMENTS, RUN_NODING_MIN, for_each_candidate_pair,
-    for_each_indexed_overlapping_bounds_pair, single_chain,
+    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair, single_chain,
 };
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 
@@ -86,16 +85,10 @@ mod sweep_characterization {
         ((lo as u64) << 32) | hi as u64
     }
 
-    fn visited_pairs<const RUN_MIN: usize>(pool: &[Segment]) -> Vec<u64> {
-        let mut seen = Vec::new();
-        let _ = for_each_candidate_pair::<RUN_MIN>(pool, single_chain, |a, b| {
-            seen.push(pair_key(a, b));
-            ControlFlow::Continue(())
-        });
+    /// The visited set, with the never-visited-twice half of the contract
+    /// checked in place. Sorting makes a repeat visit an adjacent duplicate.
+    fn sorted_unique(mut seen: Vec<u64>) -> Vec<u64> {
         seen.sort_unstable();
-        // Sorting makes a repeat visit an adjacent duplicate, so the
-        // never-visited-twice half of the contract survives the switch away
-        // from a set that rejected the second insert.
         let duplicate = seen.windows(2).find(|pair| pair[0] == pair[1]);
         assert!(
             duplicate.is_none(),
@@ -105,13 +98,23 @@ mod sweep_characterization {
         seen
     }
 
+    /// Every candidate the sweep hands the exact kernels, for one pool.
+    fn every_candidate(pool: &[Segment]) -> Vec<u64> {
+        let mut seen = Vec::new();
+        let _ = for_each_candidate_pair(pool, single_chain, |a, b| {
+            seen.push(pair_key(a, b));
+            ControlFlow::Continue(())
+        });
+        sorted_unique(seen)
+    }
+
     #[test]
     fn sweep_covers_every_intersecting_pair() {
-        // Sizes spanning the brute (<6), flat-sweep, and run-sweep branches for
-        // BOTH thresholds (RUN_NODING_MIN = 512, CHAIN_MIN_SEGMENTS = 1024).
-        // 1100 is the largest size needed: it is already above both, so every
-        // branch is entered. The oracle below is quadratic in n, so a size
-        // beyond the last threshold buys no coverage at several times the cost.
+        // Sizes spanning the brute branch (< SWEEP_MIN_ITEMS) and the two sweep
+        // strategies, each of which is driven directly below rather than reached
+        // through the run-density dispatch — so the corpus does not have to
+        // contain linework that happens to select both. The oracle is quadratic
+        // in n, which caps the useful size.
         for &n in &[4_usize, 20, 200, 600, 1100] {
             let pool = structured_pool(n);
             // `segments_intersect` is the exact orientation predicate, with an
@@ -143,10 +146,8 @@ mod sweep_characterization {
                 }
             }
             truly_intersecting.sort_unstable();
-            for visited in [
-                visited_pairs::<RUN_NODING_MIN>(&pool),
-                visited_pairs::<CHAIN_MIN_SEGMENTS>(&pool),
-            ] {
+            {
+                let visited = every_candidate(&pool);
                 for &pair in &truly_intersecting {
                     assert!(
                         visited.binary_search(&pair).is_ok(),
@@ -261,6 +262,116 @@ mod indexed_bounds_characterization {
             });
             assert!(result.is_break(), "dense n={count}");
             assert_eq!(first_hit_work, 1, "dense n={count}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod run_collapse_dispatch {
+    //! The pruning this sweep exists for, pinned as a candidate COUNT. Smooth
+    //! linework decomposes into a couple of monotone runs, within which no pair
+    //! can cross, so the run join drops essentially every candidate the flat
+    //! sweep would hand the exact kernels — and linework that reverses every
+    //! segment decomposes into one run each, where the two visit the same set
+    //! and the flat sweep is the cheaper way to reach it. A size threshold in
+    //! front of this (there were three, at 512, 512 and 1024) sent small smooth
+    //! inputs down the flat path and cost them the entire reduction.
+    use super::*;
+    use crate::geometry::segment_index::sweep::monotone_runs;
+
+    fn chain_of(points: &[(f64, f64)], pool: &mut Vec<Segment>) {
+        for pair in points.windows(2) {
+            pool.push(Segment {
+                start: XY { x: pair[0].0, y: pair[0].1 },
+                end: XY { x: pair[1].0, y: pair[1].1 },
+            });
+        }
+    }
+
+    /// A half sine wave: smooth and monotone in x, but curved, so the collapse
+    /// cannot be an artifact of exactly collinear vertices.
+    fn arc(x0: f64, y0: f64, n: usize) -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|i| {
+                let t = i as f64 / (n - 1) as f64;
+                (x0 + 10.0 * t, y0 + 3.0 * (t * std::f64::consts::PI).sin())
+            })
+            .collect()
+    }
+
+    /// Alternating direction every segment: one run per segment, nothing to
+    /// collapse.
+    fn zigzag(x0: f64, y0: f64, n: usize) -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|i| (x0 + i as f64 * 0.1, y0 + f64::from(u32::from(i % 2 == 0))))
+            .collect()
+    }
+
+    fn pool_of(left: &[(f64, f64)], right: &[(f64, f64)]) -> Vec<Segment> {
+        let mut pool = Vec::new();
+        chain_of(left, &mut pool);
+        chain_of(right, &mut pool);
+        pool
+    }
+
+    fn visits(pool: &[Segment]) -> usize {
+        let mut count = 0;
+        let _ = for_each_candidate_pair(pool, single_chain, |_left, _right| {
+            count += 1;
+            ControlFlow::Continue(())
+        });
+        count
+    }
+
+    fn runs_of(pool: &[Segment]) -> usize {
+        let mut runs = Vec::new();
+        monotone_runs(pool, &single_chain, &mut runs);
+        runs.len()
+    }
+
+    #[test]
+    fn smooth_linework_collapses_at_every_size() {
+        // 32 segments is far below every threshold this dispatch used to carry,
+        // and is where the reduction was being thrown away.
+        for n in [8_usize, 32, 128, 600] {
+            let pool = pool_of(&arc(0.0, 0.0, n), &arc(0.3, -0.6, n));
+            assert!(
+                runs_of(&pool) <= 8,
+                "n={n}: smooth linework should decompose into a handful of runs"
+            );
+            // The candidate count is bounded by the RUN structure, not the
+            // vertex count: a per-segment sweep hands over one candidate per
+            // chained adjacent pair and so grows with n, while the run join
+            // stays flat as the arcs are refined. That independence is the
+            // property a size threshold in front of this destroyed.
+            let dispatched = visits(&pool);
+            assert!(
+                dispatched <= 16,
+                "n={n}: {dispatched} candidates from {} segments — the run \
+                 collapse is not being taken",
+                pool.len()
+            );
+        }
+    }
+
+    #[test]
+    fn linework_with_nothing_to_collapse_stays_linear() {
+        // The other end: one run per segment, so the decomposition saves no
+        // pair at all. The sweep still has to stay near-linear in the pool —
+        // this is the case a quadratic fallback would hide in.
+        for n in [8_usize, 32, 128, 600] {
+            let pool = pool_of(&zigzag(0.0, 0.0, n), &zigzag(0.05, -0.4, n));
+            assert_eq!(
+                runs_of(&pool),
+                pool.len(),
+                "n={n}: alternating linework should yield one run per segment"
+            );
+            let dispatched = visits(&pool);
+            assert!(
+                dispatched <= pool.len() * 4,
+                "n={n}: {dispatched} candidates from {} segments",
+                pool.len()
+            );
         }
     }
 }

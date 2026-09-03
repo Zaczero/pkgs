@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 fn main() {
     let manifest_dir = PathBuf::from(
@@ -109,7 +109,7 @@ fn collect_files(root: &Path, logical_root: &str, files: &mut Vec<(String, PathB
         })
         .map(|entry| entry.expect("cannot read build input directory entry"))
         .collect();
-    entries.sort_unstable_by_key(|entry| entry.file_name());
+    entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
         if entry.file_name() == ".git" {

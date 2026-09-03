@@ -5,7 +5,7 @@
 use ahash::HashSetExt as _;
 
 use crate::geometry::clean_union::{
-    Cut, HashSet, OperandPool, OverlayOp, RUN_NODING_MIN, SharedSection, add_cut,
+    Cut, HashSet, OperandPool, OverlayOp, SharedSection, add_cut,
     for_each_candidate_pair, shared_section, sort_dedup_cuts,
 };
 use crate::geometry::{
@@ -188,7 +188,7 @@ pub(crate) fn collect_boundary_contacts(
     };
     // The L1-aware noding sweep, with chains broken at ring boundaries so a
     // ring junction cannot hide a same- or cross-operand contact.
-    let _ = for_each_candidate_pair::<RUN_NODING_MIN>(
+    let _ = for_each_candidate_pair(
         &pool.segments,
         |index| pool.ring_of[index],
         visit,

@@ -81,13 +81,6 @@ pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair(
     ControlFlow::Continue(())
 }
 
-/// Segment count from which the MONOTONE-CHAIN strategy pays: below it
-/// the flat per-segment sweep's forward windows are already short and
-/// the run-join setup (clip searches, pool-indirect scans) costs more
-/// than the within-chain skips save; above it the chain decomposition
-/// collapses smooth linework to a few hundred envelopes.
-pub(in crate::geometry) const CHAIN_MIN_SEGMENTS: usize = 1024;
-
 /// One envelope in [`for_each_candidate_pair`]'s sweep order: extents along
 /// the sweep axis (sorted on `sweep_min`) and the cross axis (overlap
 /// filter), plus the input ordinal the visitor receives.
@@ -223,16 +216,45 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
 /// `chain_of` that breaks runs at source boundaries so those junction pairs
 /// reach the visitor.
 ///
-/// `RUN_MIN` is the monotone-run crossover: [`CHAIN_MIN_SEGMENTS`] for the
-/// broad default (the run-join setup only pays past it), [`RUN_NODING_MIN`] for
-/// the noding hot paths (whose ~40 KB flat sort would otherwise exceed L1).
-/// Below it the flat per-segment sweep wins; below [`SWEEP_MIN_ITEMS`] the
-/// brute double loop wins. Same candidate set at every threshold — only the
-/// work shape differs.
-pub(in crate::geometry) fn for_each_candidate_pair<const RUN_MIN: usize>(
+/// The run decomposition is what prunes, so the strategy follows how far it
+/// COLLAPSED the pool rather than how big the pool is: smooth linework folds
+/// hundreds of segments into a couple of runs and skips every within-run pair,
+/// while linework that alternates direction every segment yields one run each
+/// and the two paths visit an identical candidate set. Deciding on the run
+/// count therefore takes the pruning wherever it exists — a straight 254-segment
+/// pair drops from 252 candidates to 0 — and pays the run machinery only when it
+/// buys something. Below [`SWEEP_MIN_ITEMS`] the brute double loop wins.
+pub(in crate::geometry) fn for_each_candidate_pair(
     pool: &[Segment],
     chain_of: impl Fn(usize) -> u32,
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
+    // this run buffer was their only allocation.
+    thread_local! {
+        static RUNS: crate::scratch_pool::ScratchPool<Vec<MonotoneRun>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
+    }
+    let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
+    monotone_runs(pool, &chain_of, &mut runs);
+    candidate_pairs_over_staged_runs(
+        pool,
+        &runs,
+        || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
+        &mut visit,
+    )
+}
+
+/// The shared entry point behind [`for_each_candidate_pair`] and the
+/// prepared-linework sweep, over runs that are already decomposed. `bounds` is
+/// consulted only on the sweep path, so a caller that has to compute them can
+/// defer the pass.
+pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
+    pool: &[Segment],
+    runs: &[MonotoneRun],
+    bounds: impl FnOnce() -> Bounds,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
@@ -243,69 +265,13 @@ pub(in crate::geometry) fn for_each_candidate_pair<const RUN_MIN: usize>(
         }
         return ControlFlow::Continue(());
     }
-    if count < RUN_MIN {
-        return flat_segment_sweep(pool, &mut visit);
-    }
-    let bounds = Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end]));
-    // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
-    // this run buffer was their only allocation.
-    thread_local! {
-        static RUNS: crate::scratch_pool::ScratchPool<Vec<MonotoneRun>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
-    monotone_runs(pool, &chain_of, &mut runs);
-    candidate_pairs_over_runs(pool, &runs, bounds, &mut visit)
+    candidate_pairs_over_runs(pool, runs, bounds(), visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
 /// so runs break only on bit-exact discontinuity, not source identity.
 pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
     0
-}
-
-/// The flat per-segment sweep (one envelope per segment, every
-/// envelope-overlapping pair visited — within-chain adjacents included):
-/// the small-pool strategy where short forward windows beat the chain
-/// machinery's setup. ONE pass builds entries and global extents
-/// together; the axis swap rewrites the columns in place.
-pub(in crate::geometry) fn flat_segment_sweep(
-    pool: &[Segment],
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    thread_local! {
-        static FLAT_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
-            crate::scratch_pool::ScratchPool::new(Vec::new())
-        };
-    }
-    let mut entries = crate::scratch_pool::ScratchPool::checkout(&FLAT_SCRATCH);
-    entries.reserve(pool.len());
-    let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (ordinal, segment) in pool.iter().enumerate() {
-        let (x_lo, x_hi) = (
-            segment.start.x.min(segment.end.x),
-            segment.start.x.max(segment.end.x),
-        );
-        let (y_lo, y_hi) = (
-            segment.start.y.min(segment.end.y),
-            segment.start.y.max(segment.end.y),
-        );
-        min_x = min_x.min(x_lo);
-        max_x = max_x.max(x_hi);
-        min_y = min_y.min(y_lo);
-        max_y = max_y.max(y_hi);
-        entries.push(SweepEntry {
-            sweep_min: x_lo,
-            sweep_max: x_hi,
-            cross_min: y_lo,
-            cross_max: y_hi,
-            ordinal: ordinal as u32,
-        });
-    }
-    finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
-    plain_windows(&entries, visit)
 }
 
 /// [`for_each_candidate_pair`] over PRE-STAGED runs and bounds (built
@@ -370,15 +336,6 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
         plain_windows(&entries, &mut run_visit)
     }
 }
-
-/// Pool size at or above which the noding hot paths route through the
-/// monotone-run sweep rather than the flat `SweepEntry` sort, whose ~40 KB
-/// array (at ~1 K segments) exceeds L1 and profiled at ~45% of the clean
-/// overlay kernel. Below this the flat sweep's setup-light path wins. Distinct
-/// from the generic [`for_each_candidate_pair`] threshold
-/// (`CHAIN_MIN_SEGMENTS`, tuned for its other callers) — the noding paths opt
-/// into this lower one.
-pub(in crate::geometry) const RUN_NODING_MIN: usize = 512;
 
 /// Decompose the input into maximal monotone runs: a run extends while
 /// the next segment CHAINS (starts bit-exactly at the previous end) and

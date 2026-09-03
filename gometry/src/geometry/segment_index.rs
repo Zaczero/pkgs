@@ -17,9 +17,9 @@ pub(crate) use index::{PointSetIndex, SegmentIndex};
 pub(crate) use stabbing::{EdgeId, EdgeYIndex, YStabbingIndex, uses_linear_plan_for_len};
 pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
-    CHAIN_MIN_SEGMENTS, MonotoneRun, RUN_NODING_MIN, candidate_pairs_over_runs, flat_segment_sweep,
-    for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 
 #[cfg(test)]

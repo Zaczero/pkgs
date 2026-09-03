@@ -1,8 +1,8 @@
 use std::ops::ControlFlow;
 
 use crate::geometry::{
-    Bounds, CHAIN_MIN_SEGMENTS, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point,
-    Segment, Shape, XY, candidate_pairs_over_runs, flat_segment_sweep, same_point, sign_of,
+    Bounds, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
+    candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
 /// a parallel chain-id column (the kernel's run-break identities), and
@@ -125,31 +125,18 @@ impl LineworkChains {
         }
     }
 
-    /// Run the candidate sweep over the staged linework: the brute loop
-    /// below the pair crossover, otherwise the pre-staged runs/bounds
-    /// path (no per-call decomposition).
+    /// Run the candidate sweep over the staged linework, reusing the runs and
+    /// bounds built during staging so no per-call decomposition pass is needed.
     pub(crate) fn for_each_candidate_pair(
         &self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        let count = self.segments.len();
-        if count * count < 32 {
-            for left in 0..count {
-                for right in (left + 1)..count {
-                    visit(left, right)?;
-                }
-            }
-            return ControlFlow::Continue(());
-        }
-        // Runs are pre-staged, so the chain path is profitable WAY below the
-        // build-time crossover whenever the linework is smooth (few runs):
-        // within a run no pair is ever visited, and a handful of run pairs
-        // beat a per-row event sort. Jagged small inputs (runs ~ segments)
-        // keep the flat sweep.
-        if count < CHAIN_MIN_SEGMENTS && self.runs.len() * 4 > count {
-            return flat_segment_sweep(&self.segments, &mut visit);
-        }
-        candidate_pairs_over_runs(&self.segments, &self.runs, self.bounds, &mut visit)
+        candidate_pairs_over_staged_runs(
+            &self.segments,
+            &self.runs,
+            || self.bounds,
+            &mut visit,
+        )
     }
 
     /// Stage every linework chain of `shape` (lines, ring linework of

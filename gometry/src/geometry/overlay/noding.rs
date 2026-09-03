@@ -7,7 +7,7 @@ use crate::geometry::segments::{
     segment_envelopes_disjoint,
 };
 use crate::geometry::{
-    CHAIN_MIN_SEGMENTS, HashMap, HashMapExt as _, Orientation, PointKey, RUN_NODING_MIN, Segment,
+    HashMap, HashMapExt as _, Orientation, PointKey, Segment,
     XY, dedup_consecutive_xy, for_each_candidate_pair, same_point, single_chain,
     undirected_segment_edge_key,
 };
@@ -270,7 +270,7 @@ pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Vec<Segment> {
 /// The cut events of [`collinear_overlap_pass`].
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Vec<(u32, XY)> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
-    let _ = for_each_candidate_pair::<CHAIN_MIN_SEGMENTS>(segments, single_chain, |left, right| {
+    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
         let orientations = PairOrientations::new(a, b);
         if orientations.right_start == Orientation::Collinear
@@ -345,7 +345,7 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32
     // SweepEntry sort that exceeds L1 at ~1 K segments (the arrangement noding
     // behind union/difference fallback, symmetric_difference, intersection,
     // relate, and polygonize all flow through here).
-    let _ = for_each_candidate_pair::<RUN_NODING_MIN>(segments, single_chain, |left, right| {
+    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
         // produce are collinear-overlap endpoints, decided by the robust

@@ -364,7 +364,7 @@ mod tests {
             }
             std::ops::ControlFlow::Continue(())
         };
-        let _ = for_each_candidate_pair::<512>(&pool.segments, |index| pool.ring_of[index], visit);
+        let _ = for_each_candidate_pair(&pool.segments, |index| pool.ring_of[index], visit);
         assert!(clean, "circle/box pair should stay transverse-clean");
         assert_eq!(scan.has_cross, sweep_cross);
     }
