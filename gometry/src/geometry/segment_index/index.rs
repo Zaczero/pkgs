@@ -2,7 +2,7 @@ use rstar::{AABB, RTreeNode, RTreeObject};
 
 use crate::HeapSize;
 use crate::geometry::{
-    BulkRTree, Ordering, Point, Segment, point_segment_distance_key,
+    BulkRTree, Ordering, Point, Segment, point_on_segment, point_segment_distance_key,
     point_segment_distance_squared, same_point,
 };
 
@@ -154,6 +154,18 @@ impl SegmentIndex {
     ) -> impl Iterator<Item = &SegmentEntry> + '_ {
         self.tree
             .locate_in_envelope_intersecting(segment_envelope(query))
+    }
+
+    /// Whether a point lies on any indexed segment. The envelope query keeps
+    /// the exact segment predicate on the small candidate set, so repeated
+    /// point probes do not rescan the full linework.
+    pub(crate) fn covers_point(&self, point: Point) -> bool {
+        let query = Segment {
+            start: point.xy(),
+            end: point.xy(),
+        };
+        self.intersecting_candidates(query)
+            .any(|entry| point_on_segment(point, entry.segment.start, entry.segment.end))
     }
 }
 

@@ -319,25 +319,30 @@ impl PointBatchTester {
 
     pub(crate) fn new(shape: &Shape) -> Self {
         match shape {
-            Shape::Polygon(polygon) => Self::Polygon {
-                index: PolygonPointIndex::build(polygon),
-            },
-            Shape::MultiPolygon(polygons) if polygons.len() == 1 && !polygons.is_empty() => {
-                Self::Polygon {
-                    index: PolygonPointIndex::build(&polygons[0]),
-                }
-            },
-            Shape::MultiPolygon(polygons) => {
-                let built: Vec<PolygonPointIndex> =
-                    polygons.iter().map(PolygonPointIndex::build).collect();
-                let parts = YStabbingIndex::build(built, |p| {
-                    p.bounds
-                        .map_or((f64::INFINITY, f64::NEG_INFINITY), |b| (b.miny(), b.maxy()))
-                });
-                Self::MultiPolygon { parts }
-            },
+            Shape::Polygon(polygon) => Self::from_polygon(polygon),
+            Shape::MultiPolygon(polygons) => Self::from_multipolygon(polygons),
             _ => Self::Generic(shape.clone()),
         }
+    }
+
+    pub(crate) fn from_polygon(polygon: &Polygon) -> Self {
+        Self::Polygon {
+            index: PolygonPointIndex::build(polygon),
+        }
+    }
+
+    pub(crate) fn from_multipolygon(polygons: &crate::geometry::MultiPolygon) -> Self {
+        if polygons.len() == 1 && !polygons.is_empty() {
+            return Self::Polygon {
+                index: PolygonPointIndex::build(&polygons[0]),
+            };
+        }
+        let built: Vec<PolygonPointIndex> = polygons.iter().map(PolygonPointIndex::build).collect();
+        let parts = YStabbingIndex::build(built, |p| {
+            p.bounds
+                .map_or((f64::INFINITY, f64::NEG_INFINITY), |b| (b.miny(), b.maxy()))
+        });
+        Self::MultiPolygon { parts }
     }
 
     /// Strict membership — [`Shape::contains_point`] semantics.

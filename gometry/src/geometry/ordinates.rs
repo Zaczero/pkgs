@@ -95,6 +95,24 @@ impl OrdinateSource {
         result
     }
 
+    fn build_direct(inputs: &[&Shape]) -> Self {
+        let mut result = Self::new(inputs);
+        for shape in inputs {
+            if !(shape.has_z() || shape.has_m()) {
+                continue;
+            }
+            if matches!(shape, Shape::Point(_) | Shape::MultiPoint(_)) {
+                shape.for_each_point(|point| add_vertex(&mut result.vertices, point));
+            }
+            shape.for_each_vertex_pair(|start, end| {
+                if !same_point(start, end) {
+                    result.add_source_edge(start, end);
+                }
+            });
+        }
+        result
+    }
+
     fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Self {
         let mut result = Self::new(inputs);
         for source in graph.source_points.iter() {
@@ -327,12 +345,24 @@ pub(crate) fn carry_direct_point_ordinates(
             Shape::LineString(line) => {
                 observe_direct_ordinates(line, point, tolerance, &mut z, &mut m);
             },
+            Shape::MultiLineString(lines) => {
+                for line in lines {
+                    observe_direct_ordinates(line, point, tolerance, &mut z, &mut m);
+                }
+            },
             Shape::Polygon(polygon) => {
                 for ring in polygon.rings() {
                     observe_direct_ordinates(ring, point, tolerance, &mut z, &mut m);
                 }
             },
-            _ => unreachable!("direct ordinate carry requires a scalar point carrier"),
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    for ring in polygon.rings() {
+                        observe_direct_ordinates(ring, point, tolerance, &mut z, &mut m);
+                    }
+                }
+            },
+            _ => unreachable!("direct ordinate carry requires a point carrier"),
         }
         if z.conflict && m.conflict {
             break;
@@ -358,6 +388,23 @@ pub(crate) fn carry_direct_point_ordinates(
                 .then(|| m.value().expect("retained M is sourced")),
         ),
     )))
+}
+
+/// Carry ordinates onto a directly admitted point-set intersection shape. This
+/// uses the same resolver as topology-backed overlays, but gathers source
+/// vertices and edges without constructing a graph.
+pub(crate) fn carry_direct_points_ordinates(
+    output: Shape,
+    inputs: &[&Shape],
+    strict: bool,
+) -> Result<Shape> {
+    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
+        return Ok(output);
+    }
+    let source = OrdinateSource::build_direct(inputs);
+    let declared_axes =
+        crate::geometry::overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
+    carry_or_degrade(&output, &source, declared_axes, "intersection", strict)
 }
 
 fn observe_direct_ordinates<C: Coordinates + ?Sized>(

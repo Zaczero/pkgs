@@ -146,7 +146,8 @@ pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetri
 pub(crate) use linear::MeasureRange;
 use linear::{normalize_line_distance, push_distinct_point};
 pub(crate) use ordinates::{
-    carry_direct_point_ordinates, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
+    carry_direct_point_ordinates, carry_direct_points_ordinates, carry_overlay_ordinates,
+    carry_overlay_ordinates_from_graph,
 };
 use ordinates::{carry_each, carry_each_rows, carry_ordinates};
 pub(crate) use overlay::{OverlayOp, Strictness, empty_shape_for_dimension_with_axes};

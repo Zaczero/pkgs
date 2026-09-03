@@ -974,6 +974,277 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
+    fn multipart_point_intersection_matches_generic_for_lineal_carriers() {
+        let live = multiline(&[&[(0.0, 0.0), (2.0, 2.0)], &[(4.0, 0.0), (4.0, 2.0)]]);
+        let multipoint = Shape::MultiPoint(
+            vec![
+                Point::new(4.0, 1.0).unwrap(),
+                Point::new(1.0, 1.0).unwrap(),
+                Point::new(8.0, 8.0).unwrap(),
+                Point::new(1.0, 1.0).unwrap(),
+            ]
+            .into(),
+        );
+        let scalar = point(1.0, 1.0);
+        for (left, right) in [(&scalar, &live), (&live, &scalar)] {
+            assert_point_intersection_matches_generic(
+                "point and multiline",
+                left,
+                right,
+                Strictness::Strict,
+            );
+        }
+        for (left, right) in [(&multipoint, &live), (&live, &multipoint)] {
+            let result = assert_point_intersection_matches_generic(
+                "multipoint and multiline",
+                left,
+                right,
+                Strictness::Strict,
+            )
+            .expect("line hits");
+            assert!(matches!(result, Shape::MultiPoint(_)), "{result:?}");
+            assert_eq!(
+                result
+                    .points_vec()
+                    .into_iter()
+                    .map(|point| (point.x, point.y))
+                    .collect::<Vec<_>>(),
+                vec![(1.0, 1.0), (4.0, 1.0)]
+            );
+        }
+
+        let miss = Shape::MultiPoint(vec![Point::new(1.0, 0.0).unwrap()].into());
+        assert_point_intersection_matches_generic(
+            "multipoint and multiline miss",
+            &miss,
+            &live,
+            Strictness::Strict,
+        );
+
+        let collapsed =
+            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+                MultiMember::Value(line_seq(&[(1.0, 1.0), (1.0, 1.0)])),
+                MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
+            ]));
+        let empty_member =
+            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
+            ]));
+        for (name, carrier) in [
+            ("collapsed member", collapsed),
+            ("empty member", empty_member),
+        ] {
+            assert_point_intersection_matches_generic(
+                name,
+                &multipoint,
+                &carrier,
+                Strictness::Strict,
+            );
+        }
+    }
+
+    #[test]
+    fn multipart_point_intersection_matches_generic_for_polygonal_carriers() {
+        let carrier = Shape::MultiPolygon(
+            vec![
+                polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                polygon(&[(4.0, 0.0), (6.0, 0.0), (6.0, 2.0), (4.0, 2.0), (4.0, 0.0)]),
+            ]
+            .into(),
+        );
+        let points = Shape::MultiPoint(
+            vec![
+                Point::new(5.0, 1.0).unwrap(),
+                Point::new(0.0, 1.0).unwrap(),
+                Point::new(1.0, 1.0).unwrap(),
+                Point::new(3.0, 1.0).unwrap(),
+                Point::new(1.0, 1.0).unwrap(),
+            ]
+            .into(),
+        );
+        let scalar = point(1.0, 1.0);
+        for (left, right) in [(&scalar, &carrier), (&carrier, &scalar)] {
+            assert_point_intersection_matches_generic(
+                "point and multipolygon",
+                left,
+                right,
+                Strictness::Strict,
+            );
+        }
+        for (left, right) in [(&points, &carrier), (&carrier, &points)] {
+            let result = assert_point_intersection_matches_generic(
+                "multipoint and multipolygon",
+                left,
+                right,
+                Strictness::Strict,
+            )
+            .expect("polygon hits");
+            assert!(matches!(result, Shape::MultiPoint(_)), "{result:?}");
+            assert_eq!(
+                result
+                    .points_vec()
+                    .into_iter()
+                    .map(|point| (point.x, point.y))
+                    .collect::<Vec<_>>(),
+                vec![(0.0, 1.0), (1.0, 1.0), (5.0, 1.0)]
+            );
+        }
+
+        let hole = Shape::MultiPolygon(
+            vec![Polygon::new(
+                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+                vec![Ring::from_closed(vec![
+                    Point::new(2.0, 2.0).unwrap(),
+                    Point::new(4.0, 2.0).unwrap(),
+                    Point::new(4.0, 4.0).unwrap(),
+                    Point::new(2.0, 4.0).unwrap(),
+                    Point::new(2.0, 2.0).unwrap(),
+                ])],
+            )]
+            .into(),
+        );
+        let hole_points = Shape::MultiPoint(
+            vec![
+                Point::new(1.0, 1.0).unwrap(),
+                Point::new(2.0, 3.0).unwrap(),
+                Point::new(3.0, 3.0).unwrap(),
+            ]
+            .into(),
+        );
+        for (left, right) in [(&hole_points, &hole), (&hole, &hole_points)] {
+            assert_point_intersection_matches_generic(
+                "multipoint and holed multipolygon",
+                left,
+                right,
+                Strictness::Strict,
+            );
+        }
+    }
+
+    #[test]
+    fn multipart_point_intersection_falls_back_for_ambiguous_polygonal_carriers() {
+        let points = Shape::MultiPoint(
+            vec![Point::new(1.0, 1.0).unwrap(), Point::new(5.0, 5.0).unwrap()].into(),
+        );
+        let empty_member =
+            Shape::MultiPolygon(MultiPolygon::from_values(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(polygon(&[
+                    (0.0, 0.0),
+                    (2.0, 0.0),
+                    (2.0, 2.0),
+                    (0.0, 2.0),
+                    (0.0, 0.0),
+                ])),
+            ]));
+        assert_point_intersection_matches_generic(
+            "multipoint and multipolygon empty member",
+            &points,
+            &empty_member,
+            Strictness::Strict,
+        );
+
+        let overlapping = Shape::MultiPolygon(
+            vec![
+                polygon(&[(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0), (0.0, 0.0)]),
+                polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]),
+            ]
+            .into(),
+        );
+        assert_point_intersection_matches_generic(
+            "multipoint and overlapping invalid multipolygon",
+            &points,
+            &overlapping,
+            Strictness::Strict,
+        );
+    }
+
+    #[test]
+    fn multipart_point_intersection_reconciles_ordinates_and_extremes() {
+        let z_points = Shape::MultiPoint(
+            vec![
+                Point::new_axes(1.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(None)).unwrap(),
+                Point::new_axes(1.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(None)).unwrap(),
+            ]
+            .into(),
+        );
+        let xy_line = line(&[(0.0, 0.0), (2.0, 0.0)]);
+        assert_point_intersection_matches_generic(
+            "strict duplicate ordinate conflict",
+            &z_points,
+            &xy_line,
+            Strictness::Strict,
+        );
+        let lenient = assert_point_intersection_matches_generic(
+            "lenient duplicate ordinate conflict",
+            &z_points,
+            &xy_line,
+            Strictness::Lenient,
+        )
+        .expect("lenient duplicate result");
+        assert_eq!(lenient.coordinate_axes(), "XY");
+
+        let points = Shape::MultiPoint(vec![Point::new(2.0, 0.0).unwrap()].into());
+        let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
+        let result = assert_point_intersection_matches_generic(
+            "multipoint polygon boundary interpolation",
+            &points,
+            &z_polygon,
+            Strictness::Strict,
+        )
+        .expect("interpolated boundary");
+        assert_eq!(result.coordinate_axes(), "XYZ");
+        assert_eq!(result.points_vec()[0].z(), Some(12.0));
+        let z_multipolygon = match &z_polygon {
+            Shape::Polygon(polygon) => Shape::MultiPolygon(vec![polygon.clone()].into()),
+            _ => unreachable!("z_square returns a polygon"),
+        };
+        let scalar = point(2.0, 0.0);
+        let scalar_result = assert_point_intersection_matches_generic(
+            "point multipolygon boundary interpolation",
+            &scalar,
+            &z_multipolygon,
+            Strictness::Strict,
+        )
+        .expect("scalar multipolygon boundary");
+        assert_eq!(scalar_result.coordinate_axes(), "XYZ");
+        assert_eq!(scalar_result.points_vec()[0].z(), Some(12.0));
+
+        let repeated_line =
+            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XYZ, vec![
+                MultiMember::Value(
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(None)).unwrap(),
+                        Point::new_axes(0.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(None)).unwrap(),
+                        Point::new_axes(2.0, 0.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
+                    ]))
+                    .expect("repeated line"),
+                ),
+            ]));
+        let repeated_point = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
+        let repeated_result = assert_point_intersection_matches_generic(
+            "repeated zero-length source edge",
+            &repeated_point,
+            &repeated_line,
+            Strictness::Strict,
+        )
+        .expect("repeated edge result");
+        assert_eq!(repeated_result.points_vec()[0].z(), Some(99.0));
+
+        let extreme = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
+        let extreme_line = line(&[(-1.0e150, -1.0e150), (1.0e150, 1.0e150)]);
+        for (left, right) in [(&extreme, &extreme_line), (&extreme_line, &extreme)] {
+            assert_point_intersection_matches_generic(
+                "extreme multipoint line",
+                left,
+                right,
+                Strictness::Strict,
+            );
+        }
+    }
+
+    #[test]
     fn intersection_all_matches_left_fold_for_permutations() {
         let shapes = [
             square(0.0, 0.0, 4.0, 4.0),

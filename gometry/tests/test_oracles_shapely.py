@@ -341,6 +341,44 @@ def test_mixed_point_line_polygon_overlay_matches_shapely_oracle() -> None:
                 )
 
 
+def test_multipart_point_intersection_matches_shapely_oracle() -> None:
+    from shapely import equals, from_wkt
+
+    cases = [
+        (
+            'MULTIPOINT ((4 1), (1 1), (8 8), (1 1))',
+            'MULTILINESTRING ((0 0, 2 2), (4 0, 4 2))',
+        ),
+        (
+            'POINT (1 1)',
+            'MULTILINESTRING ((0 0, 2 2), (4 0, 4 2))',
+        ),
+        (
+            'MULTIPOINT ((5 1), (0 1), (1 1), (3 1), (1 1))',
+            'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((4 0, 6 0, 6 2, 4 2, 4 0)))',
+        ),
+        (
+            'POINT (2 3)',
+            'MULTIPOLYGON (((0 0, 6 0, 6 6, 0 6, 0 0), (2 2, 4 2, 4 4, 2 4, 2 2)))',
+        ),
+    ]
+    for left_wkt, right_wkt in cases:
+        left = gm.from_wkt(left_wkt)
+        right = gm.from_wkt(right_wkt)
+        for forward, reverse in ((left, right), (right, left)):
+            got = gm.intersection(forward, reverse)
+            want = from_wkt(forward.to_wkt()).intersection(from_wkt(reverse.to_wkt()))
+            assert got.is_empty == bool(want.is_empty), (forward.to_wkt(), reverse.to_wkt())
+            if got.is_empty:
+                continue
+            assert equals(from_wkt(got.to_wkt()), want), (
+                forward.to_wkt(),
+                reverse.to_wkt(),
+                got.to_wkt(),
+                want.wkt,
+            )
+
+
 def test_h3_edges_match_h3py_oracle() -> None:
     origin = h3.latlng_to_cell(52.5, 13.4, 7)
     cell = gm.H3Cell(origin)

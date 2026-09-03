@@ -8,10 +8,10 @@ use crate::geometry::overlay::{
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
-    GeometryKind, HashMap, HashMapExt as _, Point, PointKey, Segment, Shape, TopologyDomain,
-    TopologyGraph, XY, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
-    column_all_finite, ordered_edge, point_on_segment, same_point, segment_midpoint,
-    shell_is_convex,
+    GeometryKind, HashMap, HashMapExt as _, Point, PointBatchTester, PointKey, Segment,
+    SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY, carry_direct_points_ordinates,
+    carry_overlay_ordinates, carry_overlay_ordinates_from_graph, column_all_finite, ordered_edge,
+    point_on_segment, same_point, segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -238,9 +238,12 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     }
 }
 
+#[derive(Clone, Copy)]
 enum DirectPointCarrier<'a> {
     Line(&'a crate::geometry::LineSeq),
+    MultiLine(&'a crate::geometry::MultiLineString),
     Polygon(&'a crate::geometry::Polygon),
+    MultiPolygon(&'a crate::geometry::MultiPolygon),
 }
 
 impl DirectPointCarrier<'_> {
@@ -249,7 +252,14 @@ impl DirectPointCarrier<'_> {
             Self::Line(line) => line
                 .segment_pairs()
                 .any(|[start, end]| point_on_segment(point, start, end)),
+            Self::MultiLine(lines) => lines.iter().any(|line| {
+                line.segment_pairs()
+                    .any(|[start, end]| point_on_segment(point, start, end))
+            }),
             Self::Polygon(polygon) => polygon.covers_point(point),
+            Self::MultiPolygon(polygons) => {
+                polygons.iter().any(|polygon| polygon.covers_point(point))
+            },
         }
     }
 }
@@ -262,34 +272,157 @@ fn direct_point_intersection<S: Borrow<Shape>>(
         return Ok(None);
     };
     let (left, right) = (left.borrow(), right.borrow());
-    let (point, carrier) = if let Shape::Point(point) = left {
-        (*point, right)
-    } else if let Shape::Point(point) = right {
-        (*point, left)
-    } else {
-        return Ok(None);
-    };
-    let carrier = match carrier {
+    let source_refs = [left, right];
+    if let (Some(point), Some(carrier)) = (scalar_point(left), direct_point_carrier(right)) {
+        return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
+    }
+    if let (Some(point), Some(carrier)) = (scalar_point(right), direct_point_carrier(left)) {
+        return direct_scalar_point_intersection(point, carrier, &source_refs, strictness);
+    }
+    if let (Some(points), Some(carrier)) = (multipoint(left), direct_point_carrier(right)) {
+        return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
+    }
+    if let (Some(points), Some(carrier)) = (multipoint(right), direct_point_carrier(left)) {
+        return direct_multipoint_intersection(points, carrier, &source_refs, strictness);
+    }
+    Ok(None)
+}
+
+fn scalar_point(shape: &Shape) -> Option<Point> {
+    match shape {
+        Shape::Point(point) => Some(*point),
+        _ => None,
+    }
+}
+
+fn multipoint(shape: &Shape) -> Option<&crate::geometry::MultiPoint> {
+    match shape {
+        Shape::MultiPoint(points) => Some(points),
+        _ => None,
+    }
+}
+
+fn direct_point_carrier(shape: &Shape) -> Option<DirectPointCarrier<'_>> {
+    match shape {
         Shape::LineString(line) if crate::geometry::relate::line_has_nonzero_segment(line) => {
-            DirectPointCarrier::Line(line)
+            Some(DirectPointCarrier::Line(line))
+        },
+        Shape::MultiLineString(lines)
+            if !lines.has_empty_members()
+                && lines
+                    .iter()
+                    .all(|line| crate::geometry::relate::line_has_nonzero_segment(line)) =>
+        {
+            Some(DirectPointCarrier::MultiLine(lines))
         },
         Shape::Polygon(polygon) if crate::geometry::polygon_is_valid(polygon) => {
-            DirectPointCarrier::Polygon(polygon)
+            Some(DirectPointCarrier::Polygon(polygon))
         },
-        _ => return Ok(None),
-    };
-    let source_refs = [left, right];
+        Shape::MultiPolygon(polygons) if shape.validate().is_none() => {
+            Some(DirectPointCarrier::MultiPolygon(polygons))
+        },
+        _ => None,
+    }
+}
+
+fn direct_scalar_point_intersection(
+    point: Point,
+    carrier: DirectPointCarrier<'_>,
+    source_refs: &[&Shape],
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
     if !carrier.covers_point(point) {
         return Ok(Some(empty_nary_overlay_shape(
-            &source_refs,
+            source_refs,
             OverlayOp::Intersection,
         )));
     }
     Ok(Some(crate::geometry::carry_direct_point_ordinates(
         point,
-        &source_refs,
+        source_refs,
         strictness.is_strict(),
     )?))
+}
+
+fn direct_multipoint_intersection(
+    points: &crate::geometry::MultiPoint,
+    carrier: DirectPointCarrier<'_>,
+    source_refs: &[&Shape],
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
+    if points.is_empty() {
+        return Ok(Some(empty_nary_overlay_shape(
+            source_refs,
+            OverlayOp::Intersection,
+        )));
+    }
+    let mut candidates = direct_multipoint_candidates(points, carrier);
+    if candidates.is_empty() {
+        return Ok(Some(empty_nary_overlay_shape(
+            source_refs,
+            OverlayOp::Intersection,
+        )));
+    }
+    dedup_points(&mut candidates);
+    candidates.sort_by(crate::geometry::compare_points);
+    let output = if candidates.len() == 1 {
+        Shape::Point(candidates[0])
+    } else {
+        Shape::MultiPoint(candidates.into())
+    };
+    Ok(Some(carry_direct_points_ordinates(
+        output,
+        source_refs,
+        strictness.is_strict(),
+    )?))
+}
+
+fn direct_multipoint_candidates(
+    points: &crate::geometry::MultiPoint,
+    carrier: DirectPointCarrier<'_>,
+) -> Vec<Point> {
+    match carrier {
+        DirectPointCarrier::Line(line) => {
+            let index =
+                SegmentIndex::build_from_iter(line.segment_pairs().map(|[start, end]| Segment {
+                    start: start.xy(),
+                    end: end.xy(),
+                }));
+            points
+                .points()
+                .filter(|point| index.covers_point(*point))
+                .collect()
+        },
+        DirectPointCarrier::MultiLine(lines) => {
+            let index = SegmentIndex::build_from_iter(
+                lines
+                    .iter()
+                    .flat_map(|line| line.segment_pairs())
+                    .map(|[start, end]| Segment {
+                        start: start.xy(),
+                        end: end.xy(),
+                    }),
+            );
+            points
+                .points()
+                .filter(|point| index.covers_point(*point))
+                .collect()
+        },
+        DirectPointCarrier::Polygon(polygon) => {
+            let tester = PointBatchTester::from_polygon(polygon);
+            points
+                .points()
+                .filter(|point| tester.covers_point(*point))
+                .collect()
+        },
+        DirectPointCarrier::MultiPolygon(polygons) => {
+            let tester = PointBatchTester::from_multipolygon(polygons);
+            points
+                .points()
+                .filter(|point| tester.covers_point(*point))
+                .collect()
+        },
+    }
 }
 
 /// Assemble a binary Cartesian polygon/line intersection from one joint graph.
