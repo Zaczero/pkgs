@@ -9,8 +9,9 @@ use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
     GeometryKind, HashMap, HashMapExt as _, Point, PointKey, Segment, Shape, TopologyDomain,
-    TopologyGraph, XY, carry_overlay_ordinates, column_all_finite, ordered_edge, point_on_segment,
-    same_point, segment_midpoint, shell_is_convex,
+    TopologyGraph, XY, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
+    column_all_finite, ordered_edge, point_on_segment, same_point, segment_midpoint,
+    shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -25,6 +26,39 @@ pub(crate) fn overlay_all<S: Borrow<Shape>>(
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, true)
+}
+
+#[cfg(test)]
+pub(super) fn overlay_all_line_oracle(
+    geometries: &[&Shape],
+    op: OverlayOp,
+    strictness: crate::geometry::Strictness,
+) -> Result<Shape> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: op.name(),
+        }
+        .into());
+    }
+    let mut sources = geometries
+        .iter()
+        .map(|shape| shape.normalize())
+        .collect::<Result<Vec<_>>>()?;
+    if op == OverlayOp::Difference {
+        let (left, right) = sources.split_at_mut(1);
+        right.sort_unstable_by(crate::geometry::compare_shapes);
+        let _ = left;
+    } else {
+        sources.sort_unstable_by(crate::geometry::compare_shapes);
+    }
+    let refs = sources.iter().collect::<Vec<_>>();
+    let shape = assemble_overlay(&refs, TopologyDomain::Cartesian, op, false)?;
+    let shape = if shape.is_empty() {
+        empty_nary_overlay_shape(&refs, op)
+    } else {
+        shape.normalize()?
+    };
+    carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
 
 #[cfg(test)]
@@ -146,12 +180,30 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         None
     };
-    let shape = if disjoint_bounds {
-        assemble_disjoint_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
+    let line_only_eligible = !disjoint_bounds
+        && domain == TopologyDomain::Cartesian
+        && matches!(op, OverlayOp::Union | OverlayOp::Intersection)
+        && refs.iter().all(|input| nondegenerate_line_only(input));
+    let (shape, line_graph) = if disjoint_bounds {
+        (
+            assemble_disjoint_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?,
+            None,
+        )
     } else if let Some(shape) = convex_shape {
-        shape
+        (shape, None)
+    } else if line_only_eligible {
+        match assemble_line_only_overlay(&refs, op)? {
+            Some((shape, graph)) => (shape, Some(graph)),
+            None => (
+                assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?,
+                None,
+            ),
+        }
     } else {
-        assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
+        (
+            assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?,
+            None,
+        )
     };
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
@@ -160,7 +212,11 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         // XY-defined, while ordinate restoration is a separate provenance pass.
         shape.normalize()?
     };
-    carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
+    if let Some(graph) = line_graph.as_ref() {
+        carry_overlay_ordinates_from_graph(shape, &refs, op, strictness.is_strict(), graph)
+    } else {
+        carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
+    }
 }
 
 /// The polygon-only intersection lane is valid only when the result cannot
@@ -348,6 +404,92 @@ fn assemble_disjoint_overlay(
         append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
     }
     build_overlay_shape(points, lines, polygons)
+}
+
+fn assemble_line_only_overlay(
+    inputs: &[&Shape],
+    op: OverlayOp,
+) -> Result<Option<(Shape, TopologyGraph)>> {
+    let graph = TopologyGraph::cartesian_many(inputs);
+    let Some((points, lines)) = line_only_overlay(&graph, inputs.len(), op) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        build_overlay_shape(points, lines, Vec::new())?,
+        graph,
+    )))
+}
+
+pub(super) fn nondegenerate_line_only(shape: &Shape) -> bool {
+    match shape {
+        Shape::LineString(line) => crate::geometry::relate::line_has_nonzero_segment(line),
+        Shape::MultiLineString(lines) => {
+            !lines.has_empty_members()
+                && lines
+                    .iter()
+                    .all(|line| crate::geometry::relate::line_has_nonzero_segment(line))
+        },
+        Shape::GeometryCollection(geometries) => {
+            !geometries.is_empty() && geometries.iter().all(nondegenerate_line_only)
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => false,
+    }
+}
+
+/// Assemble Cartesian line overlays directly from the joint graph's source
+/// provenance. The generic path remains authoritative when an edge carries
+/// anything other than line support or a source row is not representable.
+fn line_only_overlay(
+    graph: &TopologyGraph,
+    source_count: usize,
+    op: OverlayOp,
+) -> Option<(Vec<Point>, Vec<crate::geometry::CoordSeq>)> {
+    if !matches!(op, OverlayOp::Union | OverlayOp::Intersection)
+        || graph.edges.is_empty()
+        || !graph.source_points.is_empty()
+        || !graph.area_support.is_empty()
+        || graph
+            .edges
+            .iter()
+            .any(|edge| !graph.edge_has_only_line_sources(edge, source_count))
+    {
+        return None;
+    }
+
+    let mut lines = Vec::with_capacity(graph.edges.len());
+    for edge in &graph.edges {
+        let keep = match op {
+            OverlayOp::Union => true,
+            OverlayOp::Intersection => (0..source_count)
+                .all(|source_row| graph.edge_has_line_source_for_row(edge, source_row as u32)),
+            OverlayOp::Difference | OverlayOp::SymmetricDifference => false,
+        };
+        if keep {
+            lines.push(crate::geometry::CoordSeq::from(vec![
+                edge.segment.start,
+                edge.segment.end,
+            ]));
+        }
+    }
+
+    let points = if op == OverlayOp::Intersection {
+        graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                (0..source_count)
+                    .all(|source_row| graph.has_line_source_at_node(node.point, source_row as u32))
+            })
+            .map(|node| node.point.point())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some((points, lines))
 }
 
 fn append_overlay_parts(

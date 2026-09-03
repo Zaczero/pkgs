@@ -58,12 +58,10 @@ impl RTreeObject for SegmentEnvelope {
 }
 
 impl OrdinateSource {
-    fn build(inputs: &[&Shape]) -> Self {
+    fn new(inputs: &[&Shape]) -> Self {
         // Upper bound: every input vertex carries ordinates (the common
         // case — XYZ/XYM inputs are usually uniformly dimensioned).
         let total_coords: usize = inputs.iter().map(|shape| shape.coord_count()).sum();
-        let mut vertices = HashMap::with_capacity(total_coords);
-        let mut segments = Vec::with_capacity(total_coords);
         let mut magnitude: f64 = 0.0;
         for shape in inputs {
             if let Some(bounds) = shape.bounds() {
@@ -73,31 +71,54 @@ impl OrdinateSource {
                     .max(bounds.miny().abs())
                     .max(bounds.maxy().abs());
             }
+        }
+        Self {
+            vertices: HashMap::with_capacity(total_coords),
+            segments: Vec::with_capacity(total_coords),
+            segment_tree: std::cell::OnceCell::new(),
+            tolerance: magnitude * OVERLAY_SNAP_RELATIVE,
+        }
+    }
+
+    fn add_source_edge(&mut self, start: Point, end: Point) {
+        add_vertex(&mut self.vertices, start);
+        add_vertex(&mut self.vertices, end);
+        if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
+            self.segments.push(canonical_segment(start, end));
+        }
+    }
+
+    fn build(inputs: &[&Shape]) -> Self {
+        let mut result = Self::new(inputs);
+        for shape in inputs {
             if !(shape.has_z() || shape.has_m()) {
                 continue;
             }
             let graph = TopologyGraph::cartesian(shape);
             for source in graph.source_points.iter() {
-                add_vertex(&mut vertices, source.point);
+                add_vertex(&mut result.vertices, source.point);
             }
             for source in graph.source_edges.iter() {
-                add_vertex(&mut vertices, source.start);
-                add_vertex(&mut vertices, source.end);
-                if source.start.z().is_some()
-                    || source.start.m().is_some()
-                    || source.end.z().is_some()
-                    || source.end.m().is_some()
-                {
-                    segments.push(canonical_segment(source.start, source.end));
-                }
+                result.add_source_edge(source.start, source.end);
             }
         }
-        Self {
-            vertices,
-            segments,
-            segment_tree: std::cell::OnceCell::new(),
-            tolerance: magnitude * OVERLAY_SNAP_RELATIVE,
+        result
+    }
+
+    fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Self {
+        let mut result = Self::new(inputs);
+        for source in graph.source_points.iter() {
+            add_vertex(&mut result.vertices, source.point);
         }
+        for source in graph.source_edges.iter() {
+            if inputs
+                .get(source.source_row as usize)
+                .is_some_and(|shape| shape.has_z() || shape.has_m())
+            {
+                result.add_source_edge(source.start, source.end);
+            }
+        }
+        result
     }
 
     fn segment_tree(&self) -> &RTree<SegmentEnvelope> {
@@ -321,6 +342,21 @@ pub(crate) fn carry_overlay_ordinates(
         return Ok(output);
     }
     let source = OrdinateSource::build(inputs);
+    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
+}
+
+pub(crate) fn carry_overlay_ordinates_from_graph(
+    output: Shape,
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    strict: bool,
+    graph: &TopologyGraph,
+) -> Result<Shape> {
+    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
+        return Ok(output);
+    }
+    let source = OrdinateSource::build_from_graph(graph, inputs);
     let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }

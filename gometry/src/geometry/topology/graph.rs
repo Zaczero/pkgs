@@ -347,6 +347,22 @@ impl TopologyGraph {
         edge.line_support
     }
 
+    pub(crate) fn edge_has_only_line_sources(
+        &self,
+        edge: &TopologyEdge,
+        source_count: usize,
+    ) -> bool {
+        !edge.sources.is_empty()
+            && edge.sources.iter().all(|&source| {
+                self.source_edges
+                    .get(source as usize)
+                    .is_some_and(|source| {
+                        (source.source_row as usize) < source_count
+                            && matches!(source.support, SourceSupport::Line)
+                    })
+            })
+    }
+
     pub(crate) fn edge_has_line_source_for_row(
         &self,
         edge: &TopologyEdge,

@@ -120,16 +120,40 @@ mod binary_areal_overlay_tests {
         Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
     }
 
+    fn line_seq(points: &[(f64, f64)]) -> LineSeq {
+        LineSeq::try_new(CoordSeq::from(
+            points
+                .iter()
+                .map(|&(x, y)| Point::new(x, y).unwrap())
+                .collect::<Vec<_>>(),
+        ))
+        .expect("test line is valid")
+    }
+
     fn line(points: &[(f64, f64)]) -> Shape {
-        Shape::LineString(
-            LineSeq::try_new(CoordSeq::from(
-                points
-                    .iter()
-                    .map(|&(x, y)| Point::new(x, y).unwrap())
-                    .collect::<Vec<_>>(),
-            ))
-            .expect("test line is valid"),
-        )
+        Shape::LineString(line_seq(points))
+    }
+
+    fn multiline(lines: &[&[(f64, f64)]]) -> Shape {
+        Shape::MultiLineString(MultiLineString::from_values(
+            CoordinateAxes::XY,
+            lines
+                .iter()
+                .map(|points| MultiMember::Value(line_seq(points)))
+                .collect(),
+        ))
+    }
+
+    fn disjoint_multiline(count: usize, offset: f64) -> Shape {
+        Shape::MultiLineString(MultiLineString::from_values(
+            CoordinateAxes::XY,
+            (0..count)
+                .map(|index| {
+                    let x = offset + index as f64 * 2.0;
+                    MultiMember::Value(line_seq(&[(x, 0.0), (x, 1.0)]))
+                })
+                .collect(),
+        ))
     }
 
     fn point(x: f64, y: f64) -> Shape {
@@ -250,6 +274,33 @@ mod binary_areal_overlay_tests {
                 "{} diverged: certified={certified:?}, forced={forced:?}",
                 op.name()
             ),
+        }
+    }
+
+    fn assert_line_overlay_matches_generic(inputs: &[&Shape], op: OverlayOp) {
+        let fast = overlay_all(
+            inputs,
+            crate::geometry::TopologyDomain::Cartesian,
+            op,
+            Strictness::Strict,
+        );
+        let generic = super::super::nary::overlay_all_line_oracle(inputs, op, Strictness::Strict);
+        match (fast, generic) {
+            (Ok(fast), Ok(generic)) => {
+                assert_eq!(
+                    wkb(&fast),
+                    wkb(&generic),
+                    "{}: {fast:?} != {generic:?}",
+                    op.name()
+                );
+            },
+            (Err(fast), Err(generic)) => assert_eq!(
+                fast.to_string(),
+                generic.to_string(),
+                "{}: {fast} != {generic}",
+                op.name()
+            ),
+            (fast, generic) => panic!("{} diverged: fast={fast:?}, generic={generic:?}", op.name()),
         }
     }
 
@@ -1078,6 +1129,217 @@ mod binary_areal_overlay_tests {
         assert_eq!(merged.coordinate_axes(), "XYM");
         merged.for_each_point(|point| assert!(point.z().is_none()));
         merged.for_each_point(|point| assert!(point.m().is_some()));
+    }
+
+    #[test]
+    fn line_only_overlay_matches_generic_assembly_for_line_cases() {
+        let cases = vec![
+            vec![
+                line(&[(0.0, 0.0), (4.0, 0.0)]),
+                line(&[(1.0, 0.0), (3.0, 0.0)]),
+            ],
+            vec![
+                line(&[(0.0, 0.0), (4.0, 0.0)]),
+                line(&[(3.0, 0.0), (1.0, 0.0)]),
+            ],
+            vec![
+                multiline(&[&[(0.0, 0.0), (4.0, 0.0)], &[(0.0, 0.0), (4.0, 0.0)]]),
+                line(&[(1.0, 0.0), (3.0, 0.0)]),
+            ],
+            vec![
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+                line(&[(2.0, 0.0), (2.0, 2.0)]),
+            ],
+            vec![
+                line(&[(0.0, 0.0), (2.0, 2.0)]),
+                line(&[(0.0, 2.0), (2.0, 0.0)]),
+            ],
+            vec![
+                line(&[(0.0, 0.0), (1.0, 0.0)]),
+                line(&[(3.0, 0.0), (4.0, 0.0)]),
+            ],
+            vec![
+                line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                line(&[
+                    (1.0, -1.0),
+                    (3.0, -1.0),
+                    (3.0, 1.0),
+                    (1.0, 1.0),
+                    (1.0, -1.0),
+                ]),
+            ],
+            vec![
+                multiline(&[&[(0.0, 0.0), (2.0, 0.0)], &[(10.0, 0.0), (12.0, 0.0)]]),
+                multiline(&[&[(1.0, 0.0), (3.0, 0.0)], &[(11.0, 0.0), (13.0, 0.0)]]),
+            ],
+        ];
+
+        for case in cases {
+            let inputs = case.iter().collect::<Vec<_>>();
+            for op in [OverlayOp::Union, OverlayOp::Intersection] {
+                assert_line_overlay_matches_generic(&inputs, op);
+            }
+        }
+
+        let nary = [
+            line(&[(0.0, 0.0), (4.0, 0.0)]),
+            line(&[(1.0, 0.0), (3.0, 0.0)]),
+            line(&[(2.0, 0.0), (5.0, 0.0)]),
+        ];
+        let inputs = nary.iter().collect::<Vec<_>>();
+        assert_line_overlay_matches_generic(&inputs, OverlayOp::Union);
+        assert_line_overlay_matches_generic(&inputs, OverlayOp::Intersection);
+    }
+
+    #[test]
+    fn line_only_intersection_drops_contact_points_on_shared_edges() {
+        let left = line(&[(0.0, 0.0), (4.0, 0.0)]);
+        let right = line(&[(1.0, 0.0), (3.0, 0.0)]);
+        let result = overlay_all(
+            &[&left, &right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(result, Shape::LineString(_)), "{result:?}");
+        assert_eq!(result.points_vec().len(), 2, "{result:?}");
+        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Intersection);
+    }
+
+    #[test]
+    fn line_only_overlay_preserves_zm_and_operand_order() {
+        let left = zm_line((0.0, 0.0), (2.0, 2.0));
+        let right = zm_line((0.0, 2.0), (2.0, 0.0));
+        for op in [OverlayOp::Union, OverlayOp::Intersection] {
+            let forward = overlay_all(
+                &[&left, &right],
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            )
+            .unwrap();
+            let reverse = overlay_all(
+                &[&right, &left],
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(wkb(&forward), wkb(&reverse), "{}", op.name());
+            assert!(forward.has_z() && forward.has_m(), "{forward:?}");
+            forward.for_each_point(|point| {
+                assert!(point.z().is_some(), "{forward:?}");
+                assert!(point.m().is_some(), "{forward:?}");
+            });
+            assert_line_overlay_matches_generic(&[&left, &right], op);
+        }
+    }
+
+    #[test]
+    fn line_only_intersection_preserves_zm_for_overlapping_bounds_without_contact() {
+        let cases = [(
+            zm_line((0.0, 0.0), (4.0, 4.0)),
+            zm_line((0.0, 1.0), (4.0, 5.0)),
+        )];
+        for (left, right) in cases {
+            for strictness in [Strictness::Strict, Strictness::Lenient] {
+                let fast = overlay_all(
+                    &[&left, &right],
+                    crate::geometry::TopologyDomain::Cartesian,
+                    OverlayOp::Intersection,
+                    strictness,
+                )
+                .unwrap();
+                let generic = super::super::nary::overlay_all_line_oracle(
+                    &[&left, &right],
+                    OverlayOp::Intersection,
+                    strictness,
+                )
+                .unwrap();
+                assert_eq!(wkb(&fast), wkb(&generic), "{strictness:?}");
+                assert!(
+                    matches!(
+                        fast,
+                        Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM)
+                    ),
+                    "{fast:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_only_guard_falls_back_for_non_line_and_collapsed_support() {
+        let line_shape = line(&[(0.0, 0.0), (2.0, 0.0)]);
+        let collapsed = line(&[(4.0, 4.0), (4.0, 4.0)]);
+        let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
+        let polygon = square(4.0, 4.0, 6.0, 6.0);
+        let mixed = Shape::geometry_collection(vec![line_shape.clone(), polygon.clone()])
+            .expect("test collection is valid");
+        let empty_member =
+            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(line_seq(&[(8.0, 0.0), (9.0, 0.0)])),
+            ]));
+
+        assert!(super::super::nary::nondegenerate_line_only(&line_shape));
+        for input in [&collapsed, &empty, &polygon, &mixed, &empty_member] {
+            assert!(
+                !super::super::nary::nondegenerate_line_only(input),
+                "{input:?}"
+            );
+        }
+
+        let point_off_line = point(0.0, 1.0);
+        let point_on_line = point(0.0, 0.0);
+        assert_line_overlay_matches_generic(&[&line_shape, &point_off_line], OverlayOp::Union);
+        assert_line_overlay_matches_generic(
+            &[&line_shape, &point_on_line],
+            OverlayOp::Intersection,
+        );
+        assert_line_overlay_matches_generic(&[&line_shape, &collapsed], OverlayOp::Union);
+        assert_line_overlay_matches_generic(&[&line_shape, &collapsed], OverlayOp::Intersection);
+        assert_line_overlay_matches_generic(&[&line_shape, &empty], OverlayOp::Union);
+        assert_line_overlay_matches_generic(&[&line_shape, &polygon], OverlayOp::Union);
+        assert_line_overlay_matches_generic(&[&line_shape, &mixed], OverlayOp::Union);
+        assert_line_overlay_matches_generic(&[&line_shape, &empty_member], OverlayOp::Union);
+
+        let point_result = line_shape
+            .intersection(&point_on_line, Strictness::Strict)
+            .unwrap();
+        assert_eq!(point_result, point_on_line);
+    }
+
+    #[test]
+    fn disjoint_line_bounds_keep_certificate_before_provenance() {
+        let count = 128;
+        let left = disjoint_multiline(count, 0.0);
+        let right = disjoint_multiline(count, 10_000.0);
+
+        let union = overlay_all(
+            &[&left, &right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(union, Shape::MultiLineString(_)), "{union:?}");
+        assert_eq!(union.part_count(), count * 2);
+        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Union);
+
+        let intersection = overlay_all(
+            &[&left, &right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(
+            matches!(intersection, Shape::Empty(GeometryKind::LineString, _)),
+            "{intersection:?}"
+        );
+        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Intersection);
     }
 
     #[test]
