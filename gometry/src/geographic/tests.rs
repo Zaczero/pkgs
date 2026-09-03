@@ -303,8 +303,8 @@ fn frames_derive_degree_grad_and_radian_axes() {
     assert_eq!(degree.longitude().period(), 360.0);
     assert_eq!(degree.pole(), 90.0);
     let grad = frame(std::f64::consts::TAU / 400.0);
-    assert_eq!(grad.longitude().period(), 399.99999999999994);
-    assert_eq!(grad.pole(), 99.99999999999999);
+    assert_eq!(grad.longitude().period(), 399.999_999_999_999_94);
+    assert_eq!(grad.pole(), 99.999_999_999_999_99);
     let radian = frame(1.0);
     assert_eq!(radian.longitude().period(), std::f64::consts::TAU);
     assert_eq!(radian.pole(), std::f64::consts::FRAC_PI_2);

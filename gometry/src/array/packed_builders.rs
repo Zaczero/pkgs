@@ -51,12 +51,7 @@ impl PyGeometryArray {
                     coords,
                     offsets,
                     row_map,
-                } => self.remap_packed_lines(
-                    Arc::clone(coords),
-                    offsets.clone(),
-                    row_map,
-                    rows.clone(),
-                ),
+                } => self.remap_packed_lines(Arc::clone(coords), offsets.clone(), row_map, rows),
                 GeometryArrayStorage::Polygons {
                     coords,
                     ring_offsets,
@@ -67,7 +62,7 @@ impl PyGeometryArray {
                     ring_offsets.clone(),
                     polygon_offsets.clone(),
                     row_map,
-                    rows.clone(),
+                    rows,
                 ),
                 GeometryArrayStorage::Points { .. } | GeometryArrayStorage::Mixed(_) => {
                     return self.gather_logical_rows(&rows.collect::<Vec<_>>());

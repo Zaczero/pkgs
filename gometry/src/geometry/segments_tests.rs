@@ -78,7 +78,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
         (XY::new(-1.0, 0.25), XY::new(2.0, 0.75), rect),
         (XY::new(-1.0, 0.75), XY::new(2.0, 0.25), rect),
         // Near-parallel to the lower edge, but with ample free-axis margin.
-        (XY::new(-1.0, 0.5), XY::new(2.0, 0.500000000001), rect),
+        (XY::new(-1.0, 0.5), XY::new(2.0, 0.500_000_000_001), rect),
         (
             XY::new(1.0e15 - 32.0, 1.0e15 + 4.0),
             XY::new(1.0e15 + 32.0, 1.0e15 + 12.0),
@@ -120,7 +120,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
         assert_liang_authority_agrees(start, end, rect);
     }
 
-    let mut seed = 0x9E3779B97F4A7C15_u64;
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
     let mut admitted_count = 0;
     for _ in 0..2048 {
         seed ^= seed << 7;

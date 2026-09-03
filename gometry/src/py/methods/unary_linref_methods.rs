@@ -604,7 +604,7 @@ impl PyGeometryArray {
         let packed = crate::dispatch::PackedUnary::LineInterpolatePoint {
             distance: distance.clone(),
             normalized,
-            metric: model.clone(),
+            metric: model,
         };
         let value = crate::dispatch::unary_array_linref_shapes(
             py,
@@ -667,7 +667,7 @@ impl PyGeometryArray {
             start_distance: start_distance.clone(),
             end_distance: end_distance.clone(),
             normalized,
-            metric: model.clone(),
+            metric: model,
         };
         crate::dispatch::unary_array_linref_shapes(
             py,

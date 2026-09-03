@@ -834,7 +834,10 @@ mod tests {
         )
         .expect("ASCII coordinate list parses");
         assert_eq!(sequence.xs()[0].to_bits(), (-0.0_f64).to_bits());
-        assert_eq!(sequence.ys()[0].to_bits(), 1.2345678901234567_f64.to_bits());
+        assert_eq!(
+            sequence.ys()[0].to_bits(),
+            1.234_567_890_123_456_7_f64.to_bits()
+        );
         assert_eq!(sequence.xs()[1].to_bits(), 1e308_f64.to_bits());
         assert_eq!(sequence.ys()[1].to_bits(), (-1e-308_f64).to_bits());
     }

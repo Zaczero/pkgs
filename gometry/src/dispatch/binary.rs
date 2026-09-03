@@ -479,7 +479,7 @@ where
         (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
             paired_arrays(left, right, op_name)?;
             let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-            let output_missing = missing.clone();
+            let output_missing = missing;
             let left = left.clone();
             let right = right.clone();
             let values = py
@@ -506,7 +506,7 @@ where
         (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
             paired_arrays(left, right, op_name)?;
             let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-            let output_missing = missing.clone();
+            let output_missing = missing;
             let left = left.clone();
             let right = right.clone();
             let values = py

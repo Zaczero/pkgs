@@ -49,16 +49,16 @@ fn point_only_points(shape: &Shape) -> Vec<Point> {
 fn geodesic_point_segment_is_globally_certified() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let point = p(-102.23029036638832, 77.32057101285838);
+    let point = p(-102.230_290_366_388_32, 77.320_571_012_858_38);
     let segment = metric
         .make_segment(
-            p(71.41068147617264, -75.94703615036191),
-            p(153.0781948467615, 71.12446952478808),
+            p(71.410_681_476_172_64, -75.947_036_150_361_91),
+            p(153.078_194_846_761_5, 71.124_469_524_788_08),
         )
         .expect("fixture segment is unique");
     let actual = geodesic_segment_minimum(&geodesic, point, segment, f64::INFINITY)
         .expect("proof should close");
-    assert!((actual.distance - 2_809_179.208891459).abs() <= 1e-3);
+    assert!((actual.distance - 2_809_179.208_891_459).abs() <= 1e-3);
     assert_eq!(actual.along.to_bits(), segment.length.to_bits());
 }
 
@@ -374,12 +374,12 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
 
     let left_table = [
         ("t0", p(-18.0, -3.0)),
-        ("t1_7", p(-12.8571428571, -2.2181685175)),
-        ("t2_7", p(-7.7142857143, -2.0250720878)),
-        ("t3_7", p(-2.5714285714, -2.5661162609)),
-        ("t4_7", p(2.5714285714, -3.4338837391)),
-        ("t5_7", p(7.7142857143, -3.9749279122)),
-        ("t6_7", p(12.8571428571, -3.7818314825)),
+        ("t1_7", p(-12.857_142_857_1, -2.218_168_517_5)),
+        ("t2_7", p(-7.714_285_714_3, -2.025_072_087_8)),
+        ("t3_7", p(-2.571_428_571_4, -2.566_116_260_9)),
+        ("t4_7", p(2.571_428_571_4, -3.433_883_739_1)),
+        ("t5_7", p(7.714_285_714_3, -3.974_927_912_2)),
+        ("t6_7", p(12.857_142_857_1, -3.781_831_482_5)),
         ("t7_7", p(18.0, -3.0)),
         ("special", p(0.011, 0.0)),
     ];
@@ -400,8 +400,8 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     let (expected_distance, expected_nearest) =
         brute_geodesic_distance_and_nearest_points(&left, &right, &metric)
             .expect("non-empty shapes");
-    let left_data = PreparedPlan::new(left.clone());
-    let right_data = PreparedPlan::new(right.clone());
+    let left_data = PreparedPlan::new(left);
+    let right_data = PreparedPlan::new(right);
     let left_cache = FrameDependentCaches::default();
     let right_cache = FrameDependentCaches::default();
     let actual_distance = left_data.geodesic_distance_cached(

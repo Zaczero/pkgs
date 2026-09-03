@@ -105,7 +105,7 @@ pub(crate) fn require(
             let expected_for_rows = expected.clone();
             let array = stream_bulk(
                 iter,
-                expected.clone(),
+                expected,
                 None,
                 Some("GeometryArray"),
                 move |item, rows, row| {

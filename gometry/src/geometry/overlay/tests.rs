@@ -640,16 +640,8 @@ mod binary_areal_overlay_tests {
                 line(&[(-1.0, 1.0), (1.0, -1.0)]),
             ),
             ("hole", holed.clone(), line(&[(1.0, 5.0), (9.0, 5.0)])),
-            (
-                "hole exterior",
-                holed.clone(),
-                line(&[(4.5, 5.0), (5.5, 5.0)]),
-            ),
-            (
-                "multipart",
-                multipart.clone(),
-                line(&[(-1.0, 1.0), (7.0, 1.0)]),
-            ),
+            ("hole exterior", holed, line(&[(4.5, 5.0), (5.5, 5.0)])),
+            ("multipart", multipart, line(&[(-1.0, 1.0), (7.0, 1.0)])),
         ];
 
         for (name, polygon, line) in cases {
@@ -742,7 +734,7 @@ mod binary_areal_overlay_tests {
         let live = line(&[(-1.0, 2.0), (5.0, 2.0)]);
         let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
         let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
-        let collection = Shape::geometry_collection(vec![live.clone(), point(8.0, 8.0)])
+        let collection = Shape::geometry_collection(vec![live, point(8.0, 8.0)])
             .expect("test collection is valid");
         let empty_member =
             Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
@@ -771,7 +763,7 @@ mod binary_areal_overlay_tests {
                     (-1.0, 0.5),
                     (0.0, 0.0),
                     (0.0, 0.7),
-                    (-0.33333333333333337, 0.8333333333333333),
+                    (-0.333_333_333_333_333_37, 0.833_333_333_333_333_3),
                     (-1.0, 0.5),
                 ]),
             ),
@@ -956,18 +948,8 @@ mod binary_areal_overlay_tests {
         );
         let xy_point = point(1.0, 0.0);
         for (name, left, right, axes) in [
-            (
-                "point Z and line XY",
-                z_point.clone(),
-                xy_line.clone(),
-                "XYZ",
-            ),
-            (
-                "point XY and line ZM",
-                xy_point.clone(),
-                z_line.clone(),
-                "XYZM",
-            ),
+            ("point Z and line XY", z_point, xy_line, "XYZ"),
+            ("point XY and line ZM", xy_point, z_line.clone(), "XYZM"),
         ] {
             for (left, right) in [(&left, &right), (&right, &left)] {
                 let result = assert_point_intersection_matches_generic(

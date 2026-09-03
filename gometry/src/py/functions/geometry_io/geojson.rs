@@ -247,7 +247,7 @@ pub(crate) fn from_geojson(
     guard_epoch_frame(parsed_epoch, crs.as_ref())?;
     if let Ok(text) = data.cast::<PyString>() {
         let text: PyBackedStr = text.extract()?;
-        let crs_for_parse = crs.clone();
+        let crs_for_parse = crs;
         let decoded = py.detach(move || decode_geojson_text(text, crs_for_parse, parsed_epoch))?;
         return decoded_geojson_into_py(py, decoded);
     }
@@ -257,7 +257,7 @@ pub(crate) fn from_geojson(
         } else {
             OwnedBytes::Copied(copy_one_byte_buffer(data)?)
         };
-        let crs_for_parse = crs.clone();
+        let crs_for_parse = crs;
         let decoded =
             py.detach(move || decode_geojson_bytes(bytes, crs_for_parse, parsed_epoch))?;
         return decoded_geojson_into_py(py, decoded);

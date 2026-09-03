@@ -85,14 +85,14 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
             metric,
         )?;
         let source_vertices_only =
-            brute_geodesic_directed_hausdorff(&multipoint(source_points.clone()), &target, metric);
+            brute_geodesic_directed_hausdorff(&multipoint(source_points), &target, metric);
         assert!(
             source_to_target > source_vertices_only,
             "source interior did not affect the directed maximum: {source_to_target} <= {source_vertices_only}"
         );
 
         let target_vertices_only =
-            brute_geodesic_directed_hausdorff(&source, &multipoint(target_points.clone()), metric);
+            brute_geodesic_directed_hausdorff(&source, &multipoint(target_points), metric);
         assert!(
             source_to_target < target_vertices_only,
             "target interior did not affect the directed maximum: {source_to_target} >= {target_vertices_only}"

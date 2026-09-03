@@ -14,6 +14,7 @@
     clippy::arbitrary_source_item_ordering,
     reason = "cohesive item layout is clearer than a mandated declaration order here"
 )]
+#![deny(clippy::unreadable_literal, clippy::redundant_clone)]
 #![feature(portable_simd, trusted_len)]
 
 mod boundary;

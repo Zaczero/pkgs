@@ -1067,7 +1067,7 @@ mod geographic_masked_bounds_tests {
             (175.0, 30.0),
             (175.0, 10.0),
         ]);
-        let present = PyGeometryArray::from_shapes(vec![left, right], frame.clone());
+        let present = PyGeometryArray::from_shapes(vec![left, right], frame);
         let masked = PyGeometryArray::scatter_present_rows(
             &present,
             ValidityMask::from_sparse(3, &[1]).expect("one row is missing"),

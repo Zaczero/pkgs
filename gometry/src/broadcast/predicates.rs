@@ -351,7 +351,7 @@ where
 {
     paired_arrays(left, right, operation)?;
     let missing = crate::array::missing::union_pair(left.missing(), right.missing());
-    let output_missing = missing.clone();
+    let output_missing = missing;
     let left = left.clone();
     let right = right.clone();
     let values = py

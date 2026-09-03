@@ -852,7 +852,7 @@ fn overlay_polygons(
         return Vec::new();
     }
     let arranged_edges = match graph.domain {
-        TopologyDomain::Cartesian => area_edges.clone(),
+        TopologyDomain::Cartesian => area_edges,
         TopologyDomain::Geographic(frame)
             if !graph
                 .nodes
@@ -861,7 +861,7 @@ fn overlay_polygons(
         {
             unwrap_geographic_area_edges(graph, frame, &area_edges)
         },
-        TopologyDomain::Geographic(_) => area_edges.clone(),
+        TopologyDomain::Geographic(_) => area_edges,
     };
     let segments: Vec<Segment> = arranged_edges.iter().map(|(_, segment)| *segment).collect();
     let mut edge_by_endpoints: HashMap<(PointKey, PointKey), usize> =

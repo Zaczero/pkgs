@@ -1940,7 +1940,7 @@ mod exact_metric_cdt_tests {
         missing_slot.halfedges[interior] = delaunator::EMPTY;
         assert!(exact_metric_delaunay(&points, &missing_slot).is_none());
 
-        let mut truncated = seed.clone();
+        let mut truncated = seed;
         truncated.halfedges.pop();
         assert!(exact_metric_delaunay(&points, &truncated).is_none());
     }

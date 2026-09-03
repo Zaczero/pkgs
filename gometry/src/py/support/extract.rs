@@ -299,7 +299,7 @@ pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
                     crate::try_push_vec(&mut parts, part).map_err(pyo3::PyErr::from)?;
                 }
             }
-            PyGeometryArray::from_shapes(parts, array.frame.clone()).into_py_any(py)
+            PyGeometryArray::from_shapes(parts, array.frame).into_py_any(py)
         },
     }
 }

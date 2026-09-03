@@ -300,7 +300,7 @@ impl PyGeometryArray {
                     present.map(|_| self.geometry_at(row).shape.shape().clone())
                 })
                 .collect();
-            let present = Self::from_shapes(shapes, self.frame.clone());
+            let present = Self::from_shapes(shapes, self.frame);
             return Self::compact_present_rows(&present, mask);
         }
         if let Some(mask) = mask.as_ref()
