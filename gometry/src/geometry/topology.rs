@@ -17,7 +17,9 @@ mod graph;
 mod sections;
 mod staging;
 pub(crate) use graph::{AreaSupport, TopologyDomain, TopologyGraph, TopologyKey};
-pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace};
+pub(super) use graph::{
+    SourceSupport, TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace,
+};
 pub(super) use sections::{
     compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,
 };

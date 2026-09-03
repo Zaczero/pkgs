@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::geometry::overlay::{
     OverlayOp, build_overlay_shape, dedup_points, overlay_declared_axes,
 };
-use crate::geometry::topology::TopologyLocation;
+use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
     GeometryKind, HashMap, HashMapExt as _, Point, PointKey, Segment, Shape, TopologyDomain,
@@ -180,6 +180,15 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         None
     };
+    let polygon_line = if !disjoint_bounds
+        && domain == TopologyDomain::Cartesian
+        && geometries.len() == 2
+        && op == OverlayOp::Intersection
+    {
+        assemble_polygon_line_intersection(&refs)?
+    } else {
+        None
+    };
     let line_only_eligible = !disjoint_bounds
         && domain == TopologyDomain::Cartesian
         && matches!(op, OverlayOp::Union | OverlayOp::Intersection)
@@ -191,6 +200,8 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         )
     } else if let Some(shape) = convex_shape {
         (shape, None)
+    } else if let Some((shape, graph)) = polygon_line {
+        (shape, Some(graph))
     } else if line_only_eligible {
         match assemble_line_only_overlay(&refs, op)? {
             Some((shape, graph)) => (shape, Some(graph)),
@@ -217,6 +228,107 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
     }
+}
+
+/// Assemble a binary Cartesian polygon/line intersection from one joint graph.
+/// Direct polygonal and lineal operands keep source membership unambiguous;
+/// everything else remains on the generic path rather than rebuilding source
+/// graphs here.
+fn assemble_polygon_line_intersection(inputs: &[&Shape]) -> Result<Option<(Shape, TopologyGraph)>> {
+    let [left, right] = inputs else {
+        return Ok(None);
+    };
+    let polygonal = |shape: &Shape| {
+        matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) && !shape.is_empty()
+    };
+    let linear = |shape: &Shape| {
+        !shape.is_empty()
+            && match shape {
+                Shape::LineString(line) => crate::geometry::relate::line_has_nonzero_segment(line),
+                Shape::MultiLineString(lines) => {
+                    !lines.has_empty_members()
+                        && lines
+                            .iter()
+                            .all(|line| crate::geometry::relate::line_has_nonzero_segment(line))
+                },
+                _ => false,
+            }
+    };
+    let (polygon_row, line_row) = if polygonal(left) && linear(right) {
+        (0, 1)
+    } else if linear(left) && polygonal(right) {
+        (1, 0)
+    } else {
+        return Ok(None);
+    };
+
+    let graph = TopologyGraph::cartesian_many(inputs);
+    if graph.source_points.is_empty()
+        && !graph.edges.is_empty()
+        && !graph.area_support.is_empty()
+        && graph.source_edges.iter().all(|source| {
+            (source.source_row == polygon_row
+                && matches!(
+                    source.support,
+                    SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
+                ))
+                || (source.source_row == line_row && matches!(source.support, SourceSupport::Line))
+        })
+        && graph
+            .source_edges
+            .iter()
+            .any(|source| source.source_row == polygon_row)
+        && graph.source_edges.iter().any(|source| {
+            source.source_row == line_row && matches!(source.support, SourceSupport::Line)
+        })
+    {
+        let (points, lines) = polygon_line_overlay(&graph, polygon_row, line_row);
+        return Ok(Some((
+            build_overlay_shape(points, lines, Vec::new())?,
+            graph,
+        )));
+    }
+    Ok(None)
+}
+
+fn polygon_line_overlay(
+    graph: &TopologyGraph,
+    polygon_row: u32,
+    line_row: u32,
+) -> (Vec<Point>, Vec<crate::geometry::CoordSeq>) {
+    let mut lines = Vec::with_capacity(graph.edges.len());
+    for edge in &graph.edges {
+        if !graph.edge_has_line_source_for_row(edge, line_row) {
+            continue;
+        }
+        let midpoint = segment_midpoint(edge.segment).xy();
+        let location = if graph.contains_area_interior(midpoint) {
+            TopologyLocation::Interior
+        } else if graph.has_area_boundary(midpoint)
+            || graph.edge_has_area_source_for_row(edge, polygon_row)
+        {
+            TopologyLocation::Boundary
+        } else {
+            TopologyLocation::Exterior
+        };
+        if location != TopologyLocation::Exterior {
+            lines.push(crate::geometry::CoordSeq::from(vec![
+                edge.segment.start,
+                edge.segment.end,
+            ]));
+        }
+    }
+
+    let points = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            graph.has_line_source_at_node(node.point, line_row)
+                && (graph.contains_area_interior(node.point) || graph.has_area_boundary(node.point))
+        })
+        .map(|node| node.point.point())
+        .collect();
+    (points, lines)
 }
 
 /// The polygon-only intersection lane is valid only when the result cannot

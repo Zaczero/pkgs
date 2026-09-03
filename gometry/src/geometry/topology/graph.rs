@@ -285,7 +285,7 @@ impl TopologyGraph {
             .is_some_and(|id| self.nodes[id.index()].support.line_boundary)
     }
 
-    pub(super) fn has_area_boundary(&self, point: XY) -> bool {
+    pub(crate) fn has_area_boundary(&self, point: XY) -> bool {
         self.node_for(point)
             .is_some_and(|id| self.nodes[id.index()].support.area_boundary)
             || self
@@ -385,6 +385,21 @@ impl TopologyGraph {
                 self.source_edges[source as usize].support,
                 SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
             )
+        })
+    }
+
+    pub(crate) fn edge_has_area_source_for_row(
+        &self,
+        edge: &TopologyEdge,
+        source_row: u32,
+    ) -> bool {
+        edge.sources.iter().any(|&source| {
+            let source = self.source_edges[source as usize];
+            source.source_row == source_row
+                && matches!(
+                    source.support,
+                    SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
+                )
         })
     }
 

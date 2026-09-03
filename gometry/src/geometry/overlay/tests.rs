@@ -583,6 +583,184 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
+    fn polygon_line_intersection_matches_generic_boundary_and_hole_cases() {
+        let holed = Shape::Polygon(Polygon::new(
+            polygon(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ])
+            .shell,
+            vec![Ring::from_closed(vec![
+                Point::new(4.0, 4.0).unwrap(),
+                Point::new(6.0, 4.0).unwrap(),
+                Point::new(6.0, 6.0).unwrap(),
+                Point::new(4.0, 6.0).unwrap(),
+                Point::new(4.0, 4.0).unwrap(),
+            ])],
+        ));
+        let multipart = Shape::MultiPolygon(
+            vec![
+                polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                polygon(&[(4.0, 0.0), (6.0, 0.0), (6.0, 2.0), (4.0, 2.0), (4.0, 0.0)]),
+            ]
+            .into(),
+        );
+        let cases = [
+            (
+                "crossing",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(-1.0, 2.0), (5.0, 2.0)]),
+            ),
+            (
+                "contained",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(1.0, 1.0), (3.0, 3.0)]),
+            ),
+            (
+                "exterior",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(-2.0, 5.0), (-1.0, 5.0)]),
+            ),
+            (
+                "boundary-collinear",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(-1.0, 0.0), (5.0, 0.0)]),
+            ),
+            (
+                "vertex-only",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(-1.0, -1.0), (0.0, 0.0)]),
+            ),
+            (
+                "tangent",
+                square(0.0, 0.0, 4.0, 4.0),
+                line(&[(-1.0, 1.0), (1.0, -1.0)]),
+            ),
+            ("hole", holed.clone(), line(&[(1.0, 5.0), (9.0, 5.0)])),
+            (
+                "hole exterior",
+                holed.clone(),
+                line(&[(4.5, 5.0), (5.5, 5.0)]),
+            ),
+            (
+                "multipart",
+                multipart.clone(),
+                line(&[(-1.0, 1.0), (7.0, 1.0)]),
+            ),
+        ];
+
+        for (name, polygon, line) in cases {
+            let result = assert_intersection_matches_joint_graph(name, &polygon, &line);
+            match name {
+                "crossing" | "contained" | "boundary-collinear" => {
+                    assert!(matches!(result, Shape::LineString(_)), "{name}: {result:?}");
+                },
+                "exterior" => {
+                    assert!(
+                        matches!(result, Shape::Empty(GeometryKind::LineString, _)),
+                        "{name}: {result:?}"
+                    );
+                },
+                "vertex-only" => {
+                    assert!(
+                        matches!(result, Shape::Point(point) if point.x == 0.0 && point.y == 0.0),
+                        "{name}: {result:?}"
+                    );
+                },
+                "tangent" => {
+                    assert!(
+                        matches!(result, Shape::Point(point) if point.x == 0.0 && point.y == 0.0),
+                        "{name}: {result:?}"
+                    );
+                },
+                "hole exterior" => {
+                    assert!(
+                        matches!(result, Shape::Empty(GeometryKind::LineString, _)),
+                        "{name}: {result:?}"
+                    );
+                },
+                "hole" | "multipart" => {
+                    assert!(
+                        matches!(result, Shape::MultiLineString(_)),
+                        "{name}: {result:?}"
+                    );
+                },
+                _ => unreachable!("enumerated case"),
+            }
+        }
+
+        let reverse = assert_intersection_matches_joint_graph(
+            "reverse",
+            &line(&[(-1.0, 2.0), (5.0, 2.0)]),
+            &square(0.0, 0.0, 4.0, 4.0),
+        );
+        assert!(matches!(reverse, Shape::LineString(_)), "{reverse:?}");
+
+        let multi_line = multiline(&[&[(-1.0, 1.0), (5.0, 1.0)], &[(1.0, 3.0), (3.0, 3.0)], &[
+            (-2.0, 9.0),
+            (-1.0, 9.0),
+        ]]);
+        let multi_result = assert_intersection_matches_joint_graph(
+            "multiple line components",
+            &square(0.0, 0.0, 4.0, 4.0),
+            &multi_line,
+        );
+        assert!(
+            matches!(multi_result, Shape::MultiLineString(_)),
+            "{multi_result:?}"
+        );
+
+        let zm_result = assert_intersection_matches_joint_graph(
+            "ZM",
+            &zm_square(0.0, 0.0, 4.0, 4.0, 10.0),
+            &zm_line((-1.0, 2.0), (5.0, 2.0)),
+        );
+        assert!(zm_result.has_z() && zm_result.has_m(), "{zm_result:?}");
+        assert_all_points_have_z(&zm_result);
+        zm_result.for_each_point(|point| assert!(point.m().is_some(), "{zm_result:?}"));
+
+        let invalid = Shape::Polygon(polygon(&[
+            (0.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (4.0, 0.0),
+            (0.0, 0.0),
+        ]));
+        let _ = assert_intersection_matches_joint_graph(
+            "invalid polygon",
+            &invalid,
+            &line(&[(-1.0, 2.0), (5.0, 2.0)]),
+        );
+    }
+
+    #[test]
+    fn polygon_line_intersection_falls_back_for_ambiguous_support() {
+        let polygon = square(0.0, 0.0, 4.0, 4.0);
+        let live = line(&[(-1.0, 2.0), (5.0, 2.0)]);
+        let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
+        let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
+        let collection = Shape::geometry_collection(vec![live.clone(), point(8.0, 8.0)])
+            .expect("test collection is valid");
+        let empty_member =
+            Shape::MultiLineString(MultiLineString::from_values(CoordinateAxes::XY, vec![
+                MultiMember::Empty,
+                MultiMember::Value(line_seq(&[(-1.0, 2.0), (5.0, 2.0)])),
+            ]));
+
+        for (name, line) in [
+            ("collapsed", collapsed),
+            ("empty", empty),
+            ("collection", collection),
+            ("empty member", empty_member),
+        ] {
+            let _ = assert_intersection_matches_joint_graph(name, &polygon, &line);
+        }
+    }
+
+    #[test]
     fn intersection_all_matches_left_fold_for_permutations() {
         let shapes = [
             square(0.0, 0.0, 4.0, 4.0),
