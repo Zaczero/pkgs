@@ -598,10 +598,7 @@ fn geographic_coverage_source_keeps_checked_degree_two_rings_available() {
         roof.span.checked_estimate().unwrap().to_bits(),
         720.0_f64.to_bits()
     );
-    assert_eq!(
-        fill.direct_preimage_copies(&source.chains[fill.chain_index], 175.0),
-        Some(0..=1)
-    );
+    assert_eq!(fill.direct_preimage_copies(175.0), Some(0..=1));
     assert!(
         !fill.periodic_exact,
         "a two-turn lift is an outer periodic fill and may not certify interior"
@@ -825,10 +822,7 @@ fn geographic_coverage_source_records_a_physical_south_finite_negative_winding_r
         roof.span.checked_estimate().unwrap().to_bits(),
         (-720.0_f64).to_bits()
     );
-    assert_eq!(
-        fill.direct_preimage_copies(&source.chains[fill.chain_index], 175.0),
-        Some(-2..=-1)
-    );
+    assert_eq!(fill.direct_preimage_copies(175.0), Some(-2..=-1));
 }
 
 #[test]

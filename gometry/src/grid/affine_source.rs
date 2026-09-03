@@ -1511,6 +1511,11 @@ struct LiftedRingFill {
     // into the authoritative chain, preserving every lifted longitude turn.
     y_index: Option<EdgeYIndex>,
     roof: Option<PeriodicPoleRoof>,
+    // Lifted longitude extremes of the whole chain. They select a query's
+    // preimage copies and depend on nothing else, so they are proved once
+    // here rather than rescanned — exactly once per vertex — for every point
+    // the coverer classifies against this fill.
+    longitude_envelope: (ExactExpansion, ExactExpansion),
     // A finite lifted fill can still be a strict outer image after quotienting
     // longitude.  Only this certificate permits its planar parity interior to
     // establish retained-authority interior; exterior remains a sound
@@ -1541,7 +1546,8 @@ impl LiftedRingFill {
             }),
             None => None,
         };
-        let periodic_exact = chain.periodic_exact(degree)?;
+        let longitude_envelope = chain.longitude_envelope()?;
+        let periodic_exact = chain.periodic_exact(degree, &longitude_envelope)?;
         let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
             None
         } else {
@@ -1560,6 +1566,7 @@ impl LiftedRingFill {
             degree,
             y_index,
             roof,
+            longitude_envelope,
             periodic_exact,
         })
     }
@@ -1574,12 +1581,21 @@ impl LiftedRingFill {
             reason = "module unit tests inspect the exact periodic preimage range"
         )
     )]
-    fn direct_preimage_copies(
-        &self,
-        chain: &LiftedChain,
-        longitude: f64,
-    ) -> Option<std::ops::RangeInclusive<i64>> {
-        chain.direct_preimage_copies(longitude)
+    fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
+        match self.direct_preimages(longitude) {
+            DirectPreimages::Copies(copies) => Some(copies),
+            DirectPreimages::Empty | DirectPreimages::Uncertain => None,
+        }
+    }
+
+    /// Copies of `longitude` whose lift can land on this fill, from the
+    /// envelope proved at construction.
+    fn direct_preimages(&self, longitude: f64) -> DirectPreimages {
+        let Some(query) = ExactExpansion::from_f64(longitude) else {
+            return DirectPreimages::Uncertain;
+        };
+        let (minimum, maximum) = &self.longitude_envelope;
+        direct_preimages_for_envelope(minimum, maximum, &query)
     }
 
     fn point_class(
@@ -1588,7 +1604,7 @@ impl LiftedRingFill {
         longitude: f64,
         query: &ExactPlanarPoint,
     ) -> GridPointClass {
-        let copies = match chain.direct_preimages(longitude) {
+        let copies = match self.direct_preimages(longitude) {
             // No lift of the stored query lies in this finite fill's longitude
             // span.  That is a certified exterior, not an arithmetic failure.
             DirectPreimages::Empty => return GridPointClass::Exterior,
@@ -1616,7 +1632,7 @@ impl LiftedRingFill {
         longitude: f64,
         query: &ExactPlanarPoint,
     ) -> GridPointClass {
-        let copies = match chain.direct_preimages(longitude) {
+        let copies = match self.direct_preimages(longitude) {
             DirectPreimages::Empty => return GridPointClass::Exterior,
             DirectPreimages::Copies(copies) => copies,
             DirectPreimages::Uncertain => return GridPointClass::Unknown,
@@ -2632,9 +2648,12 @@ impl LiftedChain {
     /// vertices strictly between them, and no full-world source edge.  Every
     /// other equality case remains an outer fill, so its interior is demoted
     /// to `Unknown` by `LiftedRingFill::point_class`.
-    fn periodic_exact(&self, degree: i64) -> Option<bool> {
-        let (minimum, maximum) = self.longitude_envelope()?;
-        let width = maximum.sub(&minimum)?;
+    fn periodic_exact(
+        &self,
+        degree: i64,
+        (minimum, maximum): &(ExactExpansion, ExactExpansion),
+    ) -> Option<bool> {
+        let width = maximum.sub(minimum)?;
         let turn = ExactExpansion::from_f64(FULL_TURN_DEGREES)?;
         match width.sub(&turn)?.ordering() {
             Ordering::Less => return Some(true),
@@ -2651,10 +2670,10 @@ impl LiftedChain {
         }
         let first = ExactPlanarPoint::from_lifted(*self.vertices.first()?)?.longitude;
         let last = ExactPlanarPoint::from_lifted(*self.vertices.last()?)?.longitude;
-        let endpoints_are_extrema = (first.sub(&minimum)?.ordering() == Ordering::Equal
-            && last.sub(&maximum)?.ordering() == Ordering::Equal)
-            || (first.sub(&maximum)?.ordering() == Ordering::Equal
-                && last.sub(&minimum)?.ordering() == Ordering::Equal);
+        let endpoints_are_extrema = (first.sub(minimum)?.ordering() == Ordering::Equal
+            && last.sub(maximum)?.ordering() == Ordering::Equal)
+            || (first.sub(maximum)?.ordering() == Ordering::Equal
+                && last.sub(minimum)?.ordering() == Ordering::Equal);
         if !endpoints_are_extrema {
             return Some(false);
         }
@@ -2664,7 +2683,7 @@ impl LiftedChain {
             .unwrap_or_default()
         {
             let value = ExactPlanarPoint::from_lifted(vertex)?.longitude;
-            if value.sub(&minimum)?.ordering() != Ordering::Greater
+            if value.sub(minimum)?.ordering() != Ordering::Greater
                 || maximum.sub(&value)?.ordering() != Ordering::Greater
             {
                 return Some(false);
