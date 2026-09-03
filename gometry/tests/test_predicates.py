@@ -328,6 +328,79 @@ def test_de9im_predicates_are_exposed_for_scalar_array_index_and_join() -> None:
     ) == [(1, 1)]
 
 
+def test_ogc_mod2_multiline_point_relations_have_known_answers() -> None:
+    lines = gm.from_wkt('MULTILINESTRING ((0 0, 4 0), (4 0, 4 4))')
+    cases = [
+        (
+            'odd-incidence boundary',
+            gm.Point(0, 0),
+            'F0FFFF102',
+            'FF10F0FF2',
+            False,
+            False,
+            True,
+            False,
+            True,
+            True,
+            True,
+            False,
+        ),
+        (
+            'even-incidence shared node',
+            gm.Point(4, 0),
+            '0FFFFF102',
+            '0F1FF0FF2',
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+            True,
+            False,
+        ),
+        (
+            'off-line point',
+            gm.Point(7, 9),
+            'FF0FFF102',
+            'FF1FF00F2',
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            True,
+        ),
+    ]
+
+    for (
+        name,
+        point,
+        point_first,
+        lines_first,
+        contains,
+        contains_properly,
+        covers,
+        within,
+        covered_by,
+        touches,
+        intersects,
+        disjoint,
+    ) in cases:
+        assert gm.relate(point, lines) == point_first, name
+        assert gm.relate(lines, point) == lines_first, name
+        assert gm.contains(lines, point) is contains, name
+        assert gm.contains_properly(lines, point) is contains_properly, name
+        assert gm.covers(lines, point) is covers, name
+        assert gm.within(point, lines) is within, name
+        assert gm.covered_by(point, lines) is covered_by, name
+        assert gm.touches(lines, point) is touches, name
+        assert gm.intersects(lines, point) is intersects, name
+        assert gm.disjoint(lines, point) is disjoint, name
+
+
 def test_de9im_predicates_accept_prepared_operands() -> None:
     left = gm.box(0, 0, 2, 2)
     right = gm.box(1, 1, 3, 3)

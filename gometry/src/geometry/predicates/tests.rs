@@ -2,6 +2,76 @@ use crate::geometry::predicates::*;
 use crate::geometry::*;
 
 #[test]
+fn ogc_mod2_multiline_point_relations_have_known_answers() {
+    let point = Point::new_raw_xy;
+    let multiline = Shape::MultiLineString(
+        vec![
+            LineSeq::try_new(CoordSeq::from(vec![point(0.0, 0.0), point(4.0, 0.0)]))
+                .expect("test line is valid"),
+            LineSeq::try_new(CoordSeq::from(vec![point(4.0, 0.0), point(4.0, 4.0)]))
+                .expect("test line is valid"),
+        ]
+        .into(),
+    );
+    let cases = [
+        (
+            "odd-incidence boundary",
+            point(0.0, 0.0),
+            "F0FFFF102",
+            "FF10F0FF2",
+            false,
+            true,
+            true,
+            false,
+        ),
+        (
+            "even-incidence shared node",
+            point(4.0, 0.0),
+            "0FFFFF102",
+            "0F1FF0FF2",
+            true,
+            true,
+            false,
+            false,
+        ),
+        (
+            "off-line point",
+            point(7.0, 9.0),
+            "FF0FFF102",
+            "FF1FF00F2",
+            false,
+            false,
+            false,
+            true,
+        ),
+    ];
+
+    for (name, point, point_first, multiline_first, contains, covers, touches, disjoint) in cases {
+        let point = Shape::Point(point);
+        assert_eq!(point.relate(&multiline), point_first, "{name}");
+        assert_eq!(multiline.relate(&point), multiline_first, "{name}");
+
+        assert!(!point.contains(&multiline), "{name}");
+        assert!(!point.contains_properly(&multiline), "{name}");
+        assert!(!point.covers(&multiline), "{name}");
+        assert_eq!(point.within(&multiline), contains, "{name}");
+        assert_eq!(point.covered_by(&multiline), covers, "{name}");
+        assert_eq!(point.touches(&multiline), touches, "{name}");
+        assert_eq!(point.intersects(&multiline), !disjoint, "{name}");
+        assert_eq!(point.disjoint(&multiline), disjoint, "{name}");
+
+        assert_eq!(multiline.contains(&point), contains, "{name}");
+        assert_eq!(multiline.contains_properly(&point), contains, "{name}");
+        assert_eq!(multiline.covers(&point), covers, "{name}");
+        assert!(!multiline.within(&point), "{name}");
+        assert!(!multiline.covered_by(&point), "{name}");
+        assert_eq!(multiline.touches(&point), touches, "{name}");
+        assert_eq!(multiline.intersects(&point), !disjoint, "{name}");
+        assert_eq!(multiline.disjoint(&point), disjoint, "{name}");
+    }
+}
+
+#[test]
 fn touching_diagonal_polygons_keep_their_de9im_matrix() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
     let polygon = |points: &[(f64, f64)]| {

@@ -304,6 +304,41 @@ predicate, such as boundaries that touch while interiors are disjoint and both
 geometries are one-dimensional. One matrix can be tested against several
 patterns without recomputing the relationship for each named predicate.
 
+## MultiLineString boundary semantics
+
+`MultiLineString` uses the OGC Simple Feature Access **mod-2 boundary rule**.
+OGC 06-103r4 (SFA 1.2.1) defines a `MultiLineString` as a `MultiCurve` in
+§§6.1.8–6.1.9 and puts an endpoint in the collection boundary only when it
+occurs in an odd number of member `LineString` boundaries. The DE-9IM cells and
+their interior/boundary/exterior row and column order (`II IB IE / BI BB BE /
+EI EB EE`) are defined in §6.1.14.2 of the
+[OGC Simple Feature Access 1.2.1 specification](https://docs.ogc.org/is/06-103r4/06-103r4.pdf).
+
+For the chain represented in the table below, `(0, 0)` and `(4, 4)` have odd
+incidence and are boundary points. The shared node `(4, 0)` has even incidence,
+so it is in the `MultiLineString` interior. The matrices are known answers from
+those partitions, not values obtained from another geometry engine.
+
+| Named case | `relate(point, lines)` | `relate(lines, point)` |
+|---|---|---|
+| Odd-incidence boundary `(0, 0)` | `F0FFFF102` | `FF10F0FF2` |
+| Even-incidence shared node `(4, 0)` | `0FFFFF102` | `0F1FF0FF2` |
+| Off-line point `(7, 9)` | `FF0FFF102` | `FF1FF00F2` |
+
+The predicate consequences are equally deliberate: `contains(lines, point)`
+and `contains_properly(lines, point)` are true only for the shared interior
+node; `covers(lines, point)` is true for both on-line points. The inverse
+`within` and `covered_by` results follow the same distinction. `touches` is
+true only for the odd-incidence boundary point, while `intersects` is true for
+both on-line points and `disjoint` is true only for the off-line point.
+
+Known GEOS difference for this exact WKT pair: local Shapely 2.1.2 reports
+`shapely.geos_version_string == "3.13.1"` and returns `F0FFFF1F2` for
+`relate(POINT (0 0), MULTILINESTRING ((0 0, 4 0), (4 0, 4 4)))`, whereas
+gometry reports the OGC-mod-2 result `F0FFFF102`. This is empirical evidence
+for GEOS 3.13.1 and this input only, not a universal claim about GEOS versions
+or other boundary-node rules.
+
 !!! note "Planar computation, strict metadata"
     Predicates read ordinates as a flat plane and require matching CRS and
     coordinate-epoch metadata. Reprojection can change vertices, seams, and the

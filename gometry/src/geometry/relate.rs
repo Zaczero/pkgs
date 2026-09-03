@@ -3,6 +3,14 @@
 //! The graph builder preserves declared parts, mod-2 line boundaries, polygon
 //! holes, and geographic quotient coordinates. Named predicates and pattern
 //! matching project their answers from the matrix owned here.
+//!
+//! A `MultiLineString` follows the OGC Simple Feature Access mod-2 boundary
+//! rule: an endpoint belongs to the collection boundary when it occurs in an
+//! odd number of member `LineString` boundaries. An even-incidence shared node
+//! is therefore part of the collection interior. This is the rule specified
+//! for `MultiCurve` in OGC 06-103r4, §§6.1.8–6.1.9; the DE-9IM cells are the
+//! interior/boundary/exterior intersections described in §6.1.14.2:
+//! <https://docs.ogc.org/is/06-103r4/06-103r4.pdf>.
 
 mod de9im;
 mod graph_matrix;
