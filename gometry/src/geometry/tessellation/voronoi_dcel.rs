@@ -119,6 +119,27 @@ struct NormalizedClip<'a> {
     contacts: Vec<ExactCycleContact>,
 }
 
+impl NormalizedClip<'_> {
+    /// Extent of the outer fixed ring as `[minx, maxx, miny, maxy]`. The
+    /// boundary-tiling certificate and its regressions index the sides in that
+    /// order.
+    fn frame_bounds(&self) -> [f64; 4] {
+        let mut bounds = [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for point in &self.fixed[0] {
+            bounds[0] = bounds[0].min(point.x);
+            bounds[1] = bounds[1].max(point.x);
+            bounds[2] = bounds[2].min(point.y);
+            bounds[3] = bounds[3].max(point.y);
+        }
+        bounds
+    }
+}
+
 #[derive(Clone)]
 struct AtomSeed {
     start: exact::ExactPoint,
@@ -166,6 +187,13 @@ struct ValidatedExactCycles {
 
 fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     GeometryErrorKind::voronoi(message.into())
+}
+
+/// The one failure every direct-dual certificate reports: the exact
+/// subdivision is correct but no binary64 rounding of it preserves the
+/// topology, so the caller must not receive a silently repaired diagram.
+fn embedding_failure() -> crate::error::Error {
+    voronoi_error("exact Voronoi subdivision has no topology-preserving binary64 embedding")
 }
 
 struct IndexedExactEnvelope {
@@ -2498,9 +2526,7 @@ fn embed(
             .fixed_xy
             .map_or_else(|| vertex.point.round_nearest_even(), Ok)?;
         if !keys.insert(PointKey::new(point)) {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         let embedded = EmbeddedVertexId(points.len() as u32);
         exact_to_embedded[index] = Some(embedded);
@@ -2538,9 +2564,7 @@ fn embed(
             rounded_exact(edge.endpoints[1])?,
         ];
         if rounded[0].same_position(&rounded[1]) {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         if let OwnerTransition::Boundary { left, right } = edge.forward.owner {
             let (Some(left), Some(right)) = (left, right) else {
@@ -2553,9 +2577,7 @@ fn embed(
                 || exact::orient_points(&rounded[0], &rounded[1], &right_point)
                     != exact::ExactSign::Negative
             {
-                return Err(voronoi_error(
-                    "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                ));
+                return Err(embedding_failure());
             }
             while marked_start < marked_candidates.len()
                 && marked_candidates[marked_start].0 < edge_id
@@ -2573,9 +2595,7 @@ fn embed(
                 )
                 .is_point()
                 {
-                    return Err(voronoi_error(
-                        "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                    ));
+                    return Err(embedding_failure());
                 }
                 candidate += 1;
             }
@@ -2634,9 +2654,7 @@ fn embed(
             exact::SegmentIntersection::Point(point)
                 if shared.len() == 1 && point.same_position(&rounded_exact(shared[0])?) => {},
             _ => {
-                return Err(voronoi_error(
-                    "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                ));
+                return Err(embedding_failure());
             },
         }
     }
@@ -2723,9 +2741,7 @@ fn embed(
             Ok(order)
         };
         if sort_fan(false)? != sort_fan(true)? {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
     }
     let published_coordinates = parts
@@ -2768,9 +2784,7 @@ fn embed(
             .map(|point| exact::ExactPoint::from_xy(point.xy()))
             .collect();
         if exact::cycle_orientation(&rounded_shell)? != part.shell.orientation {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         let shell = Ring::closed(shell_coordinates)?;
         let holes = part
@@ -2783,18 +2797,14 @@ fn embed(
                     .map(|point| exact::ExactPoint::from_xy(point.xy()))
                     .collect();
                 if exact::cycle_orientation(&rounded)? != hole.orientation {
-                    return Err(voronoi_error(
-                        "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                    ));
+                    return Err(embedding_failure());
                 }
                 Ring::closed(coordinates)
             })
             .collect::<Result<Vec<_>>>()?;
         let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon) {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         labelled.push((part.owner, polygon));
     }
@@ -2845,9 +2855,7 @@ fn embed(
     if !labelled.is_empty() {
         let shape_rows: Vec<_> = polygons.iter().cloned().map(Shape::Polygon).collect();
         if !coverage_is_valid(&shape_rows, 0.0)? {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         budget.add(shape_rows.len())?;
         let mut row_entries = Vec::new();
@@ -2904,17 +2912,13 @@ fn embed(
                 )?;
                 if Shape::Polygon(polygon.clone()).covers(&point) {
                     if owner.0 as usize != site_index {
-                        return Err(voronoi_error(
-                            "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                        ));
+                        return Err(embedding_failure());
                     }
                     own = true;
                 }
             }
             if !own {
-                return Err(voronoi_error(
-                    "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                ));
+                return Err(embedding_failure());
             }
         }
         // Exact vertices are rounded once and shared by every incident cell.  The
@@ -3243,9 +3247,7 @@ pub(super) fn build_collinear_edges(
             .difference(comparison_clip, Strictness::Lenient)?
             .is_empty()
         {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
     }
     Ok(embedded.edges)
@@ -3578,24 +3580,7 @@ mod tests {
         }
         let mut clip_budget = ExpansionBudget::new("test", "extreme cluster clip");
         let padded = normalize_clip(&canonical, VoronoiBoundary::Padded, &mut clip_budget).unwrap();
-        let bounds = [
-            padded.fixed[0]
-                .iter()
-                .map(|xy| xy.x)
-                .fold(f64::INFINITY, f64::min),
-            padded.fixed[0]
-                .iter()
-                .map(|xy| xy.x)
-                .fold(f64::NEG_INFINITY, f64::max),
-            padded.fixed[0]
-                .iter()
-                .map(|xy| xy.y)
-                .fold(f64::INFINITY, f64::min),
-            padded.fixed[0]
-                .iter()
-                .map(|xy| xy.y)
-                .fold(f64::NEG_INFINITY, f64::max),
-        ];
+        let bounds = padded.frame_bounds();
         assert_directed_partition(&cells, bounds);
         // The generic coverage oracle intentionally retains its midpoint
         // certificate and rejects this one-ULP boundary case. The independent
@@ -4154,24 +4139,7 @@ mod tests {
         duplicate_key.rings[shared_ring][shared_vertex] = DualVertex::Generated(duplicate);
         mutations.push(("duplicate rounded key", duplicate_key));
 
-        let bounds = [
-            clip.fixed[0]
-                .iter()
-                .map(|xy| xy.x)
-                .fold(f64::INFINITY, f64::min),
-            clip.fixed[0]
-                .iter()
-                .map(|xy| xy.x)
-                .fold(f64::NEG_INFINITY, f64::max),
-            clip.fixed[0]
-                .iter()
-                .map(|xy| xy.y)
-                .fold(f64::INFINITY, f64::min),
-            clip.fixed[0]
-                .iter()
-                .map(|xy| xy.y)
-                .fold(f64::NEG_INFINITY, f64::max),
-        ];
+        let bounds = clip.frame_bounds();
         let mut wrong_boundary_direction = restored.clone();
         let mut swapped_boundary = false;
         'find_boundary: for ring in &mut wrong_boundary_direction.rings {
@@ -4716,9 +4684,7 @@ fn dual_embed(
     budget: &mut ExpansionBudget,
 ) -> Result<EmbeddedVoronoi> {
     if rings.rings.len() != sites.len() {
-        return Err(voronoi_error(
-            "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-        ));
+        return Err(embedding_failure());
     }
     // Vertex identity WITHOUT an exact positional sort.
     //
@@ -4744,9 +4710,7 @@ fn dual_embed(
         match interned.entry(key) {
             std::collections::hash_map::Entry::Occupied(existing) => {
                 if !existing.get().same_position(point) {
-                    return Err(voronoi_error(
-                        "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                    ));
+                    return Err(embedding_failure());
                 }
                 // Equal exact generated vertices can reach signed zero through
                 // different algebraic expressions. Reuse the first admitted
@@ -4792,22 +4756,16 @@ fn dual_embed(
             .map(|point| exact::ExactPoint::from_xy(point.xy()))
             .collect();
         if exact::cycle_orientation(&rounded_ring)? != exact::ExactSign::Positive {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         coordinates.push(coordinates[0]);
         let polygon = Polygon::new(Ring::closed(coordinates)?, Vec::new());
         if !polygon_is_valid(&polygon) {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         let site = exact::ExactPoint::from_xy(sites[site_index].point.xy());
         if exact::point_in_cycle(&rounded_ring, &site) == exact::PointInCycle::Outside {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         budget.add(rounded.len())?;
         polygons.push(polygon);
@@ -4846,24 +4804,7 @@ fn dual_embed(
         }
     }
     budget.add(edge_count)?;
-    let bounds = [
-        clip.fixed[0]
-            .iter()
-            .map(|xy| xy.x)
-            .fold(f64::INFINITY, f64::min),
-        clip.fixed[0]
-            .iter()
-            .map(|xy| xy.x)
-            .fold(f64::NEG_INFINITY, f64::max),
-        clip.fixed[0]
-            .iter()
-            .map(|xy| xy.y)
-            .fold(f64::INFINITY, f64::min),
-        clip.fixed[0]
-            .iter()
-            .map(|xy| xy.y)
-            .fold(f64::NEG_INFINITY, f64::max),
-    ];
+    let bounds = clip.frame_bounds();
     // side 0: y == miny, 1: x == maxx, 2: y == maxy, 3: x == minx
     let mut sides: [Vec<(f64, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     let mut internal_edges = Vec::new();
@@ -4872,17 +4813,13 @@ fn dual_embed(
     for &(key, &(balance, count)) in &occurrences {
         if balance == 0 {
             if count != 2 {
-                return Err(voronoi_error(
-                    "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                ));
+                return Err(embedding_failure());
             }
             internal_edges.push(*key);
             continue;
         }
         if balance.abs() != 1 || count != 1 {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         let (a, b) = if balance == 1 {
             (key[0].xy(), key[1].xy())
@@ -4898,9 +4835,7 @@ fn dual_embed(
         } else if a.x == bounds[0] && b.x == bounds[0] {
             3
         } else {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         };
         let correctly_directed = match side {
             0 => a.x < b.x,
@@ -4909,9 +4844,7 @@ fn dual_embed(
             _ => a.y > b.y,
         };
         if !correctly_directed {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
         let (lo, hi) = if side % 2 == 0 {
             (a.x.min(b.x), a.x.max(b.x))
@@ -4930,16 +4863,12 @@ fn dual_embed(
         let mut cursor = start;
         for &(lo, hi) in side.iter() {
             if lo != cursor {
-                return Err(voronoi_error(
-                    "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-                ));
+                return Err(embedding_failure());
             }
             cursor = hi;
         }
         if cursor != end {
-            return Err(voronoi_error(
-                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-            ));
+            return Err(embedding_failure());
         }
     }
     internal_edges.sort_unstable();
