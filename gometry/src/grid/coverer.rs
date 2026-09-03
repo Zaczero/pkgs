@@ -170,8 +170,10 @@ impl<'a> GeographicCandidateClassifier<'a> {
                 );
                 if topology_scalar_pair(&Predicate::Covers.spec(), operands) {
                     RectClass::Interior
-                } else {
+                } else if topology_scalar_pair(&Predicate::Intersects.spec(), operands) {
                     RectClass::Boundary
+                } else {
+                    RectClass::Outside
                 }
             },
         }
@@ -1095,6 +1097,42 @@ mod tests {
             Some(false)
         );
         assert_eq!(classifier.refine_bounds(bounds), RectClass::Boundary);
+    }
+
+    #[test]
+    fn unsupported_rectangle_refinement_distinguishes_cover_and_intersection() {
+        use crate::geometry::Ring;
+
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(170.0, 80.0),
+                Point::new_raw_xy(-170.0, 80.0),
+                Point::new_raw_xy(-170.0, 90.0),
+                Point::new_raw_xy(170.0, 90.0),
+                Point::new_raw_xy(170.0, 80.0),
+            ]),
+            Vec::new(),
+        ));
+        let plan = PreparedPlan::new(source.clone());
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let classifier = GeographicCandidateClassifier::new(
+            &source,
+            &source,
+            &plan,
+            &cache,
+            crate::geographic::GeographicFrame::crs84(),
+        )
+        .unwrap();
+        let disjoint = Bounds::new_raw(-180.0, 70.0, -170.0, 79.0);
+        let intersects = Bounds::new_raw(-180.0, 82.7, -165.0, 85.0);
+        let covers = Bounds::new_raw(170.0, 81.0, 179.0, 90.0);
+
+        for bounds in [disjoint, intersects, covers] {
+            assert_eq!(classifier.authority_graph().covers_rectangle(bounds), None);
+        }
+        assert_eq!(classifier.refine_bounds(disjoint), RectClass::Outside);
+        assert_eq!(classifier.refine_bounds(intersects), RectClass::Boundary);
+        assert_eq!(classifier.refine_bounds(covers), RectClass::Interior);
     }
 
     #[test]

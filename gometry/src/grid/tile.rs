@@ -17,7 +17,7 @@
 
 use std::f64::consts::PI;
 
-use crate::boundary::geographic::WEB_MERCATOR_MAX_LATITUDE;
+use crate::boundary::geographic::{WEB_MERCATOR_MAX_LATITUDE, normalized_geographic_pole};
 use crate::curves::{morton_deinterleave, morton_interleave};
 use crate::geometry::{Bounds, Point, Shape};
 
@@ -31,18 +31,23 @@ pub(crate) fn latitude_in_tile_domain(lat: f64) -> bool {
     (-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&lat)
 }
 
-/// Reject a covering geometry whose any vertex latitude is outside
-/// ±[`TILE_MAX_LATITUDE`]. Tile coverings cannot represent latitudes past the
-/// Web Mercator edge; silently clipping (identical cell counts for ±84 vs
-/// ±89.9) is the defect this gate closes. Matches the point/tile_cells path
-/// that raises rather than clamps.
+/// Reject a tile-covering geometry whose any non-polar vertex latitude is
+/// outside ±[`TILE_MAX_LATITUDE`]. Tile coverings cannot represent latitudes
+/// past the Web Mercator edge; silently clipping (identical cell counts for
+/// ±84 vs ±89.9) is the defect this gate closes. A physical pole is the one
+/// admitted exception: the rectangular coverer's geographic authority can
+/// classify a pole-touching source without representing the pole as a tile
+/// point. Matches the point/tile_cells path for every non-polar coordinate.
 ///
 /// Returns the first out-of-domain latitude, or `Ok(())` when every vertex is
 /// in domain (or the shape has no vertices).
-pub(crate) fn ensure_shape_in_tile_domain(shape: &Shape) -> Result<(), f64> {
+pub(crate) fn ensure_cover_shape_in_tile_domain(shape: &Shape) -> Result<(), f64> {
     let mut bad = None;
     shape.for_each_point(|point: Point| {
-        if bad.is_none() && !latitude_in_tile_domain(point.y) {
+        if bad.is_none()
+            && !latitude_in_tile_domain(point.y)
+            && normalized_geographic_pole(point.y).is_none()
+        {
             bad = Some(point.y);
         }
     });

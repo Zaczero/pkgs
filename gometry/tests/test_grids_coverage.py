@@ -213,3 +213,155 @@ def test_cell_identity_arguments_match_grid_families() -> None:
         geohash.contains(1)
     with pytest.raises(TypeError):
         geohash.intersects(1)
+
+
+def _tile_tokens(cells) -> set[str]:
+    return {cell.token for cell in cells}
+
+
+def _tile_rectangles(tiles, *, crs: int | None):
+    kwargs = {} if crs is None else {'crs': crs}
+    return [gm.box(*tile.polygon.bounds, **kwargs) for tile in tiles]
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+@pytest.mark.parametrize('south', [False, True], ids=['north', 'south'])
+def test_tile_cover_polar_cap_matches_exact_rectangular_relations(
+    crs: int | None, south: bool
+) -> None:
+    min_lat, max_lat = (-90, -80) if south else (80, 90)
+    source = gm.box(-60, min_lat, 60, max_lat, **({} if crs is None else {'crs': crs}))
+    expected_bounds = (
+        (-60.0, -90.0, 60.0, -80.0) if south else (-60.0, 80.0, 60.0, 90.0)
+    )
+    assert source.bounds == expected_bounds
+
+    tiles = [gm.Tile(x=x, y=y, zoom=4) for y in range(16) for x in range(16)]
+    rectangles = _tile_rectangles(tiles, crs=crs)
+    expected_overlap = {
+        tile.token
+        for tile, rectangle in zip(tiles, rectangles, strict=True)
+        if gm.intersects(source, rectangle)
+    }
+    expected_within = {
+        tile.token
+        for tile, rectangle in zip(tiles, rectangles, strict=True)
+        if gm.covers(source, rectangle)
+    }
+    if not south:
+        assert expected_overlap == {
+            '0101',
+            '0103',
+            '0110',
+            '0112',
+            '0111',
+            '0113',
+            '1000',
+            '1002',
+            '1001',
+            '1003',
+            '1010',
+            '1012',
+        }
+        assert expected_within == {'0110', '0111', '1000', '1001'}
+
+    overlap = gm.tile_cover(source, zoom=4, cell_rule='overlap', max_cells=None)
+    bbox = gm.tile_cover(source, zoom=4, cell_rule='bbox', max_cells=None)
+    within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
+    assert _tile_tokens(overlap) == expected_overlap
+    assert _tile_tokens(bbox) == expected_overlap
+    assert _tile_tokens(within) == expected_within
+    assert all(
+        gm.intersects(source, rectangle)
+        for rectangle in _tile_rectangles(overlap, crs=crs)
+    )
+    assert all(
+        gm.covers(source, rectangle) for rectangle in _tile_rectangles(within, crs=crs)
+    )
+
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.tile_cover(source, zoom=4, cell_rule='overlap', max_cells=11)
+    assert len(gm.tile_cover(source, zoom=4, cell_rule='overlap', max_cells=12)) == 12
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=3)
+    assert len(gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=4)) == 4
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+@pytest.mark.parametrize('south', [False, True], ids=['north', 'south'])
+def test_tile_cover_pole_point_is_empty(crs: int | None, south: bool) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    point = gm.Point(0, -90 if south else 90, **kwargs)
+    assert len(gm.tile_cover(point, zoom=4, max_cells=None)) == 0
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_tile_cover_pole_line_reaches_top_row(crs: int | None) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    source = gm.LineString([(-60, 80), (0, 90)], **kwargs)
+    overlap = gm.tile_cover(source, zoom=4, cell_rule='overlap', max_cells=None)
+    within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
+    assert _tile_tokens(overlap) == {'0103', '0110', '0112'}
+    assert not within
+    assert all(
+        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
+        for tile in overlap
+    )
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_tile_cover_seam_polar_cap_keeps_both_antimeridian_sides(
+    crs: int | None,
+) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    source = gm.Polygon(
+        [(170, 80), (-170, 80), (-170, 90), (170, 90)],
+        **kwargs,
+    )
+    overlap = gm.tile_cover(source, zoom=4, cell_rule='overlap', max_cells=None)
+    bbox = gm.tile_cover(source, zoom=4, cell_rule='bbox', max_cells=None)
+    within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
+    assert _tile_tokens(overlap) == {'0000', '0002', '1111', '1113'}
+    assert _tile_tokens(bbox) == _tile_tokens(overlap)
+    assert not within
+    assert all(
+        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
+        for tile in overlap
+    )
+
+
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_tile_cover_pole_touching_hole_removes_middle_within_tiles(
+    crs: int | None,
+) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    source = gm.Polygon(
+        [(-60, 80), (60, 80), (60, 90), (-60, 90), (-60, 80)],
+        holes=[[(-10, 80), (10, 80), (10, 90), (-10, 90), (-10, 80)]],
+        **kwargs,
+    )
+    within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
+    assert _tile_tokens(within) == {'0110', '1001'}
+    assert all(
+        gm.covers(source, gm.box(*tile.polygon.bounds, **kwargs)) for tile in within
+    )
+
+
+@pytest.mark.parametrize(
+    'bounds',
+    [
+        (-10, 84, 10, 85.1),
+        (-10, 84, 10, 89.9),
+        (-10, -89.9, 10, -84),
+        (-10, -85.1, 10, -84),
+    ],
+    ids=['north-edge', 'north-poleward', 'south-poleward', 'south-edge'],
+)
+@pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
+def test_tile_cover_still_rejects_nonpolar_mercator_overflow(
+    bounds: tuple[int, int | float, int, int | float], crs: int | None
+) -> None:
+    kwargs = {} if crs is None else {'crs': crs}
+    source = gm.box(*bounds, **kwargs)
+    with pytest.raises(gm.InvalidGeometryError, match='Web Mercator'):
+        gm.tile_cover(source, zoom=4)

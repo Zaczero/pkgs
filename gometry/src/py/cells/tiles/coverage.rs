@@ -1,6 +1,6 @@
 //! Internal tile coverer adapter. Cell arrays are returned directly.
 
-use crate::grid::tile::{self as kernel, Tile, ensure_shape_in_tile_domain};
+use crate::grid::tile::{self as kernel, Tile, ensure_cover_shape_in_tile_domain};
 use crate::py::cells::coverage_ops::{
     RectCoverSpec, build_rect_coverage_ids, coverage_factory_shapes, parse_max_cells,
     rect_cell_array_for,
@@ -71,8 +71,8 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 ///     If the geometry, zoom, ``cell_rule``, or ``max_cells`` is invalid, or
 ///     if the returned coverage would exceed ``max_cells``.
 /// InvalidGeometryError
-///     If the geometry is empty or any latitude is outside the Web Mercator
-///     domain (±85.05112878 degrees).
+///     If the geometry is empty or any non-polar latitude is outside the Web
+///     Mercator domain (±85.05112878 degrees).
 ///
 /// Examples
 /// --------
@@ -103,7 +103,7 @@ pub(super) fn tile_cover(
         max_cells,
         |geometry, effective_max_cells| {
             let (_, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
-            if let Err(lat) = ensure_shape_in_tile_domain(&cover_shape) {
+            if let Err(lat) = ensure_cover_shape_in_tile_domain(&cover_shape) {
                 return Err(InvalidGeometryError::new_err(format!(
                     "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"
                 )));
