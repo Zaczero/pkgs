@@ -760,6 +760,68 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    #[test]
+    fn generic_polygon_intersection_absorbs_retained_boundary_lines() {
+        let cases = [
+            (
+                "rounded shared boundary",
+                polygon(&[(0.5, 0.5), (-2.0, 1.5), (-1.5, -1.5), (0.5, 0.5)]),
+                polygon(&[(0.0, 1.0), (-1.0, 0.5), (0.0, 0.0), (0.0, 1.0)]),
+                polygon(&[
+                    (-1.0, 0.5),
+                    (0.0, 0.0),
+                    (0.0, 0.7),
+                    (-0.33333333333333337, 0.8333333333333333),
+                    (-1.0, 0.5),
+                ]),
+            ),
+            (
+                "integer shared boundary",
+                polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+                polygon(&[(1.0, 0.0), (3.0, 0.0), (2.0, 2.0), (1.0, 0.0)]),
+                polygon(&[(1.0, 0.0), (3.0, 0.0), (2.0, 2.0), (1.0, 0.0)]),
+            ),
+            (
+                "integer collinear crossing",
+                polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+                polygon(&[(1.0, 0.0), (3.0, 0.0), (5.0, 2.0), (3.0, 3.0), (1.0, 0.0)]),
+                polygon(&[
+                    (1.0, 0.0),
+                    (3.0, 0.0),
+                    (4.0, 1.0),
+                    (4.0, 2.5),
+                    (3.0, 3.0),
+                    (1.0, 0.0),
+                ]),
+            ),
+        ];
+
+        for (name, left, right, expected) in cases {
+            let left = Shape::Polygon(left);
+            let right = Shape::Polygon(right);
+            let expected = Shape::Polygon(expected);
+            let result = super::super::nary::binary_intersection_without_convex_shortcut(
+                &left,
+                &right,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(wkb(&result), wkb(&expected), "{name}: {result:?}");
+            assert!(matches!(result, Shape::Polygon(_)), "{name}: {result:?}");
+        }
+
+        let square = square(0.0, 0.0, 4.0, 4.0);
+        let partial_boundary = line(&[(1.0, 0.0), (3.0, 0.0)]);
+        let result = super::super::nary::binary_intersection_without_convex_shortcut(
+            &square,
+            &partial_boundary,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(wkb(&result), wkb(&partial_boundary), "{result:?}");
+        assert!(matches!(result, Shape::LineString(_)), "{result:?}");
+    }
+
     fn assert_point_intersection_matches_generic(
         name: &str,
         left: &Shape,

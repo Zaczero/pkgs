@@ -379,6 +379,45 @@ def test_multipart_point_intersection_matches_shapely_oracle() -> None:
             )
 
 
+def test_polygon_intersection_absorbs_retained_boundary_lines() -> None:
+    cases = [
+        (
+            'POLYGON ((0.5 0.5, -2 1.5, -1.5 -1.5, 0.5 0.5))',
+            'POLYGON ((0 1, -1 0.5, 0 0, 0 1))',
+            'POLYGON ((-1 0.5, 0 0, 0 0.7, -0.33333333333333337 0.8333333333333333, -1 0.5))',
+        ),
+        (
+            'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))',
+            'POLYGON ((1 0, 3 0, 2 2, 1 0))',
+            'POLYGON ((1 0, 3 0, 2 2, 1 0))',
+        ),
+        (
+            'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))',
+            'POLYGON ((1 0, 3 0, 5 2, 3 3, 1 0))',
+            'POLYGON ((1 0, 3 0, 4 1, 4 2.5, 3 3, 1 0))',
+        ),
+    ]
+    for left_wkt, right_wkt, expected_wkt in cases:
+        for operands in ((left_wkt, right_wkt), (right_wkt, left_wkt)):
+            left, right = operands
+            got = gm.intersection(gm.from_wkt(left), gm.from_wkt(right))
+            want = shapely.from_wkt(left).intersection(shapely.from_wkt(right))
+            assert got.to_wkt() == expected_wkt
+            assert got.geometry_type == 'Polygon'
+            assert shapely.equals_exact(
+                shapely.normalize(shapely.from_wkt(got.to_wkt())),
+                shapely.normalize(want),
+                tolerance=1e-15,
+            )
+
+    partial = gm.intersection(
+        gm.from_wkt('POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))'),
+        gm.from_wkt('LINESTRING (1 0, 3 0)'),
+    )
+    assert partial.to_wkt() == 'LINESTRING (1 0, 3 0)'
+    assert partial.geometry_type == 'LineString'
+
+
 def test_h3_edges_match_h3py_oracle() -> None:
     origin = h3.latlng_to_cell(52.5, 13.4, 7)
     cell = gm.H3Cell(origin)

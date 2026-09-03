@@ -1,6 +1,8 @@
 use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
+use ahash::HashSetExt as _;
+
 use crate::error::Result;
 use crate::geometry::overlay::{
     OverlayOp, Strictness, build_overlay_shape, dedup_points, overlay_declared_axes,
@@ -8,7 +10,7 @@ use crate::geometry::overlay::{
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
-    GeometryKind, HashMap, HashMapExt as _, Point, PointBatchTester, PointKey, Segment,
+    GeometryKind, HashMap, HashMapExt as _, HashSet, Point, PointBatchTester, PointKey, Segment,
     SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY, carry_direct_points_ordinates,
     carry_overlay_ordinates, carry_overlay_ordinates_from_graph, column_all_finite, ordered_edge,
     point_on_segment, same_point, segment_midpoint, shell_is_convex,
@@ -685,7 +687,8 @@ fn assemble_overlay(
         .iter()
         .map(crate::geometry::PolygonPointIndex::build)
         .collect();
-    let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, op);
+    let polygon_edges = output_polygon_edges(&polygons);
+    let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op);
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
     build_overlay_shape(points, lines, polygons)
 }
@@ -1140,14 +1143,39 @@ fn keep_area_face(membership: &[bool], op: OverlayOp) -> bool {
     }
 }
 
+fn output_polygon_edges(polygons: &[crate::geometry::Polygon]) -> HashSet<(PointKey, PointKey)> {
+    let mut edges = HashSet::with_capacity(
+        polygons
+            .iter()
+            .map(crate::geometry::Polygon::coord_count)
+            .sum(),
+    );
+    for polygon in polygons {
+        for ring in polygon.rings() {
+            for [start, end] in ring.segment_pairs() {
+                edges.insert(ordered_edge(PointKey::new(start), PointKey::new(end)));
+            }
+        }
+    }
+    edges
+}
+
 fn overlay_lines(
     graph: &TopologyGraph,
     sources: &[TopologyGraph],
     polygon_indexes: &[crate::geometry::PolygonPointIndex],
+    polygon_edges: &HashSet<(PointKey, PointKey)>,
     op: OverlayOp,
 ) -> Vec<crate::geometry::CoordSeq> {
     let mut lines = Vec::new();
     for edge in &graph.edges {
+        let edge_key = ordered_edge(
+            PointKey::new(edge.segment.start),
+            PointKey::new(edge.segment.end),
+        );
+        if polygon_edges.contains(&edge_key) {
+            continue;
+        }
         let line_source = graph.edge_has_line_source(edge);
         if !line_source && op != OverlayOp::Intersection {
             continue;
