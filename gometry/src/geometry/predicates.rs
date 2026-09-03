@@ -36,7 +36,7 @@ pub(crate) use simplicity::{
     collect_duplicate_points, collect_offending_pair, indexed_segments_are_simple,
     segment_intersection_is_simple, segments_are_adjacent,
 };
-pub(in crate::geometry) use validate::shell_is_convex;
+pub(in crate::geometry) use validate::{shell_is_convex, shell_is_strictly_convex};
 pub(crate) use validate::{validate_line, validate_point, validate_points, validate_ring};
 pub(in crate::geometry) use validity_helpers::face_interior_point;
 pub(crate) use validity_helpers::{

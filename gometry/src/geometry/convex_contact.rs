@@ -6,10 +6,57 @@
 //! overlap, or any gate failure returns `None` so the caller falls back to the
 //! general noding path.
 
-use crate::geometry::predicates::shell_is_convex;
+use crate::geometry::predicates::{
+    RingClass, ring_classify_point, shell_is_convex, shell_is_strictly_convex,
+};
 use crate::geometry::segments::{Contact, segment_contact_exact, segment_envelopes_disjoint};
-use crate::geometry::topology::{Operand, OperandPool, OrientedRing};
-use crate::geometry::{Bounds, Segment, XY, wrap_index};
+use crate::geometry::topology::{Operand, OperandPool, OrientedRing, build_operand_pool};
+use crate::geometry::{Bounds, Polygon, Segment, XY, wrap_index};
+
+/// Complete relation classes that can be derived for two strict convex
+/// shells without constructing an arrangement. Any boundary touch, collinear
+/// overlap, or uncertain admission returns `None` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConvexRelation {
+    Disjoint,
+    ProperCrossing,
+    LeftContainsRight,
+    RightContainsLeft,
+}
+
+/// Classify two eligible convex shells using exact boundary contacts and
+/// point membership. The existing convex contact walk owns segment pairing;
+/// this function only turns its clean result into a relation class.
+pub(super) fn try_classify(left: &Polygon, right: &Polygon) -> Option<ConvexRelation> {
+    if !left.holes.is_empty()
+        || !right.holes.is_empty()
+        || !shell_is_strictly_convex(left.shell.coords())
+        || !shell_is_strictly_convex(right.shell.coords())
+    {
+        return None;
+    }
+    let left_bounds = Bounds::from_coords(left.shell.coords())?;
+    let right_bounds = Bounds::from_coords(right.shell.coords())?;
+    if !left_bounds.intersects(right_bounds) {
+        return Some(ConvexRelation::Disjoint);
+    }
+
+    let pool = build_operand_pool(std::slice::from_ref(left), std::slice::from_ref(right));
+    if scan_pool(&pool, |_, _| {})? {
+        return Some(ConvexRelation::ProperCrossing);
+    }
+
+    let left_class = ring_classify_point(left.shell.coords(), right.shell.first()?);
+    let right_class = ring_classify_point(right.shell.coords(), left.shell.first()?);
+    match (left_class, right_class) {
+        (RingClass::Interior, RingClass::Exterior) => Some(ConvexRelation::LeftContainsRight),
+        (RingClass::Exterior, RingClass::Interior) => Some(ConvexRelation::RightContainsLeft),
+        (RingClass::Exterior, RingClass::Exterior) => Some(ConvexRelation::Disjoint),
+        // A boundary result or both interiors contradicts the clean contact
+        // certificate, so preserve the generic relation semantics.
+        _ => None,
+    }
+}
 
 /// Per-segment crossing cuts ready to merge into
 /// [`super::clean_union::BoundaryContacts`].
@@ -32,6 +79,23 @@ pub(super) fn try_collect(pool: &OperandPool) -> Option<ConvexBoundaryScan> {
     let (left, right) = eligible_rings(pool)?;
     let n = pool.segments.len();
     let mut cuts: Vec<Vec<ConvexCut>> = vec![Vec::new(); n];
+    let has_cross = scan_rings(pool, left, right, |segment, point| {
+        push_cut(&mut cuts, segment, point, true)
+    })?;
+    Some(ConvexBoundaryScan { cuts, has_cross })
+}
+
+fn scan_pool(pool: &OperandPool, mut on_cross: impl FnMut(usize, XY)) -> Option<bool> {
+    let (left, right) = eligible_rings(pool)?;
+    scan_rings(pool, left, right, &mut on_cross)
+}
+
+fn scan_rings(
+    pool: &OperandPool,
+    left: &OrientedRing,
+    right: &OrientedRing,
+    mut on_cross: impl FnMut(usize, XY),
+) -> Option<bool> {
     let mut has_cross = false;
 
     let left_edges = ring_chains(left);
@@ -39,14 +103,14 @@ pub(super) fn try_collect(pool: &OperandPool) -> Option<ConvexBoundaryScan> {
 
     for chain_a in &left_edges {
         for chain_b in &right_edges {
-            match scan_chains(pool, chain_a, chain_b, &mut cuts) {
+            match scan_chains(pool, chain_a, chain_b, &mut on_cross) {
                 ScanFlow::Ok(crossed) => has_cross |= crossed,
                 ScanFlow::Bail => return None,
             }
         }
     }
 
-    Some(ConvexBoundaryScan { cuts, has_cross })
+    Some(has_cross)
 }
 
 enum ScanFlow {
@@ -142,7 +206,7 @@ fn chain_edge_indices(n: usize, from: usize, to: usize) -> Vec<usize> {
     if from == to {
         return Vec::new();
     }
-    let mut edges = Vec::new();
+    let mut edges = Vec::with_capacity(n.div_ceil(2));
     let mut vertex = from;
     loop {
         edges.push(vertex);
@@ -159,7 +223,7 @@ fn scan_chains(
     pool: &OperandPool,
     chain_a: &[usize],
     chain_b: &[usize],
-    cuts: &mut [Vec<ConvexCut>],
+    on_cross: &mut impl FnMut(usize, XY),
 ) -> ScanFlow {
     let mut ia = 0_usize;
     let mut ib = 0_usize;
@@ -187,8 +251,8 @@ fn scan_chains(
         match segment_contact_exact(seg_a, seg_b) {
             Contact::Disjoint => advance_by_xmax(a_maxx, b_maxx, &mut ia, &mut ib),
             Contact::Cross { point } => {
-                push_cut(cuts, chain_a[ia], point, true);
-                push_cut(cuts, chain_b[ib], point, true);
+                on_cross(chain_a[ia], point);
+                on_cross(chain_b[ib], point);
                 crossed = true;
                 advance_by_xmax(a_maxx, b_maxx, &mut ia, &mut ib);
             },

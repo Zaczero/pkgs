@@ -53,7 +53,7 @@ fn graph_relate_shapes_in(left: &Shape, right: &Shape, space: TopologySpace) -> 
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
         return matrix;
     }
     graph_relate_data_oracle(left, right)
@@ -92,7 +92,7 @@ pub(crate) fn graph_relate_data_with_left_graph(
     left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> De9im {
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -111,7 +111,7 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> De9im {
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape()) {
+    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -222,8 +222,25 @@ fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: Topology
 
 fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Option<De9im> {
     (space == TopologySpace::Cartesian)
-        .then(|| try_areal_relate(left, right))
+        .then(|| try_cartesian_areal_relate(left, right))
         .flatten()
+}
+
+fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
+    try_convex_relate(left, right).or_else(|| try_areal_relate(left, right))
+}
+
+fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
+    let (Shape::Polygon(left), Shape::Polygon(right)) = (left, right) else {
+        return None;
+    };
+    let relation = crate::geometry::convex_contact::try_classify(left, right)?;
+    Some(match relation {
+        crate::geometry::convex_contact::ConvexRelation::Disjoint => De9im(*b"FF2FF1212"),
+        crate::geometry::convex_contact::ConvexRelation::ProperCrossing => De9im(*b"212101212"),
+        crate::geometry::convex_contact::ConvexRelation::LeftContainsRight => De9im(*b"212FF1FF2"),
+        crate::geometry::convex_contact::ConvexRelation::RightContainsLeft => De9im(*b"2FF1FF212"),
+    })
 }
 
 fn try_areal_relate_geographic(
@@ -1210,6 +1227,188 @@ mod tests {
             .0,
             "{name}: fallback"
         );
+    }
+
+    fn assert_convex_relation_case(
+        name: &str,
+        left: &Shape,
+        right: &Shape,
+        eligible: bool,
+        expected: &str,
+    ) {
+        let left_plan = PreparedPlan::transient(left);
+        let right_plan = PreparedPlan::transient(right);
+        let oracle = graph_relate_data_oracle(&left_plan, &right_plan);
+        assert_eq!(oracle.text(), expected, "{name}: oracle");
+        assert_eq!(
+            try_convex_relate(left, right).is_some(),
+            eligible,
+            "{name}: convex admission"
+        );
+        assert_eq!(
+            graph_relate_data(&left_plan, &right_plan).text(),
+            expected,
+            "{name}: dispatch"
+        );
+
+        let reverse_left = PreparedPlan::transient(right);
+        let reverse_right = PreparedPlan::transient(left);
+        let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right);
+        assert_eq!(
+            graph_relate_data(&reverse_left, &reverse_right).0,
+            reverse_oracle.0,
+            "{name}: reverse"
+        );
+        if eligible {
+            assert_eq!(reverse_oracle.0, oracle.transpose().0, "{name}: transpose");
+        }
+    }
+
+    #[test]
+    fn convex_relation_dispatch_matches_the_arrangement_oracle() {
+        let ccw_outer = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
+        let cw_outer = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [0.0, 4.0],
+            [4.0, 4.0],
+            [4.0, 0.0],
+            [0.0, 0.0],
+        ]));
+        let ccw_inner = Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0));
+        let cw_inner = Shape::Polygon(polygon(&[
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [2.0, 2.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+        ]));
+        let crossing = Shape::Polygon(rectangle(-1.0, 1.0, 5.0, 3.0));
+        let disjoint = Shape::Polygon(rectangle(8.0, 0.0, 9.0, 1.0));
+        let huge_crossing = Shape::Polygon(rectangle(1.5e150, 1.5e150, 2.5e150, 2.5e150));
+        let huge_base = Shape::Polygon(rectangle(1.0e150, 1.0e150, 2.0e150, 2.0e150));
+        let tiny_crossing = Shape::Polygon(rectangle(1.5e-150, 1.5e-150, 2.5e-150, 2.5e-150));
+        let tiny_base = Shape::Polygon(rectangle(1.0e-150, 1.0e-150, 2.0e-150, 2.0e-150));
+        let cancellation = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [1.0, 1.0 + 2.0_f64.powi(-27)],
+            [1.0 - 2.0_f64.powi(-27), 1.0],
+            [0.0, 0.0],
+        ]));
+
+        for (name, left, right, expected) in [
+            ("ccw containment", &ccw_outer, &ccw_inner, "212FF1FF2"),
+            ("cw containment", &cw_outer, &cw_inner, "212FF1FF2"),
+            ("reverse containment", &cw_inner, &ccw_outer, "2FF1FF212"),
+            ("proper crossing", &ccw_outer, &crossing, "212101212"),
+            ("clockwise crossing", &cw_outer, &crossing, "212101212"),
+            ("disjoint", &ccw_outer, &disjoint, "FF2FF1212"),
+            ("huge crossing", &huge_base, &huge_crossing, "212101212"),
+            ("tiny crossing", &tiny_base, &tiny_crossing, "212101212"),
+            ("exact cancellation", &cancellation, &disjoint, "FF2FF1212"),
+        ] {
+            assert_convex_relation_case(name, left, right, true, expected);
+        }
+    }
+
+    #[test]
+    fn convex_relation_falls_back_for_ambiguous_or_unsupported_shapes() {
+        let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
+        let far = Shape::Polygon(rectangle(8.0, 0.0, 9.0, 1.0));
+        let equal = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
+        let edge_touch = Shape::Polygon(rectangle(2.0, 0.0, 4.0, 2.0));
+        let vertex_touch = Shape::Polygon(rectangle(2.0, 2.0, 4.0, 4.0));
+        let collinear_overlap = Shape::Polygon(rectangle(1.0, 0.0, 3.0, 2.0));
+        let hole = Shape::Polygon(donut());
+        let concave = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [4.0, 0.0],
+            [4.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 4.0],
+            [0.0, 4.0],
+            [0.0, 0.0],
+        ]));
+        let invalid = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [3.0, 3.0],
+            [0.0, 3.0],
+            [3.0, 0.0],
+            [0.0, 0.0],
+        ]));
+        let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
+        let nonstrict = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [0.0, 0.0],
+        ]));
+
+        for (name, left, right, expected) in [
+            ("equal", &square, &equal, "2FFF1FFF2"),
+            ("edge touch", &square, &edge_touch, "FF2F11212"),
+            ("vertex touch", &square, &vertex_touch, "FF2F01212"),
+            (
+                "collinear overlap",
+                &square,
+                &collinear_overlap,
+                "212111212",
+            ),
+            ("hole", &hole, &square, "212F11FF2"),
+            ("concave", &concave, &square, "212111212"),
+            ("invalid", &invalid, &square, "FF2111212"),
+            ("collapsed", &collapsed, &square, "FF2F0F212"),
+            ("nonstrict", &nonstrict, &far, "FF2FF1212"),
+        ] {
+            assert_convex_relation_case(name, left, right, false, expected);
+        }
+    }
+
+    #[test]
+    fn convex_relation_rejects_a_two_unique_point_ring() {
+        let a = Point::new_raw_xy(10.0, 10.0);
+        let b = Point::new_raw_xy(11.0, 10.0);
+        // `Ring::from_closed` is the internal transport constructor. The final
+        // `a` is the stored closing duplicate for the raw A-B-A ring.
+        let two_unique = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![a, b, a, a]),
+            Vec::new(),
+        ));
+        let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
+        let left = PreparedPlan::transient(&two_unique);
+        let right = PreparedPlan::transient(&square);
+        let oracle = graph_relate_data_oracle(&left, &right);
+        assert!(try_convex_relate(&two_unique, &square).is_none());
+        assert_eq!(graph_relate_data(&left, &right).0, oracle.0);
+
+        let reverse_left = PreparedPlan::transient(&square);
+        let reverse_right = PreparedPlan::transient(&two_unique);
+        let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right);
+        assert!(try_convex_relate(&square, &two_unique).is_none());
+        assert_eq!(
+            graph_relate_data(&reverse_left, &reverse_right).0,
+            reverse_oracle.0
+        );
+    }
+
+    #[test]
+    fn strict_convexity_rejects_short_rings_but_permissive_convexity_remains() {
+        let rings = [
+            CoordSeq::from(Vec::<Point>::new()),
+            CoordSeq::from(vec![Point::new_raw_xy(0.0, 0.0)]),
+            CoordSeq::from(vec![
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(1.0, 0.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ]),
+        ];
+        for ring in rings {
+            assert!(crate::geometry::predicates::shell_is_convex(&ring));
+            assert!(!crate::geometry::predicates::shell_is_strictly_convex(
+                &ring
+            ));
+        }
     }
 
     #[test]

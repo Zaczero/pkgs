@@ -174,6 +174,33 @@ pub(crate) fn validate_ring<C: Coordinates + ?Sized>(
 /// one sign yet wind more than once, so the total turning must be exactly
 /// ±2π for a simple convex ring.
 pub(in crate::geometry) fn shell_is_convex<C: Coordinates + ?Sized>(shell: &C) -> bool {
+    shell_convexity(shell, false)
+}
+
+/// Strict convexity certificate for a finite, closed shell. Unlike
+/// [`shell_is_convex`], a collinear turn or a zero-length edge declines: the
+/// relation shortcut only admits polygons whose boundary contact classes are
+/// unambiguous from the convex shell certificate.
+pub(in crate::geometry) fn shell_is_strictly_convex<C: Coordinates + ?Sized>(shell: &C) -> bool {
+    shell_convexity(shell, true)
+}
+
+fn shell_convexity<C: Coordinates + ?Sized>(shell: &C, strict: bool) -> bool {
+    if strict {
+        let Some((first, last)) = shell.first_coord().zip(shell.last_coord()) else {
+            return false;
+        };
+        if !same_point(first, last)
+            || shell
+                .iter_coords()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite())
+            || shell
+                .segment_pairs()
+                .any(|[start, end]| same_point(start, end))
+        {
+            return false;
+        }
+    }
     // Convexity is planar, so gather the XY engine coord (16 bytes) rather than
     // the ordinate-carrying Point (40 bytes) — 2.5× less to allocate and scan.
     let mut points: Vec<XY> = shell.iter_coords().map(XY::from).collect();
@@ -186,7 +213,7 @@ pub(in crate::geometry) fn shell_is_convex<C: Coordinates + ?Sized>(shell: &C) -
     let ring = points.as_slice();
     let n = ring.len();
     if n < 3 {
-        return true;
+        return !strict;
     }
     // Schorn-Fisher convexity, atan2-free: a simple polygon is convex iff
     // every turn keeps ONE orientation AND its edge direction winds exactly
@@ -216,6 +243,8 @@ pub(in crate::geometry) fn shell_is_convex<C: Coordinates + ?Sized>(shell: &C) -
             } else if turn != sign {
                 return false;
             }
+        } else if strict {
+            return false;
         }
         let sx = component_sign(b.x - a.x);
         if sx != 0 {
