@@ -386,6 +386,20 @@ pub(crate) fn geodesic_segment_minimum(
         if minimum.distance - interval.lower <= POINT_SEGMENT_TOLERANCE_METRES {
             break;
         }
+        // The heap is ordered by lower bound, so this interval's bound is the
+        // smallest still live: no unexplored arc can reach below `best`, and
+        // `best` is the caller's standing minimum. Any value at or above it is
+        // discarded by the caller, and one below it has already been proved
+        // within tolerance by the discard rule. Bounding entry alone left the
+        // search refining a minimum nobody would read.
+        //
+        // Like the tolerance break above, this leaves arcs unexplored, so the
+        // reported `along` is the smallest among sampled positions attaining
+        // the minimum rather than the smallest attaining it anywhere. That is
+        // the witness contract both exits have always had.
+        if interval.lower >= best {
+            break;
+        }
         let middle = f64::midpoint(interval.left, interval.right);
         if !(middle > interval.left && middle < interval.right) {
             return Err(CrsError::message(
