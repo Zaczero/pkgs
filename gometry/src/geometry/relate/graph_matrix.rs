@@ -1,12 +1,15 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
+use crate::geometry::relate::{
+    De9im, Loc, line_has_nonzero_segment, polygon_has_nondegenerate_area,
+};
 use crate::geometry::topology::{
     AreaSupport, TopologyDomain, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
     TopologySpace,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon, PreparedPlan,
-    Ring, Segment, Shape, XY, overlay, same_point, segments_intersect,
+    Bounds, Contact, CoordSeq, Coordinates as _, HashMap, HashMapExt as _, PointKey, Polygon,
+    PreparedPlan, Ring, Segment, SegmentProjection, Shape, XY, line_segments, overlay, same_point,
+    segment_contact_exact, segment_midpoint, segment_projection, segments_intersect,
 };
 
 #[derive(Clone, Copy)]
@@ -35,8 +38,9 @@ impl GeographicPrepared<'_> {
     }
 }
 
-/// Compute the complete relation matrix from the two source-owned topology
-/// graphs. Every named predicate is a projection of this result.
+/// Compute the complete relation matrix, using a direct Cartesian fold where
+/// its operand contract is met and source-owned topology graphs otherwise.
+/// Every named predicate is a projection of this result.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> De9im {
     graph_relate_shapes_in(left, right, TopologySpace::Cartesian)
 }
@@ -54,6 +58,9 @@ fn graph_relate_shapes_in(left: &Shape, right: &Shape, space: TopologySpace) -> 
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
     if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
+        return matrix;
+    }
+    if let Some(matrix) = try_cartesian_polygon_line_relate(left, right) {
         return matrix;
     }
     graph_relate_data_oracle(left, right)
@@ -86,13 +93,18 @@ fn graph_relate_data_with_graphs(
 }
 
 /// Compute a Cartesian relation while reusing the left operand's resolved
-/// graph. The right graph remains lazy so direct areal pairs do no graph work.
+/// graph. The right graph remains lazy so direct pairs do no graph work.
 pub(crate) fn graph_relate_data_with_left_graph(
     left: &PreparedPlan,
     left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> De9im {
     if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
+        return matrix;
+    }
+    if let Some(matrix) =
+        try_cartesian_polygon_line_relate_with_graphs(left, right, Some(left_graph), None)
+    {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -105,13 +117,18 @@ pub(crate) fn graph_relate_data_with_left_graph(
 }
 
 /// Compute a Cartesian relation while reusing the right operand's resolved
-/// graph. The left graph remains lazy so direct areal pairs do no graph work.
+/// graph. The left graph remains lazy so direct pairs do no graph work.
 pub(crate) fn graph_relate_data_with_right_graph(
     left: &PreparedPlan,
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> De9im {
     if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
+        return matrix;
+    }
+    if let Some(matrix) =
+        try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph))
+    {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -201,8 +218,7 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
 
 fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: TopologySpace) -> De9im {
     match space {
-        TopologySpace::Cartesian => try_areal_relate_in(left.shape(), right.shape(), space)
-            .unwrap_or_else(|| graph_relate_data_oracle(left, right)),
+        TopologySpace::Cartesian => graph_relate_data(left, right),
         TopologySpace::Geographic => {
             let unit = crate::geographic::AngularFactor::try_new(
                 "test degrees",
@@ -220,6 +236,7 @@ fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: Topology
     }
 }
 
+#[cfg(test)]
 fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Option<De9im> {
     (space == TopologySpace::Cartesian)
         .then(|| try_cartesian_areal_relate(left, right))
@@ -228,6 +245,225 @@ fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Opt
 
 fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     try_convex_relate(left, right).or_else(|| try_areal_relate(left, right))
+}
+
+fn try_cartesian_polygon_line_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
+    try_cartesian_polygon_line_relate_with_graphs(left, right, None, None)
+}
+
+fn try_cartesian_polygon_line_relate_with_graphs(
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+    left_graph: Option<&TopologyGraph>,
+    right_graph: Option<&TopologyGraph>,
+) -> Option<De9im> {
+    match (left.shape(), right.shape()) {
+        (Shape::Polygon(polygon), Shape::LineString(line)) => {
+            if !polygon_has_nondegenerate_area(polygon)
+                || !line_has_nonzero_segment(line)
+                || left.validate_cached().is_some()
+                || right.validate_cached().is_some()
+            {
+                return None;
+            }
+            Some(polygon_line_matrix(
+                left_graph.unwrap_or_else(|| left.topology_graph()),
+                line,
+            ))
+        },
+        (Shape::LineString(line), Shape::Polygon(polygon)) => {
+            if !polygon_has_nondegenerate_area(polygon)
+                || !line_has_nonzero_segment(line)
+                || left.validate_cached().is_some()
+                || right.validate_cached().is_some()
+            {
+                return None;
+            }
+            Some(
+                polygon_line_matrix(right_graph.unwrap_or_else(|| right.topology_graph()), line)
+                    .transpose(),
+            )
+        },
+        _ => None,
+    }
+}
+
+fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
+    let mut matrix = De9im::empty_disjoint();
+    // A bounded nondegenerate polygon leaves a two-dimensional complement on
+    // both sides of any finite line. The line walk fills the remaining cells.
+    matrix.set_at_least(
+        Loc::Interior,
+        Loc::Exterior,
+        crate::geometry::Dimension::Surface,
+    );
+    matrix.set_at_least(
+        Loc::Exterior,
+        Loc::Exterior,
+        crate::geometry::Dimension::Surface,
+    );
+    matrix.set_at_least(
+        Loc::Boundary,
+        Loc::Exterior,
+        crate::geometry::Dimension::Curve,
+    );
+
+    let mut line_boundary = HashMap::new();
+    let mut first = None;
+    let mut last = None;
+    for [start, end] in line.segment_pairs() {
+        let (start, end) = (start.xy(), end.xy());
+        if same_point(start, end) {
+            continue;
+        }
+        first.get_or_insert(start);
+        last = Some(end);
+    }
+    let (Some(first), Some(last)) = (first, last) else {
+        return matrix;
+    };
+    toggle_line_boundary(&mut line_boundary, graph, first);
+    toggle_line_boundary(&mut line_boundary, graph, last);
+
+    let boundary_edge_count = graph.edges.iter().filter(|edge| edge.is_boundary).count();
+    let mut boundary_coverage: HashMap<usize, Vec<(SegmentProjection, SegmentProjection)>> =
+        HashMap::new();
+    for segment in line_segments(line) {
+        if same_point(segment.start, segment.end) {
+            continue;
+        }
+        let mut contacts = Vec::new();
+        graph.for_each_area_boundary_candidate(segment, |ordinal, boundary| {
+            match segment_contact_exact(segment, boundary) {
+                Contact::Disjoint => {},
+                Contact::Cross { point } | Contact::Touch { point } => {
+                    contacts.push((segment_projection(point, segment), point, true));
+                },
+                Contact::Collinear { span } => {
+                    contacts.push((segment_projection(span.start, segment), span.start, true));
+                    contacts.push((segment_projection(span.end, segment), span.end, true));
+                    if !same_point(span.start, span.end) {
+                        let start = segment_projection(span.start, boundary);
+                        let end = segment_projection(span.end, boundary);
+                        let interval = if end.cmp_along(&start).is_lt() {
+                            (end, start)
+                        } else {
+                            (start, end)
+                        };
+                        boundary_coverage.entry(ordinal).or_default().push(interval);
+                    }
+                },
+            }
+        });
+        contacts.push((SegmentProjection::Start, segment.start, false));
+        contacts.push((SegmentProjection::End, segment.end, false));
+        contacts.sort_unstable_by(|(left, ..), (right, ..)| left.cmp_along(right));
+        let mut deduplicated: Vec<(SegmentProjection, XY, bool)> =
+            Vec::with_capacity(contacts.len());
+        for contact in contacts {
+            if let Some(previous) = deduplicated.last_mut()
+                && contact.0.cmp_along(&previous.0).is_eq()
+            {
+                // Prefer exact boundary provenance when an endpoint and a
+                // boundary contact share one projected point.
+                if contact.2 {
+                    *previous = contact;
+                }
+            } else {
+                deduplicated.push(contact);
+            }
+        }
+        let contacts = deduplicated;
+
+        for (_, point, boundary) in &contacts {
+            let row = if *boundary {
+                Loc::Boundary
+            } else {
+                to_loc(graph.locate_point(*point))
+            };
+            let col = if line_boundary.contains_key(&graph.key(*point)) {
+                Loc::Boundary
+            } else {
+                Loc::Interior
+            };
+            matrix.set_at_least(row, col, crate::geometry::Dimension::Point);
+        }
+        let mut previous = &contacts[0];
+        for current in contacts.iter().skip(1) {
+            if current.0.cmp_along(&previous.0).is_eq() {
+                continue;
+            }
+            let midpoint = segment_midpoint(Segment {
+                start: previous.1,
+                end: current.1,
+            })
+            .xy();
+            match graph.locate_point(midpoint) {
+                TopologyLocation::Interior => {
+                    matrix.set_at_least(
+                        Loc::Interior,
+                        Loc::Interior,
+                        crate::geometry::Dimension::Curve,
+                    );
+                },
+                TopologyLocation::Boundary => {
+                    matrix.set_at_least(
+                        Loc::Boundary,
+                        Loc::Interior,
+                        crate::geometry::Dimension::Curve,
+                    );
+                },
+                TopologyLocation::Exterior => {
+                    matrix.set_at_least(
+                        Loc::Exterior,
+                        Loc::Interior,
+                        crate::geometry::Dimension::Curve,
+                    );
+                },
+            }
+            previous = current;
+        }
+    }
+
+    for &point in line_boundary.values() {
+        matrix.set_at_least(
+            to_loc(graph.locate_point(point)),
+            Loc::Boundary,
+            crate::geometry::Dimension::Point,
+        );
+    }
+
+    let boundary_is_covered = boundary_edge_count != 0
+        && boundary_coverage.len() == boundary_edge_count
+        && boundary_coverage.iter().all(|(_, intervals)| {
+            let mut intervals = intervals.clone();
+            intervals.sort_unstable_by(|(left, _), (right, _)| left.cmp_along(right));
+            let mut cursor = SegmentProjection::Start;
+            for (start, end) in intervals {
+                if start.cmp_along(&cursor).is_gt() {
+                    return false;
+                }
+                if end.cmp_along(&cursor).is_gt() {
+                    cursor = end;
+                }
+            }
+            cursor.cmp_along(&SegmentProjection::End).is_eq()
+        });
+    if boundary_is_covered {
+        matrix.clear(Loc::Boundary, Loc::Exterior);
+    }
+    matrix
+}
+
+fn toggle_line_boundary(
+    boundaries: &mut HashMap<TopologyKey, XY>,
+    graph: &TopologyGraph,
+    point: XY,
+) {
+    let key = graph.key(point);
+    if boundaries.remove(&key).is_none() {
+        boundaries.insert(key, point);
+    }
 }
 
 fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
@@ -1177,6 +1413,73 @@ mod tests {
             ]))
             .expect("oscillating line has four vertices"),
         )
+    }
+
+    fn line(points: &[[f64; 2]]) -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(
+                points
+                    .iter()
+                    .map(|&[x, y]| Point::new_raw_xy(x, y))
+                    .collect::<Vec<_>>(),
+            ))
+            .expect("line has at least two vertices"),
+        )
+    }
+
+    fn assert_polygon_line_direct_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
+        let polygon_plan = PreparedPlan::transient(polygon);
+        let line_plan = PreparedPlan::transient(line);
+        let oracle = graph_relate_data_oracle(
+            &PreparedPlan::transient(polygon),
+            &PreparedPlan::transient(line),
+        );
+        let direct = try_cartesian_polygon_line_relate(&polygon_plan, &line_plan)
+            .expect("admitted polygon/line pair");
+        assert_eq!(direct.text(), expected, "{name}: known matrix");
+        assert_eq!(direct.0, oracle.0, "{name}: generic differential");
+
+        let reverse_polygon_plan = PreparedPlan::transient(polygon);
+        let reverse_line_plan = PreparedPlan::transient(line);
+        let reverse_oracle = graph_relate_data_oracle(
+            &PreparedPlan::transient(line),
+            &PreparedPlan::transient(polygon),
+        );
+        let reverse = try_cartesian_polygon_line_relate(&reverse_line_plan, &reverse_polygon_plan)
+            .expect("admitted line/polygon pair");
+        assert_eq!(reverse.0, direct.transpose().0, "{name}: transpose");
+        assert_eq!(reverse.0, reverse_oracle.0, "{name}: reverse differential");
+
+        assert_eq!(
+            graph_relate_data(&polygon_plan, &line_plan).0,
+            direct.0,
+            "{name}: prepared dispatch"
+        );
+        assert_eq!(
+            line_plan.topology_graph_accesses(),
+            0,
+            "{name}: line graph avoided"
+        );
+        assert_eq!(
+            graph_relate_data(&reverse_line_plan, &reverse_polygon_plan).0,
+            reverse.0,
+            "{name}: reverse prepared dispatch"
+        );
+        assert_eq!(
+            reverse_line_plan.topology_graph_accesses(),
+            0,
+            "{name}: reverse line graph avoided"
+        );
+        assert_eq!(
+            graph_relate_shapes(polygon, line).0,
+            direct.0,
+            "{name}: ordinary dispatch"
+        );
+        assert_eq!(
+            graph_relate_shapes(line, polygon).0,
+            reverse.0,
+            "{name}: reverse ordinary dispatch"
+        );
     }
 
     #[test]
@@ -2206,6 +2509,141 @@ mod tests {
                 "{name}: line/polygon"
             );
         }
+    }
+
+    #[test]
+    fn direct_polygon_line_relation_covers_line_walk_and_boundary_cases() {
+        let polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
+        for (name, line, expected) in [
+            ("crossing", line(&[[-1.0, 5.0], [11.0, 5.0]]), "1F20F1102"),
+            ("contained", line(&[[2.0, 2.0], [8.0, 8.0]]), "102FF1FF2"),
+            (
+                "outside",
+                line(&[[-20.0, -20.0], [-15.0, -15.0]]),
+                "FF2FF1102",
+            ),
+            (
+                "tangent vertex",
+                line(&[[-1.0, 1.0], [1.0, -1.0]]),
+                "FF20F1102",
+            ),
+            (
+                "partial collinear",
+                line(&[[-1.0, 0.0], [11.0, 0.0]]),
+                "FF21F1102",
+            ),
+            (
+                "full boundary",
+                line(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [
+                    0.0, 0.0,
+                ]]),
+                "FF21FFFF2",
+            ),
+            (
+                "boundary plus exterior tail",
+                line(&[
+                    [0.0, 0.0],
+                    [5.0, 5.0],
+                    [0.0, 0.0],
+                    [10.0, 0.0],
+                    [10.0, 10.0],
+                    [0.0, 10.0],
+                    [0.0, 0.0],
+                    [11.0, 0.0],
+                ]),
+                "1F210F102",
+            ),
+        ] {
+            assert_polygon_line_direct_case(name, &polygon, &line, expected);
+        }
+
+        let donut = Shape::Polygon(donut());
+        assert_polygon_line_direct_case(
+            "hole inside",
+            &donut,
+            &line(&[[4.0, 4.0], [6.0, 6.0]]),
+            "FF2FF1102",
+        );
+        assert_polygon_line_direct_case(
+            "hole crossing",
+            &donut,
+            &line(&[[-1.0, 5.0], [11.0, 5.0]]),
+            "1F20F1102",
+        );
+
+        let zm_polygon = Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::from_vecs(
+                vec![0.0, 10.0, 10.0, 0.0, 0.0],
+                vec![0.0, 0.0, 10.0, 10.0, 0.0],
+                Some(vec![1.0, 2.0, 3.0, 4.0, 1.0]),
+                Some(vec![5.0, 6.0, 7.0, 8.0, 5.0]),
+            )),
+            Vec::new(),
+        ));
+        let zm_line = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![-1.0, 11.0],
+                vec![5.0, 5.0],
+                Some(vec![9.0, 10.0]),
+                Some(vec![11.0, 12.0]),
+            ))
+            .expect("Z/M line has two vertices"),
+        );
+        assert_polygon_line_direct_case("Z/M axes", &zm_polygon, &zm_line, "1F20F1102");
+    }
+
+    #[test]
+    fn direct_polygon_line_relation_declines_invalid_and_unsupported_inputs() {
+        let valid_polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
+        let collapsed = line(&[[1.0, 1.0], [1.0, 1.0]]);
+        assert!(
+            try_cartesian_polygon_line_relate(
+                &PreparedPlan::transient(&valid_polygon),
+                &PreparedPlan::transient(&collapsed),
+            )
+            .is_none()
+        );
+        let invalid_line = line(&[[f64::NAN, 1.0], [2.0, 2.0]]);
+        assert!(
+            try_cartesian_polygon_line_relate(
+                &PreparedPlan::transient(&valid_polygon),
+                &PreparedPlan::transient(&invalid_line),
+            )
+            .is_none()
+        );
+
+        let invalid = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+            [10.0, 0.0],
+            [0.0, 0.0],
+        ]));
+        assert!(
+            try_cartesian_polygon_line_relate(
+                &PreparedPlan::transient(&invalid),
+                &PreparedPlan::transient(&line(&[[-1.0, 5.0], [11.0, 5.0]])),
+            )
+            .is_none()
+        );
+
+        let multi_line = Shape::MultiLineString(
+            vec![
+                LineSeq::try_new(CoordSeq::from(vec![
+                    Point::new_raw_xy(-1.0, 5.0),
+                    Point::new_raw_xy(11.0, 5.0),
+                ]))
+                .unwrap(),
+            ]
+            .into(),
+        );
+        assert!(
+            try_cartesian_polygon_line_relate(
+                &PreparedPlan::transient(&valid_polygon),
+                &PreparedPlan::transient(&multi_line),
+            )
+            .is_none()
+        );
     }
 
     #[test]

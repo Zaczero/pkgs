@@ -508,6 +508,19 @@ pub(crate) fn scalar_vs_shapes<'a>(
             {
                 return None;
             }
+            if domain == TopologyDomain::Cartesian
+                && row.with_shape(|shape| {
+                    matches!(
+                        (scalar.shape(), shape),
+                        (
+                            crate::geometry::Shape::LineString(_),
+                            crate::geometry::Shape::Polygon(_)
+                        )
+                    )
+                })
+            {
+                return None;
+            }
             row.with_shape(|shape| {
                 let bounds = shape.bounds()?;
                 if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
@@ -551,6 +564,26 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         .as_mut()
                         .map(|operation| operation.frame_cache(index));
                     let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
+                    // A line scalar has no reusable support for the direct
+                    // polygon/line fold. Select that fold before resolving the
+                    // scalar graph, so this path never constructs a line graph
+                    // only to transpose the polygon-side result.
+                    if domain == TopologyDomain::Cartesian
+                        && matches!(
+                            (scalar.shape(), element.shape()),
+                            (
+                                crate::geometry::Shape::LineString(_),
+                                crate::geometry::Shape::Polygon(_)
+                            )
+                        )
+                    {
+                        let matrix = if scalar_is_left {
+                            graph_relate_data(scalar, &element)
+                        } else {
+                            graph_relate_data(&element, scalar)
+                        };
+                        return predicate_matrix_value(spec, matrix);
+                    }
                     match domain {
                         TopologyDomain::Cartesian => {
                             let scalar_graph =
@@ -752,6 +785,27 @@ mod tests {
         );
         assert_eq!(cartesian.topology_graph_accesses(), 1);
 
+        let line_scalar = PreparedPlan::new(line((-1.0, 1.0), (3.0, 1.0)));
+        let polygon_rows = [rectangle(0.0, 0.0, 2.0, 2.0)];
+        for scalar_is_left in [true, false] {
+            assert_eq!(
+                scalar_vs_shapes(
+                    &Predicate::Intersects.spec(),
+                    &line_scalar,
+                    polygon_rows
+                        .iter()
+                        .enumerate()
+                        .map(|(index, shape)| (index, Some(ShapeRow::Shape(shape)))),
+                    scalar_is_left,
+                    None,
+                    TopologyDomain::Cartesian,
+                    &crate::geometry::FrameDependentCaches::default(),
+                ),
+                [true]
+            );
+        }
+        assert_eq!(line_scalar.topology_graph_accesses(), 0);
+
         let geographic = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
         let geographic_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
@@ -769,6 +823,33 @@ mod tests {
             [true, true]
         );
         assert_eq!(geographic_cache.geographic_topology_accesses(), 1);
+    }
+
+    #[test]
+    fn geographic_line_scalar_does_not_enter_cartesian_direct_relation() {
+        let scalar = PreparedPlan::new(line((175.0, 0.0), (-175.0, 0.0)));
+        let polygon = Shape::Polygon(Polygon::new(
+            Ring::from_closed(vec![
+                Point::new_raw_xy(170.0, -10.0),
+                Point::new_raw_xy(-170.0, -10.0),
+                Point::new_raw_xy(-170.0, 10.0),
+                Point::new_raw_xy(170.0, 10.0),
+                Point::new_raw_xy(170.0, -10.0),
+            ]),
+            Vec::new(),
+        ));
+        assert_eq!(
+            scalar_vs_shapes(
+                &Predicate::Within.spec(),
+                &scalar,
+                [(0, Some(ShapeRow::Shape(&polygon)))].into_iter(),
+                true,
+                None,
+                TopologyDomain::Geographic(degrees()),
+                &crate::geometry::FrameDependentCaches::default(),
+            ),
+            [true]
+        );
     }
 
     #[test]
