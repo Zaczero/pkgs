@@ -46,7 +46,10 @@ use crate::boundary::geographic::{
 };
 use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
 use crate::geometry::expansion::{expansion_sign, fast_two_sum, two_product, two_sum};
-use crate::geometry::{Bounds, BulkRTree, CoordSeq, Coordinates as _, Shape};
+use crate::geometry::{
+    Bounds, BulkRTree, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape,
+    uses_linear_plan_for_len,
+};
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
@@ -1503,6 +1506,10 @@ struct LiftedRingFill {
     component: usize,
     ring: usize,
     degree: i64,
+    // Tiny rings use the direct iterator because the shared index's linear
+    // plan cannot amortize its visitor overhead. Larger rings resolve edge ids
+    // into the authoritative chain, preserving every lifted longitude turn.
+    y_index: Option<EdgeYIndex>,
     roof: Option<PeriodicPoleRoof>,
     // A finite lifted fill can still be a strict outer image after quotienting
     // longitude.  Only this certificate permits its planar parity interior to
@@ -1534,13 +1541,26 @@ impl LiftedRingFill {
             }),
             None => None,
         };
+        let periodic_exact = chain.periodic_exact(degree)?;
+        let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
+            None
+        } else {
+            let mut latitudes = Vec::new();
+            latitudes.try_reserve(chain.vertices.len()).ok()?;
+            latitudes.extend(chain.vertices.iter().map(|vertex| vertex.latitude));
+            // Closed chains retain their repeated first vertex, so adjacent
+            // spans include the represented closing edge without a synthetic
+            // extra id.
+            Some(EdgeYIndex::build(&latitudes))
+        };
         Some(Self {
             chain_index,
             component,
             ring,
             degree,
+            y_index,
             roof,
-            periodic_exact: chain.periodic_exact(degree)?,
+            periodic_exact,
         })
     }
 
@@ -1575,7 +1595,13 @@ impl LiftedRingFill {
             DirectPreimages::Copies(copies) => copies,
             DirectPreimages::Uncertain => return GridPointClass::Unknown,
         };
-        let result = classify_lifted_ring_bucket(chain, self.roof.as_ref(), query, copies);
+        let result = classify_lifted_ring_bucket(
+            chain,
+            self.y_index.as_ref(),
+            self.roof.as_ref(),
+            query,
+            copies,
+        );
         if result == GridPointClass::Interior && !self.periodic_exact {
             GridPointClass::Unknown
         } else {
@@ -1873,6 +1899,7 @@ fn shifted_exact_planar_point<Q: ExactPlanarCoordinates + ?Sized>(
 
 fn classify_lifted_ring_bucket(
     chain: &LiftedChain,
+    y_index: Option<&EdgeYIndex>,
     roof: Option<&PeriodicPoleRoof>,
     query: &ExactPlanarPoint,
     copies: std::ops::RangeInclusive<i64>,
@@ -1880,27 +1907,37 @@ fn classify_lifted_ring_bucket(
     let Some(mut buckets) = PeriodicParityBuckets::new(copies, chain.edges.len()) else {
         return GridPointClass::Unknown;
     };
-    let Some(mut previous) = chain
-        .vertices
-        .first()
-        .copied()
-        .and_then(ExactPlanarPoint::from_lifted)
-    else {
-        return GridPointClass::Unknown;
-    };
-    for vertex in &chain.vertices[1..] {
-        let Some(current) = ExactPlanarPoint::from_lifted(*vertex) else {
+    if let Some(y_index) = y_index {
+        let Some(query_y) = query.latitude.as_f64() else {
             return GridPointClass::Unknown;
         };
-        match bucket_lifted_edge(&previous, &current, query, false, &mut buckets) {
-            BucketEdge::Decisive(result) => return result,
-            BucketEdge::Continue => {},
-            BucketEdge::Uncertain => return GridPointClass::Unknown,
+        let mut terminal = None;
+        let mut visit =
+            |edge: EdgeId| match bucket_lifted_chain_edge(chain, edge, query, &mut buckets) {
+                BucketEdge::Continue => std::ops::ControlFlow::Continue(()),
+                BucketEdge::Decisive(result) => {
+                    terminal = Some(result);
+                    std::ops::ControlFlow::Break(())
+                },
+                BucketEdge::Uncertain => {
+                    terminal = Some(GridPointClass::Unknown);
+                    std::ops::ControlFlow::Break(())
+                },
+            };
+        if let Some(edges) = y_index.dense_band_edges(query_y) {
+            for &edge in edges {
+                if visit(edge).is_break() {
+                    break;
+                }
+            }
+        } else {
+            let _ = y_index.for_each_edge(query_y, visit);
         }
-        previous = current;
-    }
-    if let Some(roof) = roof {
-        let Some(first) = chain
+        if let Some(result) = terminal {
+            return result;
+        }
+    } else {
+        let Some(mut previous) = chain
             .vertices
             .first()
             .copied()
@@ -1908,6 +1945,38 @@ fn classify_lifted_ring_bucket(
         else {
             return GridPointClass::Unknown;
         };
+        for vertex in &chain.vertices[1..] {
+            let Some(current) = ExactPlanarPoint::from_lifted(*vertex) else {
+                return GridPointClass::Unknown;
+            };
+            match bucket_lifted_edge(&previous, &current, query, false, &mut buckets) {
+                BucketEdge::Decisive(result) => return result,
+                BucketEdge::Continue => {},
+                BucketEdge::Uncertain => return GridPointClass::Unknown,
+            }
+            previous = current;
+        }
+    }
+    let Some(previous) = chain
+        .vertices
+        .last()
+        .copied()
+        .and_then(ExactPlanarPoint::from_lifted)
+    else {
+        return GridPointClass::Unknown;
+    };
+    let Some(first) = chain
+        .vertices
+        .first()
+        .copied()
+        .and_then(ExactPlanarPoint::from_lifted)
+    else {
+        return GridPointClass::Unknown;
+    };
+    if chain.vertices.len() < 2 {
+        return GridPointClass::Unknown;
+    }
+    if let Some(roof) = roof {
         let pole_latitude = match roof.pole {
             PhysicalEndpointKey::NorthPole => ExactExpansion::from_i64(90),
             PhysicalEndpointKey::SouthPole => ExactExpansion::from_i64(-90),
@@ -1950,6 +2019,33 @@ fn classify_lifted_ring_bucket(
     } else {
         GridPointClass::Exterior
     }
+}
+
+fn bucket_lifted_chain_edge(
+    chain: &LiftedChain,
+    edge: EdgeId,
+    query: &ExactPlanarPoint,
+    buckets: &mut PeriodicParityBuckets,
+) -> BucketEdge {
+    let edge = edge.as_usize();
+    let Some(next) = edge.checked_add(1) else {
+        return BucketEdge::Uncertain;
+    };
+    let (Some(start), Some(end)) = (
+        chain
+            .vertices
+            .get(edge)
+            .copied()
+            .and_then(ExactPlanarPoint::from_lifted),
+        chain
+            .vertices
+            .get(next)
+            .copied()
+            .and_then(ExactPlanarPoint::from_lifted),
+    ) else {
+        return BucketEdge::Uncertain;
+    };
+    bucket_lifted_edge(&start, &end, query, false, buckets)
 }
 
 /// One exact edge's impact on the periodic parity sweep.  `Uncertain` is

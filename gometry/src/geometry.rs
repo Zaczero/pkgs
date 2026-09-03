@@ -95,7 +95,7 @@ mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
-pub(crate) use segment_index::uses_linear_plan_for_len;
+pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 mod segments;
 mod tessellation;
 mod topology;

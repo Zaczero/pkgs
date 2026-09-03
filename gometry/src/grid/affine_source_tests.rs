@@ -9,8 +9,8 @@ use crate::grid::affine_source::{
     LiftKind, LiftedChain, ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass,
     SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
     authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
-    classify_lifted_ring_bucket, exact_affine_level, exact_axis_rectangle,
-    exact_segment_touches_rectangle, integer_levels_between, lifted_step,
+    classify_lifted_ring_bucket, combine_polygon_point_classes, exact_affine_level,
+    exact_axis_rectangle, exact_segment_touches_rectangle, integer_levels_between, lifted_step,
     reset_authority_edge_exact_refinements, subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
@@ -31,6 +31,106 @@ fn periodic_latitude_ring(latitude: f64, reverse: bool) -> Ring {
     }
     points.push(points[0]);
     Ring::from_closed(CoordSeq::from(points))
+}
+
+fn exhaustive_authority_point_class(
+    source: &GeographicCoverageSource,
+    longitude: f64,
+    latitude: f64,
+) -> GridPointClass {
+    if source.is_unknown()
+        || !longitude.is_finite()
+        || !latitude.is_finite()
+        || latitude.to_bits() == 90.0_f64.to_bits()
+        || latitude.to_bits() == (-90.0_f64).to_bits()
+    {
+        return GridPointClass::Unknown;
+    }
+    let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
+        return GridPointClass::Unknown;
+    };
+    let mut aggregate = GridPointClass::Exterior;
+    for shell in source.ring_fills.iter().filter(|fill| fill.ring == 0) {
+        let Some(chain) = source.chains.get(shell.chain_index) else {
+            return GridPointClass::Unknown;
+        };
+        let shell_class = shell.direct_oracle_point_class(chain, longitude, &query);
+        let component = match shell_class {
+            GridPointClass::Exterior => GridPointClass::Exterior,
+            GridPointClass::Boundary | GridPointClass::Unknown => shell_class,
+            GridPointClass::Interior => {
+                let mut unknown = false;
+                let mut hole_class = GridPointClass::Interior;
+                for hole in source
+                    .ring_fills
+                    .iter()
+                    .filter(|fill| fill.component == shell.component && fill.ring != 0)
+                {
+                    let Some(chain) = source.chains.get(hole.chain_index) else {
+                        return GridPointClass::Unknown;
+                    };
+                    match hole.direct_oracle_point_class(chain, longitude, &query) {
+                        GridPointClass::Boundary => {
+                            hole_class = GridPointClass::Boundary;
+                            break;
+                        },
+                        GridPointClass::Interior => {
+                            hole_class = GridPointClass::Exterior;
+                            break;
+                        },
+                        GridPointClass::Unknown => unknown = true,
+                        GridPointClass::Exterior => {},
+                    }
+                }
+                if hole_class == GridPointClass::Interior && unknown {
+                    GridPointClass::Unknown
+                } else {
+                    hole_class
+                }
+            },
+        };
+        aggregate = combine_polygon_point_classes(aggregate, component);
+    }
+    aggregate
+}
+
+fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: &[(f64, f64)]) {
+    for &(longitude, latitude) in points {
+        assert_eq!(
+            source.authority_point_class(longitude, latitude),
+            exhaustive_authority_point_class(source, longitude, latitude),
+            "source point ({longitude}, {latitude})",
+        );
+        let Some(query) = ExactPlanarPoint::from_stored(longitude, latitude) else {
+            continue;
+        };
+        for shell in &source.ring_fills {
+            let Some(chain) = source.chains.get(shell.chain_index) else {
+                panic!("ring fill has no authoritative chain");
+            };
+            assert_eq!(
+                shell.point_class(chain, longitude, &query),
+                shell.direct_oracle_point_class(chain, longitude, &query),
+                "ring {}/{} point ({longitude}, {latitude})",
+                shell.component,
+                shell.ring,
+            );
+        }
+    }
+}
+
+fn polygon_source(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> GeographicCoverageSource {
+    GeographicCoverageSource::new(
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::from(shell)),
+            holes
+                .into_iter()
+                .map(|hole| Ring::from_closed(CoordSeq::from(hole)))
+                .collect(),
+        )),
+        SphericalGridTarget::H3(Resolution::Two),
+    )
+    .unwrap()
 }
 
 fn symbolic_edge(points: &[(f64, f64)], kind: LiftKind) -> SymbolicAffineEdge {
@@ -604,7 +704,13 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
         panic!("the fixed two-turn cap has finite direct preimages");
     };
     assert_eq!(
-        classify_lifted_ring_bucket(&source.chains[0], fill.roof.as_ref(), &query, copies),
+        classify_lifted_ring_bucket(
+            &source.chains[0],
+            fill.y_index.as_ref(),
+            fill.roof.as_ref(),
+            &query,
+            copies,
+        ),
         GridPointClass::Interior,
         "the planar lift has an interior that is not yet a quotient proof"
     );
@@ -806,6 +912,139 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
     assert_eq!(
         source.authority_point_class(11.0, 0.0),
         GridPointClass::Exterior
+    );
+}
+
+#[test]
+fn lifted_ring_classifier_matches_the_exhaustive_oracle_at_closed_y_boundaries() {
+    let shell = vec![
+        Point::new(-10.0, -10.0).unwrap(),
+        Point::new(10.0, -10.0).unwrap(),
+        Point::new(10.0, 10.0).unwrap(),
+        Point::new(-10.0, 10.0).unwrap(),
+        Point::new(-10.0, -10.0).unwrap(),
+    ];
+    let hole = vec![
+        Point::new(-2.0, -2.0).unwrap(),
+        Point::new(-2.0, 2.0).unwrap(),
+        Point::new(2.0, 2.0).unwrap(),
+        Point::new(2.0, -2.0).unwrap(),
+        Point::new(-2.0, -2.0).unwrap(),
+    ];
+    let source = polygon_source(shell, vec![hole]);
+    assert_indexed_matches_exhaustive(&source, &[
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (10.0, 0.0),
+        (0.0, 10.0),
+        (0.0, 10.0_f64.next_up()),
+        (0.0, 10.0_f64.next_down()),
+        (10.0, 10.0),
+        (-180.0, 0.0),
+        (180.0, 0.0),
+    ]);
+
+    let mut dense = Vec::new();
+    for vertex in 0..64 {
+        let angle = std::f64::consts::TAU * f64::from(vertex) / 64.0;
+        dense.push(Point::new(80.0 * angle.cos(), 20.0 * angle.sin()).unwrap());
+    }
+    dense.push(dense[0]);
+    let source = polygon_source(dense, Vec::new());
+    assert_indexed_matches_exhaustive(&source, &[
+        (0.0, 0.0),
+        (0.0, 20.0),
+        (0.0, 20.0_f64.next_up()),
+        (0.0, 20.0_f64.next_down()),
+        (-180.0, 0.0),
+        (180.0, 0.0),
+    ]);
+}
+
+#[test]
+fn lifted_ring_classifier_matches_the_exhaustive_oracle_for_tall_edges_and_winding() {
+    let mut tall = Vec::new();
+    for vertex in 0..64 {
+        let longitude = -80.0 + 160.0 * f64::from(vertex) / 64.0;
+        let latitude = if vertex % 2 == 0 { -80.0 } else { 80.0 };
+        tall.push(Point::new(longitude, latitude).unwrap());
+    }
+    tall.push(tall[0]);
+    let source = polygon_source(tall, Vec::new());
+    assert_indexed_matches_exhaustive(&source, &[
+        (-100.0, 0.0),
+        (0.0, 80.0),
+        (0.0, 80.0_f64.next_up()),
+        (0.0, 80.0_f64.next_down()),
+        (-180.0, 0.0),
+        (180.0, 0.0),
+    ]);
+
+    for (latitude, reverse) in [(80.0, false), (80.0, true), (-80.0, false), (-80.0, true)] {
+        let points = if reverse {
+            vec![
+                (170.0, latitude),
+                (0.0, latitude),
+                (-170.0, latitude),
+                (170.0, latitude),
+                (0.0, latitude),
+                (-170.0, latitude),
+                (170.0, latitude),
+            ]
+        } else {
+            vec![
+                (170.0, latitude),
+                (-170.0, latitude),
+                (0.0, latitude),
+                (170.0, latitude),
+                (-170.0, latitude),
+                (0.0, latitude),
+                (170.0, latitude),
+            ]
+        };
+        let source = polygon_source(
+            points
+                .into_iter()
+                .map(|(longitude, latitude)| Point::new(longitude, latitude).unwrap())
+                .collect(),
+            Vec::new(),
+        );
+        let pole_query = if latitude > 0.0 { 85.0 } else { -85.0 };
+        assert_indexed_matches_exhaustive(&source, &[
+            (0.0, latitude),
+            (0.0, pole_query),
+            (-180.0, latitude),
+            (180.0, latitude),
+            (0.0, pole_query.next_up()),
+            (0.0, pole_query.next_down()),
+        ]);
+    }
+}
+
+#[test]
+fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
+    assert!(LiftedChain::from_points(&[], true).is_none());
+    assert!(LiftedChain::from_points(&[(0.0, 0.0), (1.0, 1.0), (0.0, 0.0)], true).is_none());
+    assert!(LiftedChain::from_points(&[(0.0, 0.0), (1.0, f64::NAN)], false).is_none());
+    assert!(ExactPlanarPoint::from_stored(f64::INFINITY, 0.0).is_none());
+
+    let source = polygon_source(
+        vec![
+            Point::new(-10.0, -10.0).unwrap(),
+            Point::new(10.0, -10.0).unwrap(),
+            Point::new(10.0, 10.0).unwrap(),
+            Point::new(-10.0, 10.0).unwrap(),
+            Point::new(-10.0, -10.0).unwrap(),
+        ],
+        Vec::new(),
+    );
+    assert_eq!(
+        source.authority_point_class(f64::NAN, 0.0),
+        GridPointClass::Unknown
+    );
+    assert_eq!(
+        source.authority_point_class(0.0, f64::INFINITY),
+        GridPointClass::Unknown
     );
 }
 
