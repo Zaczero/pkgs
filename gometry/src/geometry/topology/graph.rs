@@ -755,10 +755,12 @@ impl AreaMembership {
                     .collect();
                 Self::Cartesian {
                     polygons: YStabbingIndex::build(candidates, |candidate| {
-                        candidate
-                            .index
-                            .y_span()
-                            .unwrap_or((f64::INFINITY, f64::NEG_INFINITY))
+                        candidate.index.envelope().unwrap_or((
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                        ))
                     }),
                 }
             },
@@ -800,8 +802,16 @@ impl AreaMembership {
                     .collect();
                 Self::Geographic {
                     frame,
+                    // Longitude is periodic here, so an X-envelope on the
+                    // index would reject a legitimate wrapped copy;
+                    // `may_contain` owns that filter against all three copies.
                     polygons: YStabbingIndex::build(candidates, |candidate| {
-                        (candidate.y_min, candidate.y_max)
+                        (
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                            candidate.y_min,
+                            candidate.y_max,
+                        )
                     }),
                 }
             },
@@ -822,13 +832,15 @@ impl AreaMembership {
         mut visit: impl FnMut(u32) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
         match self {
-            Self::Cartesian { polygons, .. } => polygons.for_each_at_y(point.y, |candidate| {
-                if candidate.index.contains_xy(point.x, point.y) {
-                    visit(candidate.polygon)
-                } else {
-                    std::ops::ControlFlow::Continue(())
-                }
-            }),
+            Self::Cartesian { polygons, .. } => {
+                polygons.for_each_at_point(point.x, point.y, |candidate| {
+                    if candidate.index.contains_xy(point.x, point.y) {
+                        visit(candidate.polygon)
+                    } else {
+                        std::ops::ControlFlow::Continue(())
+                    }
+                })
+            },
             Self::Geographic {
                 frame, polygons, ..
             } => {

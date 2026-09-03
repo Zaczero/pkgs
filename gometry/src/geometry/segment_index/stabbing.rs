@@ -40,6 +40,21 @@ const DENSE_REF_FACTOR: usize = 16;
 /// Sentinel child / root for the flat interval tree.
 const NIL: u32 = u32::MAX;
 
+/// One indexed item's envelope, carrying its position in `items`.
+#[derive(Clone, Debug)]
+pub(crate) struct EnvelopeEntry {
+    index: u32,
+    envelope: rstar::AABB<[f64; 2]>,
+}
+
+impl rstar::RTreeObject for EnvelopeEntry {
+    type Envelope = rstar::AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
 /// One node of a centered (median-of-sorted-lo) interval tree.
 #[derive(Clone, Debug)]
 struct ITreeNode {
@@ -79,7 +94,19 @@ pub(crate) struct YStabbingIndex<T> {
     items: Vec<T>,
     /// Closed Y-span per item — kept for Linear filtering and build bookkeeping.
     spans: Box<[(f64, f64)]>,
+    /// Closed X-span per item, stored beside the Y-span so a point query can
+    /// reject a candidate without touching the item. Overlapping Y-bands are
+    /// the common case, not the exception — a row of boxes, a country's
+    /// islands, a coverage — so the Y-tree alone hands back everything and the
+    /// X-envelope is what makes the query sublinear.
+    x_spans: Box<[(f64, f64)]>,
     plan: YPlan,
+    /// A 2-D envelope tree, built when the Y-plan fell through to an interval
+    /// tree — meaning the Y-spans overlap enough that a stabbing walk hands
+    /// back most of the set for every probe — and the domain has a usable X
+    /// extent. A row of adjacent boxes, a coverage, a country's parts: only an
+    /// index that discriminates on X too keeps a point query sublinear.
+    envelopes: Option<crate::geometry::BulkRTree<EnvelopeEntry>>,
 }
 
 impl<T> YStabbingIndex<T> {
@@ -88,10 +115,30 @@ impl<T> YStabbingIndex<T> {
         !matches!(self.plan, YPlan::Linear)
     }
     /// Build with a checked sizing pass selecting linear / dense bands / tree.
-    pub(crate) fn build(items: Vec<T>, mut y_span: impl FnMut(&T) -> (f64, f64)) -> Self {
-        let spans: Box<[(f64, f64)]> = items.iter().map(&mut y_span).collect();
+    /// `envelope` returns the item's closed `(min_x, max_x, min_y, max_y)`; an
+    /// index whose domain has no usable X extent (a periodic longitude, say)
+    /// passes an infinite X-span and owns that filter itself.
+    pub(crate) fn build(
+        items: Vec<T>,
+        mut envelope: impl FnMut(&T) -> (f64, f64, f64, f64),
+    ) -> Self {
+        let mut spans = Vec::with_capacity(items.len());
+        let mut x_spans = Vec::with_capacity(items.len());
+        for item in &items {
+            let (min_x, max_x, min_y, max_y) = envelope(item);
+            spans.push((min_y, max_y));
+            x_spans.push((min_x, max_x));
+        }
+        let spans: Box<[(f64, f64)]> = spans.into();
         let plan = choose_plan(&spans);
-        Self { items, spans, plan }
+        let envelopes = build_envelope_tree(&plan, &spans, &x_spans);
+        Self {
+            items,
+            spans,
+            x_spans: x_spans.into(),
+            plan,
+            envelopes,
+        }
     }
 
     /// Visit every item whose Y-interval contains `y` (closed).
@@ -142,6 +189,81 @@ impl<T> YStabbingIndex<T> {
             },
             YPlan::IntervalTree { nodes, root } => {
                 query_itree(nodes, *root, y, &mut |idx| visit(&self.items[idx as usize]))
+            },
+        }
+    }
+
+    /// Visit every item whose closed envelope contains `(x, y)`.
+    ///
+    /// Stops early when `visit` returns [`ControlFlow::Break`].
+    pub(crate) fn for_each_at_point<B>(
+        &self,
+        x: f64,
+        y: f64,
+        mut visit: impl FnMut(&T) -> std::ops::ControlFlow<B>,
+    ) -> Option<B> {
+        use std::ops::ControlFlow;
+        if let Some(envelopes) = &self.envelopes {
+            let probe = rstar::AABB::from_point([x, y]);
+            for entry in envelopes.locate_in_envelope_intersecting(probe) {
+                if let ControlFlow::Break(b) = visit(&self.items[entry.index as usize]) {
+                    return Some(b);
+                }
+            }
+            return None;
+        }
+        self.for_each_at_y_indexed(y, |item_index| {
+            let (min_x, max_x) = self.x_spans[item_index];
+            if x < min_x || x > max_x {
+                return ControlFlow::Continue(());
+            }
+            visit(&self.items[item_index])
+        })
+    }
+
+    /// The Y walk, handing the caller each surviving item's index so a filter
+    /// can run before the item itself is touched.
+    fn for_each_at_y_indexed<B>(
+        &self,
+        y: f64,
+        mut visit: impl FnMut(usize) -> std::ops::ControlFlow<B>,
+    ) -> Option<B> {
+        use std::ops::ControlFlow;
+        match &self.plan {
+            YPlan::Linear => {
+                for (index, &(lo, hi)) in self.spans.iter().enumerate() {
+                    if lo <= y
+                        && y <= hi
+                        && let ControlFlow::Break(b) = visit(index)
+                    {
+                        return Some(b);
+                    }
+                }
+                None
+            },
+            YPlan::DenseBands {
+                min_y,
+                inv_band_height,
+                band_count,
+                band_offsets,
+                band_items,
+            } => {
+                let band = band_of(y, *min_y, *inv_band_height, band_count.get());
+                let start = band_offsets[band] as usize;
+                let end = band_offsets[band + 1] as usize;
+                for &idx in &band_items[start..end] {
+                    let (lo, hi) = self.spans[idx as usize];
+                    if lo <= y
+                        && y <= hi
+                        && let ControlFlow::Break(b) = visit(idx as usize)
+                    {
+                        return Some(b);
+                    }
+                }
+                None
+            },
+            YPlan::IntervalTree { nodes, root } => {
+                query_itree(nodes, *root, y, &mut |idx| visit(idx as usize))
             },
         }
     }
@@ -351,6 +473,36 @@ fn try_dense_sizing(spans: &[(f64, f64)]) -> Option<(f64, f64, std::num::NonZero
     ))
 }
 
+/// A 2-D envelope tree for the case the Y-only plans cannot serve: heavy
+/// Y-overlap (which is what selects [`YPlan::IntervalTree`]) plus a finite X
+/// extent. Domains whose X is periodic pass an infinite span and stay on the
+/// Y walk, which is what their own filter expects.
+fn build_envelope_tree(
+    plan: &YPlan,
+    spans: &[(f64, f64)],
+    x_spans: &[(f64, f64)],
+) -> Option<crate::geometry::BulkRTree<EnvelopeEntry>> {
+    if !matches!(plan, YPlan::IntervalTree { .. }) {
+        return None;
+    }
+    let mut entries = Vec::with_capacity(spans.len());
+    for (index, (&(min_y, max_y), &(min_x, max_x))) in std::iter::zip(spans, x_spans).enumerate() {
+        if min_y > max_y {
+            // The empty-item sentinel. It matches no probe, so leaving it out
+            // of the tree is the answer rather than a reason to abandon one.
+            continue;
+        }
+        if !min_x.is_finite() || !max_x.is_finite() {
+            return None;
+        }
+        entries.push(EnvelopeEntry {
+            index: index as u32,
+            envelope: rstar::AABB::from_corners([min_x, min_y], [max_x, max_y]),
+        });
+    }
+    Some(crate::geometry::BulkRTree::bulk_load_with_params(entries))
+}
+
 fn choose_plan(spans: &[(f64, f64)]) -> YPlan {
     let n = spans.len();
     if n <= LINEAR_MAX {
@@ -534,7 +686,7 @@ mod tests {
         let items: Vec<u32> = (0..8).collect();
         let index = YStabbingIndex::build(items, |&i| {
             let y = f64::from(i);
-            (y, y + 0.5)
+            (f64::NEG_INFINITY, f64::INFINITY, y, y + 0.5)
         });
         assert_eq!(index.plan_kind(), "linear");
         assert_eq!(collect_at(&index, 3.25), vec![3]);
@@ -548,7 +700,7 @@ mod tests {
         let items: Vec<u32> = (0..n).collect();
         let index = YStabbingIndex::build(items, |&i| {
             let y = f64::from(i);
-            (y, y + 0.5)
+            (f64::NEG_INFINITY, f64::INFINITY, y, y + 0.5)
         });
         assert_eq!(index.plan_kind(), "dense");
         assert_eq!(collect_at(&index, 40.25), vec![40]);
@@ -563,7 +715,8 @@ mod tests {
         // matching item and not visit the rest of the set.
         let n = 64_u32;
         let items: Vec<u32> = (0..n).collect();
-        let index = YStabbingIndex::build(items, |_| (0.0, 1000.0));
+        let index =
+            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0));
         assert_eq!(index.plan_kind(), "tree");
         let mut visits = 0_u32;
         let broken = index.for_each_at_y(500.0, |&item| {
@@ -586,7 +739,8 @@ mod tests {
         // Every item spans the full Y range → dense refs = n * n, not proportional.
         let n = 64_u32;
         let items: Vec<u32> = (0..n).collect();
-        let index = YStabbingIndex::build(items, |_| (0.0, 1000.0));
+        let index =
+            YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1000.0));
         assert_eq!(index.plan_kind(), "tree");
         let hit = collect_at(&index, 500.0);
         assert_eq!(hit.len(), n as usize);
@@ -608,7 +762,7 @@ mod tests {
         let index = YStabbingIndex::build(items, |&i| {
             // Item i covers [i, i+10]
             let y = f64::from(i);
-            (y, y + 10.0)
+            (f64::NEG_INFINITY, f64::INFINITY, y, y + 10.0)
         });
         let hit = collect_at(&index, 20.0);
         // Items with lo <= 20 <= hi → i in [10, 20]
@@ -621,7 +775,7 @@ mod tests {
         // Simulate many bands with full-span items: sizing must not admit dense.
         let n = 1000_u32;
         let items: Vec<u32> = (0..n).collect();
-        let index = YStabbingIndex::build(items, |_| (0.0, 1.0));
+        let index = YStabbingIndex::build(items, |_| (f64::NEG_INFINITY, f64::INFINITY, 0.0, 1.0));
         assert_eq!(index.plan_kind(), "tree");
         // Construction stays O(n).
         let bytes = index.heap_bytes();

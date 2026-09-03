@@ -138,8 +138,14 @@ impl PolygonPointIndex {
             .iter()
             .map(|hole| RingPointIndex::build(hole.coords().xs(), hole.coords().ys()))
             .collect();
-        index.holes =
-            YStabbingIndex::build(hole_rings, |ring| (ring.bounds.miny(), ring.bounds.maxy()));
+        index.holes = YStabbingIndex::build(hole_rings, |ring| {
+            (
+                ring.bounds.minx(),
+                ring.bounds.maxx(),
+                ring.bounds.miny(),
+                ring.bounds.maxy(),
+            )
+        });
         index
     }
 
@@ -148,7 +154,14 @@ impl PolygonPointIndex {
         Self {
             bounds: Bounds::from_coords(shell.coords()),
             shell: shell_index,
-            holes: YStabbingIndex::build(Vec::new(), |_| (f64::INFINITY, f64::NEG_INFINITY)),
+            holes: YStabbingIndex::build(Vec::new(), |_| {
+                (
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                )
+            }),
         }
     }
 
@@ -158,8 +171,11 @@ impl PolygonPointIndex {
         })
     }
 
-    pub(crate) fn y_span(&self) -> Option<(f64, f64)> {
-        self.bounds.map(|bounds| (bounds.miny(), bounds.maxy()))
+    /// The closed `(min_x, max_x, min_y, max_y)` envelope, absent for an
+    /// empty polygon.
+    pub(crate) fn envelope(&self) -> Option<(f64, f64, f64, f64)> {
+        self.bounds
+            .map(|bounds| (bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy()))
     }
 
     /// Strict membership after the envelope candidate gate.
@@ -222,12 +238,9 @@ impl PolygonPointIndex {
                 }
             });
         } else {
-            let _ = self.holes.for_each_at_y(y, |hole| {
+            let _ = self.holes.for_each_at_point(x, y, |hole| {
                 if interior_hole {
                     return ControlFlow::Break(());
-                }
-                if !hole.bounds_contains(x, y) {
-                    return ControlFlow::Continue(());
                 }
                 match hole.classify_at(x, y) {
                     RingClass::Interior => {
@@ -264,12 +277,9 @@ impl PolygonPointIndex {
                 }
             });
         } else {
-            let _ = self.holes.for_each_at_y(y, |hole| {
+            let _ = self.holes.for_each_at_point(x, y, |hole| {
                 if hit {
                     return ControlFlow::Break(());
-                }
-                if !hole.bounds_contains(x, y) {
-                    return ControlFlow::Continue(());
                 }
                 if pred(hole.classify_at(x, y)) {
                     hit = true;
@@ -338,9 +348,16 @@ impl PointBatchTester {
             };
         }
         let built: Vec<PolygonPointIndex> = polygons.iter().map(PolygonPointIndex::build).collect();
-        let parts = YStabbingIndex::build(built, |p| {
-            p.bounds
-                .map_or((f64::INFINITY, f64::NEG_INFINITY), |b| (b.miny(), b.maxy()))
+        let parts = YStabbingIndex::build(built, |part| {
+            part.bounds.map_or(
+                (
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                ),
+                |bounds| (bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy()),
+            )
         });
         Self::MultiPolygon { parts }
     }
@@ -352,7 +369,7 @@ impl PointBatchTester {
             Self::Polygon { index: polygon, .. } => polygon.contains_xy(point.x, point.y),
             Self::MultiPolygon { parts, .. } => {
                 let mut hit = false;
-                let _ = parts.for_each_at_y(point.y, |polygon| {
+                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
                     if polygon.contains_xy(point.x, point.y) {
                         hit = true;
                         ControlFlow::Break(())
@@ -372,7 +389,7 @@ impl PointBatchTester {
             Self::Polygon { index: polygon, .. } => polygon.covers_xy(point.x, point.y),
             Self::MultiPolygon { parts, .. } => {
                 let mut hit = false;
-                let _ = parts.for_each_at_y(point.y, |polygon| {
+                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
                     if polygon.covers_xy(point.x, point.y) {
                         hit = true;
                         ControlFlow::Break(())
@@ -396,7 +413,7 @@ impl PointBatchTester {
             Self::MultiPolygon { parts, .. } => {
                 let mut on_boundary = false;
                 let mut interior = false;
-                let _ = parts.for_each_at_y(point.y, |polygon| {
+                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
                     if interior {
                         return ControlFlow::Break(());
                     }

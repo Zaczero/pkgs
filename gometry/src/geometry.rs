@@ -252,6 +252,7 @@ pub(in crate::geometry) use types::GeodesicPartsKey;
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
 
+#[derive(Clone, Debug)]
 pub(crate) struct BulkParams;
 
 impl rstar::RTreeParams for BulkParams {
