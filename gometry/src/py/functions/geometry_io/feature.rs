@@ -71,7 +71,7 @@ fn require_geojson_shape(shape: &Shape, crs: Option<&str>) -> PyResult<()> {
 }
 
 /// The RFC 7946 coordinate domain for a Feature's declared CRS.
-fn feature_domain(crs: Option<&str>) -> PyResult<crate::geometry::TopologyDomain> {
+fn feature_domain(crs: Option<&str>) -> crate::error::Result<crate::geometry::TopologyDomain> {
     Ok(match crs {
         Some(crs) => crate::crs::info(crs)?
             .geographic_frame()
@@ -84,22 +84,11 @@ fn feature_domain(crs: Option<&str>) -> PyResult<crate::geometry::TopologyDomain
 
 fn feature_dict<'py>(
     py: Python<'py>,
-    geometry: Option<&Shape>,
-    crs: Option<&str>,
+    geometry: Option<&Bound<'py, PyAny>>,
     properties: Option<&Bound<'py, PyAny>>,
     id: Option<&Bound<'py, PyAny>>,
     preserve_explicit_null: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let geometry = if let Some(shape) = geometry {
-        // Share `to_geojson`'s RFC 7946 preparation (domain + seam split).
-        Some(crate::boundary::convert::geojson_dict_prepared(
-            py,
-            shape,
-            feature_domain(crs)?,
-        )?)
-    } else {
-        None
-    };
     let properties = properties_value(py, properties, preserve_explicit_null)?;
     let feature = PyDict::new(py);
     feature.set_item("type", "Feature")?;
@@ -111,6 +100,100 @@ fn feature_dict<'py>(
     feature.set_item("properties", properties)?;
     set_feature_id(&feature, id)?;
     Ok(feature)
+}
+
+fn geometry_from_json_text(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    crate::boundary::json_text_to_py(py, text)
+}
+
+fn serialize_feature_shapes(
+    py: Python<'_>,
+    shapes: Vec<Option<(Shape, Option<String>)>>,
+) -> PyResult<Vec<Option<String>>> {
+    py.detach(move || {
+        shapes
+            .into_iter()
+            .map(|shape| {
+                shape
+                    .map(|(shape, crs)| {
+                        let domain = feature_domain(crs.as_deref())?;
+                        crate::io::to_geojson_string::<true>(&shape, domain)
+                    })
+                    .transpose()
+            })
+            .collect::<crate::error::Result<Vec<_>>>()
+    })
+    .map_err(PyErr::from)
+}
+
+fn serialize_array_feature_shapes(
+    py: Python<'_>,
+    array: &crate::PyGeometryArray,
+    crs: Option<String>,
+) -> PyResult<Vec<Option<String>>> {
+    let array = array.clone();
+    py.detach(move || {
+        let domain = feature_domain(crs.as_deref())?;
+        let mut output = Vec::new();
+        crate::boundary::try_reserve_vec(&mut output, array.len())?;
+        for row in array.row_operation().rows_with_missing(|| ()) {
+            let text = match row {
+                crate::array::ArrayRow::Missing { .. } => None,
+                crate::array::ArrayRow::Present(row) => Some(
+                    row.row()
+                        .with_shape(|shape| crate::io::to_geojson_string::<true>(shape, domain))?,
+                ),
+            };
+            crate::boundary::try_push_vec(&mut output, text)?;
+        }
+        Ok::<_, crate::error::Error>(output)
+    })
+    .map_err(PyErr::from)
+}
+
+fn owned_rows<'py>(rows: Vec<Option<Bound<'py, PyAny>>>) -> Vec<Option<Py<PyAny>>> {
+    rows.into_iter().map(|row| row.map(Bound::unbind)).collect()
+}
+
+fn side_rows<'py>(
+    value: Option<&Bound<'py, PyAny>>,
+    len: usize,
+    name: &str,
+    broadcast: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Vec<Option<Py<PyAny>>>> {
+    if value.is_none_or(|value| value.is_none()) {
+        let mut rows = crate::try_vec_with_capacity(len)?;
+        for _ in 0..len {
+            rows.push(None);
+        }
+        return Ok(rows);
+    }
+    if let Some(broadcast) = broadcast {
+        let mut rows = crate::try_vec_with_capacity(len)?;
+        for _ in 0..len {
+            rows.push(Some(broadcast.copy()?.into_any().unbind()));
+        }
+        return Ok(rows);
+    }
+    Ok(owned_rows(aligned_rows(value, len, name)?))
+}
+
+fn materialize_feature<'py>(
+    py: Python<'py>,
+    geometry: Option<&Py<PyAny>>,
+    properties: Option<&Py<PyAny>>,
+    id: Option<&Py<PyAny>>,
+    preserve_explicit_null: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let geometry = geometry.map(|text| text.bind(py));
+    let properties = properties.map(|value| value.bind(py));
+    let id = id.map(|value| value.bind(py));
+    feature_dict(py, geometry, properties, id, preserve_explicit_null)
+}
+
+enum FeatureGeometryRows {
+    Array(crate::PyGeometryArray),
+    Shapes(Vec<Option<(Shape, Option<String>)>>),
 }
 
 /// Build a GeoJSON Feature mapping from a geometry and side data.
@@ -175,20 +258,30 @@ pub(crate) fn to_feature(
             Some(exact_geometry(value).ok_or_else(|| geometry_type_err("expected Geometry"))?)
         },
     };
-    let crs = geometry.as_ref().and_then(|geometry| geometry.crs_str());
-    if let Some(geometry) = geometry {
+    let crs = geometry
+        .as_ref()
+        .and_then(|geometry| geometry.crs_str())
+        .map(str::to_owned);
+    let geometry = if let Some(geometry) = geometry {
         crate::py::errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
-    }
-    Ok(feature_dict(
-        py,
-        geometry.map(|geometry| geometry.shape.shape()),
-        crs,
-        properties,
-        id,
-        false,
-    )?
-    .unbind())
+        let shape = geometry.shape.shape().clone();
+        Some(
+            py.detach(move || {
+                let domain = feature_domain(crs.as_deref())?;
+                crate::io::to_geojson_string::<true>(&shape, domain)
+            })
+            .map_err(PyErr::from)?,
+        )
+    } else {
+        None
+    };
+    let geometry = geometry
+        .as_deref()
+        .map(|text| geometry_from_json_text(py, text))
+        .transpose()?;
+    let geometry = geometry.as_ref().map(|text| text.bind(py));
+    Ok(feature_dict(py, geometry, properties, id, false)?.unbind())
 }
 
 fn aligned_rows<'py>(
@@ -321,8 +414,7 @@ fn to_feature_collection_impl(
         Some(value) if !value.is_none() => mapping_as_dict(value)?,
         _ => None,
     };
-    let features = PyList::empty(py);
-    if let Some(array) = exact_geometry_array(values) {
+    let (geometry_rows, row_count) = if let Some(array) = exact_geometry_array(values) {
         crate::py::errors::require_epoch_drop(array.epoch(), drop_epoch, "to_feature_collection")?;
         require_geojson_crs(array.crs_str())?;
         if array.has_m() {
@@ -330,42 +422,7 @@ fn to_feature_collection_impl(
                 "GeoJSON has no M ordinate; use WKT/GeoArrow to preserve M",
             ));
         }
-        let array_crs = array.crs_str();
-        let properties = if properties.is_none() {
-            crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any()))).take(array.len()),
-            )?
-        } else if let Some(props) = &broadcast_properties {
-            crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any()))).take(array.len()),
-            )?
-        } else {
-            aligned_rows(properties, array.len(), "properties")?
-        };
-        let ids = aligned_rows(ids, array.len(), "ids")?;
-        for ((row, properties), id) in array
-            .row_operation()
-            .rows_with_missing(|| ())
-            .zip(properties.iter())
-            .zip(ids.iter())
-        {
-            let feature = match row {
-                crate::array::ArrayRow::Missing { .. } => {
-                    feature_dict(py, None, array_crs, properties.as_ref(), id.as_ref(), true)?
-                },
-                crate::array::ArrayRow::Present(row) => row.row().with_shape(|shape| {
-                    feature_dict(
-                        py,
-                        Some(shape),
-                        array_crs,
-                        properties.as_ref(),
-                        id.as_ref(),
-                        true,
-                    )
-                })?,
-            };
-            features.append(feature)?;
-        }
+        (FeatureGeometryRows::Array(array.clone()), array.len())
     } else {
         let geometry_rows = if exact_geometry(values).is_some() || values.is_none() {
             vec![values.clone()]
@@ -385,39 +442,51 @@ fn to_feature_collection_impl(
             )?;
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
-        let properties = if properties.is_none() {
-            crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(PyDict::new(py).into_any())))
-                    .take(geometry_rows.len()),
-            )?
-        } else if let Some(props) = &broadcast_properties {
-            crate::try_collect_results(
-                std::iter::repeat_with(|| Ok(Some(props.copy()?.into_any())))
-                    .take(geometry_rows.len()),
-            )?
-        } else {
-            aligned_rows(properties, geometry_rows.len(), "properties")?
-        };
-        let ids = aligned_rows(ids, geometry_rows.len(), "ids")?;
-        for ((geometry, properties), id) in
-            geometry_rows.iter().zip(properties.iter()).zip(ids.iter())
-        {
-            let (shape, row_crs) = if geometry.is_none() {
-                (None, None)
+        let mut shapes = crate::try_vec_with_capacity(geometry_rows.len())?;
+        for geometry in geometry_rows {
+            let row = if geometry.is_none() {
+                None
             } else {
-                let geometry = exact_geometry(geometry)
-                    .expect("geometry rows were validated before aligned side data");
-                (Some(geometry.shape.shape()), geometry.crs_str())
+                let geometry = exact_geometry(&geometry)
+                    .expect("geometry rows were validated before detached serialization");
+                Some((
+                    geometry.shape.shape().clone(),
+                    geometry.crs_str().map(str::to_owned),
+                ))
             };
-            features.append(feature_dict(
-                py,
-                shape,
-                row_crs,
-                properties.as_ref(),
-                id.as_ref(),
-                true,
-            )?)?;
+            crate::boundary::try_push_vec(&mut shapes, row)?;
         }
+        let row_count = shapes.len();
+        (FeatureGeometryRows::Shapes(shapes), row_count)
+    };
+
+    let properties = side_rows(
+        properties,
+        row_count,
+        "properties",
+        broadcast_properties.as_ref(),
+    )?;
+    let ids = side_rows(ids, row_count, "ids", None)?;
+    let geometry_texts = match geometry_rows {
+        FeatureGeometryRows::Array(array) => {
+            serialize_array_feature_shapes(py, &array, array.crs_str().map(str::to_owned))?
+        },
+        FeatureGeometryRows::Shapes(shapes) => serialize_feature_shapes(py, shapes)?,
+    };
+    let features = PyList::empty(py);
+    for index in 0..row_count {
+        let geometry = geometry_texts[index]
+            .as_deref()
+            .map(|text| geometry_from_json_text(py, text))
+            .transpose()?;
+        let feature = materialize_feature(
+            py,
+            geometry.as_ref(),
+            properties[index].as_ref(),
+            ids[index].as_ref(),
+            true,
+        )?;
+        features.append(feature)?;
     }
     let collection = PyDict::new(py);
     collection.set_item("type", "FeatureCollection")?;

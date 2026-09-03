@@ -168,13 +168,14 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         crate::py::arrow::reject_requested_schema(requested_schema)?;
         crate::py::arrow_c::geometry_to_stream_capsule(py, self)
     }
-    pub fn __repr__(&self) -> PyResult<String> {
+    pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         const WKT_LIMIT: usize = 120;
         // Render only the leading WKT bytes the preview needs — a 20k-vertex
         // geometry no longer materializes its full (~megabyte) WKT just to
         // truncate it. The bounded prefix is byte-identical to the full
         // render's, so the truncation result is unchanged.
-        let mut wkt = io::to_wkt_preview(&self.shape, WKT_LIMIT + 1)?;
+        let shape = self.shape.clone();
+        let mut wkt = py.detach(move || io::to_wkt_preview(shape.shape(), WKT_LIMIT + 1))?;
         if wkt.len() > WKT_LIMIT {
             wkt.truncate(WKT_LIMIT);
             wkt.push_str("...");
@@ -227,8 +228,10 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         overlay_operator(py, slf.as_any(), other, OverlayOp::SymmetricDifference)
     }
 
-    pub fn __str__(&self) -> PyResult<String> {
-        Ok(io::to_wkt(&self.shape)?)
+    pub fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let shape = self.shape.clone();
+        py.detach(move || io::to_wkt(shape.shape()))
+            .map_err(PyErr::from)
     }
 
     /// ``False`` when the geometry is empty; ``True`` otherwise.
@@ -243,12 +246,18 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         !self.shape.is_empty()
     }
 
-    pub fn __format__(&self, spec: &str) -> PyResult<String> {
+    pub fn __format__(&self, py: Python<'_>, spec: &str) -> PyResult<String> {
         use std::fmt::Write as _;
         match spec {
-            "" => return io::to_wkt(&self.shape).map_err(PyErr::from),
+            "" => {
+                let shape = self.shape.clone();
+                return py
+                    .detach(move || io::to_wkt(shape.shape()))
+                    .map_err(PyErr::from);
+            },
             "x" | "X" => {
-                let wkb = io::to_wkb(&self.shape, None, false)?;
+                let shape = self.shape.clone();
+                let wkb = py.detach(move || io::to_wkb(shape.shape(), None, false))?;
                 let capacity = wkb.len().checked_mul(2).ok_or_else(|| {
                     PyMemoryError::new_err("hexadecimal WKB output size overflows usize")
                 })?;
@@ -300,7 +309,9 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             (false, None) => io::WktNumberFormat::Fixed(16),
             (false, Some(precision)) => io::WktNumberFormat::Fixed(precision),
         };
-        io::to_wkt_display(&self.shape, format).map_err(PyErr::from)
+        let shape = self.shape.clone();
+        py.detach(move || io::to_wkt_display(shape.shape(), format))
+            .map_err(PyErr::from)
     }
 
     /// Structural value equality: same CRS, coordinate epoch, geometry kind,

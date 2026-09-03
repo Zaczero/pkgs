@@ -31,8 +31,8 @@ use boundary::{
     coordinate_inputs_are_scalar, coordinate_sequence_len_hint, coordinate_values_at_most,
     coordinate_values_exact, coordinates, coordinates_object, copy_one_byte_buffer, crs_arc,
     crs_operationally_equal, epoch_label, f64_required, f64_scalar_named,
-    finite_coordinate_required, finite_f64_required, geojson_dict_prepared, grow_sequence_error,
-    is_one_byte_buffer, json_to_py, non_negative_int, optional_coordinate_arc_values,
+    finite_coordinate_required, finite_f64_required, grow_sequence_error, is_one_byte_buffer,
+    json_to_py, non_negative_int, optional_coordinate_arc_values,
     optional_coordinate_arc_values_from_buffer, optional_coordinate_input_with_expected,
     parameter_input_with_expected, parameter_values, parameter_values_at_most,
     parameter_values_exact, parse_affine_matrix, parse_area, parse_cdt_refinement,
@@ -133,7 +133,7 @@ use geometry::{
     PreparedPlan, RepairMethod, Ring, Shape, ShapeData, SimplifyMethod, SmoothMethod,
     ValidationIssue, VoronoiBoundary, point_distance, row_sample_seed,
 };
-use py::arrow::{ArrowEncoding, packed_points_to_arrow};
+use py::arrow::ArrowEncoding;
 use py::crs::PyCrs;
 use py::errors::{CRSError, GeometryError, InvalidGeometryError, geometry_type_err};
 use py::support::{

@@ -8,9 +8,9 @@ use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
 };
 use crate::{
-    Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, geojson_dict_prepared,
-    map_coordinates_callback, parse_coordinate_replacement, render_shape_html, render_shape_svg,
-    replace_shape_coordinates, require_geojson_crs,
+    Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, map_coordinates_callback,
+    parse_coordinate_replacement, render_shape_html, render_shape_svg, replace_shape_coordinates,
+    require_geojson_crs,
 };
 
 #[pymethods]
@@ -33,8 +33,8 @@ impl PyGeometry {
         Ok(render_shape_svg(&self.shape)?)
     }
 
-    pub fn _repr_html_(&self) -> PyResult<String> {
-        let repr = self.__repr__()?;
+    pub fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
+        let repr = self.__repr__(py)?;
         Ok(render_shape_html(&self.shape, &repr)?)
     }
     /// OGC geometry type name, e.g. ``'Point'`` or ``'MultiPolygon'``.
@@ -350,11 +350,12 @@ impl PyGeometry {
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
             ));
         }
-        geojson_dict_prepared(
-            py,
-            &self.shape,
-            crate::geometry::topology_domain(&self.frame)?,
-        )
+        let shape = self.shape.clone();
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let text =
+            py.detach(move || crate::io::to_geojson_string::<true>(shape.shape(), domain))?;
+        let geometry = crate::boundary::json_text_to_py(py, &text)?;
+        Ok(geometry.bind(py).clone().cast_into()?)
     }
     /// Area in CRS-natural units for the geometry's CRS.
     ///

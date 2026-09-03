@@ -21,39 +21,6 @@ pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Re
     Ok(out)
 }
 
-/// Exact serialized length (including EWKB SRID when applicable).
-pub(crate) fn to_wkb_len(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Result<usize> {
-    require_serializable_axes(shape)?;
-    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
-    WkbShape::classify(shape).encoded_len(srid.is_some())
-}
-
-/// Write WKB/EWKB into a pre-sized buffer (exact length from [`to_wkb_len`]).
-/// Used by `PyBytes::new_with` so large scalar encodes skip a Vec→bytes copy.
-pub(crate) fn write_wkb_into(
-    out: &mut [u8],
-    shape: &Shape,
-    crs: Option<&str>,
-    include_srid: bool,
-) -> Result<()> {
-    require_serializable_axes(shape)?;
-    let srid = extended_srid_code(crs, include_srid, "EWKB")?;
-    let geometry = WkbShape::classify(shape);
-    debug_assert_eq!(
-        out.len(),
-        geometry.encoded_len(srid.is_some())?,
-        "WKB destination length drifted from classification"
-    );
-    let mut cursor = WkbBuf { buf: out, pos: 0 };
-    geometry.write(&mut cursor, srid)?;
-    debug_assert_eq!(
-        cursor.pos,
-        out.len(),
-        "WKB writer under/over-filled the destination"
-    );
-    Ok(())
-}
-
 pub(crate) fn write_wkb_to(
     out: &mut Vec<u8>,
     shape: &Shape,
@@ -81,20 +48,6 @@ fn write_wkb_resolved(out: &mut Vec<u8>, shape: &Shape, srid: Option<u32>) -> Re
     WkbShape::classify(shape).write(out, srid)
 }
 
-/// Cursor over a pre-sized mutable byte buffer for exact-size WKB fills.
-struct WkbBuf<'a> {
-    buf: &'a mut [u8],
-    pos: usize,
-}
-
-impl WkbBuf<'_> {
-    fn write_at(&mut self, bytes: &[u8]) {
-        let end = self.pos + bytes.len();
-        self.buf[self.pos..end].copy_from_slice(bytes);
-        self.pos = end;
-    }
-}
-
 trait WkbOut {
     fn push_byte(&mut self, value: u8);
     fn extend_bytes(&mut self, bytes: &[u8]);
@@ -109,72 +62,6 @@ trait WkbOut {
         zs: Option<&[f64]>,
         ms: Option<&[f64]>,
     ) -> Result<()>;
-}
-
-impl WkbOut for WkbBuf<'_> {
-    fn push_byte(&mut self, value: u8) {
-        self.buf[self.pos] = value;
-        self.pos += 1;
-    }
-
-    fn extend_bytes(&mut self, bytes: &[u8]) {
-        self.write_at(bytes);
-    }
-
-    fn write_columns(
-        &mut self,
-        xs: &[f64],
-        ys: &[f64],
-        zs: Option<&[f64]>,
-        ms: Option<&[f64]>,
-    ) -> Result<()> {
-        let count = xs.len();
-        if ys.len() != count
-            || zs.is_some_and(|z| z.len() != count)
-            || ms.is_some_and(|m| m.len() != count)
-        {
-            return Err(IoError::wkb(
-                "WKB coordinate columns have mismatched lengths",
-            ));
-        }
-        let dimension = 2 + usize::from(zs.is_some()) + usize::from(ms.is_some());
-        let byte_len = count * dimension * size_of::<f64>();
-        let end = self.pos + byte_len;
-        let bytes = &mut self.buf[self.pos..end];
-        let (lanes, rest) = bytes.as_chunks_mut::<8>();
-        debug_assert!(rest.is_empty());
-        match (zs, ms) {
-            (None, None) => {
-                let stream = std::iter::zip(xs, ys).flat_map(|(&x, &y)| [x, y]);
-                for (lane, value) in std::iter::zip(lanes, stream) {
-                    *lane = value.to_le_bytes();
-                }
-            },
-            (Some(zs), None) => {
-                let stream =
-                    std::iter::zip(std::iter::zip(xs, ys), zs).flat_map(|((&x, &y), &z)| [x, y, z]);
-                for (lane, value) in std::iter::zip(lanes, stream) {
-                    *lane = value.to_le_bytes();
-                }
-            },
-            (None, Some(ms)) => {
-                let stream =
-                    std::iter::zip(std::iter::zip(xs, ys), ms).flat_map(|((&x, &y), &m)| [x, y, m]);
-                for (lane, value) in std::iter::zip(lanes, stream) {
-                    *lane = value.to_le_bytes();
-                }
-            },
-            (Some(zs), Some(ms)) => {
-                let stream = std::iter::zip(std::iter::zip(std::iter::zip(xs, ys), zs), ms)
-                    .flat_map(|(((&x, &y), &z), &m)| [x, y, z, m]);
-                for (lane, value) in std::iter::zip(lanes, stream) {
-                    *lane = value.to_le_bytes();
-                }
-            },
-        }
-        self.pos = end;
-        Ok(())
-    }
 }
 
 impl WkbOut for Vec<u8> {

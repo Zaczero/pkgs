@@ -17,7 +17,7 @@ use std::ffi::c_int;
 use std::ops::Range;
 use std::sync::Arc;
 
-use pyo3::exceptions::{PyBufferError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySequence};
 use pyo3::{IntoPyObjectExt as _, ffi};
@@ -1223,14 +1223,6 @@ pub(crate) struct Float64Buffer {
 }
 
 impl Float64Buffer {
-    /// Zero-copy window over shared storage.
-    pub(crate) fn view(storage: Arc<[f64]>, range: Range<usize>) -> PyResult<Self> {
-        if range.start > range.end || range.end > storage.len() {
-            return Err(PyBufferError::new_err("buffer window out of range"));
-        }
-        Ok(Self { storage, range })
-    }
-
     fn as_slice(&self) -> &[f64] {
         &self.storage[self.range.clone()]
     }
@@ -1284,10 +1276,6 @@ pub(crate) struct Int32Buffer {
 }
 
 impl Int32Buffer {
-    pub(crate) const fn new(storage: Arc<[i32]>) -> Self {
-        Self { storage }
-    }
-
     fn as_slice(&self) -> &[i32] {
         &self.storage
     }

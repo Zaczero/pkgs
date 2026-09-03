@@ -13,15 +13,76 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 
+use pyo3::exceptions::PyOverflowError;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use serde_json::{Map, Number, Value};
 
-use crate::geometry::{CoordSeq, CoordinateAxes, Polygon, Shape};
-use crate::py::errors::{GeometryError, ParseError};
+use crate::geometry::{CoordSeq, CoordinateAxes};
+use crate::py::errors::GeometryError;
 use crate::py::geoarrow::GeometryEncoding;
 use crate::{PyGeometry, PyGeometryArray};
+
+/// Native failures produced while planning an Arrow export. No variant owns
+/// Python exception state; conversion is deliberately restricted to the
+/// attached capsule/PyArrow egress.
+#[derive(Debug)]
+pub(crate) enum NativeArrowExportError {
+    Core(crate::error::Error),
+    CoreRow {
+        row: usize,
+        error: crate::error::Error,
+    },
+    Overflow(Box<str>),
+    GeoArrow(Box<str>),
+    Geometry(Box<str>),
+    InvalidGeometry(Box<str>),
+}
+
+pub(crate) type NativeArrowExportResult<T> = std::result::Result<T, NativeArrowExportError>;
+
+impl From<crate::error::Error> for NativeArrowExportError {
+    fn from(error: crate::error::Error) -> Self {
+        Self::Core(error)
+    }
+}
+
+impl NativeArrowExportError {
+    pub(crate) fn overflow(message: impl Into<Box<str>>) -> Self {
+        Self::Overflow(message.into())
+    }
+
+    pub(crate) fn geoarrow(message: impl Into<Box<str>>) -> Self {
+        Self::GeoArrow(message.into())
+    }
+
+    pub(crate) fn geometry(message: impl Into<Box<str>>) -> Self {
+        Self::Geometry(message.into())
+    }
+
+    pub(crate) fn invalid_geometry(message: impl Into<Box<str>>) -> Self {
+        Self::InvalidGeometry(message.into())
+    }
+
+    pub(crate) fn into_py_err(self, _py: Python<'_>) -> PyErr {
+        match self {
+            Self::Core(error) => error.into(),
+            Self::CoreRow { row, error } => crate::broadcast::rows_err((row, error)),
+            Self::Overflow(message) => PyOverflowError::new_err(message.into_string()),
+            Self::GeoArrow(message) => crate::py::errors::parse_error(
+                message.into_string(),
+                crate::error::ParseFormat::GeoArrow,
+            ),
+            Self::Geometry(message) => {
+                crate::py::errors::GeometryError::new_err(message.into_string())
+            },
+            Self::InvalidGeometry(message) => {
+                crate::py::errors::InvalidGeometryError::new_err(message.into_string())
+            },
+        }
+    }
+}
 
 #[repr(C)]
 pub(crate) struct ArrowSchema {
@@ -128,6 +189,7 @@ mod admitted;
 mod build;
 mod capsule_lifecycle;
 mod export;
+mod export_plan;
 mod foreign_buffer;
 mod import;
 mod native;
@@ -137,17 +199,19 @@ mod tests;
 
 pub(crate) use admitted::{ClassifiedGeometrySchema, admit_and_classify_raw_schema};
 pub(crate) use build::{
-    GometryArrowArray, apply_top_level_validity, binary_array, coordinate_array, coordinate_schema,
-    empty_array, extension_schema, list_array, list_array_windowed, list_schema, wkb_schema,
+    GometryArrowArray, admitted_binary_array, admitted_list_array_windowed,
+    apply_prebuilt_top_level_validity, coordinate_array, coordinate_schema, empty_array,
+    extension_schema, list_schema, wkb_schema,
 };
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
     capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
-    geometry_to_stream_capsule, release_imported,
+    geometry_to_stream_capsule, pyarrow_array_from_export, release_imported,
 };
-pub(crate) use export::{
-    export_from_geometries, export_from_geometry_array, schema_from_geometries,
-    schema_from_geometry_array,
+pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
+pub(crate) use export_plan::{
+    PreparedArrowExportPlan, materialize_export_plan, materialize_schema_plan, plan_geometry_array,
+    plan_shapes, plan_wkb_shapes, prepare_export_plan,
 };
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c, release_imported_stream};
 pub(crate) use native::{

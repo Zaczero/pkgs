@@ -7,11 +7,9 @@ use std::ptr;
 use crate::py::arrow_c::{
     ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
     ImportedStreamGuard, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray,
-    PyResult, PyTuple, Python, StreamPrivate, apply_top_level_validity, array_capsule_destructor,
-    array_capsule_name, c_char, export_from_geometries, export_from_geometry_array, ffi,
-    release_array, release_imported_stream, release_schema, release_stream,
-    schema_capsule_destructor, schema_capsule_name, schema_from_geometries,
-    schema_from_geometry_array, stream_capsule_destructor, stream_capsule_name,
+    PyResult, PyTuple, Python, StreamPrivate, array_capsule_destructor, array_capsule_name, c_char,
+    ffi, release_array, release_imported_stream, release_schema, release_stream,
+    schema_capsule_destructor, schema_capsule_name, stream_capsule_destructor, stream_capsule_name,
     stream_get_last_error, stream_get_next, stream_get_schema,
 };
 
@@ -168,7 +166,16 @@ pub(crate) fn geometry_to_schema_capsule(
     geometry: &PyGeometry,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let schema = schema_from_geometries([geometry], geometry.crs_str(), geometry.epoch())?;
+    let shapes = vec![geometry.shape.shape().clone()];
+    let crs = geometry.crs_str().map(str::to_owned);
+    let epoch = geometry.epoch();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let schema = crate::py::arrow_c::materialize_schema_plan(plan)?;
     schema_capsule(py, schema)
 }
 
@@ -178,7 +185,17 @@ pub(crate) fn array_to_schema_capsule(
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
     // Array frame is authoritative (per-row frames no longer exist).
-    let schema = schema_from_geometry_array(array)?;
+    let array = array.clone();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_geometry_array(
+                &array,
+                crate::py::arrow::ArrowEncoding::Auto,
+            )?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let schema = crate::py::arrow_c::materialize_schema_plan(plan)?;
     schema_capsule(py, schema)
 }
 
@@ -187,7 +204,16 @@ pub(crate) fn geometry_to_array_capsules(
     geometry: &PyGeometry,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let export = export_from_geometries([geometry], geometry.crs_str(), geometry.epoch())?;
+    let shapes = vec![geometry.shape.shape().clone()];
+    let crs = geometry.crs_str().map(str::to_owned);
+    let epoch = geometry.epoch();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
     array_capsules(py, export)
 }
 
@@ -197,10 +223,17 @@ pub(crate) fn array_to_array_capsules(
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
     // Storage-direct: retain coordinate/CSR Arcs; no per-row PyGeometry.
-    let mut export = export_from_geometry_array(array)?;
-    if let Some(mask) = array.missing() {
-        apply_top_level_validity(&mut export.array, mask)?;
-    }
+    let array = array.clone();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_geometry_array(
+                &array,
+                crate::py::arrow::ArrowEncoding::Auto,
+            )?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
     array_capsules(py, export)
 }
 
@@ -209,7 +242,16 @@ pub(crate) fn geometry_to_stream_capsule(
     geometry: &PyGeometry,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let export = export_from_geometries([geometry], geometry.crs_str(), geometry.epoch())?;
+    let shapes = vec![geometry.shape.shape().clone()];
+    let crs = geometry.crs_str().map(str::to_owned);
+    let epoch = geometry.epoch();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
     stream_capsule(py, export)
 }
 
@@ -218,10 +260,17 @@ pub(crate) fn array_to_stream_capsule(
     array: &PyGeometryArray,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
-    let mut export = export_from_geometry_array(array)?;
-    if let Some(mask) = array.missing() {
-        apply_top_level_validity(&mut export.array, mask)?;
-    }
+    let array = array.clone();
+    let plan = py
+        .detach(move || {
+            let plan = crate::py::arrow_c::plan_geometry_array(
+                &array,
+                crate::py::arrow::ArrowEncoding::Auto,
+            )?;
+            crate::py::arrow_c::prepare_export_plan(plan)
+        })
+        .map_err(|error| error.into_py_err(py))?;
+    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
     stream_capsule(py, export)
 }
 
@@ -239,6 +288,26 @@ pub(crate) fn array_capsules(py: Python<'_>, export: ExportedArray) -> PyResult<
     let schema = schema_capsule(py, export.schema)?;
     let array = array_capsule(py, export.array)?;
     Ok(PyTuple::new(py, [schema, array])?.unbind().into_any())
+}
+
+/// Import one native export into PyArrow after the native plan has completed.
+/// Capsule creation and consumption stay attached because both sides invoke
+/// Python-owned release callbacks; no native encoding work happens here.
+pub(crate) fn pyarrow_array_from_export(
+    py: Python<'_>,
+    export: ExportedArray,
+) -> PyResult<Py<PyAny>> {
+    register_loaded_pyarrow_extension_types(py)?;
+    let capsules = array_capsules(py, export)?;
+    let tuple = capsules.bind(py).cast::<PyTuple>()?;
+    let pyarrow = crate::py::arrow::pyarrow_module(py)?;
+    pyarrow
+        .getattr(pyo3::intern!(py, "Array"))?
+        .call_method1(
+            pyo3::intern!(py, "_import_from_c_capsule"),
+            (tuple.get_item(0)?, tuple.get_item(1)?),
+        )
+        .map(Bound::unbind)
 }
 
 pub(crate) fn array_capsule(py: Python<'_>, array: GometryArrowArray) -> PyResult<Py<PyAny>> {

@@ -434,6 +434,24 @@ impl PyGeometryArray {
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
             ));
         }
+        let array = self.clone();
+        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let geometry_texts = py
+            .detach(move || {
+                let mut texts = Vec::new();
+                crate::boundary::try_reserve_vec(&mut texts, array.len())?;
+                for row in array.row_operation().rows_with_missing(|| ()) {
+                    let text = match row {
+                        ArrayRow::Missing { .. } => None,
+                        ArrayRow::Present(row) => Some(row.row().with_shape(|shape| {
+                            crate::io::to_geojson_string::<true>(shape, domain)
+                        })?),
+                    };
+                    crate::boundary::try_push_vec(&mut texts, text)?;
+                }
+                Ok::<_, crate::error::Error>(texts)
+            })
+            .map_err(crate::PyErr::from)?;
         let features = PyList::empty(py);
         for row in 0..self.len() {
             let feature = PyDict::new(py);
@@ -443,13 +461,13 @@ impl PyGeometryArray {
             let geometry = if self.is_row_missing(row) {
                 py.None().into_bound(py)
             } else {
-                let geometry = self.geometry_at(row);
-                crate::boundary::convert::geojson_dict_prepared(
+                crate::boundary::json_text_to_py(
                     py,
-                    geometry.shape.shape(),
-                    crate::geometry::topology_domain(&self.frame)?,
+                    geometry_texts[row]
+                        .as_deref()
+                        .expect("present row has text"),
                 )?
-                .into_any()
+                .into_bound(py)
             };
             feature.set_item("geometry", geometry)?;
             features.append(feature)?;

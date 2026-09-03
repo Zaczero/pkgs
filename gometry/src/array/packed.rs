@@ -247,7 +247,9 @@ impl PyGeometryArray {
     /// Materialize compact point validity into coordinate placeholders for an
     /// interchange format that requires one physical point per logical row.
     /// The stored compact payload remains present-only.
-    pub(crate) fn materialized_compact_point_coords(&self) -> PyResult<Option<CoordSeq>> {
+    pub(crate) fn materialized_compact_point_coords(
+        &self,
+    ) -> crate::error::Result<Option<CoordSeq>> {
         if !self.is_compact_nullable() {
             return Ok(None);
         }

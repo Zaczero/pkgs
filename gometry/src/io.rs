@@ -335,13 +335,11 @@ pub(crate) use geojson::parse_geojson;
 #[cfg(test)]
 pub(crate) use geojson::to_geojson_string_with_z;
 pub(crate) use geojson::{
-    DefiningMembers, LegacyGeoJsonCrsPolicy, collect_geojson_legacy_crs, geojson_output_shape,
-    parse_geojson_at, reconcile_legacy_geojson_crs, reject_rfc7946_cross_type_members,
-    reject_rfc7946_value_object, to_geojson_string, validate_geojson_value,
+    DefiningMembers, LegacyGeoJsonCrsPolicy, collect_geojson_legacy_crs, parse_geojson_at,
+    reconcile_legacy_geojson_crs, reject_rfc7946_cross_type_members, reject_rfc7946_value_object,
+    to_geojson_string,
 };
-pub(crate) use wkb::{
-    parse_wkb, to_wkb, to_wkb_len, wkb_len, write_wkb_into, write_wkb_to, write_wkb_to_srid,
-};
+pub(crate) use wkb::{parse_wkb, to_wkb, wkb_len, write_wkb_to, write_wkb_to_srid};
 pub(crate) use wkt::{
     WktDimension, WktNumberFormat, classify_wkt_type_token, parse_wkt, to_wkt, to_wkt_display,
     to_wkt_preview, to_wkt_with_dimension,

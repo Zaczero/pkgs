@@ -37,13 +37,12 @@ use crate::{
     fixed_geometry_array_nearest_points, geometry, geometry_array_svg_grid_html_masked, io,
     line_interpolate_points_coordseq, line_interpolate_points_shape, line_locate_coordseq,
     map_coordinates_callback, metric_nearest_points, metric_shortest_line, non_negative_int,
-    note_array_row, overlay_operator, owned_voronoi_boundary, packed_points_to_arrow,
-    paired_arrays, parse_coordinate_replacement, parse_crs, parse_curve_bounds,
-    parse_geometry_transform_options, parse_interpolate_plan, parse_precision,
-    parse_wkt_output_dimension, positive_int, pyclass, replace_shape_coordinates,
-    require_geojson_crs, resolve_line_metric, resolve_metric, row_sample_seed,
-    slice_replacement_for_shape, validate_densify_fraction, validate_equals_exact_tolerance,
-    validate_max_segment_length, validate_subdivide_max_vertices,
+    note_array_row, overlay_operator, owned_voronoi_boundary, paired_arrays,
+    parse_coordinate_replacement, parse_crs, parse_curve_bounds, parse_geometry_transform_options,
+    parse_interpolate_plan, parse_precision, parse_wkt_output_dimension, positive_int, pyclass,
+    replace_shape_coordinates, require_geojson_crs, resolve_line_metric, resolve_metric,
+    row_sample_seed, slice_replacement_for_shape, validate_densify_fraction,
+    validate_equals_exact_tolerance, validate_max_segment_length, validate_subdivide_max_vertices,
 };
 
 /// An immutable array of geometries sharing one CRS/epoch frame.
@@ -376,9 +375,7 @@ pub(crate) use packed_column_kernels::{
     segmented_planar_lengths, segmented_planar_lengths_3d, subdivide_line_columns,
     subdivide_polygon_columns, total_bounds_from_columns,
 };
-pub(crate) use packed_columns::{
-    PackedColumnError, PackedColumnOutput, PackedColumns, packed_columns_err,
-};
+pub(crate) use packed_columns::{PackedColumnError, PackedColumnOutput, PackedColumns};
 pub(crate) use packed_gather::materialized_gather;
 mod pack_admission;
 mod packed_builders;

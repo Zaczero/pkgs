@@ -190,9 +190,10 @@ impl PyGeometryArray {
         // validation, antimeridian cutting); CRS-free rows are planar. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        let domain = crate::geometry::topology_domain(&self.frame)?;
+        let frame = self.frame.clone();
         Ok(if include_z {
             py.detach(move || {
+                let domain = crate::geometry::topology_domain(&frame)?;
                 let mut out = Vec::new();
                 for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {
@@ -206,7 +207,9 @@ impl PyGeometryArray {
                 Ok::<Vec<String>, crate::error::Error>(out)
             })?
         } else {
+            let frame = self.frame.clone();
             py.detach(move || {
+                let domain = crate::geometry::topology_domain(&frame)?;
                 let mut out = Vec::new();
                 for row in array.row_operation().rows_with_missing(String::new) {
                     let value = match row {

@@ -2,10 +2,10 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-//! Shape -> Python materializers for coordinate objects and `GeoJSON` dicts.
+//! Shape -> Python materializers for coordinate objects and JSON values.
 //!
 //! Convert a `Shape` into the nested Python coordinate tuples returned by the
-//! `.coords`-style accessors and the `__geo_interface__` / `GeoJSON` mapping.
+//! `.coords`-style accessors and generic JSON mappings.
 //! Reached from the crate root and the geometry `#[pymethods]` via `use
 //! super::*`.
 
@@ -14,10 +14,7 @@ use pyo3::types::{PyAny, PyDict};
 use serde_json::Value;
 
 use crate::py::errors::parse_error;
-use crate::{
-    Coordinates, GeometryKind, Point, Polygon, PyList, Shape, geometry, py_bool,
-    try_collect_results,
-};
+use crate::{Coordinates, Point, Polygon, PyList, Shape, geometry, py_bool, try_collect_results};
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
     let value = match shape {
@@ -92,119 +89,6 @@ pub(crate) fn point_tuple(py: Python<'_>, point: Point) -> PyResult<Py<PyAny>> {
     })
 }
 
-/// Build a GeoJSON geometry dict after the same RFC 7946 preparation as
-/// [`crate::io::to_geojson_string`] when the domain is geographic (domain check,
-/// antimeridian split, right-hand winding). CRS-free geometry stays planar.
-pub(crate) fn geojson_dict_prepared<'py>(
-    py: Python<'py>,
-    shape: &Shape,
-    domain: crate::geometry::TopologyDomain,
-) -> PyResult<Bound<'py, PyDict>> {
-    let prepared = crate::io::geojson_output_shape(shape, domain)?;
-    crate::io::validate_geojson_value::<true>(prepared.as_ref())?;
-    geojson_dict_raw(py, prepared.as_ref())
-}
-
-fn geojson_dict_raw<'py>(py: Python<'py>, shape: &Shape) -> PyResult<Bound<'py, PyDict>> {
-    let dict = PyDict::new(py);
-    match shape {
-        Shape::Point(point) => {
-            dict.set_item("type", "Point")?;
-            dict.set_item("coordinates", geojson_point_object(py, *point, true)?)?;
-        },
-        Shape::MultiPoint(points) => {
-            dict.set_item("type", "MultiPoint")?;
-            dict.set_item("coordinates", geojson_points_object(py, points, true)?)?;
-        },
-        Shape::LineString(points) => {
-            dict.set_item("type", "LineString")?;
-            dict.set_item("coordinates", geojson_points_object(py, points, true)?)?;
-        },
-        Shape::MultiLineString(lines) => {
-            let values: Vec<Py<PyAny>> = try_collect_results(
-                lines
-                    .iter()
-                    .map(|line| Ok(geojson_points_object(py, line, true)?.unbind().into())),
-            )?;
-            dict.set_item("type", "MultiLineString")?;
-            dict.set_item("coordinates", PyList::new(py, values)?)?;
-        },
-        Shape::Polygon(polygon) => {
-            dict.set_item("type", "Polygon")?;
-            dict.set_item("coordinates", geojson_polygon_object(py, polygon, true)?)?;
-        },
-        Shape::MultiPolygon(polygons) => {
-            let values: Vec<Py<PyAny>> =
-                try_collect_results(polygons.iter().map(|polygon| {
-                    Ok(geojson_polygon_object(py, polygon, true)?.unbind().into())
-                }))?;
-            dict.set_item("type", "MultiPolygon")?;
-            dict.set_item("coordinates", PyList::new(py, values)?)?;
-        },
-        Shape::GeometryCollection(geometries) => {
-            let values: Vec<Py<PyAny>> = try_collect_results(
-                geometries
-                    .iter()
-                    .map(|geometry| Ok(geojson_dict_raw(py, geometry)?.unbind().into())),
-            )?;
-            dict.set_item("type", "GeometryCollection")?;
-            dict.set_item("geometries", PyList::new(py, values)?)?;
-        },
-        // GeoJSON has no dimensional-empty form; every typed empty flattens
-        // to its kind with an empty coordinates/geometries member.
-        Shape::Empty(kind, _) => {
-            dict.set_item("type", kind.geometry_type())?;
-            let member = match kind {
-                GeometryKind::GeometryCollection => "geometries",
-                _ => "coordinates",
-            };
-            dict.set_item(member, PyList::empty(py))?;
-        },
-    }
-    Ok(dict)
-}
-
-fn geojson_polygon_object<'py>(
-    py: Python<'py>,
-    polygon: &Polygon,
-    include_z: bool,
-) -> PyResult<Bound<'py, PyList>> {
-    let values: Vec<Py<PyAny>> = try_collect_results(
-        std::iter::once(&polygon.shell)
-            .chain(polygon.holes.iter())
-            .map(|ring| Ok(geojson_points_object(py, ring, include_z)?.unbind().into())),
-    )?;
-    PyList::new(py, values)
-}
-
-fn geojson_points_object<'py, C: Coordinates + ?Sized>(
-    py: Python<'py>,
-    points: &C,
-    include_z: bool,
-) -> PyResult<Bound<'py, PyList>> {
-    let values = try_collect_results(
-        points
-            .iter_coords()
-            .map(|point| geojson_point_object(py, point, include_z)),
-    )?;
-    PyList::new(py, values)
-}
-
-fn geojson_point_object(py: Python<'_>, point: Point, include_z: bool) -> PyResult<Py<PyAny>> {
-    Ok(if include_z {
-        point.z().map_or_else(
-            || vec![point.x, point.y].into_pyobject(py).map(Bound::unbind),
-            |z| {
-                vec![point.x, point.y, z]
-                    .into_pyobject(py)
-                    .map(Bound::unbind)
-            },
-        )?
-    } else {
-        vec![point.x, point.y].into_pyobject(py)?.unbind()
-    })
-}
-
 pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
     Ok(match value {
         Value::Null => py.None(),
@@ -241,4 +125,13 @@ pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
             dict.unbind().into()
         },
     })
+}
+
+pub(crate) fn json_text_to_py(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    let value = serde_json::from_str::<Value>(text).map_err(|error| {
+        crate::py::errors::GeometryError::new_err(format!(
+            "native GeoJSON materialization failed: {error}"
+        ))
+    })?;
+    json_to_py(py, &value)
 }

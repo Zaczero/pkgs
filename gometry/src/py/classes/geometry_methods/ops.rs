@@ -22,31 +22,6 @@ use crate::{
     voronoi_flatten,
 };
 
-/// Byte-size gate for exact `PyBytes::new_with` (not a coordinate-count cliff).
-const EXACT_PYBYTES_MIN_BYTES: usize = 4096;
-
-/// Cheap overestimate of WKB payload bytes without classifying the shape.
-/// Used only to skip the exact-into-PyBytes path on ordinary small geometry.
-fn wkb_byte_estimate(shape: &crate::geometry::Shape) -> usize {
-    use crate::geometry::Shape;
-    match shape {
-        Shape::Point(_) | Shape::Empty(..) => 32,
-        Shape::MultiPoint(points) => points.len().saturating_mul(32).saturating_add(32),
-        Shape::LineString(line) => line.len().saturating_mul(16).saturating_add(32),
-        Shape::MultiLineString(lines) => lines.iter().fold(32_usize, |acc, line| {
-            acc.saturating_add(32)
-                .saturating_add(line.len().saturating_mul(16))
-        }),
-        Shape::Polygon(polygon) => polygon.coord_count().saturating_mul(16).saturating_add(64),
-        Shape::MultiPolygon(polygons) => polygons.iter().fold(32_usize, |acc, polygon| {
-            acc.saturating_add(64)
-                .saturating_add(polygon.coord_count().saturating_mul(16))
-        }),
-        // Collections always take the growable `io::to_wkb` path.
-        Shape::GeometryCollection(_) => 0,
-    }
-}
-
 impl PyGeometry {
     pub(crate) fn parts_to_array(
         &self,
@@ -89,28 +64,16 @@ impl PyGeometry {
         include_srid: bool,
         precision: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let quantized = precision
-            .map(parse_precision)
-            .transpose()?
-            .map(|precision| self.shape.quantize(precision))
-            .transpose()?;
-        let shape = quantized.as_ref().unwrap_or(&self.shape);
-        let crs = self.crs_str();
-        // No coordinate-count gate (the R7 cliff was `coord_count() < 32`).
-        // Byte-size decision via a cheap overestimate (no classify): only large
-        // payloads take exact `PyBytes::new_with` (round-4 win). Ordinary
-        // multiparts share one classify with `__reduce__` via `io::to_wkb` —
-        // never `to_wkb_len` then `to_wkb` (double classify tax on small).
-        if wkb_byte_estimate(shape) >= EXACT_PYBYTES_MIN_BYTES
-            && let Ok(len) = io::to_wkb_len(shape, crs, include_srid)
-            && len >= EXACT_PYBYTES_MIN_BYTES
-        {
-            return PyBytes::new_with(py, len, |buf| {
-                io::write_wkb_into(buf, shape, crs, include_srid)?;
-                Ok(())
-            });
-        }
-        let bytes = io::to_wkb(shape, crs, include_srid)?;
+        let precision = precision.map(parse_precision).transpose()?;
+        let shape = self.shape.clone();
+        let crs = self.crs_str().map(str::to_owned);
+        let bytes = py.detach(move || {
+            let quantized = precision
+                .map(|precision| shape.quantize(precision))
+                .transpose()?;
+            let shape = quantized.as_ref().unwrap_or_else(|| shape.shape());
+            io::to_wkb(shape, crs.as_deref(), include_srid)
+        })?;
         Ok(PyBytes::new(py, &bytes))
     }
 
@@ -123,9 +86,10 @@ impl PyGeometry {
         }
         // A WGS84-tagged frame opts into the RFC 7946 geographic rules (domain
         // validation, antimeridian cutting); CRS-free geometry is planar.
-        let domain = geometry::topology_domain(&self.frame)?;
         let shape = self.shape.clone();
+        let frame = self.frame.clone();
         py.detach(move || {
+            let domain = geometry::topology_domain(&frame)?;
             Ok(if include_z {
                 io::to_geojson_string::<true>(&shape, domain)?
             } else {

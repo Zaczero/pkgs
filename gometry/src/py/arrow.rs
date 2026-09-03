@@ -462,19 +462,15 @@ pub(crate) use metadata::{
 };
 
 mod axes;
+#[cfg(test)]
 mod buffers;
 mod export;
-mod export_buffers;
 mod metadata;
 
 pub(crate) use axes::accumulate_geometry_axes;
-pub(crate) use buffers::{ensure_i32_offsets_monotonic, mixed_axes_error, push_i32_le};
-pub(crate) use export::{
-    nullable_shapes_to_wkb_arrow, packed_lines_to_arrow, packed_points_to_arrow,
-    packed_polygons_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow, storage_to_wkb_arrow,
-    validity_bitmap_from_mask,
-};
-pub(crate) use export_buffers::{ArrowCoordinateBuffers, columns_to_pybytes};
+#[cfg(test)]
+pub(crate) use buffers::ensure_i32_offsets_monotonic;
+pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 
 /// Build geometries from an Arrow array, table, record batch, reader, or
 /// Arrow-C provider. Protocol callbacks and PyArrow object inspection remain

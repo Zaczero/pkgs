@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::py::arrow_c::{
     ArrayPrivate, ArrowArray, ArrowSchema, CString, CoordSeq, CoordinateAxes, GeometryEncoding,
-    GeometryError, Map, Number, ParseError, PyResult, SchemaNode, SchemaPrivate, Value,
-    release_array, release_schema,
+    GeometryError, Map, NativeArrowExportError, NativeArrowExportResult, Number, PyResult,
+    SchemaNode, SchemaPrivate, Value, release_array, release_schema,
 };
 
 impl SchemaNode {
@@ -40,7 +40,10 @@ impl SchemaNode {
                 .metadata
                 .as_ref()
                 .map_or(ptr::null(), |metadata| metadata.as_ptr().cast()),
-            flags: 0,
+            // Arrow C Data Interface nullable flag (value 2) marks a nullable field. The
+            // previous Python builders emitted nullable coordinate/list
+            // fields, so retain that storage-type contract on capsule import.
+            flags: 2,
             n_children: private.children.len() as i64,
             children: if private.child_ptrs.is_empty() {
                 ptr::null_mut()
@@ -113,6 +116,7 @@ impl GometryArrowArray {
         self.0.as_mut()
     }
 
+    #[cfg(test)]
     fn logical_length(&self) -> PyResult<usize> {
         usize::try_from(self.0.length).map_err(|_| {
             GeometryError::new_err("Arrow geometry export length is negative or too large")
@@ -262,6 +266,7 @@ fn make_array_with_offset(
 ///
 /// Accepts only [`GometryArrowArray`] so a foreign shell cannot enter. Mask
 /// length is checked in release builds (not debug-only).
+#[cfg(test)]
 pub(crate) fn apply_top_level_validity(
     array: &mut GometryArrowArray,
     mask: &crate::array::ValidityMask,
@@ -334,6 +339,60 @@ pub(crate) fn apply_top_level_validity(
             .as_ptr()
             .cast();
         array.buffers = private.buffers.as_ptr();
+    }
+    array.null_count = i64::try_from(null_count)
+        .map_err(|_| GeometryError::new_err("Arrow geometry export null count exceeds i64"))?;
+    Ok(())
+}
+
+/// Attach a validity bitmap that was built by the detached planner. The
+/// attached egress only publishes its already-owned pointer and records the
+/// null count; it does not inspect or rebuild the bitmap.
+pub(crate) fn apply_prebuilt_top_level_validity(
+    array: &mut GometryArrowArray,
+    validity: Arc<[u8]>,
+    null_count: usize,
+) -> PyResult<()> {
+    let array = array.as_mut();
+    let logical_len = usize::try_from(array.length).map_err(|_| {
+        GeometryError::new_err("Arrow geometry export length is negative or too large")
+    })?;
+    if null_count > logical_len {
+        return Err(GeometryError::new_err(
+            "Arrow geometry export null count exceeds logical length",
+        ));
+    }
+    if null_count == 0 {
+        return Ok(());
+    }
+    if array.n_buffers < 1 {
+        return Err(GeometryError::new_err(
+            "Arrow geometry export has no top-level validity buffer slot",
+        ));
+    }
+    let private = array.private_data.cast::<ArrayPrivate>();
+    if private.is_null() {
+        return Err(GeometryError::new_err(
+            "Arrow geometry export is missing private buffer ownership",
+        ));
+    }
+    // SAFETY: this is a gometry-built shell and `private_data` points to its
+    // live ArrayPrivate allocation. The plan bitmap owns every published byte.
+    unsafe {
+        let private = &mut *private;
+        if private.buffers.is_empty() {
+            return Err(GeometryError::new_err(
+                "Arrow geometry export has no top-level validity buffer slot",
+            ));
+        }
+        private.u8_buffers.push(validity);
+        array.buffers = private.buffers.as_ptr();
+        private.buffers[0] = private
+            .u8_buffers
+            .last()
+            .expect("validity buffer was just pushed")
+            .as_ptr()
+            .cast();
     }
     array.null_count = i64::try_from(null_count)
         .map_err(|_| GeometryError::new_err("Arrow geometry export null count exceeds i64"))?;
@@ -445,14 +504,6 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     make_array(len, vec![OwnedBufferSlot::Null], children)
 }
 
-pub(crate) fn list_array(
-    offsets: Arc<[i32]>,
-    child: GometryArrowArray,
-) -> PyResult<GometryArrowArray> {
-    let length = offsets.len().saturating_sub(1);
-    list_array_windowed(offsets, child, 0, length)
-}
-
 /// List array over a full CSR offsets buffer with a logical row window.
 ///
 /// Parent offsets and the child coordinate run stay shared; only the Arrow
@@ -461,6 +512,7 @@ pub(crate) fn list_array(
 ///
 /// Offsets must be nonempty, non-negative, non-decreasing over the visible
 /// window, and the window terminal must not exceed the child length.
+#[cfg(test)]
 pub(crate) fn list_array_windowed(
     offsets: Arc<[i32]>,
     child: GometryArrowArray,
@@ -484,11 +536,29 @@ pub(crate) fn list_array_windowed(
     )
 }
 
+/// Materialize a list shell after its offsets have already been admitted by
+/// the detached export planner. No offset scan or native packing work belongs
+/// in the attached capsule egress.
+pub(crate) fn admitted_list_array_windowed(
+    offsets: Arc<[i32]>,
+    child: GometryArrowArray,
+    start: usize,
+    length: usize,
+) -> PyResult<GometryArrowArray> {
+    make_array_with_offset(
+        length,
+        start,
+        vec![OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
+        vec![child],
+    )
+}
+
 /// Binary array from owned offsets + data.
 ///
 /// Offsets must be nonempty; **every** entry (not only the terminal) must be
 /// non-negative and non-decreasing, and the terminal must lie within `data`.
 /// Intermediate OOB/negative values (e.g. `[100, 2]` or `[-5, 0]`) are rejected.
+#[cfg(test)]
 pub(crate) fn binary_array(offsets: Arc<[i32]>, data: Arc<[u8]>) -> PyResult<GometryArrowArray> {
     if offsets.is_empty() {
         return Err(GeometryError::new_err(
@@ -508,12 +578,30 @@ pub(crate) fn binary_array(offsets: Arc<[i32]>, data: Arc<[u8]>) -> PyResult<Gom
     )
 }
 
+pub(crate) fn admitted_binary_array(
+    offsets: Arc<[i32]>,
+    data: Arc<[u8]>,
+) -> PyResult<GometryArrowArray> {
+    let length = offsets.len().checked_sub(1).ok_or_else(|| {
+        GeometryError::new_err("Arrow binary offsets must contain at least one entry")
+    })?;
+    make_array(
+        length,
+        vec![
+            OwnedBufferSlot::Null,
+            OwnedBufferSlot::I32(offsets),
+            OwnedBufferSlot::U8(data),
+        ],
+        Vec::new(),
+    )
+}
+
 pub(crate) fn extension_schema(
     encoding: GeometryEncoding,
     storage: SchemaNode,
     crs: Option<&str>,
     epoch: Option<f64>,
-) -> PyResult<SchemaNode> {
+) -> NativeArrowExportResult<SchemaNode> {
     let extension_name = encoding.extension_name();
     let mut metadata = vec![("ARROW:extension:name".to_owned(), extension_name.to_owned())];
     if let Some(value) = extension_metadata_json(crs, epoch)? {
@@ -528,26 +616,26 @@ pub(crate) fn extension_schema(
 pub(crate) fn extension_metadata_json(
     crs: Option<&str>,
     epoch: Option<f64>,
-) -> PyResult<Option<String>> {
+) -> NativeArrowExportResult<Option<String>> {
     let mut metadata = Map::new();
     if let Some(crs) = crs {
         let projjson = crate::crs::to_projjson(crs)?;
         let projjson = serde_json::from_str::<Value>(&projjson).map_err(|error| {
-            ParseError::new_err(format!("invalid PROJJSON generated by PROJ: {error}"))
+            NativeArrowExportError::geoarrow(format!("invalid PROJJSON generated by PROJ: {error}"))
         })?;
         metadata.insert("crs".to_owned(), projjson);
         metadata.insert("crs_type".to_owned(), Value::String("projjson".to_owned()));
     }
     if let Some(epoch) = epoch {
         let value = Number::from_f64(epoch)
-            .ok_or_else(|| GeometryError::new_err("coordinate epoch must be finite"))?;
+            .ok_or_else(|| NativeArrowExportError::geometry("coordinate epoch must be finite"))?;
         metadata.insert("epoch".to_owned(), Value::Number(value));
     }
     if metadata.is_empty() {
         Ok(None)
     } else {
         serde_json::to_string(&metadata).map(Some).map_err(|error| {
-            GeometryError::new_err(format!("failed to encode GeoArrow metadata: {error}"))
+            NativeArrowExportError::geometry(format!("failed to encode GeoArrow metadata: {error}"))
         })
     }
 }

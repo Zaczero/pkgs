@@ -25,10 +25,33 @@ fn release_schema_twice(mut schema: Box<ArrowSchema>) {
     }
 }
 
+fn exported(geometry: &PyGeometry) -> ExportedArray {
+    let shapes = vec![geometry.shape.shape().clone()];
+    let plan = plan_shapes(
+        &shapes,
+        geometry.crs_str().map(str::to_owned),
+        geometry.epoch(),
+    )
+    .expect("test export plan");
+    materialize_export_plan(prepare_export_plan(plan).expect("test export schema"))
+        .expect("test export")
+}
+
+fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
+    let shapes = vec![geometry.shape.shape().clone()];
+    let plan = plan_shapes(
+        &shapes,
+        geometry.crs_str().map(str::to_owned),
+        geometry.epoch(),
+    )
+    .expect("test schema plan");
+    materialize_schema_plan(prepare_export_plan(plan).expect("test schema")).expect("test schema")
+}
+
 #[test]
 fn release_callbacks_are_idempotent_for_native_exports() {
     let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
-    release_twice(export_from_geometries([&point], None, None).unwrap());
+    release_twice(exported(&point));
 
     let line = PyGeometry::from_shape_crs(
         Shape::LineString(
@@ -40,7 +63,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
         ),
         None,
     );
-    release_twice(export_from_geometries([&line], None, None).unwrap());
+    release_twice(exported(&line));
 
     let ring = Ring::closed(vec![
         Point::new_raw_xy(0.0, 0.0),
@@ -50,13 +73,13 @@ fn release_callbacks_are_idempotent_for_native_exports() {
     ])
     .unwrap();
     let polygon = PyGeometry::from_shape_crs(Shape::Polygon(Polygon::new(ring, Vec::new())), None);
-    release_twice(export_from_geometries([&polygon], None, None).unwrap());
+    release_twice(exported(&polygon));
 }
 
 #[test]
 fn schema_only_export_releases_without_array_export() {
     let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
-    release_schema_twice(schema_from_geometries([&point], None, None).unwrap());
+    release_schema_twice(exported_schema(&point));
 
     let collection = PyGeometry::from_shape_crs(
         Shape::typed_empty(
@@ -65,13 +88,13 @@ fn schema_only_export_releases_without_array_export() {
         ),
         None,
     );
-    release_schema_twice(schema_from_geometries([&collection], None, None).unwrap());
+    release_schema_twice(exported_schema(&collection));
 }
 
 #[test]
 fn stream_export_release_is_idempotent_after_batch_move() {
     let point = PyGeometry::from_shape_crs(Shape::Point(Point::new_raw_xy(1.0, 2.0)), None);
-    let mut stream = stream_from_export(export_from_geometries([&point], None, None).unwrap());
+    let mut stream = stream_from_export(exported(&point));
     let mut array = empty_array();
 
     // SAFETY: this test owns the stream and moves its one batch into a

@@ -8,7 +8,7 @@ pub(crate) mod metadata;
 pub(crate) mod reserve;
 
 pub(crate) use buffer_endian::{buffer_copy_to_slice_u64, buffer_to_vec_u64};
-pub(crate) use convert::{coordinates_object, geojson_dict_prepared, json_to_py, point_tuple};
+pub(crate) use convert::{coordinates_object, json_text_to_py, json_to_py, point_tuple};
 pub(crate) use coordinate_input::{
     CoordinateInput, CrsCoordinateArgs, DefaultedF64Input, DefaultedI64Input, F64Param, I64Param,
     Zt, ZtLaneRefs, ZtLanes, ZtValues, broadcast_coordinate_group, broadcast_coordinate_input,
