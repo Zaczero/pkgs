@@ -1,5 +1,4 @@
 use pyo3::types::{PyDict, PyFloat, PyList, PyString};
-use serde::Deserialize as _;
 
 use crate::py::support::{
     Bound, CRSError, Frame, GeometryError, Py, PyAny, PyAnyMethods as _, PyBool,
@@ -336,12 +335,14 @@ fn check_json_nesting(bytes: &[u8]) -> crate::error::Result<()> {
     Ok(())
 }
 
-fn parse_json<'de, R>(mut deserializer: serde_json::Deserializer<R>) -> crate::error::Result<Value>
+pub(crate) fn deserialize_json<'de, T>(bytes: &'de [u8]) -> crate::error::Result<T>
 where
-    R: serde_json::de::Read<'de>,
+    T: serde::Deserialize<'de>,
 {
+    check_json_nesting(bytes)?;
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     deserializer.disable_recursion_limit();
-    let value = Value::deserialize(&mut deserializer)
+    let value = T::deserialize(&mut deserializer)
         .map_err(|error| crate::io::IoError::geojson(error.to_string()))?;
     deserializer
         .end()
@@ -350,13 +351,11 @@ where
 }
 
 fn parse_json_text(text: &str) -> crate::error::Result<Value> {
-    check_json_nesting(text.as_bytes())?;
-    parse_json(serde_json::Deserializer::from_str(text))
+    deserialize_json(text.as_bytes())
 }
 
 fn parse_json_bytes(bytes: &[u8]) -> crate::error::Result<Value> {
-    check_json_nesting(bytes)?;
-    parse_json(serde_json::Deserializer::from_slice(bytes))
+    deserialize_json(bytes)
 }
 
 pub(crate) fn parse_geojson_text(text: &str) -> crate::error::Result<Value> {

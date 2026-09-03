@@ -218,7 +218,7 @@ text = ("{\\"type\\":\\"Feature\\",\\"geometry\\":{\\"type\\":\\"Point\\",\\"coo
 try:
     gm.from_features(text)
 except gm.ParseError as exc:
-    assert "nesting depth 128" in str(exc), exc
+    assert "JSON nesting exceeds the structural limit" in str(exc), exc
     print("REJECTED", flush=True)
 else:
     raise SystemExit("deep Feature properties were accepted")

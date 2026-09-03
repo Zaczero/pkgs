@@ -73,9 +73,11 @@ def test_pickle_accepts_boundary(depth: int) -> None:
 
 
 @pytest.mark.parametrize('depth', [127, 128])
-def test_geojson_accepts_boundary(depth: int) -> None:
+@pytest.mark.parametrize('as_bytes', [False, True], ids=['text', 'bytes'])
+def test_geojson_accepts_boundary(depth: int, as_bytes: bool) -> None:
     shape = nested_constructor(depth)
-    restored = gm.from_geojson(shape.to_geojson())
+    text = shape.to_geojson()
+    restored = gm.from_geojson(text.encode() if as_bytes else text)
     assert restored.to_wkt() == shape.to_wkt()
 
 
@@ -84,15 +86,40 @@ def test_geojson_rejects_129() -> None:
         gm.from_geojson(nested_geojson(129))
 
 
-def test_feature_geometry_accepts_boundary() -> None:
-    shape = nested_constructor(128)
+def test_geojson_structural_limit_precedes_default_serde_recursion() -> None:
+    nested = '[' * 273 + '0' + ']' * 273
+    feature = json.dumps(
+        {'type': 'Feature', 'geometry': None, 'properties': json.loads(nested)}
+    )
+    for reader, payload in ((gm.from_geojson, nested), (gm.from_features, feature)):
+        with pytest.raises(gm.ParseError, match='structural limit of 272'):
+            reader(payload)
+
+
+@pytest.mark.parametrize('depth', [127, 128])
+@pytest.mark.parametrize('as_bytes', [False, True], ids=['text', 'bytes'])
+def test_feature_geometry_accepts_boundary(depth: int, as_bytes: bool) -> None:
+    shape = nested_constructor(depth)
     feature = {
         'type': 'Feature',
         'geometry': json.loads(shape.to_geojson()),
         'properties': {},
     }
-    restored = gm.from_features(json.dumps(feature)).geometries[0]
+    text = json.dumps(feature)
+    restored = gm.from_features(text.encode() if as_bytes else text).geometries[0]
     assert restored.to_wkt() == shape.to_wkt()
+
+
+@pytest.mark.parametrize('as_bytes', [False, True], ids=['text', 'bytes'])
+def test_feature_geometry_rejects_129(as_bytes: bool) -> None:
+    feature = {
+        'type': 'Feature',
+        'geometry': json.loads(nested_geojson(129)),
+        'properties': {},
+    }
+    text = json.dumps(feature)
+    with pytest.raises(gm.ParseError, match='nesting exceeds'):
+        gm.from_features(text.encode() if as_bytes else text)
 
 
 def test_structure_preserving_operations_accept_boundary() -> None:
