@@ -3441,8 +3441,76 @@ mod tests {
         assert!(diagram.polygons.iter().all(polygon_is_valid));
     }
 
+    fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
+        let mut edges: std::collections::BTreeMap<[PointKey; 2], Vec<[PointKey; 2]>> =
+            std::collections::BTreeMap::new();
+        for cell in cells {
+            let Shape::Polygon(polygon) = cell else {
+                panic!("Voronoi cells are polygons");
+            };
+            for index in 0..polygon.shell.len() - 1 {
+                let edge = [
+                    PointKey::new(polygon.shell.point_at(index).xy()),
+                    PointKey::new(polygon.shell.point_at(index + 1).xy()),
+                ];
+                let key = if edge[0] <= edge[1] {
+                    edge
+                } else {
+                    [edge[1], edge[0]]
+                };
+                edges.entry(key).or_default().push(edge);
+            }
+        }
+        let mut sides: [Vec<(f64, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for directions in edges.values() {
+            match directions.as_slice() {
+                [edge] => {
+                    let a = edge[0].xy();
+                    let b = edge[1].xy();
+                    let (side, correctly_directed) = if a.y == bounds[2] && b.y == bounds[2] {
+                        (0, a.x < b.x)
+                    } else if a.x == bounds[1] && b.x == bounds[1] {
+                        (1, a.y < b.y)
+                    } else if a.y == bounds[3] && b.y == bounds[3] {
+                        (2, a.x > b.x)
+                    } else if a.x == bounds[0] && b.x == bounds[0] {
+                        (3, a.y > b.y)
+                    } else {
+                        panic!("unmatched edge is not on the clip boundary");
+                    };
+                    assert!(correctly_directed, "boundary edge has the wrong direction");
+                    let (lo, hi) = if side % 2 == 0 {
+                        (a.x.min(b.x), a.x.max(b.x))
+                    } else {
+                        (a.y.min(b.y), a.y.max(b.y))
+                    };
+                    sides[side].push((lo, hi));
+                },
+                [first, second] => {
+                    assert_eq!(first[0], second[1], "internal edge directions disagree");
+                    assert_eq!(first[1], second[0], "internal edge directions disagree");
+                },
+                _ => panic!("edge has neither one nor two owners"),
+            }
+        }
+        for (side_index, side) in sides.iter_mut().enumerate() {
+            side.sort_by(|left, right| left.0.total_cmp(&right.0));
+            let (start, end) = if side_index % 2 == 0 {
+                (bounds[0], bounds[1])
+            } else {
+                (bounds[2], bounds[3])
+            };
+            let mut cursor = start;
+            for &(lo, hi) in side.iter() {
+                assert_eq!(lo, cursor, "clip boundary has a gap or overlap");
+                cursor = hi;
+            }
+            assert_eq!(cursor, end, "clip boundary is not tiled");
+        }
+    }
+
     #[test]
-    fn extreme_cluster_rejects_non_embeddable_binary64_subdivision() {
+    fn extreme_cluster_is_a_valid_binary64_partition() {
         let points = [
             (1.5523049409260434e127, -2.245414791420301e127),
             (1.5523049409198575e127, -2.2454147914173005e127),
@@ -3478,13 +3546,77 @@ mod tests {
                 .collect::<Vec<_>>()
                 .into(),
         );
-        let error = source
+        let cells = source
             .voronoi_polygons(0.0, VoronoiBoundary::Padded)
-            .expect_err("extreme cluster unexpectedly embedded");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))
+            .expect("extreme cluster should be a valid partition");
+        assert_eq!(cells.len(), points.len());
+        assert!(cells.iter().all(|cell| match cell {
+            Shape::Polygon(polygon) => polygon_is_valid(polygon),
+            _ => false,
+        }));
+        let canonical = shape::canonical_voronoi_sites(
+            points
+                .into_iter()
+                .map(|(x, y)| Point::new_raw_xy(x, y))
+                .collect(),
+            0.0,
+        );
+        for (site, cell) in canonical.iter().zip(&cells) {
+            let Shape::Polygon(polygon) = cell else {
+                unreachable!("Voronoi cells are polygons");
+            };
+            let rounded_ring: Vec<_> = polygon
+                .shell
+                .iter()
+                .take(polygon.shell.len() - 1)
+                .map(|point| exact::ExactPoint::from_xy(point.xy()))
+                .collect();
+            assert_ne!(
+                exact::point_in_cycle(&rounded_ring, &exact::ExactPoint::from_xy(site.point.xy()),),
+                exact::PointInCycle::Outside,
+            );
+        }
+        let mut clip_budget = ExpansionBudget::new("test", "extreme cluster clip");
+        let padded = normalize_clip(&canonical, VoronoiBoundary::Padded, &mut clip_budget).unwrap();
+        let bounds = [
+            padded.fixed[0]
+                .iter()
+                .map(|xy| xy.x)
+                .fold(f64::INFINITY, f64::min),
+            padded.fixed[0]
+                .iter()
+                .map(|xy| xy.x)
+                .fold(f64::NEG_INFINITY, f64::max),
+            padded.fixed[0]
+                .iter()
+                .map(|xy| xy.y)
+                .fold(f64::INFINITY, f64::min),
+            padded.fixed[0]
+                .iter()
+                .map(|xy| xy.y)
+                .fold(f64::NEG_INFINITY, f64::max),
+        ];
+        assert_directed_partition(&cells, bounds);
+        // The generic coverage oracle intentionally retains its midpoint
+        // certificate and rejects this one-ULP boundary case. The independent
+        // union/difference oracle still observes the same rectangular result.
+        assert!(!coverage_is_valid(&cells, 0.0).unwrap());
+        let clip = Shape::Polygon(Polygon::new(
+            rectangle(bounds[0], bounds[2], bounds[1], bounds[3]),
+            Vec::new(),
         ));
+        let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
+        assert!(
+            clip.difference(&union, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            union
+                .difference(&clip, Strictness::Lenient)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3879,7 +4011,7 @@ mod tests {
         mutated.rings.pop();
 
         let mut restored_budget = ExpansionBudget::new("test", "restored dual completeness");
-        let restored_diagram = dual_embed(&restored, &clip, &mut restored_budget).unwrap();
+        let restored_diagram = dual_embed(&restored, &clip, &sites, &mut restored_budget).unwrap();
         let restored_admitted = true;
         let mut missing_rows: Vec<_> = restored_diagram
             .polygons
@@ -3893,12 +4025,212 @@ mod tests {
             "coverage validity deliberately does not certify clip completeness"
         );
         let mut mutated_budget = ExpansionBudget::new("test", "mutated dual completeness");
-        let mutated_admitted = dual_embed(&mutated, &clip, &mut mutated_budget).is_ok();
+        let mutated_admitted = dual_embed(&mutated, &clip, &sites, &mut mutated_budget).is_ok();
         assert_ne!(
             mutated_admitted, restored_admitted,
             "mutated missing-cell admitted={mutated_admitted}, restored admitted={restored_admitted}"
         );
         assert!(!mutated_admitted && restored_admitted);
+    }
+
+    fn shared_dual_vertex(rings: &DualRings) -> (usize, usize, exact::ExactPoint) {
+        for (ring_index, ring) in rings.rings.iter().enumerate() {
+            for (vertex_index, vertex) in ring.iter().enumerate() {
+                let point = dual_vertex_point(vertex, &rings.centers)
+                    .expect("dual mutation fixture has valid vertices");
+                if rings.rings.iter().enumerate().any(|(other_index, other)| {
+                    other_index != ring_index
+                        && other.iter().any(|other_vertex| {
+                            dual_vertex_point(other_vertex, &rings.centers)
+                                .is_some_and(|other_point| point.same_position(other_point))
+                        })
+                }) {
+                    return (ring_index, vertex_index, point.clone());
+                }
+            }
+        }
+        panic!("dual mutation fixture has no shared vertex");
+    }
+
+    fn shared_boundary_vertex(
+        rings: &DualRings,
+        bounds: [f64; 4],
+    ) -> (usize, usize, exact::ExactPoint, usize) {
+        for (ring_index, ring) in rings.rings.iter().enumerate() {
+            for (vertex_index, vertex) in ring.iter().enumerate() {
+                let point = dual_vertex_point(vertex, &rings.centers)
+                    .expect("dual mutation fixture has valid vertices");
+                let rounded = point.round_nearest_even().unwrap();
+                let Some(side) = rounded_boundary_side(rounded, bounds) else {
+                    continue;
+                };
+                if rings.rings.iter().enumerate().any(|(other_index, other)| {
+                    other_index != ring_index
+                        && other.iter().any(|other_vertex| {
+                            dual_vertex_point(other_vertex, &rings.centers)
+                                .is_some_and(|other_point| point.same_position(other_point))
+                        })
+                }) {
+                    return (ring_index, vertex_index, point.clone(), side);
+                }
+            }
+        }
+        panic!("dual mutation fixture has no shared boundary vertex");
+    }
+
+    fn rounded_duplicate(point: &exact::ExactPoint) -> exact::ExactPoint {
+        let rounded = point.round_nearest_even().unwrap();
+        let base = exact::ExactPoint::from_xy(rounded);
+        let upper = exact::ExactPoint::from_xy(XY::new(rounded.x.next_up(), rounded.y));
+        base.midpoint(&upper).midpoint(&base)
+    }
+
+    fn rounded_boundary_side(point: XY, bounds: [f64; 4]) -> Option<usize> {
+        if point.y == bounds[2] {
+            Some(0)
+        } else if point.x == bounds[1] {
+            Some(1)
+        } else if point.y == bounds[3] {
+            Some(2)
+        } else if point.x == bounds[0] {
+            Some(3)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn dual_local_validator_rejects_deterministic_partition_mutations() {
+        let sites: Vec<_> = [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.4),
+            (0.2, 0.7),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (x, y))| Site {
+            id,
+            point: Point::new_raw_xy(x, y),
+        })
+        .collect();
+        let mut construction_budget = ExpansionBudget::new("test", "dual mutation fixture");
+        let clip =
+            normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
+        let mesh = certified_delaunay(&sites).unwrap();
+        let complex = delaunay_complex(&mesh, &sites).unwrap();
+        let restored =
+            dual_build_rings(&sites, &mesh, &complex, &clip, &mut construction_budget).unwrap();
+        let mut restored_budget = ExpansionBudget::new("test", "restored dual mutation fixture");
+        assert!(dual_embed(&restored, &clip, &sites, &mut restored_budget).is_ok());
+
+        let mut mutations = Vec::new();
+
+        let mut missing_cell = restored.clone();
+        missing_cell.rings.pop();
+        mutations.push(("missing cell", missing_cell));
+
+        let mut reversed_ring = restored.clone();
+        reversed_ring.rings[0].reverse();
+        mutations.push(("reversed ring", reversed_ring));
+
+        let (shared_ring, shared_vertex, shared_point) = shared_dual_vertex(&restored);
+        let mut moved_shared_vertex = restored.clone();
+        let moved = shared_point.round_nearest_even().unwrap();
+        moved_shared_vertex.rings[shared_ring][shared_vertex] = DualVertex::Generated(
+            exact::ExactPoint::from_xy(XY::new(moved.x + 0.125, moved.y)),
+        );
+        mutations.push(("moved shared vertex", moved_shared_vertex));
+
+        let mut duplicate_key = restored.clone();
+        let duplicate = rounded_duplicate(&shared_point);
+        assert_eq!(
+            PointKey::new(duplicate.round_nearest_even().unwrap()),
+            PointKey::new(shared_point.round_nearest_even().unwrap())
+        );
+        assert!(!duplicate.same_position(&shared_point));
+        duplicate_key.rings[shared_ring][shared_vertex] = DualVertex::Generated(duplicate);
+        mutations.push(("duplicate rounded key", duplicate_key));
+
+        let bounds = [
+            clip.fixed[0]
+                .iter()
+                .map(|xy| xy.x)
+                .fold(f64::INFINITY, f64::min),
+            clip.fixed[0]
+                .iter()
+                .map(|xy| xy.x)
+                .fold(f64::NEG_INFINITY, f64::max),
+            clip.fixed[0]
+                .iter()
+                .map(|xy| xy.y)
+                .fold(f64::INFINITY, f64::min),
+            clip.fixed[0]
+                .iter()
+                .map(|xy| xy.y)
+                .fold(f64::NEG_INFINITY, f64::max),
+        ];
+        let mut wrong_boundary_direction = restored.clone();
+        let mut swapped_boundary = false;
+        'find_boundary: for ring in &mut wrong_boundary_direction.rings {
+            for index in 0..ring.len() {
+                let next = (index + 1) % ring.len();
+                let left = dual_vertex_point(&ring[index], &restored.centers)
+                    .unwrap()
+                    .round_nearest_even()
+                    .unwrap();
+                let right = dual_vertex_point(&ring[next], &restored.centers)
+                    .unwrap()
+                    .round_nearest_even()
+                    .unwrap();
+                if rounded_boundary_side(left, bounds).is_some()
+                    && rounded_boundary_side(left, bounds) == rounded_boundary_side(right, bounds)
+                {
+                    ring.swap(index, next);
+                    swapped_boundary = true;
+                    break 'find_boundary;
+                }
+            }
+        }
+        assert!(
+            swapped_boundary,
+            "dual mutation fixture has no boundary edge"
+        );
+        mutations.push(("wrong boundary direction", wrong_boundary_direction));
+
+        let (boundary_ring, boundary_vertex, boundary_point, boundary_side) =
+            shared_boundary_vertex(&restored, bounds);
+        let boundary_rounded = boundary_point.round_nearest_even().unwrap();
+        for (name, direction) in [("gap", 1.0), ("overlap", -1.0)] {
+            let mut mutation = restored.clone();
+            let shifted = if boundary_side % 2 == 0 {
+                XY::new(boundary_rounded.x + direction * 0.125, boundary_rounded.y)
+            } else {
+                XY::new(boundary_rounded.x, boundary_rounded.y + direction * 0.125)
+            };
+            mutation.rings[boundary_ring][boundary_vertex] =
+                DualVertex::Generated(exact::ExactPoint::from_xy(shifted));
+            mutations.push((name, mutation));
+        }
+
+        let mut crossed_ring = restored.clone();
+        let crossed_index = crossed_ring
+            .rings
+            .iter()
+            .position(|ring| ring.len() >= 5)
+            .expect("dual mutation fixture has no crossable ring");
+        crossed_ring.rings[crossed_index].swap(1, 2);
+        mutations.push(("crossed ring", crossed_ring));
+
+        for (name, mutation) in mutations {
+            let mut budget = ExpansionBudget::new("test", "mutated dual partition");
+            assert!(
+                dual_embed(&mutation, &clip, &sites, &mut budget).is_err(),
+                "dual mutation unexpectedly admitted: {name}"
+            );
+        }
     }
 }
 
@@ -4374,17 +4706,20 @@ fn dual_build_rings(
 /// What is GONE, because the structure it certified no longer exists: the
 /// arrangement's rounded no-crossing scan and the per-vertex exact-vs-rounded
 /// fan-order comparison. The dual never builds that arrangement. Instead,
-/// `coverage_is_valid` proves that the emitted binary64 cells are individually
-/// valid with disjoint interiors, while directed edge cancellation separately
-/// proves that their union has exactly the rectangular clip boundary. Neither
-/// certificate establishes nearest-site ownership or arbitrary polygon/hole
-/// completeness; ownership follows the certified face mapping, and polygon
-/// clips remain on the exact arrangement lane.
+/// rounded edge cancellation proves that the valid cells have exactly the
+/// rectangular clip boundary, and exact point membership checks each canonical
+/// site's rounded cell. Polygon clips remain on the exact arrangement lane.
 fn dual_embed(
     rings: &DualRings,
     clip: &NormalizedClip<'_>,
+    sites: &[Site],
     budget: &mut ExpansionBudget,
 ) -> Result<EmbeddedVoronoi> {
+    if rings.rings.len() != sites.len() {
+        return Err(voronoi_error(
+            "exact Voronoi subdivision has no topology-preserving binary64 embedding",
+        ));
+    }
     // Vertex identity WITHOUT an exact positional sort.
     //
     // A `Center` vertex IS its component, so its rounding is memoised once per
@@ -4437,7 +4772,9 @@ fn dual_embed(
     }
     budget.add(rounded_rings.iter().map(Vec::len).sum::<usize>())?;
     let mut polygons = Vec::with_capacity(rounded_rings.len());
-    for (exact_ring, rounded) in rings.rings.iter().zip(&mut rounded_rings) {
+    for (site_index, (exact_ring, rounded)) in
+        rings.rings.iter().zip(&mut rounded_rings).enumerate()
+    {
         let start = exact_ring
             .iter()
             .enumerate()
@@ -4466,14 +4803,14 @@ fn dual_embed(
                 "exact Voronoi subdivision has no topology-preserving binary64 embedding",
             ));
         }
+        let site = exact::ExactPoint::from_xy(sites[site_index].point.xy());
+        if exact::point_in_cycle(&rounded_ring, &site) == exact::PointInCycle::Outside {
+            return Err(voronoi_error(
+                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
+            ));
+        }
         budget.add(rounded.len())?;
         polygons.push(polygon);
-    }
-    let shape_rows: Vec<_> = polygons.iter().cloned().map(Shape::Polygon).collect();
-    if !coverage_is_valid(&shape_rows, 0.0)? {
-        return Err(voronoi_error(
-            "exact Voronoi subdivision has no topology-preserving binary64 embedding",
-        ));
     }
     // Completeness by EDGE CANCELLATION rather than by a full overlay union.
     //
@@ -4483,9 +4820,12 @@ fn dual_embed(
     // undirected edge occurs either twice with opposite directions or once, and
     // the once-occurring edges tile the clip rectangle's four sides exactly with
     // no gap and no overlap, then the union of the cells IS the clip rectangle.
-    // Combined with `coverage_is_valid` (each cell valid, interiors disjoint)
-    // that is the same statement the union/difference pair made, computed on
-    // stored binary64 with no overlay.
+    // Combined with positive simple-cell validation and exact site ownership,
+    // this is the same partition statement the union/difference pair made,
+    // computed on stored binary64 with no overlay. Winding-number membership
+    // alone cannot prove this: a gap and an overlap can leave every tested site
+    // inside its own cell, while cancellation and directed boundary tiling
+    // reject both.
     let mut directed: HashMap<[PointKey; 2], (i32, usize)> = HashMap::new();
     let mut edge_count = 0_usize;
     for polygon in &polygons {
@@ -4544,7 +4884,11 @@ fn dual_embed(
                 "exact Voronoi subdivision has no topology-preserving binary64 embedding",
             ));
         }
-        let (a, b) = (key[0].xy(), key[1].xy());
+        let (a, b) = if balance == 1 {
+            (key[0].xy(), key[1].xy())
+        } else {
+            (key[1].xy(), key[0].xy())
+        };
         let side = if a.y == bounds[2] && b.y == bounds[2] {
             0
         } else if a.x == bounds[1] && b.x == bounds[1] {
@@ -4558,6 +4902,17 @@ fn dual_embed(
                 "exact Voronoi subdivision has no topology-preserving binary64 embedding",
             ));
         };
+        let correctly_directed = match side {
+            0 => a.x < b.x,
+            1 => a.y < b.y,
+            2 => a.x > b.x,
+            _ => a.y > b.y,
+        };
+        if !correctly_directed {
+            return Err(voronoi_error(
+                "exact Voronoi subdivision has no topology-preserving binary64 embedding",
+            ));
+        }
         let (lo, hi) = if side % 2 == 0 {
             (a.x.min(b.x), a.x.max(b.x))
         } else {
@@ -4627,5 +4982,5 @@ pub(super) fn dual_build(
     }
     let complex = delaunay_complex(&mesh, sites)?;
     let rings = dual_build_rings(sites, &mesh, &complex, &clip, budget)?;
-    dual_embed(&rings, &clip, budget)
+    dual_embed(&rings, &clip, sites, budget)
 }
