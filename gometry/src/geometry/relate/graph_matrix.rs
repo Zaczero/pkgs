@@ -19,6 +19,18 @@ pub(crate) struct GeographicPrepared<'a> {
     frame: crate::geographic::GeographicFrame,
 }
 
+impl<'a> GeographicPrepared<'a> {
+    /// The operand's plan and frame, for a caller running the pre-topology
+    /// gates before admitting this pair to a relation.
+    pub(crate) const fn plan(&self) -> &'a PreparedPlan {
+        self.plan
+    }
+
+    pub(crate) const fn frame(&self) -> crate::geographic::GeographicFrame {
+        self.frame
+    }
+}
+
 impl GeographicPrepared<'_> {
     pub(crate) const fn new<'a>(
         plan: &'a PreparedPlan,

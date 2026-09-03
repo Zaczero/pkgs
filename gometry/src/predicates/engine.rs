@@ -62,6 +62,29 @@ impl<'a> PreparedTopologyPair<'a> {
         }
     }
 
+    /// The two operands as the pre-topology gates read them, when this pair
+    /// still holds plain plans. A variant carrying an already-built graph has
+    /// paid the cost the gates exist to avoid, so it goes straight to the
+    /// relation.
+    fn gate_operands(&self) -> Option<(GateOperand<'a>, GateOperand<'a>)> {
+        let (left, right, domain) = match *self {
+            Self::Cartesian { left, right } => (left, right, TopologyDomain::Cartesian),
+            Self::Geographic { left, right } => (
+                left.plan(),
+                right.plan(),
+                TopologyDomain::Geographic(left.frame()),
+            ),
+            Self::CartesianLeftGraph { .. }
+            | Self::CartesianRightGraph { .. }
+            | Self::GeographicLeftGraph { .. }
+            | Self::GeographicRightGraph { .. } => return None,
+        };
+        Some((
+            GateOperand::new(ShapeRow::Shape(left.shape()), left.bounds(), domain),
+            GateOperand::new(ShapeRow::Shape(right.shape()), right.bounds(), domain),
+        ))
+    }
+
     pub(crate) fn relate(self) -> crate::geometry::De9im {
         match self {
             Self::Cartesian { left, right } => graph_relate_data(left, right),
@@ -638,6 +661,16 @@ pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
     operands: PreparedTopologyPair<'_>,
 ) -> bool {
+    // The array, index and coverer paths all run the pre-topology gates before
+    // admitting a pair to the relation; the scalar pair was the one lane that
+    // did not, so `gm.intersects(a, b)` on two operands a hundred units apart
+    // still built both topology graphs and paired their edges to discover
+    // they share no point.
+    if let Some((left, right)) = operands.gate_operands()
+        && let Some(verdict) = spec.pre_topology(left, right)
+    {
+        return verdict;
+    }
     predicate_matrix_value(spec, operands.relate())
 }
 
@@ -868,6 +901,104 @@ mod tests {
             &cache,
         );
         assert_eq!(actual, [true, false]);
+    }
+
+    /// The pre-topology gates are wired into the array, index and coverer
+    /// lanes; the scalar lane went straight to the relation, so
+    /// `gm.intersects(a, b)` on operands that do not overlap still built two
+    /// topology graphs. The gate can only be an admission filter, never an
+    /// answer change, so this asserts it against the relation it short-circuits
+    /// — including the operands it does *not* gate.
+    #[test]
+    fn the_scalar_lane_gate_never_changes_an_answer() {
+        let line = |points: Vec<Point>| {
+            Shape::LineString(LineSeq::try_new(CoordSeq::from(points)).expect("two vertices"))
+        };
+        let corpus = [
+            // Strictly disjoint envelopes — every spelling is gated.
+            (
+                line(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(1.0, 1.0),
+                ]),
+                line(vec![
+                    Point::new_raw_xy(10.0, 10.0),
+                    Point::new_raw_xy(11.0, 11.0),
+                ]),
+            ),
+            // Envelopes that merely touch: the gate is strict, so these reach
+            // the relation and really do touch.
+            (
+                line(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(1.0, 0.0),
+                ]),
+                line(vec![
+                    Point::new_raw_xy(1.0, 0.0),
+                    Point::new_raw_xy(2.0, 0.0),
+                ]),
+            ),
+            // Overlapping envelopes, crossing linework.
+            (
+                line(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(2.0, 2.0),
+                ]),
+                line(vec![
+                    Point::new_raw_xy(0.0, 2.0),
+                    Point::new_raw_xy(2.0, 0.0),
+                ]),
+            ),
+            // Overlapping envelopes, no shared point.
+            (
+                line(vec![
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(2.0, 1.0),
+                ]),
+                line(vec![
+                    Point::new_raw_xy(0.0, 2.0),
+                    Point::new_raw_xy(2.0, 3.0),
+                ]),
+            ),
+            // Areal containment, where the nesting gates apply.
+            (
+                rectangle(0.0, 0.0, 10.0, 10.0),
+                rectangle(2.0, 2.0, 4.0, 4.0),
+            ),
+        ];
+        for predicate in [
+            Predicate::Intersects,
+            Predicate::Disjoint,
+            Predicate::Contains,
+            Predicate::ContainsProperly,
+            Predicate::Within,
+            Predicate::Covers,
+            Predicate::CoveredBy,
+            Predicate::Equals,
+            Predicate::Touches,
+            Predicate::Crosses,
+            Predicate::Overlaps,
+        ] {
+            let spec = predicate.spec();
+            for (left, right) in &corpus {
+                let left_plan = PreparedPlan::new(left.clone());
+                let right_plan = PreparedPlan::new(right.clone());
+                let pair = PreparedTopologyPair::Cartesian {
+                    left: &left_plan,
+                    right: &right_plan,
+                };
+                let relation = predicate_matrix_value(&spec, pair.relate());
+                let pair = PreparedTopologyPair::Cartesian {
+                    left: &left_plan,
+                    right: &right_plan,
+                };
+                assert_eq!(
+                    topology_scalar_pair(&spec, pair),
+                    relation,
+                    "{predicate:?} disagreed with its own relation",
+                );
+            }
+        }
     }
 
     #[test]
