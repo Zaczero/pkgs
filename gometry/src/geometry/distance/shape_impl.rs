@@ -211,49 +211,19 @@ impl Shape {
         other.collect_points_into(&mut scratch.right_points);
         collect_geodesic_segments_into(self, metric, &mut scratch.left_edges)?;
         self.collect_points_into(&mut scratch.left_points);
-        let directed = |source_points: &[Point],
-                        source_edges: &[GeodesicSegment],
-                        target_edges: &[GeodesicSegment],
-                        target_points: &[Point]|
-         -> Result<f64> {
-            let mut cmax = 0.0_f64;
-            for &point in source_points {
-                let cmin = geodesic_min_distance_to_target(
-                    point,
-                    target_edges,
-                    target_points,
-                    metric,
-                    cmax,
-                )?;
-                if cmin > cmax {
-                    cmax = cmin;
-                }
-            }
-            for &segment in source_edges {
-                let value = geodesic_max_min_on_source_segment(
-                    segment,
-                    target_edges,
-                    target_points,
-                    metric,
-                    cmax,
-                )?;
-                if value > cmax {
-                    cmax = value;
-                }
-            }
-            Ok(cmax)
-        };
-        Ok(directed(
+        Ok(geodesic_directed_hausdorff_distance(
             &scratch.left_points,
             &scratch.left_edges,
             &scratch.right_edges,
             &scratch.right_points,
+            metric,
         )?
-        .max(directed(
+        .max(geodesic_directed_hausdorff_distance(
             &scratch.right_points,
             &scratch.right_edges,
             &scratch.left_edges,
             &scratch.left_points,
+            metric,
         )?))
     }
 
@@ -504,6 +474,35 @@ impl Shape {
             scratch,
         ))
     }
+}
+
+#[expect(
+    clippy::impl_trait_in_params,
+    reason = "the metric is used only through its trait contract; a named generic adds no API signal"
+)]
+pub(super) fn geodesic_directed_hausdorff_distance(
+    source_points: &[Point],
+    source_edges: &[GeodesicSegment],
+    target_edges: &[GeodesicSegment],
+    target_points: &[Point],
+    metric: &impl GeodesicMetric,
+) -> Result<f64> {
+    let mut cmax = 0.0_f64;
+    for &point in source_points {
+        let cmin =
+            geodesic_min_distance_to_target(point, target_edges, target_points, metric, cmax)?;
+        if cmin > cmax {
+            cmax = cmin;
+        }
+    }
+    for &segment in source_edges {
+        let value =
+            geodesic_max_min_on_source_segment(segment, target_edges, target_points, metric, cmax)?;
+        if value > cmax {
+            cmax = value;
+        }
+    }
+    Ok(cmax)
 }
 
 /// A one-member collection or multipart line has exactly the member's

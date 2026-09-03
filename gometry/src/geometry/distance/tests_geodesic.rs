@@ -22,6 +22,17 @@ fn brute_geodesic_directed_hausdorff(
     target: &Shape,
     metric: &impl GeodesicMetric,
 ) -> f64 {
+    const SAMPLE_FRACTIONS: [f64; 9] = [
+        0.0,
+        1.0 / 8.0,
+        2.0 / 8.0,
+        3.0 / 8.0,
+        4.0 / 8.0,
+        5.0 / 8.0,
+        6.0 / 8.0,
+        7.0 / 8.0,
+        1.0,
+    ];
     let mut target_edges = Vec::new();
     collect_geodesic_segments_into(target, metric, &mut target_edges)
         .expect("unique test segments");
@@ -37,9 +48,8 @@ fn brute_geodesic_directed_hausdorff(
         }
     });
     source.for_each_vertex_pair(|start, end| {
-        let steps = 128_usize;
-        for step in 0..=steps {
-            let point = metric.interpolate(start, end, step as f64 / steps as f64);
+        for fraction in SAMPLE_FRACTIONS {
+            let point = metric.interpolate(start, end, fraction);
             let cmin =
                 geodesic_min_distance_to_target(point, &target_edges, &target_points, metric, cmax)
                     .expect("point-to-segment proof should close");
@@ -57,14 +67,47 @@ fn brute_geodesic_directed_hausdorff(
     reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
 )]
 fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
-    let peak = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
-    let far = line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&peak, &far], |metric| {
-        let actual = peak.geodesic_hausdorff_distance(&far, metric)?;
-        let expected = brute_geodesic_directed_hausdorff(&peak, &far, metric)
-            .max(brute_geodesic_directed_hausdorff(&far, &peak, metric));
-        assert_geodesic_close("interior_peak", actual, expected);
-        assert!(actual > 500_000.0);
+    let source = line(vec![p(0.0, 0.0), p(0.5, 0.0)]);
+    let target = line(vec![p(0.0, 0.05), p(0.25, 0.4), p(0.5, 0.05)]);
+    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
+        let mut source_edges = Vec::new();
+        collect_geodesic_segments_into(&source, metric, &mut source_edges)?;
+        let source_points = source.points_vec();
+        let mut target_edges = Vec::new();
+        collect_geodesic_segments_into(&target, metric, &mut target_edges)?;
+        let target_points = target.points_vec();
+
+        let source_to_target = super::shape_impl::geodesic_directed_hausdorff_distance(
+            &source_points,
+            &source_edges,
+            &target_edges,
+            &target_points,
+            metric,
+        )?;
+        let source_vertices_only =
+            brute_geodesic_directed_hausdorff(&multipoint(source_points.clone()), &target, metric);
+        assert!(
+            source_to_target > source_vertices_only,
+            "source interior did not affect the directed maximum: {source_to_target} <= {source_vertices_only}"
+        );
+
+        let target_vertices_only =
+            brute_geodesic_directed_hausdorff(&source, &multipoint(target_points.clone()), metric);
+        assert!(
+            source_to_target < target_vertices_only,
+            "target interior did not affect the directed maximum: {source_to_target} >= {target_vertices_only}"
+        );
+
+        let expected_source_to_target = brute_geodesic_directed_hausdorff(&source, &target, metric);
+        assert_geodesic_close(
+            "source_to_target",
+            source_to_target,
+            expected_source_to_target,
+        );
+
+        let actual = source.geodesic_hausdorff_distance(&target, metric)?;
+        let target_to_source = brute_geodesic_directed_hausdorff(&target, &source, metric);
+        assert_geodesic_close("symmetric", actual, source_to_target.max(target_to_source));
         Ok(())
     })?;
     Ok(())
