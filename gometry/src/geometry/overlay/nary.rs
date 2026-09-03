@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use crate::error::Result;
 use crate::geometry::overlay::{
-    OverlayOp, build_overlay_shape, dedup_points, overlay_declared_axes,
+    OverlayOp, Strictness, build_overlay_shape, dedup_points, overlay_declared_axes,
 };
 use crate::geometry::topology::{SourceSupport, TopologyLocation};
 use crate::geometry::{
@@ -130,6 +130,14 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         ));
     }
 
+    if domain == TopologyDomain::Cartesian
+        && geometries.len() == 2
+        && op == OverlayOp::Intersection
+        && let Some(shape) = direct_point_intersection(geometries, strictness)?
+    {
+        return Ok(shape);
+    }
+
     let mut sources: Vec<Shape> = geometries
         .iter()
         .map(|geometry| {
@@ -228,6 +236,60 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     } else {
         carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
     }
+}
+
+enum DirectPointCarrier<'a> {
+    Line(&'a crate::geometry::LineSeq),
+    Polygon(&'a crate::geometry::Polygon),
+}
+
+impl DirectPointCarrier<'_> {
+    fn covers_point(&self, point: Point) -> bool {
+        match self {
+            Self::Line(line) => line
+                .segment_pairs()
+                .any(|[start, end]| point_on_segment(point, start, end)),
+            Self::Polygon(polygon) => polygon.covers_point(point),
+        }
+    }
+}
+
+fn direct_point_intersection<S: Borrow<Shape>>(
+    inputs: &[S],
+    strictness: Strictness,
+) -> Result<Option<Shape>> {
+    let [left, right] = inputs else {
+        return Ok(None);
+    };
+    let (left, right) = (left.borrow(), right.borrow());
+    let (point, carrier) = if let Shape::Point(point) = left {
+        (*point, right)
+    } else if let Shape::Point(point) = right {
+        (*point, left)
+    } else {
+        return Ok(None);
+    };
+    let carrier = match carrier {
+        Shape::LineString(line) if crate::geometry::relate::line_has_nonzero_segment(line) => {
+            DirectPointCarrier::Line(line)
+        },
+        Shape::Polygon(polygon) if crate::geometry::polygon_is_valid(polygon) => {
+            DirectPointCarrier::Polygon(polygon)
+        },
+        _ => return Ok(None),
+    };
+    let source_refs = [left, right];
+    if !carrier.covers_point(point) {
+        return Ok(Some(empty_nary_overlay_shape(
+            &source_refs,
+            OverlayOp::Intersection,
+        )));
+    }
+    Ok(Some(crate::geometry::carry_direct_point_ordinates(
+        point,
+        &source_refs,
+        strictness.is_strict(),
+    )?))
 }
 
 /// Assemble a binary Cartesian polygon/line intersection from one joint graph.

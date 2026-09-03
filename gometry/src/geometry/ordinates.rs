@@ -8,9 +8,9 @@ use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::Result;
 use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
-    CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
-    PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, point_distance, same_point,
-    scaled_residual, segment_projection,
+    CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
+    OverlayOp, Point, PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, point_distance,
+    same_point, scaled_residual, segment_projection,
 };
 
 /// Z/M lookup table built from an operation's input vertices and segments,
@@ -62,21 +62,11 @@ impl OrdinateSource {
         // Upper bound: every input vertex carries ordinates (the common
         // case — XYZ/XYM inputs are usually uniformly dimensioned).
         let total_coords: usize = inputs.iter().map(|shape| shape.coord_count()).sum();
-        let mut magnitude: f64 = 0.0;
-        for shape in inputs {
-            if let Some(bounds) = shape.bounds() {
-                magnitude = magnitude
-                    .max(bounds.minx().abs())
-                    .max(bounds.maxx().abs())
-                    .max(bounds.miny().abs())
-                    .max(bounds.maxy().abs());
-            }
-        }
         Self {
             vertices: HashMap::with_capacity(total_coords),
             segments: Vec::with_capacity(total_coords),
             segment_tree: std::cell::OnceCell::new(),
-            tolerance: magnitude * OVERLAY_SNAP_RELATIVE,
+            tolerance: ordinate_tolerance(inputs),
         }
     }
 
@@ -303,6 +293,119 @@ pub(super) fn segment_ordinate_at(
     });
     let lifted = projection.interpolate_point(start, end);
     Some((lifted.z(), lifted.m()))
+}
+
+/// Carry ordinates onto a directly admitted point/carrier intersection without
+/// constructing topology state. This mirrors [`OrdinateSource::resolve`], but
+/// the result has one known point, so source vertices and segments can be
+/// scanned in place.
+pub(crate) fn carry_direct_point_ordinates(
+    point: Point,
+    inputs: &[&Shape],
+    strict: bool,
+) -> Result<Shape> {
+    let declared_axes =
+        crate::geometry::overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
+    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
+        return Ok(Shape::Point(point));
+    }
+
+    let mut z = AxisValue::default();
+    let mut m = AxisValue::default();
+    let tolerance = ordinate_tolerance(inputs);
+    for shape in inputs {
+        if !(shape.has_z() || shape.has_m()) {
+            continue;
+        }
+        match shape {
+            Shape::Point(source) => {
+                if same_point(*source, point) {
+                    z.observe(source.z());
+                    m.observe(source.m());
+                }
+            },
+            Shape::LineString(line) => {
+                observe_direct_ordinates(line, point, tolerance, &mut z, &mut m);
+            },
+            Shape::Polygon(polygon) => {
+                for ring in polygon.rings() {
+                    observe_direct_ordinates(ring, point, tolerance, &mut z, &mut m);
+                }
+            },
+            _ => unreachable!("direct ordinate carry requires a scalar point carrier"),
+        }
+        if z.conflict && m.conflict {
+            break;
+        }
+    }
+
+    let axes = CoordinateAxes::new(
+        HasZ(declared_axes.has_z() && z.value().is_some()),
+        HasM(declared_axes.has_m() && m.value().is_some()),
+    );
+    if strict && axes != declared_axes {
+        return Err(GeometryErrorKind::ordinate_dropped("intersection"));
+    }
+    Ok(Shape::Point(Point::new_raw_axes(
+        point.x,
+        point.y,
+        ZOrdinate(
+            axes.has_z()
+                .then(|| z.value().expect("retained Z is sourced")),
+        ),
+        MOrdinate(
+            axes.has_m()
+                .then(|| m.value().expect("retained M is sourced")),
+        ),
+    )))
+}
+
+fn observe_direct_ordinates<C: Coordinates + ?Sized>(
+    coords: &C,
+    point: Point,
+    tolerance: f64,
+    z: &mut AxisValue,
+    m: &mut AxisValue,
+) {
+    for [raw_start, raw_end] in coords.segment_pairs() {
+        if same_point(raw_start, raw_end) {
+            continue;
+        }
+        if same_point(raw_start, point) {
+            z.observe(raw_start.z());
+            m.observe(raw_start.m());
+        }
+        if same_point(raw_end, point) {
+            z.observe(raw_end.z());
+            m.observe(raw_end.m());
+        }
+        let (start, end) = canonical_segment(raw_start, raw_end);
+        if !same_point(start, point)
+            && !same_point(end, point)
+            && let Some((resolved_z, resolved_m)) =
+                segment_ordinate_at(start, end, point, tolerance)
+        {
+            z.observe(resolved_z);
+            m.observe(resolved_m);
+        }
+        if z.conflict && m.conflict {
+            return;
+        }
+    }
+}
+
+fn ordinate_tolerance(inputs: &[&Shape]) -> f64 {
+    let mut magnitude: f64 = 0.0;
+    for shape in inputs {
+        if let Some(bounds) = shape.bounds() {
+            magnitude = magnitude
+                .max(bounds.minx().abs())
+                .max(bounds.maxx().abs())
+                .max(bounds.miny().abs())
+                .max(bounds.maxy().abs());
+        }
+    }
+    magnitude * OVERLAY_SNAP_RELATIVE
 }
 
 /// Carry Z/M from an operation's inputs onto a single XY output shape. In

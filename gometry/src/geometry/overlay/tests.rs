@@ -760,6 +760,219 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    fn assert_point_intersection_matches_generic(
+        name: &str,
+        left: &Shape,
+        right: &Shape,
+        strictness: Strictness,
+    ) -> Option<Shape> {
+        let fast = overlay_all(
+            &[left, right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            strictness,
+        );
+        let generic = super::super::nary::binary_intersection_without_convex_shortcut(
+            left, right, strictness,
+        );
+        match (fast, generic) {
+            (Ok(fast), Ok(generic)) => {
+                assert_eq!(wkb(&fast), wkb(&generic), "{name}: {fast:?} != {generic:?}");
+                Some(fast)
+            },
+            (Err(fast), Err(generic)) => {
+                assert_eq!(fast.to_string(), generic.to_string(), "{name}");
+                None
+            },
+            (fast, generic) => panic!("{name} diverged: fast={fast:?}, generic={generic:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_point_intersection_matches_generic_for_line_and_polygon_cases() {
+        let line_cases = [
+            (
+                "line interior",
+                point(1.0, 0.0),
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "line endpoint",
+                point(0.0, 0.0),
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "line overlap miss",
+                point(1.0, 1.0),
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "line disjoint",
+                point(10.0, 10.0),
+                line(&[(0.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "line repeated vertices",
+                point(1.0, 0.0),
+                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)]),
+            ),
+            (
+                "line collapsed",
+                point(1.0, 1.0),
+                line(&[(1.0, 1.0), (1.0, 1.0)]),
+            ),
+        ];
+        for (name, point, line) in line_cases {
+            assert_point_intersection_matches_generic(name, &point, &line, Strictness::Strict);
+            assert_point_intersection_matches_generic(name, &line, &point, Strictness::Strict);
+        }
+
+        let holed = Shape::Polygon(Polygon::new(
+            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+            vec![Ring::from_closed(vec![
+                Point::new(2.0, 2.0).unwrap(),
+                Point::new(4.0, 2.0).unwrap(),
+                Point::new(4.0, 4.0).unwrap(),
+                Point::new(2.0, 4.0).unwrap(),
+                Point::new(2.0, 2.0).unwrap(),
+            ])],
+        ));
+        let polygon_cases = [
+            (
+                "polygon interior",
+                point(1.0, 1.0),
+                square(0.0, 0.0, 4.0, 4.0),
+            ),
+            (
+                "polygon shell boundary",
+                point(0.0, 2.0),
+                square(0.0, 0.0, 4.0, 4.0),
+            ),
+            (
+                "polygon shell vertex",
+                point(0.0, 0.0),
+                square(0.0, 0.0, 4.0, 4.0),
+            ),
+            (
+                "polygon overlap miss",
+                point(4.5, 2.0),
+                square(0.0, 0.0, 4.0, 4.0),
+            ),
+            ("polygon hole interior", point(3.0, 3.0), holed.clone()),
+            ("polygon hole boundary", point(2.0, 3.0), holed.clone()),
+            ("polygon outside hole", point(1.0, 1.0), holed),
+        ];
+        for (name, point, polygon) in polygon_cases {
+            assert_point_intersection_matches_generic(name, &point, &polygon, Strictness::Strict);
+            assert_point_intersection_matches_generic(name, &polygon, &point, Strictness::Strict);
+        }
+
+        let invalid = Shape::Polygon(polygon(&[
+            (0.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (4.0, 0.0),
+            (0.0, 0.0),
+        ]));
+        assert_point_intersection_matches_generic(
+            "invalid polygon",
+            &point(1.0, 1.0),
+            &invalid,
+            Strictness::Strict,
+        );
+    }
+
+    #[test]
+    fn scalar_point_intersection_reconciles_ordinates_in_both_orders() {
+        let xy_line = line(&[(0.0, 0.0), (2.0, 0.0)]);
+        let z_line = zm_line((0.0, 0.0), (2.0, 0.0));
+        let z_point = Shape::Point(
+            Point::new_axes(1.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(None)).unwrap(),
+        );
+        let matching_point = Shape::Point(
+            Point::new_axes(1.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(Some(9.0))).unwrap(),
+        );
+        let xy_point = point(1.0, 0.0);
+        for (name, left, right, axes) in [
+            (
+                "point Z and line XY",
+                z_point.clone(),
+                xy_line.clone(),
+                "XYZ",
+            ),
+            (
+                "point XY and line ZM",
+                xy_point.clone(),
+                z_line.clone(),
+                "XYZM",
+            ),
+        ] {
+            for (left, right) in [(&left, &right), (&right, &left)] {
+                let result = assert_point_intersection_matches_generic(
+                    name,
+                    left,
+                    right,
+                    Strictness::Lenient,
+                )
+                .expect("ordinate hit");
+                assert_eq!(result.coordinate_axes(), axes, "{name}: {result:?}");
+            }
+        }
+        for (left, right) in [(&matching_point, &z_line), (&z_line, &matching_point)] {
+            let result = assert_point_intersection_matches_generic(
+                "matching point and line ordinates",
+                left,
+                right,
+                Strictness::Strict,
+            )
+            .expect("matching ordinate result");
+            assert_eq!(result.coordinate_axes(), "XYZM", "{result:?}");
+        }
+
+        let conflicting = Shape::Point(
+            Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(9.0))).unwrap(),
+        );
+        for (left, right) in [(&conflicting, &z_line), (&z_line, &conflicting)] {
+            assert_point_intersection_matches_generic(
+                "strict ordinate conflict",
+                left,
+                right,
+                Strictness::Strict,
+            );
+            let result = assert_point_intersection_matches_generic(
+                "lenient ordinate conflict",
+                left,
+                right,
+                Strictness::Lenient,
+            )
+            .expect("lenient ordinate result");
+            assert_eq!(result.coordinate_axes(), "XYM", "{result:?}");
+        }
+
+        let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
+        let boundary = point(2.0, 0.0);
+        let boundary_result = assert_point_intersection_matches_generic(
+            "polygon boundary interpolation",
+            &boundary,
+            &z_polygon,
+            Strictness::Lenient,
+        )
+        .expect("polygon boundary result");
+        assert_eq!(boundary_result.coordinate_axes(), "XYZ");
+        let boundary_point = boundary_result.points_vec()[0];
+        assert_eq!(boundary_point.z(), Some(12.0));
+
+        let interior_point = point(1.0, 1.0);
+        let interior_result = assert_point_intersection_matches_generic(
+            "polygon interior does not invent Z",
+            &interior_point,
+            &z_polygon,
+            Strictness::Lenient,
+        )
+        .expect("polygon interior result");
+        assert_eq!(interior_result.coordinate_axes(), "XY");
+    }
+
     #[test]
     fn intersection_all_matches_left_fold_for_permutations() {
         let shapes = [
