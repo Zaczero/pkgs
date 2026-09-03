@@ -113,8 +113,10 @@ pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     }
     let mut values = Vec::<MaybeUninit<f64>>::new();
     crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
-    // The fallible reservation above owns the allocation; initialize its
-    // length without asking the allocator for a second, infallible resize.
+    // SAFETY: the fallible reservation above guarantees `capacity >= len`, and
+    // `MaybeUninit<f64>` has no initialization requirement, so every slot in
+    // `0..len` is a valid value of the element type. Setting the length here
+    // avoids a second, infallible resize through the allocator.
     unsafe { values.set_len(len) };
     if buffer_format_is_native_endian(buffer.format()) {
         for (dst, cell) in values.iter_mut().zip(cells.iter()) {

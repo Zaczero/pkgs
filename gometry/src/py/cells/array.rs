@@ -1727,8 +1727,7 @@ impl PyCellArray {
             }
             let cell = crate::grid::geohash::Geohash::from_validated_id(self.id_at(row));
             let (bytes, length) = cell.token_bytes();
-            // `token_bytes` draws only from the ASCII geohash alphabet.
-            let token = unsafe { std::str::from_utf8_unchecked(&bytes[..length]) };
+            let token = std::str::from_utf8(&bytes[..length]).expect("geohash alphabet is ASCII");
             tokens.append(PyString::new(py, token))?;
         }
         Ok(tokens.into_any().unbind())

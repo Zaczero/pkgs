@@ -222,7 +222,7 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
                     };
                     crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
                         .map_err(PyErr::from)?;
-                    crate::try_push(&mut present, logical).map_err(PyErr::from)?;
+                    crate::try_push(&mut present, logical)?;
                 },
             }
         }

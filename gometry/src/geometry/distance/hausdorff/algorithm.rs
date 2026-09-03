@@ -193,45 +193,6 @@ pub(crate) fn hausdorff_scratch() -> crate::scratch_pool::ScratchLease<Hausdorff
     crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH)
 }
 
-#[cfg(test)]
-mod scratch_tests {
-    use super::*;
-
-    fn reserve(len: usize) {
-        let mut scratch = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
-        scratch.probes.reserve(len);
-        scratch.probe_results.reserve(len);
-        scratch.vertex_dist_sq.reserve(len);
-        scratch.vertex_witness.reserve(len);
-        scratch.midpoint_dist_sq.reserve(len);
-        scratch.midpoint_witness.reserve(len);
-        scratch.midpoint_probes.reserve(len);
-        scratch.midpoint_indices.reserve(len);
-        scratch.mid_results.reserve(len);
-        scratch.stack.reserve(len);
-        scratch.order_entries.reserve(len);
-    }
-
-    #[test]
-    fn algorithm_columns_are_aggregate_bounded_and_reused() {
-        reserve(256);
-        let (_, allocations) = crate::test_support::allocation_count(|| reserve(256));
-        assert_eq!(allocations, 0);
-
-        reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<(f64, f64)>() + 1);
-        let empty = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
-        assert_eq!(empty.probes.capacity(), 0);
-        assert_eq!(empty.probe_results.capacity(), 0);
-        assert_eq!(empty.order_entries.capacity(), 0);
-        drop(empty);
-
-        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(256));
-        assert!(first_allocations > 0);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(256));
-        assert_eq!(repeat_allocations, 0);
-    }
-}
-
 /// Branch-and-bound directed Hausdorff²: batch facet/SIMD vertex seeding,
 /// tight Lipschitz bounds, radius-coverage certificates, and Taha–Hanbury
 /// ordering on the tight bound.
@@ -497,4 +458,43 @@ pub(crate) fn directed_hausdorff_distance_squared_with_target_columns<T: Hausdor
     target: &T,
 ) -> f64 {
     directed_hausdorff_distance_squared_with_target_pruned(left_xs, left_ys, target)
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    fn reserve(len: usize) {
+        let mut scratch = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
+        scratch.probes.reserve(len);
+        scratch.probe_results.reserve(len);
+        scratch.vertex_dist_sq.reserve(len);
+        scratch.vertex_witness.reserve(len);
+        scratch.midpoint_dist_sq.reserve(len);
+        scratch.midpoint_witness.reserve(len);
+        scratch.midpoint_probes.reserve(len);
+        scratch.midpoint_indices.reserve(len);
+        scratch.mid_results.reserve(len);
+        scratch.stack.reserve(len);
+        scratch.order_entries.reserve(len);
+    }
+
+    #[test]
+    fn algorithm_columns_are_aggregate_bounded_and_reused() {
+        reserve(256);
+        let (_, allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert_eq!(allocations, 0);
+
+        reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<(f64, f64)>() + 1);
+        let empty = crate::scratch_pool::ScratchPool::checkout(&HAUSDORFF_SCRATCH);
+        assert_eq!(empty.probes.capacity(), 0);
+        assert_eq!(empty.probe_results.capacity(), 0);
+        assert_eq!(empty.order_entries.capacity(), 0);
+        drop(empty);
+
+        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert!(first_allocations > 0);
+        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        assert_eq!(repeat_allocations, 0);
+    }
 }

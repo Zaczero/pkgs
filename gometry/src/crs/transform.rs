@@ -303,10 +303,9 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
     match error {
         GeographicError::LatitudeOutOfRange { value } => GeometryErrorKind::projection(format!(
             "latitude {value:e} is outside the geographic coordinate domain"
-        ))
-        .into(),
+        )),
         GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
-        other => CrsError::invalid(other.to_string()).into(),
+        other => CrsError::invalid(other.to_string()),
     }
 }
 
@@ -1441,10 +1440,10 @@ impl TransformOutputPlan {
             sequences,
             offset: 0,
         };
-        Ok(shapes
+        shapes
             .iter()
             .map(|shape| rebuild_shape_columns(shape, &mut cursor))
-            .collect::<Result<Vec<_>>>()?)
+            .collect::<Result<Vec<_>>>()
     }
 }
 

@@ -148,7 +148,7 @@ fn packed_bool_lane(
 ) -> Option<PyResult<Py<PyAny>>> {
     let mut values = match values? {
         Ok(values) => values,
-        Err(error) => return Some(Err(error.into())),
+        Err(error) => return Some(Err(error)),
     };
     // Belt-and-braces: kernels that already skip missing rows still get the
     // shape-lane missing sentinel (`false`) applied here. Cheap when the

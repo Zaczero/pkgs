@@ -1927,6 +1927,14 @@ fn condense_geographic_area_face_support(
     area_membership: &AreaMembership,
     node_lookup: &HashMap<TopologyKey, TopologyNodeId>,
 ) {
+    fn root(parent: &mut [usize], mut node: usize) -> usize {
+        while parent[node] != node {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+        node
+    }
+
     if polygons.is_empty() || edges.is_empty() {
         return;
     }
@@ -1935,13 +1943,6 @@ fn condense_geographic_area_face_support(
     let mut darts = Vec::with_capacity(edges.len() * 2);
     let mut outgoing = vec![Vec::<usize>::new(); nodes.len()];
     let mut parent: Vec<usize> = (0..nodes.len()).collect();
-    fn root(parent: &mut [usize], mut node: usize) -> usize {
-        while parent[node] != node {
-            parent[node] = parent[parent[node]];
-            node = parent[node];
-        }
-        node
-    }
     for (edge, data) in edges.iter().enumerate() {
         let start = node_id(data.segment.start);
         let end = node_id(data.segment.end);

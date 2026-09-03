@@ -1595,7 +1595,6 @@ fn geojson_feature_collection(value: &Value) -> crate::error::Result<Option<&Vec
         .ok_or_else(|| {
             io::IoError::geojson("GeoJSON FeatureCollection requires features")
                 .with_parse_path("$.features")
-                .into()
         })
 }
 
@@ -1608,15 +1607,13 @@ fn geojson_feature_collection_member(
     let Some(object) = value.as_object() else {
         return Err(
             io::IoError::geojson("GeoJSON FeatureCollection features must be Features")
-                .with_parse_path(path)
-                .into(),
+                .with_parse_path(path),
         );
     };
     if object.get("type").and_then(Value::as_str) != Some("Feature") {
         return Err(
             io::IoError::geojson("GeoJSON FeatureCollection features must be Features")
-                .with_parse_path(path)
-                .into(),
+                .with_parse_path(path),
         );
     }
     io::reject_rfc7946_value_object(object).map_err(|error| error.with_parse_path(path))?;

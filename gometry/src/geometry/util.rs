@@ -40,10 +40,10 @@ pub(crate) fn geographic_bounds_to_shape(
     bounds: Bounds,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<Shape> {
+    const MAX_CHORD_RADIANS: f64 = 0.247;
     if same_topological_coordinate(bounds.minx(), bounds.maxx()) {
         return Ok(bounds_to_shape(bounds));
     }
-    const MAX_CHORD_RADIANS: f64 = 0.247;
     let segments = ((bounds.maxx() - bounds.minx()) * frame.longitude().unit().radians_per_unit()
         / MAX_CHORD_RADIANS)
         .ceil()

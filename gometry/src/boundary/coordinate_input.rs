@@ -490,6 +490,8 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
             let step = stride / item;
             let mut values = Vec::<std::mem::MaybeUninit<f64>>::new();
             crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
+            // SAFETY: the reservation above guarantees `capacity >= len`, and
+            // `MaybeUninit<f64>` is valid uninitialized.
             unsafe { values.set_len(len) };
             // ReadOnlyCell is transparent over T; treating each strided slot as
             // a cell matches PyBuffer::as_slice for the contiguous case.
@@ -665,6 +667,8 @@ pub(crate) fn try_coordseq_from_nd_buffer(
 
         let mut values = Vec::<std::mem::MaybeUninit<f64>>::new();
         crate::try_reserve_vec(&mut values, n)?;
+        // SAFETY: the reservation above guarantees `capacity >= n`, and
+        // `MaybeUninit<f64>` is valid uninitialized.
         unsafe { values.set_len(n) };
         // Never form `&[f64]` over a buffer another free-threaded mutator may
         // write — load each element through ReadOnlyCell (non-atomic; producer

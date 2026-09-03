@@ -1193,6 +1193,40 @@ impl Point {
     }
 }
 
+impl Polygon {
+    pub(crate) fn axes(&self) -> CoordinateAxes {
+        self.rings()
+            .map(|ring| ring.axes())
+            .fold(CoordinateAxes::XY, CoordinateAxes::union)
+    }
+}
+
+fn shape_member_axes(value: &impl ShapeMemberAxes) -> CoordinateAxes {
+    value.shape_member_axes()
+}
+
+trait ShapeMemberAxes {
+    fn shape_member_axes(&self) -> CoordinateAxes;
+}
+
+impl ShapeMemberAxes for Point {
+    fn shape_member_axes(&self) -> CoordinateAxes {
+        self.axes()
+    }
+}
+
+impl ShapeMemberAxes for LineSeq {
+    fn shape_member_axes(&self) -> CoordinateAxes {
+        self.axes()
+    }
+}
+
+impl ShapeMemberAxes for Polygon {
+    fn shape_member_axes(&self) -> CoordinateAxes {
+        self.axes()
+    }
+}
+
 #[cfg(test)]
 mod multipart_layout_tests {
     use super::*;
@@ -1292,39 +1326,5 @@ mod multipart_layout_tests {
                 .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2)))
                 .is_err()
         );
-    }
-}
-
-impl Polygon {
-    pub(crate) fn axes(&self) -> CoordinateAxes {
-        self.rings()
-            .map(|ring| ring.axes())
-            .fold(CoordinateAxes::XY, CoordinateAxes::union)
-    }
-}
-
-fn shape_member_axes(value: &impl ShapeMemberAxes) -> CoordinateAxes {
-    value.shape_member_axes()
-}
-
-trait ShapeMemberAxes {
-    fn shape_member_axes(&self) -> CoordinateAxes;
-}
-
-impl ShapeMemberAxes for Point {
-    fn shape_member_axes(&self) -> CoordinateAxes {
-        self.axes()
-    }
-}
-
-impl ShapeMemberAxes for LineSeq {
-    fn shape_member_axes(&self) -> CoordinateAxes {
-        self.axes()
-    }
-}
-
-impl ShapeMemberAxes for Polygon {
-    fn shape_member_axes(&self) -> CoordinateAxes {
-        self.axes()
     }
 }

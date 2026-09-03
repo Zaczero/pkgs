@@ -252,7 +252,7 @@ pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<
         .get(5..)
         .ok_or_else(|| io::IoError::wkt("expected EWKT 'SRID=<code>;<wkt>'"))?;
     let Some((code, body)) = rest.split_once(';') else {
-        return Err(io::IoError::wkt("expected EWKT 'SRID=<code>;<wkt>'").into());
+        return Err(io::IoError::wkt("expected EWKT 'SRID=<code>;<wkt>'"));
     };
     let code: u32 = code
         .trim()

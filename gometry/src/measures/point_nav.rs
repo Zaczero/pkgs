@@ -170,7 +170,7 @@ fn destination_point_on_geodesic(
     let point = Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?;
     frame
         .from_geodesic_point(point)
-        .map_err(|error| crate::crs::CrsError::message(error.to_string()).into())
+        .map_err(|error| crate::crs::CrsError::message(error.to_string()))
 }
 
 fn rhumb_destination_point(
@@ -253,7 +253,7 @@ fn interpolate_point_on_geodesic(
     )?;
     frame
         .from_geodesic_point(point)
-        .map_err(|error| crate::crs::CrsError::message(error.to_string()).into())
+        .map_err(|error| crate::crs::CrsError::message(error.to_string()))
 }
 
 fn interpolate_point_planar(

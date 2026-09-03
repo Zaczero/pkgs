@@ -55,9 +55,8 @@ where
 {
     let densify = operation.densify();
     let operation_name = M::OP.name();
-    use GeometryInput::{Many, One};
     match classify_required(other)? {
-        One(right) => {
+        GeometryInput::One(right) => {
             Frame::compatible_parts(
                 array.crs_ref(),
                 array.epoch(),
@@ -129,7 +128,7 @@ where
                 .map_err(rows_err)?,
             )
         },
-        Many(right) => {
+        GeometryInput::Many(right) => {
             let (lefts, rights) = paired_arrays(array, right, operation_name)?;
             let model = resolve_metric(array.crs_str(), unit, M::OP)?;
             let missing = crate::array::missing::union_pair(array.missing(), right.missing());
@@ -437,9 +436,8 @@ pub(crate) fn array_crs_distances(
     // Operand classification and structural checks (length, frame) come
     // BEFORE metric-model resolution, so an invalid pairing reports as such
     // even when the array's CRS cannot back a metric.
-    use GeometryInput::{Many, One};
     match classify_required(other)? {
-        One(right) => {
+        GeometryInput::One(right) => {
             Frame::compatible_parts(
                 array.crs_ref(),
                 array.epoch(),
@@ -616,7 +614,7 @@ pub(crate) fn array_crs_distances(
             }
             unreachable!("metric model is Planar or Geodesic")
         },
-        Many(right) => {
+        GeometryInput::Many(right) => {
             paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             // Planar packed × packed: pure column zip — one guarded-sqrt distance
@@ -747,10 +745,11 @@ pub(crate) fn array_crs_dwithin(
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    use GeometryInput::{Many, One};
     match classify_required(other)? {
-        One(right) => array_crs_dwithin_scalar(py, array, right, distance, operation, unit),
-        Many(right) => {
+        GeometryInput::One(right) => {
+            array_crs_dwithin_scalar(py, array, right, distance, operation, unit)
+        },
+        GeometryInput::Many(right) => {
             // Structural checks (length, frame) precede metric-model resolution
             // — see `array_crs_distances`.
             paired_arrays(array, right, operation.name())?;
@@ -903,9 +902,8 @@ pub(crate) fn array_crs_dwithin_per_element(
     operation: MetricOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    use GeometryInput::{Many, One};
     match classify_required(other)? {
-        One(right) => {
+        GeometryInput::One(right) => {
             Frame::compatible_parts(
                 array.crs_ref(),
                 array.epoch(),
@@ -975,7 +973,7 @@ pub(crate) fn array_crs_dwithin_per_element(
             };
             bool_array(py, results)
         },
-        Many(right) => {
+        GeometryInput::Many(right) => {
             paired_arrays(array, right, operation.name())?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;

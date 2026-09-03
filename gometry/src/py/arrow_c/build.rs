@@ -775,11 +775,14 @@ mod owner_export_tests {
             make_array_with_offset(3, 3, vec![OwnedBufferSlot::Null], Vec::new()).unwrap();
         apply_top_level_validity(&mut array, &window).unwrap();
         assert_eq!(array.0.null_count, 2);
-        // The first exported pointer is the original Arc allocation, not a
-        // repacked bitmap. ArrayPrivate retains its own Arc clone.
+        // SAFETY: `apply_top_level_validity` populated the buffer array with
+        // one entry, so `*buffers` reads an initialized pointer. The first
+        // exported pointer is the original Arc allocation, not a repacked
+        // bitmap, and `ArrayPrivate` retains its own Arc clone.
         let exported = unsafe { *array.0.buffers }.cast::<u8>();
         assert_eq!(exported, bitmap.as_ptr());
         drop((parent, window, bitmap));
+        // SAFETY: `ArrayPrivate` keeps the allocation alive past the drop above.
         assert_eq!(unsafe { *exported }, 0b1101_0111);
     }
 }

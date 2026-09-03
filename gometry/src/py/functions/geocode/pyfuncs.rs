@@ -33,7 +33,7 @@ fn geocode_array_codes(
                 continue;
             };
             let logical = row.logical();
-            crate::try_push(&mut present, (logical, point)).map_err(pyo3::PyErr::from)?;
+            crate::try_push(&mut present, (logical, point))?;
         }
         if lonlat_frame || present.is_empty() {
             let mut output = crate::try_vec_with_capacity(array.len())?;
@@ -53,7 +53,7 @@ fn geocode_array_codes(
             .expect("non-lonlat point array carries a CRS");
         let mut source = crate::try_vec_with_capacity(present.len())?;
         for &(_, point) in &present {
-            crate::try_push(&mut source, point.xy()).map_err(pyo3::PyErr::from)?;
+            crate::try_push(&mut source, point.xy())?;
         }
         let source = Shape::multi_point(
             crate::geometry::CoordinateAxes::XY,

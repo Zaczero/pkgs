@@ -535,8 +535,7 @@ impl SubdivisionColumns<'_> {
             if !(longitude.is_finite() && latitude.is_finite()) {
                 return Err(GeometryErrorKind::message(
                     "geodesic subdivision calculation produced a non-finite coordinate",
-                )
-                .into());
+                ));
             }
             self.xs.push(longitude);
             self.ys.push(latitude);

@@ -366,9 +366,7 @@ mod tests {
         let source = mixed_with_missing();
         let error = try_map_shape_rows(&source, |_, row| {
             if row == 2 {
-                Err::<(), crate::error::Error>(
-                    crate::geometry::GeometryErrorKind::message("boom").into(),
-                )
+                Err::<(), crate::error::Error>(crate::geometry::GeometryErrorKind::message("boom"))
             } else {
                 Ok(())
             }

@@ -138,7 +138,7 @@ impl ValidityMask {
         bytes.resize(rows.len().div_ceil(8), 0);
         let mut valid_count = 0;
         for (out, &row) in rows.iter().enumerate() {
-            assert!(row < self.len, "validity gather row must be in bounds");
+            // `is_valid` owns the bounds check.
             if self.is_valid(row) {
                 bytes[out / 8] |= 1 << (out % 8);
                 valid_count += 1;

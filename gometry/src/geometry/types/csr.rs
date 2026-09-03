@@ -189,7 +189,7 @@ impl<Level> CsrOffsetColumn<Level> {
         validate_csr_ends(&ends, end_cap)?;
         let offsets = offsets_from_ends(ends)?;
         Ok(Self {
-            offsets: offsets.into(),
+            offsets,
             _level: PhantomData,
         })
     }
@@ -206,7 +206,7 @@ impl<Level> CsrOffsetColumn<Level> {
         }
         let offsets = offsets_from_ends(ends)?;
         Ok(Self {
-            offsets: offsets.into(),
+            offsets,
             _level: PhantomData,
         })
     }

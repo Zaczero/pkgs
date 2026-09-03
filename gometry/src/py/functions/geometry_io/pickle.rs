@@ -498,7 +498,7 @@ fn pickled_coordseq(
     {
         return Err(pickle_error("packed-array pickle columns differ in length"));
     }
-    Ok(CoordSeq::from_arc_columns(xs, ys, zs, ms)?)
+    CoordSeq::from_arc_columns(xs, ys, zs, ms)
 }
 
 struct GeometryPicklePayload {

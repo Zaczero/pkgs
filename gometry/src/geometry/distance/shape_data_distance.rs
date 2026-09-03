@@ -413,14 +413,14 @@ impl PreparedPlan {
         probes
             .map(|(x, y)| {
                 crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
-                Ok(geodesic_point_distance_with_parts_and_scratch(
+                geodesic_point_distance_with_parts_and_scratch(
                     Point::new_raw_xy(x, y),
                     &parts,
                     metric,
                     bvh,
                     &mut scratch,
                     Some(&mut stack),
-                )?)
+                )
             })
             .collect()
     }
@@ -451,7 +451,7 @@ impl PreparedPlan {
         probes
             .map(|(x, y)| {
                 crate::crs::ensure_geographic_lonlat_in_frame(frame, x, y)?;
-                Ok(geodesic_point_dwithin_with_parts_and_scratch(
+                geodesic_point_dwithin_with_parts_and_scratch(
                     Point::new_raw_xy(x, y),
                     &parts,
                     metric,
@@ -459,7 +459,7 @@ impl PreparedPlan {
                     bvh,
                     &mut scratch,
                     Some(&mut stack),
-                )?)
+                )
             })
             .collect()
     }

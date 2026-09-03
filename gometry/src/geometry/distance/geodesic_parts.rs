@@ -162,12 +162,7 @@ pub(crate) fn geodesic_distance_with_parts(
     }
     let mut best = f64::INFINITY;
     best = geodesic_sweep_with_parts(&left_parts.points, right_parts, metric, best)?;
-    Ok(geodesic_sweep_with_parts(
-        &right_parts.points,
-        left_parts,
-        metric,
-        best,
-    )?)
+    geodesic_sweep_with_parts(&right_parts.points, left_parts, metric, best)
 }
 
 pub(crate) fn geodesic_dwithin_with_parts(
@@ -559,8 +554,7 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
             if found {
                 return Ok(true);
             }
-            Ok(bvh
-                .dwithin_point(vertex, target_parts, metric, &mut scratch.stack, distance)
+            bvh.dwithin_point(vertex, target_parts, metric, &mut scratch.stack, distance)
                 .and_then(|value| {
                     value.map_or_else(
                         || {
@@ -574,7 +568,7 @@ pub(crate) fn geodesic_dwithin_sweep_with_parts(
                         },
                         Ok,
                     )
-                })?)
+                })
         })
     } else {
         geodesic_capped_dwithin_with_parts(

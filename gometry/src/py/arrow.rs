@@ -510,6 +510,18 @@ fn from_arrow(
     ))
 }
 
+/// Register the Arrow interchange free functions on the module.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    crate::add_functions!(
+        m;
+        from_arrow,
+        metadata::py_parse_geoarrow_extension_metadata,
+        metadata::py_parse_geoparquet_column_frame,
+        metadata::py_admit_geoparquet_geometry_storage,
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use pyo3::exceptions::{PyImportError, PyModuleNotFoundError, PyRuntimeError};
@@ -600,16 +612,4 @@ sys.meta_path.insert(0, finder)"#
         })
         .expect("Python import-failure probe should complete");
     }
-}
-
-/// Register the Arrow interchange free functions on the module.
-pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    crate::add_functions!(
-        m;
-        from_arrow,
-        metadata::py_parse_geoarrow_extension_metadata,
-        metadata::py_parse_geoparquet_column_frame,
-        metadata::py_admit_geoparquet_geometry_storage,
-    );
-    Ok(())
 }

@@ -476,10 +476,6 @@ impl Shape {
     }
 }
 
-#[expect(
-    clippy::impl_trait_in_params,
-    reason = "the metric is used only through its trait contract; a named generic adds no API signal"
-)]
 pub(super) fn geodesic_directed_hausdorff_distance(
     source_points: &[Point],
     source_edges: &[GeodesicSegment],

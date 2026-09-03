@@ -182,10 +182,6 @@ impl PeriodicAxis {
     /// shortest directed edge. The endpoints are admitted once here, and the
     /// direction comes from [`Self::shortest_edge`], including its exact
     /// source-directed half-turn tie.
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact zero is the only directionless shortest edge"
-    )]
     pub(crate) fn seam_transit(self, from: f64, to: f64) -> Result<i8, GeographicError> {
         let canonical_from = self.canonicalize(from)?.get();
         let canonical_to = self.canonicalize(to)?.get();
@@ -339,10 +335,6 @@ impl GeographicFrame {
         Ok(())
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "signed zero and the exact admitted pole are frame identities"
-    )]
     fn to_geodesic_xy(self, longitude: f64, latitude: f64) -> Result<(f64, f64), GeographicError> {
         let longitude = self.longitude.canonicalize(longitude)?.get();
         let longitude = if self == Self::crs84() {

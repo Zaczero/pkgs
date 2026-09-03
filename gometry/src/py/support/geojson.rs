@@ -324,8 +324,7 @@ fn check_json_nesting(bytes: &[u8]) -> crate::error::Result<()> {
                 if depth > MAX_JSON_NESTING {
                     return Err(crate::io::IoError::geojson(format!(
                         "GeoJSON JSON nesting exceeds the structural limit of {MAX_JSON_NESTING}"
-                    ))
-                    .into());
+                    )));
                 }
             },
             b'}' | b']' => depth = depth.saturating_sub(1),
@@ -495,8 +494,7 @@ fn select_geojson_geometry_value<'a>(
                          FeatureCollection with from_geojson/from_features, where null \
                          geometries become missing rows",
                     )
-                    .with_parse_path(&geometry_path)
-                    .into()),
+                    .with_parse_path(&geometry_path)),
                 };
             }
             Ok(Some((geometry, geometry_path)))

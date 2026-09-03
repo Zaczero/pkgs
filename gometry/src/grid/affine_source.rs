@@ -2739,10 +2739,6 @@ pub(crate) struct SelectionAffinePiece {
 /// A split either does not cross the parent interval or has one exact parent
 /// ratio. Arithmetic failure is deliberately the enclosing `Option::None`,
 /// distinct from an ordinary absent crossing.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "boxing an exact 64-limb ratio would add a fallible allocation to every symbolic split"
-)]
 enum ParentCrossing {
     Absent,
     Present(ExactRatio),

@@ -228,9 +228,8 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
     + Sync,
 ) -> PyResult<Py<PyAny>> {
     let operation_name = operation.name();
-    use GeometryInput::{Many, One};
     match classify_required(other)? {
-        One(right) => {
+        GeometryInput::One(right) => {
             Frame::compatible_parts(
                 array.crs_ref(),
                 array.epoch(),
@@ -258,7 +257,7 @@ pub(crate) fn array_crs_similarity_metric_per_densify(
                     .map_err(rows_err)?,
             )
         },
-        Many(right) => {
+        GeometryInput::Many(right) => {
             paired_arrays(array, right, operation_name)?;
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             float64_array(

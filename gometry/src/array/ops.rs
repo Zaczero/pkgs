@@ -591,11 +591,11 @@ impl PyGeometryArray {
                         })
                     })?
                     .map_err(rows_err)?;
-                return Ok(crate::py::support::nearest_point_columns_masked(
+                return crate::py::support::nearest_point_columns_masked(
                     pairs,
                     self.frame.clone(),
                     missing,
-                )?);
+                );
             }
             let pairs = py
                 .detach(move || {
@@ -627,11 +627,11 @@ impl PyGeometryArray {
                         .collect_rows()
                 })
                 .map_err(rows_err)?;
-            return Ok(crate::py::support::nearest_point_columns_masked(
+            return crate::py::support::nearest_point_columns_masked(
                 pairs,
                 self.frame.clone(),
                 missing,
-            )?);
+            );
         }
         Err(expected_geometry_or_array())
     }

@@ -126,8 +126,9 @@ impl Geohash {
     /// The canonical lowercase token.
     pub(crate) fn token(self) -> String {
         let (bytes, length) = self.token_bytes();
-        // Every byte comes from the ASCII geohash alphabet above.
-        unsafe { String::from_utf8_unchecked(bytes[..length].to_vec()) }
+        // Every byte comes from the ASCII alphabet above, and validating at
+        // most twelve of them costs nothing next to the allocation.
+        String::from_utf8(bytes[..length].to_vec()).expect("geohash alphabet is ASCII")
     }
 
     /// The canonical token bytes in a stack-sized buffer.

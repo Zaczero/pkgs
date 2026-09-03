@@ -368,8 +368,8 @@ pub(crate) fn dispatch_typed_metric_binary<R>(
 where
     R: BulkElement,
 {
-    let op_name = op.name();
     use GeometryInput::{Many, One};
+    let op_name = op.name();
     let (left_input, right_input) = (classify_required(left)?, classify_required(right)?);
     let (left_crs, left_epoch) = match left_input {
         One(value) => (value.crs_ref(), value.epoch()),

@@ -177,6 +177,6 @@ impl PyGeometryArray {
             };
             builder.push(*point);
         }
-        Some(builder.finish().ok()?)
+        builder.finish().ok()
     }
 }

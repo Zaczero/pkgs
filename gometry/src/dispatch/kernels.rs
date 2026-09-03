@@ -419,9 +419,9 @@ pub(crate) fn unary_split_antimeridian(
         crate::geometry::TopologyDomain::Geographic(frame) => frame,
         crate::geometry::TopologyDomain::Cartesian => {
             if ctx.frame.crs_ref().is_some() {
-                return Err(
-                    CrsError::invalid("split_antimeridian requires a geographic CRS").into(),
-                );
+                return Err(CrsError::invalid(
+                    "split_antimeridian requires a geographic CRS",
+                ));
             }
             let degrees = crate::geographic::AngularFactor::try_new(
                 "angular unit",

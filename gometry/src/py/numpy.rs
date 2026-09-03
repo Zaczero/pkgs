@@ -28,10 +28,11 @@ pub(crate) fn numpy_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
 /// user-provided `mask` attribute, and ordinary ndarray subclasses remain
 /// valid inputs.
 pub(crate) fn reject_masked_array(value: &Bound<'_, PyAny>) -> PyResult<()> {
+    static MASKED_ARRAY: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+
     if value.cast::<numpy::PyUntypedArray>().is_err() {
         return Ok(());
     }
-    static MASKED_ARRAY: PyOnceLock<Py<PyType>> = PyOnceLock::new();
     let masked_array = MASKED_ARRAY.import(value.py(), "numpy.ma", "MaskedArray")?;
     if value.get_type().is_subclass(masked_array.as_any())? {
         return Err(pyo3::exceptions::PyTypeError::new_err(

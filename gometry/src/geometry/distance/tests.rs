@@ -399,7 +399,10 @@ pub(super) fn geodesic_nearest_oracle_cases() -> Vec<(&'static str, Shape, Shape
         (
             "point_line",
             Shape::Point(p(0.0, 0.0)),
-            line(vec![pzm(1.0, -1.0, 10.0, 100.0), pzm(1.0, 1.0, 20.0, 200.0)].into()),
+            line(vec![
+                pzm(1.0, -1.0, 10.0, 100.0),
+                pzm(1.0, 1.0, 20.0, 200.0),
+            ]),
         ),
         (
             "line_line",
