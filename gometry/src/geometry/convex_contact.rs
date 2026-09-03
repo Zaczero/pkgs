@@ -241,25 +241,56 @@ fn scan_chains(
             ib += 1;
             continue;
         }
-        if segment_envelopes_disjoint(seg_a, seg_b) {
-            advance_by_xmax(a_maxx, b_maxx, &mut ia, &mut ib);
-            continue;
+        if !segment_envelopes_disjoint(seg_a, seg_b) {
+            match segment_contact_exact(seg_a, seg_b) {
+                Contact::Disjoint => {},
+                Contact::Cross { point } => {
+                    on_cross(chain_a[ia], point);
+                    on_cross(chain_b[ib], point);
+                    crossed = true;
+                },
+                Contact::Touch { .. } | Contact::Collinear { .. } => return ScanFlow::Bail,
+            }
         }
-        if pool.operands[chain_a[ia]] == pool.operands[chain_b[ib]] {
+        if a_maxx < b_maxx {
+            ia += 1;
+        } else if b_maxx < a_maxx {
+            ib += 1;
+        } else if skipped_pair_meets(pool, chain_a, ia + 1, chain_b, ib)
+            || skipped_pair_meets(pool, chain_a, ia, chain_b, ib + 1)
+        {
             return ScanFlow::Bail;
-        }
-        match segment_contact_exact(seg_a, seg_b) {
-            Contact::Disjoint => advance_by_xmax(a_maxx, b_maxx, &mut ia, &mut ib),
-            Contact::Cross { point } => {
-                on_cross(chain_a[ia], point);
-                on_cross(chain_b[ib], point);
-                crossed = true;
-                advance_by_xmax(a_maxx, b_maxx, &mut ia, &mut ib);
-            },
-            Contact::Touch { .. } | Contact::Collinear { .. } => return ScanFlow::Bail,
+        } else {
+            ia += 1;
+            ib += 1;
         }
     }
     ScanFlow::Ok(crossed)
+}
+
+/// Whether either pair skipped by a coincident right-extreme advance actually
+/// meets.
+///
+/// Both chains end their current segment at the same x, so advancing one
+/// pointer would leave the other chain's successor untested and advancing both
+/// leaves two pairs untested. Those pairs share only that single x, which for
+/// two non-vertical segments is the shared endpoint the current pair already
+/// reported — but a vertical edge occupies a whole y-range there, so the
+/// contact is real and unreported. A single x admits no transversal crossing,
+/// only a touch or a collinear overlap, and both of those end the walk anyway.
+fn skipped_pair_meets(
+    pool: &OperandPool,
+    chain_a: &[usize],
+    ia: usize,
+    chain_b: &[usize],
+    ib: usize,
+) -> bool {
+    let (Some(&left), Some(&right)) = (chain_a.get(ia), chain_b.get(ib)) else {
+        return false;
+    };
+    let (seg_a, seg_b) = (pool.segments[left], pool.segments[right]);
+    !segment_envelopes_disjoint(seg_a, seg_b)
+        && !matches!(segment_contact_exact(seg_a, seg_b), Contact::Disjoint)
 }
 
 const fn segment_x_extent(segment: Segment) -> (f64, f64) {
@@ -267,17 +298,6 @@ const fn segment_x_extent(segment: Segment) -> (f64, f64) {
         segment.start.x.min(segment.end.x),
         segment.start.x.max(segment.end.x),
     )
-}
-
-fn advance_by_xmax(a_maxx: f64, b_maxx: f64, ia: &mut usize, ib: &mut usize) {
-    if a_maxx < b_maxx {
-        *ia += 1;
-    } else if b_maxx < a_maxx {
-        *ib += 1;
-    } else {
-        *ia += 1;
-        *ib += 1;
-    }
 }
 
 fn push_cut(cuts: &mut [Vec<ConvexCut>], segment: usize, point: XY, cross: bool) {

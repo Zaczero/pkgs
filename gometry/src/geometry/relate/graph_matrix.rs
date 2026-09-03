@@ -1641,6 +1641,7 @@ mod tests {
     #[test]
     fn convex_relation_falls_back_for_ambiguous_or_unsupported_shapes() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
+        let square4 = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let far = Shape::Polygon(rectangle(8.0, 0.0, 9.0, 1.0));
         let equal = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let edge_touch = Shape::Polygon(rectangle(2.0, 0.0, 4.0, 2.0));
@@ -1664,6 +1665,13 @@ mod tests {
             [0.0, 0.0],
         ]));
         let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
+        // Contained triangles whose apex sits on the square's right or left
+        // edge. Both chains end a segment at that x, which is the case the
+        // linear contact walk cannot settle from the current pair alone.
+        let right_edge_apex =
+            Shape::Polygon(polygon(&[[1.0, 1.0], [4.0, 2.0], [2.0, 3.0], [1.0, 1.0]]));
+        let left_edge_apex =
+            Shape::Polygon(polygon(&[[3.0, 1.0], [3.0, 3.0], [0.0, 2.0], [3.0, 1.0]]));
         let nonstrict = Shape::Polygon(polygon(&[
             [0.0, 0.0],
             [1.0, 0.0],
@@ -1688,6 +1696,20 @@ mod tests {
             ("invalid", &invalid, &square, "FF2111212"),
             ("collapsed", &collapsed, &square, "FF2F0F212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
+            ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
+            ("left edge apex", &square4, &left_edge_apex, "212F01FF2"),
+            (
+                "right edge apex reversed",
+                &right_edge_apex,
+                &square4,
+                "2FF10F212",
+            ),
+            (
+                "left edge apex reversed",
+                &left_edge_apex,
+                &square4,
+                "2FF10F212",
+            ),
         ] {
             assert_convex_relation_case(name, left, right, false, expected);
         }
