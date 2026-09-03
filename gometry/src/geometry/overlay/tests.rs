@@ -25,6 +25,17 @@ mod binary_areal_overlay_tests {
         ]))
     }
 
+    fn regular_polygon(cx: f64, cy: f64, radius: f64, vertices: usize) -> Shape {
+        let mut points: Vec<Point> = (0..vertices)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * index as f64 / vertices as f64;
+                Point::new_raw_xy(cx + radius * angle.cos(), cy + radius * angle.sin())
+            })
+            .collect();
+        points.push(points[0]);
+        Shape::Polygon(Polygon::new(Ring::from_closed(points), Vec::new()))
+    }
+
     fn zm_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
         let points = [
             (minx, miny),
@@ -242,6 +253,24 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    fn assert_intersection_matches_joint_graph(name: &str, left: &Shape, right: &Shape) -> Shape {
+        let fast = overlay_all(
+            &[left, right],
+            crate::geometry::TopologyDomain::Cartesian,
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        let exact = super::super::nary::binary_intersection_without_convex_shortcut(
+            left,
+            right,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(wkb(&fast), wkb(&exact), "{name}: {fast:?} != {exact:?}");
+        fast
+    }
+
     /// Pinch resolution: corner-touching squares union into a VALID
     /// `MultiPolygon` of two simple lobes (never one figure-eight ring),
     /// and the maximal walk's split classifies a shell-touching hole
@@ -320,6 +349,186 @@ mod binary_areal_overlay_tests {
             .intersection(&notch, Strictness::Strict)
             .expect("concave refinement");
         assert!(refined.is_empty(), "{refined:?}");
+    }
+
+    #[test]
+    fn convex_intersection_fast_path_matches_joint_graph() {
+        let left = square(0.0, 0.0, 4.0, 4.0);
+        let right = Shape::Polygon(polygon(&[
+            (2.0, -1.0),
+            (5.0, 2.0),
+            (2.0, 5.0),
+            (-1.0, 2.0),
+            (2.0, -1.0),
+        ]));
+        let fast = assert_intersection_matches_joint_graph("crossing", &left, &right);
+        assert!(matches!(fast, Shape::Polygon(_)), "{fast:?}");
+    }
+
+    #[test]
+    fn disjoint_convex_intersection_preserves_canonical_empty_fallback() {
+        let cases = [
+            (
+                "overlapping envelopes",
+                regular_polygon(0.0, 0.0, 1.0, 256),
+                regular_polygon(1.5, 1.5, 1.0, 256),
+            ),
+            (
+                "disjoint envelopes",
+                regular_polygon(0.0, 0.0, 1.0, 256),
+                regular_polygon(4.0, 0.0, 1.0, 256),
+            ),
+        ];
+        for (name, left, right) in cases {
+            // The first pair makes the candidate decline and must fall through
+            // the original exact assembly chain. The second is settled before
+            // dispatch by the bounds certificate. Both keep POLYGON EMPTY.
+            let fast = assert_intersection_matches_joint_graph(name, &left, &right);
+            assert!(matches!(
+                fast,
+                Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
+            ));
+        }
+    }
+
+    #[test]
+    fn convex_intersection_defers_contacts_and_concavity_to_joint_graph() {
+        let cases = [
+            (
+                "edge touch",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(2.0, 0.0, 4.0, 2.0),
+            ),
+            (
+                "vertex touch",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(2.0, 2.0, 4.0, 4.0),
+            ),
+            (
+                "nested",
+                square(0.0, 0.0, 4.0, 4.0),
+                square(1.0, 1.0, 2.0, 2.0),
+            ),
+            (
+                "disjoint",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(4.0, 4.0, 6.0, 6.0),
+            ),
+            (
+                "equal",
+                square(0.0, 0.0, 2.0, 2.0),
+                square(0.0, 0.0, 2.0, 2.0),
+            ),
+            (
+                "collinear overlap",
+                square(0.0, 0.0, 4.0, 4.0),
+                Shape::Polygon(polygon(&[
+                    (2.0, 0.0),
+                    (6.0, 0.0),
+                    (6.0, 2.0),
+                    (2.0, 2.0),
+                    (2.0, 0.0),
+                ])),
+            ),
+            (
+                "concave",
+                Shape::Polygon(polygon(&[
+                    (0.0, 0.0),
+                    (6.0, 0.0),
+                    (6.0, 1.0),
+                    (1.0, 1.0),
+                    (1.0, 5.0),
+                    (6.0, 5.0),
+                    (6.0, 6.0),
+                    (0.0, 6.0),
+                    (0.0, 0.0),
+                ])),
+                Shape::Polygon(polygon(&[
+                    (0.0, 0.0),
+                    (2.0, 0.0),
+                    (2.0, 2.0),
+                    (5.0, 2.0),
+                    (5.0, 5.0),
+                    (0.0, 5.0),
+                    (0.0, 0.0),
+                ])),
+            ),
+        ];
+        for (name, left, right) in cases {
+            let _ = assert_intersection_matches_joint_graph(name, &left, &right);
+        }
+
+        let concave_left = polygon(&[
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 5.0),
+            (6.0, 5.0),
+            (6.0, 6.0),
+            (0.0, 6.0),
+            (0.0, 0.0),
+        ]);
+        let concave_right = polygon(&[
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 2.0),
+            (5.0, 2.0),
+            (5.0, 5.0),
+            (0.0, 5.0),
+            (0.0, 0.0),
+        ]);
+        // The area-only binary shortcut is not a valid mixed-dimension
+        // intersection oracle: this concave pair also contributes a line.
+        let unrestricted = polygon_parts_to_shape(binary_areal_overlay(
+            std::slice::from_ref(&concave_left),
+            std::slice::from_ref(&concave_right),
+            OverlayOp::Intersection,
+        ));
+        let concave_left_shape = Shape::Polygon(concave_left);
+        let concave_right_shape = Shape::Polygon(concave_right);
+        let exact = assert_intersection_matches_joint_graph(
+            "concave",
+            &concave_left_shape,
+            &concave_right_shape,
+        );
+        assert_ne!(wkb(&unrestricted), wkb(&exact));
+    }
+
+    #[test]
+    fn convex_intersection_rejects_holes_multipolygons_and_invalid_shells() {
+        let holed = Shape::Polygon(Polygon::new(
+            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+            vec![Ring::from_closed(vec![
+                Point::new(2.0, 2.0).unwrap(),
+                Point::new(4.0, 2.0).unwrap(),
+                Point::new(4.0, 4.0).unwrap(),
+                Point::new(2.0, 4.0).unwrap(),
+                Point::new(2.0, 2.0).unwrap(),
+            ])],
+        ));
+        let multipolygon = Shape::MultiPolygon(
+            vec![
+                polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                polygon(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]),
+            ]
+            .into(),
+        );
+        let invalid = Shape::Polygon(polygon(&[
+            (0.0, 0.0),
+            (4.0, 4.0),
+            (0.0, 4.0),
+            (4.0, 0.0),
+            (0.0, 0.0),
+        ]));
+        let cutter = square(1.0, 1.0, 5.0, 5.0);
+        for (name, input) in [
+            ("hole", holed),
+            ("multipolygon", multipolygon),
+            ("invalid", invalid),
+        ] {
+            let _ = assert_intersection_matches_joint_graph(name, &input, &cutter);
+        }
     }
 
     #[test]

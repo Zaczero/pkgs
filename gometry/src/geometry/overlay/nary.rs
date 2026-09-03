@@ -9,8 +9,8 @@ use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind,
     GeometryKind, HashMap, HashMapExt as _, Point, PointKey, Segment, Shape, TopologyDomain,
-    TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment, same_point,
-    segment_midpoint,
+    TopologyGraph, XY, carry_overlay_ordinates, column_all_finite, ordered_edge, point_on_segment,
+    same_point, segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -35,6 +35,34 @@ pub(super) fn overlay_all_without_bounds_certificates<S: Borrow<Shape>>(
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
     overlay_all_with_bounds_certificates(geometries, domain, op, strictness, false)
+}
+
+#[cfg(test)]
+pub(super) fn binary_intersection_without_convex_shortcut(
+    left: &Shape,
+    right: &Shape,
+    strictness: crate::geometry::Strictness,
+) -> Result<Shape> {
+    let mut sources = vec![left.normalize()?, right.normalize()?];
+    sources.sort_unstable_by(crate::geometry::compare_shapes);
+    let refs: Vec<&Shape> = sources.iter().collect();
+    let shape = assemble_overlay(
+        &refs,
+        TopologyDomain::Cartesian,
+        OverlayOp::Intersection,
+        false,
+    )?;
+    let shape = if shape.is_empty() {
+        empty_nary_overlay_shape(&refs, OverlayOp::Intersection)
+    } else {
+        shape.normalize()?
+    };
+    carry_overlay_ordinates(
+        shape,
+        &refs,
+        OverlayOp::Intersection,
+        strictness.is_strict(),
+    )
 }
 
 fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
@@ -105,12 +133,23 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     if geometries.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
         return Ok(geometries[0].borrow().clone());
     }
-    let shape = if bounds_certificates
+    let disjoint_bounds = bounds_certificates
         && geometries.len() > 1
         && bounds_facts.raw_coordinate_bounds_sound
-        && disjoint_bounds_certify(&bounds_facts.bounds, op)
+        && disjoint_bounds_certify(&bounds_facts.bounds, op);
+    let convex_shape = if !disjoint_bounds
+        && domain == TopologyDomain::Cartesian
+        && geometries.len() == 2
+        && op == OverlayOp::Intersection
     {
+        convex_polygon_intersection(&refs)
+    } else {
+        None
+    };
+    let shape = if disjoint_bounds {
         assemble_disjoint_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
+    } else if let Some(shape) = convex_shape {
+        shape
     } else {
         assemble_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?
     };
@@ -122,6 +161,49 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         shape.normalize()?
     };
     carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
+}
+
+/// The polygon-only intersection lane is valid only when the result cannot
+/// contain an independent boundary contact. Two valid convex shells with a
+/// transverse boundary crossing have a positive-area, connected intersection;
+/// touch-only, nested, disjoint, and degenerate cases deliberately defer to
+/// the mixed-dimension arrangement.
+fn convex_polygon_intersection(inputs: &[&Shape]) -> Option<Shape> {
+    let [left, right] = inputs else {
+        return None;
+    };
+    let (Shape::Polygon(left), Shape::Polygon(right)) = (*left, *right) else {
+        return None;
+    };
+    if !left.holes.is_empty() || !right.holes.is_empty() {
+        return None;
+    }
+    let left_shell = left.shell.coords();
+    let right_shell = right.shell.coords();
+    let closed_finite = |shell: &crate::geometry::CoordSeq| {
+        shell.len() >= 4
+            && shell
+                .first_coord()
+                .zip(shell.last_coord())
+                .is_some_and(|(first, last)| same_point(first, last))
+            && column_all_finite(shell.xs())
+            && column_all_finite(shell.ys())
+    };
+    if !closed_finite(left_shell)
+        || !closed_finite(right_shell)
+        || !shell_is_convex(left_shell)
+        || !shell_is_convex(right_shell)
+        || !crate::geometry::polygon_is_valid(left)
+        || !crate::geometry::polygon_is_valid(right)
+    {
+        return None;
+    }
+    let output = crate::geometry::clean_union::clean_overlay(
+        std::slice::from_ref(left),
+        std::slice::from_ref(right),
+        OverlayOp::Intersection,
+    )?;
+    matches!(&output, Shape::Polygon(_)).then_some(output)
 }
 
 struct OverlayBoundsFacts {
