@@ -491,6 +491,31 @@ def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
     )
 
 
+def test_oblique_polygon_line_contacts_match_shapely() -> None:
+    shapely = pytest.importorskip('shapely')
+    points = []
+    for index in range(97):
+        angle = 2.0 * math.pi * index / 97
+        scale = 1.0 + 0.3 * math.sin(3.0 * angle) + 0.08 * math.cos(7.0 * angle)
+        points.append((10.0 * scale * math.cos(angle), 10.0 * scale * math.sin(angle)))
+    polygon = gm.Polygon(points)
+    shapely_polygon = shapely.from_wkt(polygon.to_wkt())
+
+    for case in (22, 29):
+        phase = 0.31 * case
+        line = gm.LineString([
+            (-20.0, -12.0 + 24.0 * math.sin(phase)),
+            (20.0, 12.0 * math.cos(phase)),
+            (-18.0, 10.0 * math.sin(phase + 0.7)),
+            (18.0, -10.0 * math.cos(phase + 0.4)),
+        ])
+        shapely_line = shapely.from_wkt(line.to_wkt())
+        assert shapely.relate(shapely_polygon, shapely_line) == '1F20F1102'
+        assert shapely.relate(shapely_line, shapely_polygon) == '101FF0212'
+        assert gm.relate(polygon, line) == '1F20F1102'
+        assert gm.relate(line, polygon) == '101FF0212'
+
+
 def test_intersects_detects_line_polygon_and_line_line_crossings() -> None:
     polygon = gm.box(-1, -1, 1, 1)
     crossing_line = gm.LineString([(-2, 0), (2, 0)])

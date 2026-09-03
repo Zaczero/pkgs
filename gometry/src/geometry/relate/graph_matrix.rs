@@ -1093,9 +1093,14 @@ fn locate_node_with_hint(
     } else {
         graph.locate_point(point)
     };
-    match location {
-        TopologyLocation::Exterior => hint.unwrap_or(TopologyLocation::Exterior),
-        location => location,
+    match (location, hint) {
+        (TopologyLocation::Exterior, Some(hint)) => hint,
+        // Oblique noding can round an intersection just inside an area; the
+        // source edge label is the exact topological incidence at that node.
+        (TopologyLocation::Interior, Some(TopologyLocation::Boundary)) if !owns_node => {
+            TopologyLocation::Boundary
+        },
+        (location, _) => location,
     }
 }
 
@@ -1146,6 +1151,31 @@ mod tests {
                     .collect::<Vec<_>>(),
             ),
             Vec::new(),
+        )
+    }
+
+    fn radial_polygon(vertex_count: usize) -> Polygon {
+        let mut points: Vec<_> = (0..vertex_count)
+            .map(|index| {
+                let angle = 2.0 * std::f64::consts::PI * index as f64 / vertex_count as f64;
+                let scale = 1.0 + 0.3 * (3.0 * angle).sin() + 0.08 * (7.0 * angle).cos();
+                Point::new_raw_xy(10.0 * scale * angle.cos(), 10.0 * scale * angle.sin())
+            })
+            .collect();
+        points.push(points[0]);
+        Polygon::new(Ring::from_closed(points), Vec::new())
+    }
+
+    fn oscillating_line(case: usize) -> Shape {
+        let phase = 0.31 * case as f64;
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::from(vec![
+                Point::new_raw_xy(-20.0, -12.0 + 24.0 * phase.sin()),
+                Point::new_raw_xy(20.0, 12.0 * phase.cos()),
+                Point::new_raw_xy(-18.0, 10.0 * (phase + 0.7).sin()),
+                Point::new_raw_xy(18.0, -10.0 * (phase + 0.4).cos()),
+            ]))
+            .expect("oscillating line has four vertices"),
         )
     }
 
@@ -2089,6 +2119,91 @@ mod tests {
             assert_eq!(
                 graph_relate_shapes_geographic(&polygon, &Shape::Point(point)).text(),
                 "FF20F1FF2"
+            );
+        }
+    }
+
+    #[test]
+    fn oblique_polygon_line_contacts_keep_boundary_interior_points() {
+        let polygon = Shape::Polygon(radial_polygon(97));
+        for case in [22, 29] {
+            let line = oscillating_line(case);
+            assert_eq!(
+                graph_relate_shapes(&polygon, &line).text(),
+                "1F20F1102",
+                "radial case {case}: polygon/line"
+            );
+            assert_eq!(
+                graph_relate_shapes(&line, &polygon).text(),
+                "101FF0212",
+                "radial case {case}: line/polygon"
+            );
+            let polygon_plan = PreparedPlan::transient(&polygon);
+            let line_plan = PreparedPlan::transient(&line);
+            assert_eq!(
+                graph_relate_data(&polygon_plan, &line_plan).text(),
+                "1F20F1102",
+                "radial case {case}: prepared polygon/line"
+            );
+            assert_eq!(
+                graph_relate_data(&line_plan, &polygon_plan).text(),
+                "101FF0212",
+                "radial case {case}: prepared line/polygon"
+            );
+        }
+    }
+
+    #[test]
+    fn polygon_line_boundary_interior_remains_empty_without_contact() {
+        let polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
+        for (name, line, expected, reverse_expected) in [
+            (
+                "inside",
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new_raw_xy(1.0, 1.0),
+                        Point::new_raw_xy(2.0, 2.0),
+                        Point::new_raw_xy(3.0, 1.0),
+                    ]))
+                    .unwrap(),
+                ),
+                "102FF1FF2",
+                "1FF0FF212",
+            ),
+            (
+                "outside",
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new_raw_xy(-20.0, -20.0),
+                        Point::new_raw_xy(-15.0, -15.0),
+                    ]))
+                    .unwrap(),
+                ),
+                "FF2FF1102",
+                "FF1FF0212",
+            ),
+            (
+                "endpoint contact",
+                Shape::LineString(
+                    LineSeq::try_new(CoordSeq::from(vec![
+                        Point::new_raw_xy(-1.0, 0.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                    ]))
+                    .unwrap(),
+                ),
+                "FF2F01102",
+                "FF1F00212",
+            ),
+        ] {
+            assert_eq!(
+                graph_relate_shapes(&polygon, &line).text(),
+                expected,
+                "{name}: polygon/line"
+            );
+            assert_eq!(
+                graph_relate_shapes(&line, &polygon).text(),
+                reverse_expected,
+                "{name}: line/polygon"
             );
         }
     }
