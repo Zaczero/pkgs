@@ -3,7 +3,7 @@ use std::collections::BinaryHeap;
 
 use crate::geometry::derived::monotone_chain_hull;
 use crate::geometry::{
-    HashMap, Point, PointKey, Ring, Segment, canonical_ring, delaunay_triangulation_spade,
+    HashMap, Point, PointKey, Ring, Segment, canonical_ring, delaunay_triangulation,
     point_distance, point_segment_distance, ring_winding, same_point,
 };
 
@@ -17,8 +17,8 @@ pub(crate) fn native_concave_hull(
     }
     // `spade` over `delaunator` here: delaunator's `legalize` cascades to
     // ~O(n²·⁹) on near-cocircular inputs (dense points on a smooth curve),
-    // while spade stays far closer to linear — see `delaunay_triangulation_spade`.
-    let triangulation = delaunay_triangulation_spade(points);
+    // while spade stays far closer to linear — see `delaunay_triangulation`.
+    let triangulation = delaunay_triangulation(points);
     if triangulation.triangles.is_empty() {
         return hull_indices_from_points(points);
     }
@@ -60,8 +60,8 @@ pub(crate) fn native_concave_hull(
 
         alive[triangle] = false;
         bump_boundary_degree(&mut boundary_degree, &triangulation, halfedge, -1);
-        let left = delaunator::prev_halfedge(halfedge);
-        let right = delaunator::next_halfedge(halfedge);
+        let left = crate::geometry::tessellation::prev_halfedge(halfedge);
+        let right = crate::geometry::tessellation::next_halfedge(halfedge);
         bump_boundary_degree(&mut boundary_degree, &triangulation, left, 1);
         bump_boundary_degree(&mut boundary_degree, &triangulation, right, 1);
         push_live_twin_boundary(points, &triangulation, &alive, left, &mut heap);
@@ -96,7 +96,7 @@ struct ConcaveBoundaryEdge {
 }
 
 impl ConcaveBoundaryEdge {
-    fn new(points: &[Point], triangulation: &delaunator::Triangulation, halfedge: usize) -> Self {
+    fn new(points: &[Point], triangulation: &crate::geometry::tessellation::Triangulation, halfedge: usize) -> Self {
         let (start, end) = edge_indices(triangulation, halfedge);
         let edge_key = if point_xy_cmp(&points[start], &points[end]).is_gt() {
             (end, start)
@@ -136,13 +136,13 @@ impl PartialOrd for ConcaveBoundaryEdge {
 
 fn can_peel_boundary_triangle(
     points: &[Point],
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     boundary_degree: &[i16],
     halfedge: usize,
     length: f64,
     concavity: f64,
 ) -> bool {
-    let opposite = triangulation.triangles[delaunator::prev_halfedge(halfedge)];
+    let opposite = triangulation.triangles[crate::geometry::tessellation::prev_halfedge(halfedge)];
     if boundary_degree[opposite] != 0 {
         return false;
     }
@@ -152,7 +152,7 @@ fn can_peel_boundary_triangle(
         length / concavity
     };
     let a = points[triangulation.triangles[halfedge]];
-    let b = points[triangulation.triangles[delaunator::next_halfedge(halfedge)]];
+    let b = points[triangulation.triangles[crate::geometry::tessellation::next_halfedge(halfedge)]];
     let c = points[opposite];
     point_segment_distance(c, Segment {
         start: a.into(),
@@ -163,7 +163,7 @@ fn can_peel_boundary_triangle(
 
 fn edge_length(
     points: &[Point],
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     halfedge: usize,
 ) -> f64 {
     let (start, end) = edge_indices(triangulation, halfedge);
@@ -181,10 +181,10 @@ pub(crate) fn canonicalize_concave_hull_points(points: &mut [Point]) {
     points.sort_unstable_by(point_xy_cmp);
 }
 
-fn edge_indices(triangulation: &delaunator::Triangulation, halfedge: usize) -> (usize, usize) {
+fn edge_indices(triangulation: &crate::geometry::tessellation::Triangulation, halfedge: usize) -> (usize, usize) {
     (
         triangulation.triangles[halfedge],
-        triangulation.triangles[delaunator::next_halfedge(halfedge)],
+        triangulation.triangles[crate::geometry::tessellation::next_halfedge(halfedge)],
     )
 }
 
@@ -193,7 +193,7 @@ pub(crate) fn point_xy_cmp(left: &Point, right: &Point) -> Ordering {
 }
 
 fn is_boundary_halfedge(
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     alive: &[bool],
     halfedge: usize,
 ) -> bool {
@@ -201,11 +201,11 @@ fn is_boundary_halfedge(
         return false;
     }
     let twin = triangulation.halfedges[halfedge];
-    twin == delaunator::EMPTY || !alive[twin / 3]
+    twin == crate::geometry::tessellation::EMPTY || !alive[twin / 3]
 }
 
 fn triangle_boundary_count(
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     alive: &[bool],
     triangle: usize,
 ) -> usize {
@@ -216,12 +216,12 @@ fn triangle_boundary_count(
 
 fn bump_boundary_degree(
     degree: &mut [i16],
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     halfedge: usize,
     delta: i8,
 ) {
     let start = triangulation.triangles[halfedge];
-    let end = triangulation.triangles[delaunator::next_halfedge(halfedge)];
+    let end = triangulation.triangles[crate::geometry::tessellation::next_halfedge(halfedge)];
     degree[start] += i16::from(delta);
     degree[end] += i16::from(delta);
     debug_assert!(degree[start] >= 0 && degree[end] >= 0);
@@ -229,20 +229,20 @@ fn bump_boundary_degree(
 
 fn push_live_twin_boundary(
     points: &[Point],
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     alive: &[bool],
     peeled_halfedge: usize,
     heap: &mut BinaryHeap<ConcaveBoundaryEdge>,
 ) {
     let twin = triangulation.halfedges[peeled_halfedge];
-    if twin != delaunator::EMPTY && is_boundary_halfedge(triangulation, alive, twin) {
+    if twin != crate::geometry::tessellation::EMPTY && is_boundary_halfedge(triangulation, alive, twin) {
         heap.push(ConcaveBoundaryEdge::new(points, triangulation, twin));
     }
 }
 
 fn extract_concave_boundary(
     points: &[Point],
-    triangulation: &delaunator::Triangulation,
+    triangulation: &crate::geometry::tessellation::Triangulation,
     alive: &[bool],
 ) -> Option<Vec<usize>> {
     // Boundary vertices have degree exactly two, so the adjacency is a single
@@ -255,7 +255,7 @@ fn extract_concave_boundary(
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(triangulation, alive, halfedge) {
             let start = triangulation.triangles[halfedge];
-            let end = triangulation.triangles[delaunator::next_halfedge(halfedge)];
+            let end = triangulation.triangles[crate::geometry::tessellation::next_halfedge(halfedge)];
             overflowed |= push_unique_neighbor(&mut adjacency[start], end as u32);
             overflowed |= push_unique_neighbor(&mut adjacency[end], start as u32);
         }

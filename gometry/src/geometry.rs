@@ -256,7 +256,7 @@ pub(crate) use segments::{
     squared_norm_is_trustworthy,
 };
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
-use tessellation::{delaunay_triangulation_spade, point_in_ccw_triangle};
+use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeodesicPartsKey;
 
 use crate::collections::{HashMap, HashSet};

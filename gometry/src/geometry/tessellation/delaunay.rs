@@ -1,193 +1,40 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+//! Delaunay and constrained Delaunay triangulation over the exact engine.
+//!
+//! [`exact_delaunay`] decides every step of the triangulation with exact
+//! predicates, so a mesh is Delaunay as built and carries its cocircular
+//! flags out of one exact pass; [`cdt`] forces constraint edges into that
+//! mesh and refines the faces inside them. This module owns the site and
+//! mesh types the Voronoi dual reads, the hull and collinear orders the
+//! engine seeds from, and the public entry points.
 
-use spade::Triangulation as _;
+use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
-use crate::geometry::tessellation::{
-    AngleLimit, ConstrainedDelaunayTriangulation, DelaunayTriangulation, Error, FixedFaceHandle,
-    FixedVertexHandle, InnerTag, InsertionError, Point2, RefinementParameters, exact,
-};
+use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
 use crate::geometry::{
-    AreaSign, AxisFrame, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
-    GeometryErrorKind, Orientation, Point, PointKey, Result, SimilarityFrame, XY, axis_pow2_scale,
-    exact_incircle_sign, orientation, power_of_two_exponent, ring_decision_area, same_point,
-    scale_by_power_of_two,
+    AreaSign, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
+    Orientation, Point, PointKey, Result, XY, orientation, ring_decision_area, same_point,
 };
 
-// Test-only companion to the Delaunay marker: constrained output admission
-// must happen before this result-vector reservation.
+#[path = "exact_delaunay.rs"]
+pub(super) mod exact_delaunay;
+#[path = "cdt.rs"]
+mod cdt;
+
+// Test-only companion to the output budget: constrained output admission
+// must happen before the result vector is reserved.
 #[cfg(test)]
 thread_local! {
     static CONSTRAINED_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static EXACT_METRIC_WORK: std::cell::Cell<ExactMetricWork> =
-        const { std::cell::Cell::new(ExactMetricWork::ZERO) };
-    static VORONOI_CERTIFICATION_WORK: std::cell::Cell<VoronoiCertificationWork> =
-        const { std::cell::Cell::new(VoronoiCertificationWork::ZERO) };
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ExactMetricWork {
-    map_rebuilds: usize,
-    initial_interior_owners: usize,
-    successful_flips: usize,
-    edge_inspections: usize,
-    queue_pops: usize,
-}
-
-#[cfg(test)]
-impl ExactMetricWork {
-    const ZERO: Self = Self {
-        map_rebuilds: 0,
-        initial_interior_owners: 0,
-        successful_flips: 0,
-        edge_inspections: 0,
-        queue_pops: 0,
-    };
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct VoronoiCertificationWork {
-    pub(super) mapped_accepts: usize,
-    pub(super) mapped_fallbacks: usize,
-    pub(super) robust_orientations: usize,
-    pub(super) robust_incircles: usize,
-    pub(super) exact_orientations: usize,
-    pub(super) exact_incircles: usize,
-    pub(super) edge_incidences: usize,
-}
-
-#[cfg(test)]
-impl VoronoiCertificationWork {
-    const ZERO: Self = Self {
-        mapped_accepts: 0,
-        mapped_fallbacks: 0,
-        robust_orientations: 0,
-        robust_incircles: 0,
-        exact_orientations: 0,
-        exact_incircles: 0,
-        edge_incidences: 0,
-    };
-}
-
-#[cfg(test)]
-pub(super) fn take_voronoi_certification_work() -> VoronoiCertificationWork {
-    VORONOI_CERTIFICATION_WORK.with(|work| work.replace(VoronoiCertificationWork::ZERO))
-}
-
-#[cfg(test)]
-fn reset_voronoi_certification_work() {
-    VORONOI_CERTIFICATION_WORK.with(|work| work.set(VoronoiCertificationWork::ZERO));
-}
-
-#[cfg(test)]
-fn note_voronoi_certification_work(update: impl FnOnce(&mut VoronoiCertificationWork)) {
-    VORONOI_CERTIFICATION_WORK.with(|work| {
-        let mut current = work.get();
-        update(&mut current);
-        work.set(current);
-    });
-}
-
-#[derive(Clone, Copy)]
-enum CertificationCoordinates<'a> {
-    Mapped(&'a [XY]),
-    Source(&'a [Point]),
-}
-
-impl CertificationCoordinates<'_> {
-    fn xy(self, index: usize) -> XY {
-        match self {
-            Self::Mapped(points) => points[index],
-            Self::Source(points) => points[index].xy(),
-        }
-    }
-
-    fn orient(self, a: usize, b: usize, c: usize) -> exact::ExactSign {
-        let a = self.xy(a);
-        let b = self.xy(b);
-        let c = self.xy(c);
-        match self {
-            Self::Mapped(_) => {
-                #[cfg(test)]
-                note_voronoi_certification_work(|work| work.robust_orientations += 1);
-                robust_sign(robust::orient2d(
-                    robust::Coord { x: a.x, y: a.y },
-                    robust::Coord { x: b.x, y: b.y },
-                    robust::Coord { x: c.x, y: c.y },
-                ))
-            },
-            Self::Source(_) => {
-                #[cfg(test)]
-                note_voronoi_certification_work(|work| work.exact_orientations += 1);
-                exact::orient2d(a, b, c)
-            },
-        }
-    }
-
-    fn incircle(self, a: usize, b: usize, c: usize, d: usize) -> exact::ExactSign {
-        let a = self.xy(a);
-        let b = self.xy(b);
-        let c = self.xy(c);
-        let d = self.xy(d);
-        match self {
-            Self::Mapped(_) => {
-                #[cfg(test)]
-                note_voronoi_certification_work(|work| work.robust_incircles += 1);
-                robust_sign(robust::incircle(
-                    robust::Coord { x: a.x, y: a.y },
-                    robust::Coord { x: b.x, y: b.y },
-                    robust::Coord { x: c.x, y: c.y },
-                    robust::Coord { x: d.x, y: d.y },
-                ))
-            },
-            Self::Source(_) => {
-                #[cfg(test)]
-                note_voronoi_certification_work(|work| work.exact_incircles += 1);
-                exact::incircle(a, b, c, d)
-            },
-        }
-    }
-}
-
-fn robust_sign(value: f64) -> exact::ExactSign {
-    if value > 0.0 {
-        exact::ExactSign::Positive
-    } else if value < 0.0 {
-        exact::ExactSign::Negative
-    } else {
-        exact::ExactSign::Zero
-    }
-}
-
-#[cfg(test)]
-fn take_exact_metric_work() -> ExactMetricWork {
-    EXACT_METRIC_WORK.with(|work| work.replace(ExactMetricWork::ZERO))
-}
-
-#[cfg(test)]
-fn reset_exact_metric_work() {
-    EXACT_METRIC_WORK.with(|work| work.set(ExactMetricWork::ZERO));
-}
-
-#[cfg(test)]
-fn note_exact_metric_work(update: impl FnOnce(&mut ExactMetricWork)) {
-    EXACT_METRIC_WORK.with(|work| {
-        let mut current = work.get();
-        update(&mut current);
-        work.set(current);
-    });
 }
 
 #[cfg(test)]
 fn note_constrained_output_reserve() {
-    CONSTRAINED_OUTPUT_RESERVES.with(|count| count.set(count.get() + 1));
+    CONSTRAINED_OUTPUT_RESERVES.with(|cell| cell.set(cell.get() + 1));
 }
 
 #[cfg(test)]
 pub(super) fn take_constrained_output_reserves() -> usize {
-    CONSTRAINED_OUTPUT_RESERVES.with(|count| count.replace(0))
+    CONSTRAINED_OUTPUT_RESERVES.with(|cell| cell.replace(0))
 }
 
 /// Optional CDT mesh-refinement controls. Active when either quality constraint
@@ -210,11 +57,9 @@ impl CdtRefinement {
 }
 
 /// A `max_area` no larger than the source's exact total area can constrain a
-/// triangulation; a limit at least that total cannot.  Every retained CDT face
+/// triangulation; a limit at least that total cannot. Every retained CDT face
 /// lies inside the source and therefore has no more area than the source as a
-/// whole.  Dropping that inert request before invoking Spade is both the
-/// correct short-circuit and prevents its raw-coordinate area arithmetic from
-/// turning a reciprocal/near-collinear input into unbounded refinement.
+/// whole, so that request is inert and is dropped before refinement starts.
 fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
     let CdtRefinement::On {
         min_angle,
@@ -233,66 +78,10 @@ fn effective_refinement(area: f64, refinement: CdtRefinement) -> CdtRefinement {
     }
 }
 
-fn refinement_parameters(
-    refinement: CdtRefinement,
-    max_additional_vertices: usize,
-    frame: Option<AxisFrame>,
-) -> RefinementParameters<f64> {
-    let mut params = RefinementParameters::new()
-        .exclude_outer_faces(true)
-        // `max_area` alone must not silently opt into Spade's default 30°
-        // angle target; each public constraint controls only its own quality.
-        .with_angle_limit(AngleLimit::from_deg(0.0))
-        .with_max_additional_vertices(max_additional_vertices);
-    let CdtRefinement::On {
-        min_angle,
-        max_area,
-    } = refinement
-    else {
-        return params;
-    };
-    if let Some(angle) = min_angle {
-        params = params.with_angle_limit(AngleLimit::from_deg(angle.get()));
-    }
-    if let Some(area) = max_area {
-        // Spade sees the independently scaled coordinates.  Its threshold
-        // must therefore be the exact source-space max area scaled by the
-        // frame determinant; passing source units here was the active-path
-        // reciprocal-axis bug (and made refinement chase the wrong target).
-        let local_area = frame.map_or_else(
-            || area.get(),
-            |frame| {
-                scale_by_power_of_two(
-                    area.get(),
-                    power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y()),
-                )
-            },
-        );
-        params = params.with_max_allowed_area(local_area);
-    }
-    params
-}
-
-fn triangle_min_angle_degrees(a: Point2<f64>, b: Point2<f64>, c: Point2<f64>) -> f64 {
-    fn angle(a: Point2<f64>, center: Point2<f64>, b: Point2<f64>) -> f64 {
-        let (ax, ay) = (a.x - center.x, a.y - center.y);
-        let (bx, by) = (b.x - center.x, b.y - center.y);
-        let denominator = ax.hypot(ay) * bx.hypot(by);
-        if denominator == 0.0 || !denominator.is_finite() {
-            return 0.0;
-        }
-        ((ax * bx + ay * by) / denominator)
-            .clamp(-1.0, 1.0)
-            .acos()
-            .to_degrees()
-    }
-    angle(b, a, c).min(angle(a, b, c)).min(angle(a, c, b))
-}
-
 fn triangle_area(a: Point, b: Point, c: Point) -> f64 {
-    // Keep the post-refinement check on the same framed/exact area owner as
-    // the preflight admission.  Raw `(dx * dy - dy * dx) / 2` is precisely
-    // the reciprocal-axis underflow that made an inert max-area request look
+    // The post-refinement check stays on the same framed/exact area owner as
+    // the preflight admission: raw `(dx * dy - dy * dx) / 2` is precisely the
+    // reciprocal-axis underflow that made an inert max-area request look
     // unsatisfied.
     ring_decision_area(&[a, b, c, a][..]).magnitude().get()
 }
@@ -324,35 +113,7 @@ fn validate_refinement_request(area: f64, refinement: CdtRefinement) -> Result<(
     Ok(())
 }
 
-fn apply_refinement(
-    cdt: &mut ConstrainedDelaunayTriangulation<Point2<f64>>,
-    refinement: CdtRefinement,
-    frame: Option<AxisFrame>,
-) -> Result<()> {
-    if !refinement.active() {
-        return Ok(());
-    }
-    let max_additional_vertices = GENERATED_ITEM_LIMIT.saturating_sub(cdt.num_vertices());
-    let result = cdt.refine(refinement_parameters(
-        refinement,
-        max_additional_vertices,
-        frame,
-    ));
-    if result.refinement_complete {
-        Ok(())
-    } else {
-        Err(GeometryErrorKind::triangulation(format!(
-            "constrained refinement could not satisfy the requested quality within the limit of {GENERATED_ITEM_LIMIT} generated vertices; relax min_angle/max_area"
-        )))
-    }
-}
-
-fn validate_refined_triangle(
-    a: Point,
-    b: Point,
-    c: Point,
-    refinement: CdtRefinement,
-) -> Result<()> {
+fn validate_refined_triangle(a: Point, b: Point, c: Point, refinement: CdtRefinement) -> Result<()> {
     let CdtRefinement::On {
         min_angle,
         max_area,
@@ -361,12 +122,7 @@ fn validate_refined_triangle(
         return Ok(());
     };
     if let Some(limit) = min_angle
-        && triangle_min_angle_degrees(
-            spade_point(a.xy()),
-            spade_point(b.xy()),
-            spade_point(c.xy()),
-        ) + 1.0e-9
-            < limit.get()
+        && cdt::triangle_min_angle_degrees(a.xy(), b.xy(), c.xy()) + 1.0e-9 < limit.get()
     {
         return Err(GeometryErrorKind::triangulation(format!(
             "constrained refinement did not satisfy min_angle={} degrees",
@@ -390,21 +146,12 @@ pub(super) struct Site {
     pub(super) point: Point,
 }
 
-#[derive(Debug)]
-struct CandidateTriangulation {
-    topology: PositiveTopology,
-    mapped_sites: Option<Vec<XY>>,
-}
-
-/// Candidate topology whose bounded faces have already been exact-oriented
-/// positively. Construction functions establish this once; certification
-/// consumes the typed state instead of repeating the exact face-sign scan.
-#[derive(Debug)]
-struct PositiveTopology(delaunator::Triangulation);
-
+/// The Delaunay mesh the Voronoi dual reads: counter-clockwise faces in the
+/// crate's halfedge layout plus one exact cocircular flag per slot, so every
+/// fan of cocircular faces can be collapsed onto its one circumcenter.
 #[derive(Debug)]
 pub(super) struct CertifiedDelaunay {
-    topology: delaunator::Triangulation,
+    topology: Triangulation,
     cocircular_halfedges: Vec<bool>,
 }
 
@@ -424,7 +171,7 @@ pub(super) enum CertifiedPrimalEdge {
 impl CertifiedDelaunay {
     const fn empty(hull: Vec<usize>) -> Self {
         Self {
-            topology: delaunator::Triangulation {
+            topology: Triangulation {
                 triangles: Vec::new(),
                 halfedges: Vec::new(),
                 hull,
@@ -453,19 +200,19 @@ impl CertifiedDelaunay {
     pub(super) fn primal_edges(&self) -> Vec<CertifiedPrimalEdge> {
         let mut edges = Vec::new();
         for (slot, &reverse) in self.topology.halfedges.iter().enumerate() {
-            if reverse != delaunator::EMPTY && slot > reverse {
+            if reverse != EMPTY && slot > reverse {
                 continue;
             }
             let mut sites = [
                 self.topology.triangles[slot],
-                self.topology.triangles[delaunator::next_halfedge(slot)],
+                self.topology.triangles[next_halfedge(slot)],
             ];
             sites.sort_unstable();
-            if reverse == delaunator::EMPTY {
+            if reverse == EMPTY {
                 edges.push(CertifiedPrimalEdge::Hull {
                     sites,
                     face: slot / 3,
-                    opposite: self.topology.triangles[delaunator::prev_halfedge(slot)],
+                    opposite: self.topology.triangles[prev_halfedge(slot)],
                 });
             } else {
                 let mut faces = [slot / 3, reverse / 3];
@@ -491,440 +238,60 @@ impl CertifiedDelaunay {
             .then_some(self.topology.hull.as_slice())
     }
 
-    pub(super) fn into_topology(self) -> delaunator::Triangulation {
+    /// The public layout: faces run clockwise, which is what every
+    /// triangulation consumer outside this module has always read.
+    pub(super) fn into_topology(self) -> Triangulation {
         let mut triangles = Vec::with_capacity(self.topology.triangles.len());
         for &[a, b, c] in self.topology.triangles.as_chunks::<3>().0 {
             triangles.extend([a, c, b]);
         }
-        delaunator::Triangulation {
-            halfedges: delaunay_halfedges(&triangles),
+        let halfedges = delaunay_halfedges(&triangles);
+        Triangulation {
             triangles,
+            halfedges,
             hull: self.topology.hull,
         }
     }
 }
 
-impl CandidateTriangulation {
-    /// The only transition from proposed topology to trusted Delaunay state.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the sole certification transition keeps its complete invariant proof visible together"
-    )]
-    fn try_certify(self, sites: &[Site]) -> Result<CertifiedDelaunay> {
-        let CandidateTriangulation {
-            topology: PositiveTopology(topology),
-            mapped_sites,
-        } = self;
-        let source_points = mapped_sites
-            .is_none()
-            .then(|| sites.iter().map(|site| site.point).collect::<Vec<_>>());
-        let predicates = if let Some(mapped) = mapped_sites.as_deref() {
-            if !proposal_mapping_is_admissible(sites, mapped) {
-                return Err(GeometryErrorKind::triangulation(
-                    "candidate coordinate mapping is not a bit-exact site bijection",
-                ));
-            }
-            CertificationCoordinates::Mapped(mapped)
-        } else {
-            CertificationCoordinates::Source(
-                source_points
-                    .as_deref()
-                    .expect("source coordinates exist for an unmapped candidate"),
-            )
-        };
-        if sites
-            .iter()
-            .enumerate()
-            .any(|(index, site)| site.id != index)
-            || !delaunay_euler_complete(sites.len(), &topology)
-            || !topology.triangles.len().is_multiple_of(3)
-            || topology.triangles.len() != topology.halfedges.len()
-            || topology.triangles.iter().any(|&site| site >= sites.len())
-        {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate Delaunay topology is incomplete",
-            ));
-        }
-        let used: HashSet<_> = topology.triangles.iter().copied().collect();
-        if used.len() != sites.len() {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate Delaunay topology does not contain every site exactly once",
-            ));
-        }
-        let mut unique_triangles = HashSet::new();
-        let mut edge_incidence: HashMap<(usize, usize), EdgeIncidence> = HashMap::new();
-        for (index, triangle) in topology.triangles.as_chunks::<3>().0.iter().enumerate() {
-            let mut triangle_key = *triangle;
-            triangle_key.sort_unstable();
-            if triangle_key[0] == triangle_key[1]
-                || triangle_key[1] == triangle_key[2]
-                || !unique_triangles.insert(triangle_key)
-            {
-                return Err(GeometryErrorKind::triangulation(
-                    "candidate repeats a vertex or bounded face",
-                ));
-            }
-            for local in 0..3 {
-                let edge = index * 3 + local;
-                let start = topology.triangles[edge];
-                let end = topology.triangles[delaunator::next_halfedge(edge)];
-                let incidence = edge_incidence
-                    .entry((start.min(end), start.max(end)))
-                    .or_default();
-                if !incidence.push((edge, index)) {
-                    return Err(GeometryErrorKind::triangulation(
-                        "candidate edge has more than two incidences",
-                    ));
-                }
-                #[cfg(test)]
-                note_voronoi_certification_work(|work| work.edge_incidences += 1);
-                let reverse = topology.halfedges[edge];
-                if reverse != delaunator::EMPTY
-                    && (reverse >= topology.halfedges.len()
-                        || topology.halfedges[reverse] != edge
-                        || topology.triangles[edge]
-                            != topology.triangles[delaunator::next_halfedge(reverse)]
-                        || topology.triangles[delaunator::next_halfedge(edge)]
-                            != topology.triangles[reverse])
-                {
-                    return Err(GeometryErrorKind::triangulation(
-                        "candidate half-edges are not reciprocal",
-                    ));
-                }
-            }
-        }
-        if edge_incidence.values().any(|incidents| {
-            incidents.len == 0
-                || (incidents.len == 1
-                    && topology.halfedges[incidents.entries[0].expect("incidence exists").0]
-                        != delaunator::EMPTY)
-                || (incidents.len == 2
-                    && topology.halfedges[incidents.entries[0].expect("incidence exists").0]
-                        != incidents.entries[1].expect("second incidence exists").0)
-        }) {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate is not a two-manifold disk",
-            ));
-        }
-        if candidate_has_crossing_edges(predicates, &topology) {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate contains crossing non-incident edges",
-            ));
-        }
-        let boundary = candidate_boundary_cycle(&topology)?;
-        if boundary != hull_cycle(predicates, false) {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate boundary does not equal the exact convex hull",
-            ));
-        }
-        let mut reachable = HashSet::from([0_usize]);
-        let mut frontier = vec![0_usize];
-        while let Some(face) = frontier.pop() {
-            for edge in face * 3..face * 3 + 3 {
-                let reverse = topology.halfedges[edge];
-                if reverse != delaunator::EMPTY && reachable.insert(reverse / 3) {
-                    frontier.push(reverse / 3);
-                }
-            }
-        }
-        if reachable.len() != topology.triangles.len() / 3 {
-            return Err(GeometryErrorKind::triangulation(
-                "candidate bounded faces are disconnected",
-            ));
-        }
-        let mut cocircular_halfedges = vec![false; topology.halfedges.len()];
-        for edge in 0..topology.halfedges.len() {
-            let reverse = topology.halfedges[edge];
-            if reverse == delaunator::EMPTY || edge > reverse {
-                continue;
-            }
-            let a = topology.triangles[edge];
-            let b = topology.triangles[delaunator::next_halfedge(edge)];
-            let c = topology.triangles[delaunator::prev_halfedge(edge)];
-            let d = topology.triangles[delaunator::prev_halfedge(reverse)];
-            let side_c = predicates.orient(a, b, c);
-            let side_d = predicates.orient(a, b, d);
-            if side_c == exact::ExactSign::Zero
-                || side_d == exact::ExactSign::Zero
-                || side_c == side_d
-            {
-                return Err(GeometryErrorKind::triangulation(
-                    "candidate interior-edge opposite vertices are not on opposite sides",
-                ));
-            }
-            let incircle = predicates.incircle(a, b, c, d);
-            if incircle == exact::ExactSign::Positive {
-                return Err(GeometryErrorKind::triangulation(
-                    "candidate contains an exact non-Delaunay diagonal",
-                ));
-            }
-            if incircle == exact::ExactSign::Zero {
-                cocircular_halfedges[edge] = true;
-                cocircular_halfedges[reverse] = true;
-            }
-        }
-        Ok(CertifiedDelaunay {
-            topology: delaunator::Triangulation {
-                triangles: topology.triangles,
-                halfedges: topology.halfedges,
-                hull: boundary,
-            },
-            cocircular_halfedges,
-        })
+pub(super) fn certified_delaunay(sites: &[Site]) -> CertifiedDelaunay {
+    // Every site by its input index; duplicates and collinear input are the
+    // engine's to settle exactly.
+    let points: Vec<Point> = sites.iter().map(|site| site.point).collect();
+    let mut mesh = exact_delaunay::exact_delaunay(&points);
+    if mesh.triangles.is_empty() {
+        return CertifiedDelaunay::empty(mesh.hull);
+    }
+    let cocircular_halfedges = std::mem::take(&mut mesh.cocircular);
+    CertifiedDelaunay {
+        topology: mesh.into_topology(),
+        cocircular_halfedges,
     }
 }
 
-pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
-    #[cfg(test)]
-    reset_voronoi_certification_work();
-    if sites.len() < 3 {
-        return Ok(CertifiedDelaunay::empty((0..sites.len()).collect()));
-    }
-    if let Some(proposal) = scale_only_proposal(sites)
-        && let Ok(certified) = proposal.try_certify(sites)
-    {
-        #[cfg(test)]
-        note_voronoi_certification_work(|work| work.mapped_accepts += 1);
-        return Ok(certified);
-    }
-    #[cfg(test)]
-    note_voronoi_certification_work(|work| work.mapped_fallbacks += 1);
-    let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-    let corner_hull = exact_corner_hull_cycle(&points);
-    if corner_hull.len() < 3 {
-        return Ok(CertifiedDelaunay::empty(exact_collinear_order(&points)));
-    }
-    // Cold deterministic seed: independent power-of-two axes retain every
-    // stored ordinate, then sorted-edge exact Lawson flips choose the source
-    // Euclidean topology. The candidate still earns trust only here.
-    let seed = exact_incremental_seed(&points).ok_or_else(|| {
-        GeometryErrorKind::triangulation(
-            "could not construct a complete deterministic Delaunay seed",
-        )
-    })?;
-    let fallback = exact_metric_delaunay(&points, &seed).ok_or_else(|| {
-        GeometryErrorKind::triangulation(
-            "could not construct a complete deterministic Delaunay seed",
-        )
-    })?;
-    CandidateTriangulation {
-        topology: PositiveTopology(fallback),
-        mapped_sites: None,
-    }
-    .try_certify(sites)
-}
-
-fn exact_incremental_seed(points: &[Point]) -> Option<delaunator::Triangulation> {
-    let hull = exact_corner_hull_cycle(points);
-    if hull.len() < 3 {
-        return None;
-    }
-    let mut triangles: Vec<[usize; 3]> = (1..hull.len() - 1)
-        .map(|index| [hull[0], hull[index], hull[index + 1]])
-        .collect();
-    let hull_sites: HashSet<_> = hull.iter().copied().collect();
-    for site in (0..points.len()).filter(|site| !hull_sites.contains(site)) {
-        let mut containing = Vec::new();
-        for (index, &[a, b, c]) in triangles.iter().enumerate() {
-            let signs = [
-                exact::orient2d(points[a].xy(), points[b].xy(), points[site].xy()),
-                exact::orient2d(points[b].xy(), points[c].xy(), points[site].xy()),
-                exact::orient2d(points[c].xy(), points[a].xy(), points[site].xy()),
-            ];
-            if signs.iter().all(|&sign| sign != exact::ExactSign::Negative) {
-                containing.push((index, signs));
-            }
-        }
-        if containing.is_empty() {
-            return None;
-        }
-        let mut replacements = Vec::new();
-        for &(index, signs) in containing.iter().rev() {
-            let [a, b, c] = triangles.swap_remove(index);
-            if signs.iter().all(|&sign| sign != exact::ExactSign::Zero) {
-                replacements.extend([[a, b, site], [b, c, site], [c, a, site]]);
-            } else {
-                let (left, right, opposite) = if signs[0] == exact::ExactSign::Zero {
-                    (a, b, c)
-                } else if signs[1] == exact::ExactSign::Zero {
-                    (b, c, a)
-                } else {
-                    (c, a, b)
-                };
-                replacements.extend([[left, site, opposite], [site, right, opposite]]);
-            }
-        }
-        triangles.extend(replacements);
-    }
-    let mut flat = Vec::with_capacity(triangles.len() * 3);
-    for [a, b, c] in triangles {
-        match exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy()) {
-            exact::ExactSign::Positive => flat.extend([a, b, c]),
-            exact::ExactSign::Negative => flat.extend([a, c, b]),
-            exact::ExactSign::Zero => return None,
-        }
-    }
-    let halfedges = delaunay_halfedges(&flat);
-    Some(delaunator::Triangulation {
-        triangles: flat,
-        halfedges,
-        hull: exact_hull_cycle(points),
-    })
-}
-
-fn scale_only_proposal(sites: &[Site]) -> Option<CandidateTriangulation> {
-    const MIN_SPADE: f64 = 1.793_662_034_335_766e-43;
-    const MAX_SPADE: f64 = 3.213_876_088_517_980_6e60;
-    let maximum = sites
-        .iter()
-        .flat_map(|site| [site.point.x.abs(), site.point.y.abs()])
-        .fold(0.0_f64, f64::max);
-    let scale = axis_pow2_scale(maximum);
-    let mapped: Vec<_> = sites
-        .iter()
-        .map(|site| XY::new(site.point.x * scale, site.point.y * scale))
-        .collect();
-    if mapped
-        .iter()
-        .flat_map(|point| [point.x, point.y])
-        .any(|value| value != 0.0 && !(MIN_SPADE..=MAX_SPADE).contains(&value.abs()))
-    {
-        return None;
-    }
-    let mapped_points: Vec<_> = mapped
-        .iter()
-        .map(|point| Point::new_raw_xy(point.x, point.y))
-        .collect();
-    let topology = positive_topology(
-        try_spade_delaunay(&mapped_points)?,
-        CertificationCoordinates::Mapped(&mapped),
-    )?;
-    Some(CandidateTriangulation {
-        topology,
-        mapped_sites: Some(mapped),
-    })
-}
-
-fn proposal_mapping_is_admissible(sites: &[Site], mapped: &[XY]) -> bool {
-    if sites.len() != mapped.len() {
-        return false;
-    }
-    let maximum = sites
-        .iter()
-        .flat_map(|site| [site.point.x.abs(), site.point.y.abs()])
-        .fold(0.0_f64, f64::max);
-    let scale = axis_pow2_scale(maximum);
-    let mut keys = HashSet::with_capacity(mapped.len());
-    sites.iter().zip(mapped).all(|(site, mapped)| {
-        let source = site.point.xy();
-        let expected = XY::new(source.x * scale, source.y * scale);
-        let roundtrip = XY::new(mapped.x / scale, mapped.y / scale);
-        expected.x.to_bits() == mapped.x.to_bits()
-            && expected.y.to_bits() == mapped.y.to_bits()
-            && source.x.to_bits() == roundtrip.x.to_bits()
-            && source.y.to_bits() == roundtrip.y.to_bits()
-            && (source.x == 0.0 || mapped.x != 0.0)
-            && (source.y == 0.0 || mapped.y != 0.0)
-            && keys.insert(PointKey::new(*mapped))
-    })
-}
-
-fn positive_topology(
-    topology: delaunator::Triangulation,
-    coordinates: CertificationCoordinates<'_>,
-) -> Option<PositiveTopology> {
-    if !topology.triangles.len().is_multiple_of(3) {
-        return None;
-    }
-    let mut triangles = Vec::with_capacity(topology.triangles.len());
-    for &[a, b, c] in topology.triangles.as_chunks::<3>().0 {
-        match coordinates.orient(a, b, c) {
-            exact::ExactSign::Positive => triangles.extend([a, b, c]),
-            exact::ExactSign::Negative => triangles.extend([a, c, b]),
-            exact::ExactSign::Zero => return None,
-        }
-    }
-    let halfedges = delaunay_halfedges(&triangles);
-    Some(PositiveTopology(delaunator::Triangulation {
-        triangles,
-        halfedges,
-        hull: topology.hull,
-    }))
-}
-
-pub(crate) fn delaunay_triangulation(points: &[Point]) -> delaunator::Triangulation {
+pub(crate) fn delaunay_triangulation(points: &[Point]) -> Triangulation {
     let sites: Vec<_> = points
         .iter()
         .copied()
         .enumerate()
         .map(|(id, point)| Site { id, point })
         .collect();
-    certified_delaunay(&sites).map_or_else(
-        |_| delaunator::Triangulation {
-            triangles: Vec::new(),
-            halfedges: Vec::new(),
-            hull: exact_hull_cycle(points),
-        },
-        CertifiedDelaunay::into_topology,
-    )
+    certified_delaunay(&sites).into_topology()
 }
 
-fn candidate_boundary_cycle(topology: &delaunator::Triangulation) -> Result<Vec<usize>> {
-    let mut next = HashMap::new();
-    let mut boundary_edges = 0_usize;
-    for edge in 0..topology.halfedges.len() {
-        if topology.halfedges[edge] == delaunator::EMPTY {
-            boundary_edges += 1;
-            next.insert(
-                topology.triangles[edge],
-                topology.triangles[delaunator::next_halfedge(edge)],
-            );
-        }
-    }
-    if next.len() != boundary_edges {
-        return Err(GeometryErrorKind::triangulation(
-            "candidate boundary branches at a site",
-        ));
-    }
-    let Some(&start) = next.keys().min() else {
-        return Ok(Vec::new());
-    };
-    let mut cycle = Vec::with_capacity(next.len());
-    let mut visited = HashSet::with_capacity(next.len());
-    let mut current = start;
-    loop {
-        if !visited.insert(current) {
-            break;
-        }
-        cycle.push(current);
-        current = *next.get(&current).ok_or_else(|| {
-            GeometryErrorKind::triangulation("candidate boundary is not one cycle")
-        })?;
-    }
-    if current != start || cycle.len() != next.len() {
-        return Err(GeometryErrorKind::triangulation(
-            "candidate boundary is not one cycle",
-        ));
-    }
-    Ok(rotate_cycle_to_minimum(cycle))
-}
-
-fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
-    hull_cycle(CertificationCoordinates::Source(points), true)
-}
-
-fn hull_cycle(coordinates: CertificationCoordinates<'_>, corners: bool) -> Vec<usize> {
-    let count = match coordinates {
-        CertificationCoordinates::Mapped(points) => points.len(),
-        CertificationCoordinates::Source(points) => points.len(),
-    };
-    let mut order: Vec<_> = (0..count).collect();
+/// The exact convex hull as a counter-clockwise cycle rotated to its smallest
+/// site index. With `corners` only strict corners survive, which is the seed
+/// the engine fans from; without it collinear boundary sites stay on the
+/// cycle, and a wholly collinear input yields its collinear order instead.
+fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
+    let xy = |site: usize| points[site].xy();
+    let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
+    let mut order: Vec<_> = (0..points.len()).collect();
     order.sort_unstable_by(|&a, &b| {
-        coordinates
-            .xy(a)
+        xy(a)
             .x
-            .total_cmp(&coordinates.xy(b).x)
-            .then_with(|| coordinates.xy(a).y.total_cmp(&coordinates.xy(b).y))
+            .total_cmp(&xy(b).x)
+            .then_with(|| xy(a).y.total_cmp(&xy(b).y))
     });
     if !corners {
         let Some(&last) = order.last() else {
@@ -933,37 +300,28 @@ fn hull_cycle(coordinates: CertificationCoordinates<'_>, corners: bool) -> Vec<u
         if order.len() < 3
             || order
                 .iter()
-                .all(|&site| coordinates.orient(order[0], last, site) == exact::ExactSign::Zero)
+                .all(|&site| orient(order[0], last, site) == exact::ExactSign::Zero)
         {
-            return coordinate_collinear_order(coordinates);
+            return collinear_order(points);
         }
     }
+    let pops = |sign: exact::ExactSign| {
+        if corners {
+            sign != exact::ExactSign::Positive
+        } else {
+            sign == exact::ExactSign::Negative
+        }
+    };
     let mut lower: Vec<usize> = Vec::new();
     for &site in &order {
-        while lower.len() >= 2 {
-            let sign = coordinates.orient(lower[lower.len() - 2], lower[lower.len() - 1], site);
-            if !(if corners {
-                sign != exact::ExactSign::Positive
-            } else {
-                sign == exact::ExactSign::Negative
-            }) {
-                break;
-            }
+        while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site)) {
             lower.pop();
         }
         lower.push(site);
     }
     let mut upper: Vec<usize> = Vec::new();
     for &site in order.iter().rev() {
-        while upper.len() >= 2 {
-            let sign = coordinates.orient(upper[upper.len() - 2], upper[upper.len() - 1], site);
-            if !(if corners {
-                sign != exact::ExactSign::Positive
-            } else {
-                sign == exact::ExactSign::Negative
-            }) {
-                break;
-            }
+        while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site)) {
             upper.pop();
         }
         upper.push(site);
@@ -971,84 +329,32 @@ fn hull_cycle(coordinates: CertificationCoordinates<'_>, corners: bool) -> Vec<u
     lower.pop();
     upper.pop();
     lower.extend(upper);
-    rotate_cycle_to_minimum(lower)
-}
-
-fn rotate_cycle_to_minimum(mut cycle: Vec<usize>) -> Vec<usize> {
-    if let Some(start) = cycle
+    if let Some(start) = lower
         .iter()
         .enumerate()
         .min_by_key(|(_, value)| **value)
         .map(|(index, _)| index)
     {
-        cycle.rotate_left(start);
+        lower.rotate_left(start);
     }
-    cycle
+    lower
 }
 
-fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
-    hull_cycle(CertificationCoordinates::Source(points), false)
+pub(super) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
+    hull_cycle(points, true)
 }
 
-fn coordinate_collinear_order(coordinates: CertificationCoordinates<'_>) -> Vec<usize> {
-    let count = match coordinates {
-        CertificationCoordinates::Mapped(points) => points.len(),
-        CertificationCoordinates::Source(points) => points.len(),
-    };
-    let mut order: Vec<_> = (0..count).collect();
-    let (minx, maxx, miny, maxy) = (0..count).fold(
-        (
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ),
-        |(minx, maxx, miny, maxy), index| {
-            let point = coordinates.xy(index);
-            (
-                minx.min(point.x),
-                maxx.max(point.x),
-                miny.min(point.y),
-                maxy.max(point.y),
-            )
-        },
-    );
-    if maxx - minx >= maxy - miny {
-        order.sort_unstable_by(|&left, &right| {
-            coordinates
-                .xy(left)
-                .x
-                .total_cmp(&coordinates.xy(right).x)
-                .then_with(|| coordinates.xy(left).y.total_cmp(&coordinates.xy(right).y))
-        });
-    } else {
-        order.sort_unstable_by(|&left, &right| {
-            coordinates
-                .xy(left)
-                .y
-                .total_cmp(&coordinates.xy(right).y)
-                .then_with(|| coordinates.xy(left).x.total_cmp(&coordinates.xy(right).x))
-        });
-    }
-    order
+pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
+    hull_cycle(points, false)
 }
 
-fn exact_collinear_order(points: &[Point]) -> Vec<usize> {
+/// Collinear sites in order along their longer extent.
+fn collinear_order(points: &[Point]) -> Vec<usize> {
     let mut order: Vec<_> = (0..points.len()).collect();
     let (minx, maxx, miny, maxy) = points.iter().fold(
-        (
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ),
+        (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY),
         |(minx, maxx, miny, maxy), point| {
-            (
-                minx.min(point.x),
-                maxx.max(point.x),
-                miny.min(point.y),
-                maxy.max(point.y),
-            )
+            (minx.min(point.x), maxx.max(point.x), miny.min(point.y), maxy.max(point.y))
         },
     );
     if maxx - minx >= maxy - miny {
@@ -1069,308 +375,14 @@ fn exact_collinear_order(points: &[Point]) -> Vec<usize> {
     order
 }
 
-#[derive(Clone, Copy, Default)]
-struct EdgeIncidence {
-    entries: [Option<(usize, usize)>; 2],
-    len: usize,
-}
-
-impl EdgeIncidence {
-    fn push(&mut self, value: (usize, usize)) -> bool {
-        let Some(slot) = self.entries.get_mut(self.len) else {
-            return false;
-        };
-        *slot = Some(value);
-        self.len += 1;
-        true
-    }
-}
-
-fn candidate_has_crossing_edges(
-    points: CertificationCoordinates<'_>,
-    topology: &delaunator::Triangulation,
-) -> bool {
-    #[derive(Clone, Copy)]
-    struct EdgeEnvelope {
-        edge: (usize, usize),
-        envelope: rstar::AABB<[f64; 2]>,
-    }
-    impl rstar::RTreeObject for EdgeEnvelope {
-        type Envelope = rstar::AABB<[f64; 2]>;
-
-        fn envelope(&self) -> Self::Envelope {
-            self.envelope
-        }
-    }
-
-    let mut unique = HashSet::with_capacity(topology.triangles.len());
-    for edge in 0..topology.triangles.len() {
-        let pair = (
-            topology.triangles[edge],
-            topology.triangles[delaunator::next_halfedge(edge)],
-        );
-        let key = (pair.0.min(pair.1), pair.0.max(pair.1));
-        unique.insert(key);
-    }
-    let edges: Vec<_> = unique
-        .into_iter()
-        .map(|edge @ (a, b)| EdgeEnvelope {
-            edge,
-            envelope: rstar::AABB::from_corners(
-                [
-                    points.xy(a).x.min(points.xy(b).x),
-                    points.xy(a).y.min(points.xy(b).y),
-                ],
-                [
-                    points.xy(a).x.max(points.xy(b).x),
-                    points.xy(a).y.max(points.xy(b).y),
-                ],
-            ),
-        })
-        .collect();
-    let tree = rstar::RTree::bulk_load(edges.clone());
-    edges.iter().any(|entry| {
-        let (a, b) = entry.edge;
-        tree.locate_in_envelope_intersecting(entry.envelope)
-            .any(|other| {
-                let (c, d) = other.edge;
-                if (a, b) >= (c, d) {
-                    return false;
-                }
-                if a == c || a == d || b == c || b == d {
-                    return false;
-                }
-                let ab_c = points.orient(a, b, c);
-                let ab_d = points.orient(a, b, d);
-                let cd_a = points.orient(c, d, a);
-                let cd_b = points.orient(c, d, b);
-                let on_segment = |start: usize, end: usize, point: usize| {
-                    points.xy(point).x >= points.xy(start).x.min(points.xy(end).x)
-                        && points.xy(point).x <= points.xy(start).x.max(points.xy(end).x)
-                        && points.xy(point).y >= points.xy(start).y.min(points.xy(end).y)
-                        && points.xy(point).y <= points.xy(start).y.max(points.xy(end).y)
-                };
-                (ab_c != ab_d && cd_a != cd_b)
-                    || (ab_c == exact::ExactSign::Zero && on_segment(a, b, c))
-                    || (ab_d == exact::ExactSign::Zero && on_segment(a, b, d))
-                    || (cd_a == exact::ExactSign::Zero && on_segment(c, d, a))
-                    || (cd_b == exact::ExactSign::Zero && on_segment(c, d, b))
-            })
-    })
-}
-
-/// Legalize an affine-frame triangulation in the source Euclidean metric.
-///
-/// The independent power-of-two frame preserves incidence and crossings, so
-/// it is a sound way to obtain a finite seed mesh.  A Lawson flip then uses
-/// [`exact_incircle_sign`] on the actual stored doubles for every diagonal;
-/// this is the only step that chooses Delaunay topology.
-fn exact_metric_delaunay(
-    points: &[Point],
-    initial: &delaunator::Triangulation,
-) -> Option<delaunator::Triangulation> {
-    #[cfg(test)]
-    reset_exact_metric_work();
-    if !exact_metric_seed_is_valid(points, initial) {
-        return None;
-    }
-    let mut triangles = initial.triangles.clone();
-    let mut halfedges = initial.halfedges.clone();
-    let mut pending = BinaryHeap::with_capacity(halfedges.len() / 2);
-    for edge in 0..halfedges.len() {
-        if halfedges[edge] != delaunator::EMPTY && edge < halfedges[edge] {
-            #[cfg(test)]
-            note_exact_metric_work(|work| work.initial_interior_owners += 1);
-            enqueue_delaunay_edge(&mut pending, &triangles, &halfedges, edge);
-        }
-    }
-    while let Some(Reverse((a, b, edge))) = pending.pop() {
-        #[cfg(test)]
-        note_exact_metric_work(|work| {
-            work.edge_inspections += 1;
-            work.queue_pops += 1;
-        });
-        let Some(reverse) = queued_delaunay_edge((a, b), edge, &triangles, &halfedges) else {
-            continue;
-        };
-
-        let e = edge;
-        let n = delaunator::next_halfedge(e);
-        let p = delaunator::prev_halfedge(e);
-        let r = reverse;
-        let rn = delaunator::next_halfedge(r);
-        let rp = delaunator::prev_halfedge(r);
-        let Some(n_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, n) else {
-            continue;
-        };
-        let Some(p_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, p) else {
-            continue;
-        };
-        let Some(rn_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, rn) else {
-            continue;
-        };
-        let Some(rp_reverse) = reciprocal_delaunay_halfedge(&triangles, &halfedges, rp) else {
-            continue;
-        };
-        let a = triangles[e];
-        let b = triangles[n];
-        let c = triangles[p];
-        let d = triangles[rp];
-        if !flippable_quad(points, a, b, c, d) || !source_incircle_contains(points, a, b, c, d) {
-            continue;
-        }
-
-        // Capture every unchanged boundary twin before any slot is rewritten.
-        // The directed slots, rather than the sorted queue key, own the
-        // orientation of the replacement faces.
-        triangles[e] = d;
-        triangles[n] = c;
-        triangles[p] = a;
-        triangles[r] = c;
-        triangles[rn] = d;
-        triangles[rp] = b;
-        link_delaunay_halfedges(&mut halfedges, e, r);
-        link_delaunay_halfedges(&mut halfedges, n, p_reverse);
-        link_delaunay_halfedges(&mut halfedges, p, rn_reverse);
-        link_delaunay_halfedges(&mut halfedges, rn, rp_reverse);
-        link_delaunay_halfedges(&mut halfedges, rp, n_reverse);
-
-        #[cfg(test)]
-        note_exact_metric_work(|work| work.successful_flips += 1);
-        for affected in [e, n, p, rn, rp] {
-            enqueue_delaunay_edge(&mut pending, &triangles, &halfedges, affected);
-        }
-    }
-
-    for &[a, b, c] in triangles.as_chunks::<3>().0 {
-        if exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy()) == exact::ExactSign::Zero
-        {
-            return None;
-        }
-    }
-    Some(delaunator::Triangulation {
-        halfedges,
-        triangles,
-        hull: Vec::new(),
-    })
-}
-
-fn exact_metric_seed_is_valid(points: &[Point], initial: &delaunator::Triangulation) -> bool {
-    initial.triangles.len() == initial.halfedges.len()
-        && initial.triangles.len().is_multiple_of(3)
-        && delaunay_euler_complete(points.len(), initial)
-        && initial.triangles.iter().all(|&site| site < points.len())
-        && initial
-            .halfedges
-            .iter()
-            .enumerate()
-            .all(|(edge, &reverse)| {
-                reverse == delaunator::EMPTY
-                    || reciprocal_delaunay_halfedge(&initial.triangles, &initial.halfedges, edge)
-                        == Some(reverse)
-            })
-}
-
-fn reciprocal_delaunay_halfedge(
-    triangles: &[usize],
-    halfedges: &[usize],
-    edge: usize,
-) -> Option<usize> {
-    let reverse = *halfedges.get(edge)?;
-    if reverse == delaunator::EMPTY {
-        return Some(reverse);
-    }
-    if reverse == edge || reverse >= halfedges.len() || halfedges[reverse] != edge {
-        return None;
-    }
-    let next = delaunator::next_halfedge(edge);
-    let reverse_next = delaunator::next_halfedge(reverse);
-    if next >= triangles.len() || reverse_next >= triangles.len() {
-        return None;
-    }
-    (triangles.get(edge) == triangles.get(reverse_next)
-        && triangles.get(next) == triangles.get(reverse))
-    .then_some(reverse)
-}
-
-fn queued_delaunay_edge(
-    key: (usize, usize),
-    edge: usize,
-    triangles: &[usize],
-    halfedges: &[usize],
-) -> Option<usize> {
-    let reverse = reciprocal_delaunay_halfedge(triangles, halfedges, edge)?;
-    if reverse == delaunator::EMPTY {
-        return None;
-    }
-    let start = *triangles.get(edge)?;
-    let end = *triangles.get(delaunator::next_halfedge(edge))?;
-    ((start.min(end), start.max(end)) == key).then_some(reverse)
-}
-
-fn enqueue_delaunay_edge(
-    pending: &mut BinaryHeap<Reverse<(usize, usize, usize)>>,
-    triangles: &[usize],
-    halfedges: &[usize],
-    edge: usize,
-) {
-    let Some(reverse) = reciprocal_delaunay_halfedge(triangles, halfedges, edge) else {
-        return;
-    };
-    if reverse == delaunator::EMPTY {
-        return;
-    }
-    let owner = edge.min(reverse);
-    let start = triangles[owner];
-    let end = triangles[delaunator::next_halfedge(owner)];
-    pending.push(Reverse((start.min(end), start.max(end), owner)));
-}
-
-fn link_delaunay_halfedges(halfedges: &mut [usize], left: usize, right: usize) {
-    halfedges[left] = right;
-    if right != delaunator::EMPTY {
-        halfedges[right] = left;
-    }
-}
-
-fn flippable_quad(points: &[Point], a: usize, b: usize, c: usize, d: usize) -> bool {
-    let side = |start: usize, end: usize, point: usize| {
-        orientation(points[start].xy(), points[end].xy(), points[point].xy())
-    };
-    let opposite = |left: Orientation, right: Orientation| {
-        matches!(
-            (left, right),
-            (Orientation::Clockwise, Orientation::CounterClockwise)
-                | (Orientation::CounterClockwise, Orientation::Clockwise)
-        )
-    };
-    opposite(side(a, b, c), side(a, b, d)) && opposite(side(c, d, a), side(c, d, b))
-}
-
-fn source_incircle_contains(points: &[Point], a: usize, b: usize, c: usize, d: usize) -> bool {
-    source_incircle_contains_xy(
-        points[a].xy(),
-        points[b].xy(),
-        points[c].xy(),
-        points[d].xy(),
-    )
-}
-
-fn source_incircle_contains_xy(a: XY, b: XY, c: XY, d: XY) -> bool {
-    let sign = exact_incircle_sign(a, b, c, d);
-    match orientation(a, b, c) {
-        Orientation::CounterClockwise => sign > 0,
-        Orientation::Clockwise => sign < 0,
-        Orientation::Collinear => false,
-    }
-}
-
+/// Twin slots for a flat triangle list by directed-edge lookup.
 fn delaunay_halfedges(triangles: &[usize]) -> Vec<usize> {
-    let mut halfedges = vec![delaunator::EMPTY; triangles.len()];
-    let mut directed = HashMap::with_capacity(triangles.len());
-    for (index, &start) in triangles.iter().enumerate() {
-        let end = triangles[if index % 3 == 2 { index - 2 } else { index + 1 }];
-        if let Some(&reverse) = directed.get(&(end, start)) {
+    let mut halfedges = vec![EMPTY; triangles.len()];
+    let mut directed: HashMap<(usize, usize), usize> = HashMap::with_capacity(triangles.len());
+    for index in 0..triangles.len() {
+        let start = triangles[index];
+        let end = triangles[next_halfedge(index)];
+        if let Some(reverse) = directed.remove(&(end, start)) {
             halfedges[index] = reverse;
             halfedges[reverse] = index;
         } else {
@@ -1380,25 +392,10 @@ fn delaunay_halfedges(triangles: &[usize]) -> Vec<usize> {
     halfedges
 }
 
-#[cfg(test)]
-fn delaunay_triangulation_raw(points: &[Point]) -> delaunator::Triangulation {
-    let sites: Vec<delaunator::Point> = points
-        .iter()
-        .map(|point| delaunator::Point {
-            x: point.x,
-            y: point.y,
-        })
-        .collect();
-    delaunator::triangulate(&sites)
-}
-
 /// Planar triangulation Euler identity: `T = 2n - 2 - h` for `n` vertices
-/// and `h` hull vertices (connected triangulation of a simple polygon's
-/// vertex set, or of a point set with convex hull of size `h`).
-///
-/// Hull size is derived from boundary halfedges. Candidate `hull` storage is
-/// advisory input and cannot participate in certification arithmetic.
-fn delaunay_euler_complete(n: usize, triangulation: &delaunator::Triangulation) -> bool {
+/// and `h` hull vertices of a connected triangulation of a point set.
+#[cfg(test)]
+fn delaunay_euler_complete(n: usize, triangulation: &Triangulation) -> bool {
     if n < 3 {
         return triangulation.triangles.is_empty();
     }
@@ -1406,115 +403,17 @@ fn delaunay_euler_complete(n: usize, triangulation: &delaunator::Triangulation) 
     if t == 0 {
         return false;
     }
-    let h = triangulation
-        .halfedges
-        .iter()
-        .filter(|&&edge| edge == delaunator::EMPTY)
-        .count();
-    if h < 3 {
-        return false;
-    }
-    // Saturating form avoids underflow when n is tiny relative to h.
-    t == n.saturating_mul(2).saturating_sub(2).saturating_sub(h)
+    let h = triangulation.halfedges.iter().filter(|&&edge| edge == EMPTY).count();
+    h >= 3 && t == n.saturating_mul(2).saturating_sub(2).saturating_sub(h)
 }
 
-/// Delaunay triangulation via `spade`, emitted in `delaunator`'s
-/// `(triangles, halfedges)` layout so the existing half-edge consumers (the
-/// chi-shape peeling) run unchanged. `delaunator`'s sweep-circle `legalize`
-/// cascades to ~O(n²·⁹) on near-cocircular inputs (dense points on a smooth
-/// curve); `spade`'s bulk loader stays far closer to linear there, so this is
-/// the engine `concave_hull` uses. Falls back to `delaunator` if loading is
-/// rejected (keeps the point-index ↔ vertex-index mapping exact).
-pub(crate) fn delaunay_triangulation_spade(points: &[Point]) -> delaunator::Triangulation {
-    let source_points = points;
-    // A uniform similarity loses the thin axis of reciprocal-scale inputs.
-    // The ordinary owner already seeds in an independent power-of-two frame
-    // and legalizes every diagonal in the exact source metric.
-    if AxisFrame::from_points(points).is_some_and(AxisFrame::has_reciprocal_axes) {
-        return delaunay_triangulation(points);
-    }
-    let framed = SimilarityFrame::from_points(points).map(|frame| {
-        points
-            .iter()
-            .copied()
-            .map(|point| frame.frame_point(point))
-            .collect::<Vec<_>>()
-    });
-    let points = framed.as_deref().unwrap_or(points);
-    if let Some(tri) = try_spade_delaunay(points)
-        && delaunay_euler_complete(points.len(), &tri)
-    {
-        return tri;
-    }
-    // Spade rejection means its raw-predicate coordinate gate did not admit
-    // the framed values. Return to the certified source-coordinate owner;
-    // unguarded Delaunator is not sound on those rejected values.
-    delaunay_triangulation(source_points)
-}
-
-fn try_spade_delaunay(points: &[Point]) -> Option<delaunator::Triangulation> {
-    let spade_points: Vec<_> = points.iter().map(|point| spade_point(point.xy())).collect();
-    let triangulation =
-        DelaunayTriangulation::<Point2<f64>>::bulk_load_stable(spade_points).ok()?;
-    if triangulation.num_vertices() != points.len() {
-        return None;
-    }
-
-    // spade inner faces are CCW (gometry's shell canon, matching delaunator).
-    let mut triangles: Vec<usize> = Vec::with_capacity(triangulation.num_inner_faces() * 3);
-    let mut face_to_dense: HashMap<FixedFaceHandle<InnerTag>, usize> =
-        HashMap::with_capacity(triangulation.num_inner_faces());
-    for (face_index, face) in triangulation.inner_faces().enumerate() {
-        face_to_dense.insert(face.fix(), face_index);
-        let [a, b, c] = face.vertices();
-        triangles.push(a.index());
-        triangles.push(b.index());
-        triangles.push(c.index());
-    }
-
-    let mut halfedges = Vec::with_capacity(triangles.len());
-    for face in triangulation.inner_faces() {
-        for edge in face.adjacent_edges() {
-            let rev_edge = edge.rev();
-            let Some(rev_face) = rev_edge.face().as_inner() else {
-                halfedges.push(delaunator::EMPTY);
-                continue;
-            };
-            let rev_face_index = face_to_dense[&rev_face.fix()];
-            let rev_edge_handle = rev_edge.fix();
-            let rev_local_index = rev_face
-                .adjacent_edges()
-                .iter()
-                .position(|candidate| candidate.fix() == rev_edge_handle)
-                .expect("reversed edge must be adjacent to its inner face");
-            halfedges.push(rev_face_index * 3 + rev_local_index);
-        }
-    }
-    Some(delaunator::Triangulation {
-        triangles,
-        halfedges,
-        hull: Vec::new(),
-    })
-}
-
-/// Constrained Delaunay triangulation of an areal geometry (`rings` =
-/// every shell and hole as a closed coordinate sequence): the ring edges
-/// become CDT constraints, then inner faces whose centroid lies inside the
-/// geometry (`contains`) are kept — the triangles strictly within the input.
-///
-/// This is spade used directly (the engine geo wrapped): collect the
-/// constraint segments, exact-key-dedup endpoints, build the CDT, then
-/// filter by centroid membership. Valid polygon boundaries are already
-/// simple; any crossing constraints fall back to spade's split insertion.
-/// Constrained Delaunay triangulation of the polygon interior as a flat
-/// `[a, b, c, a]`-per-kept-face vertex stream (XY, since spade's CDT is 2D).
-/// `contains` keeps interior faces. The packed array surface builds a
-/// `Polygons` layout from this in one pass; the `Vec<Shape>` form wraps it
-/// below.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the constrained triangulation kernel keeps one allocation and topology pipeline cohesive"
-)]
+/// Constrained Delaunay triangulation of an areal geometry (`rings` = every
+/// shell and hole as a closed coordinate sequence) as a flat
+/// `[a, b, c, a]`-per-kept-face vertex stream: the ring edges become
+/// constraints, the faces inside the rings are kept, and refinement, when
+/// requested, has to be met within the generated-vertex limit or the request
+/// is rejected. The packed array surface builds a `Polygons` layout from this
+/// in one pass; the `Vec<Shape>` form wraps it.
 pub(crate) fn constrained_triangle_vertices<'a>(
     rings: impl Iterator<Item = &'a CoordSeq>,
     area: f64,
@@ -1525,11 +424,8 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     let refinement = effective_refinement(area, refinement);
     validate_refinement_request(area, refinement)?;
     // A nondegenerate three-corner shell is itself its sole constrained
-    // Delaunay face. Spade can only see it as collinear after a uniform
-    // similarity has underflowed one reciprocal axis; materialize the exact
-    // stored-double face directly instead of returning a false empty result.
-    // This is a topology decision, so use the exact ring-area sign rather
-    // than the public inexact area measurement.
+    // Delaunay face; this is a topology decision, so it uses the exact
+    // ring-area sign rather than the public inexact area measurement.
     if !refinement.active()
         && rings.len() == 1
         && rings[0].coord_count() == 4
@@ -1555,7 +451,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
         }
     }
     let lines = cleanup_constraint_lines(lines);
-    let mut vertices = Vec::new();
+    let mut vertices: Vec<Point> = Vec::new();
     let mut vertex_indices: HashMap<PointKey, usize> = HashMap::with_capacity(lines.len() * 2);
     let mut edges = Vec::with_capacity(lines.len());
     for [start, end] in lines {
@@ -1564,89 +460,41 @@ pub(crate) fn constrained_triangle_vertices<'a>(
         edges.push([start, end]);
     }
 
-    let source_vertices: Vec<Point> = vertices
-        .iter()
-        .map(|point| Point::new_raw_xy(point.x, point.y))
+    let Some(mut cdt) = cdt::ConstrainedMesh::build(&vertices, &edges) else {
+        return Err(GeometryErrorKind::triangulation(
+            "constrained triangulation needs three non-collinear vertices",
+        ));
+    };
+    if let CdtRefinement::On { min_angle, max_area } = refinement {
+        let limit = GENERATED_ITEM_LIMIT.saturating_sub(vertices.len());
+        let complete = cdt.refine(
+            &mut vertices,
+            min_angle.map(crate::Positive::get),
+            max_area.map(crate::Positive::get),
+            limit,
+        );
+        if !complete {
+            return Err(GeometryErrorKind::triangulation(format!(
+                "constrained refinement could not satisfy the requested quality within the limit of {GENERATED_ITEM_LIMIT} generated vertices; relax min_angle/max_area"
+            )));
+        }
+    }
+    let inside = cdt.inside_faces();
+    let faces: Vec<[usize; 3]> = (0..cdt.mesh.triangle_count())
+        .filter(|&t| cdt.mesh.alive(t) && inside[t])
+        .map(|t| cdt.mesh.triangle(t))
         .collect();
-    let constraint_edges: HashSet<_> = edges
-        .iter()
-        .map(|&[left, right]| {
-            source_edge_key(source_vertices[left].xy(), source_vertices[right].xy())
-        })
-        .collect();
-    let frame =
-        AxisFrame::from_points(&source_vertices).filter(|frame| frame.has_reciprocal_axes());
-    let local_vertices = frame.map_or(vertices, |frame| {
-        source_vertices
-            .iter()
-            .copied()
-            .map(|point| spade_point(frame.frame_point(point).xy()))
-            .collect()
-    });
-    let mut cdt = bulk_load_constraints(local_vertices, edges)?;
-
-    apply_refinement(&mut cdt, refinement, frame)?;
-    let exterior = constrained_outer_faces(&cdt);
-
-    // Count the same retained faces the emitter will walk, so the operation-
-    // wide budget is admitted before allocating its generated vertex stream.
-    let capacity = cdt
-        .fixed_inner_faces()
-        .filter(|face| !exterior.contains(face))
-        .count()
+    let capacity = faces
+        .len()
         .checked_mul(4)
         .ok_or_else(|| GeometryErrorKind::triangulation("triangle output size overflow"))?;
     budget.add(capacity)?;
-    let mut triangles = Vec::new();
-    triangles
-        .try_reserve_exact(capacity / 4)
-        .map_err(|_| GeometryErrorKind::triangulation("could not allocate constrained faces"))?;
     #[cfg(test)]
     note_constrained_output_reserve();
-    let mut output = Vec::new();
-    output.reserve_exact(capacity);
-    for face in cdt.inner_faces() {
-        if exterior.contains(&face.fix()) {
-            continue;
-        }
-        let [a, b, c] = face.positions();
-        let [a_vertex, b_vertex, c_vertex] = face.vertices();
-        let unframe = |vertex: FixedVertexHandle, point: Point2<f64>| {
-            // Spade's stable bulk load preserves the original vertex indices.
-            // Recover an input constraint point by its index, not by
-            // `unframe(frame(point))`: the latter is algebraically identical
-            // but can lose a stored-double ULP through multiply/add/divide.
-            // Refinement/split vertices are appended, so only those take the
-            // ordinary inverse-frame path.
-            if let Some(&source) = source_vertices.get(vertex.index()) {
-                return source;
-            }
-            frame.map_or_else(
-                || Point::new_raw_xy(point.x, point.y),
-                |frame| {
-                    let point = frame.unframe_xy(XY::new(point.x, point.y));
-                    Point::new_raw_xy(point.x, point.y)
-                },
-            )
-        };
-        let a = unframe(a_vertex.fix(), a);
-        let b = unframe(b_vertex.fix(), b);
-        let c = unframe(c_vertex.fix(), c);
-        triangles.push([a, b, c]);
-    }
-    // Spade's independently-scaled mesh supplies incidence only.  The
-    // constrained interior still owns the source Euclidean diagonal, exactly
-    // like the unconstrained path: every shared retained face edge is safe to
-    // legalize, while a ring constraint has an exterior/hole face on its
-    // other side and is therefore never a two-face flip candidate.
-    if frame.is_some_and(AxisFrame::has_reciprocal_axes) {
-        exact_metric_constrained_triangles(&mut triangles, &constraint_edges);
-    }
-
-    for [a, b, c] in triangles {
+    let mut output = Vec::with_capacity(capacity);
+    for [a, b, c] in faces {
+        let (a, b, c) = (vertices[a], vertices[b], vertices[c]);
         validate_refined_triangle(a, b, c, refinement)?;
-        // The exact Lawson flip may reverse a local face; restore gometry's
-        // CCW shell convention before emitting its closed ring.
         match orientation(a.xy(), b.xy(), c.xy()) {
             Orientation::CounterClockwise => output.extend_from_slice(&[a, b, c, a]),
             Orientation::Clockwise => output.extend_from_slice(&[a, c, b, a]),
@@ -1660,180 +508,19 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     Ok(output)
 }
 
-/// Lawson-legalize the retained CDT faces in the source Euclidean metric.
-///
-/// Spade necessarily selects its seed topology in the temporary coordinate
-/// frame. With reciprocal axes that frame is affine rather than similar, so
-/// only the exact stored-double incircle predicate may choose an unconstrained
-/// diagonal. A ring constraint is adjacent to at most one retained interior
-/// face; by considering only shared retained edges this routine cannot flip a
-/// boundary or hole edge.
-fn exact_metric_constrained_triangles(
-    triangles: &mut [[Point; 3]],
-    constraint_edges: &HashSet<(PointKey, PointKey)>,
-) {
-    loop {
-        let mut edges: HashMap<(PointKey, PointKey), Vec<(usize, Point)>> = HashMap::new();
-        for (triangle_index, &[a, b, c]) in triangles.iter().enumerate() {
-            for (left, right, opposite) in [(a, b, c), (b, c, a), (c, a, b)] {
-                let key = source_edge_key(left.xy(), right.xy());
-                edges
-                    .entry(key)
-                    .or_default()
-                    .push((triangle_index, opposite));
-            }
-        }
-
-        let mut candidates: Vec<_> = edges.into_iter().collect();
-        candidates.sort_unstable_by_key(|(edge, _)| *edge);
-        let mut flipped = false;
-        for ((a, b), adjacent) in candidates {
-            if constraint_edges.contains(&(a, b)) {
-                continue;
-            }
-            let [(first_triangle, c), (second_triangle, d)] = adjacent.as_slice() else {
-                continue;
-            };
-            let (a, b) = (
-                XY::new(f64::from_bits(a.x), f64::from_bits(a.y)),
-                XY::new(f64::from_bits(b.x), f64::from_bits(b.y)),
-            );
-            if !flippable_quad_xy(a, b, c.xy(), d.xy())
-                || !source_incircle_contains_xy(a, b, c.xy(), d.xy())
-            {
-                continue;
-            }
-            triangles[*first_triangle] = [*c, *d, Point::new_raw_xy(a.x, a.y)];
-            triangles[*second_triangle] = [*d, *c, Point::new_raw_xy(b.x, b.y)];
-            flipped = true;
-            break;
-        }
-        if !flipped {
-            return;
-        }
-    }
-}
-
-fn source_edge_key(left: XY, right: XY) -> (PointKey, PointKey) {
-    let (left, right) = (PointKey::new(left), PointKey::new(right));
-    if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    }
-}
-
-fn flippable_quad_xy(a: XY, b: XY, c: XY, d: XY) -> bool {
-    let opposite = |left: Orientation, right: Orientation| {
-        matches!(
-            (left, right),
-            (Orientation::Clockwise, Orientation::CounterClockwise)
-                | (Orientation::CounterClockwise, Orientation::Clockwise)
-        )
-    };
-    opposite(orientation(a, b, c), orientation(a, b, d))
-        && opposite(orientation(c, d, a), orientation(c, d, b))
-}
-
-/// CDT face membership from constraint topology, not an arithmetic point
-/// probe. Beginning at the convex hull, cross ordinary edges within one
-/// parity region and defer a constraint crossing to the next one. The final
-/// outer parity contains the unbounded exterior and every hole; its complement
-/// is exactly the polygonal fill.
-///
-/// A rounded centroid is useful only as a positive witness. It must never
-/// reject a valid face: at reciprocal magnitudes it can round outside the very
-/// triangle it is meant to admit.
-fn constrained_outer_faces(
-    cdt: &ConstrainedDelaunayTriangulation<Point2<f64>>,
-) -> HashSet<FixedFaceHandle<InnerTag>> {
-    if cdt.all_vertices_on_line() {
-        return HashSet::new();
-    }
-    let mut inner = HashSet::new();
-    let mut outer = HashSet::new();
-    let mut current: Vec<_> = cdt.convex_hull().map(|edge| edge.rev()).collect();
-    let mut next = Vec::new();
-    let mut return_outer = true;
-    loop {
-        while let Some(edge) = current.pop() {
-            let (todo, faces) = if edge.is_constraint_edge() {
-                (&mut next, &mut inner)
-            } else {
-                (&mut current, &mut outer)
-            };
-            if let Some(face) = edge.face().as_inner()
-                && faces.insert(face.fix())
-            {
-                todo.push(edge.prev().rev());
-                todo.push(edge.next().rev());
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        std::mem::swap(&mut inner, &mut outer);
-        std::mem::swap(&mut next, &mut current);
-        return_outer = !return_outer;
-    }
-    if return_outer { outer } else { inner }
-}
-
-/// [`constrained_triangle_vertices`] chunked into one triangle `Polygon` each —
-/// the `Vec<Shape>` form (Z/M resolved by the caller's `carry_each`).
-pub(crate) const fn spade_point(point: XY) -> Point2<f64> {
-    Point2::new(point.x, point.y)
-}
-
-pub(crate) fn insertion_error(error: InsertionError) -> Error {
-    GeometryErrorKind::triangulation(error.to_string())
-}
-
 fn constraint_vertex_index(
     point: XY,
-    vertices: &mut Vec<Point2<f64>>,
+    vertices: &mut Vec<Point>,
     vertex_indices: &mut HashMap<PointKey, usize>,
 ) -> usize {
     let next_index = vertices.len();
-    *vertex_indices
-        .entry(PointKey::new(point))
-        .or_insert_with(|| {
-            vertices.push(spade_point(point));
-            next_index
-        })
+    *vertex_indices.entry(PointKey::new(point)).or_insert_with(|| {
+        vertices.push(Point::new_raw_xy(point.x, point.y));
+        next_index
+    })
 }
 
-fn bulk_load_constraints(
-    vertices: Vec<Point2<f64>>,
-    edges: Vec<[usize; 2]>,
-) -> Result<ConstrainedDelaunayTriangulation<Point2<f64>>> {
-    let mut constraint_conflict = false;
-    let cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::try_bulk_load_cdt(
-        vertices.clone(),
-        edges.clone(),
-        |_| {
-            constraint_conflict = true;
-        },
-    )
-    .map_err(insertion_error)?;
-    if !constraint_conflict {
-        return Ok(cdt);
-    }
-
-    let mut cdt =
-        ConstrainedDelaunayTriangulation::<Point2<f64>>::bulk_load_cdt(vertices, Vec::new())
-            .map_err(insertion_error)?;
-    for [start, end] in edges {
-        cdt.add_constraint_and_split(
-            FixedVertexHandle::from_index(start),
-            FixedVertexHandle::from_index(end),
-            |point| point,
-        );
-    }
-    Ok(cdt)
-}
-
-/// Prepare constraint segments for spade: exact endpoint-key deduplication
+/// Prepare constraint segments: exact endpoint-key deduplication
 /// (bit-identical XY only) and drop zero-length / duplicate undirected edges.
 /// Absolute proximity snapping was deleted — a scale-free 1e-4 radius
 /// annihilated valid small polygons (5e-5 square → zero triangles).
@@ -1845,7 +532,6 @@ pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
     let mut prepared: Vec<[XY; 2]> = Vec::with_capacity(lines.len());
     let mut seen: HashSet<(PointKey, PointKey)> = HashSet::with_capacity(lines.len());
     for [start, end] in lines {
-        // Exact identity only — `same_point` is bit-equal XY via PointKey.
         if !same_point(start, end) && seen.insert(edge_key(start, end)) {
             prepared.push([start, end]);
         }
@@ -1854,172 +540,7 @@ pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
 }
 
 #[cfg(test)]
-mod exact_metric_cdt_tests {
-    use super::*;
-
-    #[test]
-    fn queue_owner_follows_twin_when_changed_slot_is_larger() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        let seed = exact_incremental_seed(&points).expect("complete exact seed");
-        let edge = seed
-            .halfedges
-            .iter()
-            .enumerate()
-            .find_map(|(edge, &reverse)| {
-                (reverse != delaunator::EMPTY).then_some(edge.max(reverse))
-            })
-            .expect("interior diagonal");
-        let reverse = seed.halfedges[edge];
-        assert!(edge > reverse);
-
-        let mut pending = BinaryHeap::new();
-        enqueue_delaunay_edge(&mut pending, &seed.triangles, &seed.halfedges, edge);
-        let owner = edge.min(reverse);
-        let start = seed.triangles[owner];
-        let end = seed.triangles[delaunator::next_halfedge(owner)];
-        let key = (start.min(end), start.max(end));
-        assert_eq!(
-            queued_delaunay_edge(key, edge, &seed.triangles, &seed.halfedges),
-            Some(reverse)
-        );
-        assert_eq!(
-            queued_delaunay_edge(
-                (usize::MAX, usize::MAX),
-                edge,
-                &seed.triangles,
-                &seed.halfedges,
-            ),
-            None
-        );
-        assert_eq!(pending.pop(), Some(Reverse((key.0, key.1, owner))));
-
-        let boundary = seed
-            .halfedges
-            .iter()
-            .position(|&reverse| reverse == delaunator::EMPTY)
-            .expect("boundary edge");
-        assert_eq!(
-            queued_delaunay_edge(key, boundary, &seed.triangles, &seed.halfedges),
-            None
-        );
-
-        let mut malformed = seed.clone();
-        malformed.halfedges[reverse] = delaunator::EMPTY;
-        assert_eq!(
-            queued_delaunay_edge(key, edge, &malformed.triangles, &malformed.halfedges),
-            None
-        );
-    }
-
-    #[test]
-    fn exact_queue_accepts_boundary_empty_and_rejects_malformed_seed() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        let seed = exact_incremental_seed(&points).expect("complete exact seed");
-        assert!(exact_metric_delaunay(&points, &seed).is_some());
-
-        let mut missing_slot = seed.clone();
-        let interior = missing_slot
-            .halfedges
-            .iter()
-            .position(|&reverse| reverse != delaunator::EMPTY)
-            .expect("interior diagonal");
-        missing_slot.halfedges[interior] = delaunator::EMPTY;
-        assert!(exact_metric_delaunay(&points, &missing_slot).is_none());
-
-        let mut truncated = seed;
-        truncated.halfedges.pop();
-        assert!(exact_metric_delaunay(&points, &truncated).is_none());
-    }
-
-    #[test]
-    fn cocircular_quad_is_certified_without_a_zero_flip() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        let seed = exact_incremental_seed(&points).expect("complete exact seed");
-        let legalized = exact_metric_delaunay(&points, &seed).expect("exact legalization");
-        let work = take_exact_metric_work();
-        assert_eq!(work.successful_flips, 0);
-        assert!(
-            legalized
-                .halfedges
-                .iter()
-                .enumerate()
-                .all(|(edge, &reverse)| {
-                    reverse == delaunator::EMPTY || legalized.halfedges[reverse] == edge
-                })
-        );
-    }
-
-    #[test]
-    fn nonconvex_quad_is_not_a_flip_candidate() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(1.0, 1.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        assert!(!flippable_quad(&points, 0, 1, 2, 3));
-    }
-
-    #[test]
-    fn reciprocal_quad_flips_the_spade_diagonal_in_source_metric() {
-        let large = 1e159;
-        let tiny = 1e-159;
-        let left = Point::new_raw_xy(-large, 0.0);
-        let bottom = Point::new_raw_xy(0.0, -tiny);
-        let right = Point::new_raw_xy(large, 0.0);
-        let top = Point::new_raw_xy(0.0, 2.0 * tiny);
-        assert!(
-            AxisFrame::from_points(&[left, bottom, right, top])
-                .is_some_and(AxisFrame::has_reciprocal_axes)
-        );
-        let mut triangles = [[left, bottom, right], [left, right, top]];
-        exact_metric_constrained_triangles(&mut triangles, &HashSet::new());
-        assert!(triangles.iter().any(|triangle| {
-            triangle
-                .iter()
-                .any(|point| same_point(point.xy(), bottom.xy()))
-                && triangle
-                    .iter()
-                    .any(|point| same_point(point.xy(), top.xy()))
-        }));
-
-        let ring = CoordSeq::from(vec![left, bottom, right, top, left]);
-        let mut budget = ExpansionBudget::new("test", "test");
-        let output = constrained_triangle_vertices(
-            std::iter::once(&ring),
-            4.0,
-            CdtRefinement::Off,
-            &mut budget,
-        )
-        .expect("reciprocal constrained mesh");
-        assert!(output.as_chunks::<4>().0.iter().any(|triangle| {
-            triangle
-                .iter()
-                .any(|point| same_point(point.xy(), bottom.xy()))
-                && triangle
-                    .iter()
-                    .any(|point| same_point(point.xy(), top.xy()))
-        }));
-    }
-}
-
-#[cfg(test)]
-mod certified_tests {
+mod tests {
     use super::*;
 
     fn sites(points: &[(f64, f64)]) -> Vec<Site> {
@@ -2033,445 +554,50 @@ mod certified_tests {
             .collect()
     }
 
-    fn candidate(triangles: &[[usize; 3]]) -> CandidateTriangulation {
-        let flat: Vec<_> = triangles.iter().flatten().copied().collect();
-        CandidateTriangulation {
-            topology: PositiveTopology(delaunator::Triangulation {
-                halfedges: delaunay_halfedges(&flat),
-                triangles: flat,
-                hull: Vec::new(),
-            }),
-            mapped_sites: None,
-        }
-    }
-
     #[test]
-    fn certified_hull_retains_collinear_boundary_sites_and_collinear_is_empty() {
+    fn hull_retains_collinear_boundary_sites_and_collinear_input_is_empty() {
         let boundary_sites = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
-        let certified = certified_delaunay(&boundary_sites).expect("boundary-site triangulation");
-        assert_eq!(certified.hull().len(), 5);
-        assert!(certified.hull().contains(&1));
+        let mesh = certified_delaunay(&boundary_sites);
+        assert_eq!(mesh.hull().len(), 5);
+        assert!(mesh.hull().contains(&1));
 
         let collinear = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
-        let certified = certified_delaunay(&collinear).expect("collinear empty topology");
-        assert!(certified.triangles().is_empty());
-        assert_eq!(certified.hull(), &[0, 1, 2]);
+        let mesh = certified_delaunay(&collinear);
+        assert!(mesh.triangles().is_empty());
+        assert_eq!(mesh.hull(), &[0, 1, 2]);
     }
 
     #[test]
-    fn certified_cocircular_state_is_reciprocal() {
+    fn cocircular_state_is_reciprocal() {
         let sites = sites(&[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]);
-        let certified = certified_delaunay(&sites).unwrap();
+        let mesh = certified_delaunay(&sites);
         let mut cocircular_pairs = 0;
-        for (slot, &reverse) in certified.halfedges().iter().enumerate() {
-            if reverse == delaunator::EMPTY {
+        for (slot, &reverse) in mesh.halfedges().iter().enumerate() {
+            if reverse == EMPTY {
                 continue;
             }
-            assert_eq!(
-                certified.edge_is_cocircular(slot),
-                certified.edge_is_cocircular(reverse)
-            );
-            cocircular_pairs += usize::from(certified.edge_is_cocircular(slot));
+            assert_eq!(mesh.edge_is_cocircular(slot), mesh.edge_is_cocircular(reverse));
+            cocircular_pairs += usize::from(mesh.edge_is_cocircular(slot));
         }
         assert_eq!(cocircular_pairs, 2);
     }
 
     #[test]
-    fn positive_topology_canonicalizes_face_orientation_once() {
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        let reversed = delaunator::Triangulation {
-            triangles: vec![0, 2, 1],
-            halfedges: vec![delaunator::EMPTY; 3],
-            hull: vec![0, 1, 2],
-        };
-        assert_eq!(
-            positive_topology(reversed, CertificationCoordinates::Source(&points))
-                .unwrap()
-                .0
-                .triangles,
-            [0, 1, 2]
-        );
-    }
-
-    #[test]
-    fn candidate_remainder_and_manifold_mutations_differ_from_restored() {
-        let sites = sites(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
-        let restored_candidate = candidate(&[[0, 1, 2], [0, 2, 3]]);
-        let restored = restored_candidate.try_certify(&sites).is_ok();
-
-        let mut remainder = candidate(&[[0, 1, 2], [0, 2, 3]]);
-        remainder.topology.0.triangles.push(0);
-        remainder.topology.0.halfedges.push(delaunator::EMPTY);
-        let remainder_mutated = remainder.try_certify(&sites).is_ok();
-
-        let mut manifold = candidate(&[[0, 1, 2], [0, 2, 3]]);
-        let interior = manifold
-            .topology
-            .0
-            .halfedges
-            .iter()
-            .position(|&reverse| reverse != delaunator::EMPTY)
-            .unwrap();
-        manifold.topology.0.halfedges[interior] = delaunator::EMPTY;
-        let manifold_mutated = manifold.try_certify(&sites).is_ok();
-        assert_eq!(
-            (remainder_mutated, manifold_mutated, restored),
-            (false, false, true)
-        );
-    }
-
-    #[test]
-    fn illegal_diagonal_mutation_differs_from_restored() {
-        let sites = sites(&[(0.0, 0.0), (0.0, 2.0), (2.0, 0.0), (2.0, 1.0)]);
-        let alternatives = [[[0, 2, 3], [0, 3, 1]], [[0, 2, 1], [2, 3, 1]]];
-        let outcomes =
-            alternatives.map(|triangles| candidate(&triangles).try_certify(&sites).is_ok());
-        assert_eq!(outcomes.iter().filter(|&&accepted| accepted).count(), 1);
-        assert_ne!(outcomes[0], outcomes[1]);
-    }
-
-    #[test]
-    fn crossing_and_wrong_boundary_mutations_differ_from_restored() {
-        let restored_points = vec![
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(0.0, 2.0),
-        ];
-        let restored_topology = candidate(&[[0, 1, 2], [0, 2, 3]]).topology;
-        let restored_crossing = candidate_has_crossing_edges(
-            CertificationCoordinates::Source(&restored_points),
-            &restored_topology.0,
-        );
-        let crossing_topology = candidate(&[[0, 1, 2], [0, 2, 3], [0, 1, 3], [1, 2, 3]]).topology;
-        let mutated_crossing = candidate_has_crossing_edges(
-            CertificationCoordinates::Source(&restored_points),
-            &crossing_topology.0,
-        );
-
-        // Positive oriented faces in a reciprocal connected disk with an
-        // injective convex boundary cannot cross: a crossing would give a
-        // point two positive PL preimages. The explicit crossing sweep is
-        // defense in depth, so no single-check-isolated crossing candidate
-        // exists. This direct mutation still proves its predicate changes.
-
-        let wrong_hull_sites = sites(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.5, 0.5)]);
-        let mutated_hull = candidate(&[[0, 1, 4], [1, 2, 4], [0, 4, 3]])
-            .try_certify(&wrong_hull_sites)
-            .is_ok();
-        let restored_hull = certified_delaunay(&wrong_hull_sites).is_ok();
-        assert_eq!(
-            (
-                mutated_crossing,
-                restored_crossing,
-                mutated_hull,
-                restored_hull,
-            ),
-            (true, false, false, true),
-        );
-    }
-
-    #[test]
-    fn certified_storage_is_independent_of_hostile_insertion_order() {
-        let coordinates = [(0.0, 0.0), (3.0, 0.0), (2.0, 2.0), (0.0, 3.0), (0.8, 1.1)];
-        let signature = |coordinates: Vec<(f64, f64)>| {
-            let sites = sites(&coordinates);
-            let certified = certified_delaunay(&sites).unwrap();
-            let mut triangles = certified
-                .triangles()
-                .iter()
-                .map(|triangle| {
-                    let mut keys = triangle.map(|site| PointKey::new(sites[site].point));
-                    keys.sort_unstable();
-                    keys
-                })
-                .collect::<Vec<_>>();
-            triangles.sort_unstable();
-            let mut hull = certified
-                .hull()
-                .iter()
-                .map(|&site| PointKey::new(sites[site].point))
-                .collect::<Vec<_>>();
-            let start = hull
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, key)| **key)
-                .unwrap()
-                .0;
-            hull.rotate_left(start);
-            let mut reverse = hull.clone();
-            reverse.reverse();
-            let reverse_start = reverse.iter().position(|key| key == &hull[0]).unwrap();
-            reverse.rotate_left(reverse_start);
-            (triangles, hull.min(reverse))
-        };
-        let restored = signature(coordinates.to_vec());
-        let mut hostile = coordinates.to_vec();
-        hostile.reverse();
-        let mutated = signature(hostile);
-        assert_eq!(mutated, restored);
-    }
-
-    #[test]
-    fn certification_accepts_restored_and_rejects_missing_site_topology() {
-        let sites = sites(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (1.0, 0.8)]);
-        let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-        let topology = positive_topology(
-            delaunay_triangulation_raw(&points),
-            CertificationCoordinates::Source(&points),
-        )
-        .unwrap();
-        let restored = CandidateTriangulation {
-            topology: PositiveTopology(delaunator::Triangulation {
-                triangles: topology.0.triangles.clone(),
-                halfedges: topology.0.halfedges.clone(),
-                hull: topology.0.hull.clone(),
-            }),
-            mapped_sites: None,
-        }
-        .try_certify(&sites);
-        assert!(restored.is_ok(), "restored candidate: {restored:?}");
-
-        let mut triangles = topology.0.triangles;
-        for site in &mut triangles {
-            if *site == 4 {
-                *site = 0;
-            }
-        }
-        let mutated = CandidateTriangulation {
-            topology: PositiveTopology(delaunator::Triangulation {
-                triangles,
-                halfedges: topology.0.halfedges,
-                hull: topology.0.hull,
-            }),
-            mapped_sites: None,
-        }
-        .try_certify(&sites);
-        assert!(mutated.is_err(), "missing-site mutation became certified");
-        // With h derived from boundary halfedges, completeness is also forced
-        // by Euler: T=2V-2-h and T=2n-2-h imply used V == source n. Thus an
-        // otherwise-clean missing-site mutation cannot exist; the explicit
-        // used-site check remains a local diagnostic and defense in depth.
-    }
-
-    #[test]
-    fn transformed_site_collision_never_becomes_certified() {
-        let sites = sites(&[
-            (-1e20, -1e20),
-            (1e20, -1e20),
-            (0.0, 1e20),
-            (0.0, 0.0),
-            (1.0, 1.0),
-        ]);
-        let points: Vec<_> = sites.iter().map(|site| site.point).collect();
-        let frame = SimilarityFrame::from_points(&points).expect("mixed-scale frame");
-        let local: Vec<_> = points
-            .iter()
-            .copied()
-            .map(|point| frame.frame_point(point))
+    fn public_topology_is_clockwise_and_euler_complete() {
+        let points: Vec<Point> = [(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0), (1.0, 1.0), (2.5, 2.0)]
+            .into_iter()
+            .map(|(x, y)| Point::new_raw_xy(x, y))
             .collect();
-        assert!(
-            local
-                .iter()
-                .copied()
-                .map(PointKey::new)
-                .collect::<HashSet<_>>()
-                .len()
-                < sites.len()
-        );
-        let topology = positive_topology(
-            delaunay_triangulation_raw(&points),
-            CertificationCoordinates::Source(&points),
-        )
-        .unwrap();
-        let mutated = CandidateTriangulation {
-            topology: PositiveTopology(delaunator::Triangulation {
-                triangles: topology.0.triangles.clone(),
-                halfedges: topology.0.halfedges.clone(),
-                hull: topology.0.hull.clone(),
-            }),
-            mapped_sites: Some(local.iter().map(Point::xy).collect()),
+        let topology = delaunay_triangulation(&points);
+        assert!(delaunay_euler_complete(points.len(), &topology));
+        for &[a, b, c] in topology.triangles.as_chunks::<3>().0 {
+            assert_eq!(orientation(points[a].xy(), points[b].xy(), points[c].xy()), Orientation::Clockwise);
         }
-        .try_certify(&sites);
-        assert!(
-            mutated.is_err(),
-            "colliding transformed sites became certified"
-        );
-        let restored = CandidateTriangulation {
-            topology,
-            mapped_sites: None,
-        }
-        .try_certify(&sites);
-        assert!(
-            restored.is_ok(),
-            "exact fallback did not restore the candidate: {restored:?}"
-        );
-    }
-
-    #[test]
-    fn proposal_mapping_requires_forward_identity_not_only_inverse_roundtrip() {
-        let points = vec![Point::new_raw_xy(f64::MAX, 0.0)];
-        let scale = axis_pow2_scale(f64::MAX);
-        let expected = points[0].x * scale;
-        let mapped = vec![XY::new(expected, 0.0)];
-        let sites = points
-            .iter()
-            .copied()
-            .map(|point| Site { id: 0, point })
-            .collect::<Vec<_>>();
-        assert!(proposal_mapping_is_admissible(&sites, &mapped));
-        let alternate = f64::from_bits(expected.to_bits() - 1);
-        let mutated = vec![XY::new(alternate, 0.0)];
-        let restored = proposal_mapping_is_admissible(&sites, &mapped);
-        let mutated_accepted = proposal_mapping_is_admissible(&sites, &mutated);
-        assert_ne!(alternate.to_bits(), expected.to_bits());
-        assert_eq!((mutated_accepted, restored), (false, true));
-    }
-
-    #[test]
-    fn rejected_spade_mapping_uses_source_exact_predicates() {
-        let sites = sites(&[
-            (0.0, 0.0),
-            (1.0e200, 0.0),
-            (0.0, 1.0e-200),
-            (1.0e200, 2.0e-200),
-        ]);
-        certified_delaunay(&sites).expect("reciprocal source fallback");
-        let work = take_voronoi_certification_work();
-        assert_eq!(work.mapped_accepts, 0);
-        assert_eq!(work.mapped_fallbacks, 1);
-        assert_eq!(work.robust_incircles, 0);
-        assert!(work.exact_incircles > 0);
-    }
-
-    #[test]
-    fn exact_fallback_seed_keeps_ccw_hull_for_interior_insertion() {
-        let points = vec![
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(1.0, 1.0),
-            Point::new_raw_xy(0.0, 2.0),
-            Point::new_raw_xy(2.0, 2.0),
-        ];
-        let seed = exact_incremental_seed(&points).expect("forced exact fallback seed");
-        let restored =
-            candidate_has_crossing_edges(CertificationCoordinates::Source(&points), &seed);
-        let mut reversed = exact_corner_hull_cycle(&points);
-        reversed.reverse();
-        let mutated = exact::orient2d(
-            points[reversed[0]].xy(),
-            points[reversed[1]].xy(),
-            points[reversed[2]].xy(),
-        );
-        assert_eq!(mutated, exact::ExactSign::Negative);
-        assert!(!restored, "restored crossing value was {restored}");
-    }
-
-    #[test]
-    fn exact_legalization_certifies_reciprocal_extreme_witnesses() {
-        fn is_reciprocal(topology: &delaunator::Triangulation) -> bool {
-            topology.triangles.len() == topology.halfedges.len()
-                && topology
-                    .halfedges
-                    .iter()
-                    .enumerate()
-                    .all(|(edge, &reverse)| {
-                        reverse == delaunator::EMPTY
-                            || (topology.halfedges[reverse] == edge
-                                && topology.triangles[edge]
-                                    == topology.triangles[delaunator::next_halfedge(reverse)]
-                                && topology.triangles[delaunator::next_halfedge(edge)]
-                                    == topology.triangles[reverse])
-                    })
-        }
-
-        let mut cases = vec![
-            vec![
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0, 0.0),
-                Point::new_raw_xy(2.0, 2.0),
-                Point::new_raw_xy(0.0, 2.0),
-            ],
-            vec![
-                Point::new_raw_xy(-5.0, 0.0),
-                Point::new_raw_xy(-3.0, -4.0),
-                Point::new_raw_xy(0.0, -5.0),
-                Point::new_raw_xy(3.0, -4.0),
-                Point::new_raw_xy(5.0, 0.0),
-                Point::new_raw_xy(3.0, 4.0),
-                Point::new_raw_xy(0.0, 5.0),
-                Point::new_raw_xy(-3.0, 4.0),
-            ],
-        ];
-        let mut state = 0xE4D9_58D1_2A77_3B49_u64;
-        for _ in 0..16 {
-            cases.push(
-                (0..12)
-                    .map(|index| {
-                        state = state
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(1);
-                        Point::new_raw_xy(
-                            index as f64,
-                            (state >> 16) as f64 / (u64::MAX >> 16) as f64,
-                        )
-                    })
-                    .collect(),
-            );
-        }
-        for exponent in [22, 154, 162, 300] {
-            let large = 10.0_f64.powi(exponent);
-            let tiny = 10.0_f64.powi(-exponent);
-            for swap_axes in [false, true] {
-                let mut reciprocal = vec![
-                    (-large, 0.0),
-                    (-0.5 * large, -tiny),
-                    (0.5 * large, -tiny),
-                    (large, 0.0),
-                    (0.0, tiny),
-                ];
-                if swap_axes {
-                    reciprocal
-                        .iter_mut()
-                        .for_each(|point| *point = (point.1, point.0));
-                }
-                cases.push(
-                    reciprocal
-                        .into_iter()
-                        .map(|(x, y)| Point::new_raw_xy(x, y))
-                        .collect(),
-                );
+        for (slot, &twin) in topology.halfedges.iter().enumerate() {
+            if twin != EMPTY {
+                assert_eq!(topology.halfedges[twin], slot);
             }
         }
-        for points in cases {
-            let seed = exact_incremental_seed(&points).expect("complete exact seed");
-            let legalized = exact_metric_delaunay(&points, &seed).expect("exact legalization");
-            let work = take_exact_metric_work();
-            assert_eq!(work.map_rebuilds, 0);
-            assert_eq!(work.edge_inspections, work.queue_pops);
-            assert!(
-                work.queue_pops <= work.initial_interior_owners + 5 * work.successful_flips,
-                "queue work exceeded local owner budget"
-            );
-            assert!(is_reciprocal(&legalized));
-            let sites = points
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(id, point)| Site { id, point })
-                .collect::<Vec<_>>();
-            assert!(
-                CandidateTriangulation {
-                    topology: PositiveTopology(legalized),
-                    mapped_sites: None,
-                }
-                .try_certify(&sites)
-                .is_ok()
-            );
-        }
+        assert_eq!(topology.hull, [0, 1, 2, 3]);
     }
 }

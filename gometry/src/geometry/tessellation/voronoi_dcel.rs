@@ -2949,7 +2949,7 @@ pub(super) fn build(
         return dual_build(sites, boundary, budget);
     }
     let clip = normalize_clip(sites, boundary, budget)?;
-    let mesh = certified_delaunay(sites)?;
+    let mesh = certified_delaunay(sites);
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",
@@ -2972,7 +2972,7 @@ pub(super) fn build_collinear_edges(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<LineSeq>> {
-    let mesh = certified_delaunay(sites)?;
+    let mesh = certified_delaunay(sites);
     let order = mesh
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
@@ -3648,7 +3648,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Polygon(&clip_polygon), &mut budget).unwrap();
-        let mesh = certified_delaunay(&sites).unwrap();
+        let mesh = certified_delaunay(&sites);
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let primal_edges = mesh.primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
@@ -3693,7 +3693,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Polygon(&clip_polygon), &mut budget).unwrap();
-        let mesh = certified_delaunay(&sites).unwrap();
+        let mesh = certified_delaunay(&sites);
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let primal_edges = mesh.primal_edges();
         let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
@@ -3970,7 +3970,7 @@ mod tests {
         let mut construction_budget = ExpansionBudget::new("test", "dual completeness");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
-        let mesh = certified_delaunay(&sites).unwrap();
+        let mesh = certified_delaunay(&sites);
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let restored =
             dual_build_rings(&sites, &mesh, &complex, &clip, &mut construction_budget).unwrap();
@@ -4086,7 +4086,7 @@ mod tests {
         let mut construction_budget = ExpansionBudget::new("test", "dual mutation fixture");
         let clip =
             normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
-        let mesh = certified_delaunay(&sites).unwrap();
+        let mesh = certified_delaunay(&sites);
         let complex = delaunay_complex(&mesh, &sites).unwrap();
         let restored =
             dual_build_rings(&sites, &mesh, &complex, &clip, &mut construction_budget).unwrap();
@@ -4235,7 +4235,7 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     let mut start_edge = vec![usize::MAX; site_count];
     for edge in 0..halfedges.len() {
         let endpoint = flat(dual_next_halfedge(edge));
-        if start_edge[endpoint] == usize::MAX || halfedges[edge] == delaunator::EMPTY {
+        if start_edge[endpoint] == usize::MAX || halfedges[edge] == crate::geometry::tessellation::EMPTY {
             start_edge[endpoint] = edge;
         }
     }
@@ -4284,7 +4284,7 @@ fn incident_faces_for_site(
         length += 1;
         let outgoing = dual_next_halfedge(incoming);
         let next = halfedges[outgoing];
-        if next == delaunator::EMPTY {
+        if next == crate::geometry::tessellation::EMPTY {
             // `start` was a hull half-edge (q -> site) with no twin and
             // `outgoing` is the hull half-edge (site -> r).
             return (length, Some((start, outgoing)));
@@ -4580,8 +4580,8 @@ fn dual_build_rings(
             let entry_opposite = flat(dual_next_halfedge(dual_next_halfedge(first_hull)));
             let exit = [flat(last_hull), flat(dual_next_halfedge(last_hull))];
             let exit_opposite = flat(dual_next_halfedge(dual_next_halfedge(last_hull)));
-            debug_assert_eq!(halfedges[first_hull], delaunator::EMPTY);
-            debug_assert_eq!(halfedges[last_hull], delaunator::EMPTY);
+            debug_assert_eq!(halfedges[first_hull], crate::geometry::tessellation::EMPTY);
+            debug_assert_eq!(halfedges[last_hull], crate::geometry::tessellation::EMPTY);
             let entry_ray = dual_ray_hit(sites, entry, entry_opposite, &frame)?;
             let exit_ray = dual_ray_hit(sites, exit, exit_opposite, &frame)?;
             let site_point = exact::ExactPoint::from_xy(sites[site].point.xy());
@@ -4885,7 +4885,7 @@ pub(super) fn dual_build(
     budget: &mut ExpansionBudget,
 ) -> Result<EmbeddedVoronoi> {
     let clip = normalize_clip(sites, boundary, budget)?;
-    let mesh = certified_delaunay(sites)?;
+    let mesh = certified_delaunay(sites);
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",

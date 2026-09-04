@@ -93,7 +93,7 @@ pub(super) fn delaunay_complex(
     let triangles = mesh.triangles();
     let mut parents: Vec<_> = (0..triangles.len()).collect();
     for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
-        if reverse == delaunator::EMPTY || edge > reverse {
+        if reverse == crate::geometry::tessellation::EMPTY || edge > reverse {
             continue;
         }
         let left = edge / 3;

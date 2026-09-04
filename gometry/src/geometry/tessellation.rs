@@ -2,16 +2,9 @@
 //! ear-cut polygon triangles, Voronoi polygons/edges, boundary, and linework
 //! polygonization.
 
-use spade::handles::{FixedFaceHandle, FixedVertexHandle, InnerTag};
-use spade::{
-    AngleLimit, ConstrainedDelaunayTriangulation, DelaunayTriangulation, InsertionError, Point2,
-    RefinementParameters,
-};
-
-pub(crate) use crate::error::Error;
-
 mod boundary;
 mod delaunay;
+pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 mod earcut;
 pub(in crate::geometry) mod exact;
 mod polygonize;
@@ -22,7 +15,7 @@ mod voronoi_dcel;
 
 pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
 pub(crate) use delaunay::{
-    CdtRefinement, constrained_triangle_vertices, delaunay_triangulation_spade,
+    CdtRefinement, constrained_triangle_vertices, delaunay_triangulation,
 };
 use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
 pub(crate) use earcut::{

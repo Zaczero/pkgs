@@ -137,7 +137,7 @@ impl Shape {
             .enumerate()
             .map(|(id, point)| Site { id, point })
             .collect();
-        let triangulation = certified_delaunay(&sites)?;
+        let triangulation = certified_delaunay(&sites);
         let capacity = triangulation
             .triangles()
             .len()
