@@ -697,6 +697,73 @@ pub(crate) fn topology_scalar_pair(
     predicate_matrix_value(spec, operands.relate())
 }
 
+/// A DE-9IM pattern over a scalar pair, decided from bounds or direct-engine
+/// evidence before materializing the complete matrix.
+pub(crate) fn topology_scalar_pattern(pattern: [u8; 9], operands: &PreparedTopologyPair<'_>) -> bool {
+    if let Some((left, right)) = operands.gate_operands()
+        && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)
+    {
+        return verdict;
+    }
+    if let Some((left, right)) = operands.cartesian_plans()
+        && let Some(verdict) = crate::geometry::direct_linework_pattern(pattern, left, right)
+            .or_else(|| crate::geometry::direct_areal_pattern(pattern, left, right))
+            .or_else(|| crate::geometry::direct_areal_linework_pattern(pattern, left, right))
+    {
+        return verdict;
+    }
+    operands.relate().matches_bytes(pattern)
+}
+
+/// The cells sound disjoint bounds settle. Curve-boundary cells stay open:
+/// whether a curve is closed is a staging fact, not a property of its box.
+fn pattern_bounds_gate(pattern: [u8; 9], left: &GateOperand<'_>, right: &GateOperand<'_>) -> Option<bool> {
+    use crate::geometry::{De9imInterval, Dimension, Loc, OperandShape, dimension};
+    if !left.bounds_sound || !right.bounds_sound {
+        return None;
+    }
+    let (Some(left_bounds), Some(right_bounds)) = (left.bounds, right.bounds) else {
+        return None;
+    };
+    if left_bounds.intersects(right_bounds) {
+        return None;
+    }
+    let shape_of = |operand: GateOperand<'_>| -> Option<OperandShape> {
+        let interior = operand.row.with_shape(dimension)?;
+        Some(OperandShape {
+            interior,
+            boundary: match interior {
+                Dimension::Surface => Some(Dimension::Curve),
+                Dimension::Curve => Some(Dimension::Point),
+                Dimension::Point => None,
+            },
+        })
+    };
+    let (a, b) = (shape_of(*left)?, shape_of(*right)?);
+    let mut interval = De9imInterval::open(a, b);
+    for (row, col) in [
+        (Loc::Interior, Loc::Interior),
+        (Loc::Interior, Loc::Boundary),
+        (Loc::Boundary, Loc::Interior),
+        (Loc::Boundary, Loc::Boundary),
+    ] {
+        interval.settle(row, col);
+    }
+    interval.witness(Loc::Interior, Loc::Exterior, a.interior);
+    interval.settle(Loc::Interior, Loc::Exterior);
+    interval.witness(Loc::Exterior, Loc::Interior, b.interior);
+    interval.settle(Loc::Exterior, Loc::Interior);
+    if a.interior == Dimension::Surface {
+        interval.witness(Loc::Boundary, Loc::Exterior, Dimension::Curve);
+        interval.settle(Loc::Boundary, Loc::Exterior);
+    }
+    if b.interior == Dimension::Surface {
+        interval.witness(Loc::Exterior, Loc::Boundary, Dimension::Curve);
+        interval.settle(Loc::Exterior, Loc::Boundary);
+    }
+    interval.pattern(pattern)
+}
+
 /// A named predicate read off a fully decided matrix.
 pub(crate) fn predicate_matrix_value(spec: &PredicateSpec, matrix: crate::geometry::De9im) -> bool {
     match spec.predicate {

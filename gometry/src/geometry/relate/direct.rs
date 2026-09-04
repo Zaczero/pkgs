@@ -403,6 +403,21 @@ pub(crate) fn direct_linework_predicate(
     })
 }
 
+/// One DE-9IM pattern over two linework operands, decided as early as the
+/// contacts allow under three-valued evaluation, or `None` when the pair is
+/// not admitted here.
+pub(crate) fn direct_linework_pattern(
+    pattern: [u8; 9],
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> Option<bool> {
+    let outcome = relate_linework(left, right, |interval| interval.pattern(pattern))?;
+    Some(match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => matrix.matches_bytes(pattern),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Areal operands
 // ---------------------------------------------------------------------------
@@ -654,6 +669,18 @@ pub(crate) fn direct_areal_predicate(
     }))? {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
+    })
+}
+
+/// [`direct_areal_predicate`] for a pattern.
+pub(crate) fn direct_areal_pattern(
+    pattern: [u8; 9],
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> Option<bool> {
+    Some(match relate_areal(left, right, Ask::Predicate(&mut |interval| interval.pattern(pattern)))? {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => matrix.matches_bytes(pattern),
     })
 }
 
@@ -952,6 +979,29 @@ pub(crate) fn direct_areal_linework_predicate(
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix.transpose()),
     })
+}
+
+/// [`direct_areal_linework_predicate`] for a pattern, in either operand order.
+pub(crate) fn direct_areal_linework_pattern(
+    pattern: [u8; 9],
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> Option<bool> {
+    let finish = |outcome: Outcome| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => matrix.matches_bytes(pattern),
+    };
+    if let Some(outcome) =
+        relate_areal_linework(left, right, Ask::Predicate(&mut |interval| interval.pattern(pattern)))
+    {
+        return Some(finish(outcome));
+    }
+    let transposed = De9im::transpose_pattern(pattern);
+    relate_areal_linework(right, left, Ask::Predicate(&mut |interval| interval.pattern(transposed)))
+        .map(|outcome| match outcome {
+            Outcome::Verdict(verdict) => verdict,
+            Outcome::Matrix(matrix) => matrix.transpose().matches_bytes(pattern),
+        })
 }
 
 #[cfg(test)]

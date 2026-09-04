@@ -461,11 +461,11 @@ pub(crate) fn relate_pattern_broadcast(
     pattern: &str,
 ) -> PyResult<Py<PyAny>> {
     with_prepared_operands(py, left, right, |left, right| {
-        let pattern_owned = pattern.to_owned();
-        let compiled = crate::geometry::CompiledPattern::new(&pattern_owned)
+        let compiled = crate::geometry::CompiledPattern::new(pattern)
             .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
+        let bytes = compiled.bytes();
         topology_broadcast(py, left, right, "relate_pattern", move |operands| {
-            compiled.matches(operands.relate())
+            crate::predicates::engine::topology_scalar_pattern(bytes, &operands)
         })
     })
 }
