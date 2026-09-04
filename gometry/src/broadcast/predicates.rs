@@ -7,6 +7,7 @@
 //! relate broadcasts and coordinate-input broadcasts. The generic value cores
 //! live in the parent `broadcast`.
 
+use crate::array::PackedStorage;
 use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
@@ -206,7 +207,7 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
     // Packed point arrays are already a uniform-axis column — clone it directly
     // rather than gathering every row and repacking through
     // `CoordSeq::from_points`.
-    if let GeometryArrayStorage::Points { coords, row_map } = splitters.storage() {
+    if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = splitters.storage() {
         if splitters.is_compact_nullable() {
             let points = splitters
                 .row_operation()

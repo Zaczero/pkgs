@@ -1,5 +1,6 @@
 //! Contiguous gather materialization owned by separated-data export boundaries.
 
+use crate::array::PackedStorage;
 use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
     Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
@@ -66,16 +67,26 @@ pub(crate) fn gather_polygon_columns(
 pub(crate) fn materialized_gather(
     storage: &GeometryArrayStorage,
 ) -> PackedColumnResult<Option<GeometryArrayStorage>> {
+    match storage {
+        GeometryArrayStorage::Packed(packed) => {
+            Ok(materialize_gather(packed)?.map(GeometryArrayStorage::Packed))
+        },
+        GeometryArrayStorage::Mixed(_) => Ok(None),
+    }
+}
+
+fn materialize_gather(
+    storage: &PackedStorage,
+) -> PackedColumnResult<Option<PackedStorage>> {
     Ok(match storage {
-        GeometryArrayStorage::Mixed(_) => None,
-        GeometryArrayStorage::Points { coords, row_map } => match row_map.as_deref() {
-            RowSelectionRef::Gather(map) => Some(GeometryArrayStorage::Points {
+        PackedStorage::Points { coords, row_map } => match row_map.as_deref() {
+            RowSelectionRef::Gather(map) => Some(PackedStorage::Points {
                 coords: Arc::new(gather_point_columns(coords, map).map_err(batch_err)?),
                 row_map: RowSelection::Identity,
             }),
             _ => None,
         },
-        GeometryArrayStorage::Lines {
+        PackedStorage::Lines {
             coords,
             offsets,
             row_map,
@@ -83,7 +94,7 @@ pub(crate) fn materialized_gather(
             RowSelectionRef::Gather(map) => {
                 let (out_coords, out_offsets) =
                     gather_line_columns(coords, offsets.as_slice(), map).map_err(batch_err)?;
-                Some(GeometryArrayStorage::Lines {
+                Some(PackedStorage::Lines {
                     coords: Arc::new(out_coords),
                     offsets: out_offsets,
                     row_map: RowSelection::Identity,
@@ -91,7 +102,7 @@ pub(crate) fn materialized_gather(
             },
             _ => None,
         },
-        GeometryArrayStorage::Polygons {
+        PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
@@ -105,7 +116,7 @@ pub(crate) fn materialized_gather(
                     map,
                 )
                 .map_err(batch_err)?;
-                Some(GeometryArrayStorage::Polygons {
+                Some(PackedStorage::Polygons {
                     coords: Arc::new(out_coords),
                     ring_offsets: out_ring_offsets,
                     polygon_offsets: out_polygon_offsets,

@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use pyo3::types::PyAny;
 
 use crate::NonNegative;
@@ -405,9 +406,9 @@ pub(crate) fn pair_dwithin_geodesic(
 /// `Arc<GeometryArrayStorage>` — allocation-free for packed columns.
 pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorage) -> Vec<f64> {
     match storage {
-        GeometryArrayStorage::Lines {
+        GeometryArrayStorage::Packed(PackedStorage::Lines {
             offsets, row_map, ..
-        } => {
+        }) => {
             let map = row_map.as_deref();
             let rows = crate::array::line_logical_len(offsets.as_slice(), map);
             (0..rows)
@@ -420,15 +421,15 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
                 })
                 .collect()
         },
-        GeometryArrayStorage::Points { coords, row_map } => {
+        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             vec![0.0; crate::array::point_logical_len(coords, row_map.as_deref())]
         },
-        GeometryArrayStorage::Polygons {
+        GeometryArrayStorage::Packed(PackedStorage::Polygons {
             ring_offsets,
             polygon_offsets,
             row_map,
             ..
-        } => {
+        }) => {
             let map = row_map.as_deref();
             let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
             (0..rows)

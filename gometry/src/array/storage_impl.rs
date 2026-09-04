@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{
@@ -23,9 +24,9 @@ impl GeometryArrayStorage {
     /// same columns, so this is O(1) for points, lines, and polygons.
     pub(crate) fn packed_axes(&self) -> Option<CoordinateAxes> {
         match self {
-            Self::Points { coords, .. }
-            | Self::Lines { coords, .. }
-            | Self::Polygons { coords, .. } => Some(coords.axes()),
+            Self::Packed(PackedStorage::Points { coords, .. })
+            | Self::Packed(PackedStorage::Lines { coords, .. })
+            | Self::Packed(PackedStorage::Polygons { coords, .. }) => Some(coords.axes()),
             Self::Mixed(_) => None,
         }
     }
@@ -38,7 +39,7 @@ impl GeometryArrayStorage {
         let mut output = Vec::new();
         crate::boundary::try_reserve_vec(&mut output, self.len())?;
         match self {
-            Self::Points { .. } | Self::Polygons { .. } => {
+            Self::Packed(PackedStorage::Points { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => {
                 for _ in 0..self.len() {
                     crate::boundary::try_push_vec(&mut output, constant)?;
                 }
@@ -54,11 +55,11 @@ impl GeometryArrayStorage {
 
     pub(crate) fn lines_bool(&self, line: impl Fn(&CoordSeq) -> bool) -> Option<Result<Vec<bool>>> {
         match self {
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 Some((|| {
                     let len = line_logical_len(offsets.as_slice(), map);
@@ -84,12 +85,12 @@ impl GeometryArrayStorage {
         polygon: impl Fn(&Polygon) -> bool,
     ) -> Option<Result<Vec<bool>>> {
         match self {
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 Some((|| {
                     let len = polygon_logical_len(polygon_offsets.as_slice(), map);
@@ -124,11 +125,11 @@ impl GeometryArrayStorage {
             return self.lines_bool(line);
         };
         match self {
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 Some((|| {
                     let len = line_logical_len(offsets.as_slice(), map);
@@ -162,12 +163,12 @@ impl GeometryArrayStorage {
             return self.polygons_bool(polygon);
         };
         match self {
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 Some((|| {
                     let len = polygon_logical_len(polygon_offsets.as_slice(), map);
@@ -229,38 +230,38 @@ impl GeometryArrayStorage {
     pub fn len(&self) -> usize {
         match self {
             Self::Mixed(items) => items.len(),
-            Self::Points { coords, row_map } => point_logical_len(coords, row_map.as_deref()),
-            Self::Lines {
+            Self::Packed(PackedStorage::Points { coords, row_map }) => point_logical_len(coords, row_map.as_deref()),
+            Self::Packed(PackedStorage::Lines {
                 offsets, row_map, ..
-            } => line_logical_len(offsets.as_slice(), row_map.as_deref()),
-            Self::Polygons {
+            }) => line_logical_len(offsets.as_slice(), row_map.as_deref()),
+            Self::Packed(PackedStorage::Polygons {
                 polygon_offsets,
                 row_map,
                 ..
-            } => polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref()),
+            }) => polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref()),
         }
     }
 
     pub(crate) fn logical_coordinate_bytes(&self) -> usize {
         match self {
             Self::Mixed(shapes) => shapes.iter().map(Shape::coordinate_bytes).sum(),
-            Self::Points { coords, row_map } => {
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
                 coordseq_logical_bytes(coords, point_logical_len(coords, row_map.as_deref()))
             },
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => coordseq_logical_bytes(
+            }) => coordseq_logical_bytes(
                 coords,
                 packed_lines_coord_len(offsets.as_slice(), row_map.as_deref()),
             ),
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => coordseq_logical_bytes(
+            }) => coordseq_logical_bytes(
                 coords,
                 packed_polygons_coord_len(
                     ring_offsets.as_slice(),
@@ -279,20 +280,20 @@ impl GeometryArrayStorage {
             Self::Mixed(shapes) => {
                 self.logical_coordinate_bytes() + shapes.len() * std::mem::size_of::<Shape>()
             },
-            Self::Points { row_map, .. } => self.logical_coordinate_bytes() + row_map.heap_bytes(),
-            Self::Lines {
+            Self::Packed(PackedStorage::Points { row_map, .. }) => self.logical_coordinate_bytes() + row_map.heap_bytes(),
+            Self::Packed(PackedStorage::Lines {
                 offsets, row_map, ..
-            } => {
+            }) => {
                 let rows = line_logical_len(offsets.as_slice(), row_map.as_deref());
                 self.logical_coordinate_bytes()
                     + (rows + 1) * std::mem::size_of::<i32>()
                     + row_map.heap_bytes()
             },
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 polygon_offsets,
                 row_map,
                 ..
-            } => {
+            }) => {
                 let rows = polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref());
                 let rings =
                     packed_polygons_ring_len(polygon_offsets.as_slice(), row_map.as_deref());
@@ -339,11 +340,11 @@ impl GeometryArrayStorage {
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(PointRows::Gathered),
-            Self::Points { coords, row_map } => Some(PointRows::Packed {
+            Self::Packed(PackedStorage::Points { coords, row_map }) => Some(PointRows::Packed {
                 coords,
                 row_map: row_map.as_deref(),
             }),
-            Self::Lines { .. } | Self::Polygons { .. } => None,
+            Self::Packed(PackedStorage::Lines { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => None,
         }
     }
 
@@ -357,16 +358,16 @@ impl GeometryArrayStorage {
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(LineRows::Gathered),
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => Some(LineRows::Packed {
+            }) => Some(LineRows::Packed {
                 coords,
                 offsets: offsets.as_slice(),
                 row_map: row_map.as_deref(),
             }),
-            Self::Points { .. } | Self::Polygons { .. } => None,
+            Self::Packed(PackedStorage::Points { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => None,
         }
     }
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
@@ -379,12 +380,12 @@ impl GeometryArrayStorage {
         // Points and lines use every stored ordinate. Polygon envelopes use
         // only shells: external holes are invalid but still representable, and
         // must not expand an array bound beyond the scalar polygon contract.
-        if let Self::Polygons {
+        if let Self::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } = self
+        }) = self
             && row_map.is_identity()
         {
             let mut total: Option<Bounds> = None;
@@ -406,11 +407,11 @@ impl GeometryArrayStorage {
             return total;
         }
         let packed = match self {
-            Self::Points { coords, row_map }
-            | Self::Lines {
+            Self::Packed(PackedStorage::Points { coords, row_map })
+            | Self::Packed(PackedStorage::Lines {
                 coords, row_map, ..
-            } => row_map.is_identity().then_some(coords),
-            Self::Polygons { .. } | Self::Mixed(_) => None,
+            }) => row_map.is_identity().then_some(coords),
+            Self::Packed(PackedStorage::Polygons { .. }) | Self::Mixed(_) => None,
         };
         if let Some(seq) = packed {
             let (minx, maxx) = crate::geometry::column_minmax(seq.xs())?;
@@ -440,12 +441,12 @@ impl GeometryArrayStorage {
             crate::geometry::bounds_to_shape(Bounds::new_raw(minx, miny, maxx, maxy))
         };
         match self {
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
                 Some(Self::map_polygon_rows(
                     ring_offsets,
@@ -457,11 +458,11 @@ impl GeometryArrayStorage {
                     },
                 ))
             },
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
                 Some(Self::map_line_rows(
                     offsets.as_slice(),
@@ -469,7 +470,7 @@ impl GeometryArrayStorage {
                     |window| row_box(xs, ys, window),
                 ))
             },
-            Self::Points { .. } | Self::Mixed(_) => None,
+            Self::Packed(PackedStorage::Points { .. }) | Self::Mixed(_) => None,
         }
     }
 
@@ -484,12 +485,12 @@ impl GeometryArrayStorage {
                 Some(Bounds::new_raw(minx, miny, maxx, maxy))
             };
         match self {
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
                 Some(Self::map_polygon_rows(
                     ring_offsets,
@@ -499,11 +500,11 @@ impl GeometryArrayStorage {
                     |window| window.and_then(|shell| row_bounds(xs, ys, shell)),
                 ))
             },
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
                 Some(Self::map_line_rows(
                     offsets.as_slice(),
@@ -517,7 +518,7 @@ impl GeometryArrayStorage {
             // far-apart pairs against a point array without materializing the
             // other operand. Non-finite (empty point) → `None`, so the refuter
             // defers it to the exact per-pair path.
-            Self::Points { coords, row_map } => {
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
                 let map = row_map.as_deref();
                 Some(
                     (0..point_logical_len(coords, map))
@@ -552,23 +553,23 @@ impl GeometryArrayStorage {
     pub(crate) fn row(&self, index: usize) -> ShapeRow<'_> {
         match self {
             Self::Mixed(shapes) => ShapeRow::Shape(&shapes[index]),
-            Self::Points { coords, row_map } => {
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
                 ShapeRow::Point(coords.point_at(physical_row(row_map.as_deref(), index)))
             },
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let window = row_map.as_deref().csr_window(offsets.as_slice(), index);
                 ShapeRow::Line(coords, window.start, window.end)
             },
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let rings =
                     polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index);
                 ShapeRow::Rings(coords, ring_offsets, rings.start, rings.end)
@@ -583,24 +584,24 @@ impl GeometryArrayStorage {
     pub(crate) fn shape_data_at(&self, index: usize) -> Arc<ShapeData> {
         match self {
             Self::Mixed(shapes) => Arc::new(ShapeData::new(shapes[index].clone())),
-            Self::Points { coords, row_map } => Arc::new(ShapeData::new(Shape::Point(
+            Self::Packed(PackedStorage::Points { coords, row_map }) => Arc::new(ShapeData::new(Shape::Point(
                 coords.point_at(physical_row(row_map.as_deref(), index)),
             ))),
-            Self::Polygons {
+            Self::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => Arc::new(ShapeData::new(Shape::Polygon(Self::polygon_view(
+            }) => Arc::new(ShapeData::new(Shape::Polygon(Self::polygon_view(
                 coords,
                 ring_offsets,
                 polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index),
             )))),
-            Self::Lines {
+            Self::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_proven(
+            }) => Arc::new(ShapeData::new(Shape::LineString(LineSeq::from_proven(
                 Self::line_view(coords, offsets, row_map.as_deref(), index),
             )))),
         }

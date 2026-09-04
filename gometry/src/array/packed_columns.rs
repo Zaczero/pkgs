@@ -9,6 +9,9 @@
 //! payload here. Output-producing kernels write logical rows once into their
 //! final coordinate and offset columns.
 
+#[cfg(test)]
+use crate::array::packed_column_kernels;
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::missing::ValidityCursor;
@@ -481,7 +484,6 @@ impl PackedRow<'_> {
     /// Polygon rows only: ring-index range within ``ring_offsets``.
     pub(crate) const fn polygon_rings(&self) -> Option<std::ops::Range<usize>> {
         match *self {
-            Self::Missing { .. } => None,
             Self::Polygons {
                 row,
                 polygon_offsets,
@@ -490,14 +492,13 @@ impl PackedRow<'_> {
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
                 Some(rings)
             },
-            Self::Points { .. } | Self::Lines { .. } => None,
+            Self::Missing { .. } | Self::Points { .. } | Self::Lines { .. } => None,
         }
     }
 
     /// Polygon rows only: exterior-ring vertex window.
     pub(crate) fn polygon_shell_window(&self) -> Option<std::ops::Range<usize>> {
         match *self {
-            Self::Missing { .. } => None,
             Self::Polygons {
                 row,
                 ring_offsets,
@@ -511,7 +512,7 @@ impl PackedRow<'_> {
                     Some(ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize)
                 }
             },
-            Self::Points { .. } | Self::Lines { .. } => None,
+            Self::Missing { .. } | Self::Points { .. } | Self::Lines { .. } => None,
         }
     }
 }
@@ -612,7 +613,7 @@ pub(super) const fn row_err(row: usize, error: crate::error::Error) -> PackedCol
     PackedColumnError::Row { row, error }
 }
 
-fn resolve_point_columns<'a>(
+const fn resolve_point_columns<'a>(
     coords: &'a CoordSeq,
     row_map: RowSelectionRef<'a>,
     missing: Option<&'a ValidityMask>,
@@ -626,7 +627,7 @@ fn resolve_point_columns<'a>(
     }
 }
 
-fn resolve_line_columns<'a>(
+const fn resolve_line_columns<'a>(
     coords: &'a CoordSeq,
     offsets: &'a CsrOffsetColumn,
     row_map: RowSelectionRef<'a>,
@@ -640,7 +641,7 @@ fn resolve_line_columns<'a>(
     }
 }
 
-fn resolve_polygon_columns<'a>(
+const fn resolve_polygon_columns<'a>(
     coords: &'a CoordSeq,
     ring_offsets: &'a CsrOffsetColumn<RingLevel>,
     polygon_offsets: &'a CsrOffsetColumn<PolygonLevel>,
@@ -660,35 +661,45 @@ fn resolve_packed_columns<'a>(
     storage: &'a GeometryArrayStorage,
     missing: Option<&'a ValidityMask>,
     point_layout: PointRowLayout,
-) -> PackedColumnResult<Option<PackedColumns<'a>>> {
-    Ok(match storage {
+) -> Option<PackedColumns<'a>> {
+    match storage {
+        GeometryArrayStorage::Packed(packed) => Some(resolve_columns(packed, missing, point_layout)),
         GeometryArrayStorage::Mixed(_) => None,
-        GeometryArrayStorage::Points { coords, row_map } => Some(PackedColumns::Points(
+    }
+}
+
+fn resolve_columns<'a>(
+    storage: &'a PackedStorage,
+    missing: Option<&'a ValidityMask>,
+    point_layout: PointRowLayout,
+) -> PackedColumns<'a> {
+    match storage {
+        PackedStorage::Points { coords, row_map } => PackedColumns::Points(
             resolve_point_columns(coords, row_map.as_deref(), missing, point_layout),
+        ),
+        PackedStorage::Lines {
+            coords,
+            offsets,
+            row_map,
+        } => PackedColumns::Lines(resolve_line_columns(
+            coords,
+            offsets,
+            row_map.as_deref(),
+            missing,
         )),
-        GeometryArrayStorage::Lines {
-            coords,
-            offsets,
-            row_map,
-        } => Some(PackedColumns::Lines(resolve_line_columns(
-            coords,
-            offsets,
-            row_map.as_deref(),
-            missing,
-        ))),
-        GeometryArrayStorage::Polygons {
+        PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } => Some(PackedColumns::Polygons(resolve_polygon_columns(
+        } => PackedColumns::Polygons(resolve_polygon_columns(
             coords,
             ring_offsets,
             polygon_offsets,
             row_map.as_deref(),
             missing,
-        ))),
-    })
+        )),
+    }
 }
 
 fn assemble_packed_output(output: PackedColumnOutput, frame: Frame) -> PyGeometryArray {
@@ -1160,8 +1171,7 @@ fn map_selected_to_crs(
     match columns {
         PackedColumns::Points(points) => {
             let rows = points.rows();
-            if points.missing.is_some() {
-                let missing = points.missing.expect("masked points");
+            if let Some(missing) = points.missing {
                 let coords = map_masked_point_columns_to_crs(
                     transformer,
                     points.coords(),
@@ -1305,7 +1315,7 @@ impl PyGeometryArray {
         let result = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
                         .expect("not mixed");
                 kernel(columns)
             })
@@ -1365,7 +1375,7 @@ impl PyGeometryArray {
         let output = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
                         .expect("not mixed");
                 map_selected_points(columns, output_axes, map)
             })
@@ -1390,7 +1400,7 @@ impl PyGeometryArray {
         let output = py
             .detach(move || {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
                         .expect("not mixed");
                 map_selected_to_crs(columns, &transformer)
             })
@@ -1415,7 +1425,7 @@ impl PyGeometryArray {
         let output = py
             .detach(move || -> PackedColumnResult<PackedColumnOutput> {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
                         .expect("not mixed");
                 let mut replacement_index = 0;
                 let output = replace_packed_columns_dispatch(
@@ -1467,13 +1477,13 @@ impl PyGeometryArray {
                     left_storage.as_ref(),
                     left_missing.as_ref(),
                     left_point_layout,
-                )?
+                )
                 .expect("not mixed");
                 let right_columns = resolve_packed_columns(
                     right_storage.as_ref(),
                     right_missing.as_ref(),
                     right_point_layout,
-                )?
+                )
                 .expect("not mixed");
                 kernel(left_columns, right_columns)
             })
@@ -1490,7 +1500,7 @@ impl PyGeometryArray {
     where
         R: Send,
     {
-        let GeometryArrayStorage::Points { .. } = self.storage() else {
+        let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() else {
             return Ok(None);
         };
         let storage = Arc::clone(self.storage_arc());
@@ -1499,7 +1509,7 @@ impl PyGeometryArray {
         let result = py
             .detach(move || -> PackedColumnResult<R> {
                 let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)?
+                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
                         .expect("points");
                 let PackedColumns::Points(point_columns) = columns else {
                     unreachable!("reduce_packed_points_detached requires point storage");
@@ -1519,7 +1529,7 @@ impl PyGeometryArray {
     where
         T: Send,
     {
-        let (GeometryArrayStorage::Points { .. }, GeometryArrayStorage::Points { .. }) =
+        let (GeometryArrayStorage::Packed(PackedStorage::Points { .. }), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =
             (self.storage(), right.storage())
         else {
             return Ok(None);
@@ -1536,13 +1546,13 @@ impl PyGeometryArray {
                     left_storage.as_ref(),
                     left_missing.as_ref(),
                     left_point_layout,
-                )?
+                )
                 .expect("points");
                 let right_columns = resolve_packed_columns(
                     right_storage.as_ref(),
                     right_missing.as_ref(),
                     right_point_layout,
-                )?
+                )
                 .expect("points");
                 let PackedColumns::Points(left) = left_columns else {
                     unreachable!("pair_packed_points_detached requires point storage");
@@ -1565,27 +1575,27 @@ impl PyGeometryArray {
     /// O(1) packed-storage X/Y swap — narrow escape hatch, not a general scan.
     pub(crate) fn swap_xy_packed_storage(&self) -> Option<Self> {
         match self.storage() {
-            GeometryArrayStorage::Points { coords, row_map } => Some(Self::packed_points_mapped(
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => Some(Self::packed_points_mapped(
                 coords.swap_xy(),
                 self.frame.clone(),
                 row_map.clone(),
             )),
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => Some(Self::packed_lines_mapped(
+            }) => Some(Self::packed_lines_mapped(
                 coords.swap_xy(),
                 offsets.clone(),
                 self.frame.clone(),
                 row_map.clone(),
             )),
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => Some(Self::packed_polygons_mapped(
+            }) => Some(Self::packed_polygons_mapped(
                 coords.swap_xy(),
                 ring_offsets.clone(),
                 polygon_offsets.clone(),
@@ -1617,32 +1627,32 @@ mod tests {
     fn selected_views_resolve_physical_rows_directly() {
         let selection =
             || RowSelection::gather_checked_native(Arc::from([1_usize, 0, 1]), 2).unwrap();
-        let point_storage = GeometryArrayStorage::Points {
+        let point_storage = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::new(coords()),
             row_map: RowSelection::gather_checked_native(Arc::from([2_usize, 0, 2]), 6).unwrap(),
-        };
-        let line_storage = GeometryArrayStorage::Lines {
+        });
+        let line_storage = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::new(coords()),
             offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
             row_map: selection(),
-        };
-        let polygon_storage = GeometryArrayStorage::Polygons {
+        });
+        let polygon_storage = GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords: Arc::new(coords()),
             ring_offsets: CsrOffsetColumn::<RingLevel>::try_new(vec![0, 3, 6], 6)
                 .expect("valid ring offsets"),
             polygon_offsets: CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1, 2], 2)
                 .expect("valid polygon offsets"),
             row_map: selection(),
-        };
+        });
 
         for storage in [&point_storage, &line_storage, &polygon_storage] {
-            let Ok(Some(columns)) = resolve_packed_columns(storage, None, PointRowLayout::Dense)
+            let Some(columns) = resolve_packed_columns(storage, None, PointRowLayout::Dense)
             else {
                 panic!("packed view resolution failed");
             };
             assert_eq!(columns.row_count(), 3);
             assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
-            let _ = crate::array::packed_column_kernels::bounds_values_from_columns(&columns)
+            let _ = packed_column_kernels::bounds_values_from_columns(&columns)
                 .expect("bounds");
         }
     }
@@ -1705,7 +1715,7 @@ mod tests {
     }
 
     fn gathered_lines(rows: usize) -> GeometryArrayStorage {
-        GeometryArrayStorage::Lines {
+        GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::new(coords()),
             offsets: CsrOffsetColumn::try_new(vec![0, 3, 6], 6).expect("valid offsets"),
             row_map: RowSelection::gather_checked_native(
@@ -1713,18 +1723,16 @@ mod tests {
                 2,
             )
             .unwrap(),
-        }
+        })
     }
 
     #[test]
     fn selected_reduction_allocates_only_its_result() {
         let storage = gathered_lines(32);
         let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
-            .ok()
-            .flatten()
             .expect("packed columns");
         let (values, allocations) = allocation_count(|| {
-            crate::array::packed_column_kernels::bounds_values_from_columns(&columns)
+            packed_column_kernels::bounds_values_from_columns(&columns)
                 .expect("bounds")
         });
         assert_eq!(values.len(), 32 * 4);
@@ -1736,8 +1744,6 @@ mod tests {
         fn count(rows: usize) -> usize {
             let storage = gathered_lines(rows);
             let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
-                .ok()
-                .flatten()
                 .expect("packed columns");
             let (output, allocations) = allocation_count(|| {
                 let Ok(output) = map_selected_points(columns, CoordinateAxes::XY, |point| {

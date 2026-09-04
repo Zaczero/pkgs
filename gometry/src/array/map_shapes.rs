@@ -2,6 +2,7 @@
 //! any storage, mask-aware, with detached (GIL-free) variants. Child
 //! module of [`super`] (`packed_ops`).
 
+use crate::array::PackedStorage;
 use crate::array::packed_ops::{
     GeometryArrayStorage, PyGeometryArray, PyResult, Python, Result, Shape, note_array_row,
     rows_err,
@@ -219,9 +220,9 @@ impl PyGeometryArray {
             // Packed rows re-pack either way — the plain map already
             // never materializes wrappers there (and packed-row clones are
             // Arc bumps since the CoordSeq view conversion).
-            GeometryArrayStorage::Points { .. }
-            | GeometryArrayStorage::Lines { .. }
-            | GeometryArrayStorage::Polygons { .. } => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
+            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
                 self.map_shapes(|shape| Ok(transform(shape)?.unwrap_or_else(|| shape.clone())))
             },
         }
@@ -262,9 +263,9 @@ impl PyGeometryArray {
                     .map_err(rows_err)?;
                 Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
-            GeometryArrayStorage::Points { .. }
-            | GeometryArrayStorage::Lines { .. }
-            | GeometryArrayStorage::Polygons { .. } => self
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
+            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => self
                 .map_shapes_detached_indexed(py, |shape, row| {
                     Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
                 }),

@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{
@@ -65,7 +66,7 @@ impl PyGeometryArray {
         first_coords: &CoordSeq,
     ) -> PyResult<Option<Self>> {
         let total_rows = arrays.iter().try_fold(0_usize, |total, array| {
-            let GeometryArrayStorage::Points { coords, row_map } = array.storage() else {
+            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = array.storage() else {
                 return Ok::<_, pyo3::PyErr>(total);
             };
             total
@@ -80,7 +81,7 @@ impl PyGeometryArray {
                 Err(error) => return Err(error.into()),
             };
         for array in arrays {
-            let GeometryArrayStorage::Points { coords, row_map } = array.storage() else {
+            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = array.storage() else {
                 return Ok(None);
             };
             if coords.axes() != first_coords.axes() {
@@ -104,11 +105,11 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Self>> {
         let mut vertex_count = 0_usize;
         for array in arrays {
-            let GeometryArrayStorage::Lines {
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 return Ok(None);
             };
@@ -124,11 +125,11 @@ impl PyGeometryArray {
         let mut builder = PointColumnBuilder::with_capacity(first_coords.axes(), vertex_count);
         let mut offset_builder = CsrOffsetBuilder::new();
         for array in arrays {
-            let GeometryArrayStorage::Lines {
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 unreachable!("storage kind checked in reservation pass");
             };
@@ -155,12 +156,12 @@ impl PyGeometryArray {
         let mut vertex_count = 0_usize;
         let mut ring_count = 0_usize;
         for array in arrays {
-            let GeometryArrayStorage::Polygons {
+            let GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 return Ok(None);
             };
@@ -191,12 +192,12 @@ impl PyGeometryArray {
         let mut polygon_builder = CsrOffsetBuilder::new();
         let mut output_rings = 0_usize;
         for array in arrays {
-            let GeometryArrayStorage::Polygons {
+            let GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 unreachable!("storage kind checked in reservation pass");
             };
@@ -240,18 +241,18 @@ impl PyGeometryArray {
             return Ok(None);
         }
         match first.storage() {
-            GeometryArrayStorage::Points {
+            GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: first_coords,
                 ..
-            } => Self::concat_packed_points_many(arrays, first, first_coords),
-            GeometryArrayStorage::Lines {
+            }) => Self::concat_packed_points_many(arrays, first, first_coords),
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: first_coords,
                 ..
-            } => Self::concat_packed_lines_many(arrays, first, first_coords),
-            GeometryArrayStorage::Polygons {
+            }) => Self::concat_packed_lines_many(arrays, first, first_coords),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: first_coords,
                 ..
-            } => Self::concat_packed_polygons_many(arrays, first, first_coords),
+            }) => Self::concat_packed_polygons_many(arrays, first, first_coords),
             GeometryArrayStorage::Mixed(_) => Ok(None),
         }
     }
@@ -264,24 +265,24 @@ impl PyGeometryArray {
             GeometryArrayStorage::Mixed(shapes) => {
                 shapes[rows].iter().map(Shape::coordinate_bytes).sum()
             },
-            GeometryArrayStorage::Points { coords, .. } => coords.axes().byte_width(rows.len()),
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => coords.axes().byte_width(rows.len()),
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 let vertices = rows
                     .map(|logical| map.csr_window(offsets, logical).len())
                     .sum();
                 coords.axes().byte_width(vertices)
             },
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 let vertices = rows
                     .map(|logical| {
@@ -306,19 +307,19 @@ impl PyGeometryArray {
             GeometryArrayStorage::Mixed(_) => {
                 coordinate_bytes + rows.len() * std::mem::size_of::<Shape>()
             },
-            GeometryArrayStorage::Points { row_map, .. } => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. }) => {
                 coordinate_bytes + selected_row_map_heap_bytes(row_map.as_deref(), rows)
             },
-            GeometryArrayStorage::Lines { row_map, .. } => {
+            GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => {
                 coordinate_bytes
                     + (rows.len() + 1) * std::mem::size_of::<i32>()
                     + selected_row_map_heap_bytes(row_map.as_deref(), rows)
             },
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 polygon_offsets,
                 row_map,
                 ..
-            } => {
+            }) => {
                 let map = row_map.as_deref();
                 let rings: usize = rows
                     .clone()
@@ -348,7 +349,7 @@ impl PyGeometryArray {
 
     /// Materialize packed `Points` storage when `row_map` reorders rows.
     pub(crate) fn materialize_packed_points(&self) -> Self {
-        if let GeometryArrayStorage::Points { coords, row_map } = self.storage()
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage()
             && row_map.reorders()
         {
             return self.materialize_packed_points_parts(coords, row_map.as_deref());
@@ -371,11 +372,11 @@ impl PyGeometryArray {
             rows.map(LogicalRow),
         );
         Self::from_storage(
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            },
+            }),
             self.frame.clone(),
         )
     }
@@ -400,11 +401,11 @@ impl PyGeometryArray {
 
     /// Materialize packed `Lines` storage when `row_map` reorders rows.
     pub(crate) fn materialize_packed_lines(&self) -> PyResult<Self> {
-        if let GeometryArrayStorage::Lines {
+        if let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
             && row_map.reorders()
         {
             return self.materialize_packed_lines_parts(coords, offsets, row_map.as_deref());
@@ -428,12 +429,12 @@ impl PyGeometryArray {
             rows.map(LogicalRow),
         );
         Self::from_storage(
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            },
+            }),
             self.frame.clone(),
         )
     }
@@ -455,12 +456,12 @@ impl PyGeometryArray {
 
     /// Materialize packed `Polygons` storage when `row_map` reorders rows.
     pub(crate) fn materialize_packed_polygons(&self) -> PyResult<Self> {
-        if let GeometryArrayStorage::Polygons {
+        if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
             && row_map.reorders()
         {
             return self.materialize_packed_polygons_parts(
@@ -844,20 +845,20 @@ impl PyGeometryArray {
         // materialization (the map path's cost). `ring_offsets.len() ==
         // polygon_offsets.len()` exactly when `total_rings == rows`, i.e. one
         // ring per polygon; any holes/empties fall through to the general map.
-        if let GeometryArrayStorage::Polygons {
+        if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
             && ring_offsets.len() == polygon_offsets.len()
         {
             return Ok(Self::from_storage(
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords: Arc::clone(coords),
                     offsets: ring_offsets.clone().cast_level::<()>(),
                     row_map: row_map.clone(),
-                },
+                }),
                 self.frame.clone(),
             )
             .with_missing_mask(self.missing().cloned()));
@@ -874,7 +875,7 @@ impl PyGeometryArray {
         if self.has_missing() {
             return Ok(None);
         }
-        let GeometryArrayStorage::Points { coords, row_map } = self.storage() else {
+        let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage() else {
             return Ok(None);
         };
         if coords.is_empty() {

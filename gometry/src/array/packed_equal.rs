@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdFloat as _;
 
@@ -301,22 +302,22 @@ fn pair_packed_equals_exact_impl<const Z: bool, const M: bool>(
     let both_points = matches!(
         (left.storage(), right.storage()),
         (
-            GeometryArrayStorage::Points { .. },
-            GeometryArrayStorage::Points { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. }),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
         )
     );
     let both_lines = matches!(
         (left.storage(), right.storage()),
         (
-            GeometryArrayStorage::Lines { .. },
-            GeometryArrayStorage::Lines { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }),
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
         )
     );
     let both_polys = matches!(
         (left.storage(), right.storage()),
         (
-            GeometryArrayStorage::Polygons { .. },
-            GeometryArrayStorage::Polygons { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
         )
     );
     if !both_points && !both_lines && !both_polys {

@@ -1,5 +1,6 @@
 //! Similarity metric parameter broadcasts and scalar CRS-aware thresholds.
 
+use crate::array::PackedStorage;
 use pyo3::types::PyAny;
 
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, ValidityMask};
@@ -104,9 +105,9 @@ impl SimilarityMode for HausdorffMode {
         missing: Option<&ValidityMask>,
     ) -> crate::error::Result<Option<Vec<f64>>> {
         let identity = match storage {
-            GeometryArrayStorage::Lines { row_map, .. } => row_map.is_identity(),
-            GeometryArrayStorage::Points { .. }
-            | GeometryArrayStorage::Polygons { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => row_map.is_identity(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
             | GeometryArrayStorage::Mixed(_) => true,
         };
         if !identity {

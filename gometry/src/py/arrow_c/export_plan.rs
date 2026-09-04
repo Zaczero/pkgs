@@ -7,6 +7,7 @@
     reason = "each GeoArrow layout has one explicit planning arm"
 )]
 
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::PyResult;
@@ -27,7 +28,7 @@ enum StoragePlan {
         offsets: Arc<[i32]>,
         start: usize,
         length: usize,
-        child: Box<StoragePlan>,
+        child: Box<Self>,
     },
     Binary {
         offsets: Arc<[i32]>,
@@ -44,7 +45,7 @@ impl StoragePlan {
         }
     }
 
-    fn offset(&self) -> usize {
+    const fn offset(&self) -> usize {
         match self {
             Self::List { start, .. } => *start,
             _ => 0,
@@ -214,7 +215,7 @@ fn plan_storage(
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
     let (encoding, storage) = match storage {
-        GeometryArrayStorage::Points { coords, row_map } => {
+        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             let coords = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.as_ref().clone(),
                 RowSelectionRef::Window { start, len } => coords.view(
@@ -223,11 +224,11 @@ fn plan_storage(
             };
             (GeometryEncoding::Point, StoragePlan::Coordinates(coords))
         },
-        GeometryArrayStorage::Lines {
+        GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
             row_map,
-        } => {
+        }) => {
             let (start, length) = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => {
                     (0, offsets.len().saturating_sub(1))
@@ -242,12 +243,12 @@ fn plan_storage(
                 child: Box::new(StoragePlan::Coordinates(coords.as_ref().clone())),
             })
         },
-        GeometryArrayStorage::Polygons {
+        GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } => {
+        }) => {
             let (start, length) = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => {
                     (0, polygon_offsets.len().saturating_sub(1))
@@ -483,7 +484,7 @@ fn plan_multilines(
             match member {
                 crate::geometry::MultiMember::Empty => {
                     crate::boundary::try_push_vec(&mut line_offsets, point_count)
-                        .map_err(NativeArrowExportError::from)?
+                        .map_err(NativeArrowExportError::from)?;
                 },
                 crate::geometry::MultiMember::Value(index) => {
                     let line = &items.as_slice()[index];
@@ -571,7 +572,7 @@ fn plan_multipolygons(
             match member {
                 crate::geometry::MultiMember::Empty => {
                     crate::boundary::try_push_vec(&mut polygon_offsets, ring_count)
-                        .map_err(NativeArrowExportError::from)?
+                        .map_err(NativeArrowExportError::from)?;
                 },
                 crate::geometry::MultiMember::Value(index) => {
                     let polygon = &polygons.as_slice()[index];
@@ -754,7 +755,7 @@ fn validate_binary_offsets(offsets: &[i32], child_len: usize) -> NativeArrowExpo
     validate_list_offsets(
         offsets,
         0,
-        offsets.len().checked_sub(1).unwrap_or(0),
+        offsets.len().saturating_sub(1),
         child_len,
     )
 }

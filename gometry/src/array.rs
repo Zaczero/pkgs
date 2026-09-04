@@ -235,7 +235,7 @@ impl ArrayRows {
                 if missing.is_missing(logical) {
                     LogicalRow::Missing { logical }
                 } else {
-                    let payload = if matches!(storage.as_ref(), GeometryArrayStorage::Points { .. })
+                    let payload = if matches!(storage.as_ref(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
                     {
                         missing.present_before(logical)
                     } else {
@@ -255,7 +255,7 @@ impl ArrayRows {
         let state = match self {
             Self::Dense(storage) => LogicalRowsState::Dense(storage.iter_rows()),
             Self::CompactNullable { storage, missing }
-                if matches!(storage.as_ref(), GeometryArrayStorage::Points { .. }) =>
+                if matches!(storage.as_ref(), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =>
             {
                 LogicalRowsState::CompactPoints {
                     rows: storage.iter_rows(),
@@ -394,7 +394,8 @@ mod tests;
 
 pub(crate) use shape_row::ShapeRow;
 pub(crate) use storage_types::{
-    GeometryArrayStorage, LineRows, PointRows, RowSelection, RowSelectionRef, RowsIter, ShapesIter,
+    GeometryArrayStorage, LineRows, PackedStorage, PointRows, RowSelection, RowSelectionRef,
+    RowsIter, ShapesIter,
     contiguous_physical_range, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
     packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
     polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,

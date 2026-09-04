@@ -10,6 +10,7 @@
 //! export, alternate owners (`array.coords` over packed storage), and a tuple
 //! layout selector — each added alongside the consumer that needs it.
 
+use crate::array::PackedStorage;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -162,7 +163,7 @@ impl CoordinateView {
                 },
                 // Packed points: each row is one scalar point geometry, so it
                 // contributes one coordinate tagged with its own row index.
-                GeometryArrayStorage::Points { coords, row_map } => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
                     if let Some(mask) = missing
                         && mask.len() != crate::array::point_logical_len(coords, map)
@@ -197,11 +198,11 @@ impl CoordinateView {
                 },
                 // Packed lines: each row contributes its zero-copy column
                 // window as one run, exactly like a scalar LineString.
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords,
                     offsets,
                     row_map,
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     let rows = crate::array::line_logical_len(offsets.as_slice(), map);
                     for row in 0..rows {
@@ -217,12 +218,12 @@ impl CoordinateView {
                 // Packed polygons: walk the two CSR levels directly. Building
                 // a temporary Polygon view per row would allocate its hole Arc
                 // and then make `walk` traverse the same offsets again.
-                GeometryArrayStorage::Polygons {
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords,
                     ring_offsets,
                     polygon_offsets,
                     row_map,
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     let ring_offsets = ring_offsets.as_slice();
                     let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
@@ -266,20 +267,20 @@ impl CoordinateView {
                     return total;
                 }
                 match storage.as_ref() {
-                    GeometryArrayStorage::Points { coords, row_map } => {
+                    GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         crate::array::point_logical_len(coords, row_map.as_deref())
                     },
-                    GeometryArrayStorage::Lines {
+                    GeometryArrayStorage::Packed(PackedStorage::Lines {
                         offsets, row_map, ..
-                    } => {
+                    }) => {
                         crate::array::packed_lines_coord_len(offsets.as_slice(), row_map.as_deref())
                     },
-                    GeometryArrayStorage::Polygons {
+                    GeometryArrayStorage::Packed(PackedStorage::Polygons {
                         ring_offsets,
                         polygon_offsets,
                         row_map,
                         ..
-                    } => crate::array::packed_polygons_coord_len(
+                    }) => crate::array::packed_polygons_coord_len(
                         ring_offsets.as_slice(),
                         polygon_offsets.as_slice(),
                         row_map.as_deref(),
@@ -302,13 +303,13 @@ impl CoordinateView {
                 storage,
                 missing: Some(missing),
             } => match storage.as_ref() {
-                GeometryArrayStorage::Points { coords, row_map } => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let rows = crate::array::point_logical_len(coords, row_map.as_deref());
                     (0..rows).filter(|&row| missing.is_valid(row)).count()
                 },
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     let rows = crate::array::line_logical_len(offsets.as_slice(), map);
                     (0..rows)
@@ -316,12 +317,12 @@ impl CoordinateView {
                         .map(|row| map.csr_window(offsets.as_slice(), row).len())
                         .sum()
                 },
-                GeometryArrayStorage::Polygons {
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     ring_offsets,
                     polygon_offsets,
                     row_map,
                     ..
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     let rings = ring_offsets.as_slice();
                     let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
@@ -348,18 +349,18 @@ impl CoordinateView {
                 storage,
                 missing: None,
             } => match storage.as_ref() {
-                GeometryArrayStorage::Points { coords, row_map } => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     crate::array::point_logical_len(coords, row_map.as_deref())
                 },
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
-                } => crate::array::packed_lines_coord_len(offsets.as_slice(), row_map.as_deref()),
-                GeometryArrayStorage::Polygons {
+                }) => crate::array::packed_lines_coord_len(offsets.as_slice(), row_map.as_deref()),
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     ring_offsets,
                     polygon_offsets,
                     row_map,
                     ..
-                } => crate::array::packed_polygons_coord_len(
+                }) => crate::array::packed_polygons_coord_len(
                     ring_offsets.as_slice(),
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
@@ -441,7 +442,7 @@ impl CoordinateView {
                     return None;
                 }
                 match storage.as_ref() {
-                    GeometryArrayStorage::Points { coords, row_map } => {
+                    GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         row_map.is_identity().then_some(coords)
                     },
                     // Packed line/polygon coordinate columns borrow only when the
@@ -449,12 +450,12 @@ impl CoordinateView {
                     // arrays materialize through `for_each`, so public buffers
                     // match logical row order and never expose excluded parent
                     // coordinates.
-                    GeometryArrayStorage::Lines {
+                    GeometryArrayStorage::Packed(PackedStorage::Lines {
                         coords, row_map, ..
-                    }
-                    | GeometryArrayStorage::Polygons {
+                    })
+                    | GeometryArrayStorage::Packed(PackedStorage::Polygons {
                         coords, row_map, ..
-                    } => row_map.is_identity().then_some(coords),
+                    }) => row_map.is_identity().then_some(coords),
                     GeometryArrayStorage::Mixed(_) => None,
                 }
             },
@@ -464,7 +465,7 @@ impl CoordinateView {
     /// Resolve one axis to a borrowed or materialized column.
     pub fn column(&self, axis: CoordinateAxis) -> crate::error::Result<CoordinateColumnRef<'_>> {
         if let CoordinateOwner::Array { storage, missing } = &self.owner
-            && let GeometryArrayStorage::Points { coords, row_map } = storage.as_ref()
+            && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = storage.as_ref()
             && missing.is_none()
         {
             if let Some(window) = row_map.as_deref().contiguous_window() {
@@ -635,7 +636,7 @@ impl CoordinateView {
         } = &self.owner
         {
             match storage.as_ref() {
-                GeometryArrayStorage::Points { coords, row_map } if row_map.is_identity() => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) if row_map.is_identity() => {
                     let mut indexes = Vec::new();
                     crate::boundary::try_reserve_vec(&mut indexes, coords.len())?;
                     for row in 0..coords.len() {
@@ -643,9 +644,9 @@ impl CoordinateView {
                     }
                     return Ok(indexes);
                 },
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
-                } if row_map.is_identity() => {
+                }) if row_map.is_identity() => {
                     let offsets = offsets.as_slice();
                     let mut indexes = Vec::new();
                     crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
@@ -658,12 +659,12 @@ impl CoordinateView {
                     }
                     return Ok(indexes);
                 },
-                GeometryArrayStorage::Polygons {
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     ring_offsets,
                     polygon_offsets,
                     row_map,
                     ..
-                } if row_map.is_identity() => {
+                }) if row_map.is_identity() => {
                     let rings = ring_offsets.as_slice();
                     let polys = polygon_offsets.as_slice();
                     let mut indexes = Vec::new();
@@ -803,7 +804,7 @@ impl CoordinateView {
                 storage,
                 missing: None,
             } => match storage.as_ref() {
-                GeometryArrayStorage::Points { coords, row_map } => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
                     let len = crate::array::point_logical_len(coords, map);
                     if index >= len {
@@ -820,11 +821,11 @@ impl CoordinateView {
                         },
                     })
                 },
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords,
                     offsets,
                     row_map,
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     let offsets = offsets.as_slice();
                     match map {
@@ -835,12 +836,12 @@ impl CoordinateView {
                         crate::array::RowSelectionRef::Gather(_) => None,
                     }
                 },
-                GeometryArrayStorage::Polygons {
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords,
                     ring_offsets,
                     polygon_offsets,
                     row_map,
-                } => {
+                }) => {
                     let map = row_map.as_deref();
                     match map {
                         crate::array::RowSelectionRef::Identity
@@ -927,9 +928,9 @@ impl CoordinateView {
                 storage,
                 missing: None,
             } => match storage.as_ref() {
-                GeometryArrayStorage::Points { .. } => true,
-                GeometryArrayStorage::Lines { row_map, .. }
-                | GeometryArrayStorage::Polygons { row_map, .. } => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => true,
+                GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. })
+                | GeometryArrayStorage::Packed(PackedStorage::Polygons { row_map, .. }) => {
                     !matches!(row_map.as_deref(), crate::array::RowSelectionRef::Gather(_))
                 },
                 GeometryArrayStorage::Mixed(_) => false,
@@ -1052,40 +1053,40 @@ fn packed_columnar_equal(
 ) -> Option<bool> {
     match (left, right) {
         (
-            GeometryArrayStorage::Points {
+            GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: ca,
                 row_map: ma,
-            },
-            GeometryArrayStorage::Points {
+            }),
+            GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: cb,
                 row_map: mb,
-            },
+            }),
         ) => packed_points_columnar_eq(ca, ma, cb, mb),
         (
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: ca,
                 offsets: oa,
                 row_map: ma,
-            },
-            GeometryArrayStorage::Lines {
+            }),
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: cb,
                 offsets: ob,
                 row_map: mb,
-            },
+            }),
         ) => packed_lines_columnar_eq(ca, oa.as_slice(), ma, cb, ob.as_slice(), mb),
         (
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: ca,
                 ring_offsets: ra,
                 polygon_offsets: pa,
                 row_map: ma,
-            },
-            GeometryArrayStorage::Polygons {
+            }),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: cb,
                 ring_offsets: rb,
                 polygon_offsets: pb,
                 row_map: mb,
-            },
+            }),
         ) => packed_polygons_columnar_eq(
             ca,
             ra.as_slice(),

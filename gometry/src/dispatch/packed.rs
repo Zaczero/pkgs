@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -369,11 +370,11 @@ pub(crate) fn try_unary_packed_array(
                 metric,
             },
         ) => {
-            let GeometryArrayStorage::Lines {
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 return None;
             };
@@ -400,11 +401,11 @@ pub(crate) fn try_unary_packed_array(
                 metric,
             },
         ) => {
-            let GeometryArrayStorage::Lines {
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             else {
                 return None;
             };

@@ -164,6 +164,16 @@ pub enum GeometryArrayStorage {
     /// [`crate::geometry::PreparedPlan`] once into the array-side prepared
     /// cache.
     Mixed(Vec<Shape>),
+    /// Homogeneous rows in one columnar layout. Packed-only code takes the
+    /// inner type directly, so it can never be handed `Mixed`.
+    Packed(PackedStorage),
+}
+
+/// The three columnar layouts. A value of this type is packed by construction:
+/// every operation that only makes sense on columns takes it, and the `Mixed`
+/// arms those operations used to bail on are gone with the case.
+#[derive(Clone, Debug)]
+pub enum PackedStorage {
     Points {
         coords: Arc<CoordSeq>,
         row_map: RowSelection,
@@ -534,7 +544,7 @@ impl<'a> PhysicalRowsIter<'a> {
     fn new(storage: &'a GeometryArrayStorage) -> Self {
         match storage {
             GeometryArrayStorage::Mixed(items) => Self::Mixed { items, index: 0 },
-            GeometryArrayStorage::Points { coords, row_map } => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                 let row_map = row_map.as_deref();
                 Self::Points {
                     coords,
@@ -543,11 +553,11 @@ impl<'a> PhysicalRowsIter<'a> {
                     len: point_logical_len(coords, row_map),
                 }
             },
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => {
+            }) => {
                 let row_map = row_map.as_deref();
                 Self::Lines {
                     coords,
@@ -557,12 +567,12 @@ impl<'a> PhysicalRowsIter<'a> {
                     len: line_logical_len(offsets.as_slice(), row_map),
                 }
             },
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => {
+            }) => {
                 let row_map = row_map.as_deref();
                 Self::Polygons {
                     coords,
@@ -831,22 +841,22 @@ mod tests {
             None,
             None,
         ));
-        let identity = GeometryArrayStorage::Points {
+        let identity = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::clone(&coords),
             row_map: RowSelection::Identity,
-        };
+        });
         assert_shapes_iter_exact(&identity);
 
-        let window = GeometryArrayStorage::Points {
+        let window = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::clone(&coords),
             row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3),
-        };
+        });
         assert_shapes_iter_exact(&window);
 
-        let gather = GeometryArrayStorage::Points {
+        let gather = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords,
             row_map: RowSelection::gather_checked_native(Arc::from([3_usize, 0, 2]), 4).unwrap(),
-        };
+        });
         assert_shapes_iter_exact(&gather);
     }
 
@@ -860,25 +870,25 @@ mod tests {
         ));
         // Three lines: verts [0,2), [2,4), [4,6)
         let offsets = crate::geometry::CsrOffsetColumn::try_new(vec![0, 2, 4, 6], 6).unwrap();
-        let identity = GeometryArrayStorage::Lines {
+        let identity = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
             row_map: RowSelection::Identity,
-        };
+        });
         assert_shapes_iter_exact(&identity);
 
-        let window = GeometryArrayStorage::Lines {
+        let window = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
             row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 3, 0..2),
-        };
+        });
         assert_shapes_iter_exact(&window);
 
-        let gather = GeometryArrayStorage::Lines {
+        let gather = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
             row_map: RowSelection::gather_checked_native(Arc::from([2_usize, 0]), 3).unwrap(),
-        };
+        });
         assert_shapes_iter_exact(&gather);
     }
 
@@ -902,38 +912,38 @@ mod tests {
                 2,
             )
             .unwrap();
-        let identity = GeometryArrayStorage::Polygons {
+        let identity = GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
             row_map: RowSelection::Identity,
-        };
+        });
         assert_shapes_iter_exact(&identity);
 
-        let window = GeometryArrayStorage::Polygons {
+        let window = GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
             row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 2, 1..2),
-        };
+        });
         assert_shapes_iter_exact(&window);
 
-        let gather = GeometryArrayStorage::Polygons {
+        let gather = GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map: RowSelection::gather_checked_native(Arc::from([1_usize, 0]), 2).unwrap(),
-        };
+        });
         assert_shapes_iter_exact(&gather);
     }
 
     #[test]
     fn shapes_iter_size_hint_exact_empty_storages() {
         assert_shapes_iter_exact(&GeometryArrayStorage::Mixed(Vec::new()));
-        let empty_pts = GeometryArrayStorage::Points {
+        let empty_pts = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::new(CoordSeq::from_vecs(vec![], vec![], None, None)),
             row_map: RowSelection::Identity,
-        };
+        });
         assert_shapes_iter_exact(&empty_pts);
     }
 }

@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::prelude::*;
@@ -44,7 +45,7 @@ fn line_locate_geometry_points(
         .clone();
     let line = geometry.plan_or_transient();
     if points.is_compact_nullable()
-        && matches!(points.storage(), GeometryArrayStorage::Points { .. })
+        && matches!(points.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
     {
         let points = points.clone();
         return detach_collect_f64(py, move || {
@@ -146,11 +147,11 @@ pub(crate) fn line_locate_point_input(
                         .collect_rows()
                 });
             }
-            if let GeometryArrayStorage::Lines {
+            if let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = array.storage()
+            }) = array.storage()
             {
                 return line_locate_point_on_lines(
                     py,
@@ -233,7 +234,7 @@ pub(crate) fn line_locate_point_m_input(
                 crate::resolve_line_metric(geometry.crs_str(), None, false, MetricOp::LineLocate)?;
             let line = geometry.plan_or_transient();
             if points.is_compact_nullable()
-                && matches!(points.storage(), GeometryArrayStorage::Points { .. })
+                && matches!(points.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
             {
                 let points = points.clone();
                 return detach_collect_f64(py, move || {

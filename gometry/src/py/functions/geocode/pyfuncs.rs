@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use pyo3::types::PyTuple;
 
 use crate::py::functions::geocode::pluscode::{
@@ -21,7 +22,7 @@ fn geocode_array_codes(
     operation: impl Fn(f64, f64) -> PyResult<String>,
 ) -> PyResult<Vec<Option<String>>> {
     if array.is_compact_nullable() {
-        if !matches!(array.storage(), crate::GeometryArrayStorage::Points { .. }) {
+        if !matches!(array.storage(), crate::GeometryArrayStorage::Packed(PackedStorage::Points { .. })) {
             return Err(crate::py::errors::geometry_type_err(
                 "expected Point geometry",
             ));

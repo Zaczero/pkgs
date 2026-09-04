@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{
@@ -137,11 +138,11 @@ pub(crate) fn line_interpolate_points_rows(
         plan.is_fractional(),
         crate::dispatch::MetricOp::LineInterpolatePoints,
     )?;
-    if let GeometryArrayStorage::Lines {
+    if let GeometryArrayStorage::Packed(PackedStorage::Lines {
         coords,
         offsets,
         row_map,
-    } = array.storage()
+    }) = array.storage()
         && let crs::MetricModel::Planar { .. } = model
     {
         let coords = Arc::clone(coords);

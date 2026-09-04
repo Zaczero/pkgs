@@ -4,6 +4,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use crate::array::PackedStorage;
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
@@ -646,7 +647,7 @@ fn input_point<'a>(input: &'a GeometryInput<'a>) -> Option<PointOperand<'a>> {
     match input {
         GeometryInput::One(geometry) => geometry_point(geometry).map(PointOperand::One),
         GeometryInput::Many(array) if array.is_compact_nullable() => {
-            matches!(array.storage(), GeometryArrayStorage::Points { .. })
+            matches!(array.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
                 .then_some(PointOperand::Compact(array))
         },
         GeometryInput::Many(array) => array
@@ -1602,7 +1603,7 @@ impl<'a> PointBinaryInput<'a> {
         match self {
             Self::One(geometry) => geometry_point(geometry).map(PointOperand::One),
             Self::Many(array) if array.is_compact_nullable() => {
-                matches!(array.storage(), GeometryArrayStorage::Points { .. })
+                matches!(array.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
                     .then_some(PointOperand::Compact(array))
             },
             Self::Many(array) => array

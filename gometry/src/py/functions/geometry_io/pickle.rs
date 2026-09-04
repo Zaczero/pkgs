@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use pyo3::IntoPyObjectExt as _;
@@ -627,7 +628,7 @@ fn array_pickle_payload_detached(
             epoch,
             missing: missing_bytes,
         }),
-        (GeometryArrayStorage::Points { coords, row_map }, None) => {
+        (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), None) => {
             let selection = row_map.as_deref();
             if points_are_finite(coords, selection) {
                 let (xs, ys, zs, ms) = encode_points_selection(coords, selection)?;
@@ -650,7 +651,7 @@ fn array_pickle_payload_detached(
                 })
             }
         },
-        (GeometryArrayStorage::Points { coords, row_map }, Some(mask)) => {
+        (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), Some(mask)) => {
             let selection = row_map.as_deref();
             let row_aligned =
                 !point_layout.is_compact() && mask.len() == selection.len(coords.len());
@@ -689,11 +690,11 @@ fn array_pickle_payload_detached(
             })
         },
         (
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            },
+            }),
             mask,
         ) => {
             let windows = selected_line_windows(offsets, row_map.as_deref(), mask)?;
@@ -723,12 +724,12 @@ fn array_pickle_payload_detached(
             }
         },
         (
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            },
+            }),
             mask,
         ) => {
             let rows = selected_storage_rows(
@@ -933,8 +934,8 @@ fn wkb_rows_for_mask(
 ) -> crate::error::Result<Vec<Vec<u8>>> {
     let row_count = missing.map_or(storage.len(), ValidityMask::len);
     let compact = missing.is_some_and(|mask| match storage {
-        GeometryArrayStorage::Points { .. } => point_layout.is_compact(),
-        GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. } => {
+        GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => point_layout.is_compact(),
+        GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
             storage.len() != mask.len()
         },
         GeometryArrayStorage::Mixed(_) => false,

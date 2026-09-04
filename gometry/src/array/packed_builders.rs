@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use std::sync::Arc;
 
 use crate::array::{GeometryArrayStorage, PyGeometryArray, RowProducts};
@@ -47,24 +48,24 @@ impl PyGeometryArray {
                 self.selected_row_products(rows.clone())
             };
             let selected = match self.storage() {
-                GeometryArrayStorage::Lines {
+                GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords,
                     offsets,
                     row_map,
-                } => self.remap_packed_lines(Arc::clone(coords), offsets.clone(), row_map, rows),
-                GeometryArrayStorage::Polygons {
+                }) => self.remap_packed_lines(Arc::clone(coords), offsets.clone(), row_map, rows),
+                GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords,
                     ring_offsets,
                     polygon_offsets,
                     row_map,
-                } => self.remap_packed_polygons(
+                }) => self.remap_packed_polygons(
                     Arc::clone(coords),
                     ring_offsets.clone(),
                     polygon_offsets.clone(),
                     row_map,
                     rows,
                 ),
-                GeometryArrayStorage::Points { .. } | GeometryArrayStorage::Mixed(_) => {
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. }) | GeometryArrayStorage::Mixed(_) => {
                     return self.gather_logical_rows(&rows.collect::<Vec<_>>());
                 },
             };
@@ -91,14 +92,14 @@ impl PyGeometryArray {
                 .collect();
             return Self::from_shapes(shapes, self.frame.clone());
         }
-        if let GeometryArrayStorage::Points { coords, row_map } = self.storage() {
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage() {
             return self.select_packed_points(Arc::clone(coords), row_map, rows.iter().copied());
         }
-        if let GeometryArrayStorage::Lines {
+        if let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
         {
             return self.remap_packed_lines(
                 Arc::clone(coords),
@@ -107,12 +108,12 @@ impl PyGeometryArray {
                 rows.iter().copied(),
             );
         }
-        if let GeometryArrayStorage::Polygons {
+        if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
         {
             return self.remap_packed_polygons(
                 Arc::clone(coords),
@@ -135,23 +136,23 @@ impl PyGeometryArray {
     }
 
     fn gather_logical_row_range_dense(&self, rows: std::ops::Range<usize>) -> Self {
-        if let GeometryArrayStorage::Points { coords, row_map } = self.storage() {
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage() {
             return self.select_packed_points(Arc::clone(coords), row_map, rows);
         }
-        if let GeometryArrayStorage::Lines {
+        if let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
         {
             return self.remap_packed_lines(Arc::clone(coords), offsets.clone(), row_map, rows);
         }
-        if let GeometryArrayStorage::Polygons {
+        if let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
             row_map,
-        } = self.storage()
+        }) = self.storage()
         {
             return self.remap_packed_polygons(
                 Arc::clone(coords),

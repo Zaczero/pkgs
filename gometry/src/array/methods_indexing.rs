@@ -11,6 +11,7 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 
+use crate::array::PackedStorage;
 use std::fmt::Write as _;
 
 use numpy::{
@@ -334,11 +335,11 @@ impl RowGetItemContainer for PyGeometryArray {
     }
 
     fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self {
-        if matches!(self.storage(), GeometryArrayStorage::Points { .. })
+        if matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
             && !self.is_compact_nullable()
         {
             let mut out = self.slice_packed_points(start, stop, step);
-            let GeometryArrayStorage::Points { row_map, .. } = out.storage() else {
+            let GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. }) = out.storage() else {
                 unreachable!("packed point slicing preserves point storage")
             };
             out.row_products = self.row_products.with_selection(row_map.clone());
@@ -781,7 +782,7 @@ impl PyGeometryArray {
         }
         // Packed identity XY points: copy ordinate columns once and patch
         // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).
-        if let GeometryArrayStorage::Points { coords, row_map } = self.storage()
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = self.storage()
             && !self.is_compact_nullable()
             && row_map.is_identity()
             && coords.axes() == crate::geometry::CoordinateAxes::XY

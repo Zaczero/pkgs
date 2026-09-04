@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::{PyMemoryError, PyTypeError};
 
@@ -195,7 +196,7 @@ impl GridPointRows<'_> {
 /// arrays gather straight off their shared column.
 pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointRows<'_>> {
     if array.is_compact_nullable() {
-        if !matches!(array.storage(), crate::GeometryArrayStorage::Points { .. }) {
+        if !matches!(array.storage(), crate::GeometryArrayStorage::Packed(PackedStorage::Points { .. })) {
             return Err(crate::py::errors::geometry_type_err(
                 "expected Point geometry",
             ));

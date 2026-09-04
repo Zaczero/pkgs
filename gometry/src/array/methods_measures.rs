@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::types::PyDict;
 
@@ -530,7 +531,7 @@ impl PyGeometryArray {
         unit: Option<DistanceUnit>,
         op: MetricOp,
     ) -> PyResult<Option<Vec<f64>>> {
-        if !matches!(self.storage(), GeometryArrayStorage::Polygons { .. }) {
+        if !matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })) {
             return Ok(None);
         }
         let missing = self.missing().cloned();
@@ -616,7 +617,7 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Vec<f64>>> {
         if !matches!(
             self.storage(),
-            GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
         ) {
             return Ok(None);
         }
@@ -720,7 +721,7 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Vec<f64>>> {
         let to_metre =
             crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op)?.coordinate_scale();
-        if let GeometryArrayStorage::Points { .. } = self.storage() {
+        if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
             let mut values = Vec::new();
             crate::boundary::try_reserve_vec(&mut values, self.len()).map_err(PyErr::from)?;
             values.resize(self.len(), 0.0);
@@ -728,7 +729,7 @@ impl PyGeometryArray {
         }
         if !matches!(
             self.storage(),
-            GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. }
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
         ) {
             return Ok(None);
         }
@@ -896,16 +897,16 @@ impl PyGeometryArray {
             return Ok(joined);
         }
         if let (
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: left,
                 offsets: left_offsets,
                 row_map: left_row_map,
-            },
-            GeometryArrayStorage::Lines {
+            }),
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords: right,
                 offsets: right_offsets,
                 row_map: right_row_map,
-            },
+            }),
         ) = (self.storage(), other.storage())
             && left.axes() == right.axes()
         {
@@ -929,18 +930,18 @@ impl PyGeometryArray {
             ));
         }
         if let (
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: left,
                 ring_offsets: left_rings,
                 polygon_offsets: left_polygons,
                 row_map: left_row_map,
-            },
-            GeometryArrayStorage::Polygons {
+            }),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords: right,
                 ring_offsets: right_rings,
                 polygon_offsets: right_polygons,
                 row_map: right_row_map,
-            },
+            }),
         ) = (self.storage(), other.storage())
             && left.axes() == right.axes()
         {

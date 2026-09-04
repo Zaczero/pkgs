@@ -7,6 +7,7 @@
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
+use crate::array::PackedStorage;
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
     Arc, Bounds, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
@@ -350,12 +351,12 @@ impl PyGeometryArray {
             let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
             let polygon_offsets = polygon_builder.finish(rows)?.cast_level::<PolygonLevel>();
             return Ok(Self::from_result_storage(
-                Arc::new(GeometryArrayStorage::Polygons {
+                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords: Arc::new(CoordSeq::try_from_vecs(xs, ys, None, None)?),
                     ring_offsets,
                     polygon_offsets,
                     row_map: RowSelection::Identity,
-                }),
+                })),
                 self.frame.clone(),
                 self.missing().cloned(),
                 // The output rectangles have the same per-row bounds as the

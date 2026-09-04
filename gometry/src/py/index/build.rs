@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use crate::geometry::TopologyDomain;
 use crate::py::index::{
     AABB, Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore,
@@ -146,7 +147,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         }));
     }
     match array.storage() {
-        GeometryArrayStorage::Points { coords, row_map } => {
+        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             if coords.is_empty() {
                 return Ok(None);
             }
@@ -187,7 +188,7 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
                 non_prunable_live,
             }))
         },
-        GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. } => {
+        GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
             let Some(bounds) = array.cached_element_bounds() else {
                 return Ok(None);
             };

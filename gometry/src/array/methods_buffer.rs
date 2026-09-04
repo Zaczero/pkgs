@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use std::num::NonZeroU32;
 
 use crate::array::{GeometryArrayStorage, PackedColumns, PyGeometryArray, PyResult, Python};
@@ -24,7 +25,7 @@ impl PyGeometryArray {
             return Ok(None);
         }
         if side != BufferSide::Both
-            || !matches!(self.storage(), GeometryArrayStorage::Points { .. })
+            || !matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
         {
             return Ok(None);
         }

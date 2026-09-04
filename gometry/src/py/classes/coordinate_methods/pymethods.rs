@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 
 use crate::py::classes::coordinate_methods::{
@@ -370,7 +371,7 @@ impl PyCoordinates {
                         .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
                         .map(|(_, shape)| coordinates_object(py, shape))
                         .collect::<PyResult<Vec<_>>>()?,
-                    GeometryArrayStorage::Points { coords, row_map } => {
+                    GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
                         if let Some(mask) = missing
                             && mask.len() != crate::array::point_logical_len(coords, map)
@@ -401,7 +402,7 @@ impl PyCoordinates {
                             })
                             .collect::<PyResult<Vec<_>>>()?
                     },
-                    GeometryArrayStorage::Lines { .. } | GeometryArrayStorage::Polygons { .. } => {
+                    GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
                         storage
                             .iter_shapes()
                             .enumerate()

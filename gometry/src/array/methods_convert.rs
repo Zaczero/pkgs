@@ -1,3 +1,4 @@
+use crate::array::PackedStorage;
 use crate::array::{
     Arc, Bounds, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec, PackedColumnError,
     PackedColumns, PyGeometryArray, PyResult, Python, Result, Shape, affine_about,
@@ -269,33 +270,33 @@ impl PyGeometryArray {
             return Ok(identity);
         }
         match self.storage() {
-            GeometryArrayStorage::Lines {
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } => Ok(Self::from_result_storage(
-                Arc::new(GeometryArrayStorage::Lines {
+            }) => Ok(Self::from_result_storage(
+                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords: Arc::new(reverse_coord_windows(coords, offsets)),
                     offsets: offsets.clone(),
                     row_map: row_map.clone(),
-                }),
+                })),
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
                 Arc::clone(&self.total_bounds_cache),
             )),
-            GeometryArrayStorage::Polygons {
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
                 coords,
                 ring_offsets,
                 polygon_offsets,
                 row_map,
-            } => Ok(Self::from_result_storage(
-                Arc::new(GeometryArrayStorage::Polygons {
+            }) => Ok(Self::from_result_storage(
+                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     coords: Arc::new(reverse_coord_windows(coords, ring_offsets)),
                     ring_offsets: ring_offsets.clone(),
                     polygon_offsets: polygon_offsets.clone(),
                     row_map: row_map.clone(),
-                }),
+                })),
                 self.frame.clone(),
                 self.missing().cloned(),
                 Arc::clone(&self.bounds_cache),
@@ -459,7 +460,7 @@ impl PyGeometryArray {
         drop: bool,
     ) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&self.frame)?;
-        if matches!(self.storage(), GeometryArrayStorage::Lines { .. }) {
+        if matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Lines { .. })) {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {

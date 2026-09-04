@@ -2,6 +2,7 @@
     clippy::absolute_paths,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::array::PackedStorage;
 use numpy::PyArrayMethods as _;
 use pyo3::IntoPyObjectExt as _;
 
@@ -204,11 +205,11 @@ impl PyGeometryArray {
         // mask per row: both keep the per-shape route.)
         if !preserve_topology
             && let Some(tolerance) = tolerance.as_scalar()
-            && let GeometryArrayStorage::Lines {
+            && let GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
                 offsets,
                 row_map,
-            } = self.storage()
+            }) = self.storage()
         {
             // Propagate real PyResult errors from the packed kernels — never
             // `.ok()` them into a silent fallthrough that hides the failure.
@@ -221,9 +222,9 @@ impl PyGeometryArray {
                     Ok(m) => m,
                     Err(err) => return Some(Err(err)),
                 };
-                if let GeometryArrayStorage::Lines {
+                if let GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords, offsets, ..
-                } = materialized.storage()
+                }) = materialized.storage()
                 {
                     return Some(match method {
                         SimplifyMethod::Vw => {
