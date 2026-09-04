@@ -64,7 +64,7 @@ impl PyCrs {
         slf: &Bound<'_, Self>,
         authority: Option<&str>,
     ) -> PyResult<Vec<crs::IdentifyCandidate>> {
-        crs_identify(slf.as_any(), authority)
+        slf.borrow().cached_identify(authority)
     }
 
     /// Non-deprecated authority objects equivalent to this CRS.

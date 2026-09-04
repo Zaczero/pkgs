@@ -34,6 +34,7 @@ pub struct PyCrs {
     /// Kept separate from the free ``crs_info()`` bounded global LRU — held
     /// receivers must not thrash that cache.
     info_py: Mutex<Option<(u64, Py<PyDict>)>>,
+    identify: Mutex<Option<(u64, Option<String>, Vec<crs::IdentifyCandidate>)>>,
 }
 
 impl PyCrs {
@@ -42,7 +43,27 @@ impl PyCrs {
             canonical,
             info: Mutex::new(None),
             info_py: Mutex::new(None),
+            identify: Mutex::new(None),
         }
+    }
+
+    /// Generation-stamped ``identify()`` for this receiver, keyed by authority.
+    pub(crate) fn cached_identify(&self, authority: Option<&str>) -> PyResult<Vec<crs::IdentifyCandidate>> {
+        let state = crs::runtime_state_snapshot()?;
+        let generation = state.generation;
+        {
+            let guard = self.identify.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((cached_gen, cached_authority, candidates)) = guard.as_ref()
+                && *cached_gen == generation
+                && cached_authority.as_deref() == authority
+            {
+                return Ok(candidates.clone());
+            }
+        }
+        let candidates = crs::identify_with_state(&self.canonical, authority, &state)?;
+        *self.identify.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((generation, authority.map(str::to_owned), candidates.clone()));
+        Ok(candidates)
     }
 
     pub(crate) fn resolve(value: &Bound<'_, PyAny>) -> PyResult<Self> {

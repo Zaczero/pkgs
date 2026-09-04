@@ -38,8 +38,8 @@ pub(crate) use export::{
 #[cfg(test)]
 pub(crate) use identify::authority_matches;
 pub(crate) use identify::{
-    identify, non_deprecated, search, to_2d, to_3d, to_authority, to_authority_with_state, to_cf,
-    to_epsg,
+    identify, identify_with_state, non_deprecated, search, to_2d, to_3d, to_authority,
+    to_authority_with_state, to_cf, to_epsg,
 };
 pub(crate) use lookup::{
     authorities_with_state, catalog, catalog_with_state, celestial_bodies_with_state, codes,
