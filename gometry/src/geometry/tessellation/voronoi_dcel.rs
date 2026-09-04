@@ -699,9 +699,7 @@ fn certified_site_adjacency(
             .saturating_add(edges.len().saturating_mul(2)),
     )?;
     let mut degrees = Vec::new();
-    degrees
-        .try_reserve_exact(site_count)
-        .map_err(|_| voronoi_error("could not allocate certified site adjacency"))?;
+    degrees.reserve_exact(site_count);
     degrees.resize(site_count, 0_usize);
     for edge in edges {
         let sites = match *edge {
@@ -712,9 +710,7 @@ fn certified_site_adjacency(
         degrees[sites[1]] = degrees[sites[1]].saturating_add(1);
     }
     let mut offsets = Vec::new();
-    offsets
-        .try_reserve_exact(site_count + 1)
-        .map_err(|_| voronoi_error("could not allocate certified site adjacency"))?;
+    offsets.reserve_exact(site_count + 1);
     offsets.push(0_u32);
     for degree in degrees {
         let next = (offsets.last().copied().unwrap_or(0) as usize)
@@ -724,14 +720,10 @@ fn certified_site_adjacency(
     }
     let neighbor_count = offsets.last().copied().unwrap_or(0) as usize;
     let mut neighbors = Vec::new();
-    neighbors
-        .try_reserve_exact(neighbor_count)
-        .map_err(|_| voronoi_error("could not allocate certified site adjacency"))?;
+    neighbors.reserve_exact(neighbor_count);
     neighbors.resize(neighbor_count, SiteId(0));
     let mut cursors = Vec::new();
-    cursors
-        .try_reserve_exact(site_count)
-        .map_err(|_| voronoi_error("could not allocate certified site adjacency"))?;
+    cursors.reserve_exact(site_count);
     cursors.extend(offsets[..site_count].iter().map(|offset| *offset as usize));
     for edge in edges {
         let sites = match *edge {
@@ -1088,9 +1080,7 @@ fn fixed_coordinates(
     clip: &NormalizedClip<'_>,
 ) -> Result<Vec<Option<XY>>> {
     let mut fixed = Vec::new();
-    fixed
-        .try_reserve_exact(points.len())
-        .map_err(|_| voronoi_error("could not allocate exact fixed-coordinate table"))?;
+    fixed.reserve_exact(points.len());
     fixed.resize(points.len(), None);
     for candidate in sites
         .iter()
@@ -1912,9 +1902,7 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
             .count();
         budget.add(component_orbits)?;
         let mut queue = VecDeque::new();
-        queue
-            .try_reserve(component_orbits)
-            .map_err(|_| voronoi_error("could not allocate exact label queue"))?;
+        queue.reserve(component_orbits);
         queue.push_back(exterior);
         while let Some(left) = queue.pop_front() {
             let left_label = label_of_orbit[left.0 as usize]
@@ -2439,9 +2427,7 @@ fn marked_site_candidates(
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<(EdgeId, SiteId)>> {
     let mut indexed = Vec::new();
-    indexed
-        .try_reserve_exact(sites.len())
-        .map_err(|_| voronoi_error("could not allocate Voronoi site index"))?;
+    indexed.reserve_exact(sites.len());
     indexed.extend(sites.iter().enumerate().map(|(index, site)| {
         rstar::primitives::GeomWithData::new([site.point.x, site.point.y], SiteId(index as u32))
     }));
@@ -2671,9 +2657,7 @@ fn embed(
             .ok_or_else(|| voronoi_error("too many live edge incidences"))?;
     }
     let mut incident_edges = Vec::new();
-    incident_edges
-        .try_reserve_exact(live_edge_ids.len().saturating_mul(2))
-        .map_err(|_| voronoi_error("could not allocate live edge incidence"))?;
+    incident_edges.reserve_exact(live_edge_ids.len().saturating_mul(2));
     incident_edges.resize(live_edge_ids.len().saturating_mul(2), EdgeId(0));
     let mut cursors = incidence_offsets[..subdivision.vertices.len()].to_vec();
     for &edge_id in &live_edge_ids {
@@ -2859,9 +2843,7 @@ fn embed(
         }
         budget.add(shape_rows.len())?;
         let mut row_entries = Vec::new();
-        row_entries
-            .try_reserve_exact(shape_rows.len())
-            .map_err(|_| voronoi_error("could not allocate Voronoi row index"))?;
+        row_entries.reserve_exact(shape_rows.len());
         row_entries.extend(shape_rows.iter().enumerate().map(|(row, shape)| {
             let bounds = shape.bounds().expect("admitted polygon has bounds");
             rstar::primitives::GeomWithData::new(

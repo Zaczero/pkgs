@@ -839,7 +839,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
         return Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?);
     }
 
-    let mut output = CoordSeqBuilder::try_with_capacity(coords.axes(), rows.len())?;
+    let mut output = CoordSeqBuilder::with_capacity(coords.axes(), rows.len());
     let mut present_row = 0;
     for (_, physical) in rows.cursor() {
         if physical.is_some() {

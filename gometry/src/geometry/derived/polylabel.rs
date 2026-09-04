@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeqBuilder, Coordinates as _,
-    ExpansionBudget, FacetBvh, GeometryErrorKind, Point, PolylabelCell, PreparedLinework, Segment,
+    ExpansionBudget, FacetBvh, Point, PolylabelCell, PreparedLinework, Segment,
     Shape, XY,
 };
 impl Eq for PolylabelCell {}
@@ -236,9 +236,7 @@ fn normalized_polylabel_frame(
     let normalized = xy.try_map_coordseqs(
         |seq| {
             let mut builder = CoordSeqBuilder::like_coords(seq, 0);
-            builder.try_reserve_exact(seq.len()).map_err(|_| {
-                GeometryErrorKind::message("polylabel could not allocate normalized coordinates")
-            })?;
+            builder.reserve_exact(seq.len());
             for point in seq.iter_coords() {
                 let xy = frame.frame_xy(point.x, point.y);
                 builder.push(point.with_xy(xy.x, xy.y)?);

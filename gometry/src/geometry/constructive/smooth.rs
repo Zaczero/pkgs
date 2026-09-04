@@ -95,11 +95,7 @@ fn reserve_builder(coords: &CoordSeq, cap: usize) -> Result<CoordSeqBuilder> {
     let mut builder = CoordSeqBuilder::like_coords(coords, 0);
     // Grow each live column once — same OOM contract as the prior `Vec<Point>`
     // path, without the AoS staging buffer or the SoA transpose.
-    builder.try_reserve_exact(cap).map_err(|_| {
-        GeometryErrorKind::message(format!(
-            "smooth could not allocate {cap} output coordinates"
-        ))
-    })?;
+    builder.reserve_exact(cap);
     Ok(builder)
 }
 

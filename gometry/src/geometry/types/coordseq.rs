@@ -1261,6 +1261,20 @@ impl CoordSeqBuilder {
     /// Fallibly reserve exact capacity on every live column. Used by
     /// constructive paths that have already enforced a coordinate budget and
     /// want an OOM error instead of an abort at the final allocation.
+    /// Reserve exactly `additional` more coordinates on every column. The
+    /// kernels reserve plainly; only the Python ingress keeps the fallible
+    /// twin below, where a length came from `__len__` or an iterator.
+    pub(crate) fn reserve_exact(&mut self, additional: usize) {
+        self.xs.reserve_exact(additional);
+        self.ys.reserve_exact(additional);
+        if let Some(zs) = &mut self.zs {
+            zs.reserve_exact(additional);
+        }
+        if let Some(ms) = &mut self.ms {
+            ms.reserve_exact(additional);
+        }
+    }
+
     pub(crate) fn try_reserve_exact(
         &mut self,
         additional: usize,

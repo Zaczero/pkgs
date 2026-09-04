@@ -257,7 +257,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let axes = coords.axes();
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, self.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, self.len());
         for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
                 crate::array::ArrayRow::Missing { .. } => builder.push_xyzm(

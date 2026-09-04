@@ -47,7 +47,7 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return None;
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total).ok()?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, total);
         for shape in replay {
             let Shape::LineString(seq) = shape else {
                 unreachable!("validated in the first pass");
@@ -121,7 +121,7 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return None;
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices).ok()?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("validated in the first pass");
@@ -170,7 +170,7 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return None;
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, shapes.len()).ok()?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, shapes.len());
         for shape in shapes {
             let Shape::Point(point) = shape else {
                 unreachable!("validated in the first pass");

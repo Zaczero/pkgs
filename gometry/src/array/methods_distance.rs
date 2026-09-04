@@ -144,7 +144,7 @@ where
                     error,
                 })
             }) {
-                builder.try_push(result)?;
+                builder.push(result?);
             }
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder.finish_with_missing_placeholders()
@@ -204,7 +204,7 @@ where
                     error,
                 })
             }) {
-                builder.try_push(result)?;
+                builder.push(result?);
             }
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder.finish_with_missing_placeholders()

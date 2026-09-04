@@ -57,9 +57,7 @@ pub(crate) fn geographic_bounds_to_shape(
     }
     .ok_or(crate::error::ResourceError::Allocation)?;
     let mut points = Vec::new();
-    points
-        .try_reserve_exact(capacity)
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    points.reserve_exact(capacity);
     let span = bounds.maxx() - bounds.minx();
     points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
     for index in 1..segments {

@@ -121,7 +121,7 @@ impl PyGeometryArray {
                     pyo3::exceptions::PyOverflowError::new_err("coordinate count overflows usize")
                 })?;
         }
-        let mut builder = PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
+        let mut builder = PointColumnBuilder::with_capacity(first_coords.axes(), vertex_count);
         let mut offset_builder = CsrOffsetBuilder::new();
         for array in arrays {
             let GeometryArrayStorage::Lines {
@@ -186,7 +186,7 @@ impl PyGeometryArray {
                 })?;
         }
         let mut coord_builder =
-            PointColumnBuilder::try_with_capacity(first_coords.axes(), vertex_count)?;
+            PointColumnBuilder::with_capacity(first_coords.axes(), vertex_count);
         let mut ring_builder = CsrOffsetBuilder::new();
         let mut polygon_builder = CsrOffsetBuilder::new();
         let mut output_rings = 0_usize;
