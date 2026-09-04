@@ -69,7 +69,10 @@ fn graph_relate_shapes_in(left: &Shape, right: &Shape, space: TopologySpace) -> 
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
+    if let Some(matrix) = super::direct_areal_relate(left, right)
+        .or_else(|| try_convex_relate(left.shape(), right.shape()))
+        .or_else(|| try_areal_relate(left.shape(), right.shape()))
+    {
         return matrix;
     }
     if let Some(matrix) = try_cartesian_polygon_line_relate(left, right) {
@@ -527,7 +530,7 @@ fn try_areal_relate_geographic(
 /// Fold a complete DE-9IM matrix from the one arrangement shared by two
 /// nondegenerate Cartesian areal operands. Source graphs retain boundary-only
 /// degeneracies, so those inputs deliberately stay on the graph path.
-fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
+pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     let mut left_polygons = Vec::new();
     let mut right_polygons = Vec::new();
     collect_areal_polygons(left, &mut left_polygons)?;
@@ -585,7 +588,7 @@ fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     Some(matrix)
 }
 
-fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
+pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
     match shape {
         Shape::Polygon(polygon) => collect_areal_polygon(polygon, polygons),
         Shape::MultiPolygon(parts) => {
