@@ -58,7 +58,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
 #[derive(Debug)]
 pub(super) struct DelaunayComplex {
     face_component: Vec<usize>,
-    centers: Vec<exact::ExactPoint>,
+    pub(super) centers: Vec<exact::ExactPoint>,
 }
 
 impl DelaunayComplex {

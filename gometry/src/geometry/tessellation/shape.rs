@@ -417,6 +417,7 @@ impl Shape {
         if monotone_chain_hull(&points).len() >= 3 {
             return Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?
                 .into_edges()
+                .into_line_seqs()?
                 .into_iter()
                 .map(Self::LineString)
                 .collect());
