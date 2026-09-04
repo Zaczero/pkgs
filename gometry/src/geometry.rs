@@ -71,7 +71,7 @@ mod coverage;
 #[doc(hidden)]
 pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
-pub(crate) use dimension::{Dimension, dimension};
+pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
     centroid_line_row_columns, centroid_polygon_row_columns, native_concave_hull,

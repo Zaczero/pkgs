@@ -27,6 +27,22 @@ impl From<Dimension> for usize {
     }
 }
 
+/// Whether every vertex of a ring lies on one line, decided exactly.
+pub(crate) fn ring_is_collinear(coords: &crate::geometry::CoordSeq) -> bool {
+    let (xs, ys) = (coords.xs(), coords.ys());
+    let Some((&ax, &ay)) = xs.first().zip(ys.first()) else {
+        return true;
+    };
+    let Some(base) = (0..xs.len()).find(|&i| xs[i] != ax || ys[i] != ay) else {
+        return true;
+    };
+    let (bx, by) = (xs[base], ys[base]);
+    (0..xs.len()).all(|i| {
+        crate::geometry::orientation_xy(ax, ay, bx, by, xs[i], ys[i])
+            == crate::geometry::Orientation::Collinear
+    })
+}
+
 pub(crate) fn dimension(shape: &Shape) -> Option<Dimension> {
     match shape {
         Shape::Empty(..) => None,

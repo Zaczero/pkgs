@@ -1217,6 +1217,19 @@ impl GraphBuilder {
     }
 
     fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) {
+        // Cartesian collinear rings enclose nothing and therefore contribute
+        // their closed linework, not surface support. A lon/lat-collinear ring
+        // can still enclose a polar cap, so geographic graphs retain area.
+        if !self.domain.space().is_geographic()
+            && polygon
+                .rings()
+                .all(|ring| crate::geometry::ring_is_collinear(ring.coords()))
+        {
+            for ring in polygon.rings() {
+                self.collect_line(ring.coords(), source_row);
+            }
+            return;
+        }
         let mut staged_rings = Vec::new();
         let support = if self.domain.space().is_geographic() {
             let StagedChartRing {
@@ -1506,10 +1519,18 @@ impl GraphBuilder {
 
     fn finish_dimensions(
         mut self,
-        effective_dimension: Option<Dimension>,
+        declared_dimension: Option<Dimension>,
         is_collection: bool,
         has_polygonal_members: bool,
     ) -> TopologyGraph {
+        // A Cartesian polygon with no area support was staged as linework.
+        // Its effective dimension follows that staged support, not its tag.
+        let effective_dimension = match declared_dimension {
+            Some(Dimension::Surface) if self.area_support.is_empty() => {
+                (!self.source_edges.is_empty()).then_some(Dimension::Curve)
+            },
+            other => other,
+        };
         let (atomic, provenance) = crate::geometry::overlay::self_node_segments_sourced(
             self.chart_edges.iter().map(|edge| edge.segment),
         );

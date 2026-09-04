@@ -1733,6 +1733,44 @@ mod tests {
         }
     }
 
+    /// A polygon whose rings enclose nothing is its linework, so it must
+    /// answer exactly as the equivalent closed line against every operand.
+    /// This is the one rule a caller can predict, and it is what the graph
+    /// staging enforces by routing such a polygon to `collect_line`.
+    #[test]
+    fn degenerate_polygon_relates_as_its_own_linework() {
+        let flat = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
+        let ring = line(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]);
+        let others = [
+            Shape::Polygon(polygon(&[
+                [0.0, 0.0],
+                [2.0, 0.0],
+                [2.0, 2.0],
+                [0.0, 2.0],
+                [0.0, 0.0],
+            ])),
+            line(&[[0.0, 0.0], [2.0, 0.0]]),
+            line(&[[1.0, -1.0], [1.0, 1.0]]),
+            Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 0.0)),
+            Shape::Point(crate::geometry::Point::new_raw_xy(5.0, 5.0)),
+        ];
+        for other in &others {
+            let as_polygon = graph_relate_data_oracle(
+                &PreparedPlan::transient(&flat),
+                &PreparedPlan::transient(other),
+            );
+            let as_line = graph_relate_data_oracle(
+                &PreparedPlan::transient(&ring),
+                &PreparedPlan::transient(other),
+            );
+            assert_eq!(
+                as_polygon.text(),
+                as_line.text(),
+                "a collapsed polygon must relate as its ring line against {other:?}"
+            );
+        }
+    }
+
     #[test]
     fn convex_relation_falls_back_for_ambiguous_or_unsupported_shapes() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
@@ -1789,7 +1827,7 @@ mod tests {
             ("hole", &hole, &square, "212F11FF2"),
             ("concave", &concave, &square, "212111212"),
             ("invalid", &invalid, &square, "FF2111212"),
-            ("collapsed", &collapsed, &square, "F12F0F212"),
+            ("collapsed", &collapsed, &square, "F1FFFF212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
             ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
             ("left edge apex", &square4, &left_edge_apex, "212F01FF2"),
