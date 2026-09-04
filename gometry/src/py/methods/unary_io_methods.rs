@@ -4,29 +4,9 @@ use pyo3::types::{PyAny, PyBytes};
 use crate::py::errors::require_epoch_drop;
 use crate::{PyGeometry, PyGeometryArray, PyValidationReport, RepairMethod};
 
-macro_rules! doc_to_wkt {
-    (scalar) => {
-        concat!(doc_to_wkt!(@body), r"
-
-Returns
--------
-str
-    The WKT string.
-
-", doc_to_wkt!(@tail))
-    };
-    (array) => {
-        concat!(doc_to_wkt!(@body), r"
-
-Returns
--------
-list of str
-    One WKT string per row.
-
-", doc_to_wkt!(@tail))
-    };
-    (@body) => {
-        r"Serialize to Well-Known Text.
+method_doc! {
+    doc_to_wkt;
+    body: r"Serialize to Well-Known Text.
 
 Parameters
 ----------
@@ -44,10 +24,24 @@ precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
 
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which WKT cannot encode."
-    };
-    (@tail) => {
-        r"
+    Permit losing coordinate-epoch metadata, which WKT cannot encode.";
+    scalar: r"
+
+Returns
+-------
+str
+    The WKT string.
+
+";
+    array: r"
+
+Returns
+-------
+list of str
+    One WKT string per row.
+
+";
+    tail: r"
 Raises
 ------
 GeometryError
@@ -67,33 +61,12 @@ Examples
 >>> gm.Point(1.5, 2.5).to_wkt()
 'POINT (1.5 2.5)'
 >>> gm.GeometryArray([gm.Point(1.5, 2.5)]).to_wkt()
-['POINT (1.5 2.5)']"
-    };
+['POINT (1.5 2.5)']";
 }
 
-macro_rules! doc_to_wkb {
-    (scalar) => {
-        concat!(doc_to_wkb!(@body), r"
-
-Returns
--------
-bytes
-    The WKB payload.
-
-", doc_to_wkb!(@tail))
-    };
-    (array) => {
-        concat!(doc_to_wkb!(@body), r"
-
-Returns
--------
-list of bytes
-    One WKB payload per row.
-
-", doc_to_wkb!(@tail))
-    };
-    (@body) => {
-        r"Serialize to Well-Known Binary.
+method_doc! {
+    doc_to_wkb;
+    body: r"Serialize to Well-Known Binary.
 
 Parameters
 ----------
@@ -106,10 +79,24 @@ precision : int, optional
     Decimal places to round coordinates to (omit for full precision).
 
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which (E)WKB cannot encode."
-    };
-    (@tail) => {
-        r"Notes
+    Permit losing coordinate-epoch metadata, which (E)WKB cannot encode.";
+    scalar: r"
+
+Returns
+-------
+bytes
+    The WKB payload.
+
+";
+    array: r"
+
+Returns
+-------
+list of bytes
+    One WKB payload per row.
+
+";
+    tail: r"Notes
 -----
 The coordinate epoch is not representable in (E)WKB and does not survive a
 round-trip; use Arrow interchange when the epoch matters.
@@ -131,33 +118,12 @@ Examples
 >>> import gometry as gm
 >>> pt = gm.Point(1, 2)
 >>> pt.to_wkt() == gm.from_wkb(pt.to_wkb()).to_wkt()
-True"
-    };
+True";
 }
 
-macro_rules! doc_to_geojson {
-    (scalar) => {
-        concat!(doc_to_geojson!(@body), r"
-
-Returns
--------
-str
-    The `GeoJSON` geometry string.
-
-", doc_to_geojson!(@tail))
-    };
-    (array) => {
-        concat!(doc_to_geojson!(@body), r"
-
-Returns
--------
-list of str
-    One `GeoJSON` geometry string per row.
-
-", doc_to_geojson!(@tail))
-    };
-    (@body) => {
-        r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
+method_doc! {
+    doc_to_geojson;
+    body: r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
 CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
 ``to_crs(4326)`` first. CRS-free input is serialized as-is.
 
@@ -169,10 +135,24 @@ include_z : bool, default True
     `GeoJSON` cannot represent M; remove it explicitly with ``set_m(None)``.
 
 drop_epoch : bool, default False
-    Permit losing coordinate-epoch metadata, which GeoJSON cannot encode."
-    };
-    (@tail) => {
-        r#"Raises
+    Permit losing coordinate-epoch metadata, which GeoJSON cannot encode.";
+    scalar: r"
+
+Returns
+-------
+str
+    The `GeoJSON` geometry string.
+
+";
+    array: r"
+
+Returns
+-------
+list of str
+    One `GeoJSON` geometry string per row.
+
+";
+    tail: r#"Raises
 ------
 CRSError
     If the input carries a CRS other than WGS84.
@@ -189,38 +169,31 @@ Examples
 --------
 >>> import gometry as gm
 >>> gm.Point(1, 2).to_geojson()
-'{"type":"Point","coordinates":[1.0,2.0]}'"#
-    };
+'{"type":"Point","coordinates":[1.0,2.0]}'"#;
 }
 
-macro_rules! doc_validate {
-    (scalar) => {
-        concat!(doc_validate!(@body), r"
+method_doc! {
+    doc_validate;
+    body: r"Structured validity report in the geometry's coordinate frame.
+Geographic antimeridian crossings are normalized before validation;
+projected and CRS-free geometry uses ordinary planar OGC validity.";
+    scalar: r"
 
 Returns
 -------
 ValidationReport
     Truthy when valid.
 
-", doc_validate!(@tail))
-    };
-    (array) => {
-        concat!(doc_validate!(@body), r"
+";
+    array: r"
 
 Returns
 -------
 list of ValidationReport
     One report per row; missing rows are ``None``.
 
-", doc_validate!(@tail))
-    };
-    (@body) => {
-        r"Structured validity report in the geometry's coordinate frame.
-Geographic antimeridian crossings are normalized before validation;
-projected and CRS-free geometry uses ordinary planar OGC validity."
-    };
-    (@tail) => {
-        r"See Also
+";
+    tail: r"See Also
 --------
 is_valid : Boolean-only test.
 repair : Fix what the report diagnoses.
@@ -231,33 +204,12 @@ Examples
 >>> bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))')
 >>> report = bowtie.validate()
 >>> (report.valid, report.reason)
-(False, 'exterior ring has a self-intersection')"
-    };
+(False, 'exterior ring has a self-intersection')";
 }
 
-macro_rules! doc_repair {
-    (scalar) => {
-        concat!(doc_repair!(@body), r"
-
-Returns
--------
-Geometry
-    A valid geometry.
-
-", doc_repair!(@tail))
-    };
-    (array) => {
-        concat!(doc_repair!(@body), r"
-
-Returns
--------
-GeometryArray
-    One valid geometry per row.
-
-", doc_repair!(@tail))
-    };
-    (@body) => {
-        r"Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
+method_doc! {
+    doc_repair;
+    body: r"Repair invalid geometry, returning corrected result(s) (OGC). Already-valid
 input is returned unchanged at validation cost. Geographic antimeridian
 crossings are normalized before validity is decided, so a valid seam-crossing
 geometry is never destructively repaired; an invalid crossing repairs from its
@@ -273,10 +225,24 @@ method : {'linework', 'structure'}, default linework
     as shells minus holes, discarding collapsed components.
 
     Z/M are carried at vertices traceable to the input; a rebuild that needs
-    unsourceable vertices returns the mathematically natural XY result."
-    };
-    (@tail) => {
-        r"
+    unsourceable vertices returns the mathematically natural XY result.";
+    scalar: r"
+
+Returns
+-------
+Geometry
+    A valid geometry.
+
+";
+    array: r"
+
+Returns
+-------
+GeometryArray
+    One valid geometry per row.
+
+";
+    tail: r"
 Raises
 ------
 InvalidGeometryError
@@ -293,8 +259,7 @@ Examples
 >>> bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))')
 >>> fixed = bowtie.repair()
 >>> (fixed.is_valid, fixed.geometry_type)
-(True, 'MultiPolygon')"
-    };
+(True, 'MultiPolygon')";
 }
 
 #[pymethods]

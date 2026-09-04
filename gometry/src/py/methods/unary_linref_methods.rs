@@ -23,40 +23,9 @@ fn reject_m_basis_distance_options(normalized: bool, unit: Option<DistanceUnit>)
     Ok(())
 }
 
-macro_rules! doc_line_interpolate {
-    (scalar) => {
-        concat!(doc_line_interpolate!(@pre), r"
-count : int, optional
-    Number of evenly spaced distance-basis samples (``>= 1``). Mutually
-    exclusive with ``at`` and unavailable with ``basis='m'``.
-", doc_line_interpolate!(@post), r"
-
-Returns
--------
-Point or GeometryArray[Point]
-    One point for scalar ``at``; a point column for many ``at`` values or
-    ``count`` samples.
-
-", doc_line_interpolate!(@tail))
-    };
-    (array) => {
-        concat!(doc_line_interpolate!(@pre), r"
-count : int or iterable of int, optional
-    Number of evenly spaced distance-basis samples per row (``>= 1``). A scalar
-    broadcasts; otherwise pass one count per row. Mutually exclusive with
-    ``at`` and unavailable with ``basis='m'``.
-", doc_line_interpolate!(@post), r"
-
-Returns
--------
-GeometryArray[Point] or Groups[GeometryArray[Point]]
-    One point per row for scalar or row-aligned ``at``; one point group per
-    row for ``count`` samples.
-
-", doc_line_interpolate!(@tail))
-    };
-    (@pre) => {
-        r"Interpolate point locations along linework.
+method_doc! {
+    doc_line_interpolate;
+    pre: r"Interpolate point locations along linework.
 
 Parameters
 ----------
@@ -64,10 +33,35 @@ at : float or sequence of float, optional
     One location or many explicit distance-basis locations. Under
     ``basis='m'``, pass one stored M value (or one value per array row).
 
-"
-    };
-    (@post) => {
-        r"
+";
+    scalar: (r"
+count : int, optional
+    Number of evenly spaced distance-basis samples (``>= 1``). Mutually
+    exclusive with ``at`` and unavailable with ``basis='m'``.
+", r"
+
+Returns
+-------
+Point or GeometryArray[Point]
+    One point for scalar ``at``; a point column for many ``at`` values or
+    ``count`` samples.
+
+");
+    array: (r"
+count : int or iterable of int, optional
+    Number of evenly spaced distance-basis samples per row (``>= 1``). A scalar
+    broadcasts; otherwise pass one count per row. Mutually exclusive with
+    ``at`` and unavailable with ``basis='m'``.
+", r"
+
+Returns
+-------
+GeometryArray[Point] or Groups[GeometryArray[Point]]
+    One point per row for scalar or row-aligned ``at``; one point group per
+    row for ``count`` samples.
+
+");
+    post: r"
 basis : {'distance', 'm'}, default 'distance'
     Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
     synthesized coordinates follow the CRS metric: geodesic on a geographic CRS,
@@ -79,10 +73,8 @@ normalized : bool, default False
 
 unit : {'planar', 'meters'}, default None
     Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``."
-    };
-    (@tail) => {
-        r"
+    ``basis='m'``.";
+    tail: r"
 Raises
 ------
 GeometryTypeError
@@ -104,33 +96,12 @@ Examples
 >>> import gometry as gm
 >>> line = gm.LineString([(0, 0), (10, 0)])
 >>> line.line_interpolate(4).to_wkt()
-'POINT (4 0)'"
-    };
+'POINT (4 0)'";
 }
 
-macro_rules! doc_line_substring {
-    (scalar) => {
-        concat!(doc_line_substring!(@body), r"
-
-Returns
--------
-LineString or Point
-    The substring (a ``Point`` when ``start == end``).
-
-", doc_line_substring!(@tail))
-    };
-    (array) => {
-        concat!(doc_line_substring!(@body), r"
-
-Returns
--------
-GeometryArray
-    One substring per row.
-
-", doc_line_substring!(@tail))
-    };
-    (@body) => {
-        r"Return the portion of linework from ``start`` through ``end``.
+method_doc! {
+    doc_line_substring;
+    body: r"Return the portion of linework from ``start`` through ``end``.
 
 Parameters
 ----------
@@ -149,10 +120,24 @@ normalized : bool, default False
 
 unit : {'planar', 'meters'}, default None
     Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``."
-    };
-    (@tail) => {
-        r"
+    ``basis='m'``.";
+    scalar: r"
+
+Returns
+-------
+LineString or Point
+    The substring (a ``Point`` when ``start == end``).
+
+";
+    array: r"
+
+Returns
+-------
+GeometryArray
+    One substring per row.
+
+";
+    tail: r"
 Raises
 ------
 GeometryTypeError
@@ -174,40 +159,12 @@ Examples
 >>> import gometry as gm
 >>> line = gm.LineString([(0, 0), (10, 0)])
 >>> line.line_substring(2, 6).to_wkt()
-'LINESTRING (2 0, 6 0)'"
-    };
+'LINESTRING (2 0, 6 0)'";
 }
 
-macro_rules! doc_interpolate_m {
-    (scalar) => {
-        concat!(doc_interpolate_m!(@pre), r"
-start_m, end_m : float
-    The measure range (finite, ``end_m >= start_m``).
-", doc_interpolate_m!(@post), r"
-
-Returns
--------
-Geometry
-    The geometry with interpolated M values (same kind as the input).
-
-", doc_interpolate_m!(@tail))
-    };
-    (array) => {
-        concat!(doc_interpolate_m!(@pre), r"
-start_m, end_m : float or sequence of float
-    The measure range (finite, ``end_m >= start_m``) — a scalar applies to
-    every geometry, or pass one value per geometry.
-", doc_interpolate_m!(@post), r"
-
-Returns
--------
-GeometryArray
-    One result per row (kinds preserved).
-
-", doc_interpolate_m!(@tail))
-    };
-    (@pre) => {
-        r"Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
+method_doc! {
+    doc_interpolate_m;
+    pre: r"Interpolate an M ordinate along the line's arc length (CRS-aware). M runs
 from ``start_m`` at the start to ``end_m`` at the end, continuously across
 multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
 follows the CRS like length — geodesic on a geographic CRS, planar
@@ -215,20 +172,39 @@ otherwise (coordinates are never moved). Z is preserved; existing M requires
 ``overwrite=True``.
 
 Parameters
-----------"
-    };
-    (@post) => {
-        r"overwrite : bool, default False
+----------";
+    scalar: (r"
+start_m, end_m : float
+    The measure range (finite, ``end_m >= start_m``).
+", r"
+
+Returns
+-------
+Geometry
+    The geometry with interpolated M values (same kind as the input).
+
+");
+    array: (r"
+start_m, end_m : float or sequence of float
+    The measure range (finite, ``end_m >= start_m``) — a scalar applies to
+    every geometry, or pass one value per geometry.
+", r"
+
+Returns
+-------
+GeometryArray
+    One result per row (kinds preserved).
+
+");
+    post: r"overwrite : bool, default False
     Replace existing M ordinates instead of raising.
 
 unit : {'planar', 'meters'}, default None
     Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
     forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
     — only for deliberate coordinate-space math); ``meters`` forces the
-    CRS metric and raises without a CRS."
-    };
-    (@tail) => {
-        r"
+    CRS metric and raises without a CRS.";
+    tail: r"
 Raises
 ------
 GeometryTypeError
@@ -249,33 +225,12 @@ Examples
 >>> import gometry as gm
 >>> line = gm.LineString([(0, 0), (10, 0)])
 >>> line.interpolate_m(0.0, 100.0).to_wkt()
-'LINESTRING M (0 0 0, 10 0 100)'"
-    };
+'LINESTRING M (0 0 0, 10 0 100)'";
 }
 
-macro_rules! doc_line_locate {
-    (scalar) => {
-        concat!(doc_line_locate!(@body), r"
-
-Returns
--------
-float or numpy.ndarray
-    One location, or a column when ``geom`` is an array.
-
-", doc_line_locate!(@tail))
-    };
-    (array) => {
-        concat!(doc_line_locate!(@body), r"
-
-Returns
--------
-numpy.ndarray
-    One location per line row.
-
-", doc_line_locate!(@tail))
-    };
-    (@body) => {
-        r"Locate the position on linework nearest ``geom``.
+method_doc! {
+    doc_line_locate;
+    body: r"Locate the position on linework nearest ``geom``.
 
 Parameters
 ----------
@@ -292,10 +247,24 @@ normalized : bool, default False
 
 unit : {'planar', 'meters'}, default None
     Distance-basis unit override. Omitted follows the CRS; invalid with
-    ``basis='m'``."
-    };
-    (@tail) => {
-        r"
+    ``basis='m'``.";
+    scalar: r"
+
+Returns
+-------
+float or numpy.ndarray
+    One location, or a column when ``geom`` is an array.
+
+";
+    array: r"
+
+Returns
+-------
+numpy.ndarray
+    One location per line row.
+
+";
+    tail: r"
 Raises
 ------
 CRSError
@@ -320,8 +289,7 @@ Examples
 >>> import gometry as gm
 >>> line = gm.LineString([(0, 0), (10, 0)])
 >>> line.line_locate(gm.Point(4, 3))
-4.0"
-    };
+4.0";
 }
 
 #[pymethods]

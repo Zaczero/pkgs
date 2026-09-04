@@ -308,3 +308,28 @@ macro_rules! unary_shape_method {
         }
     };
 }
+
+/// One docstring macro per unary method, from its prose fragments. Each entry
+/// expands to the `doc_x!` macro the method files consume, with `(scalar)` and
+/// `(array)` arms that concatenate the shared body/tail around a per-form
+/// `Returns` block, so the prose has one source and the expansions are exactly
+/// what the hand-written arms produced.
+macro_rules! method_doc {
+    ($name:ident; body: $body:expr; scalar: $scalar:expr; array: $array:expr; tail: $tail:expr $(;)?) => {
+        macro_rules! $name {
+            (scalar) => { concat!($body, $scalar, $tail) };
+            (array) => { concat!($body, $array, $tail) };
+            (@body) => { $body };
+            (@tail) => { $tail };
+        }
+    };
+    ($name:ident; pre: $pre:expr; scalar: ($sp:expr, $sr:expr); array: ($ap:expr, $ar:expr); post: $post:expr; tail: $tail:expr $(;)?) => {
+        macro_rules! $name {
+            (scalar) => { concat!($pre, $sp, $post, $sr, $tail) };
+            (array) => { concat!($pre, $ap, $post, $ar, $tail) };
+            (@pre) => { $pre };
+            (@post) => { $post };
+            (@tail) => { $tail };
+        }
+    };
+}
