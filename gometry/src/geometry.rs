@@ -220,9 +220,12 @@ pub(crate) use relate::{
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
     line_scalar_prefers_direct_polygon_relate,
 };
-pub(crate) use relate::{direct_areal_linework_predicate, direct_areal_predicate, direct_linework_predicate};
+pub(crate) use relate::{
+    StagedLinework, StagedRings, direct_areal_linework_predicate,
+    direct_areal_predicate, direct_linework_predicate, stage_linework, stage_rings,
+};
 pub(in crate::geometry) use segment_index::{
-    MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
+    MonotoneRun, candidate_pairs_between, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
     single_chain,
 };

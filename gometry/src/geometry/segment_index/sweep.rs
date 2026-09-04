@@ -247,7 +247,6 @@ pub(in crate::geometry) fn for_each_candidate_pair(
         pool,
         &runs,
         || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
-        None,
         &mut visit,
     )
 }
@@ -255,32 +254,23 @@ pub(in crate::geometry) fn for_each_candidate_pair(
 /// The shared entry point behind [`for_each_candidate_pair`] and the
 /// prepared-linework sweep, over runs that are already decomposed. `bounds` is
 /// consulted only on the sweep path, so a caller that has to compute them can
-/// defer the pass. `split` makes the join bipartite: segments below it are one
-/// operand, the rest the other, and pairs within one operand are never
-/// visited — the two-operand relation engines want exactly the cross pairs,
-/// and on jagged linework those are a small fraction of the self-join.
+/// defer the pass.
 pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
     bounds: impl FnOnce() -> Bounds,
-    split: Option<u32>,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
-        let same_side = |left: usize, right: usize| {
-            split.is_some_and(|split| (left < split as usize) == (right < split as usize))
-        };
         for left in 0..count {
             for right in (left + 1)..count {
-                if !same_side(left, right) {
-                    visit(left, right)?;
-                }
+                visit(left, right)?;
             }
         }
         return ControlFlow::Continue(());
     }
-    candidate_pairs_over_runs(pool, runs, bounds(), split, visit)
+    candidate_pairs_over_runs(pool, runs, bounds(), visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -297,7 +287,6 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
     bounds: Bounds,
-    split: Option<u32>,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
@@ -325,7 +314,7 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
             cross_min: y_lo,
             cross_max: y_hi,
             ordinal: ordinal as u32,
-            side: split.map_or(0, |split| if run.start < split { 1 } else { 2 }),
+            side: 0,
         });
     }
     finish_sweep_entries(&mut entries, swapped);
@@ -415,6 +404,87 @@ pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
         -1
     } else {
         0
+    }
+}
+
+/// Candidate pairs between two SEPARATELY staged pools: every run of `a`
+/// against every run of `b` whose envelopes overlap, `visit(a_ordinal,
+/// b_ordinal)` each once, in the two pools' own index spaces. One sweep over
+/// both run sets, tagged by side so same-pool pairs never reach the scan,
+/// and the run join bisects across the two pools. This is what a prepared
+/// operand's staged runs are swept against each row with: nothing about
+/// the prepared side is rebuilt per call.
+pub(in crate::geometry) fn candidate_pairs_between(
+    a: (&[Segment], &[MonotoneRun]),
+    b: (&[Segment], &[MonotoneRun]),
+    bounds: Bounds,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
+    let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
+    thread_local! {
+        static SWEEP_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
+            crate::scratch_pool::ScratchPool::new(Vec::new())
+        };
+    }
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
+    entries.reserve(a.1.len() + b.1.len());
+    for (side, (pool, runs)) in [(1_u8, a), (2_u8, b)] {
+        for (index, run) in runs.iter().enumerate() {
+            let segs = &pool[run.start as usize..run.end as usize];
+            let (first, last) = match segs {
+                [only] => (only.start, only.end),
+                [first, .., last] => (first.start, last.end),
+                [] => continue,
+            };
+            let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
+            let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
+            entries.push(SweepEntry {
+                sweep_min: x_lo,
+                sweep_max: x_hi,
+                cross_min: y_lo,
+                cross_max: y_hi,
+                // Ordinal space: `a`'s runs first, then `b`'s.
+                ordinal: (index + if side == 1 { 0 } else { a.1.len() }) as u32,
+                side,
+            });
+        }
+    }
+    finish_sweep_entries(&mut entries, swapped);
+    let (cross_lo, cross_hi) = if swapped {
+        (min_x, max_x)
+    } else {
+        (min_y, max_y)
+    };
+    let total = a.1.len() + b.1.len();
+    let bands = if total >= SWEEP_BAND_MIN {
+        (total / SWEEP_BAND_GRAIN).next_power_of_two().min(64)
+    } else {
+        1
+    };
+    let band_height = (cross_hi - cross_lo) / bands as f64;
+    let mut run_visit = |left: usize, right: usize| -> ControlFlow<()> {
+        // `left < right` in ordinal space, and the sides differ, so `left` is
+        // an `a` run and `right` a `b` run.
+        let (a_run, b_run) = (&a.1[left], &b.1[right - a.1.len()]);
+        let (a_chain, b_chain) = (
+            RunChain {
+                pool: a.0,
+                run: a_run,
+                swapped,
+            },
+            RunChain {
+                pool: b.0,
+                run: b_run,
+                swapped,
+            },
+        );
+        bisect_runs(&a_chain, 0, a_chain.len(), &b_chain, 0, b_chain.len(), visit)
+    };
+    if bands > 1 && band_height > 0.0 {
+        banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
+    } else {
+        plain_windows(&entries, &mut run_visit)
     }
 }
 
@@ -531,7 +601,13 @@ fn bisect_runs(
     let (a_len, b_len) = (a_hi - a_lo, b_hi - b_lo);
     if a_len == 1 && b_len == 1 {
         let (x, y) = (a.ordinal(a_lo), b.ordinal(b_lo));
-        let (low, high) = if x < y { (x, y) } else { (y, x) };
+        // One pool: input-ordinal order. Two pools: `a` then `b`, whatever
+        // their ordinals.
+        let (low, high) = if std::ptr::eq(a.pool, b.pool) && x > y {
+            (y, x)
+        } else {
+            (x, y)
+        };
         return visit(low, high);
     }
     if a_len >= b_len {

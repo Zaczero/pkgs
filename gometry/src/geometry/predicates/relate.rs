@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
-    candidate_pairs_over_staged_runs, same_point, sign_of,
+    candidate_pairs_between, candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
 /// a parallel chain-id column (the kernel's run-break identities), and
@@ -131,22 +131,35 @@ impl LineworkChains {
         &self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, None, &mut visit)
+        candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, &mut visit)
     }
 
-    /// The candidate sweep restricted to pairs that straddle `split`: one
-    /// segment below it, one at or above. Staged lines never chain across each
-    /// other, so a run never straddles the split either.
-    pub(crate) fn for_each_cross_pair(
+    /// Every candidate pair between this staging and `other`, as
+    /// `visit(self_ordinal, other_ordinal)`, from one sweep over both run
+    /// sets. Neither staging is rebuilt.
+    pub(crate) fn for_each_pair_with(
         &self,
-        split: usize,
+        other: &Self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        candidate_pairs_over_staged_runs(
-            &self.segments,
-            &self.runs,
-            || self.bounds,
-            Some(split as u32),
+        let (a, b) = (self.segments.len(), other.segments.len());
+        if a.min(b) == 0 {
+            return ControlFlow::Continue(());
+        }
+        if a * b < 32 {
+            for left in 0..a {
+                for right in 0..b {
+                    visit(left, right)?;
+                }
+            }
+            return ControlFlow::Continue(());
+        }
+        let mut bounds = self.bounds;
+        bounds.include_bounds(other.bounds);
+        candidate_pairs_between(
+            (&self.segments, &self.runs),
+            (&other.segments, &other.runs),
+            bounds,
             &mut visit,
         )
     }
@@ -190,6 +203,12 @@ impl LineworkChains {
         self.spans.len()
     }
 
+    /// The segment ordinals of one staged line, if it contains a segment.
+    pub(crate) fn line_span(&self, line: usize) -> Option<std::ops::Range<usize>> {
+        let span = &self.spans[line];
+        (span.count > 0).then(|| span.first as usize..(span.first + span.count) as usize)
+    }
+
     /// The two ends of an OPEN staged line — its OGC boundary candidates —
     /// or `None` for a closed one, whose ends cancel. Read off the staged
     /// segments, so a duplicated first or last vertex elided at staging still
@@ -217,4 +236,3 @@ impl LineworkChains {
         }
     }
 }
-

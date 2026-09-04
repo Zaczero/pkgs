@@ -212,6 +212,9 @@ struct TopologyPlan {
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
     point_tester: OnceLock<Box<Option<PointBatchTester>>>,
+    /// The direct relation engines' stagings, built once per operand.
+    linework: OnceLock<Box<Option<crate::geometry::StagedLinework>>>,
+    rings: OnceLock<Box<Option<crate::geometry::StagedRings>>>,
 }
 
 /// Shape-derived metric products shared by persistent and transient plans.
@@ -327,6 +330,26 @@ impl PreparedPlan {
         self.topology.get().map_or(0, |topology| {
             topology.cartesian_graph_accesses.load(Ordering::Relaxed)
         })
+    }
+
+    /// The shape staged as linework for the direct relation engine, `None`
+    /// when it is not a line operand they admit.
+    pub(crate) fn staged_linework(&self) -> Option<&crate::geometry::StagedLinework> {
+        self.topology()
+            .linework
+            .get_or_init(|| Box::new(crate::geometry::stage_linework(self.shape())))
+            .as_ref()
+            .as_ref()
+    }
+
+    /// The shape's rings staged for the direct relation engine, `None` when
+    /// it is not an areal operand.
+    pub(crate) fn staged_rings(&self) -> Option<&crate::geometry::StagedRings> {
+        self.topology()
+            .rings
+            .get_or_init(|| Box::new(crate::geometry::stage_rings(self.shape())))
+            .as_ref()
+            .as_ref()
     }
 
     pub(crate) fn validate_cached(&self) -> Option<&ValidationIssue> {

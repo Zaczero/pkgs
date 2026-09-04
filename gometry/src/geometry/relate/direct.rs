@@ -52,52 +52,50 @@ fn admitted_lines(shape: &Shape) -> Option<Vec<&crate::geometry::CoordSeq>> {
     }
 }
 
-/// One operand staged for the engine: its segments occupy `[first, first +
-/// count)` of the shared pool; `boundary` is its sorted mod-2 endpoint set.
-struct Operand {
-    first: usize,
-    count: usize,
+/// A linework operand staged for the engine: its chains (segments, monotone
+/// runs, bounds) and its sorted mod-2 endpoint set. Built once per operand
+/// and cached on a prepared plan, so a scalar swept against an array is
+/// staged exactly once for the whole call.
+pub(crate) struct StagedLinework {
+    chains: LineworkChains,
     boundary: Vec<PointKey>,
 }
 
-impl Operand {
-    fn stage(chains: &mut LineworkChains, lines: &[&crate::geometry::CoordSeq]) -> Self {
-        let first_line = chains.line_count();
-        let first = chains.segments.len();
-        for line in lines {
-            // Admission proved a real segment, so staging never declines.
-            chains.push_line(line);
-        }
-        let line_count = chains.line_count() - first_line;
-        // OGC line boundaries are the mod-2 endpoints of the whole operand:
-        // an end shared by an even number of parts is interior.
-        let mut ends: Vec<PointKey> = Vec::with_capacity(2 * line_count);
-        for line in first_line..first_line + line_count {
-            if let Some((start, end)) = chains.line_ends(line) {
-                ends.push(PointKey::new(start));
-                ends.push(PointKey::new(end));
-            }
-        }
-        ends.sort_unstable();
-        let mut boundary = Vec::with_capacity(ends.len());
-        let mut run = ends.iter().peekable();
-        while let Some(&key) = run.next() {
-            let mut multiplicity = 1_usize;
-            while run.peek() == Some(&&key) {
-                run.next();
-                multiplicity += 1;
-            }
-            if multiplicity % 2 == 1 {
-                boundary.push(key);
-            }
-        }
-        Self {
-            first,
-            count: chains.segments.len() - first,
-            boundary,
+/// Stage a line operand, or `None` when it is not admitted here: Cartesian
+/// `LineString`/`MultiLineString` whose every member has a real segment.
+pub(crate) fn stage_linework(shape: &Shape) -> Option<StagedLinework> {
+    let lines = admitted_lines(shape)?;
+    let mut chains = LineworkChains::default();
+    for line in &lines {
+        // Admission proved a real segment, so staging never declines.
+        chains.push_line(line);
+    }
+    // OGC line boundaries are the mod-2 endpoints of the whole operand: an
+    // end shared by an even number of parts is interior.
+    let mut ends: Vec<PointKey> = Vec::with_capacity(2 * chains.line_count());
+    for line in 0..chains.line_count() {
+        if let Some((start, end)) = chains.line_ends(line) {
+            ends.push(PointKey::new(start));
+            ends.push(PointKey::new(end));
         }
     }
+    ends.sort_unstable();
+    let mut boundary = Vec::with_capacity(ends.len());
+    let mut run = ends.iter().peekable();
+    while let Some(&key) = run.next() {
+        let mut multiplicity = 1_usize;
+        while run.peek() == Some(&&key) {
+            run.next();
+            multiplicity += 1;
+        }
+        if multiplicity % 2 == 1 {
+            boundary.push(key);
+        }
+    }
+    Some(StagedLinework { chains, boundary })
+}
 
+impl StagedLinework {
     const fn shape(&self) -> OperandShape {
         OperandShape {
             interior: Dimension::Curve,
@@ -107,10 +105,6 @@ impl Operand {
                 Some(Dimension::Point)
             },
         }
-    }
-
-    const fn owns(&self, ordinal: usize) -> bool {
-        ordinal >= self.first && ordinal < self.first + self.count
     }
 
     /// Where a point known to lie ON this operand sits: on its boundary if it
@@ -148,28 +142,28 @@ pub(crate) enum Outcome {
 /// Relate two admitted linework operands, stopping as soon as `decide` returns
 /// a verdict. `None` when either operand is not admitted.
 fn relate_linework(
-    left: &Shape,
-    right: &Shape,
+    left: &PreparedPlan,
+    right: &PreparedPlan,
     mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
 ) -> Option<Outcome> {
-    let left_lines = admitted_lines(left)?;
-    let right_lines = admitted_lines(right)?;
-
-    let mut chains = LineworkChains::default();
-    let a = Operand::stage(&mut chains, &left_lines);
-    let b = Operand::stage(&mut chains, &right_lines);
+    let a = left.staged_linework()?;
+    let b = right.staged_linework()?;
     let mut interval = De9imInterval::open(a.shape(), b.shape());
     if let Some(verdict) = decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
 
-    let mut touched = vec![Touched::None; chains.segments.len()];
+    let mut touched = [
+        vec![Touched::None; a.chains.segments.len()],
+        vec![Touched::None; b.chains.segments.len()],
+    ];
     let mut a_boundary_hit = vec![false; a.boundary.len()];
     let mut b_boundary_hit = vec![false; b.boundary.len()];
-    // Collinear spans, per segment ordinal, as the two vertices bounding them.
-    let mut spans: Vec<(usize, XY, XY)> = Vec::new();
+    // Collinear spans per side, per segment ordinal, as the two vertices
+    // bounding them.
+    let mut spans: [Vec<(usize, XY, XY)>; 2] = [Vec::new(), Vec::new()];
 
-    let verdict = sweep_contacts(&chains, &a, |ia, ib, contact| {
+    let verdict = sweep_contacts(&a.chains, &b.chains, |ia, ib, contact| {
         let mut vertex = |point: XY, interval: &mut De9imInterval| {
             let (la, lb) = (a.class_of(point), b.class_of(point));
             if let Some(slot) = a.boundary_slot(point) {
@@ -184,17 +178,17 @@ fn relate_linework(
             Contact::Disjoint => return None,
             Contact::Cross { .. } => {
                 interval.witness(Loc::Interior, Loc::Interior, Dimension::Point);
-                for ordinal in [ia, ib] {
-                    if touched[ordinal] == Touched::None {
-                        touched[ordinal] = Touched::Points;
+                for (side, ordinal) in [(0, ia), (1, ib)] {
+                    if touched[side][ordinal] == Touched::None {
+                        touched[side][ordinal] = Touched::Points;
                     }
                 }
             },
             Contact::Touch { point } => {
                 vertex(point, &mut interval);
-                for ordinal in [ia, ib] {
-                    if touched[ordinal] == Touched::None {
-                        touched[ordinal] = Touched::Points;
+                for (side, ordinal) in [(0, ia), (1, ib)] {
+                    if touched[side][ordinal] == Touched::None {
+                        touched[side][ordinal] = Touched::Points;
                     }
                 }
             },
@@ -202,9 +196,9 @@ fn relate_linework(
             // span: that is a vertex touch, and it must not raise II to a curve.
             Contact::Collinear { span } if same_point(span.start, span.end) => {
                 vertex(span.start, &mut interval);
-                for ordinal in [ia, ib] {
-                    if touched[ordinal] == Touched::None {
-                        touched[ordinal] = Touched::Points;
+                for (side, ordinal) in [(0, ia), (1, ib)] {
+                    if touched[side][ordinal] == Touched::None {
+                        touched[side][ordinal] = Touched::Points;
                     }
                 }
             },
@@ -212,10 +206,10 @@ fn relate_linework(
                 interval.witness(Loc::Interior, Loc::Interior, Dimension::Curve);
                 vertex(span.start, &mut interval);
                 vertex(span.end, &mut interval);
-                touched[ia] = Touched::Spans;
-                touched[ib] = Touched::Spans;
-                spans.push((ia, span.start, span.end));
-                spans.push((ib, span.start, span.end));
+                touched[0][ia] = Touched::Spans;
+                touched[1][ib] = Touched::Spans;
+                spans[0].push((ia, span.start, span.end));
+                spans[1].push((ib, span.start, span.end));
             },
         }
         decide(&interval)
@@ -226,8 +220,7 @@ fn relate_linework(
 
     if let Some(verdict) = settle_after_sweep(
         &mut interval,
-        &chains,
-        [&a, &b],
+        [&a.chains, &b.chains],
         &touched,
         [&a_boundary_hit, &b_boundary_hit],
         spans,
@@ -240,19 +233,17 @@ fn relate_linework(
     ))
 }
 
-/// Drive the bipartite candidate sweep over the staged pool — `a` owns its
-/// prefix, the other operand the rest — and hand every cross-operand contact
-/// to `on_contact` as `(a_ordinal, b_ordinal, contact)`, stopping with its
-/// verdict as soon as it returns one.
+/// Sweep two staged pools against each other and hand every contact to
+/// `on_contact` as `(a_ordinal, b_ordinal, contact)` in the pools' own index
+/// spaces, stopping with its verdict as soon as it returns one.
 fn sweep_contacts(
-    chains: &LineworkChains,
-    a: &Operand,
+    a: &LineworkChains,
+    b: &LineworkChains,
     mut on_contact: impl FnMut(usize, usize, Contact) -> Option<bool>,
 ) -> Option<bool> {
     let mut verdict = None;
-    let _ = chains.for_each_cross_pair(a.first + a.count, |i, j| {
-        let (ia, ib) = if a.owns(i) { (i, j) } else { (j, i) };
-        let (sa, sb): (Segment, Segment) = (chains.segments[ia], chains.segments[ib]);
+    let _ = a.for_each_pair_with(b, |ia, ib| {
+        let (sa, sb): (Segment, Segment) = (a.segments[ia], b.segments[ib]);
         if segment_envelopes_disjoint(sa, sb) {
             return ControlFlow::Continue(());
         }
@@ -272,11 +263,10 @@ fn sweep_contacts(
 /// `decide` is consulted after each phase.
 fn settle_after_sweep(
     interval: &mut De9imInterval,
-    chains: &LineworkChains,
-    operands: [&Operand; 2],
-    touched: &[Touched],
+    chains: [&LineworkChains; 2],
+    touched: &[Vec<Touched>; 2],
     boundary_hit: [&[bool]; 2],
-    mut spans: Vec<(usize, XY, XY)>,
+    mut spans: [Vec<(usize, XY, XY)>; 2],
     decide: &mut impl FnMut(&De9imInterval) -> Option<bool>,
 ) -> Option<bool> {
     // Every contact has been seen: the four inner cells cannot rise further.
@@ -302,17 +292,15 @@ fn settle_after_sweep(
     // by collinear spans. Untouched and point-touched segments settle it at
     // once; only span-carrying segments need the coverage fold, and only when
     // every other segment of that operand was covered.
-    spans.sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
-    for (operand, row, col) in [
-        (operands[0], Loc::Interior, Loc::Exterior),
-        (operands[1], Loc::Exterior, Loc::Interior),
+    for (side, row, col) in [
+        (0, Loc::Interior, Loc::Exterior),
+        (1, Loc::Exterior, Loc::Interior),
     ] {
-        let segments = &chains.segments[operand.first..operand.first + operand.count];
-        let reaches_exterior = segments.iter().enumerate().any(|(offset, segment)| {
-            let ordinal = operand.first + offset;
-            match touched[ordinal] {
+        spans[side].sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
+        let reaches_exterior = chains[side].segments.iter().enumerate().any(|(ordinal, segment)| {
+            match touched[side][ordinal] {
                 Touched::None | Touched::Points => true,
-                Touched::Spans => !covered(*segment, &spans, ordinal),
+                Touched::Spans => !covered(*segment, &spans[side], ordinal),
             }
         });
         if reaches_exterior {
@@ -373,7 +361,7 @@ fn covered(segment: Segment, spans: &[(usize, XY, XY)], ordinal: usize) -> bool 
 
 /// The full matrix of two linework operands, or `None` when either is not
 /// admitted here.
-pub(crate) fn direct_linework_relate(left: &Shape, right: &Shape) -> Option<De9im> {
+pub(crate) fn direct_linework_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
     match relate_linework(left, right, |_| None)? {
         Outcome::Matrix(matrix) => Some(matrix),
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
@@ -384,8 +372,8 @@ pub(crate) fn direct_linework_relate(left: &Shape, right: &Shape) -> Option<De9i
 /// evidence allows, or `None` when either operand is not admitted here.
 pub(crate) fn direct_linework_predicate(
     spec: &PredicateSpec,
-    left: &Shape,
-    right: &Shape,
+    left: &PreparedPlan,
+    right: &PreparedPlan,
 ) -> Option<bool> {
     let outcome = relate_linework(left, right, |interval| {
         predicate_verdict(interval, spec.predicate, Dimension::Curve, Dimension::Curve)
@@ -400,37 +388,39 @@ pub(crate) fn direct_linework_predicate(
 // Areal operands
 // ---------------------------------------------------------------------------
 
-/// A polygon operand's rings, with one vertex of each for the placement
-/// phase. Shells and holes are not told apart: whichever side of a ring is
-/// the owner's interior, the ring's two sides are one interior and one
-/// exterior patch of the owner, and with no contact both sit in the same
-/// region of the other operand.
-struct ArealOperand {
-    staged: Operand,
+/// A polygon operand's rings staged as closed chains, with one vertex of each
+/// for the placement phase. Shells and holes are not told apart: whichever
+/// side of a ring is the owner's interior, the ring's two sides are one
+/// interior and one exterior patch of the owner, and with no contact both
+/// sit in the same region of the other operand. Cached on a prepared plan.
+pub(crate) struct StagedRings {
+    chains: LineworkChains,
     ring_vertices: Vec<XY>,
 }
 
-impl ArealOperand {
-    fn stage(chains: &mut LineworkChains, polygons: &[&crate::geometry::Polygon]) -> Self {
-        let mut lines: Vec<&crate::geometry::CoordSeq> = Vec::new();
-        let mut ring_vertices = Vec::new();
-        for polygon in polygons {
-            for ring in polygon.rings() {
-                lines.push(ring.coords());
-                ring_vertices.push(XY::new(ring.coords().xs()[0], ring.coords().ys()[0]));
-            }
-        }
-        let staged = Operand::stage(chains, &lines);
-        debug_assert!(
-            staged.boundary.is_empty(),
-            "rings are closed and contribute no mod-2 boundary points"
-        );
-        Self {
-            staged,
-            ring_vertices,
+/// Stage an areal operand's rings, or `None` when it is not areal here (see
+/// `collect_areal_polygons`); admission proper is decided per call.
+pub(crate) fn stage_rings(shape: &Shape) -> Option<StagedRings> {
+    let mut polygons = Vec::new();
+    super::graph_matrix::collect_areal_polygons(shape, &mut polygons)?;
+    if polygons.is_empty() {
+        return None;
+    }
+    let mut chains = LineworkChains::default();
+    let mut ring_vertices = Vec::new();
+    for polygon in &polygons {
+        for ring in polygon.rings() {
+            chains.push_line(ring.coords());
+            ring_vertices.push(XY::new(ring.coords().xs()[0], ring.coords().ys()[0]));
         }
     }
+    Some(StagedRings {
+        chains,
+        ring_vertices,
+    })
+}
 
+impl StagedRings {
     const fn shape() -> OperandShape {
         OperandShape {
             interior: Dimension::Surface,
@@ -516,17 +506,15 @@ fn relate_areal(
 ) -> Option<Outcome> {
     let left_polygons = admitted_polygons(left)?;
     let right_polygons = admitted_polygons(right)?;
-
-    let mut chains = LineworkChains::default();
-    let a = ArealOperand::stage(&mut chains, &left_polygons);
-    let b = ArealOperand::stage(&mut chains, &right_polygons);
-    let mut interval = De9imInterval::open(ArealOperand::shape(), ArealOperand::shape());
+    let a = left.staged_rings()?;
+    let b = right.staged_rings()?;
+    let mut interval = De9imInterval::open(StagedRings::shape(), StagedRings::shape());
     if let Some(verdict) = decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
 
     let mut boundaries_met = false;
-    let verdict = sweep_contacts(&chains, &a.staged, |_ia, _ib, contact| {
+    let verdict = sweep_contacts(&a.chains, &b.chains, |_ia, _ib, contact| {
         match contact {
             Contact::Disjoint => return None,
             Contact::Cross { .. } => {
@@ -652,31 +640,26 @@ struct Cut {
 /// exterior unless shared spans cover every ring segment end to end.
 fn relate_areal_linework(
     area: &PreparedPlan,
-    line: &Shape,
+    line: &PreparedPlan,
     mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
 ) -> Option<Outcome> {
     let polygons = admitted_polygons(area)?;
-    let lines = admitted_lines(line)?;
-
-    let mut chains = LineworkChains::default();
-    let rings = ArealOperand::stage(&mut chains, &polygons);
-    let linework = Operand::stage(&mut chains, &lines);
-    let mut interval = De9imInterval::open(ArealOperand::shape(), linework.shape());
+    let rings = area.staged_rings()?;
+    let linework = line.staged_linework()?;
+    let mut interval = De9imInterval::open(StagedRings::shape(), linework.shape());
     interval.witness(Loc::Interior, Loc::Exterior, Dimension::Surface);
     if let Some(verdict) = decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
 
-    let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.count];
+    let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.chains.segments.len()];
     let mut ring_spans: Vec<(usize, XY, XY)> = Vec::new();
-    let verdict = sweep_contacts(&chains, &rings.staged, |ring_ordinal, line_ordinal, contact| {
-        let Some(contact_point) = cut_line_at_contact(
-            chains.segments[line_ordinal],
+    let verdict = sweep_contacts(&rings.chains, &linework.chains, |ring_ordinal, line_ordinal, contact| {
+        let contact_point = cut_line_at_contact(
+            linework.chains.segments[line_ordinal],
             contact,
-            &mut cuts[line_ordinal - linework.first],
-        ) else {
-            return None;
-        };
+            &mut cuts[line_ordinal],
+        )?;
         if let Contact::Collinear { span } = contact
             && !same_point(span.start, span.end)
         {
@@ -690,17 +673,14 @@ fn relate_areal_linework(
         return Some(Outcome::Verdict(verdict));
     }
 
-    for line_index in 0..chains.line_count() {
-        let Some(span) = chains.line_span(line_index) else {
+    for line_index in 0..linework.chains.line_count() {
+        let Some(span) = linework.chains.line_span(line_index) else {
             continue;
         };
-        if span.start < linework.first {
-            continue; // a ring
-        }
-        let walked = walk_line_pieces(&chains, &linework, &polygons, span, &mut cuts, &mut interval);
+        let walked = walk_line_pieces(linework, &polygons, span, &mut cuts, &mut interval);
         // Line ends in the boundary column: on a cut they are boundary points
         // of the area, otherwise they sit where their piece does.
-        if let Some((start, end)) = chains.line_ends(line_index) {
+        if let Some((start, end)) = linework.chains.line_ends(line_index) {
             for (point, piece) in [(start, walked.first_piece), (end, walked.last_piece)] {
                 if linework.class_of(point) != Loc::Boundary {
                     continue;
@@ -719,11 +699,12 @@ fn relate_areal_linework(
     }
 
     ring_spans.sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
-    let ring_segments = &chains.segments[rings.staged.first..rings.staged.first + rings.staged.count];
-    let boundary_covered = ring_segments
+    let boundary_covered = rings
+        .chains
+        .segments
         .iter()
         .enumerate()
-        .all(|(offset, segment)| covered(*segment, &ring_spans, rings.staged.first + offset));
+        .all(|(ordinal, segment)| covered(*segment, &ring_spans, ordinal));
     if !boundary_covered {
         interval.witness(Loc::Boundary, Loc::Exterior, Dimension::Curve);
     }
@@ -803,8 +784,7 @@ impl WalkedLine {
 /// and witnessing every piece and cut. A piece that continues across a
 /// vertex keeps its location; a cut ends it.
 fn walk_line_pieces(
-    chains: &LineworkChains,
-    linework: &Operand,
+    linework: &StagedLinework,
     polygons: &[&crate::geometry::Polygon],
     span: std::ops::Range<usize>,
     cuts: &mut [Vec<Cut>],
@@ -818,13 +798,14 @@ fn walk_line_pieces(
     };
     let mut piece: Option<Loc> = None;
     let mut span_depth = 0_i32;
+    let chains = &linework.chains;
     let (line_start, line_end) = (
         chains.segments[span.start].start,
         chains.segments[span.end - 1].end,
     );
     for ordinal in span.clone() {
         let segment = chains.segments[ordinal];
-        let slot = &mut cuts[ordinal - linework.first];
+        let slot = &mut cuts[ordinal];
         slot.sort_by(|left, right| left.at.cmp_along(&right.at));
         let mut cursor = segment.start;
         let mut index = 0;
@@ -879,10 +860,10 @@ pub(crate) fn direct_areal_linework_relate(left: &PreparedPlan, right: &Prepared
         Outcome::Matrix(matrix) => matrix,
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
     };
-    if let Some(outcome) = relate_areal_linework(left, right.shape(), |_| None) {
+    if let Some(outcome) = relate_areal_linework(left, right, |_| None) {
         return Some(unwrap(outcome));
     }
-    relate_areal_linework(right, left.shape(), |_| None).map(|outcome| unwrap(outcome).transpose())
+    relate_areal_linework(right, left, |_| None).map(|outcome| unwrap(outcome).transpose())
 }
 
 /// One named predicate over an areal and a linework operand, in either
@@ -896,14 +877,14 @@ pub(crate) fn direct_areal_linework_predicate(
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
     };
-    if let Some(outcome) = relate_areal_linework(left, right.shape(), |interval| {
+    if let Some(outcome) = relate_areal_linework(left, right, |interval| {
         predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Curve)
     }) {
         return Some(finish(outcome, spec));
     }
     // Swapped operands: the predicate on the (line, area) pair is the same
     // predicate on the transposed (area, line) interval.
-    relate_areal_linework(right, left.shape(), |interval| {
+    relate_areal_linework(right, left, |interval| {
         predicate_verdict(&interval.transpose(), spec.predicate, Dimension::Curve, Dimension::Surface)
     })
     .map(|outcome| match outcome {
@@ -975,7 +956,8 @@ mod tests {
 
     fn check(label: &str, left: &Shape, right: &Shape) {
         let expected = oracle(left, right);
-        let direct = direct_linework_relate(left, right)
+        let (left_plan, right_plan) = (PreparedPlan::transient(left), PreparedPlan::transient(right));
+        let direct = direct_linework_relate(&left_plan, &right_plan)
             .unwrap_or_else(|| panic!("{label}: the pair should be admitted"));
         assert_eq!(
             direct.text(),
@@ -984,7 +966,7 @@ mod tests {
         );
         for predicate in every_predicate() {
             let spec = spec_of(predicate);
-            let early = direct_linework_predicate(&spec, left, right).unwrap();
+            let early = direct_linework_predicate(&spec, &left_plan, &right_plan).unwrap();
             assert_eq!(
                 early,
                 predicate_matrix_value(&spec, expected),
@@ -994,7 +976,7 @@ mod tests {
         }
         // And the transpose, since the engine orients pairs.
         let oracle_t = oracle(right, left);
-        let direct_t = direct_linework_relate(right, left).unwrap();
+        let direct_t = direct_linework_relate(&right_plan, &left_plan).unwrap();
         assert_eq!(direct_t.text(), oracle_t.text(), "{label}: transposed");
     }
 
@@ -1060,7 +1042,7 @@ mod tests {
             let right = points(right_n);
             let label = format!("fuzz {left:?} vs {right:?}");
             let (left, right) = (line(&left), line(&right));
-            if direct_linework_relate(&left, &right).is_none() {
+            if stage_linework(&left).is_none() || stage_linework(&right).is_none() {
                 continue; // a collapsed line: not admitted, the graph keeps it
             }
             // The graph is the oracle only where it is trusted: on a line
@@ -1106,7 +1088,7 @@ mod tests {
             ),
         ];
         for (label, left, right, expected) in &cases {
-            let direct = direct_linework_relate(left, right).unwrap();
+            let direct = direct_linework_relate(&PreparedPlan::transient(left), &PreparedPlan::transient(right)).unwrap();
             assert_eq!(direct.text(), *expected, "{label}");
         }
     }
@@ -1408,7 +1390,7 @@ mod tests {
                     .map(|_| ((next() % 8) as f64, (next() % 8) as f64))
                     .collect();
                 let probe = line(&points);
-                if direct_linework_relate(&probe, &probe).is_none()
+                if stage_linework(&probe).is_none()
                     || !PreparedPlan::transient(&probe).is_simple_cached()
                 {
                     continue;

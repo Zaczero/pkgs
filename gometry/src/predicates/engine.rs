@@ -688,7 +688,7 @@ pub(crate) fn topology_scalar_pair(
     // same way, and the graph stays for what they decline.
     if let Some((left, right)) = operands.cartesian_plans()
         && let Some(verdict) =
-            crate::geometry::direct_linework_predicate(spec, left.shape(), right.shape())
+            crate::geometry::direct_linework_predicate(spec, left, right)
                 .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
                 .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
     {

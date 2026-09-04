@@ -19,7 +19,11 @@ mod interval;
 mod operands;
 
 pub(crate) use de9im::{De9im, Loc};
-pub(crate) use direct::{direct_areal_linework_predicate, direct_areal_linework_relate, direct_areal_predicate, direct_areal_relate, direct_linework_predicate, direct_linework_relate};
+pub(crate) use direct::{
+    StagedLinework, StagedRings, direct_areal_linework_predicate,
+    direct_areal_linework_relate, direct_areal_predicate, direct_areal_relate,
+    direct_linework_predicate, direct_linework_relate, stage_linework, stage_rings,
+};
 pub(crate) use graph_matrix::{
     GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
