@@ -6,8 +6,6 @@
 
 use crate::grid::s2::cellid::Face;
 
-/// Number of cube faces.
-pub(crate) const NUM_FACES: u8 = 6;
 /// Finest subdivision level.
 pub(crate) const MAX_LEVEL: u8 = 30;
 /// Leaf-grid size per face axis: `2^MAX_LEVEL` IJ positions.
@@ -243,7 +241,7 @@ mod tests {
         for (lon, lat) in samples {
             let point = lonlat_to_point(lon, lat);
             let (face, u, v) = xyz_to_face_uv(point);
-            assert!(face.get() < NUM_FACES);
+            assert!(Face::ALL.contains(&face));
             assert!((-1.0..=1.0).contains(&u) && (-1.0..=1.0).contains(&v));
             // ST/UV round trip and the discretized leaf coordinates.
             let (s_value, t_value) = (uv_to_st(u), uv_to_st(v));

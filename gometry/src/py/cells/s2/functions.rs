@@ -79,6 +79,7 @@ pub(crate) fn s2_cells(
     )
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled S2Cell from its 64-bit id (internal; see
 /// ``S2Cell.__reduce__``).
 #[pyfunction]

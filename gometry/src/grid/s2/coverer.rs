@@ -43,8 +43,8 @@ use crate::grid::affine_source::{
 pub(crate) use crate::grid::coverer::CellClass;
 use crate::grid::coverer::{NativeRectClassifier, RectClass};
 use crate::grid::s2::cell::Cell;
-use crate::grid::s2::cellid::CellId;
-use crate::grid::s2::projection::{MAX_LEVEL, NUM_FACES};
+use crate::grid::s2::cellid::{CellId, Face};
+use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
@@ -270,7 +270,7 @@ impl Coverer {
         hidden: &mut Vec<(u8, CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
     ) -> Result<(), CoverBudgetExceeded> {
-        for face in 0..NUM_FACES {
+        for face in Face::ALL {
             let id = CellId::from_face(face);
             match classify(ctx, id) {
                 CellClass::Outside => {},

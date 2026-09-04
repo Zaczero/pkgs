@@ -12,6 +12,9 @@ mod types;
 pub(crate) use cell::{s2_cell_from_xy, s2_cell_id, *};
 pub(super) use functions::s2_dissolve;
 pub(super) use parse::parse_s2_min_level_value;
-pub(crate) use parse::{parse_s2_level, parse_s2_level_budget, parse_s2_level_value};
+pub(crate) use parse::{
+    parse_s2_level, parse_s2_level_budget, parse_s2_level_validated,
+    parse_s2_level_value,
+};
 pub(crate) use register::register as register_s2;
 pub(crate) use types::PyS2Cell;

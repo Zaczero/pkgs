@@ -3,7 +3,7 @@ use h3o::{CellIndex, LatLng, Resolution};
 use crate::H3_MAX_RESOLUTION;
 use crate::geometry::{Point, Shape};
 use crate::grid::cell::{CellPickleArg, GridCell, HierarchicalCell};
-use crate::py::cells::h3::cell::h3_grid_ring_cells;
+use crate::py::cells::h3::cell::h3_immediate_neighbors;
 use crate::py::cells::h3::tile::h3_cell_shape;
 
 fn h3_kernel_area_m2(cell: CellIndex) -> f64 {
@@ -122,7 +122,7 @@ impl GridCell for CellIndex {
     }
 
     fn neighbors(self) -> Vec<Self> {
-        h3_grid_ring_cells(self, 1)
+        h3_immediate_neighbors(self)
     }
 
     fn parent_at(self, depth: u8) -> Option<Self> {

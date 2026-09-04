@@ -12,7 +12,7 @@ use crate::grid::geohash::Geohash;
 use crate::grid::tile::Tile;
 use crate::py::cells::geohash::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
 use crate::py::cells::h3::{PyH3Cell, h3_cell_from_xy, h3_cell_index, parse_h3_resolution};
-use crate::py::cells::s2::{PyS2Cell, parse_s2_level, s2_cell_from_xy, s2_cell_id};
+use crate::py::cells::s2::{PyS2Cell, parse_s2_level_validated, s2_cell_from_xy, s2_cell_id};
 use crate::py::cells::tiles::{PyTile, parse_tile_zoom, tile_arg};
 use crate::py::cells::{
     Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
@@ -135,7 +135,7 @@ pub(crate) fn construct_s2_cell(
         lat,
         level,
         "level",
-        parse_s2_level,
+        parse_s2_level_validated,
         s2_cell_from_xy,
         |cell| {
             Ok(PyS2Cell {

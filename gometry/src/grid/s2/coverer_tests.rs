@@ -9,11 +9,11 @@ use crate::grid::affine_source::{
 };
 use crate::grid::coverer::CellClass;
 use crate::grid::s2::cell::Cell;
-use crate::grid::s2::cellid::CellId;
+use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::coverer::{
     AffineRectClass, CoverContext, CoverRule, Coverer, Covering, certified_rect_windows, classify,
 };
-use crate::grid::s2::projection::{MAX_LEVEL, NUM_FACES};
+use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
     CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
@@ -81,7 +81,7 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
     let mut dfs: Vec<(u8, CellId, CellClass)> = Vec::new();
     let mut staged: Vec<(CellId, CellClass)> = Vec::new();
     let limit = coverer.max_cells;
-    for face in 0..NUM_FACES {
+    for face in Face::ALL {
         let id = CellId::from_face(face);
         match classify_relate(&ctx, id) {
             CellClass::Outside => {},
@@ -278,7 +278,7 @@ fn fixed(level: u8) -> Coverer {
         min_level: level,
         max_level: level,
         level_mod: 1,
-        max_cells: Some(crate::grid::GRID_MAX_CELLS),
+        max_cells: Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
         target_cells: 8,
     }
 }
@@ -960,7 +960,7 @@ fn cover_rejects_fine_min_level_before_flooding() {
         min_level: 16,
         max_level: 16,
         level_mod: 1,
-        max_cells: Some(crate::grid::GRID_MAX_CELLS),
+        max_cells: Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
         target_cells: 8,
     };
     let err = coverer
@@ -969,7 +969,7 @@ fn cover_rejects_fine_min_level_before_flooding() {
     assert!(matches!(
         err,
         crate::grid::CoverError::Budget(error)
-            if error.limit == crate::grid::GRID_MAX_CELLS
+            if error.limit == usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()
     ));
     assert!(err.to_string().contains("max_cells"));
 }

@@ -200,7 +200,9 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
                 "expected Point geometry",
             ));
         }
-        let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
+        // A frame is lon/lat when it has no CRS or a WGS 84 one; any other CRS
+        // is the one to reproject from.
+        let projected_crs = array.crs_str().filter(|crs| !crate::crs::is_wgs84_lonlat(crs));
         let mut xs = Vec::new();
         let mut ys = Vec::new();
         let mut present = Vec::new();
@@ -226,13 +228,12 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
                 },
             }
         }
-        if lonlat_frame {
+        let Some(crs) = projected_crs else {
             for &logical in &present {
                 crate::boundary::geographic::validate_lonlat_xy(xs[logical], ys[logical])?;
             }
             return Ok(GridPointRows::Columns { xs, ys });
-        }
-        let crs = array.crs_str().expect("non-lonlat frame carries a CRS");
+        };
         let mut px = Vec::new();
         let mut py = Vec::new();
         crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(PyErr::from)?;
@@ -240,7 +241,7 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
             crate::try_push_pair(&mut px, &mut py, xs[logical], ys[logical])
                 .map_err(PyErr::from)?;
         }
-        crate::crs::TransformPlan::new(crs, "EPSG:4326").transform_coordinates(
+        crate::crs::TransformPlan::new(crs, "EPSG:4326")?.transform_coordinates(
             &mut px,
             &mut py,
             crate::Zt::None,
@@ -256,19 +257,22 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         .storage()
         .point_rows()
         .ok_or_else(|| crate::py::errors::geometry_type_err("expected Point geometry"))?;
-    let lonlat_frame = array.crs_str().is_none_or(crate::crs::is_wgs84_lonlat);
-    if lonlat_frame || points.is_empty() {
-        // Skip lon/lat validation on missing rows (NaN placeholders) — factories
-        // carry them as a missing mask instead of rejecting the whole batch.
-        for (row, point) in points.iter().enumerate() {
-            if array.is_row_missing(row) {
-                continue;
+    let projected_crs = array.crs_str().filter(|crs| !crate::crs::is_wgs84_lonlat(crs));
+    let crs = match projected_crs {
+        Some(crs) if !points.is_empty() => crs,
+        _ => {
+            // Skip lon/lat validation on missing rows (NaN placeholders) —
+            // factories carry them as a missing mask instead of rejecting the
+            // whole batch.
+            for (row, point) in points.iter().enumerate() {
+                if array.is_row_missing(row) {
+                    continue;
+                }
+                crate::boundary::geographic::validate_lonlat_point(point)?;
             }
-            crate::boundary::geographic::validate_lonlat_point(point)?;
-        }
-        return Ok(GridPointRows::Source(points));
-    }
-    let crs = array.crs_str().expect("non-lonlat frame carries a CRS");
+            return Ok(GridPointRows::Source(points));
+        },
+    };
     // Grid cells are 2-D (lon/lat), so keep independent X/Y columns through
     // the batched transform. This avoids the previous AoS -> CoordSeq -> Shape
     // round-trip; only the final `PointRows` interchange materializes Points.
@@ -293,7 +297,7 @@ pub(crate) fn grid_lonlat_points(array: &PyGeometryArray) -> PyResult<GridPointR
         for &row in &present {
             crate::try_push_pair(&mut px, &mut py, xs[row], ys[row]).map_err(PyErr::from)?;
         }
-        crate::crs::TransformPlan::new(crs, "EPSG:4326").transform_coordinates(
+        crate::crs::TransformPlan::new(crs, "EPSG:4326")?.transform_coordinates(
             &mut px,
             &mut py,
             crate::Zt::None,

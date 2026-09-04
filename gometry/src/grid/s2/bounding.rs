@@ -34,8 +34,8 @@
 
 use crate::geometry::{Bounds, Shape};
 use crate::grid::s2::cell::Cell;
-use crate::grid::s2::cellid::CellId;
-use crate::grid::s2::projection::{NUM_FACES, Point3, lonlat_to_point};
+use crate::grid::s2::cellid::{CellId, Face};
+use crate::grid::s2::projection::{Point3, lonlat_to_point};
 
 /// Deepest S2 cell whose region contains the shape (bbox contract).
 ///
@@ -208,8 +208,8 @@ pub(crate) fn bounding_cell_bbox(bounds: Bounds) -> Option<CellId> {
     let mut closed_root: Option<CellId> = None;
     let mut margin_root: Option<CellId> = None;
     let mut n_closed = 0_usize;
-    for face_idx in 0..NUM_FACES {
-        let root = CellId::from_face(face_idx);
+    for face in Face::ALL {
+        let root = CellId::from_face(face);
         if !bbox_closed_in_cell(root, &bbox) {
             continue;
         }
@@ -282,7 +282,7 @@ fn deepest_margin_child(root: CellId, bbox: &LonLatBBox) -> CellId {
             return current;
         };
 
-        let mut margin = [CellId::from_face(0); 4];
+        let mut margin = [CellId::from_face(Face::ALL[0]); 4];
         let mut n = 0_usize;
         for child in children {
             if bbox_margin_in_cell(child, bbox) {
@@ -292,7 +292,6 @@ fn deepest_margin_child(root: CellId, bbox: &LonLatBBox) -> CellId {
         }
 
         match n {
-            0 => return current,
             1 => current = margin[0],
             _ => return current,
         }

@@ -418,17 +418,10 @@ fn membership_from_tagged(
     match cell_rule {
         // Overlap already builds the annotated product — seed the inspection
         // partition so interior/boundary do not re-cover.
-        CellRule::Overlap => {
-            for (cell, _) in tagged {
-                crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)
-                    .map_err(coverage_ops::cover_budget_err)?;
-                crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
-            }
-        },
         CellRule::Bbox => unreachable!("bbox membership returned before allocation"),
         // Rule-specific visibility was decided by the cover traversal. The
         // tagged stream therefore contains only retained result cells.
-        CellRule::Within | CellRule::Center => {
+        CellRule::Overlap | CellRule::Within | CellRule::Center => {
             for (cell, _) in tagged {
                 crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)
                     .map_err(coverage_ops::cover_budget_err)?;

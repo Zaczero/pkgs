@@ -367,11 +367,12 @@ mod tests {
     /// children sum to their parent.
     #[test]
     fn area_invariants() {
-        let full: f64 = (0..6)
+        let full: f64 = Face::ALL
+            .into_iter()
             .map(|face| Cell::from_id(CellId::from_face(face)).area_steradians())
             .sum();
         assert!((full - 4.0 * std::f64::consts::PI).abs() < 1e-9);
-        for face in 0..6 {
+        for face in Face::ALL {
             let area = Cell::from_id(CellId::from_face(face)).area_steradians();
             assert!((area - 4.0 * std::f64::consts::PI / 6.0).abs() < 1e-10);
         }

@@ -759,7 +759,7 @@ mod tests {
     fn reusable_degraded_plan_reprobes_after_each_diagnostic() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         clear_cache();
-        let plan = TransformPlan::new("EPSG:4267", "EPSG:4326");
+        let plan = TransformPlan::new("EPSG:4267", "EPSG:4326").unwrap();
         for (index, (x, y)) in [(-104.0, 40.0), (-100.0, 55.0)].into_iter().enumerate() {
             let mut x = [x];
             let mut y = [y];

@@ -5,6 +5,7 @@
 use pyo3::{PyAny, PyResult};
 
 use crate::geometry::{LineSeq, Point, Shape};
+use crate::grid::s2::cellid::S2Level;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 use crate::py::cells::{Bound, PyAnyMethods as _};
 use crate::py::errors::{GeometryError, integer_parameter_error};
@@ -20,8 +21,17 @@ pub(crate) struct S2LevelBudget {
     /// Adaptive refinement target.
     pub(super) target_cells: usize,
 }
-pub(crate) fn parse_s2_level_value(value: i64) -> PyResult<u8> {
-    crate::py::cells::checked_depth(value, "S2 level", "level", 0, i64::from(S2_MAX_LEVEL))
+pub(crate) fn parse_s2_level_value(value: i64) -> PyResult<S2Level> {
+    u8::try_from(value)
+        .ok()
+        .and_then(S2Level::try_new)
+        .ok_or_else(|| {
+            integer_parameter_error(
+                format!("S2 level must be between 0 and {S2_MAX_LEVEL}, got {value}"),
+                "level",
+                value,
+            )
+        })
 }
 
 pub(crate) fn parse_s2_min_level_value(value: i64) -> PyResult<u8> {
@@ -34,9 +44,16 @@ pub(crate) fn parse_s2_min_level_value(value: i64) -> PyResult<u8> {
     )
 }
 
-pub(crate) fn parse_s2_level(value: &Bound<'_, PyAny>) -> PyResult<u8> {
+/// An S2 level argument as the validated level type.
+pub(crate) fn parse_s2_level_validated(value: &Bound<'_, PyAny>) -> PyResult<S2Level> {
     parse_s2_level_value(py_i64_required("S2 level", value)?)
 }
+
+/// An S2 level argument as the plain depth the grid-generic surface uses.
+pub(crate) fn parse_s2_level(value: &Bound<'_, PyAny>) -> PyResult<u8> {
+    parse_s2_level_validated(value).map(S2Level::get)
+}
+
 
 pub(crate) fn validate_s2_level_mod(level_mod: i64) -> PyResult<u8> {
     if !(1..=3).contains(&level_mod) {

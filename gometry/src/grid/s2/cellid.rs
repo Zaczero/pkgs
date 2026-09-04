@@ -30,6 +30,9 @@ pub(crate) enum Face {
 }
 
 impl Face {
+    /// The six cube faces in index order.
+    pub(crate) const ALL: [Self; 6] = [Self::F0, Self::F1, Self::F2, Self::F3, Self::F4, Self::F5];
+
     pub(crate) const fn get(self) -> u8 {
         self as u8
     }
@@ -47,15 +50,27 @@ impl Face {
     }
 }
 
-impl From<Face> for u8 {
-    fn from(face: Face) -> Self {
-        face.get()
+/// An S2 level admitted at the boundary: `0..=MAX_LEVEL`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct S2Level(u8);
+
+impl S2Level {
+    pub(crate) const fn try_new(level: u8) -> Option<Self> {
+        if level <= MAX_LEVEL {
+            Some(Self(level))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn get(self) -> u8 {
+        self.0
     }
 }
 
-impl From<u8> for Face {
-    fn from(face: u8) -> Self {
-        Self::from_u8(face).expect("S2 face must be in 0..=5")
+impl From<Face> for u8 {
+    fn from(face: Face) -> Self {
+        face.get()
     }
 }
 
@@ -255,6 +270,14 @@ impl CellId {
     }
 
     /// The ancestor at `level`; `None` when `level` is finer than this
+    /// The ancestor of a LEAF cell at `level`: every validated level is at or
+    /// above a leaf's, so unlike [`Self::parent`] this cannot decline.
+    pub(crate) fn leaf_parent(self, level: S2Level) -> Self {
+        debug_assert!(self.is_leaf());
+        let lsb = lsb_for_level(level.get());
+        Self((self.0 & lsb.wrapping_neg()) | lsb)
+    }
+
     /// cell's (same level returns the cell itself).
     #[expect(
         clippy::same_name_method,
@@ -354,11 +377,11 @@ impl CellId {
 
     /// The face, leaf-grid IJ of this cell's lowest corner, and the Hilbert
     /// orientation (the decode loop over the position→IJ table).
-    pub(crate) fn face_ij_orientation(self) -> (u8, i32, i32, u8) {
-        let face = self.face().get();
+    pub(crate) fn face_ij_orientation(self) -> (Face, i32, i32, u8) {
+        let face = self.face();
         let mut i = 0_i32;
         let mut j = 0_i32;
-        let mut orient = u16::from(face & SWAP_MASK);
+        let mut orient = u16::from(face.get() & SWAP_MASK);
         let mut nbits = u32::from(MAX_LEVEL) - 7 * LOOKUP_BITS;
         let mut k = 7_u32;
         loop {
@@ -383,7 +406,7 @@ impl CellId {
 
     /// The face and si/ti (half-leaf grid) coordinates of the cell center —
     /// the exact center the recursive subdivision uses.
-    pub(crate) fn center_face_siti(self) -> (u8, u32, u32) {
+    pub(crate) fn center_face_siti(self) -> (Face, u32, u32) {
         let (face, i, j, _) = self.face_ij_orientation();
         let delta = if self.is_leaf() {
             1
@@ -555,7 +578,7 @@ mod tests {
     fn edge_neighbors_match_oracle() {
         let mut cases = sample_points();
         // Push samples right against every face edge via face centers ± eps.
-        for face in 0..6_u8 {
+        for face in Face::ALL {
             let center = CellId::from_face(face);
             let (_, i, j, _) = center.face_ij_orientation();
             cases.extend(

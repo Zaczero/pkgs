@@ -142,12 +142,10 @@ True
     }
 }
 
-pub(crate) fn s2_cell_from_xy(lon: f64, lat: f64, level: u8) -> PyResult<PyS2Cell> {
+pub(crate) fn s2_cell_from_xy(lon: f64, lat: f64, level: S2Level) -> PyResult<PyS2Cell> {
     validate_lonlat_xy(lon, lat)?;
     Ok(PyS2Cell {
-        cell: CellId::from_lonlat(lon, lat)
-            .parent(level)
-            .expect("level validated"),
+        cell: CellId::from_lonlat(lon, lat).leaf_parent(level),
     })
 }
 
@@ -202,9 +200,9 @@ use pyo3::types::PyBool;
 
 use crate::Typed;
 use crate::boundary::geographic::validate_lonlat_xy;
-use crate::grid::cell::{GridCell, HierarchicalCell};
+use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::s2::cell::Cell as S2GeomCell;
-use crate::grid::s2::cellid::CellId;
+use crate::grid::s2::cellid::{CellId, S2Level};
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
     cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,

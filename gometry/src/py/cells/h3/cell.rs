@@ -657,8 +657,22 @@ fn try_h3_grid_disk_cells_with_budget(
     Ok(cells)
 }
 
-pub(super) fn h3_grid_ring_cells(cell: CellIndex, k: u32) -> Vec<CellIndex> {
-    try_h3_grid_ring_cells(cell, k).expect("one-ring H3 neighbor expansion fits the grid limit")
+/// The six (five at a pentagon) immediate neighbors: the `k = 1` ring, which
+/// fits any budget and so needs none of the ring machinery's limits.
+pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> Vec<CellIndex> {
+    let mut cells = Vec::with_capacity(6);
+    for value in cell.grid_ring_fast(1) {
+        let Some(value) = value else {
+            cells.clear();
+            cells.extend(
+                cell.grid_disk_distances_safe(1)
+                    .filter_map(|(cell, distance)| (distance == 1).then_some(cell)),
+            );
+            return cells;
+        };
+        cells.push(value);
+    }
+    cells
 }
 
 pub(super) fn try_h3_grid_ring_cells(

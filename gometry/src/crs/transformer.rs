@@ -21,14 +21,16 @@ use crate::error::{ErrorKind, Result};
 use crate::geometry::{GeometryErrorKind, TopologyDomain};
 
 impl TransformPlan {
-    pub(crate) fn new(source: &str, target: &str) -> Self {
+    pub(crate) fn new(source: &str, target: &str) -> Result<Self> {
         Self::new_with_options(source, target, TransformOptions::default())
     }
 
-    pub(crate) fn new_with_options(source: &str, target: &str, options: TransformOptions) -> Self {
-        let state = runtime_state_snapshot().expect("CRS runtime state must remain readable");
-        Self::new_with_options_at(source, target, options, state)
-            .expect("CRS transform plan must be valid")
+    pub(crate) fn new_with_options(
+        source: &str,
+        target: &str,
+        options: TransformOptions,
+    ) -> Result<Self> {
+        Self::new_with_options_at(source, target, options, runtime_state_snapshot()?)
     }
 
     pub(crate) fn new_with_options_at(
@@ -777,7 +779,8 @@ mod tests {
         let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:3857", TransformOptions {
             force_over: true,
             ..TransformOptions::default()
-        });
+        })
+        .unwrap();
 
         assert!(plan.transform_bounds_many(&[], 2).unwrap().is_empty());
         let info = crate::crs::cache_info();
