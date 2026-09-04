@@ -85,6 +85,18 @@ impl<'a> PreparedTopologyPair<'a> {
         ))
     }
 
+    /// Both plans of a Cartesian pair, whichever graphs it carries.
+    fn cartesian_plans(&self) -> Option<(&'a PreparedPlan, &'a PreparedPlan)> {
+        match *self {
+            Self::Cartesian { left, right }
+            | Self::CartesianLeftGraph { left, right, .. }
+            | Self::CartesianRightGraph { left, right, .. } => Some((left, right)),
+            Self::Geographic { .. }
+            | Self::GeographicLeftGraph { .. }
+            | Self::GeographicRightGraph { .. } => None,
+        }
+    }
+
     pub(crate) fn relate(self) -> crate::geometry::De9im {
         match self {
             Self::Cartesian { left, right } => graph_relate_data(left, right),
@@ -671,7 +683,10 @@ pub(crate) fn topology_scalar_pair(
     {
         return verdict;
     }
-    if let PreparedTopologyPair::Cartesian { left, right } = &operands
+    // The direct engines need the plans, not a graph: a pair that already
+    // carries the scalar's graph (the scalar-vs-array lane) is admitted the
+    // same way, and the graph stays for what they decline.
+    if let Some((left, right)) = operands.cartesian_plans()
         && let Some(verdict) =
             crate::geometry::direct_linework_predicate(spec, left.shape(), right.shape())
                 .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))

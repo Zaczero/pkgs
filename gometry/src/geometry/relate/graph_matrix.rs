@@ -122,11 +122,11 @@ pub(crate) fn graph_relate_data_with_left_graph(
     left_graph: &TopologyGraph,
     right: &PreparedPlan,
 ) -> De9im {
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
-        return matrix;
-    }
-    if let Some(matrix) =
-        try_cartesian_polygon_line_relate_with_graphs(left, right, Some(left_graph), None)
+    if let Some(matrix) = super::direct_areal_relate(left, right)
+        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
+        .or_else(|| super::direct_areal_linework_relate(left, right))
+        .or_else(|| try_cartesian_polygon_line_relate_with_graphs(left, right, Some(left_graph), None))
+        .or_else(|| super::direct_linework_relate(left.shape(), right.shape()))
     {
         return matrix;
     }
@@ -149,11 +149,11 @@ pub(crate) fn graph_relate_data_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> De9im {
-    if let Some(matrix) = try_cartesian_areal_relate(left.shape(), right.shape()) {
-        return matrix;
-    }
-    if let Some(matrix) =
-        try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph))
+    if let Some(matrix) = super::direct_areal_relate(left, right)
+        .or_else(|| try_cartesian_areal_relate(left.shape(), right.shape()))
+        .or_else(|| super::direct_areal_linework_relate(left, right))
+        .or_else(|| try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph)))
+        .or_else(|| super::direct_linework_relate(left.shape(), right.shape()))
     {
         return matrix;
     }
