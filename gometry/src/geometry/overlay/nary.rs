@@ -1299,7 +1299,7 @@ fn overlay_polygons(
         .faces
         .iter()
         .map(|face| {
-            let Some(probe) = face_probe(face.ring.as_slice(), face.decision_area.sign()) else {
+            let Some(probe) = face_probe(face.ring.as_slice(), face.area_sign) else {
                 return 0;
             };
             let area_membership: Vec<bool> = sources

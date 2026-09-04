@@ -114,11 +114,10 @@ pub(super) fn delaunay_complex(
     // defines the exact circumcenter, since all of them are cocircular.
     let mut component_of_root = vec![usize::MAX; triangles.len()];
     let mut centers = Vec::new();
-    for face in 0..triangles.len() {
+    for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         if component_of_root[root] == usize::MAX {
             component_of_root[root] = centers.len();
-            let [a, b, c] = triangles[face];
             centers.push(exact::circumcenter(
                 sites[a].point.xy(),
                 sites[b].point.xy(),

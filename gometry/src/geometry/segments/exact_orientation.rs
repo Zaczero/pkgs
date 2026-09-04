@@ -11,9 +11,18 @@ use crate::geometry::tessellation::exact::{ExactSign, Interval};
 
 const LIMBS: usize = 68;
 
+/// Fixed-width signed integer wide enough for any product of two differences
+/// of finite binary64 values (2 × (2^1024 / 2^-1074) needs 4197 bits; 68 limbs
+/// give 4352). `low..high` is the window of limbs that may be nonzero, so the
+/// arithmetic below costs the live width of the operands rather than the
+/// full 68 limbs: ordinary coordinates occupy two limbs and their products
+/// four, and only exponent spreads across the whole binary64 range reach the
+/// full width.
 #[derive(Clone, Copy)]
 struct ExactInteger {
     negative: bool,
+    low: usize,
+    high: usize,
     limbs: [u64; LIMBS],
 }
 
@@ -21,6 +30,8 @@ impl ExactInteger {
     const fn zero() -> Self {
         Self {
             negative: false,
+            low: 0,
+            high: 0,
             limbs: [0; LIMBS],
         }
     }
@@ -41,16 +52,23 @@ impl ExactInteger {
         result.negative = bits >> 63 != 0;
         let (word, bit) = (shift / 64, shift % 64);
         result.limbs[word] = significand << bit;
+        result.low = word;
+        result.high = word + 1;
         if bit != 0 {
             result.limbs[word + 1] = significand >> (64 - bit);
+            result.high = word + 2;
         }
         result
     }
     fn is_zero(&self) -> bool {
-        self.limbs.iter().all(|&limb| limb == 0)
+        self.limbs[self.low..self.high].iter().all(|&limb| limb == 0)
     }
     fn cmp_magnitude(&self, other: &Self) -> std::cmp::Ordering {
-        self.limbs.iter().rev().cmp(other.limbs.iter().rev())
+        let (low, high) = (self.low.min(other.low), self.high.max(other.high));
+        self.limbs[low..high]
+            .iter()
+            .rev()
+            .cmp(other.limbs[low..high].iter().rev())
     }
     fn subtract(self, other: Self) -> Self {
         if self.negative != other.negative {
@@ -64,45 +82,65 @@ impl ExactInteger {
     }
     fn add_magnitudes(left: &Self, right: &Self, negative: bool) -> Self {
         let mut result = Self::zero();
+        let (low, high) = (left.low.min(right.low), left.high.max(right.high));
         let mut carry = 0_u128;
-        for index in 0..LIMBS {
+        for index in low..high {
             let sum = u128::from(left.limbs[index]) + u128::from(right.limbs[index]) + carry;
             result.limbs[index] = sum as u64;
             carry = sum >> 64;
         }
-        debug_assert_eq!(carry, 0);
+        result.low = low;
+        result.high = high;
+        if carry != 0 {
+            result.limbs[high] = carry as u64;
+            result.high = high + 1;
+        }
         result.negative = negative;
         result
     }
     fn subtract_magnitudes(larger: &Self, smaller: &Self, negative: bool) -> Self {
         let mut result = Self::zero();
+        let (low, high) = (larger.low.min(smaller.low), larger.high.max(smaller.high));
         let mut borrow = 0_u128;
-        for index in 0..LIMBS {
+        for index in low..high {
             let subtrahend = u128::from(smaller.limbs[index]) + borrow;
             let minuend = u128::from(larger.limbs[index]);
             result.limbs[index] = minuend.wrapping_sub(subtrahend) as u64;
             borrow = u128::from(minuend < subtrahend);
         }
         debug_assert_eq!(borrow, 0);
+        result.low = low;
+        result.high = high;
         result.negative = negative;
         result
     }
     fn product(&self, other: &Self) -> Self {
         let mut result = Self::zero();
-        for (left_index, &left) in self.limbs.iter().enumerate() {
+        if self.is_zero() || other.is_zero() {
+            return result;
+        }
+        let low = self.low + other.low;
+        let high = (self.high + other.high).min(LIMBS);
+        for (left_index, &left) in self.limbs.iter().enumerate().take(self.high).skip(self.low) {
             if left == 0 {
                 continue;
             }
             let mut carry = 0_u128;
-            for (right_index, &right) in other.limbs[..LIMBS - left_index].iter().enumerate() {
-                let index = left_index + right_index;
-                let value =
-                    u128::from(result.limbs[index]) + u128::from(left) * u128::from(right) + carry;
+            let right_end = other.high.min(LIMBS - left_index);
+            for (right_index, &right) in other.limbs[other.low..right_end].iter().enumerate() {
+                let index = left_index + other.low + right_index;
+                let value = u128::from(result.limbs[index]) + u128::from(left) * u128::from(right) + carry;
                 result.limbs[index] = value as u64;
                 carry = value >> 64;
             }
-            debug_assert_eq!(carry, 0);
+            if carry != 0 {
+                let index = left_index + other.high;
+                debug_assert!(index < LIMBS, "a product of two binary64 differences fits");
+                result.limbs[index] = carry as u64;
+            }
         }
+        result.low = low;
+        result.high = high;
         result.negative = self.negative != other.negative && !result.is_zero();
         result
     }

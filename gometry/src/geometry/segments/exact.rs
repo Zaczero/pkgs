@@ -486,6 +486,14 @@ pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, 
 
 
 
+/// Exact orientation of `c` against the directed line `a -> b`.
+///
+/// A vertex identity (`c` is `a` or `b`, or the line is a point) is a zero
+/// determinant no floating filter can certify, and callers produce it
+/// constantly: a node against its own incident edges, adjacent ring edges as
+/// a candidate pair. Settling it by comparison keeps the exact path for
+/// genuine near-collinearity.
+#[expect(clippy::float_cmp, reason = "vertex identity, not proximity: the operands either are the same stored coordinate or they are not")]
 pub(in crate::geometry) fn orientation_xy(
     ax: f64,
     ay: f64,
@@ -494,6 +502,9 @@ pub(in crate::geometry) fn orientation_xy(
     cx: f64,
     cy: f64,
 ) -> Orientation {
+    if (cx == ax && cy == ay) || (cx == bx && cy == by) || (ax == bx && ay == by) {
+        return Orientation::Collinear;
+    }
     certified_orientation_xy(ax, ay, bx, by, cx, cy)
 }
 

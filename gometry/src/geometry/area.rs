@@ -87,52 +87,16 @@ impl RingDecisionArea {
     }
 }
 
-/// Face-walk classification stores a magnitude only for consumers that keep
-/// the walk itself. Winding-only consumers need the exact sign, but never use
-/// the magnitude to seed a component's exterior face.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum FaceDecisionArea {
-    Sign(AreaSign),
-    Exact(RingDecisionArea),
-}
-
-impl FaceDecisionArea {
-    pub(crate) const fn sign(self) -> AreaSign {
-        match self {
-            Self::Sign(sign) => sign,
-            Self::Exact(area) => area.sign(),
-        }
-    }
-
-    pub(crate) const fn sign_only(sign: AreaSign) -> Self {
-        Self::Sign(sign)
-    }
-
-    pub(crate) const fn exact(area: RingDecisionArea) -> Self {
-        Self::Exact(area)
-    }
-
-    /// True when `self` is a better outer-face candidate than `other`.
-    pub(crate) fn prefers_as_outer_face_than(self, other: Self) -> bool {
-        let (self_sign, other_sign) = (self.sign(), other.sign());
-        if self_sign == AreaSign::Negative && other_sign != AreaSign::Negative {
-            return true;
-        }
-        if other_sign == AreaSign::Negative {
-            return false;
-        }
-        match (self_sign, other_sign) {
-            (AreaSign::Zero, AreaSign::Positive) => true,
-            (AreaSign::Positive, AreaSign::Positive) => match (self, other) {
-                (Self::Exact(left), Self::Exact(right)) => {
-                    left.magnitude().abs_cmp(right.magnitude()).is_lt()
-                },
-                // A nondegenerate component has a negative outer walk. If
-                // every walk is nonnegative, all of its enclosed area is zero.
-                _ => false,
-            },
-            _ => false,
-        }
+impl AreaSign {
+    /// True when a face walk with this sign is a better outer-face candidate
+    /// for its component than one with `other`. A nondegenerate component's
+    /// outer face is its negative walk; when every walk is nonnegative the
+    /// component encloses no area and a zero walk seeds it.
+    pub(crate) const fn prefers_as_outer_face_than(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Negative, Self::Zero | Self::Positive) | (Self::Zero, Self::Positive)
+        )
     }
 }
 

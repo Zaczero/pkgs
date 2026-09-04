@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use crate::geometry::arrangement::{Face, WindingWeight};
 use crate::geometry::{
-    FaceDecisionArea, HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_decision,
+    HashMap, Orientation, PointKey, Segment, XY,
     open_xy_cycle_sign, orientation, same_point, wrap_index,
 };
 
@@ -98,11 +98,7 @@ pub(crate) fn walk_faces<const RINGS: bool>(
                 break;
             }
         }
-        let decision_area = if RINGS {
-            FaceDecisionArea::exact(open_xy_cycle_decision(&cycle))
-        } else {
-            FaceDecisionArea::sign_only(open_xy_cycle_sign(&cycle))
-        };
+        let area_sign = open_xy_cycle_sign(&cycle);
         faces.push(Face {
             ring: if RINGS {
                 cycle
@@ -110,7 +106,7 @@ pub(crate) fn walk_faces<const RINGS: bool>(
                 cycle_scratch = cycle;
                 Vec::new()
             },
-            decision_area,
+            area_sign,
             component: component_of[owners[seed] as usize],
         });
     }
