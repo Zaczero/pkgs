@@ -90,6 +90,10 @@ struct SweepEntry {
     cross_min: f64,
     cross_max: f64,
     ordinal: u32,
+    /// Bipartite sweeps tag the two operands `1` and `2`, so a pair from one
+    /// operand is `left.side & right.side != 0` and skips before any extent
+    /// compare; a self-join leaves every entry at `0`.
+    side: u8,
 }
 
 fn wider_axis_swapped(min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> bool {
@@ -174,6 +178,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
             cross_min: y_lo,
             cross_max: y_hi,
             ordinal: ordinal as u32,
+            side: 0,
         });
     }
     finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
@@ -242,6 +247,7 @@ pub(in crate::geometry) fn for_each_candidate_pair(
         pool,
         &runs,
         || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
+        None,
         &mut visit,
     )
 }
@@ -249,23 +255,32 @@ pub(in crate::geometry) fn for_each_candidate_pair(
 /// The shared entry point behind [`for_each_candidate_pair`] and the
 /// prepared-linework sweep, over runs that are already decomposed. `bounds` is
 /// consulted only on the sweep path, so a caller that has to compute them can
-/// defer the pass.
+/// defer the pass. `split` makes the join bipartite: segments below it are one
+/// operand, the rest the other, and pairs within one operand are never
+/// visited — the two-operand relation engines want exactly the cross pairs,
+/// and on jagged linework those are a small fraction of the self-join.
 pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
     bounds: impl FnOnce() -> Bounds,
+    split: Option<u32>,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
+        let same_side = |left: usize, right: usize| {
+            split.is_some_and(|split| (left < split as usize) == (right < split as usize))
+        };
         for left in 0..count {
             for right in (left + 1)..count {
-                visit(left, right)?;
+                if !same_side(left, right) {
+                    visit(left, right)?;
+                }
             }
         }
         return ControlFlow::Continue(());
     }
-    candidate_pairs_over_runs(pool, runs, bounds(), visit)
+    candidate_pairs_over_runs(pool, runs, bounds(), split, visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -282,6 +297,7 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
     bounds: Bounds,
+    split: Option<u32>,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
@@ -309,6 +325,7 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
             cross_min: y_lo,
             cross_max: y_hi,
             ordinal: ordinal as u32,
+            side: split.map_or(0, |split| if run.start < split { 1 } else { 2 }),
         });
     }
     finish_sweep_entries(&mut entries, swapped);
@@ -401,10 +418,14 @@ pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
     }
 }
 
-/// Candidate pairs between two monotone runs: both runs' per-segment
-/// sweep extents are consecutive sorted intervals, so the join is a
-/// two-pointer interval scan — linear in the run lengths plus the
-/// matches. Within the window, the cross-axis filter prunes as usual.
+/// Candidate pairs between two monotone runs by envelope bisection: the
+/// envelope of any position range of a monotone run is the box spanned by
+/// its two end vertices, so a range pair whose boxes are apart is dropped
+/// whole and the longer range is halved otherwise. Two smooth chains that
+/// meet at a few points cost O(k log n) — the first crossing of two
+/// 1,200-vertex rings is found after a handful of halvings — where a linear
+/// interval merge walked every segment in the sweep overlap. Same candidate
+/// set: every pair whose envelopes overlap on both axes, each once.
 fn run_pair_join(
     pool: &[Segment],
     a: &MonotoneRun,
@@ -424,191 +445,104 @@ fn run_pair_join(
         };
         return visit(low as usize, high as usize);
     }
-    let sweep = |point: XY| if swapped { point.y } else { point.x };
-    let cross = |point: XY| if swapped { point.x } else { point.y };
-    let index_of = |run: &MonotoneRun, position: u32| -> usize {
-        if run.ascending(swapped) {
-            (run.start + position) as usize
-        } else {
-            (run.end - 1 - position) as usize
-        }
+    let a = RunChain {
+        pool,
+        run: a,
+        swapped,
     };
-    // Chain-vertex sweep coordinate at ascending position `p` (0..=len):
-    // a run's segment extents are the consecutive intervals [v(p), v(p+1)].
-    let vertex = |run: &MonotoneRun, position: u32| -> f64 {
-        let len = run.end - run.start;
-        if run.ascending(swapped) {
-            if position < len {
-                sweep(pool[(run.start + position) as usize].start)
-            } else {
-                sweep(pool[run.end as usize - 1].end)
-            }
-        } else if position < len {
-            sweep(pool[(run.end - 1 - position) as usize].end)
-        } else {
-            sweep(pool[run.start as usize].start)
-        }
+    let b = RunChain {
+        pool,
+        run: b,
+        swapped,
     };
-    // Clip each run's scan range to the OTHER's sweep envelope by binary
-    // search over the sorted chain vertices — neighbor runs that barely
-    // touch cost O(log n) instead of a full linear walk.
-    let clip = |run: &MonotoneRun, lo: f64, hi: f64| -> (u32, u32) {
-        let len = run.end - run.start;
-        let mut first = 0_u32;
-        let mut count = len;
-        while count > 0 {
-            let half = count / 2;
-            let probe = first + half;
-            if vertex(run, probe + 1) < lo {
-                first = probe + 1;
-                count -= half + 1;
-            } else {
-                count = half;
-            }
-        }
-        let mut last = first;
-        let mut count = len - first;
-        while count > 0 {
-            let half = count / 2;
-            let probe = last + half;
-            if vertex(run, probe) <= hi {
-                last = probe + 1;
-                count -= half + 1;
-            } else {
-                count = half;
-            }
-        }
-        (first, last)
-    };
-    let (b_env_lo, b_env_hi) = (vertex(b, 0), vertex(b, b.end - b.start));
-    let (a_lo, a_hi) = clip(a, b_env_lo, b_env_hi);
-    let (a_env_lo, a_env_hi) = (vertex(a, 0), vertex(a, a.end - a.start));
-    let (b_lo, b_hi) = clip(b, a_env_lo, a_env_hi);
-    // Both runs are ALSO cross-monotone (same quadrant), so the candidates lie in
-    // the CROSS overlap too — clip each x-overlap range to it, turning the O(n)
-    // band walk into O(log n + matches) when two large smooth boundaries cross at
-    // few points. Conservative: the per-segment cross filter below still decides
-    // exactness, so a loose clip only costs a few extra scanned segments.
-    let ((a_lo, a_hi), (b_lo, b_hi)) =
-        cross_clip_runs(pool, a, b, swapped, (a_lo, a_hi), (b_lo, b_hi));
-    let mut b_low = b_lo;
-    for a_pos in a_lo..a_hi {
-        let a_idx = index_of(a, a_pos);
-        let a_seg = pool[a_idx];
-        let (a_min, a_max) = ordered(sweep(a_seg.start), sweep(a_seg.end));
-        // Advance the window start: b extents are sorted by BOTH ends.
-        while b_low < b_hi {
-            let b_seg = pool[index_of(b, b_low)];
-            if sweep(b_seg.start).max(sweep(b_seg.end)) < a_min {
-                b_low += 1;
-            } else {
-                break;
-            }
-        }
-        let (a_cross_min, a_cross_max) = ordered(cross(a_seg.start), cross(a_seg.end));
-        let mut b_pos = b_low;
-        while b_pos < b_hi {
-            let b_idx = index_of(b, b_pos);
-            let b_seg = pool[b_idx];
-            if sweep(b_seg.start).min(sweep(b_seg.end)) > a_max {
-                break;
-            }
-            let (b_cross_min, b_cross_max) = ordered(cross(b_seg.start), cross(b_seg.end));
-            if b_cross_min <= a_cross_max && b_cross_max >= a_cross_min {
-                let (low, high) = if a_idx < b_idx {
-                    (a_idx, b_idx)
-                } else {
-                    (b_idx, a_idx)
-                };
-                visit(low, high)?;
-            }
-            b_pos += 1;
-        }
-    }
-    ControlFlow::Continue(())
+    bisect_runs(&a, 0, a.len(), &b, 0, b.len(), visit)
 }
 
-/// Tighten two cross-monotone runs' already x-clipped position ranges to their
-/// mutual CROSS overlap (binary search over the sorted cross vertices). Cross
-/// is monotone over each range in either direction; the key is normalized to
-/// ascending. Conservative — segments whose cross-extent merely touches the
-/// other's range are kept, leaving exactness to `run_pair_join`'s cross filter.
-fn cross_clip_runs(
-    pool: &[Segment],
-    a: &MonotoneRun,
-    b: &MonotoneRun,
+/// One monotone run viewed by ascending sweep position, whichever way its
+/// segments were stored.
+struct RunChain<'a> {
+    pool: &'a [Segment],
+    run: &'a MonotoneRun,
     swapped: bool,
-    (a_lo, a_hi): (u32, u32),
-    (b_lo, b_hi): (u32, u32),
-) -> ((u32, u32), (u32, u32)) {
-    let cross = |point: XY| if swapped { point.x } else { point.y };
-    let cross_vertex = |run: &MonotoneRun, position: u32| -> f64 {
-        let len = run.end - run.start;
-        if run.ascending(swapped) {
-            if position < len {
-                cross(pool[(run.start + position) as usize].start)
-            } else {
-                cross(pool[run.end as usize - 1].end)
-            }
-        } else if position < len {
-            cross(pool[(run.end - 1 - position) as usize].end)
+}
+
+impl RunChain<'_> {
+    fn len(&self) -> u32 {
+        self.run.end - self.run.start
+    }
+
+    /// Pool ordinal of the segment at ascending position `position`.
+    fn ordinal(&self, position: u32) -> usize {
+        if self.run.ascending(self.swapped) {
+            (self.run.start + position) as usize
         } else {
-            cross(pool[run.start as usize].start)
+            (self.run.end - 1 - position) as usize
         }
-    };
-    let cross_clip = |run: &MonotoneRun, p_lo: u32, p_hi: u32, lo: f64, hi: f64| -> (u32, u32) {
-        if p_hi <= p_lo + 1 {
-            return (p_lo, p_hi);
+    }
+
+    /// Chain vertex at ascending position `position` (`0..=len`).
+    fn vertex(&self, position: u32) -> XY {
+        if self.run.ascending(self.swapped) {
+            if position < self.len() {
+                self.pool[(self.run.start + position) as usize].start
+            } else {
+                self.pool[self.run.end as usize - 1].end
+            }
+        } else if position < self.len() {
+            self.pool[(self.run.end - 1 - position) as usize].end
+        } else {
+            self.pool[self.run.start as usize].start
         }
-        let ascending = cross_vertex(run, p_hi) >= cross_vertex(run, p_lo);
-        let key = |position: u32| {
-            let value = cross_vertex(run, position);
-            if ascending { value } else { -value }
+    }
+
+    /// The envelope of positions `lo..hi`, from its two end vertices: a
+    /// monotone run's sweep and cross coordinates both move one way.
+    fn envelope(&self, lo: u32, hi: u32) -> (f64, f64, f64, f64) {
+        let (first, last) = (self.vertex(lo), self.vertex(hi));
+        let (sweep, cross) = if self.swapped {
+            ((first.y, last.y), (first.x, last.x))
+        } else {
+            ((first.x, last.x), (first.y, last.y))
         };
-        let (klo, khi) = if ascending { (lo, hi) } else { (-hi, -lo) };
-        // first = smallest p whose far cross vertex reaches `klo`.
-        let mut first = p_lo;
-        let mut count = p_hi - p_lo;
-        while count > 0 {
-            let half = count / 2;
-            let probe = first + half;
-            if key(probe + 1) < klo {
-                first = probe + 1;
-                count -= half + 1;
-            } else {
-                count = half;
-            }
-        }
-        // last = one past the largest p whose near cross vertex is within `khi`.
-        let mut last = first;
-        let mut count = p_hi - first;
-        while count > 0 {
-            let half = count / 2;
-            let probe = last + half;
-            if key(probe) <= khi {
-                last = probe + 1;
-                count -= half + 1;
-            } else {
-                count = half;
-            }
-        }
-        (first, last)
-    };
-    let (bc_lo, bc_hi) = {
-        let (c0, c1) = (cross_vertex(b, b_lo), cross_vertex(b, b_hi));
-        (c0.min(c1), c0.max(c1))
-    };
-    let (a_lo, a_hi) = cross_clip(a, a_lo, a_hi, bc_lo, bc_hi);
-    let (ac_lo, ac_hi) = {
-        let (c0, c1) = (cross_vertex(a, a_lo), cross_vertex(a, a_hi));
-        (c0.min(c1), c0.max(c1))
-    };
-    let (b_lo, b_hi) = cross_clip(b, b_lo, b_hi, ac_lo, ac_hi);
-    ((a_lo, a_hi), (b_lo, b_hi))
+        let (s_lo, s_hi) = ordered(sweep.0, sweep.1);
+        let (c_lo, c_hi) = ordered(cross.0, cross.1);
+        (s_lo, s_hi, c_lo, c_hi)
+    }
 }
 
 fn ordered(a: f64, b: f64) -> (f64, f64) {
     if a <= b { (a, b) } else { (b, a) }
+}
+
+fn bisect_runs(
+    a: &RunChain<'_>,
+    a_lo: u32,
+    a_hi: u32,
+    b: &RunChain<'_>,
+    b_lo: u32,
+    b_hi: u32,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    let (as_lo, as_hi, ac_lo, ac_hi) = a.envelope(a_lo, a_hi);
+    let (bs_lo, bs_hi, bc_lo, bc_hi) = b.envelope(b_lo, b_hi);
+    if as_hi < bs_lo || bs_hi < as_lo || ac_hi < bc_lo || bc_hi < ac_lo {
+        return ControlFlow::Continue(());
+    }
+    let (a_len, b_len) = (a_hi - a_lo, b_hi - b_lo);
+    if a_len == 1 && b_len == 1 {
+        let (x, y) = (a.ordinal(a_lo), b.ordinal(b_lo));
+        let (low, high) = if x < y { (x, y) } else { (y, x) };
+        return visit(low, high);
+    }
+    if a_len >= b_len {
+        let mid = a_lo + a_len / 2;
+        bisect_runs(a, a_lo, mid, b, b_lo, b_hi, visit)?;
+        bisect_runs(a, mid, a_hi, b, b_lo, b_hi, visit)
+    } else {
+        let mid = b_lo + b_len / 2;
+        bisect_runs(a, a_lo, a_hi, b, b_lo, mid, visit)?;
+        bisect_runs(a, a_lo, a_hi, b, mid, b_hi, visit)
+    }
 }
 
 /// The plain forward-window scan over sweep-sorted entries.
@@ -621,7 +555,10 @@ fn plain_windows(
             if right.sweep_min > left.sweep_max {
                 break;
             }
-            if right.cross_min <= left.cross_max && right.cross_max >= left.cross_min {
+            if left.side & right.side == 0
+                && right.cross_min <= left.cross_max
+                && right.cross_max >= left.cross_min
+            {
                 visit_ordered(left, right, visit)?;
             }
         }
@@ -668,7 +605,8 @@ fn banded_windows(
                 if right.sweep_min > left.sweep_max {
                     break;
                 }
-                if right.cross_min <= left.cross_max
+                if left.side & right.side == 0
+                    && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
                 {

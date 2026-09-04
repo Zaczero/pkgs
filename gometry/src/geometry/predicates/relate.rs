@@ -131,10 +131,22 @@ impl LineworkChains {
         &self,
         mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
+        candidate_pairs_over_staged_runs(&self.segments, &self.runs, || self.bounds, None, &mut visit)
+    }
+
+    /// The candidate sweep restricted to pairs that straddle `split`: one
+    /// segment below it, one at or above. Staged lines never chain across each
+    /// other, so a run never straddles the split either.
+    pub(crate) fn for_each_cross_pair(
+        &self,
+        split: usize,
+        mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
         candidate_pairs_over_staged_runs(
             &self.segments,
             &self.runs,
             || self.bounds,
+            Some(split as u32),
             &mut visit,
         )
     }

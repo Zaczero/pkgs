@@ -240,23 +240,18 @@ fn relate_linework(
     ))
 }
 
-/// Drive the candidate sweep over the staged pool and hand every
-/// cross-operand contact to `on_contact` as `(a_ordinal, b_ordinal,
-/// contact)`, stopping with its verdict as soon as it returns one. The pool
-/// is one self-join and `a` owns a prefix of it, so same-operand pairs are
-/// skipped here.
+/// Drive the bipartite candidate sweep over the staged pool — `a` owns its
+/// prefix, the other operand the rest — and hand every cross-operand contact
+/// to `on_contact` as `(a_ordinal, b_ordinal, contact)`, stopping with its
+/// verdict as soon as it returns one.
 fn sweep_contacts(
     chains: &LineworkChains,
     a: &Operand,
     mut on_contact: impl FnMut(usize, usize, Contact) -> Option<bool>,
 ) -> Option<bool> {
     let mut verdict = None;
-    let _ = chains.for_each_candidate_pair(|i, j| {
-        let (i_left, j_left) = (a.owns(i), a.owns(j));
-        if i_left == j_left {
-            return ControlFlow::Continue(());
-        }
-        let (ia, ib) = if i_left { (i, j) } else { (j, i) };
+    let _ = chains.for_each_cross_pair(a.first + a.count, |i, j| {
+        let (ia, ib) = if a.owns(i) { (i, j) } else { (j, i) };
         let (sa, sb): (Segment, Segment) = (chains.segments[ia], chains.segments[ib]);
         if segment_envelopes_disjoint(sa, sb) {
             return ControlFlow::Continue(());
