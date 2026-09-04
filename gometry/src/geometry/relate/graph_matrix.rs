@@ -581,8 +581,8 @@ pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
         let mut right_all = true;
         for slot in range {
             let winding = built.windings[built.arrangement.face_of[slot] as usize];
-            let left_inside = winding[0] >= 1;
-            let right_inside = winding[1] >= 1;
+            let left_inside = winding[0] != 0;
+            let right_inside = winding[1] != 0;
             left_any |= left_inside;
             left_all &= left_inside;
             right_any |= right_inside;
@@ -639,7 +639,7 @@ pub(crate) fn ring_is_sound(ring: &Ring) -> bool {
 }
 
 const fn areal_location(winding: i32) -> Loc {
-    if winding >= 1 {
+    if winding != 0 {
         Loc::Interior
     } else {
         Loc::Exterior
@@ -647,7 +647,7 @@ const fn areal_location(winding: i32) -> Loc {
 }
 
 const fn areal_edge_location(left_winding: i32, right_winding: i32) -> Loc {
-    match (left_winding >= 1, right_winding >= 1) {
+    match (left_winding != 0, right_winding != 0) {
         (true, true) => Loc::Interior,
         (false, false) => Loc::Exterior,
         _ => Loc::Boundary,
@@ -969,12 +969,12 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
                 overlay::build_areal_arrangement(&left_polygons, &right_polygons)
             };
             for winding in arrangement.windings {
-                let left_loc = if winding[0] >= 1 {
+                let left_loc = if winding[0] != 0 {
                     Loc::Interior
                 } else {
                     Loc::Exterior
                 };
-                let right_loc = if winding[1] >= 1 {
+                let right_loc = if winding[1] != 0 {
                     Loc::Interior
                 } else {
                     Loc::Exterior

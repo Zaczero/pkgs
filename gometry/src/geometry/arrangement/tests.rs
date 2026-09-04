@@ -54,8 +54,8 @@ fn assert_bit_parity(fast: &mut Arrangement<i32>, slow: &mut Arrangement<i32>) {
     }
     let windings = fast.face_windings(&[0]);
     assert_eq!(windings, slow.face_windings(&[0]), "windings diverge");
-    let fast_rings = fast.region_rings(&windings, |w| w >= 1);
-    let slow_rings = slow.region_rings(&windings, |w| w >= 1);
+    let fast_rings = fast.region_rings(&windings, |w| w != 0);
+    let slow_rings = slow.region_rings(&windings, |w| w != 0);
     assert_eq!(fast_rings.len(), slow_rings.len(), "ring count diverges");
     for (left, right) in std::iter::zip(&fast_rings, &slow_rings) {
         assert_eq!(bits(left), bits(right), "region ring diverges");

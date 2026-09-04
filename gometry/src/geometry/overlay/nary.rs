@@ -764,7 +764,7 @@ fn assemble_overlay(
     if raw_polygon_loops_eligible {
         let loops = shape_polygon_loops(inputs);
         if !loops.is_empty() {
-            let polygons = crate::geometry::winding_region(&loops, |winding| winding >= 1)
+            let polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)
                 .into_iter()
                 .map(|polygon| canonicalize_polygon(polygon, domain))
                 .collect();
@@ -1236,7 +1236,7 @@ fn overlay_polygons(
     if raw_polygon_loops_eligible {
         let loops = source_polygon_loops(sources);
         if !loops.is_empty() {
-            return crate::geometry::winding_region(&loops, |winding| winding >= 1)
+            return crate::geometry::winding_region(&loops, |winding| winding != 0)
                 .into_iter()
                 .map(|polygon| canonicalize_polygon(polygon, graph.domain))
                 .collect();

@@ -42,7 +42,7 @@ impl ArealArrangement {
     /// arrangement for both the region and the boundary contact).
     pub(in crate::geometry) fn overlay_polygons(&self, op: OverlayOp) -> Vec<Polygon> {
         let interior = |winding: [i32; 2]| -> bool {
-            let (a, b) = (winding[0] >= 1, winding[1] >= 1);
+            let (a, b) = (winding[0] != 0, winding[1] != 0);
             match op {
                 OverlayOp::Union => a || b,
                 OverlayOp::Intersection => a && b,

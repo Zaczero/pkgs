@@ -1380,11 +1380,9 @@ mod tests {
     #[test]
     fn an_invalid_shell_follows_geos_even_odd() {
         // An asymmetric bowtie is admitted (its net area is nonzero) with no
-        // validity gate, and its negative-winding lobe is where the engines
-        // part ways: the arrangement fold fills `winding >= 1` and reads that
-        // lobe as exterior, while this engine reads every ring segment as a
-        // boundary — which is the even-odd reading GEOS gives. Pinned to
-        // shapely's answers; the fold's divergence is its own item.
+        // validity gate. Its negative-winding lobe is interior under the
+        // nonzero rule both the arrangement fold and this engine use, which is
+        // the even-odd reading GEOS gives. Pinned to shapely's answers.
         use crate::geometry::{Polygon, Ring};
         let ring = |points: &[(f64, f64)]| {
             let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
@@ -1412,6 +1410,9 @@ mod tests {
             )
             .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), geos, "{label}");
+            let fold = crate::geometry::relate::graph_matrix::try_areal_relate(&bowtie, &other)
+                .unwrap_or_else(|| panic!("{label}: fold admits the pair"));
+            assert_eq!(fold.text(), geos, "{label}: the fold fills nonzero like GEOS");
         }
     }
 
