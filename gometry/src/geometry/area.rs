@@ -87,9 +87,8 @@ impl RingDecisionArea {
     }
 }
 
-/// Face-walk classification stores a magnitude only for consumers that keep
-/// the walk itself. Winding-only consumers need the exact sign, but never use
-/// the magnitude to seed a component's exterior face.
+/// Face walks retain a magnitude only for consumers that keep the walk itself;
+/// winding-only consumers need just the exact sign.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum FaceDecisionArea {
     Sign(AreaSign),
@@ -124,15 +123,24 @@ impl FaceDecisionArea {
         match (self_sign, other_sign) {
             (AreaSign::Zero, AreaSign::Positive) => true,
             (AreaSign::Positive, AreaSign::Positive) => match (self, other) {
-                (Self::Exact(left), Self::Exact(right)) => {
-                    left.magnitude().abs_cmp(right.magnitude()).is_lt()
-                },
-                // A nondegenerate component has a negative outer walk. If
-                // every walk is nonnegative, all of its enclosed area is zero.
+                (Self::Exact(left), Self::Exact(right)) => left.magnitude().abs_cmp(right.magnitude()).is_lt(),
                 _ => false,
             },
             _ => false,
         }
+    }
+}
+
+impl AreaSign {
+    /// True when a face walk with this sign is a better outer-face candidate
+    /// for its component than one with `other`. A nondegenerate component's
+    /// outer face is its negative walk; when every walk is nonnegative the
+    /// component encloses no area and a zero walk seeds it.
+    pub(crate) const fn prefers_as_outer_face_than(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Negative, Self::Zero | Self::Positive) | (Self::Zero, Self::Positive)
+        )
     }
 }
 
@@ -247,6 +255,12 @@ pub(crate) fn exact_ring_area_centroid_sums_local(
 /// Axis residual extent for scale selection. Prefer the finite `|x - origin|`
 /// span; when subtraction overflows, fall back to `max(|x|, |origin|)` so a
 /// power-of-two scale still maps `x*s - origin*s` into a normal range.
+///
+/// The span pass is one branchless max chain that LLVM vectorizes: comparing
+/// against infinity rejects a NaN residual as well, so the overflow flag is a
+/// lane-wise OR rather than a branch, and the `|x|` fallback span is computed
+/// only on the overflow path that reads it. This runs inside every exact ring
+/// area sign, which is why it is written for the vector unit.
 fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: f64) -> (f64, bool) {
     let mut max_delta = 0.0_f64;
     let mut overflow = false;
@@ -260,9 +274,42 @@ fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: 
         let max_abs = values
             .into_iter()
             .fold(origin.abs(), |extent, x| extent.max(x.abs()));
-        (max_abs, true)
-    } else {
-        (max_delta, false)
+        return (max_abs, true);
+    }
+    (max_delta, false)
+}
+
+/// The power-of-two frame a ring's cross terms are evaluated in.
+///
+/// `residuals_finite` records what the extent scan already learned: that
+/// every `value - origin` is finite, so the frame's residual is the plain
+/// `(value - origin) * scale` and needs no per-element fallback. Discarding
+/// that flag is what forced [`scaled_residual`]'s branch into the fold.
+#[derive(Clone, Copy)]
+struct RingFrame {
+    ox: f64,
+    oy: f64,
+    sx: f64,
+    sy: f64,
+    residuals_finite: bool,
+}
+
+impl RingFrame {
+    /// The x residual, branchless where the scan proved the subtraction finite.
+    fn x(self, value: f64) -> f64 {
+        if self.residuals_finite {
+            (value - self.ox) * self.sx
+        } else {
+            scaled_residual(value, self.ox, self.sx)
+        }
+    }
+
+    fn y(self, value: f64) -> f64 {
+        if self.residuals_finite {
+            (value - self.oy) * self.sy
+        } else {
+            scaled_residual(value, self.oy, self.sy)
+        }
     }
 }
 
@@ -270,18 +317,37 @@ fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: 
 /// Returns `(ox, oy, sx, sy)` with `sx == 0.0` for a fully-collapsed ring
 /// (both axes zero). Per-axis positive power-of-two scales preserve sign of
 /// the shoelace cross product while keeping each edge term normal.
-fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> (f64, f64, f64, f64) {
+fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
     if xs.is_empty() {
-        return (0.0, 0.0, 0.0, 0.0);
+        return RingFrame {
+            ox: 0.0,
+            oy: 0.0,
+            sx: 0.0,
+            sy: 0.0,
+            residuals_finite: true,
+        };
     }
     let ox = xs[0];
     let oy = ys[0];
     let (max_dx, overflow_x) = axis_extent_for_scale(xs.iter().copied(), ox);
     let (max_dy, overflow_y) = axis_extent_for_scale(ys.iter().copied(), oy);
-    if !overflow_x && !overflow_y && max_dx == 0.0 && max_dy == 0.0 {
-        return (ox, oy, 0.0, 0.0);
+    let residuals_finite = !overflow_x && !overflow_y;
+    if residuals_finite && max_dx == 0.0 && max_dy == 0.0 {
+        return RingFrame {
+            ox,
+            oy,
+            sx: 0.0,
+            sy: 0.0,
+            residuals_finite,
+        };
     }
-    (ox, oy, axis_pow2_scale(max_dx), axis_pow2_scale(max_dy))
+    RingFrame {
+        ox,
+        oy,
+        sx: axis_pow2_scale(max_dx),
+        sy: axis_pow2_scale(max_dy),
+        residuals_finite,
+    }
 }
 
 /// Expansion sum of cross terms for the uncertain filtered path. Columns are
@@ -340,6 +406,71 @@ fn classify_half_area(half: f64) -> AreaSign {
     }
 }
 
+/// The filtered cross-term fold over an edge enumeration: the approximate
+/// half-area (doubled) and the largest term, which together decide whether
+/// the sign is certain.
+fn filtered_cross_terms(
+    xs: &[f64],
+    ys: &[f64],
+    edge_count: usize,
+    frame: RingFrame,
+    mut edge_at: impl FnMut(usize) -> (usize, usize),
+) -> (f64, f64) {
+    let mut approx = 0.0_f64;
+    let mut max_term = 0.0_f64;
+    for edge in 0..edge_count {
+        let (i, j) = edge_at(edge);
+        let term = frame.x(xs[i]) * frame.y(ys[j]) - frame.x(xs[j]) * frame.y(ys[i]);
+        approx += term;
+        max_term = max_term.max(term.abs());
+    }
+    (approx, max_term)
+}
+
+/// [`filtered_cross_terms`] for a closed ring, whose edges are the contiguous
+/// pairs `(i, i + 1)` and whose origin shift is the ordinary identity scale.
+///
+/// The general fold indexes through a closure and re-derives each residual's
+/// finiteness per element, which keeps it scalar. Here the edges are two
+/// offset slices and the frame's residual is a plain shift and scale, the
+/// shape LLVM vectorizes; the sum reassociates because the error bound below
+/// holds for any summation order, a tree sum being no worse than the
+/// sequential one it replaces. Every ring winding in the library lands here.
+fn filtered_ring_cross_terms(xs: &[f64], ys: &[f64], pairs: usize, frame: RingFrame) -> (f64, f64) {
+    if !frame.residuals_finite {
+        return filtered_cross_terms(xs, ys, pairs, frame, |index| (index, index + 1));
+    }
+    let (ox, oy, sx, sy) = (frame.ox, frame.oy, frame.sx, frame.sy);
+    let mut approx = 0.0_f64;
+    let mut max_term = 0.0_f64;
+    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
+        .iter()
+        .zip(&xs[1..=pairs])
+        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
+    {
+        let (ax, ay) = ((x0 - ox) * sx, (y0 - oy) * sy);
+        let (bx, by) = ((x1 - ox) * sx, (y1 - oy) * sy);
+        let term = ax.algebraic_mul(by).algebraic_sub(bx.algebraic_mul(ay));
+        approx = approx.algebraic_add(term);
+        max_term = max_term.max(term.abs());
+    }
+    (approx, max_term)
+}
+
+/// The verdict a filtered fold supports, or `None` when the rounding bound
+/// leaves the sign open and the exact expansion has to settle it.
+fn filtered_verdict(approx: f64, max_term: f64, edge_count: usize) -> Option<AreaSign> {
+    let half = approx / 2.0;
+    let bound = ERRBOUND * max_term * edge_count as f64;
+    if half > bound {
+        return Some(AreaSign::Positive);
+    }
+    if half < -bound {
+        return Some(AreaSign::Negative);
+    }
+    None
+}
+
 /// Filtered ring-sign over an edge enumeration. Ordinary (decisive) rings
 /// allocate nothing; expansion buffers are built only on the uncertain path.
 fn exact_half_area_sign_filtered_edges(
@@ -351,49 +482,60 @@ fn exact_half_area_sign_filtered_edges(
     if edge_count == 0 {
         return AreaSign::Zero;
     }
-    let (ox, oy, sx, sy) = ring_normalize_params(xs, ys);
-    if sx == 0.0 {
+    let frame = ring_normalize_params(xs, ys);
+    if frame.sx == 0.0 {
         return AreaSign::Zero;
     }
-    let mut approx = 0.0_f64;
-    let mut max_term = 0.0_f64;
-    for edge in 0..edge_count {
-        let (i, j) = edge_at(edge);
-        let axi = scaled_residual(xs[i], ox, sx);
-        let ayi = scaled_residual(ys[i], oy, sy);
-        let bxj = scaled_residual(xs[j], ox, sx);
-        let byj = scaled_residual(ys[j], oy, sy);
-        let term = axi * byj - bxj * ayi;
-        approx += term;
-        max_term = max_term.max(term.abs());
+    let (approx, max_term) = filtered_cross_terms(xs, ys, edge_count, frame, &mut edge_at);
+    if let Some(sign) = filtered_verdict(approx, max_term, edge_count) {
+        return sign;
     }
-    let half = approx / 2.0;
-    let bound = ERRBOUND * max_term * edge_count as f64;
-    if half > bound {
-        return AreaSign::Positive;
-    }
-    if half < -bound {
-        return AreaSign::Negative;
-    }
-    // Uncertain: materialize normalized columns once for the expansion path
-    // (scale/origin already known). This includes `max_term == 0.0`: unequal
-    // exact product tails can survive even when every rounded cross term is
-    // zero. Ping-pong expansion avoids per-edge clone.
-    let mut nxs = Vec::with_capacity(xs.len());
-    let mut nys = Vec::with_capacity(ys.len());
-    for index in 0..xs.len() {
-        nxs.push(scaled_residual(xs[index], ox, sx));
-        nys.push(scaled_residual(ys[index], oy, sy));
-    }
-    let expansion = expansion_cross_terms_edges(&nxs, &nys, edge_count, edge_at);
-    classify_half_area(estimate(&expansion) / 2.0)
+    // Uncertain: the expansion path settles it. This includes
+    // `max_term == 0.0`: unequal exact product tails can survive even when
+    // every rounded cross term is zero.
+    exact_ring_sign_by_expansion(xs, ys, edge_count, frame, edge_at)
 }
 
+/// The exact area sign of a CLOSED ring stored as columns, whose edges are the
+/// contiguous pairs `(i, i + 1)`.
+///
+/// This is the library's ring-orientation predicate — staging, validity, ring
+/// canonicalization and the areal engines all reach it — so the ordinary case
+/// takes the vectorized contiguous fold rather than the general enumeration.
+/// A scaled ring (extreme magnitudes) and an undecided filter both fall back
+/// to the shared exact path.
 pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaSign {
     if pairs == 0 {
         return AreaSign::Zero;
     }
-    exact_half_area_sign_filtered_edges(xs, ys, pairs, |index| (index, index + 1))
+    let frame = ring_normalize_params(xs, ys);
+    if frame.sx == 0.0 {
+        return AreaSign::Zero;
+    }
+    let (approx, max_term) = filtered_ring_cross_terms(xs, ys, pairs, frame);
+    if let Some(sign) = filtered_verdict(approx, max_term, pairs) {
+        return sign;
+    }
+    exact_ring_sign_by_expansion(xs, ys, pairs, frame, |index| (index, index + 1))
+}
+
+/// The exact expansion tail shared by both filtered entries: normalized
+/// columns built once, then the cross-term expansion summed exactly.
+fn exact_ring_sign_by_expansion(
+    xs: &[f64],
+    ys: &[f64],
+    edge_count: usize,
+    frame: RingFrame,
+    edge_at: impl FnMut(usize) -> (usize, usize),
+) -> AreaSign {
+    let mut nxs = Vec::with_capacity(xs.len());
+    let mut nys = Vec::with_capacity(ys.len());
+    for index in 0..xs.len() {
+        nxs.push(frame.x(xs[index]));
+        nys.push(frame.y(ys[index]));
+    }
+    let expansion = expansion_cross_terms_edges(&nxs, &nys, edge_count, edge_at);
+    classify_half_area(estimate(&expansion) / 2.0)
 }
 
 fn exact_open_xy_sign(points: &[XY]) -> AreaSign {
@@ -540,7 +682,7 @@ fn exact_cycle_area_measure_columns(
     edge_count: usize,
     edge_at: impl FnMut(usize) -> (usize, usize),
 ) -> f64 {
-    let (ox, oy, sx, sy) = ring_normalize_params(xs, ys);
+    let RingFrame { ox, oy, sx, sy, .. } = ring_normalize_params(xs, ys);
     if sx == 0.0 {
         return 0.0;
     }
@@ -917,13 +1059,13 @@ pub(crate) fn ring_decision_area<C: Coordinates + ?Sized>(points: &C) -> RingDec
     }
 }
 
-/// The exact sign of a closed ring's area without computing its magnitude.
+/// The exact sign of a closed ring's area, with none of the magnitude work.
 pub(crate) fn ring_area_sign<C: Coordinates + ?Sized>(points: &C) -> AreaSign {
     let pairs = points.coord_count().saturating_sub(1);
     if pairs == 0 {
         return AreaSign::Zero;
     }
-    let sign = if let Some((xs, ys)) = points.xy_columns() {
+    if let Some((xs, ys)) = points.xy_columns() {
         exact_ring_area_sign_columns(xs, ys, pairs)
     } else {
         let count = points.coord_count();
@@ -934,8 +1076,7 @@ pub(crate) fn ring_area_sign<C: Coordinates + ?Sized>(points: &C) -> AreaSign {
             ys.push(point.y);
         }
         exact_ring_area_sign_columns(&xs, &ys, pairs)
-    };
-    sign
+    }
 }
 
 pub(crate) fn ring_winding<C: Coordinates + ?Sized>(points: &C) -> RingWinding {
@@ -1006,6 +1147,117 @@ fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The closed-ring filter reassociates its sum and drops the residual
+    /// branch, so it must still agree with the exact expansion on every ring —
+    /// above all where the filter is undecided and the sign comes from the
+    /// expansion in both paths.
+    #[test]
+    fn vectorized_ring_filter_agrees_with_the_exact_expansion() {
+        let reference = |xs: &[f64], ys: &[f64], pairs: usize| -> AreaSign {
+            let frame = ring_normalize_params(xs, ys);
+            if frame.sx == 0.0 {
+                return AreaSign::Zero;
+            }
+            exact_ring_sign_by_expansion(xs, ys, pairs, frame, |index| (index, index + 1))
+        };
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0_usize;
+        let mut undecided = 0_usize;
+        for case in 0..4000 {
+            let count = 3 + (next() % 12) as usize;
+            let mut xs = Vec::with_capacity(count + 1);
+            let mut ys = Vec::with_capacity(count + 1);
+            // Half the cases sit far from the origin, where the shift is what
+            // keeps the filter meaningful.
+            let offset = if case % 2 == 0 { 0.0 } else { 1.0e7 };
+            match case % 3 {
+                // Ordinary rings, area shrinking with the case index.
+                0 => {
+                    let scale = 2.0_f64.powi(-(case % 60));
+                    for _ in 0..count {
+                        xs.push(((next() % 2048) as f64 - 1024.0) * scale + offset);
+                        ys.push(((next() % 2048) as f64 - 1024.0) * scale + offset);
+                    }
+                },
+                // Collinear vertices: the area is exactly zero, so the filter
+                // is undecided and only the expansion can answer.
+                1 => {
+                    for _ in 0..count {
+                        let step = ((next() % 4096) as f64 - 2048.0) / 64.0;
+                        xs.push(step + offset);
+                        ys.push(step.mul_add(3.0, 1.0) + offset);
+                    }
+                },
+                // Collinear but for one vertex nudged by a few ULP: a real but
+                // vanishing area, right at the rounding bound.
+                _ => {
+                    for index in 0..count {
+                        let step = ((next() % 4096) as f64 - 2048.0) / 64.0;
+                        let x = step + offset;
+                        let mut y = step.mul_add(3.0, 1.0) + offset;
+                        if index == count / 2 {
+                            let ulps = 1 + next() % 4;
+                            for _ in 0..ulps {
+                                y = f64::from_bits(y.to_bits() + 1);
+                            }
+                        }
+                        xs.push(x);
+                        ys.push(y);
+                    }
+                },
+            }
+            xs.push(xs[0]);
+            ys.push(ys[0]);
+            let pairs = count;
+            let frame = ring_normalize_params(&xs, &ys);
+            if frame.sx != 0.0 {
+                let (approx, max_term) = filtered_ring_cross_terms(&xs, &ys, pairs, frame);
+                if filtered_verdict(approx, max_term, pairs).is_none() {
+                    undecided += 1;
+                }
+            }
+            assert_eq!(
+                exact_ring_area_sign_columns(&xs, &ys, pairs),
+                reference(&xs, &ys, pairs),
+                "case {case}: xs={xs:?} ys={ys:?}"
+            );
+            checked += 1;
+        }
+        assert!(checked == 4000, "every case ran");
+        assert!(
+            undecided > 20,
+            "only {undecided} rings reached the undecided filter; the corpus stopped exercising the exact tail"
+        );
+    }
+
+    /// Coordinates whose `value - origin` overflows: the scan reports it, and
+    /// the frame must then form each residual as `value * scale - origin *
+    /// scale` instead of subtracting first. Taking the plain difference here
+    /// yields an infinity and loses the sign entirely, so the orientation of a
+    /// ring spanning most of the float range is the check that path has to pass.
+    #[test]
+    fn rings_spanning_the_float_range_keep_their_orientation() {
+        let huge = f64::MAX;
+        // A counter-clockwise triangle and its mirror, both far wider than any
+        // finite subtraction can express.
+        let ccw_xs = [-huge, huge, 0.0, -huge];
+        let ccw_ys = [-huge, -huge, huge, -huge];
+        let cw_xs = [-huge, 0.0, huge, -huge];
+        let cw_ys = [-huge, huge, -huge, -huge];
+        assert!(
+            !ring_normalize_params(&ccw_xs, &ccw_ys).residuals_finite,
+            "the corpus must actually reach the overflowing-residual frame"
+        );
+        assert_eq!(exact_ring_area_sign_columns(&ccw_xs, &ccw_ys, 3), AreaSign::Positive);
+        assert_eq!(exact_ring_area_sign_columns(&cw_xs, &cw_ys, 3), AreaSign::Negative);
+    }
 
     #[test]
     fn shared_two_sum_preserves_shoelace_bits() {
