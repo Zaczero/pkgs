@@ -241,10 +241,10 @@ pub(crate) fn require_locate_point(point: &PyGeometry, operation: MetricOp) -> P
 
 /// Extract one query `Point` per array row (the array form of
 /// [`require_locate_point`], same error).
-pub(crate) fn require_locate_points<'a>(
-    points: &'a PyGeometryArray,
+pub(crate) fn require_locate_points(
+    points: &PyGeometryArray,
     operation: MetricOp,
-) -> PyResult<PointRows<'a>> {
+) -> PyResult<PointRows<'_>> {
     let operation = operation.name();
     points
         .storage()

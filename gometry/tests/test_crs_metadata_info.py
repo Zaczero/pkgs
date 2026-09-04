@@ -983,6 +983,17 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
     assert gm.crs_info(4326)['name'] == 'WGS 84'
 
 
+def test_crs_receiver_identify_is_memoised_and_invalidates_on_clear() -> None:
+    """``identify()`` answers from the receiver until the runtime generation moves."""
+    crs = gm.CRS(3857)
+    first = crs.identify()
+    assert first[0]['code'] == '3857'
+    assert crs.identify() == first
+    assert crs.identify(authority='EPSG') == first
+    gm.crs_clear_cache()
+    assert crs.identify() == first
+
+
 def test_crs_receiver_info_invalidates_on_clear_only() -> None:
     """``crs_clear_cache`` alone must re-resolve receivers after the db mutates."""
     import sqlite3

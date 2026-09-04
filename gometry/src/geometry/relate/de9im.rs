@@ -56,14 +56,18 @@ impl De9im {
         String::from_utf8_lossy(&self.0).into_owned()
     }
 
+    /// OGC pattern match: `T` = non-empty, `F` = empty, digits exact,
+    /// `*` = anything. `None` for a malformed pattern (caller raises the
+    /// canonical error).
     /// [`matches`](Self::matches) for a pattern already validated to nine
-    /// ASCII literals.
+    /// literals, as the engines carry it.
     pub(crate) fn matches_bytes(self, pattern: [u8; 9]) -> bool {
         self.matches(std::str::from_utf8(&pattern).expect("a validated pattern is ASCII"))
             .expect("a validated pattern has nine literals")
     }
 
-    /// The equivalent pattern after swapping the two operands.
+    /// The pattern that asks of the transposed pair what `pattern` asks of
+    /// this one: rows and columns swapped.
     pub(crate) const fn transpose_pattern(pattern: [u8; 9]) -> [u8; 9] {
         [
             pattern[0], pattern[3], pattern[6],
@@ -72,9 +76,6 @@ impl De9im {
         ]
     }
 
-    /// OGC pattern match: `T` = non-empty, `F` = empty, digits exact,
-    /// `*` = anything. `None` for a malformed pattern (caller raises the
-    /// canonical error).
     pub(crate) fn matches(self, pattern: &str) -> Option<bool> {
         if pattern.len() != 9 {
             return None;

@@ -129,9 +129,7 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         crate::geometry::GeometryKind::Point,
         crate::geometry::CoordinateAxes::XYZ,
     );
-    assert!(
-        to_geojson_string::<true>(&xyz_empty, crate::geometry::TopologyDomain::Cartesian).is_err()
-    );
+    to_geojson_string::<true>(&xyz_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 
     let measured = Shape::Point(
         Point::new_axes(
@@ -142,15 +140,10 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
         )
         .unwrap(),
     );
-    assert!(
-        to_geojson_string::<true>(&measured, crate::geometry::TopologyDomain::Cartesian).is_err()
-    );
+    to_geojson_string::<true>(&measured, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 
     let explicit_empty = parse_wkt("MULTIPOINT (EMPTY, (1 2))").unwrap();
-    assert!(
-        to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian)
-            .is_err()
-    );
+    to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 }
 
 #[test]

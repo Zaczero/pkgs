@@ -122,25 +122,10 @@ impl StagedLinework {
     }
 }
 
-/// Per-segment record of what the sweep saw, for the exterior cells.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Touched {
-    /// No contact at all: the whole segment lies in the other's exterior.
-    None,
-    /// Point contacts only: the interior still reaches the exterior.
-    Points,
-    /// At least one collinear span: coverage decides.
-    Spans,
-}
-
-pub(crate) enum Outcome {
-    /// The predicate was decided before the matrix was complete.
-    Verdict(bool),
-    Matrix(De9im),
-}
-
-/// Whether a caller needs a complete matrix or can stop at a predicate result.
-enum Ask<'a> {
+/// What a caller wants from an engine: the whole matrix, or one predicate
+/// decided as early as the evidence allows. Only a predicate can be decided
+/// before the sweep, so the pre-sweep probes run for predicates alone.
+pub(crate) enum Ask<'a> {
     Matrix,
     Predicate(&'a mut dyn FnMut(&De9imInterval) -> Option<bool>),
 }
@@ -156,6 +141,23 @@ impl Ask<'_> {
     const fn probes(&self) -> bool {
         matches!(self, Self::Predicate(_))
     }
+}
+
+/// Per-segment record of what the sweep saw, for the exterior cells.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Touched {
+    /// No contact at all: the whole segment lies in the other's exterior.
+    None,
+    /// Point contacts only: the interior still reaches the exterior.
+    Points,
+    /// At least one collinear span: coverage decides.
+    Spans,
+}
+
+pub(crate) enum Outcome {
+    /// The predicate was decided before the matrix was complete.
+    Verdict(bool),
+    Matrix(De9im),
 }
 
 /// Relate two admitted linework operands, stopping as soon as `decide` returns
@@ -432,7 +434,8 @@ pub(crate) struct StagedRings {
     ring_vertices: Vec<XY>,
 }
 
-/// Stage an areal operand's rings, or `None` when it is not areal here.
+/// Stage an areal operand's rings, or `None` when it is not areal here (see
+/// `collect_areal_polygons`); admission proper is decided per call.
 pub(crate) fn stage_rings(shape: &Shape) -> Option<StagedRings> {
     let mut polygons = Vec::new();
     super::graph_matrix::collect_polygons(shape, &mut polygons)?;
@@ -472,19 +475,26 @@ impl StagedRings {
 fn polygons_of(plan: &PreparedPlan) -> Option<Vec<&crate::geometry::Polygon>> {
     let mut polygons = Vec::new();
     super::graph_matrix::collect_polygons(plan.shape(), &mut polygons)?;
-    (!polygons.is_empty()).then_some(polygons)
+    if polygons.is_empty() {
+        return None;
+    }
+    Some(polygons)
 }
 
-/// The stricter admission required only before a boundary sweep. Point probes
-/// read shell-minus-holes directly and remain sound for every structural shape.
+/// Whether the contact sweep and ring placement may reason about this
+/// operand: every ring has area (staging elides zero-length segments, so
+/// repeated vertices need no gate), and a multi-part or holed operand is
+/// valid, so its rings form a laminar family. The vertex probes run before
+/// this gate: a point-in-polygon reading needs neither.
 fn sweep_admits(plan: &PreparedPlan, polygons: &[&crate::geometry::Polygon]) -> bool {
-    if !plan.areal_rings_sound() {
+    if !plan.areal_rings_have_area() {
         return false;
     }
     let adjacency_possible = polygons.len() > 1 || polygons.iter().any(|polygon| !polygon.holes.is_empty());
     !adjacency_possible || plan.validate_cached().is_none()
 }
 
+/// The first shell vertex of a polygon, the probe point its owner offers.
 fn first_vertex(polygon: &crate::geometry::Polygon) -> XY {
     let shell = polygon.shell.coords();
     XY::new(shell.xs()[0], shell.ys()[0])
@@ -540,17 +550,20 @@ fn locate_off_boundary(polygons: &[&crate::geometry::Polygon], point: XY) -> Opt
 /// other's interior or exterior, and both of its sides — one an interior
 /// patch of its owner, one an exterior patch, whichever way round — share
 /// that placement, which fixes every cell from one located vertex per ring.
-fn relate_areal(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    mut ask: Ask<'_>,
-) -> Option<Outcome> {
+fn relate_areal(left: &PreparedPlan, right: &PreparedPlan, mut ask: Ask<'_>) -> Option<Outcome> {
     let left_polygons = polygons_of(left)?;
     let right_polygons = polygons_of(right)?;
     let mut interval = De9imInterval::open(StagedRings::shape(), StagedRings::shape());
     if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
+    // One shell vertex of each operand located in the other, before either
+    // is admitted, staged or swept: a vertex inside the other decides
+    // `intersects` and one outside decides `contains`/`within` from two
+    // linear probes, where the sweep is n log n and has to finish to
+    // conclude anything. The probe reads each polygon as shell minus holes,
+    // the reading the point predicates give, so it needs no soundness or
+    // validity gate.
     if ask.probes() {
         interval.witness(
             Loc::Boundary,
@@ -712,25 +725,17 @@ struct Cut {
 /// piece it belongs to does. A bounded area leaves interior and exterior on
 /// both sides of any finite line, and its boundary reaches the line's
 /// exterior unless shared spans cover every ring segment end to end.
-fn relate_areal_linework(
-    area: &PreparedPlan,
-    line: &PreparedPlan,
-    mut ask: Ask<'_>,
-) -> Option<Outcome> {
+fn relate_areal_linework(area: &PreparedPlan, line: &PreparedPlan, mut ask: Ask<'_>) -> Option<Outcome> {
     let polygons = polygons_of(area)?;
     let linework = line.staged_linework()?;
     let mut interval = De9imInterval::open(StagedRings::shape(), linework.shape());
     interval.witness(Loc::Interior, Loc::Exterior, Dimension::Surface);
-    if let Some(verdict) = ask.decide(&interval) {
-        return Some(Outcome::Verdict(verdict));
-    }
+    // The line's first vertex located in the area before the area is
+    // admitted, staged or swept: inside decides `intersects`, outside
+    // decides `contains`, from one linear probe.
     if ask.probes() {
         let probe = linework.chains.segments[0].start;
-        interval.witness(
-            locate_in_polygons(&polygons, probe),
-            linework.class_of(probe),
-            Dimension::Point,
-        );
+        interval.witness(locate_in_polygons(&polygons, probe), linework.class_of(probe), Dimension::Point);
         if let Some(verdict) = ask.decide(&interval) {
             return Some(Outcome::Verdict(verdict));
         }
@@ -891,7 +896,7 @@ fn walk_line_pieces(
         chains.segments[span.start].start,
         chains.segments[span.end - 1].end,
     );
-    for ordinal in span.clone() {
+    for ordinal in span {
         let segment = chains.segments[ordinal];
         let slot = &mut cuts[ordinal];
         slot.sort_by(|left, right| left.at.cmp_along(&right.at));
@@ -906,10 +911,10 @@ fn walk_line_pieces(
                 delta += i32::from(slot[index].span_delta);
                 index += 1;
             }
-            if !same_point(cursor, point) {
-                if span_depth > 0 {
-                    piece = None; // inside a shared span: on the boundary
-                } else {
+            // A stretch inside a shared span lies on the boundary itself and
+            // was witnessed when the span arrived; anything else is a piece.
+            if !same_point(cursor, point) && span_depth == 0 {
+                {
                     let location = *piece.get_or_insert_with(|| {
                         locate_in_polygons(polygons, segment_midpoint(Segment { start: cursor, end: point }).xy())
                     });
@@ -1161,6 +1166,10 @@ mod tests {
             // dimension (see `non_simple_linework_matches_geos`), so the fuzz
             // keeps to simple operands and the non-simple cases are pinned
             // against GEOS by hand.
+            // The graph is the oracle only where it is trusted: on lines that
+            // double back over themselves it has lost owners and dimensions
+            // (see `non_simple_linework_matches_geos`), so the fuzz keeps to
+            // simple operands and the non-simple cases are pinned to GEOS.
             if !PreparedPlan::transient(&left).is_simple_cached()
                 || !PreparedPlan::transient(&right).is_simple_cached()
             {
@@ -1172,8 +1181,46 @@ mod tests {
         assert!(checked > 1000, "only {checked} admitted pairs");
     }
 
-    /// Two long jagged lines exercise the two-pool sweep above its brute-force
-    /// threshold, both for crossing and separated bands.
+    /// Every pattern the engines can be asked, decided early on a partial
+    /// interval, must agree with the same pattern read off the oracle's full
+    /// matrix. The set mixes the named predicates' patterns with literal-
+    /// dimension and wildcard forms, so both the `T`/`F` and `0`/`1`/`2`
+    /// literal branches of the three-valued evaluation are exercised.
+    #[test]
+    fn early_patterns_agree_with_the_oracle_matrix() {
+        const PATTERNS: [&[u8; 9]; 14] = [
+            b"T********", b"FF*FF****", b"T*T***T**", b"T*****FF*", b"**T***T**",
+            b"0********", b"1********", b"*1*******", b"*********", b"FFFFFFFF*",
+            b"1*T***T**", b"F*T***T**", b"0F1FF0102", b"**2******",
+        ];
+        let corpus: [(Shape, Shape); 4] = [
+            (line(&[(0.0, 0.0), (2.0, 2.0)]), line(&[(0.0, 2.0), (2.0, 0.0)])),
+            (line(&[(0.0, 0.0), (2.0, 0.0)]), line(&[(1.0, 0.0), (3.0, 0.0)])),
+            (line(&[(0.0, 0.0), (1.0, 1.0)]), line(&[(5.0, 5.0), (6.0, 6.0)])),
+            (multi(&[&[(0.0, 0.0), (1.0, 0.0)], &[(1.0, 0.0), (1.0, 1.0)]]), line(&[(1.0, 0.0), (2.0, 0.0)])),
+        ];
+        let mut decided_early = 0_usize;
+        for (left, right) in &corpus {
+            let expected = oracle(left, right);
+            let (l, r) = (PreparedPlan::transient(left), PreparedPlan::transient(right));
+            for pattern in PATTERNS {
+                let early = direct_linework_pattern(*pattern, &l, &r)
+                    .unwrap_or_else(|| panic!("pair should be admitted"));
+                assert_eq!(
+                    early,
+                    expected.matches_bytes(*pattern),
+                    "pattern {} on {}",
+                    std::str::from_utf8(pattern).unwrap(),
+                    expected.text()
+                );
+                decided_early += 1;
+            }
+        }
+        assert_eq!(decided_early, corpus.len() * PATTERNS.len());
+    }
+
+    /// Two long jagged lines: well past the brute-force threshold, so the
+    /// pair is joined by the two-pool sweep, and jagged so the sweep bands.
     #[test]
     fn long_jagged_lines_reach_the_two_pool_sweep() {
         let jagged = |count: usize, dx: f64, dy: f64| -> Shape {
@@ -1186,6 +1233,8 @@ mod tests {
                 .collect();
             line(&points)
         };
+        // Half a period out of phase, so the sawtooths cross on every tooth;
+        // in phase they are parallel offsets that never meet.
         check("long jagged, crossing", &jagged(400, 0.0, 0.0), &jagged(400, 0.185, -0.4));
         check("long jagged, disjoint", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 5.0));
         check("long jagged, separated bands", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 2.0));
@@ -1197,7 +1246,13 @@ mod tests {
         // answers `0F1F00102` for the first pair — it loses the dimension of
         // the shared first segment once the right operand doubles back over
         // itself — which is the defect that keeps these out of the fuzz.
-        let cases: [(&str, Shape, Shape, &str); 3] = [
+        let cases: [(&str, Shape, Shape, &str); 4] = [
+            (
+                "both non-simple, sharing a segment and a vertex",
+                line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (2.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
+                line(&[(2.0, 0.0), (0.0, 2.0), (1.0, 0.0), (2.0, 2.0), (0.0, 2.0)]),
+                "1010F0102",
+            ),
             (
                 "shared first segment, right operand doubles back",
                 line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 0.0), (1.0, 0.0)]),
@@ -1410,7 +1465,7 @@ mod tests {
             )
             .unwrap_or_else(|| panic!("{label}: admitted"));
             assert_eq!(direct.text(), geos, "{label}");
-            let fold = crate::geometry::relate::graph_matrix::try_areal_relate(&bowtie, &other)
+            let fold = super::super::graph_matrix::try_areal_relate(&bowtie, &other)
                 .unwrap_or_else(|| panic!("{label}: fold admits the pair"));
             assert_eq!(fold.text(), geos, "{label}: the fold fills nonzero like GEOS");
         }
@@ -1502,10 +1557,10 @@ mod tests {
                 state
             };
             let star: Vec<(f64, f64)> = {
-                let n = 9;
+                let n = 9_u32;
                 let mut points: Vec<(f64, f64)> = (0..n)
                     .map(|i| {
-                        let angle = i as f64 / n as f64 * std::f64::consts::TAU;
+                        let angle = f64::from(i) / f64::from(n) * std::f64::consts::TAU;
                         let radius = if i % 2 == 0 { 3.0 } else { 1.5 };
                         ((3.0 + radius * angle.cos()).round(), (3.0 + radius * angle.sin()).round())
                     })
@@ -1517,9 +1572,10 @@ mod tests {
             let mut checked = 0;
             for _ in 0..3000 {
                 let count = 2 + (next() % 4) as usize;
-                let points: Vec<(f64, f64)> = (0..count)
-                    .map(|_| ((next() % 8) as f64, (next() % 8) as f64))
-                    .collect();
+                let points: Vec<(f64, f64)> =
+                    std::iter::repeat_with(|| ((next() % 8) as f64, (next() % 8) as f64))
+                        .take(count)
+                        .collect();
                 let probe = line(&points);
                 if stage_linework(&probe).is_none()
                     || !PreparedPlan::transient(&probe).is_simple_cached()

@@ -44,9 +44,7 @@ impl PyGeometryArray {
             }
             offset_builder.push_end(total, vertex_cap).ok()?;
         }
-        let Some(axes) = axes else {
-            return None;
-        };
+        let axes = axes?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, total);
         for shape in replay {
             let Shape::LineString(seq) = shape else {
@@ -92,9 +90,7 @@ impl PyGeometryArray {
             };
             // Shared structural pack-admission (shell, ≥4 XY-closed rings,
             // uniform axes) — same predicate as streaming + packed GeoArrow.
-            let Some(row_axes) = super::polygon_pack_axes(polygon) else {
-                return None;
-            };
+            let row_axes = super::polygon_pack_axes(polygon)?;
             match axes {
                 None => axes = Some(row_axes),
                 Some(existing) if existing != row_axes => return None,
@@ -118,9 +114,7 @@ impl PyGeometryArray {
             debug_assert!(poly_rings > 0);
             polygon_builder.push_end(ring_index, vertex_cap).ok()?;
         }
-        let Some(axes) = axes else {
-            return None;
-        };
+        let axes = axes?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
@@ -167,9 +161,7 @@ impl PyGeometryArray {
                 Some(_) => {},
             }
         }
-        let Some(axes) = axes else {
-            return None;
-        };
+        let axes = axes?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, shapes.len());
         for shape in shapes {
             let Shape::Point(point) = shape else {

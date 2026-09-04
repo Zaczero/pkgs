@@ -450,12 +450,8 @@ impl CoordinateView {
                     // arrays materialize through `for_each`, so public buffers
                     // match logical row order and never expose excluded parent
                     // coordinates.
-                    GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        coords, row_map, ..
-                    })
-                    | GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                        coords, row_map, ..
-                    }) => row_map.is_identity().then_some(coords),
+                    GeometryArrayStorage::Packed(PackedStorage::Lines { coords, row_map, .. } |
+PackedStorage::Polygons { coords, row_map, .. }) => row_map.is_identity().then_some(coords),
                     GeometryArrayStorage::Mixed(_) => None,
                 }
             },
@@ -929,8 +925,8 @@ impl CoordinateView {
                 missing: None,
             } => match storage.as_ref() {
                 GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => true,
-                GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. })
-                | GeometryArrayStorage::Packed(PackedStorage::Polygons { row_map, .. }) => {
+                GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. } |
+PackedStorage::Polygons { row_map, .. }) => {
                     !matches!(row_map.as_deref(), crate::array::RowSelectionRef::Gather(_))
                 },
                 GeometryArrayStorage::Mixed(_) => false,
@@ -1253,16 +1249,13 @@ impl CoordinateView {
         let mut any = false;
         let mut all_present = true;
         let result = self.try_for_each_point(&mut |coord| {
-            let (value, is_present) = match project(coord.point) {
-                Some(value) => {
-                    any = true;
-                    (value, true)
-                },
-                None => {
+            let (value, is_present) = project(coord.point).map_or_else(|| {
                     all_present = false;
                     (0.0, false)
-                },
-            };
+                }, |value| {
+                    any = true;
+                    (value, true)
+                });
             match crate::boundary::try_push_pair(&mut values, &mut present, value, is_present) {
                 Ok(()) => ControlFlow::Continue(()),
                 Err(error) => ControlFlow::Break(error),

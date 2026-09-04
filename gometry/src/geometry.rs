@@ -17,7 +17,7 @@
 mod access;
 mod frame;
 pub(crate) use frame::{
-    AxisFrame, SimilarityFrame, axis_pow2_scale, exact_incircle_sign, power_of_two_exponent,
+    AxisFrame, axis_pow2_scale, power_of_two_exponent,
     scale_by_power_of_two, scaled_residual, unscale_area,
 };
 mod area;
@@ -34,7 +34,7 @@ pub(crate) use access::{
 #[cfg(test)]
 pub(crate) use area::ring_area_measure_columns;
 pub(crate) use area::{
-    AreaSign, RingDecisionArea, RingWinding, closed_columns_winding,
+    AreaSign, FaceDecisionArea, RingDecisionArea, RingWinding, closed_columns_winding,
     exact_ring_area_centroid_sums_local, open_point_cycle_decision, open_point_cycle_winding,
     open_xy_cycle_decision, open_xy_cycle_sign, open_xy_cycle_winding,
     polygon_area_measure_columns, polygon_area_measure_with, ring_area_measure, ring_decision_area,
@@ -221,13 +221,10 @@ pub(crate) use relate::{
     line_scalar_prefers_direct_polygon_relate,
 };
 pub(crate) use relate::{De9imInterval, Loc, OperandShape};
-pub(crate) use relate::{collect_polygons, ring_is_sound};
 pub(crate) use relate::{
-    StagedLinework, StagedRings, direct_areal_linework_predicate,
-    direct_areal_predicate, direct_linework_predicate, stage_linework, stage_rings,
-};
-pub(crate) use relate::{
-    direct_areal_linework_pattern, direct_areal_pattern, direct_linework_pattern,
+    StagedLinework, StagedRings, collect_polygons, direct_areal_linework_predicate,
+    direct_areal_linework_pattern, direct_areal_pattern, direct_areal_predicate,
+    direct_linework_pattern, direct_linework_predicate, ring_has_area, stage_linework, stage_rings,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_between, candidate_pairs_over_staged_runs, for_each_candidate_pair,

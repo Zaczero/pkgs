@@ -89,14 +89,13 @@ fn part_output_len<const CLOSED: bool>(
 }
 
 /// Exact-capacity SoA builder for one smoothed part. The budget check already
-/// caps `cap` at [`SMOOTH_MAX_COORDS`]; `try_reserve_exact` only fails on a
-/// genuine out-of-memory condition at the (bounded) final allocation.
-fn reserve_builder(coords: &CoordSeq, cap: usize) -> Result<CoordSeqBuilder> {
+/// caps `cap` at [`SMOOTH_MAX_COORDS`], then grows each live column once.
+fn reserve_builder(coords: &CoordSeq, cap: usize) -> CoordSeqBuilder {
     let mut builder = CoordSeqBuilder::like_coords(coords, 0);
     // Grow each live column once — same OOM contract as the prior `Vec<Point>`
     // path, without the AoS staging buffer or the SoA transpose.
     builder.reserve_exact(cap);
-    Ok(builder)
+    builder
 }
 
 /// Corner-cutting Chaikin smoothing and centripetal Catmull-Rom subdivision
@@ -124,36 +123,36 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
             let mut current = points.clone();
             for _ in 0..iterations {
                 current = if CLOSED {
-                    chaikin_closed(&current)?
+                    chaikin_closed(&current)
                 } else {
-                    chaikin_open(&current, keep_endpoints)?
+                    chaikin_open(&current, keep_endpoints)
                 };
             }
             current
         },
         SmoothMethod::CatmullRom => {
             let samples = catmull_rom_samples_per_segment(iterations);
-            catmull_rom_subdivide::<CLOSED>(points, samples)?
+            catmull_rom_subdivide::<CLOSED>(points, samples)
         },
     })
 }
 
-fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
+fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> CoordSeq {
     let count = points.len();
     if count < 2 {
-        return Ok(points.clone());
+        return points.clone();
     }
     if !keep_endpoints {
-        let mut out = reserve_builder(points, 2 * (count - 1))?;
+        let mut out = reserve_builder(points, 2 * (count - 1));
         for index in 0..count - 1 {
             let start = points.point_at(index);
             let end = points.point_at(index + 1);
             out.push(lerp_point(start, end, 0.25));
             out.push(lerp_point(start, end, 0.75));
         }
-        return Ok(out.finish_infallible());
+        return out.finish_infallible();
     }
-    let mut out = reserve_builder(points, 2 * count - 2)?;
+    let mut out = reserve_builder(points, 2 * count - 2);
     out.push_at(points, 0);
     for index in 0..count - 1 {
         let start = points.point_at(index);
@@ -168,16 +167,16 @@ fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
         }
     }
     out.push_at(points, count - 1);
-    Ok(out.finish_infallible())
+    out.finish_infallible()
 }
 
-fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
+fn chaikin_closed(points: &CoordSeq) -> CoordSeq {
     let count = points.len();
     if count < 4 {
-        return Ok(points.clone());
+        return points.clone();
     }
     let edge_count = count - 1;
-    let mut out = reserve_builder(points, 2 * edge_count + 1)?;
+    let mut out = reserve_builder(points, 2 * edge_count + 1);
     // Capture the first emitted corner so the ring can close bit-identically
     // without reading back from the SoA builder.
     let mut first_corner = None;
@@ -193,7 +192,7 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
         out.push(r);
     }
     out.push(first_corner.expect("closed Chaikin has at least one edge"));
-    Ok(out.finish_infallible())
+    out.finish_infallible()
 }
 
 /// Subdivide every segment into ``samples`` equal parametric pieces (keeping
@@ -201,14 +200,14 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
 pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
     points: &CoordSeq,
     samples: usize,
-) -> Result<CoordSeq> {
+) -> CoordSeq {
     let count = points.len();
     if count < 2 || samples <= 1 {
-        return Ok(points.clone());
+        return points.clone();
     }
     let edge_count = count - 1;
     let total = edge_count * samples + 1;
-    let mut out = reserve_builder(points, total)?;
+    let mut out = reserve_builder(points, total);
     out.push_at(points, 0);
     let first = points.point_at(0);
     for edge in 0..edge_count {
@@ -248,7 +247,7 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
     if CLOSED {
         out.push(first);
     }
-    Ok(out.finish_infallible())
+    out.finish_infallible()
 }
 
 fn catmull_control<const CLOSED: bool>(points: &CoordSeq, index: isize) -> Point {

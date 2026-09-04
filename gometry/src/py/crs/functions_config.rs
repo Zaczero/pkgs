@@ -164,9 +164,8 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
     match take_path_string(value, name) {
         Ok(s) => Ok(s),
         Err(PathTakeError::Oom) => Err(crate::string_alloc_error()),
-        Err(PathTakeError::Provider(err)) => Err(err),
-        Err(PathTakeError::Err(err)) => Err(err),
-    }
+        Err(PathTakeError::Provider(err) | PathTakeError::Err(err)) => Err(err),
+        }
 }
 
 /// Return the current CRS engine configuration.

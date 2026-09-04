@@ -174,7 +174,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         // geometry no longer materializes its full (~megabyte) WKT just to
         // truncate it. The bounded prefix is byte-identical to the full
         // render's, so the truncation result is unchanged.
-        let shape = self.shape.clone();
+        let shape = std::sync::Arc::clone(&self.shape);
         let mut wkt = py.detach(move || io::to_wkt_preview(shape.shape(), WKT_LIMIT + 1))?;
         if wkt.len() > WKT_LIMIT {
             wkt.truncate(WKT_LIMIT);
@@ -229,7 +229,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     }
 
     pub fn __str__(&self, py: Python<'_>) -> PyResult<String> {
-        let shape = self.shape.clone();
+        let shape = std::sync::Arc::clone(&self.shape);
         py.detach(move || io::to_wkt(shape.shape()))
             .map_err(PyErr::from)
     }
@@ -250,13 +250,13 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         use std::fmt::Write as _;
         match spec {
             "" => {
-                let shape = self.shape.clone();
+                let shape = std::sync::Arc::clone(&self.shape);
                 return py
                     .detach(move || io::to_wkt(shape.shape()))
                     .map_err(PyErr::from);
             },
             "x" | "X" => {
-                let shape = self.shape.clone();
+                let shape = std::sync::Arc::clone(&self.shape);
                 let wkb = py.detach(move || io::to_wkb(shape.shape(), None, false))?;
                 let capacity = wkb.len().checked_mul(2).ok_or_else(|| {
                     PyMemoryError::new_err("hexadecimal WKB output size overflows usize")
@@ -309,7 +309,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             (false, None) => io::WktNumberFormat::Fixed(16),
             (false, Some(precision)) => io::WktNumberFormat::Fixed(precision),
         };
-        let shape = self.shape.clone();
+        let shape = std::sync::Arc::clone(&self.shape);
         py.detach(move || io::to_wkt_display(shape.shape(), format))
             .map_err(PyErr::from)
     }

@@ -44,7 +44,7 @@ impl RowProductChunk {
 pub(crate) struct RowProductOwner {
     physical_len: usize,
     chunks: Mutex<HashMap<usize, Arc<RowProductChunk>>>,
-    aliases: HashMap<usize, (Arc<RowProductOwner>, usize)>,
+    aliases: HashMap<usize, (Arc<Self>, usize)>,
 }
 
 impl RowProductOwner {
@@ -714,7 +714,7 @@ impl PyGeometryArray {
                     index,
                 )
             },
-            _ => PyGeometry::with_row_products(
+            GeometryArrayStorage::Packed(_) => PyGeometry::with_row_products(
                 self.storage().shape_data_at(index),
                 frame,
                 self.row_products.clone(),
@@ -878,8 +878,7 @@ mod frame_cache_row_tests {
     #[test]
     fn concurrent_first_publication_keeps_one_prepared_arc() {
         let products = Arc::new(RowProducts::fresh(1));
-        let mut threads: Vec<_> = (0..8)
-            .map(|_| {
+        let mut threads: Vec<_> = std::iter::repeat_with(|| {
                 let products = Arc::clone(&products);
                 std::thread::spawn(move || {
                     products.operation().prepared_plan(
@@ -887,7 +886,7 @@ mod frame_cache_row_tests {
                         Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)))),
                     )
                 })
-            })
+            }).take(8)
             .collect();
         let first = threads
             .remove(0)
@@ -1064,7 +1063,7 @@ mod frame_cache_row_tests {
 
         for row in array.storage().iter_rows() {
             let data = PreparedRow::transient(row);
-            crate::broadcast::pair_distance_planar(1.0, &data, &probe).unwrap();
+            crate::broadcast::pair_distance_planar(1.0, &data, &probe);
         }
 
         assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));

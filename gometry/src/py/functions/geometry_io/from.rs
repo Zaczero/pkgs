@@ -218,11 +218,7 @@ pub(crate) fn from_wkb(
                 if item.is_none() {
                     return Ok(None);
                 }
-                if let Some(bytes) = exact_backed_bytes(item)? {
-                    Ok(Some(OwnedBytes::Backed(bytes)))
-                } else {
-                    copy_wkb_payload(item).map(|bytes| Some(OwnedBytes::Copied(bytes)))
-                }
+                exact_backed_bytes(item)?.map_or_else(|| copy_wkb_payload(item).map(|bytes| Some(OwnedBytes::Copied(bytes))), |bytes| Ok(Some(OwnedBytes::Backed(bytes))))
             },
             fallback.clone(),
             parsed_epoch,
@@ -248,11 +244,7 @@ pub(crate) fn from_wkb(
         "WKB import",
         "EWKB SRID",
         move |data, _row| {
-            if let Some(bytes) = exact_backed_bytes(data)? {
-                Ok(OwnedBytes::Backed(bytes))
-            } else {
-                copy_wkb_payload(data).map(OwnedBytes::Copied)
-            }
+            exact_backed_bytes(data)?.map_or_else(|| copy_wkb_payload(data).map(OwnedBytes::Copied), |bytes| Ok(OwnedBytes::Backed(bytes)))
         },
         move |data| {
             let parsed = io::parse_wkb(data.as_slice())?;

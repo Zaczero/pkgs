@@ -840,7 +840,7 @@ geometry_parts_methods!(PyMultiPolygon);
 geometry_parts_methods!(PyGeometryCollection);
 
 impl PyGeometry {
-    pub(crate) fn with_row_products(
+    pub(crate) const fn with_row_products(
         shape: Arc<ShapeData>,
         frame: Frame,
         row_products: RowProducts,

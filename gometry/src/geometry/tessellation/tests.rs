@@ -217,11 +217,10 @@ fn delaunay_triangles_accept_mixed_axis_collection_without_panicking() {
 }
 
 #[test]
-fn constrained_pentagon_retains_reciprocal_axes_before_spade() {
-    // 1e77 × 1e-77 is below the old 900-bit trigger but its squared
-    // circumcircle products already enter Spade's degenerate range.  This is
-    // a topology test: all five stored vertices must make three constrained
-    // faces rather than raising `TooLarge`.
+fn constrained_pentagon_retains_reciprocal_axes() {
+    // 1e77 × 1e-77: squared circumcircle products of these vertices underflow
+    // in floating point, which once lost an axis. This is a topology test:
+    // all five stored vertices must make three constrained faces.
     let large = 1.0e77;
     let tiny = 1.0e-77;
     let source = Shape::Polygon(polygon(

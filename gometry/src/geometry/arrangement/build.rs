@@ -491,8 +491,8 @@ impl<W: WindingWeight> Arrangement<W> {
         for (face_id, face) in self.faces.iter().enumerate() {
             let slot = &mut outer[face.component as usize];
             let better = slot.is_none_or(|current| {
-                face.area_sign
-                    .prefers_as_outer_face_than(self.faces[current as usize].area_sign)
+                face.decision_area
+                    .prefers_as_outer_face_than(self.faces[current as usize].decision_area)
             });
             if better {
                 *slot = Some(face_id as u32);

@@ -8,7 +8,7 @@ use pyo3::types::PyAny;
 use crate::py::wire_crs::{SharedRowCrs, SridFrameAdmission};
 use crate::{Crs, Frame, PyGeometryArray, Shape, guard_epoch_frame};
 
-const DETACHED_BATCH_ROWS: usize = 16_384;
+const DETACHED_BATCH_ROWS: usize = 0x4000;
 
 pub(crate) enum StreamedRow {
     Present {
@@ -189,10 +189,10 @@ where
         rows,
         first_crs,
         first_epoch,
-        have_present_row: _,
         missing_rows,
         row_count,
         fallback,
+        ..
     } = state;
     let result = py.detach(move || {
         iter_detach_finalize(

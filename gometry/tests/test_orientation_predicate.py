@@ -95,7 +95,7 @@ def test_hausdorff_preserves_underflowed_local_determinant() -> None:
     assert gm.hausdorff_distance(graph, baseline) == offset
 
 
-def test_spade_rejection_returns_to_certified_source_delaunay() -> None:
+def test_concave_hull_near_collinear_ulp_sites_keeps_the_exact_cycle() -> None:
     mu = math.ulp(0.0)
     points = [
         (0.00, 257 * mu),

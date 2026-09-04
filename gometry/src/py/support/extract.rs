@@ -41,9 +41,9 @@ pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> PyResult<Option<Py
 }
 
 impl CoercedCollectedGeometryItems {
-    pub(crate) fn into_items(self) -> PyResult<Vec<PyGeometry>> {
+    pub(crate) fn into_items(self) -> Vec<PyGeometry> {
         let Self::Items(items) = self;
-        Ok(items)
+        items
     }
 }
 
@@ -84,7 +84,7 @@ impl<'a> GeometryValues<'a> {
             Self::One(geometry) => Ok(vec![geometry.clone()]),
             Self::Array(array) if array.has_missing() => Err(missing_geometry_items_error()),
             Self::Array(array) => Ok(array.items()?.into_owned()),
-            Self::Collected(items) => items.into_items(),
+            Self::Collected(items) => Ok(items.into_items()),
         }
     }
 }
@@ -283,7 +283,7 @@ pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
             .flat_map_shapes_groups(py, part_shapes)
             .and_then(|groups| groups.into_py_any(py)),
         crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items()?;
+            let mut items = items.into_items();
             let frame = crate::Frame::resolve_items(
                 &mut items,
                 crate::FrameAdoption {
@@ -348,7 +348,7 @@ pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<P
                 .and_then(|groups| groups.into_py_any(py))
         },
         crate::GeometryValues::Collected(items) => {
-            let mut items = items.into_items()?;
+            let mut items = items.into_items();
             let frame = crate::Frame::resolve_items(
                 &mut items,
                 crate::FrameAdoption {
@@ -391,11 +391,10 @@ fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
     let mut rings = Vec::new();
     let mut failure = None;
     shape.for_each_ring(|ring| {
-        if failure.is_none() {
-            if let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line())) {
+        if failure.is_none()
+            && let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line())) {
                 failure = Some(error);
             }
-        }
     });
     if let Some(error) = failure {
         return Err(error);

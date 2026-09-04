@@ -159,7 +159,7 @@ mod multipoint_iteration_tests {
             });
         assert_eq!(result, Err(()));
         assert_eq!(visited, 1);
-        assert_eq!(multipoint.into_iter().collect::<Vec<_>>().len(), 3);
+        assert_eq!(multipoint.into_iter().count(), 3);
     }
 }
 

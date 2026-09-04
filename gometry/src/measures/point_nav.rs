@@ -41,9 +41,9 @@ fn to_geodesic_point(frame: GeographicFrame, point: Point) -> PyResult<Point> {
         .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(point.x, point.y).into())
 }
 
-fn from_geodesic_point(frame: GeographicFrame, point: Point) -> PyResult<Point> {
+fn point_from_geodesic(frame: GeographicFrame, point: Point) -> PyResult<Point> {
     frame
-        .from_geodesic_point(point)
+        .point_from_geodesic(point)
         .map_err(|error| crate::py::errors::CRSError::new_err(error.to_string()))
 }
 
@@ -134,7 +134,7 @@ fn destination_point(
                 distance,
                 state,
             )?;
-            from_geodesic_point(
+            point_from_geodesic(
                 *frame,
                 Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?,
             )
@@ -170,7 +170,7 @@ fn destination_point_on_geodesic(
     )?;
     let point = Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?;
     frame
-        .from_geodesic_point(point)
+        .point_from_geodesic(point)
         .map_err(|error| crate::crs::CrsError::message(error.to_string()))
 }
 
@@ -201,7 +201,7 @@ fn rhumb_destination_point(
              indeterminate",
         ));
     };
-    Ok(Shape::Point(from_geodesic_point(
+    Ok(Shape::Point(point_from_geodesic(
         frame,
         Point::new_axes(x, y, ZOrdinate(from.z()), MOrdinate(from.m()))?,
     )?))
@@ -253,7 +253,7 @@ fn interpolate_point_on_geodesic(
         )),
     )?;
     frame
-        .from_geodesic_point(point)
+        .point_from_geodesic(point)
         .map_err(|error| crate::crs::CrsError::message(error.to_string()))
 }
 
@@ -263,7 +263,7 @@ fn interpolate_point_planar(
     to: Point,
     distance: f64,
     normalized: bool,
-) -> PyResult<Shape> {
+) -> Shape {
     let total = (to.x - from.x).hypot(to.y - from.y) * to_metre;
     let ratio = if normalized {
         distance
@@ -274,14 +274,14 @@ fn interpolate_point_planar(
     }
     .clamp(0.0, 1.0);
     if same_topological_coordinate(ratio, 0.0) {
-        return Ok(Shape::Point(from));
+        return Shape::Point(from);
     }
     if same_topological_coordinate(ratio, 1.0) {
-        return Ok(Shape::Point(to));
+        return Shape::Point(to);
     }
     // Stable lerp: `start*(1-t)+end*t` avoids the `(end-start)*t`
     // overflow class on extreme-but-finite endpoints.
-    Ok(Shape::Point(crate::geometry::lerp_point(from, to, ratio)))
+    Shape::Point(crate::geometry::lerp_point(from, to, ratio))
 }
 
 fn interpolate_point(
@@ -299,7 +299,7 @@ fn interpolate_point(
             )?))
         },
         crs::MetricModel::Planar { to_metre } => {
-            interpolate_point_planar(to_metre.get(), from, to, distance, normalized)
+            Ok(interpolate_point_planar(to_metre.get(), from, to, distance, normalized))
         },
     }
 }
@@ -359,7 +359,7 @@ fn rhumb_interpolate_point(
              indeterminate",
         ));
     };
-    Ok(Shape::Point(from_geodesic_point(
+    Ok(Shape::Point(point_from_geodesic(
         frame,
         Point::new_axes(
             x,
@@ -486,10 +486,7 @@ pub(crate) fn point_destination(
     let from = require_point(geometry, MetricOp::Destination)?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
     match model {
-        crs::MetricModel::Geodesic { .. } => Ok(Shape::Point(destination_point(
-            &model, from, bearing, distance,
-        )?)),
-        crs::MetricModel::Planar { .. } => Ok(Shape::Point(destination_point(
+        crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => Ok(Shape::Point(destination_point(
             &model, from, bearing, distance,
         )?)),
     }
@@ -507,10 +504,7 @@ pub(crate) fn point_interpolate(
     geometry.frame.compatible(&other.frame, "interpolate")?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::PointBetween)?;
     match model {
-        crs::MetricModel::Geodesic { .. } => {
-            interpolate_point(&model, from, to, distance, normalized)
-        },
-        crs::MetricModel::Planar { .. } => {
+        crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
             interpolate_point(&model, from, to, distance, normalized)
         },
     }
@@ -1038,7 +1032,7 @@ impl PointBinaryGeometryKernel for RhumbInterpolatePointKernel<'_> {
 
 impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
     fn eval_planar(self, to_metre: f64, row: usize, left: Point, right: Point) -> PyResult<Shape> {
-        interpolate_point_planar(to_metre, left, right, self.distance[row], self.normalized)
+        Ok(interpolate_point_planar(to_metre, left, right, self.distance[row], self.normalized))
     }
 
     fn eval_geodesic(
@@ -1865,10 +1859,7 @@ fn destination_point_array(
             let point = require_point(geometry, MetricOp::Destination)?;
             let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
             let point = match model {
-                crs::MetricModel::Geodesic { .. } => {
-                    destination_point(&model, point, bearing.values[0], distance.values[0])?
-                },
-                crs::MetricModel::Planar { .. } => {
+                crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
                     destination_point(&model, point, bearing.values[0], distance.values[0])?
                 },
             };
@@ -1925,10 +1916,7 @@ pub(crate) fn destination_point_receiver(
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
     if len == 1 && bearing.scalar && distance.scalar {
         let point = match model {
-            crs::MetricModel::Geodesic { .. } => {
-                destination_point(&model, point, bearing.values[0], distance.values[0])?
-            },
-            crs::MetricModel::Planar { .. } => {
+            crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
                 destination_point(&model, point, bearing.values[0], distance.values[0])?
             },
         };

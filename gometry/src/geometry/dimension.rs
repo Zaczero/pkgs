@@ -28,11 +28,13 @@ impl From<Dimension> for usize {
 }
 
 /// Whether every vertex of a ring lies on one line, decided exactly.
+#[expect(clippy::float_cmp, reason = "the first vertex distinct from the origin is found by identity, not proximity; a tolerance would pick a near-duplicate as the line's second point")]
 pub(crate) fn ring_is_collinear(coords: &crate::geometry::CoordSeq) -> bool {
     let (xs, ys) = (coords.xs(), coords.ys());
     let Some((&ax, &ay)) = xs.first().zip(ys.first()) else {
         return true;
     };
+    // The first vertex distinct from the origin fixes the candidate line.
     let Some(base) = (0..xs.len()).find(|&i| xs[i] != ax || ys[i] != ay) else {
         return true;
     };

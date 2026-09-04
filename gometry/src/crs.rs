@@ -71,11 +71,10 @@ use cache::{
 pub(crate) use cache::{cache_info, lru_resolve};
 pub(crate) use catalog::{
     ProjStringVersion, authorities_with_state, catalog, celestial_bodies_with_state, codes,
-    ellipsoids, geoid_models, identify, identify_with_state, non_deprecated, prime_meridians,
-    proj_operations, same,
+    ellipsoids, geoid_models, non_deprecated, prime_meridians, proj_operations, same,
     search, to_2d, to_3d, to_authority, to_authority_with_state, to_cf, to_epsg, to_proj,
     to_projjson, to_projjson_with_options, to_projjson_with_options_at, to_wkt_with_options,
-    unit_info, units_with_state, utm_zones, utm_zones_at, validate_search_limit,
+    unit_info, units_with_state, utm_zones, utm_zones_at, validate_search_limit, identify_with_state,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::CrsError;

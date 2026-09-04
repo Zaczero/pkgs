@@ -24,9 +24,7 @@ impl GeometryArrayStorage {
     /// same columns, so this is O(1) for points, lines, and polygons.
     pub(crate) fn packed_axes(&self) -> Option<CoordinateAxes> {
         match self {
-            Self::Packed(PackedStorage::Points { coords, .. })
-            | Self::Packed(PackedStorage::Lines { coords, .. })
-            | Self::Packed(PackedStorage::Polygons { coords, .. }) => Some(coords.axes()),
+            Self::Packed(packed) => Some(packed.axes()),
             Self::Mixed(_) => None,
         }
     }
@@ -39,7 +37,7 @@ impl GeometryArrayStorage {
         let mut output = Vec::new();
         crate::boundary::try_reserve_vec(&mut output, self.len())?;
         match self {
-            Self::Packed(PackedStorage::Points { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => {
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. }) => {
                 for _ in 0..self.len() {
                     crate::boundary::try_push_vec(&mut output, constant)?;
                 }
@@ -344,7 +342,7 @@ impl GeometryArrayStorage {
                 coords,
                 row_map: row_map.as_deref(),
             }),
-            Self::Packed(PackedStorage::Lines { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => None,
+            Self::Packed(PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => None,
         }
     }
 
@@ -367,7 +365,7 @@ impl GeometryArrayStorage {
                 offsets: offsets.as_slice(),
                 row_map: row_map.as_deref(),
             }),
-            Self::Packed(PackedStorage::Points { .. }) | Self::Packed(PackedStorage::Polygons { .. }) => None,
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. }) => None,
         }
     }
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
@@ -407,10 +405,8 @@ impl GeometryArrayStorage {
             return total;
         }
         let packed = match self {
-            Self::Packed(PackedStorage::Points { coords, row_map })
-            | Self::Packed(PackedStorage::Lines {
-                coords, row_map, ..
-            }) => row_map.is_identity().then_some(coords),
+            Self::Packed(PackedStorage::Points { coords, row_map } |
+PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some(coords),
             Self::Packed(PackedStorage::Polygons { .. }) | Self::Mixed(_) => None,
         };
         if let Some(seq) = packed {
@@ -673,5 +669,13 @@ fn csr_windows_partition(boundaries: &[i32], len: usize) -> bool {
             }
             covered == len
         },
+    }
+}
+
+impl PackedStorage {
+    pub(crate) fn axes(&self) -> CoordinateAxes {
+        match self {
+            Self::Points { coords, .. } | Self::Lines { coords, .. } | Self::Polygons { coords, .. } => coords.axes(),
+        }
     }
 }

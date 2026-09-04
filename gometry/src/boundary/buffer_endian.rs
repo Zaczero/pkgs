@@ -117,7 +117,7 @@ pub(crate) fn buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     // `MaybeUninit<f64>` has no initialization requirement, so every slot in
     // `0..len` is a valid value of the element type. Setting the length here
     // avoids a second, infallible resize through the allocator.
-    unsafe { values.set_len(len) };
+    unsafe { values.set_len(len); }
     if buffer_format_is_native_endian(buffer.format()) {
         for (dst, cell) in values.iter_mut().zip(cells.iter()) {
             dst.write(cell.get());

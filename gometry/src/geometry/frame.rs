@@ -118,11 +118,6 @@ impl SimilarityFrame {
             scaled_residual(y, self.origin.y, self.scale),
         )
     }
-
-    pub(crate) fn frame_point(self, point: Point) -> Point {
-        let xy = self.frame_xy(point.x, point.y);
-        Point::new_raw_xy(xy.x, xy.y)
-    }
 }
 
 impl AxisFrame {
@@ -162,19 +157,6 @@ impl AxisFrame {
         self.scale_y
     }
 
-    /// Whether one similarity scale would erase a live stored-double axis.
-    /// Consumers that only need planar topology can use this frame to retain
-    /// both axes; Euclidean metric consumers must keep their own exact metric
-    /// predicate instead.
-    pub(crate) fn has_reciprocal_axes(self) -> bool {
-        // Squared predicates consume twice the coordinate exponent span; by
-        // 2^100 an otherwise normal minor coordinate can already push the
-        // determinant product into the subnormal/zero regime.  This is the
-        // same failure class as 1e300 × 1e-300, reached earlier by Spade's
-        // squared circumcircle arithmetic (the 1e77 × 1e-77 CDT repro).
-        (power_of_two_exponent(self.scale_x) - power_of_two_exponent(self.scale_y)).abs() > 100
-    }
-
     pub(crate) fn frame_xy(self, x: f64, y: f64) -> XY {
         XY::new(
             scaled_residual(x, self.origin.x, self.scale_x),
@@ -195,4 +177,3 @@ impl AxisFrame {
     }
 }
 
-pub(crate) use crate::geometry::tessellation::exact::incircle as exact_incircle_sign;

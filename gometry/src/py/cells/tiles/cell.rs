@@ -10,7 +10,7 @@ use pyo3::types::{PyAny, PyBool, PyDict, PyTuple};
 
 use crate::Typed;
 use crate::curves::morton_interleave;
-use crate::grid::cell::{GridCell, HierarchicalCell};
+use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
@@ -44,6 +44,7 @@ pub(crate) struct PyTile {
 }
 
 crate::heapless!(PyTile);
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled Tile from its packed id (internal; see
 /// ``Tile.__reduce__``).
 #[pyfunction]

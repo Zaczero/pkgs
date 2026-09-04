@@ -647,10 +647,15 @@ def test_geometry_collection_relate_residual_regressions_match_shapely() -> None
     )
     line = gm.LineString([(0, 0), (1, 0)])
     line_oracle = shapely.from_wkt('LINESTRING(0 0,1 0)')
-    # A collinear polygon encloses nothing, so gometry treats its rings as
-    # closed linework. GEOS instead retains a two-dimensional interior.
+    # A DELIBERATE divergence, not a regression. The member polygon's rings are
+    # collinear, so it encloses nothing and gometry relates it as the closed
+    # line it is: interior along the ring, and no boundary, because a closed
+    # curve has none. GEOS keeps a two-dimensional interior for it (IE=2 below)
+    # and a point-sized boundary, which a zero-area set cannot have. The
+    # equivalence gometry does guarantee is with the ring's own linework, which
+    # `degenerate_polygon_relates_as_its_own_linework` pins in the Rust suite.
     assert gm.relate(collapsed, line) == '10FFFFFF2'
-    assert gm.relate(line, collapsed) == '1F00FFFF2'
+    assert gm.relate(line, collapsed) == '1FF0FFFF2'
     assert shapely.relate(collapsed_oracle, line_oracle) == '1F2F0FFF2'
     left = gm.from_wkt(
         'GEOMETRYCOLLECTION(POINT(3 1),POLYGON((-2 -2,-1 -2,-1 -1,-2 -1,-2 -2)),POLYGON((1 1,3 1,3 3,1 3,1 1)),POINT(1 0))'

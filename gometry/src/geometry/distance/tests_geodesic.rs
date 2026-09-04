@@ -1,3 +1,7 @@
+#![allow(
+    clippy::panic_in_result_fn,
+    reason = "tests assert, and return Result only to propagate setup errors"
+)]
 use crate::crs::with_ellipsoid_metric;
 use crate::error::Result;
 use crate::geometry::distance::frechet::frechet_dp_columns;
@@ -323,10 +327,10 @@ fn geodesic_filled_area_operations_are_explicitly_unsupported() -> Result<()> {
     ]);
     let point = Shape::Point(p(0.0, 0.0));
     with_ellipsoid_metric("EPSG:4326", &[&area, &point], |metric| {
-        assert!(area.geodesic_cap(metric).is_err());
-        assert!(area.geodesic_distance(&point, metric).is_err());
-        assert!(area.geodesic_hausdorff_distance(&point, metric).is_err());
-        assert!(area.geodesic_nearest_points(&point, metric).is_err());
+        area.geodesic_cap(metric).unwrap_err();
+        area.geodesic_distance(&point, metric).unwrap_err();
+        area.geodesic_hausdorff_distance(&point, metric).unwrap_err();
+        area.geodesic_nearest_points(&point, metric).unwrap_err();
         Ok(())
     })?;
     Ok(())

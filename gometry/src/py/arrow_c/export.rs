@@ -1,3 +1,4 @@
+use crate::py::arrow_c;
 use std::sync::Arc;
 
 use crate::py::arrow_c::{ExportedArray, GometryArrowArray, SchemaNode};
@@ -21,5 +22,5 @@ pub(crate) fn apply_exported_validity_plan(
     bitmap: Arc<[u8]>,
     null_count: usize,
 ) -> pyo3::PyResult<()> {
-    crate::py::arrow_c::apply_prebuilt_top_level_validity(&mut export.array, bitmap, null_count)
+    arrow_c::apply_prebuilt_top_level_validity(&mut export.array, bitmap, null_count)
 }

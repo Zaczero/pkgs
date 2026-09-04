@@ -1,5 +1,5 @@
 use crate::geometry::segments::{
-    EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority, clip_segment_liang_barsky,
+    ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority, clip_segment_liang_barsky,
     segment_nearest_points,
 };
 use crate::geometry::*;
@@ -36,8 +36,9 @@ fn assert_liang_authority_agrees(start: XY, end: XY, rect: Bounds) {
     let fast = clip_segment_liang_barsky(start, end, rect);
     let authority = clip_segment_authority(start, end, rect);
     match fast {
-        None => assert_eq!(clip_segment(start, end, rect), authority),
-        Some(fast) => {
+        ClipVerdict::Declined => assert_eq!(clip_segment(start, end, rect), authority),
+        decided => {
+            let fast = decided.into_clip();
             assert_eq!(fast.is_some(), authority.is_some());
             assert_eq!(clip_segment(start, end, rect), fast);
             let (Some((fast_start, fast_end)), Some((authority_start, authority_end))) =
@@ -88,7 +89,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
     ];
     for (start, end, rect) in admitted {
         assert!(
-            clip_segment_liang_barsky(start, end, rect).is_some(),
+            clip_segment_liang_barsky(start, end, rect) != ClipVerdict::Declined,
             "ordinary finite case was not admitted: {start:?} -> {end:?}"
         );
         assert_liang_authority_agrees(start, end, rect);
@@ -114,7 +115,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
     ];
     for (start, end, rect) in fallback {
         assert!(
-            clip_segment_liang_barsky(start, end, rect).is_none(),
+            clip_segment_liang_barsky(start, end, rect) == ClipVerdict::Declined,
             "ambiguous case was admitted: {start:?} -> {end:?}, {rect:?}"
         );
         assert_liang_authority_agrees(start, end, rect);
@@ -137,7 +138,7 @@ fn liang_barsky_admission_differentials_cover_rounding_boundaries() {
         let y1 = (seed as f64 / u64::MAX as f64) * 8.0 - 4.0;
         let start = XY::new(x0, y0);
         let end = XY::new(x1, y1);
-        if clip_segment_liang_barsky(start, end, rect).is_some() {
+        if clip_segment_liang_barsky(start, end, rect) != ClipVerdict::Declined {
             admitted_count += 1;
         }
         assert_liang_authority_agrees(start, end, rect);

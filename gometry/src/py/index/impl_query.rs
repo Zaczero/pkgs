@@ -160,7 +160,7 @@ impl PySpatialIndex {
                                 let data = products.prepared(idx);
                                 pair_dwithin_planar(to_metre.get(), &data, &query, radius)
                                     .map_err(Into::into)
-                            })?
+                            })?;
                         },
                         crs::ResolvedMetric::Geodesic(metric) => {
                             let query_cache = products.frame_cache(i);
@@ -309,7 +309,7 @@ impl PySpatialIndex {
         }
         // Resolve the ellipsoid OUTSIDE the metric scope: `with_geodesic`
         // holds the thread-local handle cache borrow across its closure.
-        let Ok(shape) = crs::ellipsoid_shape_at(crs, &runtime_state) else {
+        let Ok(shape) = crs::ellipsoid_shape_at(crs, runtime_state) else {
             *cache = GeodesicCapsCache {
                 row_count: self.rows.len(),
                 generation: self.mutation_gen,
@@ -319,7 +319,7 @@ impl PySpatialIndex {
             return Ok(None);
         };
         let mut products = self.rows.operation();
-        let built = match crs::with_ellipsoid_metric_at(crs, &[], &runtime_state, |ellipsoid| {
+        let built = match crs::with_ellipsoid_metric_at(crs, &[], runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
                 shape,
                 self.rows.len(),
@@ -333,7 +333,7 @@ impl PySpatialIndex {
                             semi_major,
                             flattening,
                             ellipsoid,
-                            &runtime_state,
+                            runtime_state,
                         )
                         .ok()
                         .flatten()
@@ -355,6 +355,7 @@ impl PySpatialIndex {
             runtime_generation: runtime_gen,
             caps: built.clone(),
         };
+        drop(cache);
         Ok(built)
     }
 
@@ -776,6 +777,7 @@ impl PySpatialIndex {
         }
 
         let mut candidates = crate::try_vec_with_capacity(ids.len())?;
+        #[expect(clippy::needless_range_loop, reason = "the position is data: it is stored beside the id it indexes")]
         for row in 0..points.len() {
             for position in offsets[row] as usize..offsets[row + 1] as usize {
                 try_push_vec(&mut candidates, (ids[position], row, position))?;
@@ -941,7 +943,7 @@ impl PySpatialIndex {
                             let data = products.prepared(idx);
                             pair_dwithin_planar(to_metre.get(), &data, &query_plan, distance)
                                 .map_err(Into::into)
-                        })?
+                        })?;
                     },
                     crs::ResolvedMetric::Geodesic(metric) => retain_row(&mut matches, 0, |idx| {
                         let data = products.prepared(idx);
@@ -1203,13 +1205,13 @@ impl PySpatialIndex {
                 },
             }
             dedup_row_ids(builder.values_mut(), row_start);
-            let mut ids = builder.values_mut();
+            let ids = builder.values_mut();
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
                     let query_operand =
                         GateOperand::new(ShapeRow::Shape(query.shape()), query.bounds(), domain);
                     let query_cache = query_rows.frame_cache(row);
-                    retain_row(&mut ids, row_start, |idx| {
+                    retain_row(ids, row_start, |idx| {
                         if let Some(verdict) = spec.pre_topology(
                             query_operand,
                             GateOperand::new(index_products.row(idx), None, domain),
@@ -1227,7 +1229,7 @@ impl PySpatialIndex {
                                 domain,
                             ),
                         ))
-                    })?
+                    })?;
                 },
                 (None, Some(_), Some(IndexPredicate::Dwithin)) => {
                     unreachable!("exact dwithin selects a typed point-row runner")
@@ -1311,7 +1313,7 @@ impl PySpatialIndex {
 
 /// The candidate lookup `spec` calls for. Admission rejects a predicate the
 /// index cannot narrow, so every spec that reaches a query carries a rule.
-fn candidate_policy(spec: &PredicateSpec) -> IndexEnvelope {
+const fn candidate_policy(spec: &PredicateSpec) -> IndexEnvelope {
     spec.index_envelope
         .expect("the index rejects a predicate it cannot accelerate")
 }

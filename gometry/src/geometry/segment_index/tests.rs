@@ -164,6 +164,7 @@ mod sweep_characterization {
 mod indexed_bounds_characterization {
     use super::*;
 
+    #[expect(clippy::unnecessary_wraps, reason = "a row is an optional bounds, and the fixtures spell present rows")]
     fn bounds(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Option<Bounds> {
         Some(Bounds::new_raw(minx, miny, maxx, maxy))
     }
@@ -214,8 +215,7 @@ mod indexed_bounds_characterization {
 
     #[test]
     fn indexed_bounds_short_circuit_on_first_touch() {
-        let rows = (0..4096)
-            .map(|_| bounds(0.0, 0.0, 1.0, 1.0))
+        let rows = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0)).take(4096)
             .collect::<Vec<_>>();
         let mut work = 0;
         let result = for_each_indexed_overlapping_bounds_pair(&rows, |_, _| {
@@ -252,8 +252,7 @@ mod indexed_bounds_characterization {
             assert_eq!(indexed_pairs(&diagonal).1, 0, "diagonal n={count}");
             assert_eq!(indexed_pairs(&cross_axis).1, 0, "cross-axis n={count}");
 
-            let dense = (0..count)
-                .map(|_| bounds(0.0, 0.0, 1.0, 1.0))
+            let dense = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0)).take(count)
                 .collect::<Vec<_>>();
             let mut first_hit_work = 0;
             let result = for_each_indexed_overlapping_bounds_pair(&dense, |_, _| {

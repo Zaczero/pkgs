@@ -799,7 +799,6 @@ fn finish_wkt_point(builder: CoordSeqBuilder) -> Result<Point> {
 /// Read one ASCII numeric token. The comma delimiter is enabled for coordinate
 /// lists and disabled for Points so malformed point commas retain the old
 /// numeric-token error.
-#[inline(always)]
 fn parse_wkt_ascii_float_at(
     bytes: &[u8],
     index: &mut usize,

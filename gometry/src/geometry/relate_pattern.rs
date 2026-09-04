@@ -19,7 +19,7 @@ impl<'a> CompiledPattern<'a> {
         Some(Self { pattern })
     }
 
-    /// The nine validated literals carried by the direct engines.
+    /// The nine validated literals, as the engines carry a pattern.
     pub(crate) fn bytes(self) -> [u8; 9] {
         self.pattern.as_bytes().try_into().expect("a compiled pattern has nine literals")
     }

@@ -282,6 +282,7 @@ pub(crate) fn snap_column_simd(
     Ok(out)
 }
 
+#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
 /// `((v - origin) / size).round() * size + origin` with power-of-two
 /// pre-scale so `v=1e308, origin=-1e308, size=1e308` stays finite.
 ///

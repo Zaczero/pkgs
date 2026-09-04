@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::py::numpy;
 use crate::geometry::{
     Bounds, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     ZOrdinate, geographic_bounds_to_shape,
@@ -35,7 +36,7 @@ fn multipart_members(
     exact: impl Fn(&Shape) -> Option<Shape>,
     raw: impl Fn(&Bound<'_, PyAny>) -> PyResult<Shape>,
 ) -> PyResult<(Vec<Shape>, Frame)> {
-    crate::py::numpy::reject_masked_array(values)?;
+    numpy::reject_masked_array(values)?;
     // Fallible growth (D10) via collect_py_iter — no artificial count ceiling.
     let mut row = 0_usize;
     let mut members = crate::collect_py_iter(values, |item| {
@@ -78,8 +79,7 @@ fn multipart_members(
 fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<CoordinateAxes> {
     let axes = members
         .first()
-        .map(Shape::axes)
-        .unwrap_or(CoordinateAxes::XY);
+        .map_or(CoordinateAxes::XY, Shape::axes);
     if members.iter().any(|member| member.axes() != axes) {
         return Err(InvalidGeometryError::new_err(format!(
             "{kind} members must share one coordinate axes layout (XY, XYZ, XYM, or XYZM)"
@@ -89,12 +89,12 @@ fn homogeneous_multipart_axes(members: &[Shape], kind: &str) -> PyResult<Coordin
 }
 
 /// The canonical `LINESTRING EMPTY`.
-pub(super) fn empty_line_string() -> Shape {
+pub(super) const fn empty_line_string() -> Shape {
     Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XY)
 }
 
 /// The canonical `MULTIPOINT EMPTY` — an `XY` multipoint with no members.
-pub(super) fn empty_multi_point() -> Shape {
+pub(super) const fn empty_multi_point() -> Shape {
     Shape::typed_empty(GeometryKind::MultiPoint, CoordinateAxes::XY)
 }
 
@@ -187,7 +187,7 @@ pub(super) fn coordinate_vertices(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<CoordSeq> {
     for value in [coordinates, x, y, z, m].into_iter().flatten() {
-        crate::py::numpy::reject_masked_array(value)?;
+        numpy::reject_masked_array(value)?;
     }
     match (coordinates, x, y) {
         // Contiguous / strided N×D buffer → final SoA Arcs (no Vec<Point>).
@@ -366,7 +366,7 @@ pub(crate) fn build_multi_point(
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
     if let Some(coordinates) = coordinates {
-        crate::py::numpy::reject_masked_array(coordinates)?;
+        numpy::reject_masked_array(coordinates)?;
     }
     // No coordinates → `MULTIPOINT EMPTY` (Shapely-compatible `MultiPoint()`).
     if coordinates.is_none() && x.is_none() && y.is_none() && z.is_none() && m.is_none() {
@@ -393,10 +393,7 @@ pub(crate) fn build_multi_point(
             _ => None,
         },
         |item| {
-            Ok(match extract_coordinate_or_empty(item)? {
-                Some(point) => Shape::Point(point),
-                None => Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY),
-            })
+            Ok(extract_coordinate_or_empty(item)?.map_or_else(|| Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XY), Shape::Point))
         },
     )?;
     if members.is_empty() {
@@ -532,7 +529,7 @@ pub(crate) fn build_multi_polygon(
             Shape::Empty(GeometryKind::Polygon, _) => Some(shape.clone()),
             _ => None,
         },
-        |item| polygon_from_coordinates_item(item),
+        polygon_from_coordinates_item,
     )?;
     if members.is_empty() {
         return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame));
@@ -603,12 +600,10 @@ pub(super) fn build_box_shape(
                 && (-90.0..=90.0).contains(&miny)
                 && (-90.0..=90.0).contains(&maxy)
                 && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
-            {
-                if minx < maxx && miny < maxy {
+                && minx < maxx && miny < maxy {
                     return geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
                         .map_err(PyErr::from);
                 }
-            }
             Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
         },
         Some("split") => {
@@ -738,7 +733,7 @@ fn geometry_from_data_item(
 }
 
 fn polygon_from_coordinates_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
-    crate::py::numpy::reject_masked_array(item)?;
+    numpy::reject_masked_array(item)?;
     // Materialize once, then classify. Speculative `extract_points` on the
     // parent would consume the first ring of a one-shot iterator and leave
     // only holes for the ring-list path (shell silently dropped).
@@ -754,7 +749,7 @@ enum PolygonMember<'py> {
 }
 
 fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<PolygonMember<'py>> {
-    crate::py::numpy::reject_masked_array(member)?;
+    numpy::reject_masked_array(member)?;
     let mut iter = crate::py_iter_or_error(member, || {
         PyTypeError::new_err("polygon member must be a coordinate sequence")
     })?;
@@ -871,7 +866,7 @@ pub(super) fn build_geometry_array(
     epoch: Option<&Bound<'_, PyAny>>,
     item: impl Fn(&Bound<'_, PyAny>) -> PyResult<Shape>,
 ) -> PyResult<PyGeometryArray> {
-    crate::py::numpy::reject_masked_array(values)?;
+    numpy::reject_masked_array(values)?;
     // Fallible growth (D10): linestrings/polygons factories and similar
     // `itertools.repeat` inputs terminate with MemoryError, never abort.
     // Stream directly into StreamingShapes — no intermediate Vec<Shape>.

@@ -1,3 +1,4 @@
+use crate::geometry::types::coordseq;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 
@@ -192,7 +193,7 @@ impl LineSeq {
     /// Z/M; this is the one owner of that rule for `shortest_line`,
     /// `minimum_clearance_line`, and the circle-radius lines.
     pub(crate) fn segment(start: Point, end: Point) -> Self {
-        Self(crate::geometry::types::coordseq::coerced_pair(start, end))
+        Self(coordseq::coerced_pair(start, end))
     }
 
     /// A stored line row addressed by `window` into packed columns. Line
@@ -428,11 +429,11 @@ impl GeometryCollection {
         self.members.iter()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.members.len()
     }
 
-    pub(crate) fn capacity(&self) -> usize {
+    pub(crate) const fn capacity(&self) -> usize {
         self.members.capacity()
     }
 }
@@ -736,7 +737,7 @@ macro_rules! impl_multipart {
                 self.members.get(index, self.values.len())
             }
 
-            pub(crate) fn has_empty_members(&self) -> bool {
+            pub(crate) const fn has_empty_members(&self) -> bool {
                 self.members.has_empty_members()
             }
 
@@ -892,7 +893,7 @@ impl MultiPoint {
         self.members.get(index, self.coords.len())
     }
 
-    pub(crate) fn has_empty_members(&self) -> bool {
+    pub(crate) const fn has_empty_members(&self) -> bool {
         self.members.has_empty_members()
     }
 
@@ -1058,7 +1059,7 @@ macro_rules! impl_multipart_iteration {
                 self.members.len(self.values.len())
             }
 
-            pub(crate) fn is_empty(&self) -> bool {
+            pub(crate) const fn is_empty(&self) -> bool {
                 self.values.is_empty()
             }
 
@@ -1291,8 +1292,8 @@ mod multipart_layout_tests {
     #[test]
     fn collection_admission_has_one_inclusive_depth_boundary() {
         assert_eq!(raw_nested(MAX_NESTING).nesting_depth(), MAX_NESTING);
-        assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING - 1)]).is_ok());
-        assert!(Shape::geometry_collection(vec![raw_nested(MAX_NESTING)]).is_err());
+        Shape::geometry_collection(vec![raw_nested(MAX_NESTING - 1)]).unwrap();
+        Shape::geometry_collection(vec![raw_nested(MAX_NESTING)]).unwrap_err();
     }
 
     #[test]
@@ -1321,10 +1322,7 @@ mod multipart_layout_tests {
         let Shape::GeometryCollection(collection) = &source else {
             unreachable!("collection fixture")
         };
-        assert!(
-            collection
-                .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2)))
-                .is_err()
-        );
+        collection
+                .try_map_members(|_| Ok::<_, crate::error::Error>(raw_nested(2))).unwrap_err();
     }
 }

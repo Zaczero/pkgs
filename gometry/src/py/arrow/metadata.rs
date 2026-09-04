@@ -740,11 +740,11 @@ fn admit_geoparquet_geometry_storage(
         reconcile_extension_sources(reconciled, field_meta_source).map_err(as_geoparquet)?;
 
     // Physical storage: extension wrapper first, then dictionary encoding.
-    let storage_type = unwrap_extension_then_dictionary(&pa, arrow_type)?;
+    let storage_type = unwrap_extension_then_dictionary(pa, arrow_type)?;
 
     match declared {
         GeometryEncoding::Wkb => {
-            let is_binary = arrow_type_is_binary_family(&pa, &storage_type)?;
+            let is_binary = arrow_type_is_binary_family(pa, &storage_type)?;
             if let Some((extension_name, metadata)) = reconciled {
                 if extension_name != "geoarrow.wkb" || !is_binary {
                     return Err(geoparquet_meta_error(format!(
@@ -784,7 +784,7 @@ fn admit_geoparquet_geometry_storage(
             }
             // No extension: declared encoding + exact list depth + xy struct.
             let expected_depth = native.list_depth().expect("native encoding has list depth");
-            let depth = geoarrow_list_depth(&pa, &storage_type)?;
+            let depth = geoarrow_list_depth(pa, &storage_type)?;
             if depth != Some(expected_depth) {
                 return Err(geoparquet_meta_error(format!(
                     "native GeoParquet encoding '{encoding}' does not match \

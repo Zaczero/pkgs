@@ -174,8 +174,8 @@ impl GridKind {
     }
 
     pub(crate) fn id_from_value(self, value: &Bound<'_, PyAny>) -> PyResult<u64> {
-        if self != Self::GeohashCell && value.cast_exact::<PyBool>().is_err() {
-            if value
+        if self != Self::GeohashCell && value.cast_exact::<PyBool>().is_err()
+            && value
                 .getattr_opt(pyo3::intern!(value.py(), "__index__"))?
                 .is_some()
             {
@@ -192,7 +192,6 @@ impl GridKind {
                 self.validate_id(id)?;
                 return Ok(id);
             }
-        }
         match self {
             Self::H3Cell => h3_id_from_object(value),
             Self::S2Cell => s2_id_from_object(value),

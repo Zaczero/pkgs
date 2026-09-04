@@ -1,3 +1,8 @@
+#[cfg(test)]
+use crate::geometry::predicates;
+use crate::geometry::convex_contact::ConvexRelation;
+use crate::geometry::convex_contact;
+use crate::geometry::topology;
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::relate::{
     De9im, Loc, line_has_nonzero_segment, polygon_has_nondegenerate_area,
@@ -54,31 +59,34 @@ impl GeographicPrepared<'_> {
 /// its operand contract is met and source-owned topology graphs otherwise.
 /// Every named predicate is a projection of this result.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> De9im {
-    graph_relate_shapes_in(left, right, TopologySpace::Cartesian)
+    graph_relate_data(&PreparedPlan::transient(left), &PreparedPlan::transient(right))
 }
 
+/// The geographic oracle the tests relate through: a degree frame stands in
+/// for a CRS, which is why this never leaves the test build.
 #[cfg(test)]
 fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
-    graph_relate_shapes_in(left, right, TopologySpace::Geographic)
-}
-
-fn graph_relate_shapes_in(left: &Shape, right: &Shape, space: TopologySpace) -> De9im {
-    let left = PreparedPlan::transient(left);
-    let right = PreparedPlan::transient(right);
-    graph_relate_plans(&left, &right, space)
+    graph_relate_plans(
+        &PreparedPlan::transient(left),
+        &PreparedPlan::transient(right),
+        TopologySpace::Geographic,
+    )
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De9im {
+    // Contacts first: a crossing or a laminar placement settles the matrix
+    // from one sweep, cheaper than the convex classifier on the inputs both
+    // admit; the convex lane then catches touching convex pairs before the
+    // arrangement fold.
     if let Some(matrix) = super::direct_areal_relate(left, right)
         .or_else(|| try_convex_relate(left.shape(), right.shape()))
         .or_else(|| try_areal_relate(left.shape(), right.shape()))
     {
         return matrix;
     }
-    if let Some(matrix) = try_cartesian_polygon_line_relate(left, right) {
-        return matrix;
-    }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right)
+        .or_else(|| try_cartesian_polygon_line_relate(left, right))
+    {
         return matrix;
     }
     if let Some(matrix) = super::direct_linework_relate(left, right) {
@@ -130,9 +138,6 @@ pub(crate) fn graph_relate_data_with_left_graph(
     {
         return matrix;
     }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
-        return matrix;
-    }
     if let Some(point) = shape_point(right.shape()) {
         return graph_relate_to_point(left_graph, point);
     }
@@ -155,9 +160,6 @@ pub(crate) fn graph_relate_data_with_right_graph(
         .or_else(|| try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph)))
         .or_else(|| super::direct_linework_relate(left, right))
     {
-        return matrix;
-    }
-    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -245,6 +247,7 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
     graph_relate(&left_graph, right_graph)
 }
 
+#[cfg(test)]
 fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: TopologySpace) -> De9im {
     match space {
         TopologySpace::Cartesian => graph_relate_data(left, right),
@@ -465,6 +468,7 @@ fn polygon_line_matrix(graph: &TopologyGraph, line: &CoordSeq) -> De9im {
         }
     }
 
+    #[expect(clippy::iter_over_hash_type, reason = "a max-fold over the boundary points is order-independent")]
     for &point in line_boundary.values() {
         matrix.set_at_least(
             to_loc(graph.locate_point(point)),
@@ -510,12 +514,12 @@ fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     let (Shape::Polygon(left), Shape::Polygon(right)) = (left, right) else {
         return None;
     };
-    let relation = crate::geometry::convex_contact::try_classify(left, right)?;
+    let relation = convex_contact::try_classify(left, right)?;
     Some(match relation {
-        crate::geometry::convex_contact::ConvexRelation::Disjoint => De9im(*b"FF2FF1212"),
-        crate::geometry::convex_contact::ConvexRelation::ProperCrossing => De9im(*b"212101212"),
-        crate::geometry::convex_contact::ConvexRelation::LeftContainsRight => De9im(*b"212FF1FF2"),
-        crate::geometry::convex_contact::ConvexRelation::RightContainsLeft => De9im(*b"2FF1FF212"),
+        ConvexRelation::Disjoint => De9im(*b"FF2FF1212"),
+        ConvexRelation::ProperCrossing => De9im(*b"212101212"),
+        ConvexRelation::LeftContainsRight => De9im(*b"212FF1FF2"),
+        ConvexRelation::RightContainsLeft => De9im(*b"2FF1FF212"),
     })
 }
 
@@ -597,7 +601,20 @@ pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     Some(matrix)
 }
 
-/// Every polygon of an areal shape, structurally, or `None` otherwise.
+/// The polygons of an areal shape whose every ring is sound (see
+/// [`ring_is_sound`]), or `None` when the shape is not areal or any ring
+/// is not.
+pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
+    let first = polygons.len();
+    collect_polygons(shape, polygons)?;
+    polygons[first..]
+        .iter()
+        .all(|polygon| polygon.rings().all(ring_is_sound))
+        .then_some(())
+}
+
+/// Every polygon of an areal shape, structurally, or `None` when the shape
+/// is not areal at all.
 pub(crate) fn collect_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
     match shape {
         Shape::Polygon(polygon) => {
@@ -622,20 +639,19 @@ pub(crate) fn collect_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Poly
     }
 }
 
-pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
-    let first = polygons.len();
-    collect_polygons(shape, polygons)?;
-    polygons[first..]
-        .iter()
-        .all(|polygon| polygon.rings().all(ring_is_sound))
-        .then_some(())
+/// A ring the areal engines can reason about: closed with real extent and
+/// a nonzero exact area, and for the arrangement fold no zero-length
+/// segment either.
+pub(crate) fn ring_is_sound(ring: &Ring) -> bool {
+    ring_has_area(ring)
+        && !ring
+            .segment_pairs()
+            .any(|[start, end]| same_point(start, end))
 }
 
-/// A closed ring with nonzero area and no zero-length segment.
-pub(crate) fn ring_is_sound(ring: &Ring) -> bool {
-    ring.coord_count() >= Ring::MIN_VERTICES_CLOSED
-        && !crate::geometry::ring_winding(ring).is_degenerate()
-        && !ring.segment_pairs().any(|[start, end]| same_point(start, end))
+/// A closed ring with real extent and a nonzero exact area.
+pub(crate) fn ring_has_area(ring: &Ring) -> bool {
+    ring.coord_count() >= Ring::MIN_VERTICES_CLOSED && !crate::geometry::ring_winding(ring).is_degenerate()
 }
 
 const fn areal_location(winding: i32) -> Loc {
@@ -679,6 +695,7 @@ pub(crate) fn graph_intersects_rectangle_data(
         return None;
     }
     let geographic_graph;
+    #[expect(clippy::option_if_let_else, reason = "the else branch initializes the deferred binding the graph borrows from")]
     let graph = if let Some(graph) = source_graph {
         graph
     } else if let Some(source) = geographic_source {
@@ -710,7 +727,7 @@ pub(crate) fn graph_intersects_rectangle_data(
     }))
 }
 
-fn rectangle_edges(bounds: Bounds) -> [Segment; 4] {
+const fn rectangle_edges(bounds: Bounds) -> [Segment; 4] {
     let corners = bounds.corners();
     [
         Segment {
@@ -859,7 +876,7 @@ fn single_point(graph: &TopologyGraph) -> Option<XY> {
         .then(|| graph.source_points[0].point.xy())
 }
 
-fn shape_point(shape: &Shape) -> Option<XY> {
+const fn shape_point(shape: &Shape) -> Option<XY> {
     match shape {
         Shape::Point(point) => Some(point.xy()),
         _ => None,
@@ -1013,7 +1030,7 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
     }
 }
 
-fn set_dimension(
+const fn set_dimension(
     matrix: &mut De9im,
     row: Loc,
     col: Loc,
@@ -1127,7 +1144,7 @@ fn pair_edges(
         };
         let mut edges = Vec::with_capacity(graph.edges.len());
         let mut hints = HashMap::with_capacity(graph.edges.len() * 2);
-        for edge in graph.edges.iter() {
+        for edge in &graph.edges {
             let location = edge_location(edge);
             let label = if left_present {
                 EdgeLabel {
@@ -1204,7 +1221,7 @@ fn pair_edges(
             } else {
                 (&mut label.right, edge_location(&right.edges[owner - split]))
             };
-            merge_location(slot, location);
+            merge_coincident_piece(slot, location);
             for point in [segment.start, segment.end] {
                 let hint = hints.entry(PointKey::new(point)).or_insert(EdgeLabel {
                     left: None,
@@ -1218,16 +1235,21 @@ fn pair_edges(
                 merge_location(slot, location);
             }
         }
-        // Two atomic pieces with the same ends retain both operands' labels,
-        // even when their independent noding produced the same crossing.
+        // Two atomic pieces with the same ends are one piece. That happens
+        // when one graph already split an edge at a crossing during its own
+        // noding and the other's unsplit copy is now cut at the same computed
+        // point: overwriting here dropped the first graph's ownership of it,
+        // and a shared segment read as belonging to one side only.
         match by_segment.entry(crate::geometry::undirected_segment_edge_key(segment)) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let (_, existing): &mut (Segment, EdgeLabel) = entry.get_mut();
-                if let Some(location) = label.left {
-                    merge_coincident_piece(&mut existing.left, location);
-                }
-                if let Some(location) = label.right {
-                    merge_coincident_piece(&mut existing.right, location);
+                for (slot, location) in [
+                    (&mut existing.left, label.left),
+                    (&mut existing.right, label.right),
+                ] {
+                    if let Some(location) = location {
+                        merge_coincident_piece(slot, location);
+                    }
                 }
             },
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1238,7 +1260,7 @@ fn pair_edges(
     (by_segment.into_values().collect(), hints)
 }
 
-fn edge_location(edge: &crate::geometry::topology::TopologyEdge) -> TopologyLocation {
+const fn edge_location(edge: &topology::TopologyEdge) -> TopologyLocation {
     if edge.is_boundary {
         TopologyLocation::Boundary
     } else {
@@ -1246,9 +1268,13 @@ fn edge_location(edge: &crate::geometry::topology::TopologyEdge) -> TopologyLoca
     }
 }
 
-// Coincident edge copies prefer boundary support; node hints below prefer
-// interior support. Degenerate rings can contribute both edge labels.
-fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
+/// Merge the location of one graph's coincident piece copies. Copies of one
+/// graph with different flags exist only in degenerate input — a zero-area
+/// ring's forward and return edges — where the geometry has no interior and
+/// the boundary flag is the one that means something. A node, by contrast,
+/// merges through [`merge_location`], where an interior edge outranks a
+/// boundary one.
+const fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
     *slot = Some(match (*slot, location) {
         (Some(TopologyLocation::Boundary), _) | (_, TopologyLocation::Boundary) => {
             TopologyLocation::Boundary
@@ -1260,7 +1286,7 @@ fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: Topolog
     });
 }
 
-fn merge_location(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
+const fn merge_location(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
     *slot = Some(match (*slot, location) {
         (Some(TopologyLocation::Interior), _) | (_, TopologyLocation::Interior) => {
             TopologyLocation::Interior
@@ -1397,8 +1423,14 @@ fn locate_node_with_hint(
             .node_location(point)
             .expect("node provenance must resolve in its owning graph");
     }
-    // Rounded crossings can land inside an area even though their source
-    // edge is its boundary. Line hints still defer to mod-2 node location.
+    // A hint is edge provenance: this graph has an edge ending at the node
+    // with that location. An area-boundary edge makes the node a boundary
+    // node outright — a node the pairing computed sits within an ULP of that
+    // edge, and re-locating the rounded point can land it just inside the
+    // area, which read a boundary crossing as an interior touch and lost the
+    // `BI` cell. A line edge says only that the node is on the line; whether
+    // it is a mod-2 end is the node's business, so location decides there,
+    // with the hint rescuing a rounded point that missed the line entirely.
     match (hint, graph.locate_point(point)) {
         (Some(TopologyLocation::Boundary), _) => TopologyLocation::Boundary,
         (Some(hint), TopologyLocation::Exterior) => hint,
@@ -1418,34 +1450,6 @@ const fn to_loc(location: TopologyLocation) -> Loc {
 mod tests {
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring};
-
-    #[test]
-    fn a_computed_crossing_node_keeps_its_boundary_provenance() {
-        let star = Shape::Polygon(polygon(&[
-            [6.0, 3.0], [4.0, 4.0], [4.0, 6.0], [2.0, 4.0], [0.0, 4.0],
-            [2.0, 2.0], [1.0, 0.0], [3.0, 2.0], [5.0, 1.0], [6.0, 3.0],
-        ]));
-        let probe = Shape::LineString(
-            LineSeq::try_new(CoordSeq::from_xy(&[XY::new(1.0, 2.0), XY::new(3.0, 3.0)])).unwrap(),
-        );
-        let matrix = graph_relate_data_oracle(
-            &PreparedPlan::transient(&star),
-            &PreparedPlan::transient(&probe),
-        );
-        assert_eq!(matrix.text(), "1020F1102");
-    }
-
-    #[test]
-    fn a_shared_segment_split_by_the_other_operand_keeps_both_owners() {
-        let line = |points: &[(f64, f64)]| {
-            let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-            Shape::LineString(LineSeq::try_new(CoordSeq::from_xy(&xy)).unwrap())
-        };
-        let a = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 0.0), (1.0, 0.0)]);
-        let b = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0), (2.0, 1.0), (1.0, 2.0)]);
-        let matrix = graph_relate_data_oracle(&PreparedPlan::transient(&a), &PreparedPlan::transient(&b));
-        assert_eq!(matrix.text(), "1F1F00102");
-    }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
@@ -1616,19 +1620,19 @@ mod tests {
         }
     }
 
-    fn assert_areal_fast_path(name: &str, left: Shape, right: Shape) {
+    fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
         let expected = graph_relate_data_oracle(
-            &PreparedPlan::transient(&left),
-            &PreparedPlan::transient(&right),
+            &PreparedPlan::transient(left),
+            &PreparedPlan::transient(right),
         );
-        let fast = try_areal_relate(&left, &right).expect("areal fast-path admission");
+        let fast = try_areal_relate(left, right).expect("areal fast-path admission");
         assert_eq!(fast.0, expected.0, "{name}: forward");
-        let reverse = try_areal_relate(&right, &left).expect("reverse areal fast-path admission");
+        let reverse = try_areal_relate(right, left).expect("reverse areal fast-path admission");
         assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
         assert_eq!(
             graph_relate_data(
-                &PreparedPlan::transient(&left),
-                &PreparedPlan::transient(&right)
+                &PreparedPlan::transient(left),
+                &PreparedPlan::transient(right)
             )
             .0,
             expected.0,
@@ -1636,20 +1640,20 @@ mod tests {
         );
     }
 
-    fn assert_areal_fallback(name: &str, left: Shape, right: Shape) {
+    fn assert_areal_fallback(name: &str, left: &Shape, right: &Shape) {
         assert!(
-            try_areal_relate(&left, &right).is_none(),
+            try_areal_relate(left, right).is_none(),
             "{name}: admission"
         );
         assert_eq!(
             graph_relate_data(
-                &PreparedPlan::transient(&left),
-                &PreparedPlan::transient(&right)
+                &PreparedPlan::transient(left),
+                &PreparedPlan::transient(right)
             )
             .0,
             graph_relate_data_oracle(
-                &PreparedPlan::transient(&left),
-                &PreparedPlan::transient(&right),
+                &PreparedPlan::transient(left),
+                &PreparedPlan::transient(right),
             )
             .0,
             "{name}: fallback"
@@ -1831,6 +1835,21 @@ mod tests {
             ("hole", &hole, &square, "212F11FF2"),
             ("concave", &concave, &square, "212111212"),
             ("invalid", &invalid, &square, "FF2111212"),
+            // The graph models a zero-area ring as interior linework (its
+            // edges carry no boundary flag), so its stretch along the square's
+            // bottom edge reads as interior-on-boundary. The earlier `FF2F0F212`
+            // was not a convention but an artifact: the pairing dropped one
+            // side's ownership when the ring's pieces collided with the
+            // square's. The degenerate-area convention itself (a `BB=0` node
+            // cell beside an otherwise empty boundary row) is logged as open.
+            // A polygon whose rings are collinear encloses nothing, so it IS
+            // its linework and relates exactly as the equivalent closed line:
+            // interior along the ring, no boundary (a closed curve has none).
+            // The former `F12F0F212` claimed a two-dimensional interior (IE=2)
+            // and a point-sized boundary at once, which is neither reading.
+            // GEOS answers `212F1F2F2`, asserting two 2D interiors meet, which
+            // a zero-area set cannot do. `degenerate_polygon_relates_as_its_own_linework`
+            // pins the equivalence.
             ("collapsed", &collapsed, &square, "F1FFFF212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
             ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
@@ -1891,13 +1910,14 @@ mod tests {
             ]),
         ];
         for ring in rings {
-            assert!(crate::geometry::predicates::shell_is_convex(&ring));
-            assert!(!crate::geometry::predicates::shell_is_strictly_convex(
+            assert!(predicates::shell_is_convex(&ring));
+            assert!(!predicates::shell_is_strictly_convex(
                 &ring
             ));
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to")]
     #[test]
     fn direct_areal_relation_matches_graph_oracle() {
         let shell_with_hole = Shape::Polygon(donut());
@@ -2026,7 +2046,7 @@ mod tests {
             ),
         ];
         for (name, left, right) in cases {
-            assert_areal_fast_path(name, left, right);
+            assert_areal_fast_path(name, &left, &right);
         }
 
         let adjacent = Shape::MultiPolygon(
@@ -2102,7 +2122,7 @@ mod tests {
                 Shape::Polygon(rectangle(11.0, -2.0, 51.0, 2.0)),
             ),
         ] {
-            assert_areal_fast_path(name, left, right);
+            assert_areal_fast_path(name, &left, &right);
         }
     }
 
@@ -2116,10 +2136,10 @@ mod tests {
             ]))
             .expect("line has two vertices"),
         );
-        assert_areal_fallback("line member", areal.clone(), line);
+        assert_areal_fallback("line member", &areal, &line);
         assert_areal_fallback(
             "zero length edge",
-            Shape::Polygon(polygon(&[
+            &Shape::Polygon(polygon(&[
                 [0.0, 0.0],
                 [2.0, 0.0],
                 [2.0, 0.0],
@@ -2127,12 +2147,12 @@ mod tests {
                 [0.0, 2.0],
                 [0.0, 0.0],
             ])),
-            areal.clone(),
+            &areal,
         );
         assert_areal_fallback(
             "collapsed ring",
-            Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]])),
-            areal.clone(),
+            &Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]])),
+            &areal,
         );
         assert!(try_areal_relate_in(&areal, &areal, TopologySpace::Geographic).is_none());
     }
@@ -3013,4 +3033,39 @@ mod tests {
             graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),
         );
     }
+    #[test]
+    fn a_computed_crossing_node_keeps_its_boundary_provenance() {
+        // The line crosses the star's edge (0 4)-(2 2) at (5/3, 7/3), a node
+        // the pairing computes. Re-locating that rounded point read it as
+        // interior; the edge provenance says boundary, and BI must be 0.
+        let star = Shape::Polygon(polygon(&[
+            [6.0, 3.0], [4.0, 4.0], [4.0, 6.0], [2.0, 4.0], [0.0, 4.0],
+            [2.0, 2.0], [1.0, 0.0], [3.0, 2.0], [5.0, 1.0], [6.0, 3.0],
+        ]));
+        let probe = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_xy(&[XY::new(1.0, 2.0), XY::new(3.0, 3.0)])).unwrap(),
+        );
+        let matrix = graph_relate_data_oracle(
+            &PreparedPlan::transient(&star),
+            &PreparedPlan::transient(&probe),
+        );
+        assert_eq!(matrix.text(), "1020F1102");
+    }
+
+    #[test]
+    fn a_shared_segment_split_by_the_other_operand_keeps_both_owners() {
+        // B doubles back over itself and its own noding splits the segment it
+        // shares with A at the crossing; A's unsplit copy is then cut at the
+        // same computed point. The pieces are one piece with two owners, and
+        // the shared stretch is II at a curve — GEOS agrees.
+        let line = |points: &[(f64, f64)]| {
+            let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+            Shape::LineString(LineSeq::try_new(CoordSeq::from_xy(&xy)).unwrap())
+        };
+        let a = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 0.0), (1.0, 0.0)]);
+        let b = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0), (2.0, 1.0), (1.0, 2.0)]);
+        let matrix = graph_relate_data_oracle(&PreparedPlan::transient(&a), &PreparedPlan::transient(&b));
+        assert_eq!(matrix.text(), "1F1F00102");
+    }
+
 }

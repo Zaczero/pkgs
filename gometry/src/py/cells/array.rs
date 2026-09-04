@@ -25,7 +25,7 @@ use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_fr
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes};
-use crate::grid::cell::{GridCell, HierarchicalCell};
+use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
 };
@@ -1734,6 +1734,7 @@ impl PyCellArray {
     }
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled CellArray from its public identities and logical mask.
 #[pyfunction]
 pub(crate) fn _unpickle_cell_array(

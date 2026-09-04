@@ -274,8 +274,8 @@ impl GeographicFrame {
 
     /// Convert a finite degree/Greenwich result back to this CRS's native
     /// angular axes, retaining any Z/M ordinates.
-    pub(crate) fn from_geodesic_point(self, point: Point) -> Result<Point, GeographicError> {
-        let (longitude, latitude) = self.from_geodesic_xy(point.x, point.y)?;
+    pub(crate) fn point_from_geodesic(self, point: Point) -> Result<Point, GeographicError> {
+        let (longitude, latitude) = self.xy_from_geodesic(point.x, point.y)?;
         Ok(point.with_xy_raw(longitude, latitude))
     }
 
@@ -307,29 +307,25 @@ impl GeographicFrame {
 
     /// Convert mutable canonical Greenwich-degree XY lanes to this CRS's
     /// native axes. Z/T lanes are not part of geographic angular conversion.
-    pub(crate) fn from_geodesic_lanes(
+    pub(crate) fn lanes_from_geodesic(
         self,
         xs: &mut [f64],
         ys: &mut [f64],
     ) -> Result<(), GeographicError> {
         for (longitude, latitude) in std::iter::zip(xs, ys) {
-            (*longitude, *latitude) = self.from_geodesic_xy(*longitude, *latitude)?;
+            (*longitude, *latitude) = self.xy_from_geodesic(*longitude, *latitude)?;
         }
         Ok(())
     }
 
-    #[expect(
-        clippy::wrong_self_convention,
-        reason = "the frame value selects the native angular axes for this conversion"
-    )]
-    pub(crate) fn from_geodesic_lanes_indexed(
+    pub(crate) fn lanes_indexed_from_geodesic(
         self,
         xs: &mut [f64],
         ys: &mut [f64],
     ) -> Result<(), (usize, GeographicError)> {
         for (index, (longitude, latitude)) in std::iter::zip(xs, ys).enumerate() {
             (*longitude, *latitude) = self
-                .from_geodesic_xy(*longitude, *latitude)
+                .xy_from_geodesic(*longitude, *latitude)
                 .map_err(|error| (index, error))?;
         }
         Ok(())
@@ -363,7 +359,7 @@ impl GeographicFrame {
         Ok((longitude, latitude))
     }
 
-    fn from_geodesic_xy(
+    fn xy_from_geodesic(
         self,
         longitude: f64,
         latitude: f64,
@@ -371,10 +367,10 @@ impl GeographicFrame {
         if !longitude.is_finite() || !latitude.is_finite() {
             return Err(GeographicError::NonFinite {
                 name: "geodesic coordinate",
-                value: if !longitude.is_finite() {
-                    longitude
-                } else {
+                value: if longitude.is_finite() {
                     latitude
+                } else {
+                    longitude
                 },
             });
         }
@@ -394,10 +390,10 @@ impl GeographicFrame {
         if !longitude.is_finite() || !latitude.is_finite() {
             return Err(GeographicError::NonFinite {
                 name: "native coordinate",
-                value: if !longitude.is_finite() {
-                    longitude
-                } else {
+                value: if longitude.is_finite() {
                     latitude
+                } else {
+                    longitude
                 },
             });
         }

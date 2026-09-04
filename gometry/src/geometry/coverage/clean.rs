@@ -481,16 +481,16 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
         .iter()
         .map(|row| {
             let shape = row.borrow();
-            if !shape.bounds().is_some_and(|bounds| {
+            if shape.bounds().is_some_and(|bounds| {
                 crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
                     Some(shape),
                     bounds,
                     frame,
                 )
             }) {
-                shape.split_antimeridian_in_frame(frame)
-            } else {
                 Ok(shape.clone())
+            } else {
+                shape.split_antimeridian_in_frame(frame)
             }
         })
         .collect::<Result<_>>()?;
@@ -662,7 +662,7 @@ mod tests {
         // equal shared borders deliberately exercise the highest-row tie break.
         let rows: Vec<Shape> = (0..16)
             .map(|column| {
-                let minx = column as f64 * 1.1;
+                let minx = f64::from(column) * 1.1;
                 rectangle(minx, 0.0, minx + 1.0, 2.0)
             })
             .collect();

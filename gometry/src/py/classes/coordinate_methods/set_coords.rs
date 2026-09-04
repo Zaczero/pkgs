@@ -173,17 +173,15 @@ fn replacement_from_coordinates_view(
     let mut ys = Vec::new();
     crate::try_reserve_pair(&mut xs, &mut ys, expected_len).map_err(PyErr::from)?;
     let mut zs = axes.has_z().then(Vec::new);
-    if let Some(out) = zs.as_mut() {
-        if let Err(error) = crate::try_reserve_vec(out, expected_len) {
+    if let Some(out) = zs.as_mut()
+        && let Err(error) = crate::try_reserve_vec(out, expected_len) {
             return Err(PyErr::from(error));
         }
-    }
     let mut ms = axes.has_m().then(Vec::new);
-    if let Some(out) = ms.as_mut() {
-        if let Err(error) = crate::try_reserve_vec(out, expected_len) {
+    if let Some(out) = ms.as_mut()
+        && let Err(error) = crate::try_reserve_vec(out, expected_len) {
             return Err(PyErr::from(error));
         }
-    }
     let result = coords.view.try_for_each_point(&mut |coord| {
         if let Err(error) = crate::try_push_vec(&mut xs, coord.point.x) {
             return std::ops::ControlFlow::Break(error);
@@ -256,17 +254,15 @@ fn replacement_from_matrix(
     let mut ys = Vec::new();
     crate::try_reserve_pair(&mut xs, &mut ys, rows).map_err(PyErr::from)?;
     let mut zs = axes.has_z().then(Vec::new);
-    if let Some(out) = zs.as_mut() {
-        if let Err(error) = crate::try_reserve_vec(out, rows) {
+    if let Some(out) = zs.as_mut()
+        && let Err(error) = crate::try_reserve_vec(out, rows) {
             return Err(PyErr::from(error));
         }
-    }
     let mut ms = axes.has_m().then(Vec::new);
-    if let Some(out) = ms.as_mut() {
-        if let Err(error) = crate::try_reserve_vec(out, rows) {
+    if let Some(out) = ms.as_mut()
+        && let Err(error) = crate::try_reserve_vec(out, rows) {
             return Err(PyErr::from(error));
         }
-    }
     let (order, n) = coordinate_axis_order(axes);
     for row in 0..rows {
         let base = row * width;

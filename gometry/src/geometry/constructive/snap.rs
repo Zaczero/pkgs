@@ -512,7 +512,7 @@ impl SubdivisionColumns<'_> {
             };
             if let TopologyDomain::Geographic(frame) = domain {
                 let point = frame
-                    .from_geodesic_point(Point::new_raw_xy(longitude, latitude))
+                    .point_from_geodesic(Point::new_raw_xy(longitude, latitude))
                     .expect("geographic subdivision produced a finite coordinate");
                 (longitude, latitude) = (point.x, point.y);
             }
@@ -711,7 +711,7 @@ impl Shape {
                         MultiMember::Value(line) => Some(line.axes()),
                         MultiMember::Empty => None,
                     })
-                    .unwrap_or(lines.axes());
+                    .unwrap_or_else(|| lines.axes());
                 Self::MultiLineString(MultiLineString::from_values(axes, members))
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
@@ -731,7 +731,7 @@ impl Shape {
                         MultiMember::Value(polygon) => Some(polygon.axes()),
                         MultiMember::Empty => None,
                     })
-                    .unwrap_or(polygons.axes());
+                    .unwrap_or_else(|| polygons.axes());
                 Self::MultiPolygon(MultiPolygon::from_values(axes, members))
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
@@ -880,13 +880,12 @@ impl Shape {
                         MultiMember::Value(index) => {
                             let polygon = &polygons.as_slice()[index];
                             dedup_ring(&polygon.shell)
-                                .map(|shell| {
+                                .map_or(MultiMember::Empty, |shell| {
                                     MultiMember::Value(Polygon::new(
                                         shell,
                                         polygon.holes.iter().filter_map(dedup_ring).collect(),
                                     ))
                                 })
-                                .unwrap_or(MultiMember::Empty)
                         },
                     })
                     .collect();

@@ -1,4 +1,4 @@
-//! CRS database queries (identify, search, codes, lookup, catalog, units,
+//! CRS database queries (search, codes, lookup, catalog, units,
 //! ellipsoids, ...) and serialization/comparison (WKT, PROJ string, PROJJSON,
 //! CF, equality). Thin PROJ-database glue over the FFI wrappers in the parent.
 
@@ -38,9 +38,8 @@ pub(crate) use export::{
 #[cfg(test)]
 pub(crate) use identify::authority_matches;
 pub(crate) use identify::{
-    identify, identify_with_state, non_deprecated, search, to_2d, to_3d, to_authority,
-    to_authority_with_state, to_cf, to_epsg,
-};
+    non_deprecated, search, to_2d, to_3d, to_authority, to_authority_with_state, to_cf,
+    to_epsg, identify_with_state};
 pub(crate) use lookup::{
     authorities_with_state, catalog, catalog_with_state, celestial_bodies_with_state, codes,
     geoid_models,

@@ -49,6 +49,7 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
         .unbind())
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(crate) fn _unpickle_spatial_index(
     values: &crate::PyGeometryArray,
@@ -145,7 +146,7 @@ impl PySpatialIndex {
     /// Returns
     /// -------
     /// int
-    pub(crate) fn __len__(&self) -> usize {
+    pub(crate) const fn __len__(&self) -> usize {
         self.rows.live_count()
     }
 
@@ -859,11 +860,9 @@ impl PySpatialIndex {
                         builder.clear();
                         return Err(pyo3::PyErr::from(error));
                     }
-                } else {
-                    if let Err(error) = crate::try_reserve_vec(builder.values_mut(), capacity) {
-                        builder.clear();
-                        return Err(pyo3::PyErr::from(error));
-                    }
+                } else if let Err(error) = crate::try_reserve_vec(builder.values_mut(), capacity) {
+                    builder.clear();
+                    return Err(pyo3::PyErr::from(error));
                 }
                 let mut frontier = BinaryHeap::new();
                 let mut leaf_frontier = Vec::new();

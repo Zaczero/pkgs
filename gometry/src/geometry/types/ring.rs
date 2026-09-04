@@ -62,9 +62,7 @@ impl Ring {
         }
         // XY-open: silent-close (WKT/WKB/shapely/constructor convention).
         let mut closed = CoordSeqBuilder::like_coords(&coords, 0);
-        closed
-            .try_reserve_exact(coords.len() + 1)
-            .map_err(|_| GeometryErrorKind::message("could not allocate closed polygon ring"))?;
+        closed.reserve_exact(coords.len() + 1);
         for index in 0..coords.len() {
             closed.push_at(&coords, index);
         }

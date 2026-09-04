@@ -104,7 +104,7 @@ impl NearestState for OneNearest {
 }
 
 #[inline]
-fn combine_nearest_ceiling(nearest: Option<f64>, max_distance: Option<NonNegative>) -> Option<f64> {
+const fn combine_nearest_ceiling(nearest: Option<f64>, max_distance: Option<NonNegative>) -> Option<f64> {
     match (nearest, max_distance) {
         (Some(a), Some(b)) => Some(a.min(b.get())),
         (Some(a), None) => Some(a),
@@ -124,13 +124,13 @@ struct HeapLeafPolicy<'a> {
 
 impl HeapLeafPolicy<'_> {
     #[inline]
-    fn visit_leaf<'a, B>(
+    fn visit_leaf<B>(
         &mut self,
         index: &PySpatialIndex,
         node: &StrNode,
         ceiling: Option<f64>,
         bound: &B,
-        frontier: &mut BinaryHeap<FrontierNode<'a>>,
+        frontier: &mut BinaryHeap<FrontierNode<'_>>,
     ) -> PyResult<()>
     where
         B: Fn(&AABB<[f64; 2]>) -> f64,
@@ -286,7 +286,7 @@ impl PySpatialIndex {
                 },
                 |idx| {
                     let data = rows.prepared(idx);
-                    pair_distance_planar(to_metre, &data, query).map_err(Into::into)
+                    Ok(pair_distance_planar(to_metre, &data, query))
                 },
                 OneNearest::default(),
                 max_distance,
@@ -307,7 +307,7 @@ impl PySpatialIndex {
             },
             |idx| {
                 let data = rows.prepared(idx);
-                pair_distance_planar(to_metre, &data, query).map_err(Into::into)
+                Ok(pair_distance_planar(to_metre, &data, query))
             },
             k,
             max_distance,
@@ -554,14 +554,12 @@ impl PySpatialIndex {
                             .map_err(pyo3::PyErr::from)?;
                         }
                     }
-                    continue;
                 },
                 Frontier::Overflow(RTreeNode::Parent(parent)) => {
                     for child in parent.children() {
                         try_push_heap(frontier, FrontierNode::overflow(&bound, child))
                             .map_err(pyo3::PyErr::from)?;
                     }
-                    continue;
                 },
                 Frontier::Overflow(RTreeNode::Leaf(entry)) => {
                     if !visited.visit(entry.idx)? {

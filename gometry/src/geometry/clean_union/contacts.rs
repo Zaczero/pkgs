@@ -74,7 +74,7 @@ mod scratch_tests {
     #[test]
     fn nested_cut_scratch_charges_and_reuses_inner_buffers() {
         reserve(64, 16);
-        let (_, allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        let ((), allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
         assert_eq!(allocations, 0);
 
         let huge_inner = crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<Cut>() + 1;
@@ -84,9 +84,9 @@ mod scratch_tests {
         assert!(empty.is_empty());
         drop(empty);
 
-        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        let ((), first_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
         assert!(first_allocations > 0);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
+        let ((), repeat_allocations) = crate::test_support::allocation_count(|| reserve(64, 16));
         assert_eq!(repeat_allocations, 0);
     }
 }
@@ -95,7 +95,7 @@ thread_local! {
     // The per-segment cut index (one list per segment, ~N at large n) is the
     // same shape every overlay; reuse it per-thread so it is allocated ONCE, not
     // once per call (matching `segment_index`'s sweep scratch). Returned on drop.
-    static CUTS_SCRATCH: ScratchPool<CutsScratch> = ScratchPool::new(CutsScratch(Vec::new()));
+    static CUTS_SCRATCH: ScratchPool<CutsScratch> = const { ScratchPool::new(CutsScratch(Vec::new())) };
 }
 
 impl BoundaryContacts {

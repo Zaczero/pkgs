@@ -13,35 +13,42 @@ pub(crate) fn dedup_points(points: &mut Vec<Point>) {
     let mut seen: HashSet<PointKey> = HashSet::with_capacity(points.len());
     points.retain(|point| seen.insert(PointKey::new(*point)));
 }
-
-/// Overlay nodes rings where boundaries meet; a node on a straight run does
-/// not define the output region and is removed before the result is emitted.
+/// An overlay nodes rings wherever operands meet, and a node on a straight
+/// run says nothing about the region: every ring leaves with each vertex
+/// that lies on the segment between its neighbours removed.
 fn drop_collinear_ring_vertices(polygon: &Polygon) -> Polygon {
     let simplify = |ring: &Ring| Ring::from_closed(drop_collinear_vertices(ring.coords().iter_coords().collect()));
-    Polygon::new(simplify(&polygon.shell), polygon.holes.iter().map(simplify).collect())
+    let shell = simplify(&polygon.shell);
+    let holes = polygon.holes.iter().map(simplify).collect();
+    Polygon::new(shell, holes)
 }
 
-/// One stack pass plus the seam removes vertices between collinear neighbours.
+/// One pass with a stack, then the seam: a vertex on the segment between
+/// its neighbours goes, and removing it re-examines the neighbour it exposed.
+/// A ring of three vertices or fewer is left alone, since a collinear whole
+/// ring is a degeneracy for the caller to see, not to hide.
 pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     if vertices.len() <= 4 {
         return vertices;
     }
     vertices.pop();
-    let mut kept = Vec::with_capacity(vertices.len());
+    let mut kept: Vec<Point> = Vec::with_capacity(vertices.len());
     for vertex in vertices {
         while kept.len() >= 2 && point_on_segment(kept[kept.len() - 1], kept[kept.len() - 2], vertex) {
             kept.pop();
         }
         kept.push(vertex);
     }
+    // The seam: the last vertices against the first, and the first against
+    // the last, until neither is collinear with its neighbours.
     loop {
-        let count = kept.len();
-        if count <= 3 {
+        let n = kept.len();
+        if n <= 3 {
             break;
         }
-        if point_on_segment(kept[count - 1], kept[count - 2], kept[0]) {
+        if point_on_segment(kept[n - 1], kept[n - 2], kept[0]) {
             kept.pop();
-        } else if point_on_segment(kept[0], kept[count - 1], kept[1]) {
+        } else if point_on_segment(kept[0], kept[n - 1], kept[1]) {
             kept.remove(0);
         } else {
             break;
@@ -50,6 +57,7 @@ pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
     kept.push(kept[0]);
     kept
 }
+
 /// Canonicalize overlay buckets into the narrowest representable `Shape`.
 ///
 /// Points and lines covered by the polygon output are absorbed (a piece inside
@@ -142,8 +150,8 @@ impl ChainEdge for Segment {
 /// hash iteration. Node incidence is a CSR over the distinct end keys: one
 /// map lookup per edge end and no per-node allocation, which is what an
 /// overlay of thousands of atomic segments spends its time on otherwise.
-pub(crate) fn merge_chains(edges: Vec<CoordSeq>) -> Vec<CoordSeq> {
-    merge_chain_edges(&edges)
+pub(crate) fn merge_chains(edges: &[CoordSeq]) -> Vec<CoordSeq> {
+    merge_chain_edges(edges)
 }
 
 pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
@@ -198,7 +206,7 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
 
     let mut used = vec![false; ends.len()];
     let mut chains: Vec<CoordSeq> = Vec::new();
-    let mut walk = |seed: usize, start_slot: usize, used: &mut [bool]| -> CoordSeq {
+    let walk = |seed: usize, start_slot: usize, used: &mut [bool]| -> CoordSeq {
         let mut coords: Vec<Point> = Vec::new();
         let mut edge = seed;
         let mut from = node_ends[seed][start_slot];
@@ -242,14 +250,10 @@ pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
     chains
 }
 
-#[expect(
-    clippy::redundant_closure_for_method_calls,
-    reason = "Polygon::bounds lives in a private module; closure keeps the call site readable"
-)]
 pub(crate) fn build_overlay_shape(
     points: Vec<Point>,
-    lines: Vec<CoordSeq>,
-    polygons: Vec<Polygon>,
+    lines: &[CoordSeq],
+    polygons: &[Polygon],
 ) -> crate::error::Result<Shape> {
     // Overlays node linework into atomic per-vertex segments; dissolve them back
     // into maximal chains (split only at genuine degree-`>= 3` junctions), so a
@@ -259,10 +263,14 @@ pub(crate) fn build_overlay_shape(
 }
 
 /// [`build_overlay_shape`] for a lane that dissolved its linework itself.
+#[expect(
+    clippy::redundant_closure_for_method_calls,
+    reason = "Polygon::bounds lives in a private module; closure keeps the call site readable"
+)]
 pub(crate) fn build_overlay_shape_from_chains(
     points: Vec<Point>,
     lines: Vec<CoordSeq>,
-    polygons: Vec<Polygon>,
+    polygons: &[Polygon],
 ) -> crate::error::Result<Shape> {
     let polygons: Vec<Polygon> = polygons.iter().map(drop_collinear_ring_vertices).collect();
     let polygon_bounds: Vec<Option<Bounds>> =

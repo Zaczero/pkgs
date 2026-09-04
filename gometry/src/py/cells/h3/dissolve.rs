@@ -1,3 +1,4 @@
+use crate::grid::cell_set;
 use crate::geometry::CoordSeq;
 use crate::py::cells::coverage_ops::{
     GridDissolver, SortedCells, coordseq_crosses_lon_seam, dissolve_grid_cells,
@@ -34,7 +35,7 @@ impl GridDissolver for H3Dissolver {
             .iter()
             .any(|cell| cell.resolution() != resolution)
         {
-            let expanded = crate::grid::cell_set::uncompact(cells.as_slice(), resolution.into())?;
+            let expanded = cell_set::uncompact(cells.as_slice(), resolution.into())?;
             Ok(Some(SortedCells::new(expanded.into_public_vec())))
         } else {
             Ok(Some(cells.clone()))

@@ -307,6 +307,7 @@ impl Shape {
         }
     }
 
+    #[expect(clippy::match_same_arms, reason = "the arms bind different member types; they cannot share a pattern")]
     pub fn parts(&self) -> ShapePartsIter<'_> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
@@ -320,11 +321,7 @@ impl Shape {
             Self::GeometryCollection(geometries) => {
                 ShapePartsIter::GeometryCollection(geometries.iter())
             },
-            Self::Empty(kind, _)
-                if matches!(
-                    kind,
-                    GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon
-                ) =>
+            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
             {
                 ShapePartsIter::Single(Some(self))
             },
@@ -350,6 +347,7 @@ impl Shape {
     /// Number of top-level parts, without materializing them — `1` for a single
     /// geometry, the member count for a multi/collection. The `O(1)`
     /// counterpart to `parts().count()`.
+    #[expect(clippy::match_same_arms, reason = "the arms bind different member types; they cannot share a pattern")]
     pub fn part_count(&self) -> usize {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => 1,
@@ -357,11 +355,7 @@ impl Shape {
             Self::MultiLineString(lines) => lines.len(),
             Self::MultiPolygon(polygons) => polygons.len(),
             Self::GeometryCollection(geometries) => geometries.len(),
-            Self::Empty(kind, _)
-                if matches!(
-                    kind,
-                    GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon
-                ) =>
+            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
             {
                 1
             },
@@ -402,11 +396,7 @@ impl Shape {
                 },
             }),
             Self::GeometryCollection(geometries) => geometries.get(index).cloned(),
-            Self::Empty(kind, _)
-                if matches!(
-                    kind,
-                    GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon
-                ) =>
+            Self::Empty(GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon, _) =>
             {
                 (index == 0).then(|| self.clone())
             },

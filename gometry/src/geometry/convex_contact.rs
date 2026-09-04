@@ -80,7 +80,7 @@ pub(super) fn try_collect(pool: &OperandPool) -> Option<ConvexBoundaryScan> {
     let n = pool.segments.len();
     let mut cuts: Vec<Vec<ConvexCut>> = vec![Vec::new(); n];
     let has_cross = scan_rings(pool, left, right, |segment, point| {
-        push_cut(&mut cuts, segment, point, true)
+        push_cut(&mut cuts, segment, point, true);
     })?;
     Some(ConvexBoundaryScan { cuts, has_cross })
 }
@@ -118,7 +118,15 @@ enum ScanFlow {
     Bail,
 }
 
-/// Total staged shell vertices above which the general segment sweep wins.
+/// Total staged shell vertices above which the general segment sweep wins, so
+/// this path declines the pair.
+///
+/// Both are linear in the crossing count, but this path walks two monotone
+/// chains and materializes their edge-index vectors, a larger constant than
+/// the sweep's banded `n log n`. The advantage therefore narrows with size and
+/// reverses. Measured on two overlapping convex rings (union, one host): 4.3x
+/// faster at 16 total vertices, 1.7x at 256, 1.2x at 600, level near this
+/// bound, and 1.2x slower at 2400.
 const CONVEX_CONTACT_MAX_VERTICES: usize = 1000;
 
 fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> {
@@ -141,8 +149,9 @@ fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> 
     if a.len() < 3 || b.len() < 3 || a.len() + b.len() > CONVEX_CONTACT_MAX_VERTICES {
         return None;
     }
-    // Convexity uses an exact orientation per vertex, so reject disjoint
-    // envelopes before paying for it.
+    // Envelope before convexity: both are linear, but convexity spends an
+    // exact orientation predicate per vertex, so a disjoint pair should not
+    // pay for it.
     if !Bounds::from_xy_iter(a.iter().copied()).intersects(Bounds::from_xy_iter(b.iter().copied()))
     {
         return None;

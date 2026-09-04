@@ -607,8 +607,7 @@ impl Shape {
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => simplify_polygon(&polygons.as_slice()[index])
-                            .map(MultiMember::Value)
-                            .unwrap_or(MultiMember::Empty),
+                            .map_or(MultiMember::Empty, MultiMember::Value),
                     })
                     .collect();
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))
@@ -678,8 +677,7 @@ impl Shape {
                     .map(|member| match member {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => vw_polygon(&polygons.as_slice()[index])
-                            .map(MultiMember::Value)
-                            .unwrap_or(MultiMember::Empty),
+                            .map_or(MultiMember::Empty, MultiMember::Value),
                     })
                     .collect();
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members))

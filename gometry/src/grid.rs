@@ -6,80 +6,15 @@
 //! top-level `geohash_*`/`tile_*`/`s2_*` functions and the grid
 //! coverages; the Python surfaces live under `src/py/cells/`.
 
+use crate::boundary::geographic;
 use thiserror::Error;
 
 /// Default cell-output budget for covering factories when `max_cells` is
 /// omitted. Secure-by-default against runaway coverings of untrusted boxes;
 /// callers pass a larger value or `max_cells=None` (unlimited) for deliberate
 /// large work. H3 traversal methods use the same default and escape hatch.
-pub(crate) const GRID_MAX_CELLS: usize = 1_000_000;
+pub(crate) const GRID_MAX_CELLS: i64 = 1_000_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("{operation} would exceed the {limit}-cell limit")]
-pub(crate) struct CellLimitExceeded {
-    operation: &'static str,
-    limit: usize,
-}
-
-impl CellLimitExceeded {
-    pub(crate) const fn new(operation: &'static str) -> Self {
-        Self {
-            operation,
-            limit: GRID_MAX_CELLS,
-        }
-    }
-}
-
-/// Bounded flat collector for cell-algebra operations. Public ragged cell
-/// outputs use the shared fallible `CsrBuilder` instead.
-pub(crate) struct CellCollector<T> {
-    operation: &'static str,
-    values: Vec<T>,
-}
-
-impl<T> CellCollector<T> {
-    pub(crate) fn with_estimate(operation: &'static str, estimate: usize) -> Self {
-        Self {
-            operation,
-            values: Vec::with_capacity(estimate.min(GRID_MAX_CELLS)),
-        }
-    }
-
-    pub(crate) fn push(&mut self, value: T) -> Result<(), CellLimitExceeded> {
-        if self.values.len() == GRID_MAX_CELLS {
-            return Err(CellLimitExceeded::new(self.operation));
-        }
-        self.values.push(value);
-        Ok(())
-    }
-
-    pub(crate) fn extend(
-        &mut self,
-        values: impl IntoIterator<Item = T>,
-    ) -> Result<(), CellLimitExceeded> {
-        for value in values {
-            self.push(value)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.values.clear();
-    }
-
-    pub(crate) fn into_vec(self) -> Vec<T> {
-        self.values
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn len(&self) -> usize {
-        self.values.len()
-    }
-}
-
-/// A covering whose running cell count would exceed the caller-supplied
-/// `max_cells` budget. The error message names `max_cells` so callers learn
-/// the override knob (`None` = unlimited).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error(
     "covering would exceed max_cells={limit}; raise max_cells or pass max_cells=None for unlimited"
@@ -134,7 +69,7 @@ pub(crate) mod tile;
 /// same representative prevents backend projection roundoff from choosing an
 /// identifier from the caller's arbitrary pole spelling.
 pub(crate) fn canonical_lonlat(lon: f64, lat: f64) -> (f64, f64) {
-    let lat = crate::boundary::geographic::normalize_accepted_latitude(lat);
+    let lat = geographic::normalize_accepted_latitude(lat);
     let mut lon = lon % 360.0;
     if lon < -180.0 {
         lon += 360.0;
@@ -144,7 +79,7 @@ pub(crate) fn canonical_lonlat(lon: f64, lat: f64) -> (f64, f64) {
     if lon == 0.0 {
         lon = 0.0;
     }
-    if crate::boundary::geographic::normalized_geographic_pole(lat).is_some() {
+    if geographic::normalized_geographic_pole(lat).is_some() {
         lon = -180.0;
     }
     (lon, lat)
@@ -221,15 +156,5 @@ mod budget_tests {
                 assert_eq!(cell(lon, lat), owner);
             }
         }
-    }
-
-    #[test]
-    fn flat_collector_accepts_exact_limit_and_rejects_next_cell() {
-        let mut cells = CellCollector::with_estimate("test", GRID_MAX_CELLS);
-        cells
-            .extend(std::iter::repeat_n(0_u8, GRID_MAX_CELLS))
-            .unwrap();
-        assert_eq!(cells.len(), GRID_MAX_CELLS);
-        cells.push(1).unwrap_err();
     }
 }

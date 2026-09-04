@@ -905,11 +905,11 @@ mod tests {
             crate::geographic::GeographicFrame::crs84(),
             geohash::roots(),
             10,
-            Some(crate::grid::GRID_MAX_CELLS),
+            Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
         ) {
             Ok(_) => panic!("world at precision 10 must exceed the cell budget"),
             Err(CoverError::Budget(err)) => {
-                assert_eq!(err.limit, crate::grid::GRID_MAX_CELLS);
+                assert_eq!(err.limit, usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap());
                 assert!(err.to_string().contains("max_cells"));
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),

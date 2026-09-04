@@ -1,3 +1,4 @@
+use crate::crs::catalog::export;
 use std::ptr;
 
 use crate::crs::catalog::{
@@ -34,11 +35,6 @@ fn cf_proj_units_token(unit_name: &str, to_metre: f64) -> String {
         // Unknown linear unit: emit the native name so parse can reject or map.
         unit_name.to_owned()
     }
-}
-
-pub(crate) fn identify(value: &str, authority: Option<&str>) -> Result<Vec<IdentifyCandidate>> {
-    let state = runtime_state_snapshot()?;
-    identify_with_state(value, authority, &state)
 }
 
 pub(crate) fn identify_with_state(
@@ -142,7 +138,7 @@ pub(crate) fn to_2d(value: &str, name: Option<&str>) -> Result<String> {
         || CrsExportKind::To2d {
             name: name.map(str::to_owned),
         },
-        |key, state| crate::crs::catalog::export::crs_to_2d_export_at(key, state),
+        export::crs_to_2d_export_at,
         &state,
     )
 }
@@ -154,7 +150,7 @@ pub(crate) fn to_3d(value: &str, name: Option<&str>) -> Result<String> {
         || CrsExportKind::To3d {
             name: name.map(str::to_owned),
         },
-        |key, state| crate::crs::catalog::export::crs_to_3d_export_at(key, state),
+        export::crs_to_3d_export_at,
         &state,
     )
 }
@@ -178,7 +174,7 @@ fn to_cf_with_state(
             "CRS.to_cf() does not support compound CRS {normalized}; convert components separately"
         )));
     }
-    let wkt = crate::crs::catalog::export::to_wkt_with_options_at(
+    let wkt = export::to_wkt_with_options_at(
         &normalized,
         wkt_version,
         &CrsWktOptions::default(),

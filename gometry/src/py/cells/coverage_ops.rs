@@ -305,7 +305,7 @@ pub(crate) fn cover_error(err: crate::grid::CoverError) -> PyErr {
 
 /// Parse the shared cover-factory `max_cells` parameter.
 ///
-/// - omitted default is applied by the pyfunction signature (`1_000_000`)
+/// - omitted default is applied by the pyfunction signature (`GRID_MAX_CELLS`)
 /// - `None` (Python `None`) → unlimited
 /// - positive int → that budget
 /// - `<= 0` → typed value error naming `max_cells`

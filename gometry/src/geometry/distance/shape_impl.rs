@@ -1,3 +1,4 @@
+use crate::geometry::distance;
 use crate::geometry::distance::{
     GeodesicSweepCapsAccum, HausdorffFeature, HausdorffTarget, Result, any_parts_within,
     collect_geodesic_segments_into, collect_point_only_into, compact_hausdorff_params,
@@ -454,7 +455,7 @@ impl Shape {
     pub(crate) fn frechet_distance_with_scratch(
         &self,
         other: &Self,
-        scratch: &mut crate::geometry::distance::FrechetDpScratch,
+        scratch: &mut distance::FrechetDpScratch,
     ) -> Result<f64> {
         // An empty operand is TOTAL, not an error — the same output-type
         // sentinel `distance` and `hausdorff_distance` already return, so one

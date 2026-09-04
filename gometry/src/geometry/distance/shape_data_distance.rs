@@ -1,3 +1,4 @@
+use crate::geometry::distance;
 use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
@@ -408,7 +409,7 @@ impl PreparedPlan {
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let bvh = parts.geodesic_bvh(metric);
-        let mut scratch = crate::geometry::distance::geodesic_scratch();
+        let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes
             .map(|(x, y)| {
@@ -446,7 +447,7 @@ impl PreparedPlan {
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
         let bvh = parts.geodesic_bvh(metric);
-        let mut scratch = crate::geometry::distance::geodesic_scratch();
+        let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
         probes
             .map(|(x, y)| {

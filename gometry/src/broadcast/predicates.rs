@@ -270,6 +270,7 @@ pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {
     }
 }
 
+#[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
 fn relate_plan_pair(operands: PreparedTopologyPair<'_>) -> String {
     operands.relate().text()
 }
@@ -462,7 +463,8 @@ pub(crate) fn relate_pattern_broadcast(
     pattern: &str,
 ) -> PyResult<Py<PyAny>> {
     with_prepared_operands(py, left, right, |left, right| {
-        let compiled = crate::geometry::CompiledPattern::new(pattern)
+        let pattern_owned = pattern.to_owned();
+        let compiled = crate::geometry::CompiledPattern::new(&pattern_owned)
             .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
         let bytes = compiled.bytes();
         topology_broadcast(py, left, right, "relate_pattern", move |operands| {
@@ -612,13 +614,11 @@ fn xy_array_values(
     spec: PredicateSpec,
     domain: TopologyDomain,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
-    let points: Vec<Point> = x
+    
+    x
         .into_iter()
         .zip(y)
         .map(|(x, y)| Point::new_raw_xy(x, y))
-        .collect();
-    points
-        .into_iter()
         .map(|point| {
             let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
             let point_cache = crate::geometry::FrameDependentCaches::default();

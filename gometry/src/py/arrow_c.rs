@@ -10,6 +10,7 @@
     reason = "C Data Interface child pointers require stable pointee addresses"
 )]
 
+use crate::py::errors;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ use pyo3::types::{PyAny, PyTuple};
 use serde_json::{Map, Number, Value};
 
 use crate::geometry::{CoordSeq, CoordinateAxes};
-use crate::py::errors::GeometryError;
+use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::geoarrow::GeometryEncoding;
 use crate::{PyGeometry, PyGeometryArray};
 
@@ -70,15 +71,15 @@ impl NativeArrowExportError {
             Self::Core(error) => error.into(),
             Self::CoreRow { row, error } => crate::broadcast::rows_err((row, error)),
             Self::Overflow(message) => PyOverflowError::new_err(message.into_string()),
-            Self::GeoArrow(message) => crate::py::errors::parse_error(
+            Self::GeoArrow(message) => errors::parse_error(
                 message.into_string(),
                 crate::error::ParseFormat::GeoArrow,
             ),
             Self::Geometry(message) => {
-                crate::py::errors::GeometryError::new_err(message.into_string())
+                GeometryError::new_err(message.into_string())
             },
             Self::InvalidGeometry(message) => {
-                crate::py::errors::InvalidGeometryError::new_err(message.into_string())
+                InvalidGeometryError::new_err(message.into_string())
             },
         }
     }

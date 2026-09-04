@@ -120,9 +120,7 @@ fn merge_h3_component(
         .len()
         .saturating_add(component.len())
         .min(max_cells.unwrap_or(usize::MAX));
-    result
-        .try_reserve(capacity)
-        .map_err(|_| H3CoverError::Allocation)?;
+    result.reserve(capacity);
     let (mut left, mut right) = (0, 0);
     while left < previous.len() || right < component.len() {
         let entry = match (previous.get(left), component.get(right)) {
@@ -178,9 +176,7 @@ pub(crate) fn h3_cover(
 ) -> Result<Vec<H3CoveredCell>, H3CoverError> {
     const MAX_DFS_FRONTIER: usize = 212; // 122 roots + 6 * 15 depth-first growth.
     let mut stack = Vec::new();
-    stack
-        .try_reserve_exact(MAX_DFS_FRONTIER)
-        .map_err(|_| H3CoverError::Allocation)?;
+    stack.reserve_exact(MAX_DFS_FRONTIER);
     stack.extend(CellIndex::base_cells());
     debug_assert_eq!(stack.len(), 122, "vendor base-cell partition changed");
 
@@ -211,9 +207,7 @@ pub(crate) fn h3_cover(
                     .map_err(|_| H3CoverError::CapacityOverflow)?;
                 let count = usize::try_from(cell.children_count(next))
                     .map_err(|_| H3CoverError::CapacityOverflow)?;
-                stack
-                    .try_reserve(count)
-                    .map_err(|_| H3CoverError::Allocation)?;
+                stack.reserve(count);
                 stack.extend(cell.children(next));
             },
         }
@@ -317,9 +311,7 @@ fn emit_leaf(
         .checked_add(1)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(next_len, max_cells).map_err(H3CoverError::Budget)?;
-    covered
-        .try_reserve(1)
-        .map_err(|_| H3CoverError::Allocation)?;
+    covered.reserve(1);
     covered.push(H3CoveredCell { cell, interior });
     Ok(())
 }
@@ -337,9 +329,7 @@ fn emit_interior_descendants(
         .checked_add(count)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(total, max_cells).map_err(H3CoverError::Budget)?;
-    covered
-        .try_reserve_exact(count)
-        .map_err(|_| H3CoverError::Allocation)?;
+    covered.reserve_exact(count);
     let start = covered.len();
     covered.extend(cell.children(target).map(|cell| H3CoveredCell {
         cell,

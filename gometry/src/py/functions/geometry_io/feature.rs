@@ -151,7 +151,7 @@ fn serialize_array_feature_shapes(
     .map_err(PyErr::from)
 }
 
-fn owned_rows<'py>(rows: Vec<Option<Bound<'py, PyAny>>>) -> Vec<Option<Py<PyAny>>> {
+fn owned_rows(rows: Vec<Option<Bound<'_, PyAny>>>) -> Vec<Option<Py<PyAny>>> {
     rows.into_iter().map(|row| row.map(Bound::unbind)).collect()
 }
 

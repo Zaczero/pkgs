@@ -1,3 +1,4 @@
+use crate::py::errors::InvalidGeometryError;
 use crate::py::crs::{
     Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
     PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _,
@@ -449,7 +450,7 @@ fn cf_standard_parallel_values(value: &Bound<'_, PyAny>, maximum: usize) -> PyRe
         if value.is_finite() {
             return Ok(vec![value]);
         }
-        return Err(crate::py::errors::InvalidGeometryError::new_err(
+        return Err(InvalidGeometryError::new_err(
             "standard_parallel must be finite",
         ));
     }

@@ -132,6 +132,7 @@ fn snapshot_optional_bytes(bytes: Option<&[u8]>) -> PyResult<Option<Vec<u8>>> {
     bytes.map(snapshot_bytes).transpose()
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled `Geometry` (internal; see ``Geometry.__reduce__``).
 ///
 /// Frame strings are canonicalized through PROJ. Embedded EWKB SRIDs reuse the
@@ -151,6 +152,7 @@ pub(crate) fn _unpickle_geometry(
     Ok(Typed(geometry))
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled mixed-storage `GeometryArray` (internal; see
 /// ``GeometryArray.__reduce__``).
 ///
@@ -175,6 +177,7 @@ pub(crate) fn _unpickle_geometry_array(
         .map_err(PyErr::from)
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled packed-point `GeometryArray` from raw f64 columns
 /// (internal; see ``GeometryArray.__reduce__``).
 ///
@@ -203,6 +206,7 @@ pub(crate) fn _unpickle_point_array(
         .map_err(PyErr::from)
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled packed-line `GeometryArray` from raw f64 columns plus
 /// little-endian `i32` CSR offsets (internal; see
 /// ``GeometryArray.__reduce__``).
@@ -232,6 +236,7 @@ pub(crate) fn _unpickle_line_array(
     .map_err(PyErr::from)
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled packed-polygon `GeometryArray` from raw f64 columns plus
 /// little-endian `i32` two-level CSR offsets (internal; see
 /// ``GeometryArray.__reduce__``).
@@ -935,7 +940,8 @@ fn wkb_rows_for_mask(
     let row_count = missing.map_or(storage.len(), ValidityMask::len);
     let compact = missing.is_some_and(|mask| match storage {
         GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => point_layout.is_compact(),
-        GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
+        GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. }) => {
             storage.len() != mask.len()
         },
         GeometryArrayStorage::Mixed(_) => false,

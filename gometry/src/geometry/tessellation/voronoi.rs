@@ -5,8 +5,7 @@
 )]
 
 use crate::error::Result;
-use crate::geometry::tessellation::{CertifiedDelaunay, Site, exact};
-use crate::geometry::{HashMap, HashMapExt as _};
+use crate::geometry::tessellation::{CertifiedDelaunay, EMPTY, Site, exact};
 
 pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
     let ordered = |value: f64| {
@@ -57,7 +56,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
 /// same geometric Voronoi vertex once per triangulation face.
 #[derive(Debug)]
 pub(super) struct DelaunayComplex {
-    face_component: Vec<usize>,
+    pub(super) face_component: Vec<usize>,
     pub(super) centers: Vec<exact::ExactPoint>,
 }
 
@@ -93,7 +92,7 @@ pub(super) fn delaunay_complex(
     let triangles = mesh.triangles();
     let mut parents: Vec<_> = (0..triangles.len()).collect();
     for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
-        if reverse == crate::geometry::tessellation::EMPTY || edge > reverse {
+        if reverse == EMPTY || edge > reverse {
             continue;
         }
         let left = edge / 3;
@@ -108,44 +107,27 @@ pub(super) fn delaunay_complex(
         }
     }
 
-    // A certified face is already non-collinear.  Keeping its canonical
-    // minimum triangle is enough both to name a component deterministically
-    // and to define its exact circumcenter; collecting every component site
-    // only recreated this state at a much higher allocation cost.
-    let mut component_faces: HashMap<usize, ([usize; 3], usize)> = HashMap::new();
-    for (face, triangle) in triangles.iter().enumerate() {
+    // One component per union-find root. Face order is deterministic (the
+    // exact engine inserts in Hilbert order over the canonical sites), and a
+    // component's id never reaches the output: rings start at their rounded
+    // lexicographic minimum and edges sort canonically. Any face of the fan
+    // defines the exact circumcenter, since all of them are cocircular.
+    let mut component_of_root = vec![usize::MAX; triangles.len()];
+    let mut centers = Vec::new();
+    for face in 0..triangles.len() {
         let root = complex_root(&mut parents, face);
-        let mut key = *triangle;
-        key.sort_unstable();
-        component_faces
-            .entry(root)
-            .and_modify(|current| {
-                if key < current.0 {
-                    *current = (key, face);
-                }
-            })
-            .or_insert((key, face));
-    }
-
-    let mut roots: Vec<_> = component_faces.keys().copied().collect();
-    roots.sort_unstable_by_key(|root| component_faces[root].0);
-    let component_by_root: HashMap<_, _> = roots
-        .iter()
-        .enumerate()
-        .map(|(component, &root)| (root, component))
-        .collect();
-    let mut centers = Vec::with_capacity(roots.len());
-    for root in roots {
-        let face = component_faces[&root].1;
-        let [a, b, c] = triangles[face];
-        centers.push(exact::circumcenter(
-            sites[a].point.xy(),
-            sites[b].point.xy(),
-            sites[c].point.xy(),
-        )?);
+        if component_of_root[root] == usize::MAX {
+            component_of_root[root] = centers.len();
+            let [a, b, c] = triangles[face];
+            centers.push(exact::circumcenter(
+                sites[a].point.xy(),
+                sites[b].point.xy(),
+                sites[c].point.xy(),
+            )?);
+        }
     }
     let face_component = (0..triangles.len())
-        .map(|face| component_by_root[&complex_root(&mut parents, face)])
+        .map(|face| component_of_root[complex_root(&mut parents, face)])
         .collect();
     Ok(DelaunayComplex {
         face_component,

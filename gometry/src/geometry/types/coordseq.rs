@@ -57,7 +57,7 @@ impl MColumn {
         }
     }
 
-    fn window(&self, range: Range<usize>) -> Range<usize> {
+    const fn window(&self, range: Range<usize>) -> Range<usize> {
         match self {
             Self::Shared(_) => range,
             Self::Local(_) => 0..range.end - range.start,
@@ -1226,24 +1226,26 @@ impl CoordSeqBuilder {
             drop(xs);
             return Err(error);
         }
-        let mut zs = None;
-        if axes.has_z() {
+        let zs = if axes.has_z() {
             let mut values = Vec::new();
             if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
                 drop((xs, ys));
                 return Err(error);
             }
-            zs = Some(values);
-        }
-        let mut ms = None;
-        if axes.has_m() {
+            Some(values)
+        } else {
+            None
+        };
+        let ms = if axes.has_m() {
             let mut values = Vec::new();
             if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
                 drop((xs, ys, zs));
                 return Err(error);
             }
-            ms = Some(values);
-        }
+            Some(values)
+        } else {
+            None
+        };
         Ok(Self {
             xs,
             ys,

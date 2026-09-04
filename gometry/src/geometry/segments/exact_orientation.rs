@@ -117,6 +117,7 @@ impl ExactInteger {
     }
 }
 
+#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
 pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> Orientation {
     // Certify ordinary finite coordinates with the first Shewchuk filter before
     // constructing outward intervals. Overflow, underflow, and near-collinear

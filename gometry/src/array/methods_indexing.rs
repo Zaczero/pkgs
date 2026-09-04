@@ -1,4 +1,8 @@
 #![allow(
+    clippy::used_underscore_items,
+    reason = "`_with_missing` is private by Python convention, not unused"
+)]
+#![allow(
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]

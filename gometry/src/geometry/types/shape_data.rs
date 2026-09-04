@@ -215,7 +215,10 @@ struct TopologyPlan {
     /// The direct relation engines' stagings, built once per operand.
     linework: OnceLock<Box<Option<crate::geometry::StagedLinework>>>,
     rings: OnceLock<Box<Option<crate::geometry::StagedRings>>>,
-    areal_rings_sound: OnceLock<bool>,
+    /// Whether every ring of an areal shape has area (the direct engines'
+    /// gate); `false` for a non-areal shape. Each ring is scanned once per
+    /// plan.
+    areal_rings_have_area: OnceLock<bool>,
 }
 
 /// Shape-derived metric products shared by persistent and transient plans.
@@ -301,7 +304,7 @@ impl PreparedPlan {
         &self.shape
     }
 
-    pub(crate) fn shape_arc(&self) -> &Arc<ShapeData> {
+    pub(crate) const fn shape_arc(&self) -> &Arc<ShapeData> {
         &self.shape
     }
 
@@ -336,33 +339,33 @@ impl PreparedPlan {
     /// The shape staged as linework for the direct relation engine, `None`
     /// when it is not a line operand they admit.
     pub(crate) fn staged_linework(&self) -> Option<&crate::geometry::StagedLinework> {
-        self.topology()
-            .linework
-            .get_or_init(|| Box::new(crate::geometry::stage_linework(self.shape())))
-            .as_ref()
-            .as_ref()
+        Option::as_ref(
+            self.topology()
+                .linework
+                .get_or_init(|| Box::new(crate::geometry::stage_linework(self.shape()))),
+        )
     }
 
-    /// Whether every ring is sound for the direct areal engines, cached so a
-    /// predicate probe need not repeat exact area or zero-edge admission.
-    pub(crate) fn areal_rings_sound(&self) -> bool {
-        *self.topology().areal_rings_sound.get_or_init(|| {
+    /// Whether every ring of this areal shape has a nonzero exact area
+    /// (`ring_has_area`), decided once per plan.
+    pub(crate) fn areal_rings_have_area(&self) -> bool {
+        *self.topology().areal_rings_have_area.get_or_init(|| {
             let mut polygons = Vec::new();
             crate::geometry::collect_polygons(self.shape(), &mut polygons).is_some()
                 && polygons
                     .iter()
-                    .all(|polygon| polygon.rings().all(crate::geometry::ring_is_sound))
+                    .all(|polygon| polygon.rings().all(crate::geometry::ring_has_area))
         })
     }
 
     /// The shape's rings staged for the direct relation engine, `None` when
     /// it is not an areal operand.
     pub(crate) fn staged_rings(&self) -> Option<&crate::geometry::StagedRings> {
-        self.topology()
-            .rings
-            .get_or_init(|| Box::new(crate::geometry::stage_rings(self.shape())))
-            .as_ref()
-            .as_ref()
+        Option::as_ref(
+            self.topology()
+                .rings
+                .get_or_init(|| Box::new(crate::geometry::stage_rings(self.shape()))),
+        )
     }
 
     pub(crate) fn validate_cached(&self) -> Option<&ValidationIssue> {

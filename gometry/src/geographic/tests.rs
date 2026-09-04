@@ -29,7 +29,7 @@ fn scalar_view_borrows_literal_payload_and_reduces_only_on_access() {
     let point = crate::geometry::Point::new(540.0, 45.0).unwrap();
     let shape = crate::geometry::Shape::Point(point);
     let view = ScalarGeographicView::try_new(degrees(), &shape).unwrap();
-    assert!(std::ptr::eq(view.shape(), &shape));
+    assert!(std::ptr::eq(view.shape(), &raw const shape));
     let mut seen = None;
     view.try_for_each_coordinate(|coordinate| {
         seen = Some(coordinate);
@@ -317,13 +317,10 @@ fn frames_derive_degree_grad_and_radian_axes() {
         std::f64::consts::PI / 180.0
     );
     assert_eq!(degree.prime_meridian_radians(), 0.0);
-    assert!(AngularFactor::try_new("unit", 0.0).is_err());
-    assert!(AngularFactor::try_new("unit", f64::INFINITY).is_err());
-    assert!(PeriodicAxis::try_new("subnormal axis", factor(f64::MAX)).is_err());
-    assert!(
-        GeographicFrame::try_new(degree.longitude().unit(), factor(f64::from_bits(1)), 0.0,)
-            .is_err()
-    );
+    AngularFactor::try_new("unit", 0.0).unwrap_err();
+    AngularFactor::try_new("unit", f64::INFINITY).unwrap_err();
+    PeriodicAxis::try_new("subnormal axis", factor(f64::MAX)).unwrap_err();
+    GeographicFrame::try_new(degree.longitude().unit(), factor(f64::from_bits(1)), 0.0,).unwrap_err();
 }
 
 #[test]
@@ -335,7 +332,7 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
     assert_bits(converted.x, -180.0);
     assert_bits(
         degree
-            .from_geodesic_point(crate::geometry::Point::new_raw_xy(180.0, 45.0))
+            .point_from_geodesic(crate::geometry::Point::new_raw_xy(180.0, 45.0))
             .unwrap()
             .x,
         -180.0,
@@ -359,7 +356,7 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
         .unwrap();
     assert_eq!(converted.x, 2.0);
     assert_eq!(converted.y, 45.0);
-    let restored = paris.from_geodesic_point(converted).unwrap();
+    let restored = paris.point_from_geodesic(converted).unwrap();
     assert_eq!(restored.x, 0.0);
     assert_eq!(restored.y, 45.0);
 
@@ -367,7 +364,7 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
     let mut ys = [45.0, -45.0];
     paris.to_geodesic_lanes(&mut xs, &mut ys).unwrap();
     assert_eq!(xs, [2.0, -178.0]);
-    paris.from_geodesic_lanes(&mut xs, &mut ys).unwrap();
+    paris.lanes_from_geodesic(&mut xs, &mut ys).unwrap();
     assert_eq!(xs, [0.0, -180.0]);
 }
 
@@ -391,8 +388,8 @@ fn longitude_canonicalization_pins_aliases_neighbors_and_nonfinite() {
         180.0_f64.next_down()
     );
     assert!(axis.canonicalize(180.0_f64.next_up()).unwrap().get() < -179.0);
-    assert!(axis.canonicalize(f64::NAN).is_err());
-    assert!(axis.canonicalize(f64::INFINITY).is_err());
+    axis.canonicalize(f64::NAN).unwrap_err();
+    axis.canonicalize(f64::INFINITY).unwrap_err();
 }
 
 #[test]
@@ -487,10 +484,10 @@ fn latitude_admission_is_exact_at_poles_for_all_unit_scales() {
                 Latitude::try_new(frame, admitted_outside).unwrap().get(),
                 exact,
             );
-            assert!(Latitude::try_new(frame, rejected_outside).is_err());
+            Latitude::try_new(frame, rejected_outside).unwrap_err();
         }
     }
-    assert!(Latitude::try_new(degrees(), f64::NAN).is_err());
+    Latitude::try_new(degrees(), f64::NAN).unwrap_err();
 }
 
 #[test]
@@ -551,7 +548,7 @@ fn intervals_distinguish_empty_arc_full_and_windows() {
         CircularInterval::Full.windows(axis),
         Some(LongitudeWindows::Full)
     );
-    assert!(CircularInterval::try_arc(axis, 0.0, 360.0).is_err());
+    CircularInterval::try_arc(axis, 0.0, 360.0).unwrap_err();
 }
 
 #[test]
@@ -634,8 +631,8 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
     assert_eq!(axis.seam_transit(0.0, -180.0).unwrap(), 0);
     assert_eq!(axis.seam_transit(180.0, 0.0).unwrap(), -1);
     assert_eq!(axis.seam_transit(-180.0, 0.0).unwrap(), 0);
-    assert!(axis.seam_transit(f64::NAN, 0.0).is_err());
-    assert!(axis.seam_transit(0.0, f64::INFINITY).is_err());
+    axis.seam_transit(f64::NAN, 0.0).unwrap_err();
+    axis.seam_transit(0.0, f64::INFINITY).unwrap_err();
 
     let positive = ring(vec![0.0, 120.0, 240.0, 360.0, 480.0, 600.0, 720.0], vec![
         0.0;

@@ -570,7 +570,8 @@ pub(crate) fn stroke_loops(
     let mut points = crate::scratch_pool::ScratchPool::checkout(&GATHER);
     points.extend(chain.iter_coords());
     dedup_consecutive_points(&mut points);
-    let result = match points.as_slice() {
+    
+    match points.as_slice() {
         [] => Ok(Some(true)),
         [point] => {
             let Some(circle) = circle_loop(*point, distance, quadrant_segments, budget)? else {
@@ -603,8 +604,7 @@ pub(crate) fn stroke_loops(
             loops.push(columns);
             Ok(Some(clean))
         },
-    };
-    result
+    }
 }
 
 /// One full-circle CCW loop around `center` — the buffer of a point and

@@ -896,8 +896,8 @@ fn python_feature_id(py: Python<'_>, value: Option<Bound<'_, PyAny>>) -> PyResul
     Ok(value.unbind())
 }
 
-fn build_features<'py>(
-    py: Python<'py>,
+fn build_features(
+    py: Python<'_>,
     rows: impl Iterator<Item = PyResult<FeatureRow>>,
     crs: Option<Crs>,
     epoch: Option<f64>,

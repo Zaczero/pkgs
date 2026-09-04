@@ -12,6 +12,7 @@
 //! / `_Int32Buffer` pyclasses move `Arc` column storage into pyarrow without a
 //! second byte copy on little-endian hosts.
 
+use crate::py::numpy;
 use std::borrow::Cow;
 use std::ffi::c_int;
 use std::ops::Range;
@@ -93,6 +94,7 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> boo
                 }))
 }
 
+#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
 fn coordinate_values_equal(left: &[f64], right: &[f64]) -> bool {
     left.len() == right.len()
         && left
@@ -219,7 +221,7 @@ impl Groups {
             GroupsValues::Coordinates { values, .. } => &values[self.coordinate_values_window(row)],
             _ => unreachable!(),
         };
-        crate::py::numpy::float64_matrix_slice_array(py, slf.into_any(), values, rows, *dimensions)
+        numpy::float64_matrix_slice_array(py, slf.into_any(), values, rows, *dimensions)
     }
 
     fn slice_rows(&self, rows: Range<usize>) -> Self {
@@ -375,9 +377,8 @@ impl Groups {
                 },
                 Err(error) => return Err(error),
             };
-            let candidate = match index.extract::<i64>() {
-                Ok(candidate) => candidate,
-                Err(_) => return Ok(None),
+            let Ok(candidate) = index.extract::<i64>() else {
+                return Ok(None);
             };
             crate::try_push(&mut values, candidate)?;
         }
@@ -593,7 +594,7 @@ impl Groups {
                 let dimensions = *dimensions;
                 let values = &values[start..end];
                 drop(this);
-                crate::py::numpy::float64_matrix_slice_array(
+                numpy::float64_matrix_slice_array(
                     slf.py(),
                     slf.into_any(),
                     values,
@@ -1051,7 +1052,7 @@ impl Groups {
                 },
                 GroupsValues::Coordinates { values, dimensions } => {
                     let source = &values[self.coordinate_values_window(row)];
-                    crate::py::numpy::float64_matrix(
+                    numpy::float64_matrix(
                         py,
                         source.to_vec(),
                         source.len() / *dimensions,
@@ -1142,6 +1143,7 @@ impl Groups {
     }
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(crate) fn _unpickle_int64_groups(
     ids: &Bound<'_, PyAny>,
@@ -1158,6 +1160,7 @@ pub(crate) fn _unpickle_int64_groups(
     })
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(crate) fn _unpickle_geometry_groups(
     values: Py<PyGeometryArray>,
@@ -1175,6 +1178,7 @@ pub(crate) fn _unpickle_geometry_groups(
     })
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(crate) fn _unpickle_cell_groups(
     values: Py<PyCellArray>,
@@ -1190,6 +1194,7 @@ pub(crate) fn _unpickle_cell_groups(
     })
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(crate) fn _unpickle_coordinate_groups(
     values: &Bound<'_, PyAny>,

@@ -132,7 +132,7 @@ impl Geohash {
     }
 
     /// The canonical token bytes in a stack-sized buffer.
-    pub(crate) fn token_bytes(self) -> ([u8; 12], usize) {
+    pub(crate) const fn token_bytes(self) -> ([u8; 12], usize) {
         let mut bytes = [0_u8; 12];
         let mut index = 0;
         while index < self.precision as usize {

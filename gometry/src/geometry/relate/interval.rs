@@ -114,7 +114,8 @@ impl De9imInterval {
         self.hi[index(row, col)] = self.lo[index(row, col)];
     }
 
-    /// The same interval with operand rows and columns exchanged.
+    /// Rows and columns swapped, on both bounds — the interval of the pair
+    /// in the other order.
     pub(crate) const fn transpose(&self) -> Self {
         const fn swap(cells: [Cell; 9]) -> [Cell; 9] {
             let m = cells;

@@ -3,41 +3,57 @@ use crate::geometry::*;
 mod binary_areal_overlay_tests {
     use super::*;
 
-    /// Partitioning bounds-disconnected inputs must agree with one joint
-    /// arrangement, including singleton point and empty components.
+    /// The bounds-component partition is an optimization, so the only
+    /// evidence it can give is agreement with the unpartitioned lane on
+    /// inputs that actually split: several clusters of overlapping blobs
+    /// with clear water between them, plus a lone empty input and a lone
+    /// point so singleton components of every dimension are exercised.
     #[test]
     fn partitioned_union_matches_the_single_arrangement() {
         use crate::geometry::{Strictness, TopologyDomain};
         let blob = |cx: f64, cy: f64, r: f64| -> Shape {
             let points: Vec<(f64, f64)> = (0..12)
                 .map(|i| {
-                    let theta = i as f64 / 12.0 * std::f64::consts::TAU;
+                    let theta = f64::from(i) / 12.0 * std::f64::consts::TAU;
                     (cx + r * theta.cos(), cy + r * theta.sin())
                 })
                 .chain(std::iter::once((cx + r, cy)))
                 .collect();
             Shape::Polygon(polygon(&points))
         };
-        let mut inputs = Vec::new();
+        let mut inputs: Vec<Shape> = Vec::new();
+        // Three clusters, each internally overlapping, far apart from each other.
         for (ox, oy) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)] {
             for k in 0..5 {
-                inputs.push(blob(ox + 1.3 * k as f64, oy + 0.7 * k as f64, 1.5));
+                inputs.push(blob(ox + 1.3 * f64::from(k), oy + 0.7 * f64::from(k), 1.5));
             }
         }
-        inputs.push(Shape::Point(Point::new_raw_xy(50.0, 50.0)));
+        inputs.push(Shape::Point(crate::geometry::Point::new_raw_xy(50.0, 50.0)));
         inputs.push(Shape::empty_polygon());
         for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
             let partitioned = super::nary::overlay_all_with_bounds_certificates(
-                &inputs, TopologyDomain::Cartesian, op, Strictness::Lenient, true,
+                &inputs,
+                TopologyDomain::Cartesian,
+                op,
+                Strictness::Lenient,
+                true,
             )
             .unwrap();
             let single = super::nary::overlay_all_with_bounds_certificates(
-                &inputs, TopologyDomain::Cartesian, op, Strictness::Lenient, false,
+                &inputs,
+                TopologyDomain::Cartesian,
+                op,
+                Strictness::Lenient,
+                false,
             )
             .unwrap();
-            assert!(partitioned.equals(&single), "{op:?}: partitioned overlay differs");
+            assert!(
+                partitioned.equals(&single),
+                "{op:?}: partitioned overlay differs from the single arrangement"
+            );
         }
     }
+
 
     fn polygon(points: &[(f64, f64)]) -> Polygon {
         Polygon::new(
@@ -301,7 +317,7 @@ mod binary_areal_overlay_tests {
         );
         match (certified, forced) {
             (Ok(certified), Ok(forced)) => {
-                assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name())
+                assert_eq!(wkb(&certified), wkb(&forced), "{}", op.name());
             },
             (Err(certified), Err(forced)) => {
                 assert_eq!(certified.to_string(), forced.to_string(), "{}", op.name());
@@ -618,6 +634,7 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to")]
     #[test]
     fn polygon_line_intersection_matches_generic_boundary_and_hole_cases() {
         let holed = Shape::Polygon(Polygon::new(
@@ -686,27 +703,15 @@ mod binary_areal_overlay_tests {
                 "crossing" | "contained" | "boundary-collinear" => {
                     assert!(matches!(result, Shape::LineString(_)), "{name}: {result:?}");
                 },
-                "exterior" => {
+                "exterior" | "hole exterior" => {
                     assert!(
                         matches!(result, Shape::Empty(GeometryKind::LineString, _)),
                         "{name}: {result:?}"
                     );
                 },
-                "vertex-only" => {
+                "vertex-only" | "tangent" => {
                     assert!(
                         matches!(result, Shape::Point(point) if point.x == 0.0 && point.y == 0.0),
-                        "{name}: {result:?}"
-                    );
-                },
-                "tangent" => {
-                    assert!(
-                        matches!(result, Shape::Point(point) if point.x == 0.0 && point.y == 0.0),
-                        "{name}: {result:?}"
-                    );
-                },
-                "hole exterior" => {
-                    assert!(
-                        matches!(result, Shape::Empty(GeometryKind::LineString, _)),
                         "{name}: {result:?}"
                     );
                 },
@@ -1902,6 +1907,17 @@ mod binary_areal_overlay_tests {
                 line(&[(0.0, 0.0), (1.0, 0.0)]),
                 line(&[(3.0, 0.0), (4.0, 0.0)]),
             ],
+            // Overlapping bounds, no contact: the no-interaction lane.
+            vec![
+                line(&[(0.0, 0.0), (2.0, 1.0), (4.0, 2.0)]),
+                line(&[(0.0, 1.0), (2.0, 2.0), (4.0, 3.0)]),
+            ],
+            // Same, with a repeated vertex the dissolve would drop and a part
+            // that ends where the next begins.
+            vec![
+                multiline(&[&[(0.0, 0.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)], &[(2.0, 1.0), (3.0, 3.0)]]),
+                line(&[(0.0, 2.0), (3.0, 4.0)]),
+            ],
             vec![
                 line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
                 line(&[
@@ -1957,16 +1973,16 @@ mod binary_areal_overlay_tests {
         let mut checked = 0;
         for _ in 0..800 {
             let rows = 2 + (next() % 2) as usize;
-            let shapes: Vec<Shape> = (0..rows)
-                .map(|_| {
-                    let count = 2 + (next() % 3) as usize;
-                    let points: Vec<(f64, f64)> =
-                        std::iter::repeat_with(|| ((next() % 4) as f64, (next() % 4) as f64))
-                            .take(count)
-                            .collect();
-                    line(&points)
-                })
-                .collect();
+            let shapes: Vec<Shape> = std::iter::repeat_with(|| {
+                let count = 2 + (next() % 3) as usize;
+                let points: Vec<(f64, f64)> =
+                    std::iter::repeat_with(|| ((next() % 4) as f64, (next() % 4) as f64))
+                        .take(count)
+                        .collect();
+                line(&points)
+            })
+            .take(rows)
+            .collect();
             let inputs: Vec<&Shape> = shapes.iter().collect();
             if !inputs.iter().all(|shape| super::super::nary::nondegenerate_line_only(shape)) {
                 continue;
@@ -2213,8 +2229,8 @@ mod binary_areal_overlay_tests {
     }
 }
 
-/// Every overlay lane leaves through one builder, so nodes on straight runs
-/// never survive to output rings.
+/// Every overlay lane leaves through one builder, so a node on a straight
+/// run never survives to the output, whichever lane produced the ring.
 #[test]
 fn overlay_output_rings_carry_no_collinear_nodes() {
     let shape = |wkt: &str| crate::io::parse_wkt(wkt).unwrap();

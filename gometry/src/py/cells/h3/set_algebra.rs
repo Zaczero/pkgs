@@ -63,6 +63,7 @@ grid_free_functions! {
     }
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled H3Cell from its 64-bit index (internal; see
 /// ``H3Cell.__reduce__``).
 #[pyfunction]

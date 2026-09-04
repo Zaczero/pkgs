@@ -815,6 +815,7 @@ impl PyH3VertexArray {
     }
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled `H3VertexArray` from its 64-bit indexes (internal).
 #[pyfunction]
 pub(super) fn _unpickle_h3_vertex_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3VertexArray> {
@@ -932,6 +933,7 @@ impl PyH3EdgeArray {
     }
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled `H3EdgeArray` from its 64-bit indexes (internal).
 #[pyfunction]
 pub(super) fn _unpickle_h3_edge_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3EdgeArray> {

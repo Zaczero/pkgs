@@ -107,8 +107,8 @@ def test_delaunay_square_tiny_and_huge_is_euler_complete() -> None:
         )
 
 
-def test_spade_voronoi_affine_extremes_succeed() -> None:
-    """Spade Voronoi must not reject affine copies at 1e-100 / 1e155."""
+def test_voronoi_affine_extremes_succeed() -> None:
+    """Voronoi must not reject affine copies at 1e-100 / 1e155."""
     for side in (1e-100, 1e155):
         sites = gm.MultiPoint([
             (0.0, 0.0),
@@ -248,7 +248,7 @@ def _reciprocal_pentagon(
 @pytest.mark.parametrize(
     'exponent',
     [
-        pytest.param(22, id='framed-normal-below-spade-floor'),
+        pytest.param(22, id='framed-normal'),
         pytest.param(154, id='framed-subnormal'),
         pytest.param(162, id='framed-zero-after-underflow'),
     ],
@@ -851,7 +851,7 @@ def test_active_constrained_max_area_is_scaled_from_the_source_metric(
     exponent: int,
     swap_axes: bool,
 ) -> None:
-    """An active source-space area limit reaches Spade in local units exactly."""
+    """An active source-space area limit reaches refinement in local units exactly."""
     large = 10.0**exponent
     tiny = 10.0**-exponent
     points = [(0.0, 0.0), (large, 0.0), (large, tiny), (0.0, tiny)]

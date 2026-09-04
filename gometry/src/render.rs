@@ -11,10 +11,14 @@ use crate::geometry::{Bounds, CoordSeq, Coordinates, Point, Shape};
 struct TryString(String);
 
 impl TryString {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self(String::new())
     }
 
+    #[expect(
+        clippy::same_name_method,
+        reason = "shadows `fmt::Write::write_fmt` so `write!` on this buffer yields the crate's fallible result"
+    )]
     fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> Result<()> {
         std::fmt::write(self, args).map_err(|_| ResourceError::Allocation.into())
     }
@@ -128,38 +132,38 @@ fn missing_svg() -> Result<String> {
          <text x=\"60\" y=\"44\" text-anchor=\"middle\" font-size=\"14\" fill=\"#777\">missing</text>\
          </svg>",
     )
-    .map_err(|_| ResourceError::Allocation.into())
+    .map_err(|()| ResourceError::Allocation.into())
 }
 
 pub(crate) fn render_shape_svg(shape: &Shape) -> Result<String> {
     const EMPTY: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\"/>";
     if shape.is_empty() {
         return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|_| ResourceError::Allocation.into());
+            .map_err(|()| ResourceError::Allocation.into());
     }
     let Some(bounds) = svg_bounds(shape) else {
         return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|_| ResourceError::Allocation.into());
+            .map_err(|()| ResourceError::Allocation.into());
     };
     let (minx, miny, maxx, maxy) = bounds.into_tuple();
     let w = maxx - minx;
     let h = maxy - miny;
     if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
         return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|_| ResourceError::Allocation.into());
+            .map_err(|()| ResourceError::Allocation.into());
     }
     // Map world → local pixel frame so extreme-but-finite coordinates never
     // produce infinite viewBox/stroke or NaN transforms.
     let scale = SVG_MAX_PX / w.max(h);
     if !scale.is_finite() || scale <= 0.0 {
         return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|_| ResourceError::Allocation.into());
+            .map_err(|()| ResourceError::Allocation.into());
     }
     let px_w = (w * scale).max(1.0);
     let px_h = (h * scale).max(1.0);
     if !px_w.is_finite() || !px_h.is_finite() {
         return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|_| ResourceError::Allocation.into());
+            .map_err(|()| ResourceError::Allocation.into());
     }
     let sw = 1.5_f64;
     let r = 3.0_f64;

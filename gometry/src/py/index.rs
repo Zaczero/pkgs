@@ -69,7 +69,7 @@ impl IndexPredicate {
     /// Whether the relation is symmetric (`p(a, b) == p(b, a)`). Directional
     /// predicates cannot be reported as unordered `i < j` pairs without
     /// silently dropping the reverse direction.
-    pub(crate) fn is_symmetric(self) -> bool {
+    pub(crate) const fn is_symmetric(self) -> bool {
         match self {
             Self::Topological(predicate) => predicate.spec().symmetric,
             Self::Dwithin => true,
@@ -109,7 +109,7 @@ impl IndexPredicate {
     }
 
     /// The canonical token (inverse of [`parse`](Self::parse)).
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Topological(predicate) => predicate.token(),
             Self::Dwithin => "dwithin",
@@ -544,7 +544,7 @@ impl IndexRows {
         IndexRowOperation::new(self)
     }
 
-    fn live_count(&self) -> usize {
+    const fn live_count(&self) -> usize {
         self.live_count
     }
     fn len(&self) -> usize {

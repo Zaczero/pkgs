@@ -37,8 +37,7 @@ pub(crate) fn sample_weighted<T>(
         return Ok(None);
     }
     let mut state = seed;
-    let mut points = Vec::new();
-    points.reserve_exact(count);
+    let mut points = Vec::with_capacity(count);
     for _ in 0..count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative

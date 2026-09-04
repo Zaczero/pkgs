@@ -8,7 +8,7 @@ use pyo3::pymethods;
 use pyo3::types::PyAny;
 
 use crate::Typed;
-use crate::grid::cell::{GridCell, HierarchicalCell};
+use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
@@ -39,6 +39,7 @@ pub(crate) struct PyGeohashCell {
 }
 
 crate::heapless!(PyGeohashCell);
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pyfunction]
 pub(super) fn _unpickle_geohash_cell(token: &str) -> PyResult<PyGeohashCell> {
     Ok(PyGeohashCell {

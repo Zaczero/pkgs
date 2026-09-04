@@ -102,8 +102,8 @@ pub(in crate::geometry) use areal::{
     binary_areal_overlay, build_areal_arrangement, outside_winding_seeds,
 };
 pub(crate) use assembly::{
-    build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
-    empty_overlay_shape, merge_chain_edges, merge_chains,
+    build_overlay_shape, build_overlay_shape_from_chains, dedup_points, empty_overlay_shape,
+    merge_chain_edges, merge_chains,
 };
 pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use clip::{

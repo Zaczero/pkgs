@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::io::geojson;
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryKind, IoError, IoGeometryKind, LineSeq,
     MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring, Shape, WktHeader, extended_srid_code,
@@ -219,12 +221,12 @@ mod tests {
                     || matches!(shape, Shape::Empty(_, axes) if axes != CoordinateAxes::XY)
                 {
                     let result = if include_z {
-                        crate::io::geojson::to_geojson_string::<true>(
+                        geojson::to_geojson_string::<true>(
                             &shape,
                             crate::geometry::TopologyDomain::Cartesian,
                         )
                     } else {
-                        crate::io::geojson::to_geojson_string::<false>(
+                        geojson::to_geojson_string::<false>(
                             &shape,
                             crate::geometry::TopologyDomain::Cartesian,
                         )

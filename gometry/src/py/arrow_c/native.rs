@@ -932,13 +932,10 @@ fn build_owned_node_admitted(
         }
         for index in 0..validated.n_children {
             let child_schema = &schema.children[index];
-            let name = match crate::boundary::try_string_from_str(child_schema.name()) {
-                Ok(name) => name,
-                Err(()) => {
-                    drop(children);
-                    drop(field_names);
-                    return Err(crate::boundary::string_alloc_error());
-                },
+            let Ok(name) = crate::boundary::try_string_from_str(child_schema.name()) else {
+                drop(children);
+                drop(field_names);
+                return Err(crate::boundary::string_alloc_error());
             };
             field_names.push(name);
             // SAFETY: children live under capture shell for this construction.
@@ -1158,22 +1155,19 @@ fn merge_owned_row_missing(
     ancestor: Option<Arc<[bool]>>,
 ) -> PyResult<Option<Arc<[bool]>>> {
     let len = array.length;
-    let mut missing = match ancestor {
-        Some(a) => {
-            if a.len() != len {
-                return Err(PyTypeError::new_err(
-                    "Arrow ancestor missing length does not match child length",
-                ));
-            }
-            let mut missing = crate::try_vec_with_capacity(len)?;
-            missing.extend_from_slice(a.as_ref());
-            missing
-        },
-        None => {
-            let mut missing = crate::try_vec_with_capacity(len)?;
-            missing.resize(len, false);
-            missing
-        },
+    let mut missing = if let Some(a) = ancestor {
+        if a.len() != len {
+            return Err(PyTypeError::new_err(
+                "Arrow ancestor missing length does not match child length",
+            ));
+        }
+        let mut missing = crate::try_vec_with_capacity(len)?;
+        missing.extend_from_slice(a.as_ref());
+        missing
+    } else {
+        let mut missing = crate::try_vec_with_capacity(len)?;
+        missing.resize(len, false);
+        missing
     };
     let mut any = missing.iter().any(|&m| m);
     for row in 0..len {

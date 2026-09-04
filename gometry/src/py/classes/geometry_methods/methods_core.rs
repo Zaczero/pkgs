@@ -13,6 +13,7 @@ use crate::{
     require_geojson_crs,
 };
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pymethods]
 impl PyGeometry {
     #[new]
@@ -350,7 +351,7 @@ impl PyGeometry {
                 "__geo_interface__ cannot represent M or coordinate epoch; use an explicit serializer or clear the dimension",
             ));
         }
-        let shape = self.shape.clone();
+        let shape = std::sync::Arc::clone(&self.shape);
         let domain = crate::geometry::topology_domain(&self.frame)?;
         let text =
             py.detach(move || crate::io::to_geojson_string::<true>(shape.shape(), domain))?;

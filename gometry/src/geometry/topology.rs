@@ -72,7 +72,7 @@ mod scratch_tests {
     #[test]
     fn topology_scratch_is_aggregate_bounded_and_reuses_medium_columns() {
         reserve(1024, 32);
-        let (_, allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        let ((), allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
         assert_eq!(allocations, 0);
 
         reserve(
@@ -86,9 +86,9 @@ mod scratch_tests {
         assert_eq!(empty.rings.capacity(), 0);
         drop(empty);
 
-        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        let ((), first_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
         assert!(first_allocations > 0);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
+        let ((), repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
         assert_eq!(repeat_allocations, 0);
     }
 
@@ -103,7 +103,7 @@ mod scratch_tests {
                 polygon: 0,
                 ring: 0,
                 is_hole: false,
-                points: source.clone(),
+                points: std::sync::Arc::clone(&source),
                 segments: 0..0,
             });
             drop(source);
@@ -171,12 +171,12 @@ pub(super) struct OperandPool {
 thread_local! {
     // Reuse the column buffers per-thread so overlay staging does not allocate
     // a fresh set of parallel provenance vectors for every operation.
-    static TOPOLOGY_SCRATCH: ScratchPool<TopologyScratch> = ScratchPool::new(TopologyScratch {
+    static TOPOLOGY_SCRATCH: ScratchPool<TopologyScratch> = const { ScratchPool::new(TopologyScratch {
         segments: Vec::new(),
         operands: Vec::new(),
         ring_of: Vec::new(),
         rings: Vec::new(),
-    });
+    }) };
 }
 
 impl std::ops::Deref for OperandPool {

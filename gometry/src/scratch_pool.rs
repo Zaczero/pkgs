@@ -209,7 +209,7 @@ mod tests {
     }
 
     thread_local! {
-        static PANICKING_POOL: ScratchPool<PanickingClear> = ScratchPool::new(PanickingClear);
+        static PANICKING_POOL: ScratchPool<PanickingClear> = const { ScratchPool::new(PanickingClear) };
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         let nested = vec![Vec::<u64>::with_capacity(3), Vec::<u64>::with_capacity(5)];
         assert_eq!(
             nested_vec_retained_bytes(&nested),
-            nested.capacity() * size_of::<Vec<u64>>() + 8 * size_of::<u64>()
+            nested.capacity() * size_of::<Vec<u64>>() + u64::BITS as usize
         );
         let impossible = usize::MAX / size_of::<u64>() + 1;
         assert_eq!(allocation_bytes(impossible, size_of::<u64>()), usize::MAX);
@@ -287,7 +287,7 @@ mod tests {
             medium.0.capacity()
         });
         assert_eq!(warm_allocations, 1);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| {
+        let ((), repeat_allocations) = crate::test_support::allocation_count(|| {
             let mut medium = ScratchPool::checkout(&CAPACITY_POOL);
             medium.0.reserve_exact(64);
             assert_eq!(medium.0.capacity(), warmed);
@@ -317,13 +317,15 @@ mod tests {
     }
 
     thread_local! {
-        static THREAD_POOL: ScratchPool<ThreadScratch> = ScratchPool::new(ThreadScratch(Vec::new()));
+        static THREAD_POOL: ScratchPool<ThreadScratch> = const { ScratchPool::new(ThreadScratch(Vec::new())) };
     }
 
     #[test]
     fn worker_threads_have_independent_pools_and_teardown_drops_values() {
         THREAD_DROPS.store(0, Ordering::Relaxed);
-        let handles: Vec<_> = (1..=2)
+        
+        assert_eq!(
+            (1..=2)
             .map(|capacity| {
                 std::thread::spawn(move || {
                     let mut lease = ScratchPool::checkout(&THREAD_POOL);
@@ -331,10 +333,6 @@ mod tests {
                     lease.0.capacity()
                 })
             })
-            .collect();
-        assert_eq!(
-            handles
-                .into_iter()
                 .map(|h| h.join().unwrap())
                 .collect::<Vec<_>>(),
             [16, 32]
@@ -354,7 +352,7 @@ mod tests {
     }
 
     thread_local! {
-        static TEARDOWN_POOL: ScratchPool<TeardownScratch> = ScratchPool::new(TeardownScratch);
+        static TEARDOWN_POOL: ScratchPool<TeardownScratch> = const { ScratchPool::new(TeardownScratch) };
         static TEARDOWN_LEASE: std::cell::RefCell<Option<ScratchLease<TeardownScratch>>> = const {
             std::cell::RefCell::new(None)
         };
@@ -369,6 +367,6 @@ mod tests {
             let lease = ScratchPool::checkout(&TEARDOWN_POOL);
             TEARDOWN_LEASE.with(|holder| *holder.borrow_mut() = Some(lease));
         });
-        assert!(handle.join().is_ok());
+        handle.join().unwrap();
     }
 }

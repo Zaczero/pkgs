@@ -84,7 +84,7 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 ///
 #[pyfunction]
 #[pyo3(
-    signature = (geom, zoom, *, cell_rule = CellRule::Overlap, max_cells = Some(1_000_000)),
+    signature = (geom, zoom, *, cell_rule = CellRule::Overlap, max_cells = Some(crate::grid::GRID_MAX_CELLS)),
     text_signature = "(geom, zoom, *, cell_rule='overlap', max_cells=1000000)"
 )]
 pub(super) fn tile_cover(

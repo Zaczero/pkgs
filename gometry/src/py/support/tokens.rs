@@ -58,6 +58,7 @@ crate::tokens::token_from_pyobject!(
     NavigationPath,
 );
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Machine-readable token vocabularies for the stub-parity gate: every
 /// [`token_enum!`](crate::tokens::token_enum) surface as `(enum_name, public_alias,
 /// canonical_tokens)`, where the alias is the private `_types` `Literal` name

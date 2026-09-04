@@ -188,7 +188,8 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
                 non_prunable_live,
             }))
         },
-        GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
+        GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. }) => {
             let Some(bounds) = array.cached_element_bounds() else {
                 return Ok(None);
             };
@@ -275,7 +276,7 @@ pub(crate) fn build_spatial_index(
             true,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
         )?
-        .into_items()?;
+        .into_items();
         return py.detach(move || spatial_index(items));
     }
     let present = crate::try_collect_results(
@@ -289,7 +290,7 @@ pub(crate) fn build_spatial_index(
         true,
         crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
     )?
-    .into_items()?;
+    .into_items();
     let metadata = index_metadata(&present)?;
     let mut present = present.into_iter();
     let rows = crate::try_collect_results(raw_items.into_iter().map(|item| {

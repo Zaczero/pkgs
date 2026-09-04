@@ -191,10 +191,9 @@ fn replace_dense_packed_coordinates(
                 array.frame.clone(),
             )))
         },
-        GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-        | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-        | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
-        | GeometryArrayStorage::Mixed(_) => Ok(Err(replacement)),
+        GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) |
+GeometryArrayStorage::Mixed(_) => Ok(Err(replacement)),
     }
 }
 
@@ -228,6 +227,7 @@ fn replace_array_coordinates(
     Ok(array.scatter_present_result(PyGeometryArray::from_shapes(shapes, array.frame.clone())))
 }
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 #[pymethods]
 impl PyGeometryArray {
     /// Estimate one conformal metric CRS for all present rows.
@@ -454,7 +454,7 @@ impl PyGeometryArray {
             })
             .map_err(crate::PyErr::from)?;
         let features = PyList::empty(py);
-        for row in 0..self.len() {
+        for (row, text) in geometry_texts.iter().enumerate() {
             let feature = PyDict::new(py);
             feature.set_item("type", "Feature")?;
             feature.set_item("id", row)?;
@@ -464,9 +464,7 @@ impl PyGeometryArray {
             } else {
                 crate::boundary::json_text_to_py(
                     py,
-                    geometry_texts[row]
-                        .as_deref()
-                        .expect("present row has text"),
+                    text.as_deref().expect("present row has text"),
                 )?
                 .into_bound(py)
             };
@@ -546,9 +544,8 @@ impl PyGeometryArray {
         // whole-array answer is a single O(1) axes read — not a per-row Shape
         // materialization + probe.
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { coords, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { coords, .. }) => coords.axes().has_z(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. } |
+PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) => coords.axes().has_z(),
             GeometryArrayStorage::Mixed(_) => {
                 self.present_shape_rows().any(|(_, shape)| shape.has_z())
             },
@@ -589,9 +586,8 @@ impl PyGeometryArray {
             return false;
         }
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { coords, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { coords, .. }) => coords.axes().has_m(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. } |
+PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) => coords.axes().has_m(),
             GeometryArrayStorage::Mixed(_) => {
                 self.present_shape_rows().any(|(_, shape)| shape.has_m())
             },
@@ -749,9 +745,8 @@ impl PyGeometryArray {
         // ``1`` from CSR row counts without per-row ``Shape`` materialization.
         // Mixed rows delegate to ``Shape::part_count`` on materialized shapes.
         let values = match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => try_collect_values(
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => try_collect_values(
                 (0..self.len()).map(|row| i64::from(!self.is_row_missing(row))),
                 self.len(),
             )?,
@@ -1062,9 +1057,7 @@ impl PyGeometryArray {
         let mut output = crate::try_vec_with_capacity(self.len())?;
         match self.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
-                for _ in 0..self.len() {
-                    output.push(false);
-                }
+                output.extend(std::iter::repeat_n(false, self.len()));
             },
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 offsets, row_map, ..
@@ -1140,9 +1133,7 @@ impl PyGeometryArray {
             if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
                 return Some((|| {
                     let mut values = crate::try_vec_with_capacity(self.len())?;
-                    for _ in 0..self.len() {
-                        values.push(true);
-                    }
+                    values.extend(std::iter::repeat_n(true, self.len()));
                     Ok(values)
                 })());
             }
@@ -1222,10 +1213,9 @@ impl PyGeometryArray {
     pub(crate) fn is_convex_unary_packed(&self) -> PyResult<Vec<bool>> {
         let mut output = crate::try_vec_with_capacity(self.len())?;
         match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. }) | GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) => {
-                for _ in 0..self.len() {
-                    output.push(false);
-                }
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. }) => {
+                output.extend(std::iter::repeat_n(false, self.len()));
             },
             GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) | GeometryArrayStorage::Mixed(_) => {
                 for (row, shape) in self.storage().iter_shapes().enumerate() {

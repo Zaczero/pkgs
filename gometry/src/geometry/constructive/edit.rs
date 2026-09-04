@@ -483,7 +483,7 @@ impl Shape {
     /// `MULTIPOLYGON EMPTY` yields `MULTIPOLYGON Z EMPTY`). A non-canonical
     /// empty (e.g. a collection OF empties) is `None` — its members retag
     /// individually through the recursive verb.
-    fn retag_empty_axes(&self, axes: CoordinateAxes) -> Option<Self> {
+    const fn retag_empty_axes(&self, axes: CoordinateAxes) -> Option<Self> {
         match self {
             Self::Empty(kind, _) => Some(Self::typed_empty(*kind, axes)),
             _ => None,
@@ -514,21 +514,18 @@ impl Shape {
             return Ok(empty);
         }
         let axes = self.axes_with_ordinate(axis, value.is_some());
-        if let Self::MultiPoint(points) = self {
-            if points.is_empty() {
+        if let Self::MultiPoint(points) = self
+            && points.is_empty() {
                 return Ok(Self::MultiPoint(points.with_axes(axes)));
             }
-        }
-        if let Self::MultiLineString(lines) = self {
-            if lines.is_empty() {
+        if let Self::MultiLineString(lines) = self
+            && lines.is_empty() {
                 return Ok(Self::MultiLineString(lines.with_axes(axes)));
             }
-        }
-        if let Self::MultiPolygon(polygons) = self {
-            if polygons.is_empty() {
+        if let Self::MultiPolygon(polygons) = self
+            && polygons.is_empty() {
                 return Ok(Self::MultiPolygon(polygons.with_axes(axes)));
             }
-        }
         if let Self::GeometryCollection(geometries) = self {
             return Ok(Self::GeometryCollection(geometries.try_map_members(
                 |geometry| geometry.set_ordinate(axis, value, overwrite),
@@ -725,7 +722,7 @@ impl Shape {
                         crate::geometry::MultiMember::Value(line) => Some(line.axes()),
                         crate::geometry::MultiMember::Empty => None,
                     })
-                    .unwrap_or(lines.axes());
+                    .unwrap_or_else(|| lines.axes());
                 Ok(Self::MultiLineString(MultiLineString::try_new(
                     axes, members,
                 )?))
@@ -749,7 +746,7 @@ impl Shape {
                         crate::geometry::MultiMember::Value(polygon) => Some(polygon.axes()),
                         crate::geometry::MultiMember::Empty => None,
                     })
-                    .unwrap_or(polygons.axes());
+                    .unwrap_or_else(|| polygons.axes());
                 Ok(Self::MultiPolygon(MultiPolygon::try_new(axes, members)?))
             },
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
@@ -1038,8 +1035,7 @@ impl Shape {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
                         crate::geometry::MultiMember::Value(index) => {
                             remove_repeated_polygon(&polygons.as_slice()[index])
-                                .map(crate::geometry::MultiMember::Value)
-                                .unwrap_or(crate::geometry::MultiMember::Empty)
+                                .map_or(crate::geometry::MultiMember::Empty, crate::geometry::MultiMember::Value)
                         },
                     })
                     .collect();

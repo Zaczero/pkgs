@@ -251,7 +251,7 @@ pub(crate) fn unary_array_linref_shapes(
     let shapes = py
         .detach(move || {
             let mut rows = array.row_operation();
-            rows.rows_with_missing(|| Shape::empty_point())
+            rows.rows_with_missing(Shape::empty_point)
                 .map(|row| {
                     let ArrayRow::Present(present) = row else {
                         return Ok(Shape::empty_point());
@@ -307,7 +307,7 @@ pub(crate) fn unary_array_shapes_budgeted(
         .detach(move || {
             let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
             let mut rows = array.row_operation();
-            rows.rows_with_missing(|| Shape::empty_point())
+            rows.rows_with_missing(Shape::empty_point)
                 .map(|row| {
                     let ArrayRow::Present(present) = row else {
                         return Ok(Shape::empty_point());

@@ -402,7 +402,8 @@ impl PyCoordinates {
                             })
                             .collect::<PyResult<Vec<_>>>()?
                     },
-                    GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
+                    GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. }) => {
                         storage
                             .iter_shapes()
                             .enumerate()

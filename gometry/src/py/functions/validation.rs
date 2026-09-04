@@ -4,6 +4,9 @@
 //! CRS); `repair` fixes invalid geometries. Both delegate to the crate-root and
 //! `geometry` validation kernels via `use super::*`.
 
+use crate::py::errors;
+use crate::py::support;
+use crate::py::vectors;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -84,7 +87,7 @@ pub(crate) fn require(
         let array = require_array_contract(array.clone(), expected.as_ref(), axes, Some(py))?;
         return Ok(array.into_pyobject(py)?.into_any().unbind());
     }
-    if let Ok(groups) = value.cast::<crate::py::vectors::Groups>()
+    if let Ok(groups) = value.cast::<vectors::Groups>()
         && let Some(array) = groups.get().geometry_values_view()
     {
         let array = require_array_contract(array, expected.as_ref(), axes, Some(py))?;
@@ -189,7 +192,7 @@ fn require_geometry_contract(
             None,
             "$",
         );
-        return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
+        return Err(errors::invalid_geometry_issue(&issue, row));
     }
     let plan = geometry.plan_or_transient();
     let domain = geometry::topology_domain(&geometry.frame)?;
@@ -198,7 +201,7 @@ fn require_geometry_contract(
         None => geometry::validate_data_in_frame(&plan, domain),
     };
     if let Some(issue) = issue {
-        return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
+        return Err(errors::invalid_geometry_issue(&issue, row));
     }
     Ok(geometry)
 }
@@ -243,7 +246,7 @@ fn require_array_contract(
             None,
             "$",
         );
-        return Err(crate::py::errors::invalid_geometry_issue(&issue, row));
+        return Err(errors::invalid_geometry_issue(&issue, row));
     }
     let domain = geometry::topology_domain(&array.frame)?;
     if let Some(py) = py {
@@ -254,14 +257,14 @@ fn require_array_contract(
             (array, issue)
         });
         if let Some((row, issue)) = issue {
-            return Err(crate::py::errors::invalid_geometry_issue(&issue, Some(row)));
+            return Err(errors::invalid_geometry_issue(&issue, Some(row)));
         }
         return Ok(array);
     }
     if let Some((row, issue)) = array.present_shape_rows().find_map(|(row, shape)| {
         geometry::validate_shape_in_frame(&shape, domain).map(|issue| (row, issue))
     }) {
-        return Err(crate::py::errors::invalid_geometry_issue(&issue, Some(row)));
+        return Err(errors::invalid_geometry_issue(&issue, Some(row)));
     }
     Ok(array)
 }
@@ -322,7 +325,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
             return parse_require_wkt(text.as_ref(), fallback);
         }
         // GeoJSON text: same shared coercer as mapping / interface / bytes.
-        let parsed = crate::py::support::parse_geojson_text(text.as_ref())?;
+        let parsed = support::parse_geojson_text(text.as_ref())?;
         return parse_require_geojson_value(&parsed, fallback);
     }
     if is_one_byte_buffer(geom) {
@@ -355,6 +358,7 @@ pub struct PyValidationReport {
 
 type ValidationReportPickleArgs = (Typed,);
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled `ValidationReport` from its geometry only (internal;
 /// see ``ValidationReport.__reduce__``).
 ///

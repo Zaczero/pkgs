@@ -23,7 +23,7 @@ macro_rules! define_operation {
         }
 
         impl Operation {
-            pub(crate) fn name(self) -> &'static str {
+            pub(crate) const fn name(self) -> &'static str {
                 match self {
                     $(Self::$unit => $name,)*
                     Self::Metric(op) => op.name(),

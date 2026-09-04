@@ -709,7 +709,7 @@ impl CompactLimbs {
         }
     }
 
-    fn single(value: f64) -> Self {
+    const fn single(value: f64) -> Self {
         let mut limbs = [0.0; INLINE_EXPANSION_LIMBS];
         limbs[0] = value;
         Self::Inline { limbs, len: 1 }
@@ -753,8 +753,7 @@ impl CompactLimbs {
                 *len = u8::try_from(required).ok()?;
             },
             Self::Inline { limbs, len } => {
-                let mut expanded = Vec::new();
-                expanded.reserve(required);
+                let mut expanded = Vec::with_capacity(required);
                 expanded.resize(required, 0.0);
                 expanded[..usize::from(*len)].copy_from_slice(&limbs[..usize::from(*len)]);
                 *self = Self::Heap(expanded);
@@ -795,8 +794,7 @@ impl CompactLimbs {
                 len: *len,
             }),
             Self::Heap(limbs) => {
-                let mut clone = Vec::new();
-                clone.reserve(limbs.len());
+                let mut clone = Vec::with_capacity(limbs.len());
                 clone.extend_from_slice(limbs);
                 Some(Self::Heap(clone))
             },
@@ -1044,21 +1042,15 @@ impl ExactExpansion {
                 if !head.is_finite() || !tail.is_finite() {
                     return None;
                 }
-                let term = if tail != 0.0 {
-                    if head != 0.0 {
-                        [tail, head]
-                    } else {
-                        [tail, 0.0]
-                    }
-                } else {
+                let term = if tail == 0.0 {
                     [if head == 0.0 { 0.0 } else { head }, 0.0]
-                };
-                let term_len = if tail != 0.0 {
-                    1 + usize::from(head != 0.0)
                 } else if head != 0.0 {
-                    1
+                    [tail, head]
                 } else {
-                    0
+                    [tail, 0.0]
+                };
+                let term_len = if tail == 0.0 { usize::from(head != 0.0) } else {
+                    1 + usize::from(head != 0.0)
                 };
                 if term_len == 0 {
                     continue;
@@ -1534,8 +1526,7 @@ impl LiftedRingFill {
         let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
             None
         } else {
-            let mut latitudes = Vec::new();
-            latitudes.reserve(chain.vertices.len());
+            let mut latitudes = Vec::with_capacity(chain.vertices.len());
             latitudes.extend(chain.vertices.iter().map(|vertex| vertex.latitude));
             // Closed chains retain their repeated first vertex, so adjacent
             // spans include the represented closing edge without a synthetic
@@ -1763,8 +1754,7 @@ impl PeriodicParityBuckets {
         if length > edge_count.checked_add(2)? {
             return None;
         }
-        let mut events = Vec::new();
-        events.reserve_exact(length);
+        let mut events = Vec::with_capacity(length);
         events.resize(length, false);
         Some(Self {
             first,
@@ -2736,8 +2726,7 @@ impl SymbolicAffineEdge {
         end: LiftedVertex,
         kind: LiftKind,
     ) -> Option<Self> {
-        let mut parameters = Vec::new();
-        parameters.reserve(8);
+        let mut parameters = Vec::with_capacity(8);
         parameters.push(ExactParentParameter::start()?);
         parameters.push(ExactParentParameter::end()?);
         let mut result = Self {
@@ -3414,8 +3403,7 @@ fn build_authority_edge_index(
     edges: &[SymbolicAffineEdge],
 ) -> Option<BulkRTree<AuthorityEdgeProxy>> {
     let capacity = edges.len().checked_mul(3)?;
-    let mut entries = Vec::new();
-    entries.reserve(capacity);
+    let mut entries = Vec::with_capacity(capacity);
     for (edge, authority_edge) in edges.iter().enumerate() {
         for envelope in authority_edge_proxy_envelopes(authority_edge)? {
             entries.push(AuthorityEdgeProxy { edge, envelope });
@@ -4149,7 +4137,7 @@ impl GeographicCoverageSource {
         (!self.unknown).then(|| self.selection_edges.iter())
     }
 
-    pub(crate) fn has_polygon(&self) -> bool {
+    pub(crate) const fn has_polygon(&self) -> bool {
         !self.ring_fills.is_empty()
     }
 

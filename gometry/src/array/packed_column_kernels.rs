@@ -160,7 +160,7 @@ const COLUMN_STREAM_MIN_GROUPS: usize = 64;
 /// caller can retain the general `MultiLineString` representation and its
 /// ordinate/error policy.
 pub(crate) fn clip_lines_packed_xy(
-    line_columns: LineColumns<'_>,
+    line_columns: &LineColumns<'_>,
     rect: Bounds,
     domain: crate::geometry::TopologyDomain,
 ) -> PackedColumnResult<Option<PackedColumnOutput>> {

@@ -617,7 +617,8 @@ impl PyGeometryArray {
     ) -> PyResult<Option<Vec<f64>>> {
         if !matches!(
             self.storage(),
-            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. })
         ) {
             return Ok(None);
         }
@@ -729,7 +730,8 @@ impl PyGeometryArray {
         }
         if !matches!(
             self.storage(),
-            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. })
         ) {
             return Ok(None);
         }

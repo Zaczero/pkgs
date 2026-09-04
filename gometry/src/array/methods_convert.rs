@@ -307,11 +307,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn swap_xy_unary_packed(&self) -> PyResult<Self> {
-        if let Some(packed) = self.swap_xy_packed_storage() {
-            Ok(packed)
-        } else {
-            self.map_shapes(|shape| Ok(shape.swap_xy()?))
-        }
+        self.swap_xy_packed_storage().map_or_else(|| self.map_shapes(|shape| Ok(shape.swap_xy()?)), Ok)
     }
 
     pub(crate) fn unique_points_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
@@ -436,15 +432,13 @@ impl PyGeometryArray {
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
         if let Some(axes) = self.uniform_axes()
             && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
-        {
-            if let Some(mapped) = Python::attach(|py| {
+            && let Some(mapped) = Python::attach(|py| {
                 self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                     Ok(point.quantize(precision))
                 })
             })? {
                 return Ok(mapped);
             }
-        }
         Python::attach(|py| {
             self.map_shapes_shared_detached(py, move |shape| {
                 let quantized = shape.quantize(precision)?;
@@ -464,7 +458,7 @@ impl PyGeometryArray {
             let clipped =
                 self.try_map_packed_columns_detached(py, self.frame.clone(), move |columns| {
                     match columns {
-                        PackedColumns::Lines(lines) => clip_lines_packed_xy(lines, rect, domain),
+                        PackedColumns::Lines(lines) => clip_lines_packed_xy(&lines, rect, domain),
                         _ => Ok(None),
                     }
                 })?;

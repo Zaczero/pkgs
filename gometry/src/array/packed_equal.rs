@@ -157,7 +157,7 @@ fn packed_points_equal_exact_columns_impl<const Z: bool, const M: bool>(
         return vec![false; rows];
     }
     if let (Some(left_xy), Some(right_xy)) = (left.contiguous_xy(), right.contiguous_xy()) {
-        return packed_points_equal_contiguous::<Z, M>(left, right, left_xy, right_xy, tolerance);
+        return packed_points_equal_contiguous::<Z, M>(left, right, &left_xy, &right_xy, tolerance);
     }
     let mut out = Vec::with_capacity(rows);
     let mut left_rows = left.rows().cursor();
@@ -195,8 +195,8 @@ fn packed_points_equal_exact_columns_impl<const Z: bool, const M: bool>(
 fn packed_points_equal_contiguous<const Z: bool, const M: bool>(
     left: &PointColumns<'_>,
     right: &PointColumns<'_>,
-    left_xy: XyColumns<'_>,
-    right_xy: XyColumns<'_>,
+    left_xy: &XyColumns<'_>,
+    right_xy: &XyColumns<'_>,
     tolerance: f64,
 ) -> Vec<bool> {
     let left_coords = left.contiguous_coords().expect("contiguous point columns");

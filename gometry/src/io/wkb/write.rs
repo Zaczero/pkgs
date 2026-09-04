@@ -436,15 +436,11 @@ impl WkbBody<'_> {
             Self::EmptyMultiPoint
             | Self::EmptyLineString
             | Self::EmptyMultiLineString
-            | Self::EmptyMultiPolygon => {
+            | Self::EmptyMultiPolygon | Self::EmptyPolygon => {
                 write_u32(out, 0);
                 Ok(())
             },
-            Self::EmptyPolygon => {
-                write_u32(out, 0);
-                Ok(())
-            },
-        }
+            }
     }
 }
 
@@ -581,7 +577,7 @@ mod tests {
             MultiMember::Value(line(&[xy(0.0, 0.0), xy(1.0, 1.0)])),
             MultiMember::Value(line(&[xyz(2.0, 2.0, 3.0), xyz(3.0, 3.0, 4.0)])),
         ]);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     #[test]
@@ -600,7 +596,7 @@ mod tests {
                 xyz(2.0, 2.0, 1.0),
             ])),
         ]);
-        assert!(result.is_err());
+        result.unwrap_err();
     }
 
     /// Collections keep genuinely heterogeneous members (no axis promotion),

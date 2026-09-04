@@ -220,9 +220,8 @@ impl PyGeometryArray {
             // Packed rows re-pack either way — the plain map already
             // never materializes wrappers there (and packed-row clones are
             // Arc bumps since the CoordSeq view conversion).
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => {
                 self.map_shapes(|shape| Ok(transform(shape)?.unwrap_or_else(|| shape.clone())))
             },
         }
@@ -263,9 +262,8 @@ impl PyGeometryArray {
                     .map_err(rows_err)?;
                 Ok(rebuild_shared_mixed(self, shapes, changed)?)
             },
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => self
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => self
                 .map_shapes_detached_indexed(py, |shape, row| {
                     Ok(transform(shape, row)?.unwrap_or_else(|| shape.clone()))
                 }),

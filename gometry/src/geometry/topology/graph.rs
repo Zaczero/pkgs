@@ -16,7 +16,7 @@ use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
     SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, dimension,
-    point_on_segment, same_point, segment_vs_rect, shared_segment_part,
+    point_on_segment, same_point, segment_projection, segment_vs_rect, shared_segment_part,
 };
 use crate::heap_size::HeapSize;
 
@@ -366,22 +366,6 @@ impl TopologyGraph {
 
     pub(crate) const fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
         edge.line_support
-    }
-
-    pub(crate) fn edge_has_only_line_sources(
-        &self,
-        edge: &TopologyEdge,
-        source_count: usize,
-    ) -> bool {
-        !edge.sources.is_empty()
-            && edge.sources.iter().all(|&source| {
-                self.source_edges
-                    .get(source as usize)
-                    .is_some_and(|source| {
-                        (source.source_row as usize) < source_count
-                            && matches!(source.support, SourceSupport::Line)
-                    })
-            })
     }
 
 
@@ -1569,11 +1553,13 @@ impl GraphBuilder {
                         polygon,
                         interior_left,
                     } => {
-                        // The noding provenance already says whether this
-                        // piece runs against its source; the direction is
-                        // combinatorial, never a projection.
-                        let reversed = reversed ^ piece_reversed;
-                        let direction = if interior_left == reversed { -1 } else { 1 };
+                        let direction = if matches!(self.domain, TopologyDomain::Cartesian) {
+                            source_direction(piece, chart.segment)
+                                * if interior_left { 1 } else { -1 }
+                        } else {
+                            let reversed = reversed ^ piece_reversed;
+                            if interior_left == reversed { -1 } else { 1 }
+                        };
                         if let Some((_, net)) = bundle
                             .area_transitions
                             .iter_mut()
@@ -1822,6 +1808,12 @@ impl EdgeBundle {
             area_transitions: Vec::new(),
         }
     }
+}
+
+fn source_direction(piece: Segment, source: Segment) -> i32 {
+    let start = segment_projection(piece.start, source);
+    let end = segment_projection(piece.end, source);
+    if end.cmp_along(&start).is_ge() { 1 } else { -1 }
 }
 
 #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
@@ -2404,8 +2396,8 @@ fn condense_area_face_support(
     for (face, data) in arrangement.faces.iter().enumerate() {
         let candidate = &mut outer[data.component as usize];
         if candidate.is_none_or(|current| {
-            data.area_sign
-                .prefers_as_outer_face_than(arrangement.faces[current].area_sign)
+            data.decision_area
+                .prefers_as_outer_face_than(arrangement.faces[current].decision_area)
         }) {
             *candidate = Some(face);
         }

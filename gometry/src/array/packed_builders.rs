@@ -127,7 +127,7 @@ impl PyGeometryArray {
             GeometryArrayStorage::Mixed(existing) => {
                 rows.iter().map(|&row| existing[row].clone()).collect()
             },
-            _ => rows
+            GeometryArrayStorage::Packed(_) => rows
                 .iter()
                 .map(|&row| self.storage().row(row).with_shape(std::clone::Clone::clone))
                 .collect(),
@@ -164,7 +164,7 @@ impl PyGeometryArray {
         }
         let shapes = match self.storage() {
             GeometryArrayStorage::Mixed(existing) => existing[rows].to_vec(),
-            _ => rows
+            GeometryArrayStorage::Packed(_) => rows
                 .map(|row| self.storage().row(row).with_shape(std::clone::Clone::clone))
                 .collect(),
         };

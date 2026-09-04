@@ -1,7 +1,7 @@
 use h3o::CoordIJ;
 use pyo3::prelude::*;
 
-use crate::grid::cell::{GridCell, HierarchicalCell};
+use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::py::cells::cell_ops::{
     cell_boundary, cell_center, cell_contains, cell_descendant_count, cell_hash, cell_intersects,
     cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
@@ -673,29 +673,6 @@ pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> Vec<CellIndex> {
         cells.push(value);
     }
     cells
-}
-
-pub(super) fn try_h3_grid_ring_cells(
-    cell: CellIndex,
-    k: u32,
-) -> std::result::Result<Vec<CellIndex>, crate::grid::CellLimitExceeded> {
-    let estimate = usize::try_from(h3o::max_grid_ring_size(k)).unwrap_or(usize::MAX);
-    if estimate > crate::grid::GRID_MAX_CELLS {
-        return Err(crate::grid::CellLimitExceeded::new("H3 grid_ring"));
-    }
-    let mut cells = crate::grid::CellCollector::with_estimate("H3 grid_ring", estimate);
-    for value in cell.grid_ring_fast(k) {
-        let Some(value) = value else {
-            cells.clear();
-            cells.extend(
-                cell.grid_disk_distances_safe(k)
-                    .filter_map(|(cell, distance)| (distance == k).then_some(cell)),
-            )?;
-            return Ok(cells.into_vec());
-        };
-        cells.push(value)?;
-    }
-    Ok(cells.into_vec())
 }
 
 fn try_h3_grid_ring_cells_with_budget(

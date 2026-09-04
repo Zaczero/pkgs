@@ -9,6 +9,7 @@
 //! raw-pointer helpers (which stay private in the parent `crs` module) via
 //! `use super::*`; re-exported at `crs` so `crs::transform` callers resolve.
 
+use crate::geometry::types;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -23,6 +24,7 @@ use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Lati
 use crate::geometry::{CoordWindow, LineSeq, MOrdinate, TopologyDomain, ZOrdinate};
 
 /// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
+pub(crate) type TransformedBounds = (f64, f64, f64, f64);
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
 
 /// Backend-neutral edge samples for one bounds row. Geographic source windows
@@ -242,7 +244,7 @@ impl BoundsSamplePlan {
     pub(super) fn leave_in_core(&mut self) -> Result<()> {
         if let TopologyDomain::Geographic(frame) = self.target_domain {
             frame
-                .from_geodesic_lanes(&mut self.x, &mut self.y)
+                .lanes_from_geodesic(&mut self.x, &mut self.y)
                 .map_err(map_geographic_conversion_error)?;
         }
         Ok(())
@@ -266,7 +268,7 @@ pub(super) fn transform_in_core_xy_with_domains(
     transform_in_core_xy_batch(operation, x, y)?;
     if let TopologyDomain::Geographic(frame) = target_domain {
         frame
-            .from_geodesic_lanes(x, y)
+            .lanes_from_geodesic(x, y)
             .map_err(map_geographic_conversion_error)?;
     }
     Ok(())
@@ -291,7 +293,7 @@ pub(super) fn transform_in_core_xy_with_domains_indexed(
     transform_in_core_xy_batch_indexed(operation, x, y)?;
     if let TopologyDomain::Geographic(frame) = target_domain {
         frame
-            .from_geodesic_lanes_indexed(x, y)
+            .lanes_indexed_from_geodesic(x, y)
             .map_err(|(coordinate, error)| {
                 TransformFailure::at(map_geographic_conversion_error(error), coordinate)
             })?;
@@ -844,7 +846,7 @@ pub(crate) fn transform_bounds_many(
     rows: &[(f64, f64, f64, f64)],
     densify: u32,
     options: TransformOptions,
-) -> Result<(Vec<(f64, f64, f64, f64)>, TransformExecution)> {
+) -> Result<(Vec<TransformedBounds>, TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_rows(source, target, rows, densify, options, state)
 }
@@ -855,7 +857,7 @@ pub(crate) fn transform_bounds_3d(
     bounds: (f64, f64, f64, f64, f64, f64),
     densify: u32,
     options: TransformOptions,
-) -> Result<((f64, f64, f64, f64, f64, f64), TransformExecution)> {
+) -> Result<(TransformedBounds3d, TransformExecution)> {
     let state = runtime_state_snapshot()?;
     transform_bounds_row(source, target, bounds, densify, options, state)
 }
@@ -1285,8 +1287,8 @@ impl TransformOutputPlan {
         for shape in shapes {
             visit_shape_sequences(shape, &mut |source| counts.add(source))?;
         }
-        crate::geometry::types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
-        crate::geometry::types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
+        types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
+        types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
         let mut plan = Self {
             xy: OutputColumns::try_with_capacity(counts.xy_vertices, false)?,
             xyz: OutputColumns::try_with_capacity(counts.xyz_vertices, true)?,
@@ -1710,6 +1712,7 @@ mod lane_tests {
         assert_eq!(calls, 1);
     }
 
+    #[expect(clippy::too_many_lines, reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to")]
     #[test]
     fn mixed_sequences_share_final_lanes_and_reconstruct_exactly() {
         let xy = CoordSeq::from_columns(

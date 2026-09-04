@@ -76,10 +76,7 @@ impl PyGeometryArray {
                 })
         })?;
         let mut builder =
-            match PointColumnBuilder::try_with_capacity(first_coords.axes(), total_rows) {
-                Ok(builder) => builder,
-                Err(error) => return Err(error.into()),
-            };
+            PointColumnBuilder::with_capacity(first_coords.axes(), total_rows);
         for array in arrays {
             let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) = array.storage() else {
                 return Ok(None);

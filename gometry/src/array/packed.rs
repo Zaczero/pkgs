@@ -250,12 +250,12 @@ impl PyGeometryArray {
     /// The stored compact payload remains present-only.
     pub(crate) fn materialized_compact_point_coords(
         &self,
-    ) -> crate::error::Result<Option<CoordSeq>> {
+    ) -> Option<CoordSeq> {
         if !self.is_compact_nullable() {
-            return Ok(None);
+            return None;
         }
         let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) = self.storage() else {
-            return Ok(None);
+            return None;
         };
         let axes = coords.axes();
         let mut builder = CoordSeqBuilder::with_capacity(axes, self.len());
@@ -275,7 +275,7 @@ impl PyGeometryArray {
                 },
             }
         }
-        Ok(Some(builder.finish_with_missing_placeholders()))
+        Some(builder.finish_with_missing_placeholders())
     }
 
     /// Attach a missing mask, normalizing the all-present case back to the
@@ -378,9 +378,8 @@ impl PyGeometryArray {
             return Self::compact_present_rows(present, mask);
         }
         let scattered = match present.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => unreachable!(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => unreachable!(),
             GeometryArrayStorage::Mixed(_) => {
                 let mut rows = present.storage().iter_shapes();
                 let shapes: Vec<Shape> = mask
@@ -556,7 +555,8 @@ impl PyGeometryArray {
                 mask.present_count(),
                 "compact point payload must contain exactly one row per present mask bit"
             ),
-            GeometryArrayStorage::Packed(PackedStorage::Lines { .. }) | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
+            GeometryArrayStorage::Packed(PackedStorage::Lines { .. } |
+PackedStorage::Polygons { .. }) => {
                 assert_eq!(
                     compact.len(),
                     len,
@@ -564,7 +564,7 @@ impl PyGeometryArray {
                 );
             },
             GeometryArrayStorage::Mixed(_) => {
-                panic!("compact nullable storage must be homogeneous packed storage");
+                unreachable!("compact nullable storage is built from packed storage only");
             },
         }
         Self {
@@ -660,9 +660,9 @@ impl PyGeometryArray {
             return self;
         }
         self.row_products = match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { row_map, .. }) => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. } |
+PackedStorage::Lines { row_map, .. } | PackedStorage::Polygons { row_map, ..
+}) => {
                 source.row_products.with_selection(row_map.clone())
             },
             GeometryArrayStorage::Mixed(_) => source.selected_row_products(rows),
@@ -754,9 +754,9 @@ impl PyGeometryArray {
             .expect("packed storage has uniform axes");
         self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
             let [a, b, d, e, xoff, yoff] = matrix;
-            let (x, y) =
+            let (mapped_x, mapped_y) =
                 crate::geometry::stable_affine_xy(a, b, d, e, xoff, yoff, point.x, point.y);
-            point.with_xy(x, y)
+            point.with_xy(mapped_x, mapped_y)
         })
     }
 

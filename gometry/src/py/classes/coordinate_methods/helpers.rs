@@ -273,12 +273,9 @@ pub(crate) fn get_coordinates(
     return_index: bool,
 ) -> PyResult<Py<PyAny>> {
     let array;
-    let (input, grouped) = match classify_required(values) {
-        Ok(input) => (input, matches!(input, GeometryInput::Many(_))),
-        Err(_) => {
-            array = PyGeometryArray::new(values, None, None)?;
-            (GeometryInput::Many(&array), false)
-        },
+    let (input, grouped) = if let Ok(input) = classify_required(values) { (input, matches!(input, GeometryInput::Many(_))) } else {
+        array = PyGeometryArray::new(values, None, None)?;
+        (GeometryInput::Many(&array), false)
     };
     let view = coordinate_view_for_input(input);
     let axes = axes.unwrap_or(CoordinateAxes::XY);

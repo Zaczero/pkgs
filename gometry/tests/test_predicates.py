@@ -467,8 +467,19 @@ def test_de9im_reviewer_correctness_cases_match_shapely() -> None:
             'FF2101FF2',
         ),
         ('LINESTRING (0 0, 0 0)', 'POINT (1 0)', 'FF0FFF0F2'),
-        ('POLYGON ((0 0, 0 0, 0 0, 0 0))', 'LINESTRING (0 0, 1 0)', 'FF2F0F102'),
     ]
+    # A polygon that encloses nothing IS its linework, and gometry relates it
+    # that way: the ring below has collapsed to a single point, so it answers
+    # exactly as POINT (0 0) does. GEOS instead keeps a two-dimensional
+    # interior for it (IE=2), which a single point cannot have, so this pair is
+    # a deliberate divergence rather than a parity case.
+    degenerate = ('POLYGON ((0 0, 0 0, 0 0, 0 0))', 'LINESTRING (0 0, 1 0)')
+    assert gm.relate(gm.from_wkt(degenerate[0]), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
+    assert gm.relate(gm.from_wkt('POINT (0 0)'), gm.from_wkt(degenerate[1])) == 'F0FFFF102'
+    assert (
+        shapely.relate(shapely.from_wkt(degenerate[0]), shapely.from_wkt(degenerate[1]))
+        == 'FF2F0F102'
+    )
     for left_wkt, right_wkt, matrix in cases:
         left = gm.from_wkt(left_wkt)
         right = gm.from_wkt(right_wkt)

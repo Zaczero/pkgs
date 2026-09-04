@@ -1,3 +1,7 @@
+#![allow(
+    clippy::used_underscore_items,
+    reason = "`_repr_html_` is IPython's display protocol name"
+)]
 use crate::html_text_escape;
 use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, parse_crs};
 frozen_pymethods! {

@@ -168,41 +168,29 @@ fn geodesic_segment_intersection_accepts_flattening_boundaries() {
     for flattening in [-0.25, 0.2] {
         let geodesic = Geodesic::new(6_378_137.0, flattening);
         let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        assert!(
-            metric
-                .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
-                .is_ok()
-        );
+        metric
+                .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0)).unwrap();
     }
     let outside = Geodesic::new(6_378_137.0, 0.200_000_000_1);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&outside);
-    assert!(
-        metric
-            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0))
-            .is_err()
-    );
+    metric
+            .segments_cross(p(0.0, 0.0), p(10.0, 0.0), p(5.0, -1.0), p(5.0, 1.0)).unwrap_err();
 }
 
 #[test]
 fn geodesic_segment_rejects_nonunique_shortest_endpoints() {
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    assert!(metric.make_segment(p(0.0, 10.0), p(180.0, -10.0)).is_err());
-    assert!(metric.make_segment(p(0.0, 90.0), p(180.0, -90.0)).is_err());
+    metric.make_segment(p(0.0, 10.0), p(180.0, -10.0)).unwrap_err();
+    metric.make_segment(p(0.0, 90.0), p(180.0, -90.0)).unwrap_err();
     let sphere = Geodesic::new(6_378_137.0, 0.0);
     let sphere_metric = EllipsoidMetric::for_crs84_geometry_test(&sphere);
-    assert!(
-        sphere_metric
-            .make_segment(p(0.0, 0.0), p(180.0, 0.0))
-            .is_err()
-    );
+    sphere_metric
+            .make_segment(p(0.0, 0.0), p(180.0, 0.0)).unwrap_err();
     let prolate = Geodesic::new(6_378_137.0, -0.01);
     let prolate_metric = EllipsoidMetric::for_crs84_geometry_test(&prolate);
-    assert!(
-        prolate_metric
-            .make_segment(p(0.0, 10.0), p(180.0, -10.0))
-            .is_err()
-    );
+    prolate_metric
+            .make_segment(p(0.0, 10.0), p(180.0, -10.0)).unwrap_err();
 }
 
 #[test]

@@ -394,8 +394,7 @@ mod tests;
 
 pub(crate) use shape_row::ShapeRow;
 pub(crate) use storage_types::{
-    GeometryArrayStorage, LineRows, PackedStorage, PointRows, RowSelection, RowSelectionRef,
-    RowsIter, ShapesIter,
+    GeometryArrayStorage, PackedStorage, LineRows, PointRows, RowSelection, RowSelectionRef, RowsIter, ShapesIter,
     contiguous_physical_range, line_logical_len, packed_lines_coord_len, packed_polygons_coord_len,
     packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
     polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,

@@ -83,7 +83,7 @@ pub(super) fn geohash_cell_array(
 ///
 #[pyfunction]
 #[pyo3(
-    signature = (geom, precision, *, cell_rule = CellRule::Overlap, max_cells = Some(1_000_000)),
+    signature = (geom, precision, *, cell_rule = CellRule::Overlap, max_cells = Some(crate::grid::GRID_MAX_CELLS)),
     text_signature = "(geom, precision, *, cell_rule='overlap', max_cells=1000000)"
 )]
 pub(super) fn geohash_cover(

@@ -14,7 +14,7 @@ use crate::py::arrow_c::{
 
 impl SchemaNode {
     pub(crate) fn into_schema(self) -> PyResult<Box<ArrowSchema>> {
-        let SchemaNode {
+        let Self {
             format,
             name,
             metadata,
@@ -301,7 +301,7 @@ pub(crate) fn apply_top_level_validity(
         GeometryError::new_err("Arrow geometry export validity span exceeds usize")
     })?;
     let (owned, mask_offset) = mask.arrow_bitmap();
-    let owned_bits = owned.len().checked_mul(8).unwrap_or(usize::MAX);
+    let owned_bits = owned.len().saturating_mul(8);
     let validity = if mask_offset == offset && owned_bits >= total_bits {
         owned
     } else {

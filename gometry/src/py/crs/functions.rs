@@ -23,7 +23,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MinConfidence {
     type Error = PyErr;
 
     fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        let value = crate::py_index_object("min_confidence", &value.as_any())?
+        let value = crate::py_index_object("min_confidence", value.as_any())?
             .extract::<i64>()
             .map_err(|_| CRSError::new_err("min_confidence must be between 0 and 100"))?;
         let value = u8::try_from(value)
@@ -210,22 +210,6 @@ pub(crate) fn crs_info<'py>(
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Bound<'py, PyDict>> {
     super::list_cache::crs_info_py_dict(py, &crs_normalize(value)?)
-}
-/// Identify candidate CRS matches for a definition.
-///
-/// Parameters
-/// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
-///
-/// Returns
-/// -------
-/// list
-pub(crate) fn crs_identify(
-    value: &Bound<'_, PyAny>,
-    authority: Option<&str>,
-) -> PyResult<Vec<crs::IdentifyCandidate>> {
-    Ok(crs::identify(&crs_normalize(value)?, authority)?)
 }
 
 /// Best authority:code identifier for a CRS.

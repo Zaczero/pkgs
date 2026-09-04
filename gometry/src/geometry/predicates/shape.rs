@@ -1,3 +1,4 @@
+use crate::geometry::relate;
 use crate::error::Result;
 use crate::geometry::predicates::{line_contains_point, multiline_contains_point};
 use crate::geometry::{
@@ -173,7 +174,7 @@ impl Shape {
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
         let compiled = relate_pattern::CompiledPattern::new(pattern)
             .ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
-        Ok(compiled.matches(crate::geometry::relate::graph_relate_shapes(self, other)))
+        Ok(compiled.matches(relate::graph_relate_shapes(self, other)))
     }
 
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {

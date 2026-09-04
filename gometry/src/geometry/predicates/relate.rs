@@ -58,6 +58,9 @@ impl LineworkChains {
         let first = self.segments.len() as u32;
         self.segments.reserve(count);
         self.line_of.reserve(count);
+        let [min_x, min_y, max_x, max_y] = crate::geometry::xy_bounds_columns(xs, ys);
+        self.bounds.include_xy(XY::new(min_x, min_y));
+        self.bounds.include_xy(XY::new(max_x, max_y));
         // One pass stages segments, bounds, AND the monotone runs (a run
         // extends while the quadrant signs hold; zero-length segments
         // isolate; lines never chain into each other — see the kernel's
@@ -80,8 +83,6 @@ impl LineworkChains {
             if sx == 0 && sy == 0 {
                 continue; // zero-length: removable stutter, never staged
             }
-            self.bounds.include_xy(XY::new(x0, y0));
-            self.bounds.include_xy(XY::new(x1, y1));
             self.segments.push(Segment {
                 start: Point::new_raw_xy(x0, y0).into(),
                 end: Point::new_raw_xy(x1, y1).into(),
@@ -203,7 +204,8 @@ impl LineworkChains {
         self.spans.len()
     }
 
-    /// The segment ordinals of one staged line, if it contains a segment.
+    /// The segment ordinals of one staged line, or `None` when nothing of it
+    /// survived staging.
     pub(crate) fn line_span(&self, line: usize) -> Option<std::ops::Range<usize>> {
         let span = &self.spans[line];
         (span.count > 0).then(|| span.first as usize..(span.first + span.count) as usize)
@@ -236,3 +238,4 @@ impl LineworkChains {
         }
     }
 }
+

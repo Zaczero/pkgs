@@ -80,6 +80,7 @@ pub(super) fn h3_tile(
         )
     })?;
     let mut cells = Vec::new();
+    #[expect(clippy::iter_over_hash_type, reason = "the cells are sorted before they leave")]
     for cell in coverage {
         crate::boundary::try_push_vec(&mut cells, TiledCell { cell })
             .map_err(|_| H3TileError::Allocation)?;
@@ -543,7 +544,7 @@ mod edge_trace_tests {
                 coordinates.point_at(0),
                 coordinates.point_at(1),
                 Resolution::Fifteen,
-            ) > 1_000_000
+            ) > u64::try_from(crate::grid::GRID_MAX_CELLS).unwrap()
         );
         let mut calls = 0;
         let error = visit_edge_cells(&coordinates, Resolution::Fifteen, |_| {

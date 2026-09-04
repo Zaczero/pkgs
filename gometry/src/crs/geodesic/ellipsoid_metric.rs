@@ -1,7 +1,8 @@
+use crate::crs::geodesic;
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    DirectGeodesic, IntersectSolver, InverseGeodesic, LowerBoundKernel, cached_lower_bound_kernel,
+    DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel, cached_lower_bound_kernel,
     checked_geodesic_segment, geodesic_foot_on_segment, geodesic_locate_on_segment,
     geodesic_point_to_segment, geodesic_point_within_segment,
     geodesic_segment_intersection_with_solver, interpolate_optional_ordinate,
@@ -109,6 +110,7 @@ impl<'a> EllipsoidMetric<'a> {
             .expect("geographic metric received an admitted point")
     }
 
+    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
     fn to_geodesic_segment(&self, segment: GeodesicSegment) -> GeodesicSegment {
         GeodesicSegment {
             start: self.to_geodesic_point(segment.start),
@@ -188,12 +190,12 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
                 "geodesic segment intersection is supported only for flattening in [-1/4, 1/5]",
             ));
         }
-        let first = crate::crs::geodesic::checked_geodesic_segment(
+        let first = geodesic::checked_geodesic_segment(
             self.geodesic,
             self.to_geodesic_point(a),
             self.to_geodesic_point(b),
         )?;
-        let second = crate::crs::geodesic::checked_geodesic_segment(
+        let second = geodesic::checked_geodesic_segment(
             self.geodesic,
             self.to_geodesic_point(c),
             self.to_geodesic_point(d),
@@ -211,10 +213,10 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
                 |(first, second)| {
                     (
                         self.frame
-                            .from_geodesic_point(first)
+                            .point_from_geodesic(first)
                             .expect("geodesic witness is finite"),
                         self.frame
-                            .from_geodesic_point(second)
+                            .point_from_geodesic(second)
                             .expect("geodesic witness is finite"),
                     )
                 },
@@ -232,6 +234,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         )
     }
 
+    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
     fn interpolate(&self, a: Point, b: Point, fraction: f64) -> Point {
         if fraction == 0.0 {
             return a;
@@ -265,7 +268,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         )
         .expect("geodesic interpolation is finite");
         self.frame
-            .from_geodesic_point(point)
+            .point_from_geodesic(point)
             .expect("geodesic interpolation is finite")
     }
 
@@ -298,7 +301,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         Ok(GeodesicSegmentWitness {
             foot: self
                 .frame
-                .from_geodesic_point(witness.foot)
+                .point_from_geodesic(witness.foot)
                 .expect("geodesic witness is finite"),
             ..witness
         })

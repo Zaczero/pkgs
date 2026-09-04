@@ -8,6 +8,7 @@ use pyo3::types::PyAny;
 use crate::{HeapSize, PyGeometry, Typed, exact_geometry, expected_geometry_or_array};
 // --- PreparedGeometry #[pymethods] (moved from crate root) ---
 
+#[expect(clippy::used_underscore_items, reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice")]
 /// Rebuild a pickled `PreparedGeometry` by re-preparing its geometry
 /// (internal; see ``PreparedGeometry.__reduce__``).
 #[pyfunction]

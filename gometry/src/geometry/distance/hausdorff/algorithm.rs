@@ -197,7 +197,7 @@ impl HausdorffScratch {
 
 thread_local! {
     static HAUSDORFF_SCRATCH: crate::scratch_pool::ScratchPool<HausdorffScratch> =
-        crate::scratch_pool::ScratchPool::new(HausdorffScratch::new());
+        const { crate::scratch_pool::ScratchPool::new(HausdorffScratch::new()) };
 }
 
 pub(crate) fn hausdorff_scratch() -> crate::scratch_pool::ScratchLease<HausdorffScratch> {
@@ -493,7 +493,7 @@ mod scratch_tests {
     #[test]
     fn algorithm_columns_are_aggregate_bounded_and_reused() {
         reserve(256);
-        let (_, allocations) = crate::test_support::allocation_count(|| reserve(256));
+        let ((), allocations) = crate::test_support::allocation_count(|| reserve(256));
         assert_eq!(allocations, 0);
 
         reserve(crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<(f64, f64)>() + 1);
@@ -503,9 +503,9 @@ mod scratch_tests {
         assert_eq!(empty.order_entries.capacity(), 0);
         drop(empty);
 
-        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        let ((), first_allocations) = crate::test_support::allocation_count(|| reserve(256));
         assert!(first_allocations > 0);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(256));
+        let ((), repeat_allocations) = crate::test_support::allocation_count(|| reserve(256));
         assert_eq!(repeat_allocations, 0);
     }
 }

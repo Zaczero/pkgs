@@ -25,7 +25,7 @@ pub(crate) fn geodesic_line_interpolate(
     ensure_geographic_domain_in_frame(frame, shape)?;
     let distance = Finite::try_new("distance", distance)?.get();
     let crs = normalize(crs)?;
-    with_geodesic_at(&crs, &state, |geodesic| {
+    with_geodesic_at(&crs, state, |geodesic| {
         let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(
@@ -58,7 +58,7 @@ pub(crate) fn geodesic_line_substring(
     let frame = geographic_metric_frame_at(crs, state)?;
     ensure_geographic_domain_in_frame(frame, shape)?;
     let crs = normalize(crs)?;
-    with_geodesic_at(&crs, &state, |geodesic| {
+    with_geodesic_at(&crs, state, |geodesic| {
         let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(
@@ -88,7 +88,7 @@ pub(crate) fn geodesic_line_locate(
     ensure_geographic_domain_in_frame(frame, shape)?;
     ensure_geographic_lonlat_in_frame(frame, point.x, point.y)?;
     let crs = normalize(crs)?;
-    with_geodesic_at(&crs, &state, |geodesic| {
+    with_geodesic_at(&crs, state, |geodesic| {
         let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let index = shape.geodesic_line_index(

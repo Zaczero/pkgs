@@ -166,12 +166,9 @@ pub(crate) unsafe extern "C" fn stream_get_schema(
         if private.is_null() {
             return -1;
         }
-        let schema = match (*private).schema.clone().into_schema() {
-            Ok(schema) => schema,
-            Err(_) => {
-                (*private).last_error = c"failed to materialize Arrow schema";
-                return -1;
-            },
+        let Ok(schema) = (*private).schema.clone().into_schema() else {
+            (*private).last_error = c"failed to materialize Arrow schema";
+            return -1;
         };
         ptr::write(out, *schema);
     }

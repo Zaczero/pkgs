@@ -484,7 +484,7 @@ impl Shape {
             )));
         }
         if measured.is_empty() {
-            return Ok(Shape::typed_empty(GeometryKind::of(self), self.axes()));
+            return Ok(Self::typed_empty(GeometryKind::of(self), self.axes()));
         }
         let output_axes = CoordinateAxes::new(HasZ(self.axes().has_z()), HasM(true));
         Ok(match self {

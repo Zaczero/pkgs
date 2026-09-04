@@ -1,3 +1,4 @@
+use crate::py::cells::h3;
 use crate::grid::spherical_arc::{H3BoundingWindow, h3_cell_contains_windows};
 use crate::py::cells::coverage_ops::SortedCells;
 use crate::py::cells::h3::register::build_coverage;
@@ -282,7 +283,7 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 /// (1, '872830828ffffff')
 #[pyfunction]
 #[pyo3(
-    signature = (geom, resolution, *, cell_rule = CellRule::Overlap, max_cells = 1_000_000),
+    signature = (geom, resolution, *, cell_rule = CellRule::Overlap, max_cells = crate::grid::GRID_MAX_CELLS),
     text_signature = "(geom, resolution, *, cell_rule='overlap', max_cells=1000000)"
 )]
 pub(super) fn h3_cover(
@@ -293,7 +294,7 @@ pub(super) fn h3_cover(
     #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
 ) -> PyResult<Py<PyAny>> {
     let max_cells = super::super::coverage_ops::parse_max_cells(max_cells)?;
-    let resolution = crate::py::cells::h3::parse_h3_resolution(resolution)?;
+    let resolution = h3::parse_h3_resolution(resolution)?;
     grid_cover_dispatch(
         py,
         geom,

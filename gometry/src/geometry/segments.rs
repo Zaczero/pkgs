@@ -503,22 +503,45 @@ pub(crate) fn clip_segment(
     rect: Bounds,
 ) -> Option<(XY, XY)> {
     let (start, end) = (start.into(), end.into());
-    if let Some(clipped) = clip_segment_axis_aligned(start, end, rect) {
-        return clipped;
+    match clip_segment_axis_aligned(start, end, rect) {
+        ClipVerdict::Declined => {},
+        decided => return decided.into_clip(),
     }
-    if let Some(clipped) = clip_segment_liang_barsky(start, end, rect) {
-        return clipped;
+    match clip_segment_liang_barsky(start, end, rect) {
+        ClipVerdict::Declined => {},
+        decided => return decided.into_clip(),
     }
     clip_segment_edge_bisection(start, end, rect)
 }
 
-#[cfg(test)]
-fn clip_segment_authority(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
-    clip_segment_axis_aligned(start, end, rect)
-        .unwrap_or_else(|| clip_segment_edge_bisection(start, end, rect))
+/// What a fast clip lane says about a segment: nothing (the next authority
+/// decides), a proved miss, or the clipped piece.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ClipVerdict {
+    Declined,
+    Disjoint,
+    Clipped(XY, XY),
 }
 
-fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> Option<Option<(XY, XY)>> {
+impl ClipVerdict {
+    /// The clip a decided verdict names; a declined one has none to give.
+    pub(super) const fn into_clip(self) -> Option<(XY, XY)> {
+        match self {
+            Self::Clipped(start, end) => Some((start, end)),
+            Self::Disjoint | Self::Declined => None,
+        }
+    }
+}
+
+#[cfg(test)]
+fn clip_segment_authority(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
+    match clip_segment_axis_aligned(start, end, rect) {
+        ClipVerdict::Declined => clip_segment_edge_bisection(start, end, rect),
+        decided => decided.into_clip(),
+    }
+}
+
+fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
     // Axis-aligned clamp: when the free span dwarfs the rect (±1e20 vs unit
     // box), parametric t for both edges collapses to the same value and
     // edge-hit reconstruction degenerates. Clamping the free ordinate keeps
@@ -526,44 +549,44 @@ fn clip_segment_axis_aligned(start: XY, end: XY, rect: Bounds) -> Option<Option<
     if same_topological_coordinate(start.y, end.y) {
         let y = start.y;
         if y < rect.miny() || y > rect.maxy() {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         let (lo, hi) = (start.x.min(end.x), start.x.max(end.x));
         if hi < rect.minx() || lo > rect.maxx() {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         let x0 = lo.max(rect.minx());
         let x1 = hi.min(rect.maxx());
         if same_topological_coordinate(x0, x1) {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         return if start.x <= end.x {
-            Some(Some((XY::new(x0, y), XY::new(x1, y))))
+            ClipVerdict::Clipped(XY::new(x0, y), XY::new(x1, y))
         } else {
-            Some(Some((XY::new(x1, y), XY::new(x0, y))))
+            ClipVerdict::Clipped(XY::new(x1, y), XY::new(x0, y))
         };
     }
     if same_topological_coordinate(start.x, end.x) {
         let x = start.x;
         if x < rect.minx() || x > rect.maxx() {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         let (lo, hi) = (start.y.min(end.y), start.y.max(end.y));
         if hi < rect.miny() || lo > rect.maxy() {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         let y0 = lo.max(rect.miny());
         let y1 = hi.min(rect.maxy());
         if same_topological_coordinate(y0, y1) {
-            return Some(None);
+            return ClipVerdict::Disjoint;
         }
         return if start.y <= end.y {
-            Some(Some((XY::new(x, y0), XY::new(x, y1))))
+            ClipVerdict::Clipped(XY::new(x, y0), XY::new(x, y1))
         } else {
-            Some(Some((XY::new(x, y1), XY::new(x, y0))))
+            ClipVerdict::Clipped(XY::new(x, y1), XY::new(x, y0))
         };
     }
-    None
+    ClipVerdict::Declined
 }
 
 fn clip_segment_edge_bisection(start: XY, end: XY, rect: Bounds) -> Option<(XY, XY)> {
@@ -659,7 +682,14 @@ fn clip_segment_edge_bisection(start: XY, end: XY, rect: Bounds) -> Option<(XY, 
 /// Liang-Barsky lane admitted only when every subtraction, ratio, and free-axis
 /// reconstruction has a finite, separated rounding cell. `None` declines to
 /// the edge-bisection authority; `Some(None)` is a proved disjoint segment.
-fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<(XY, XY)>> {
+fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> ClipVerdict {
+    liang_barsky_decided(start, end, rect).unwrap_or(ClipVerdict::Declined)
+}
+
+/// The lane's own answer, where `None` declines to the next authority so the
+/// error-bounded arithmetic can decline with `?`.
+#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
+fn liang_barsky_decided(start: XY, end: XY, rect: Bounds) -> Option<ClipVerdict> {
     #[derive(Clone, Copy)]
     enum Edge {
         MinX,
@@ -717,7 +747,7 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
         let q_error = q_error?;
         if p == 0.0 {
             match compare_with_error(q, q_error, 0.0, 0.0) {
-                Some(std::cmp::Ordering::Less) => return Some(None),
+                Some(std::cmp::Ordering::Less) => return Some(ClipVerdict::Disjoint),
                 Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => continue,
                 None => return None,
             }
@@ -725,7 +755,7 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
         let (ratio, ratio_error) = ratio_with_ulp_error(q, q_error, p, p_error)?;
         if p < 0.0 {
             match compare_with_error(ratio, ratio_error, upper, upper_error) {
-                Some(std::cmp::Ordering::Greater) => return Some(None),
+                Some(std::cmp::Ordering::Greater) => return Some(ClipVerdict::Disjoint),
                 Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Less) => {},
                 None => return None,
             }
@@ -740,7 +770,7 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
             }
         } else {
             match compare_with_error(ratio, ratio_error, lower, lower_error) {
-                Some(std::cmp::Ordering::Less) => return Some(None),
+                Some(std::cmp::Ordering::Less) => return Some(ClipVerdict::Disjoint),
                 Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {},
                 None => return None,
             }
@@ -756,20 +786,10 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
         }
     }
     if lower > upper {
-        return if compare_with_error(lower, lower_error, upper, upper_error)
-            == Some(std::cmp::Ordering::Greater)
-        {
-            Some(None)
-        } else {
-            None
-        };
+        return (compare_with_error(lower, lower_error, upper, upper_error) == Some(std::cmp::Ordering::Greater)).then_some(ClipVerdict::Disjoint);
     }
     if lower == upper {
-        return if lower_error == 0.0 && upper_error == 0.0 {
-            Some(None)
-        } else {
-            None
-        };
+        return (lower_error == 0.0 && upper_error == 0.0).then_some(ClipVerdict::Disjoint);
     }
     if lower_edge.is_some() && !(lower_error < lower && lower_error < 1.0 - lower) {
         return None;
@@ -814,7 +834,7 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
             (rect.minx(), rect.maxx())
         };
         let margin = (free_value - min).min(max - free_value);
-        if !(margin > free_error) {
+        if margin.partial_cmp(&free_error) != Some(std::cmp::Ordering::Greater) {
             return None;
         }
         Some(if x_fixed {
@@ -829,7 +849,7 @@ fn clip_segment_liang_barsky(start: XY, end: XY, rect: Bounds) -> Option<Option<
     let clipped_end = (upper == 1.0)
         .then_some(end)
         .map_or_else(|| point_at(upper, upper_error, upper_edge), Some)?;
-    Some(Some((clipped_start, clipped_end)))
+    Some(ClipVerdict::Clipped(clipped_start, clipped_end))
 }
 
 fn ulp_error(value: f64) -> Option<f64> {
@@ -852,6 +872,7 @@ fn subtraction_with_ulp_error(left: f64, right: f64) -> Option<(f64, f64)> {
     Some((value, ulp_error(value)?))
 }
 
+#[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
 fn compare_with_error(
     left: f64,
     left_error: f64,
@@ -880,6 +901,10 @@ fn compare_with_error(
     }
 }
 
+#[expect(
+    clippy::nonminimal_bool,
+    reason = "NaN must fall into the declined branch; the negated comparisons are what make it"
+)]
 fn ratio_with_ulp_error(
     numerator: f64,
     numerator_error: f64,

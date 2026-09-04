@@ -247,7 +247,11 @@ pub(crate) fn self_node_segments_sourced(
 }
 
 fn self_node_segments_sourced_unique(segments: &[Segment]) -> (Vec<Segment>, Vec<u32>) {
-    let NodingScan { events, overlaps_found, .. } = full_noding_events(segments);
+    let NodingScan {
+        events,
+        overlaps_found,
+        ..
+    } = full_noding_events(segments);
     if !overlaps_found {
         return split_by_events_sourced(segments, events);
     }
@@ -330,21 +334,33 @@ fn push_collinear_overlap_cuts(
 /// also reporting whether any collinear OVERLAP pair was seen (the trigger
 /// for the exactness pre-pass).
 pub(crate) fn full_noding_pass(segments: &[Segment]) -> (Vec<Segment>, bool) {
-    let NodingScan { events, overlaps_found, .. } = full_noding_events(segments);
+    let NodingScan {
+        events,
+        overlaps_found,
+        ..
+    } = full_noding_events(segments);
     (split_by_events(segments, events), overlaps_found)
 }
 
 /// What one pass of the candidate sweep learned about a segment pool.
 pub(in crate::geometry) struct NodingScan {
+    /// Interior cut points, per segment ordinal.
     pub(in crate::geometry) events: Vec<(u32, XY)>,
+    /// A collinear pair shared more than a point — an interior overlap, or two
+    /// identical segments.
     pub(in crate::geometry) overlaps_found: bool,
+    /// Two segments that are not consecutive in the pool met at a shared
+    /// endpoint: a vertex a dissolve would treat as a junction. Consecutive
+    /// segments share their chaining vertex by construction and are not
+    /// counted, whether or not they belong to one chain.
     pub(in crate::geometry) junctions_found: bool,
-    /// `(cut segment, point, landing segment)` for a vertex landing on an
-    /// interior cut, which a line dissolve must treat as a splitting node.
+    /// Every cut that is an endpoint of another segment landing on the cut
+    /// segment's interior, as `(cut ordinal, point, landing ordinal)` — the
+    /// events among `events` that a vertex reaches.
     pub(in crate::geometry) touches: Vec<(u32, XY, u32)>,
 }
 
-/// The cut events of [`full_noding_pass`], plus the collinear-overlap flag.
+/// The cut events of [`full_noding_pass`], plus what else the sweep saw.
 /// Also the noding front end of [`Arrangement::from_single_loop`], which
 /// replays [`split_by_events`]' ordering bit-for-bit without materializing
 /// the atomic segment soup.
@@ -376,10 +392,16 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> NodingSca
             || same_point(a.start, b.end)
             || same_point(a.end, b.start)
             || same_point(a.end, b.end);
+        // A shared endpoint between segments that are not consecutive is a
+        // junction whatever else the pair does — collinear pairs meeting end
+        // to end included.
         junctions_found |= shares_endpoint && right != left + 1;
         let collinear = orientations.right_start == Orientation::Collinear
             && orientations.right_end == Orientation::Collinear;
         if collinear {
+            // An identical pair shares its whole extent and cuts nothing; it is
+            // an overlap all the same, and the one a raw (undeduplicated) pool
+            // has to report.
             let identical = (same_point(a.start, b.start) && same_point(a.end, b.end))
                 || (same_point(a.start, b.end) && same_point(a.end, b.start));
             overlaps_found |= identical

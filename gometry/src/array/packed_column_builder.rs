@@ -26,24 +26,26 @@ impl PackedColumnBuilder {
             drop(xs);
             return Err(error);
         }
-        let mut zs = None;
-        if coords.zs().is_some() {
+        let zs = if coords.zs().is_some() {
             let mut values = Vec::new();
             if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
                 drop((xs, ys));
                 return Err(error);
             }
-            zs = Some(values);
-        }
-        let mut ms = None;
-        if coords.ms().is_some() {
+            Some(values)
+        } else {
+            None
+        };
+        let ms = if coords.ms().is_some() {
             let mut values = Vec::new();
             if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
                 drop((xs, ys, zs));
                 return Err(error);
             }
-            ms = Some(values);
-        }
+            Some(values)
+        } else {
+            None
+        };
         Ok(Self {
             xs,
             ys,
@@ -55,9 +57,7 @@ impl PackedColumnBuilder {
 
     fn try_reserve_columns(&mut self, additional: usize) -> CrateResult<()> {
         crate::boundary::try_reserve_vec(&mut self.xs, additional)?;
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.ys, additional) {
-            return Err(error);
-        }
+        crate::boundary::try_reserve_vec(&mut self.ys, additional)?;
         if let Some(zs) = &mut self.zs
             && let Err(error) = crate::boundary::try_reserve_vec(zs, additional)
         {

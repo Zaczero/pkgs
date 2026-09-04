@@ -3,6 +3,7 @@
 //! Wraps a cached pipeline for repeated coordinate transforms; reaches the FFI
 //! pipeline engine and helpers in the parent `crs` module via `use super::*`.
 
+use crate::crs::transform;
 use std::sync::Arc;
 
 use crate::crs::transform::{
@@ -482,7 +483,7 @@ impl TransformPlan {
             if let TopologyDomain::Geographic(frame) = self.target_domain {
                 let (west, east) = canonical_identity_longitudes(bounds.0, bounds.2, frame)?;
                 let [south, north] =
-                    crate::crs::transform::canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
+                    transform::canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
                 Ok((west, south, east, north))
             } else {
                 Ok(bounds)
@@ -536,7 +537,7 @@ impl TransformPlan {
             if let TopologyDomain::Geographic(frame) = self.target_domain {
                 let (west, east) = canonical_identity_longitudes(bounds.0, bounds.3, frame)?;
                 let [south, north] =
-                    crate::crs::transform::canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
+                    transform::canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
                 Ok((west, south, bounds.2, east, north, bounds.5))
             } else {
                 Ok(bounds)

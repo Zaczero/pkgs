@@ -1,4 +1,4 @@
-use crate::geometry::{AreaSign, HashMap, PointKey, XY};
+use crate::geometry::{FaceDecisionArea, HashMap, PointKey, XY};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
@@ -63,7 +63,7 @@ pub(crate) struct Face {
     /// every other constructor (winding consumers walk boundaries through
     /// [`Arrangement::region_rings`] instead).
     pub ring: Vec<XY>,
-    pub area_sign: AreaSign,
+    pub decision_area: FaceDecisionArea,
     pub component: u32,
 }
 

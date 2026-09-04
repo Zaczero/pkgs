@@ -347,11 +347,11 @@ mod tests {
                 state.rotate_left(29) & 0x7FEF_FFFF_FFFF_FFFF,
             ));
         }
-        for pair in values.chunks_exact(2) {
+        for pair in values.as_chunks::<2>().0 {
             let left = product(pair[0]);
             let right = product(pair[1]);
-            let left = &left[..1 + usize::from(left[1] != 0.0)];
-            let right = &right[..1 + usize::from(right[1] != 0.0)];
+            let left = &left[..=usize::from(left[1] != 0.0)];
+            let right = &right[..=usize::from(right[1] != 0.0)];
             let mut legacy = [0.0; 4];
             let legacy_len = old_area_sum(left, right, &mut legacy);
             let mut shared = [0.0; 4];

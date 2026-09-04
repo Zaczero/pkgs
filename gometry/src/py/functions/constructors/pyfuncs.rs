@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use crate::py::numpy;
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
@@ -228,13 +229,13 @@ fn try_points_from_arc_columns(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
     use pyo3::buffer::PyBuffer;
-    crate::py::numpy::reject_masked_array(x)?;
-    crate::py::numpy::reject_masked_array(y)?;
+    numpy::reject_masked_array(x)?;
+    numpy::reject_masked_array(y)?;
     if let Some(value) = z {
-        crate::py::numpy::reject_masked_array(value)?;
+        numpy::reject_masked_array(value)?;
     }
     if let Some(value) = m {
-        crate::py::numpy::reject_masked_array(value)?;
+        numpy::reject_masked_array(value)?;
     }
     // Real buffers only — never promote Sequence.__len__ to authority.
     let Ok(x_buffer) = PyBuffer::<f64>::get(x) else {
@@ -265,8 +266,7 @@ fn try_points_from_arc_columns(
     let y_len = y_buffer.item_count();
     if x_len != y_len {
         return Err(InvalidGeometryError::new_err(format!(
-            "x and y must have the same length, got {} and {}",
-            x_len, y_len,
+            "x and y must have the same length, got {x_len} and {y_len}",
         )));
     }
     let xs = coordinate_arc_values_from_buffer(py, &x_buffer)?;

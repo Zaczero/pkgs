@@ -175,7 +175,7 @@ fn for_each_part(
 ) -> pyo3::PyResult<()> {
     match shape {
         Shape::MultiPoint(points) => {
-            for point in points.iter() {
+            for point in points {
                 visit(bounds_envelope(Bounds::from_point(point)))?;
             }
         },

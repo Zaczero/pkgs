@@ -84,9 +84,9 @@ impl HausdorffTargetLike for SmallLineTarget {
         for (slot, &(x, y)) in std::iter::zip(out.iter_mut(), probes) {
             let mut best = f64::INFINITY;
             let mut witness = u32::MAX;
-            for index in 0..self.n_segments as usize {
+            for (index, &segment) in self.segments.iter().enumerate().take(self.n_segments as usize) {
                 let distance_squared =
-                    point_segment_distance_squared(Point::new_raw_xy(x, y), self.segments[index]);
+                    point_segment_distance_squared(Point::new_raw_xy(x, y), segment);
                 if distance_squared < best {
                     best = distance_squared;
                     witness = index as u32;

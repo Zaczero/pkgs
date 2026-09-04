@@ -137,7 +137,7 @@ fn plan_geometry_array_auto(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    if let Some(coords) = array.materialized_compact_point_coords()? {
+    if let Some(coords) = array.materialized_compact_point_coords() {
         return Ok(ArrowExportPlan {
             encoding: GeometryEncoding::Point,
             storage: StoragePlan::Coordinates(coords),

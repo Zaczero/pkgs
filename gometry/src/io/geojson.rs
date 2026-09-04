@@ -1,3 +1,4 @@
+use crate::boundary::metadata;
 use std::borrow::Cow;
 
 use serde_json::Value;
@@ -710,7 +711,7 @@ pub(crate) fn validate_legacy_geojson_crs(
             "legacy GeoJSON CRS member is not supported",
         ));
     };
-    if !crate::boundary::metadata::crs_labels_operationally_equal(&legacy_canonical, target)? {
+    if !metadata::crs_labels_operationally_equal(&legacy_canonical, target)? {
         return Err(IoError::geojson(format!(
             "legacy GeoJSON CRS member ({legacy_canonical}) conflicts with crs={target}"
         )));

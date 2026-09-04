@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use numpy::{PyUntypedArray, PyUntypedArrayMethods};
+use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyFloat, PyInt};
@@ -409,15 +409,12 @@ pub(crate) fn integer_values_exact(
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<i64>> {
     crate::py::numpy::reject_masked_array(value)?;
-    match collect_py_iter_exact(
+    collect_py_iter_exact(
         value,
         expected,
         |item| map_integer_item(&item, name),
         on_len,
-    ) {
-        Ok(values) => Ok(values),
-        Err(err) => Err(err),
-    }
+    )
 }
 
 /// Copy a C-contiguous `f64` buffer into a freshly allocated `Arc<[f64]>` —
@@ -492,7 +489,7 @@ fn strided_buffer_to_arc_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult
             crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
             // SAFETY: the reservation above guarantees `capacity >= len`, and
             // `MaybeUninit<f64>` is valid uninitialized.
-            unsafe { values.set_len(len) };
+            unsafe { values.set_len(len); }
             // ReadOnlyCell is transparent over T; treating each strided slot as
             // a cell matches PyBuffer::as_slice for the contiguous case.
             let base = buffer.buf_ptr().cast::<ReadOnlyCell<f64>>();
@@ -669,7 +666,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
         crate::try_reserve_vec(&mut values, n)?;
         // SAFETY: the reservation above guarantees `capacity >= n`, and
         // `MaybeUninit<f64>` is valid uninitialized.
-        unsafe { values.set_len(n) };
+        unsafe { values.set_len(n); }
         // Never form `&[f64]` over a buffer another free-threaded mutator may
         // write — load each element through ReadOnlyCell (non-atomic; producer
         // must stay quiescent for this finite capture).
@@ -959,10 +956,7 @@ fn coordinate_values_exact_with(
             "{name} must be a float or an iterable of finite floats"
         ))
     })?;
-    match collect_py_iter_exact_from_iter(value, iter, expected, |item| convert(&item), on_len) {
-        Ok(values) => Ok(values),
-        Err(err) => Err(err),
-    }
+    collect_py_iter_exact_from_iter(value, iter, expected, |item| convert(&item), on_len)
 }
 
 /// Reported sequence length when discoverable without draining a bare

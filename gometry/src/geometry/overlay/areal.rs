@@ -108,11 +108,11 @@ impl RetainScratch for ArealScratch {
 }
 
 thread_local! {
-    static AREAL_SCRATCH: ScratchPool<ArealScratch> = ScratchPool::new(ArealScratch {
+    static AREAL_SCRATCH: ScratchPool<ArealScratch> = const { ScratchPool::new(ArealScratch {
         segments: Vec::new(), tags: Vec::new(), segment_loop: Vec::new(), loop_anchor: Vec::new(),
         loop_ranges: Vec::new(), loop_operand: Vec::new(), loop_component: Vec::new(),
         probes: Vec::new(), probe_slots: Vec::new(), ranges: Vec::new(), boxes: Vec::new(),
-    });
+    }) };
 }
 
 fn areal_operand_inventory<P: AsRef<Polygon>>(polygons: &[P]) -> (usize, usize) {

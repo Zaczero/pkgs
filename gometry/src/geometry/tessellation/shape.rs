@@ -114,9 +114,8 @@ impl Shape {
                 .total_cmp(&right.x)
                 .then_with(|| left.y.total_cmp(&right.y))
         });
-        // Sweep-circle triangulation (delaunator: robust-predicate hull walk,
-        // the mapbox algorithm) straight over the unique vertices -- no geo
-        // conversion, no incremental-insertion engine.
+        // The exact engine takes the unique vertices as they are: no
+        // conversion, no proposal path, no repair afterwards.
         points
     }
 
@@ -416,6 +415,8 @@ impl Shape {
             .collect())
     }
 
+    /// The edges as one packed line column: what an array result stores, so
+    /// the Python lane never builds a line object per edge.
     pub(crate) fn voronoi_edge_column_budgeted(
         &self,
         tolerance: f64,
@@ -453,20 +454,15 @@ impl Shape {
             // Dimensional empties keep their declared axes on the boundary
             // sentinel, matching `exterior` (a Z empty polygon's boundary is
             // MULTILINESTRING Z EMPTY, not an XY collapse).
-            Self::Empty(GeometryKind::Point | GeometryKind::GeometryCollection, axes) => {
+            Self::Empty(GeometryKind::Point | GeometryKind::GeometryCollection |
+GeometryKind::MultiPoint, axes) => {
                 Self::typed_empty(GeometryKind::GeometryCollection, *axes)
             },
-            Self::Empty(GeometryKind::MultiPoint, axes) => {
-                Self::typed_empty(GeometryKind::GeometryCollection, *axes)
-            },
-            Self::Empty(GeometryKind::LineString, axes) => {
+            Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, axes) => {
                 Self::typed_empty(GeometryKind::MultiPoint, *axes)
             },
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, axes) => {
                 Self::typed_empty(GeometryKind::MultiLineString, *axes)
-            },
-            Self::Empty(GeometryKind::MultiLineString, axes) => {
-                Self::typed_empty(GeometryKind::MultiPoint, *axes)
             },
             Self::LineString(points) => line_boundary(points),
             Self::MultiLineString(lines) => multiline_boundary(lines),

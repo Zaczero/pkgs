@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::geometry::facet_bvh;
 use crate::geometry::distance::SQUARED_SPACE_MAX_MAGNITUDE;
 use crate::geometry::distance::hausdorff::{HausdorffFeature, sqrt_distance_squared};
 use crate::geometry::facet_bvh::{BVH_MIN_INDEXED_SEGMENTS, FacetBvh, PreparedLinework};
@@ -22,10 +24,10 @@ impl RetainScratch for QueryScratch {
 }
 
 thread_local! {
-    static QUERY_SCRATCH: ScratchPool<QueryScratch> = ScratchPool::new(QueryScratch {
+    static QUERY_SCRATCH: ScratchPool<QueryScratch> = const { ScratchPool::new(QueryScratch {
         dist: Vec::new(),
         witness: Vec::new(),
-    });
+    }) };
 }
 
 #[cfg(test)]
@@ -41,7 +43,7 @@ mod scratch_tests {
     #[test]
     fn query_columns_are_aggregate_bounded_and_reentrant() {
         reserve(1024);
-        let (_, allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        let ((), allocations) = crate::test_support::allocation_count(|| reserve(1024));
         assert_eq!(allocations, 0);
 
         let held = ScratchPool::checkout(&QUERY_SCRATCH);
@@ -55,15 +57,15 @@ mod scratch_tests {
         assert_eq!(empty.witness.capacity(), 0);
         drop(empty);
 
-        let (_, first_allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        let ((), first_allocations) = crate::test_support::allocation_count(|| reserve(1024));
         assert!(first_allocations > 0);
-        let (_, repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024));
+        let ((), repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024));
         assert_eq!(repeat_allocations, 0);
     }
 
     #[test]
     fn witness_indices_span_every_facet_in_flat_and_bvh_queries() {
-        let segment_count = crate::geometry::facet_bvh::FACET_SEGMENTS * 3 + 1;
+        let segment_count = facet_bvh::FACET_SEGMENTS * 3 + 1;
         let xs: Vec<f64> = (0..=segment_count).map(|index| index as f64).collect();
         let ys = vec![0.0; xs.len()];
         let probe = [(segment_count as f64 - 0.5, 1.0)];

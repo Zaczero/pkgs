@@ -8,7 +8,10 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
-use crate::geometry::exact_arith::{checked_dd_mul as double_double_mul, checked_two_product as two_product, dd_add as double_double_add, dd_sub as double_double_sub, two_sum};
+use crate::geometry::exact_arith::{
+    checked_dd_mul as double_double_mul, checked_two_product as two_product,
+    dd_add as double_double_add, dd_sub as double_double_sub, two_sum,
+};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Orientation, Point, axis_pow2_scale, orientation, point_distance,
 };

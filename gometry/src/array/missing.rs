@@ -165,7 +165,7 @@ impl ValidityMask {
         let parts = collected;
         let len = parts.iter().try_fold(0_usize, |total, (len, mask)| {
             if let Some(mask) = mask {
-                assert_eq!(*len, mask.len, "validity concat length must match mask");
+                debug_assert_eq!(*len, mask.len, "validity concat length must match mask");
             }
             total
                 .checked_add(*len)
@@ -383,7 +383,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{ValidityMask, union_many, union_pair};
-    use crate::heap_size::HeapSize;
+    use crate::heap_size::HeapSize as _;
 
     #[test]
     fn polarity_windows_gather_concat_and_trailing_bits() {

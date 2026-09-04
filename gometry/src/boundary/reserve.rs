@@ -252,12 +252,9 @@ impl<T> CsrBuilder<T> {
     /// used by packed representations whose physical value count differs from
     /// the logical row count (for example, four vertices per triangle).
     pub(crate) fn push_end(&mut self, end: usize) -> Result<()> {
-        let end = match i64::try_from(end) {
-            Ok(end) => end,
-            Err(_) => {
-                self.release();
-                return Err(ResourceError::SizeOverflow.into());
-            },
+        let Ok(end) = i64::try_from(end) else {
+            self.release();
+            return Err(ResourceError::SizeOverflow.into());
         };
         let last = *self
             .offsets
@@ -274,7 +271,7 @@ impl<T> CsrBuilder<T> {
         Ok(())
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.values.len()
     }
 
@@ -287,7 +284,7 @@ impl<T> CsrBuilder<T> {
         &self.values
     }
 
-    pub(crate) fn values_mut(&mut self) -> &mut Vec<T> {
+    pub(crate) const fn values_mut(&mut self) -> &mut Vec<T> {
         &mut self.values
     }
 
@@ -631,12 +628,9 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
         let text: &str = item
             .extract()
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
-        let owned = match try_string_from_str(text) {
-            Ok(owned) => owned,
-            Err(()) => {
-                drop(out);
-                return Err(string_alloc_error());
-            },
+        let Ok(owned) = try_string_from_str(text) else {
+            drop(out);
+            return Err(string_alloc_error());
         };
         if try_reserve_next_raw(&mut out).is_err() {
             drop(owned);

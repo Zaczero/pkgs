@@ -47,19 +47,24 @@ impl ProjDiagnostic {
 }
 
 #[cfg(test)]
+type ContextObservation = std::sync::Arc<std::sync::Mutex<Option<(u64, Option<Vec<String>>)>>>;
+#[cfg(test)]
+type ContextCreationHook = (
+    std::sync::Arc<std::sync::Barrier>,
+    std::sync::Arc<std::sync::Barrier>,
+    Option<ContextObservation>,
+);
+#[cfg(test)]
 thread_local! {
-    static CONTEXT_CREATION_HOOK: std::cell::RefCell<Option<(
-        std::sync::Arc<std::sync::Barrier>,
-        std::sync::Arc<std::sync::Barrier>,
-        Option<std::sync::Arc<std::sync::Mutex<Option<(u64, Option<Vec<String>>)>>>>,
-    )>> = const { std::cell::RefCell::new(None) };
+    static CONTEXT_CREATION_HOOK: std::cell::RefCell<Option<ContextCreationHook>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(super) fn install_context_creation_state_hook(
     entered: std::sync::Arc<std::sync::Barrier>,
     resume: std::sync::Arc<std::sync::Barrier>,
-    observed: std::sync::Arc<std::sync::Mutex<Option<(u64, Option<Vec<String>>)>>>,
+    observed: ContextObservation,
 ) {
     CONTEXT_CREATION_HOOK.with(|hook| *hook.borrow_mut() = Some((entered, resume, Some(observed))));
 }
@@ -116,7 +121,7 @@ impl ProjContext {
     }
 
     pub(crate) fn diagnostic_ptr(&self) -> *mut std::ffi::c_void {
-        self.diagnostic.as_ref() as *const ProjDiagnostic as *mut std::ffi::c_void
+        std::ptr::from_ref::<ProjDiagnostic>(self.diagnostic.as_ref()) as *mut std::ffi::c_void
     }
 
     pub(crate) fn clear_diagnostic(&self) {

@@ -307,8 +307,8 @@ pub(crate) fn pair_distance_planar(
     to_metre: f64,
     a: &PreparedPlan,
     b: &PreparedPlan,
-) -> crate::error::Result<f64> {
-    Ok(a.distance(b) * to_metre)
+) -> f64 {
+    a.distance(b) * to_metre
 }
 
 pub(crate) fn pair_distance_geodesic(

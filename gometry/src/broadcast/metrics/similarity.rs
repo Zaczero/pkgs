@@ -1,5 +1,6 @@
 //! Similarity metric parameter broadcasts and scalar CRS-aware thresholds.
 
+#![allow(clippy::similar_names, reason = "coordinate lanes are named by side and axis")]
 use crate::array::PackedStorage;
 use pyo3::types::PyAny;
 
@@ -106,9 +107,8 @@ impl SimilarityMode for HausdorffMode {
     ) -> crate::error::Result<Option<Vec<f64>>> {
         let identity = match storage {
             GeometryArrayStorage::Packed(PackedStorage::Lines { row_map, .. }) => row_map.is_identity(),
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            | GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
-            | GeometryArrayStorage::Mixed(_) => true,
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. } |
+PackedStorage::Polygons { .. }) | GeometryArrayStorage::Mixed(_) => true,
         };
         if !identity {
             return Ok(None);

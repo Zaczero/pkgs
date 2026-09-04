@@ -515,16 +515,18 @@ fn run_pair_join(
         };
         return visit(low as usize, high as usize);
     }
-    let a = RunChain {
-        pool,
-        run: a,
-        swapped,
-    };
-    let b = RunChain {
-        pool,
-        run: b,
-        swapped,
-    };
+    let (a, b) = (
+        RunChain {
+            pool,
+            run: a,
+            swapped,
+        },
+        RunChain {
+            pool,
+            run: b,
+            swapped,
+        },
+    );
     bisect_runs(&a, 0, a.len(), &b, 0, b.len(), visit)
 }
 
@@ -537,12 +539,12 @@ struct RunChain<'a> {
 }
 
 impl RunChain<'_> {
-    fn len(&self) -> u32 {
+    const fn len(&self) -> u32 {
         self.run.end - self.run.start
     }
 
     /// Pool ordinal of the segment at ascending position `position`.
-    fn ordinal(&self, position: u32) -> usize {
+    const fn ordinal(&self, position: u32) -> usize {
         if self.run.ascending(self.swapped) {
             (self.run.start + position) as usize
         } else {
@@ -551,7 +553,7 @@ impl RunChain<'_> {
     }
 
     /// Chain vertex at ascending position `position` (`0..=len`).
-    fn vertex(&self, position: u32) -> XY {
+    const fn vertex(&self, position: u32) -> XY {
         if self.run.ascending(self.swapped) {
             if position < self.len() {
                 self.pool[(self.run.start + position) as usize].start

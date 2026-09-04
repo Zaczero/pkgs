@@ -1,3 +1,4 @@
+use crate::boundary::geographic;
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
@@ -29,7 +30,7 @@ pub(crate) fn ensure_geographic_domain_in_frame(
             });
             invalid.map_or_else(
                 || crate::geometry::GeometryErrorKind::message(error.to_string()),
-                |point| crate::boundary::geographic::invalid_lonlat_error(point.x, point.y),
+                |point| geographic::invalid_lonlat_error(point.x, point.y),
             )
         })
 }
@@ -44,7 +45,7 @@ pub(crate) fn ensure_geographic_lonlat_in_frame(
         .canonicalize(lon)
         .and_then(|_| crate::geographic::Latitude::try_new(frame, lat))
         .map(|_| ())
-        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(lon, lat))
+        .map_err(|_| geographic::invalid_lonlat_error(lon, lat))
 }
 
 pub(crate) fn ensure_geographic_columns_in_frame(

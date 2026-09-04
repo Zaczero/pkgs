@@ -3,6 +3,7 @@
 //! invalidation, `cache_info`, and the `with_proj_pipeline`/
 //! `with_proj_operation` cached accessors. Reached via `use super::*`.
 
+use crate::crs::runtime;
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
@@ -301,7 +302,7 @@ pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {
 
 pub(crate) fn cache_info() -> CacheInfo {
     let state = runtime_state_snapshot().unwrap_or_else(|_| {
-        crate::crs::runtime::runtime_state_lock()
+        runtime::runtime_state_lock()
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

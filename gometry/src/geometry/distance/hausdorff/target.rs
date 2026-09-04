@@ -158,11 +158,8 @@ impl SmallLineTarget {
 pub(crate) fn small_line_target_distance_squared(target: &SmallLineTarget, point: XY) -> f64 {
     let probe = Point::new_raw_xy(point.x, point.y);
     let mut best = f64::INFINITY;
-    for index in 0..target.n_segments as usize {
-        best = best.min(point_segment_distance_squared(
-            probe,
-            target.segments[index],
-        ));
+    for &segment in &target.segments[..target.n_segments as usize] {
+        best = best.min(point_segment_distance_squared(probe, segment));
     }
     best
 }
@@ -226,8 +223,7 @@ pub(crate) fn collect_hausdorff_segment_params_small_culled(
         let length = sqrt_distance_squared(dx * dx + dy * dy);
         Some(sqrt_distance_squared(cmax_sq) + length)
     });
-    for index in 0..target.n_segments as usize {
-        let segment = target.segments[index];
+    for &segment in target.segments.iter().take(target.n_segments as usize) {
         if prune_margin.is_some_and(|margin| {
             hausdorff_feature_bbox_disjoint_from_expanded_source(
                 ax,

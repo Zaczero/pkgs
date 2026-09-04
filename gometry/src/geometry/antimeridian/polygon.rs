@@ -233,9 +233,7 @@ fn chart_ring(
     let summary = RingSummary::try_new(frame, &geographic)
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
     let mut points = Vec::new();
-    points
-        .try_reserve_exact(geographic.len())
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    points.reserve_exact(geographic.len());
     if matches!(summary.domain, RingDomain::FullLongitude(_))
         && matches!(summary.turn, RingTurn::None)
     {
@@ -274,9 +272,7 @@ fn chart_polygon(
 ) -> Result<Polygon> {
     let shell = chart_ring(&polygon.shell, frame, longitude_scale, latitude_scale)?;
     let mut holes = Vec::new();
-    holes
-        .try_reserve_exact(polygon.holes.len())
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
+    holes.reserve_exact(polygon.holes.len());
     for hole in polygon.holes.iter() {
         holes.push(chart_ring(hole, frame, longitude_scale, latitude_scale)?);
     }
@@ -298,9 +294,7 @@ fn chart_shape(
         )?)),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::new();
-            members
-                .try_reserve_exact(polygons.members().len())
-                .map_err(|_| crate::error::ResourceError::Allocation)?;
+            members.reserve_exact(polygons.members().len());
             for member in polygons.members() {
                 members.push(match member {
                     MultiMember::Empty => MultiMember::Empty,

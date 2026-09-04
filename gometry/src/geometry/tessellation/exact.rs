@@ -639,7 +639,7 @@ fn incircle_filtered(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     determinant.sign()
 }
 
-pub(crate) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
+pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
     if let Some(sign) = incircle_float(a, b, c, d) {
         debug_assert_eq!(sign, incircle_dyadic(a, b, c, d), "float-filtered incircle disagrees");
         return sign;

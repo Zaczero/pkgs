@@ -1,6 +1,6 @@
 use crate::py::crs::{
     Bound, Py, PyAny, PyCrs, PyDict, PyResult, Python, crs, crs_factors, crs_geodesic,
-    crs_geodesic_direct, crs_geodesic_interpolate, crs_geoid_models, crs_identify,
+    crs_geodesic_direct, crs_geodesic_interpolate, crs_geoid_models,
     crs_non_deprecated, crs_same, pymethods,
 };
 #[pymethods]

@@ -114,7 +114,7 @@ pub(crate) fn to_wkt_with_options_at(
             version,
             options: options.clone(),
         },
-        |key, state| wkt_export(key, state),
+        wkt_export,
         state,
     )
 }
@@ -141,7 +141,7 @@ pub(crate) fn to_projjson_with_options_at(
         || CrsExportKind::ProjJson {
             options: options.clone(),
         },
-        |key, state| projjson_export(key, state),
+        projjson_export,
         state,
     )
 }
@@ -180,7 +180,7 @@ pub(crate) fn to_proj_at(
             version,
             options: options.clone(),
         },
-        |key, state| proj_string_export(key, state),
+        proj_string_export,
         state,
     )
 }

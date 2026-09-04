@@ -88,15 +88,12 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         } else {
             shape.bounds()
         };
-        return match bounds {
-            Some(bounds) => Ok(BoundingQueryRegion {
+        return bounds.map_or_else(|| Err(InvalidGeometryError::new_err(
+                "bounding cell requires a non-empty geometry",
+            )), |bounds| Ok(BoundingQueryRegion {
                 bounds,
                 crosses_antimeridian: shape.crosses_antimeridian(),
-            }),
-            None => Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            )),
-        };
+            }));
     }
     if let Some(array) = exact_geometry_array(value) {
         let crs = array.crs_str();
@@ -122,15 +119,12 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
         } else {
             shape.bounds()
         };
-        return match bounds {
-            Some(bounds) => Ok(BoundingQueryRegion {
+        return bounds.map_or_else(|| Err(InvalidGeometryError::new_err(
+                "bounding cell requires a non-empty geometry",
+            )), |bounds| Ok(BoundingQueryRegion {
                 bounds,
                 crosses_antimeridian: shape.crosses_antimeridian(),
-            }),
-            None => Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            )),
-        };
+            }));
     }
     let values = match crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
         GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
@@ -339,7 +333,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
         crate::try_collect_results(
             array
                 .row_operation()
-                .rows_with_missing(|| Vec::<u64>::new())
+                .rows_with_missing(Vec::<u64>::new)
                 .map(|row| {
                     let crate::array::ArrayRow::Present(row) = row else {
                         return Ok(Vec::new());
@@ -528,7 +522,7 @@ mod tests {
     fn grouped_cover_budget_is_cumulative_and_overflow_safe() {
         // `PyErr` rendering touches the interpreter even in a pure-Rust test.
         crate::test_support::initialize_python();
-        let limit = crate::grid::GRID_MAX_CELLS;
+        let limit = usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap();
         assert_eq!(
             checked_cover_batch_len(limit - 1, 1, Some(limit)).expect("at budget"),
             limit

@@ -673,7 +673,7 @@ pub(crate) fn array_crs_distances(
                             None::<fn(Bounds, Bounds) -> Option<f64>>,
                             f64::NAN,
                             |_row, left, right_data, _left_products, _right_products| {
-                                pair_distance_planar(to_metre.get(), left, right_data)
+                                Ok(pair_distance_planar(to_metre.get(), left, right_data))
                             },
                         )?,
                     )

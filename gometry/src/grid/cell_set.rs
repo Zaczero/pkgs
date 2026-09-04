@@ -17,11 +17,11 @@ impl<C: HierarchicalCell> CanonicalCellSet<C> {
     /// Normalize an arbitrary finite vector. Allocation failures are returned
     /// as resource errors rather than aborting through `Vec` growth.
     pub(crate) fn new(cells: Vec<C>) -> crate::error::Result<Self> {
-        Self::from_range_sorted(normalize_with_floor(cells, 0)?)
+        Ok(Self::from_range_sorted(normalize_with_floor(cells, 0)?))
     }
 
-    fn from_range_sorted(cells: Vec<C>) -> crate::error::Result<Self> {
-        Ok(Self { cells })
+    const fn from_range_sorted(cells: Vec<C>) -> Self {
+        Self { cells }
     }
 
     pub(crate) fn as_slice(&self) -> &[C] {
@@ -94,7 +94,7 @@ pub(crate) fn compact_with_floor<C: HierarchicalCell>(
     cells: Vec<C>,
     floor: u8,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
-    CanonicalCellSet::from_range_sorted(normalize_with_floor(cells, floor)?)
+    Ok(CanonicalCellSet::from_range_sorted(normalize_with_floor(cells, floor)?))
 }
 
 /// Expand every cell to `target` (each must be at or above it). Overlapping
@@ -144,7 +144,7 @@ fn uncompact_canonical<C: HierarchicalCell>(
             stack[children_start..].reverse();
         }
     }
-    CanonicalCellSet::from_range_sorted(out)
+    Ok(CanonicalCellSet::from_range_sorted(out))
 }
 
 /// Hierarchy-aware union: the normalized combination of both sets.
@@ -183,7 +183,7 @@ pub(crate) fn intersection<C: HierarchicalCell>(
             }
         }
     }
-    CanonicalCellSet::from_range_sorted(out)
+    Ok(CanonicalCellSet::from_range_sorted(out))
 }
 
 /// Hierarchy-aware difference of two NORMALIZED sets: cells partially
@@ -216,7 +216,7 @@ pub(crate) fn difference<C: HierarchicalCell>(
     for &cell in &left.cells {
         subtract(cell, &right.cells, &mut out)?;
     }
-    CanonicalCellSet::from_range_sorted(out)
+    Ok(CanonicalCellSet::from_range_sorted(out))
 }
 
 /// Whether a NORMALIZED set contains `cell` entirely (some member is an

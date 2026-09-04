@@ -122,9 +122,8 @@ pub(crate) fn py_index_object<'py>(
     if value.cast_exact::<PyBool>().is_ok() {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     }
-    let index = match value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? {
-        Some(index) => index,
-        None => return Err(PyTypeError::new_err(format!("{name} must be an integer"))),
+    let Some(index) = value.getattr_opt(pyo3::intern!(value.py(), "__index__"))? else {
+        return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     };
     match index.call0() {
         Ok(integer)

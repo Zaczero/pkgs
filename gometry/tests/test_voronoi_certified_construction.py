@@ -45,12 +45,21 @@ def _normalized_edges(
 
 
 def _outcome(points: list[tuple[float, float]], clip: str) -> tuple[str, object]:
+    # Cells are byte-identical between the lanes. Edges are the same segments,
+    # but each lane orders and directs its list by its own construction (the
+    # subdivision walk versus the dual's lexicographic canon), so they compare
+    # as a set of undirected segments.
     try:
         source = gm.MultiPoint(points)
+        segments = set()
+        for edge in source.voronoi_edges(clip=clip):
+            coords = [tuple(xy[:2]) for xy in edge.coords]
+            for start, end in zip(coords, coords[1:], strict=False):
+                segments.add((start, end) if start <= end else (end, start))
         return (
             'ok',
             tuple(cell.to_wkb() for cell in source.voronoi_polygons(clip=clip)),
-            tuple(edge.to_wkb() for edge in source.voronoi_edges(clip=clip)),
+            frozenset(segments),
         )
     except gm.InvalidGeometryError as error:
         return ('error', str(error))

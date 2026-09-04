@@ -159,7 +159,7 @@ impl Shape {
                 // JTS LineMerger contract, shared verbatim with the overlay line
                 // sink via [`merge_chains`].
                 let chains =
-                    merge_chains(lines.iter().map(|line| line.as_coords().clone()).collect());
+                    merge_chains(&lines.iter().map(|line| line.as_coords().clone()).collect::<Vec<_>>());
                 // A merge that produced nothing keeps the lineal type
                 // (`MULTILINESTRING EMPTY`), unlike the general narrowing.
                 if chains.is_empty() {
@@ -268,8 +268,8 @@ fn shared_paths_from_graph(graph: &TopologyGraph) -> (Vec<CoordSeq>, Vec<CoordSe
     same_path_direction.retain(|key, _| same_keys.contains(key));
 
     (
-        orient_shared_paths(merge_chains(same), &same_path_direction),
-        orient_shared_paths(merge_chains(opposite), &opposite_path_direction),
+        orient_shared_paths(merge_chains(&same), &same_path_direction),
+        orient_shared_paths(merge_chains(&opposite), &opposite_path_direction),
     )
 }
 

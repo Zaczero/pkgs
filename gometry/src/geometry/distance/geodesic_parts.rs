@@ -1,3 +1,4 @@
+use crate::geometry::distance;
 use crate::error::Result;
 use crate::geometry::distance::{
     CapGroup, GEODESIC_CAP_GROUP, RowProbe, collect_point_only_into, geodesic_ordered_rows_into,
@@ -451,7 +452,7 @@ pub(crate) fn geodesic_point_distance_with_parts_and_scratch(
     target_parts: &GeodesicParts,
     metric: &impl GeodesicMetric,
     bvh: Option<&GeodesicFacetBvh>,
-    scratch: &mut crate::geometry::distance::GeodesicScratch,
+    scratch: &mut distance::GeodesicScratch,
     stack: Option<&mut Vec<u32>>,
 ) -> Result<f64> {
     if let Some(bvh) = bvh {
@@ -607,7 +608,7 @@ pub(crate) fn geodesic_point_dwithin_with_parts_and_scratch(
     metric: &impl GeodesicMetric,
     distance: f64,
     bvh: Option<&GeodesicFacetBvh>,
-    scratch: &mut crate::geometry::distance::GeodesicScratch,
+    scratch: &mut distance::GeodesicScratch,
     stack: Option<&mut Vec<u32>>,
 ) -> Result<bool> {
     if let Some(bvh) = bvh {

@@ -558,9 +558,8 @@ sys.meta_path.insert(0, finder)"#
                 None,
             )?;
 
-            let missing = match pyarrow_module(py) {
-                Ok(_) => panic!("missing pyarrow should fail"),
-                Err(error) => error,
+            let Err(missing) = pyarrow_module(py) else {
+                panic!("missing pyarrow should fail");
             };
             assert!(missing.is_instance_of::<PyModuleNotFoundError>(py));
             assert!(missing.value(py).to_string().contains("install gometry"));
@@ -570,9 +569,8 @@ sys.meta_path.insert(0, finder)"#
                 .expect("finder is defined")
                 .unbind();
             finder.bind(py).setattr("mode", "broken")?;
-            let broken = match pyarrow_module(py) {
-                Ok(_) => panic!("broken pyarrow should fail"),
-                Err(error) => error,
+            let Err(broken) = pyarrow_module(py) else {
+                panic!("broken pyarrow should fail");
             };
             assert!(broken.is_instance_of::<PyRuntimeError>(py));
             assert!(
@@ -583,17 +581,15 @@ sys.meta_path.insert(0, finder)"#
             );
 
             finder.bind(py).setattr("mode", "abi")?;
-            let abi = match pyarrow_module(py) {
-                Ok(_) => panic!("ABI failure should fail"),
-                Err(error) => error,
+            let Err(abi) = pyarrow_module(py) else {
+                panic!("ABI failure should fail");
             };
             assert!(abi.is_instance_of::<PyImportError>(py));
             assert!(abi.value(py).to_string().contains("pyarrow ABI mismatch"));
 
             finder.bind(py).setattr("mode", "nested")?;
-            let nested = match pyarrow_module(py) {
-                Ok(_) => panic!("nested dependency failure should fail"),
-                Err(error) => error,
+            let Err(nested) = pyarrow_module(py) else {
+                panic!("nested dependency failure should fail");
             };
             assert!(nested.is_instance_of::<PyModuleNotFoundError>(py));
             assert!(

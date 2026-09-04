@@ -2,6 +2,7 @@
 //! the operation's input vertices and segments (`carry_ordinates`/`carry_each`
 //! and the `OrdinateSource` lookup), shared by overlay and decomposition.
 
+use crate::geometry::overlay;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::collections::{HashMap, HashMapExt as _};
@@ -85,10 +86,10 @@ impl OrdinateSource {
                 continue;
             }
             let graph = TopologyGraph::cartesian(shape);
-            for source in graph.source_points.iter() {
+            for source in &graph.source_points {
                 add_vertex(&mut result.vertices, source.point);
             }
-            for source in graph.source_edges.iter() {
+            for source in &graph.source_edges {
                 result.add_source_edge(source.start, source.end);
             }
         }
@@ -115,10 +116,10 @@ impl OrdinateSource {
 
     fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Self {
         let mut result = Self::new(inputs);
-        for source in graph.source_points.iter() {
+        for source in &graph.source_points {
             add_vertex(&mut result.vertices, source.point);
         }
-        for source in graph.source_edges.iter() {
+        for source in &graph.source_edges {
             if inputs
                 .get(source.source_row as usize)
                 .is_some_and(|shape| shape.has_z() || shape.has_m())
@@ -193,7 +194,7 @@ struct AxisValue {
 }
 
 impl AxisValue {
-    fn observe(&mut self, candidate: Option<f64>) {
+    const fn observe(&mut self, candidate: Option<f64>) {
         let Some(candidate) = candidate else {
             return;
         };
@@ -323,7 +324,7 @@ pub(crate) fn carry_direct_point_ordinates(
     strict: bool,
 ) -> Result<Shape> {
     let declared_axes =
-        crate::geometry::overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
+        overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(Shape::Point(point));
     }
@@ -406,7 +407,7 @@ pub(crate) fn carry_direct_overlay_ordinates(
         return Ok(output);
     }
     let source = OrdinateSource::build_direct(inputs);
-    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
 
@@ -503,7 +504,7 @@ pub(crate) fn carry_overlay_ordinates(
         return Ok(output);
     }
     let source = OrdinateSource::build(inputs);
-    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
 
@@ -518,7 +519,7 @@ pub(crate) fn carry_overlay_ordinates_from_graph(
         return Ok(output);
     }
     let source = OrdinateSource::build_from_graph(graph, inputs);
-    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }
 
