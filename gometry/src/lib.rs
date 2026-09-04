@@ -14,6 +14,14 @@
     clippy::arbitrary_source_item_ordering,
     reason = "cohesive item layout is clearer than a mandated declaration order here"
 )]
+#![allow(
+    clippy::redundant_closure_for_method_calls,
+    reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
+)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "a flow reads best in one place; the long functions here are single pipelines whose phases share state, and splitting them would smear one operation across helpers"
+)]
 #![deny(clippy::unreadable_literal, clippy::redundant_clone)]
 #![feature(portable_simd, trusted_len)]
 
@@ -163,7 +171,7 @@ use py::support::{
     require_locate_point, require_locate_points, resolve_line_metric, rings,
     validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
     validate_distance, validate_distance_arg, validate_equals_exact_tolerance,
-    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations, voronoi_flatten,
+    validate_max_segment_length, validate_nearest_k, validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten,
     wrapped_box,
 };
 use pyo3::buffer::PyBuffer;

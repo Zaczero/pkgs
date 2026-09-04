@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original,
+    CoordSeq, CsrOffsetColumn, GeodesicMetric as _, GeometryErrorKind, Point, PointKey, VertexProvenance, emit_from_original,
     shape_from_open_hull, smallest_enclosing_circle,
 };
 use crate::py::support::{
@@ -123,6 +123,29 @@ pub(crate) fn owned_voronoi_boundary(
 /// `voronoi_edges` × scalar / array): resolve `tolerance` and the clip
 /// boundary once against the subject frame, run the per-shape diagram
 /// `kernel`, and flatten the cells into one mixed array carrying that frame.
+/// Run one Voronoi kernel over every input shape outside the interpreter
+/// lock, one budget for the whole call. The boundary and shapes are fully
+/// admitted Rust values by then; Python objects exist only after reattachment.
+fn voronoi_outputs<T: Send>(
+    py: Python<'_>,
+    shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
+    frame: &Frame,
+    tolerance: f64,
+    clip: &VoronoiClipInput,
+    operation: &'static str,
+    kernel: fn(&Shape, f64, VoronoiBoundary<'_>, &mut crate::geometry::ExpansionBudget) -> Result<T>,
+) -> PyResult<Vec<T>> {
+    let boundary = owned_voronoi_boundary(py, clip, frame, operation)?;
+    let shapes = shapes.collect::<Vec<_>>();
+    Ok(py.detach(move || {
+        let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
+        shapes
+            .iter()
+            .map(|shape| kernel(shape, tolerance, boundary.as_borrowed(), &mut budget))
+            .collect::<Result<Vec<T>>>()
+    })?)
+}
+
 pub(crate) fn voronoi_flatten(
     py: Python<'_>,
     shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
@@ -137,25 +160,45 @@ pub(crate) fn voronoi_flatten(
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Shape>>,
 ) -> PyResult<PyGeometryArray> {
-    let boundary = owned_voronoi_boundary(py, clip, &frame, operation)?;
-    // The boundary and shapes are now fully admitted Rust values. Keep all
-    // tessellation and output-shape construction outside the interpreter lock;
-    // Python objects are created only by `from_shapes` after reattachment.
-    let shapes = shapes.collect::<Vec<_>>();
-    let cells = py.detach(move || {
-        let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
-        let mut cells = Vec::new();
-        for shape in &shapes {
-            cells.extend(kernel(
-                shape,
-                tolerance,
-                boundary.as_borrowed(),
-                &mut budget,
-            )?);
-        }
-        Ok::<_, crate::error::Error>(cells)
-    })?;
-    Ok(PyGeometryArray::from_shapes(cells, frame))
+    let cells = voronoi_outputs(py, shapes, &frame, tolerance, clip, operation, kernel)?;
+    Ok(PyGeometryArray::from_shapes(cells.into_iter().flatten().collect(), frame))
+}
+
+/// Voronoi edges straight into packed line storage: the kernel hands back one
+/// XY column per input shape and the columns concatenate once.
+pub(crate) fn voronoi_edges_flatten(
+    py: Python<'_>,
+    shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
+    frame: Frame,
+    tolerance: f64,
+    clip: &VoronoiClipInput,
+) -> PyResult<PyGeometryArray> {
+    let columns = voronoi_outputs(
+        py,
+        shapes,
+        &frame,
+        tolerance,
+        clip,
+        "voronoi_edges",
+        Shape::voronoi_edge_column_budgeted,
+    )?;
+    let mut merged: Option<(CoordSeq, CsrOffsetColumn)> = None;
+    for (coords, offsets) in columns {
+        merged = Some(match merged {
+            None => (coords, offsets),
+            Some((prefix_coords, prefix_offsets)) => {
+                let coords = prefix_coords
+                    .concat(&coords)
+                    .ok_or_else(|| GeometryErrorKind::message("Voronoi edge columns disagree on axes"))?;
+                let offsets = CsrOffsetColumn::rebase_concat_validated(&prefix_offsets, &offsets, coords.len())?;
+                (coords, offsets)
+            },
+        });
+    }
+    Ok(match merged {
+        Some((coords, offsets)) if !coords.is_empty() => PyGeometryArray::packed_lines(coords, offsets, frame),
+        _ => PyGeometryArray::from_shapes(Vec::new(), frame),
+    })
 }
 
 pub(crate) fn py_polygonize_full(

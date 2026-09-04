@@ -10,7 +10,7 @@ use crate::geometry::tessellation::{
     triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
+    AxisFrame, CoordSeq, CsrOffsetColumn, Dimension, ExpansionBudget, GeometryErrorKind, GeometryKind, HashSet,
     Point, PointKey, Polygon, PolygonizeFull, Ring, Segment, Shape, TopologyGraph, VoronoiBoundary,
     carry_each, carry_each_rows, empty_geometry, line_segments,
 };
@@ -408,26 +408,41 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
+        Ok(self
+            .voronoi_edges_raw(tolerance, boundary, budget)?
+            .into_line_seqs()?
+            .into_iter()
+            .map(Self::LineString)
+            .collect())
+    }
+
+    pub(crate) fn voronoi_edge_column_budgeted(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<(CoordSeq, CsrOffsetColumn)> {
+        self.voronoi_edges_raw(tolerance, boundary, budget)?.into_line_column()
+    }
+
+    fn voronoi_edges_raw(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<voronoi_dcel::EmbeddedEdges> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let canonical = canonical_voronoi_sites(self.unique_xy_points(), tolerance);
         if canonical.len() < 2 {
-            return Ok(Vec::new());
+            return Ok(voronoi_dcel::EmbeddedEdges::Chains(Vec::new()));
         }
         let points: Vec<_> = canonical.iter().map(|site| site.point).collect();
         if monotone_chain_hull(&points).len() >= 3 {
-            return Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?
-                .into_edges()
-                .into_line_seqs()?
-                .into_iter()
-                .map(Self::LineString)
-                .collect());
+            return Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?.into_edges());
         }
-        Ok(
-            voronoi_dcel::build_collinear_edges(&canonical, boundary, budget)?
-                .into_iter()
-                .map(Self::LineString)
-                .collect(),
-        )
+        Ok(voronoi_dcel::EmbeddedEdges::Chains(voronoi_dcel::build_collinear_edges(
+            &canonical, boundary, budget,
+        )?))
     }
 
     pub fn boundary(&self) -> Result<Self> {
