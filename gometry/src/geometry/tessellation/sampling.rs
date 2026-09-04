@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::geometry::tessellation::polygon_triangles;
-use crate::geometry::{Coordinates as _, GeometryErrorKind, Point, Shape};
+use crate::geometry::{Coordinates as _, Point, Shape};
 
 /// A common power-of-two factor that keeps weight products finite for
 /// huge-but-valid coordinates (exact in binary floating point; weights
@@ -38,11 +38,7 @@ pub(crate) fn sample_weighted<T>(
     }
     let mut state = seed;
     let mut points = Vec::new();
-    points.try_reserve_exact(count).map_err(|_| {
-        GeometryErrorKind::message(format!(
-            "sample_points could not allocate {count} output points"
-        ))
-    })?;
+    points.reserve_exact(count);
     for _ in 0..count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative

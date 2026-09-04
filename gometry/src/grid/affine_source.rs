@@ -771,14 +771,14 @@ impl CompactLimbs {
             },
             Self::Inline { limbs, len } => {
                 let mut expanded = Vec::new();
-                expanded.try_reserve(required).ok()?;
+                expanded.reserve(required);
                 expanded.resize(required, 0.0);
                 expanded[..usize::from(*len)].copy_from_slice(&limbs[..usize::from(*len)]);
                 *self = Self::Heap(expanded);
             },
             Self::Heap(limbs) => {
                 let additional = required.saturating_sub(limbs.len());
-                limbs.try_reserve(additional).ok()?;
+                limbs.reserve(additional);
                 if limbs.len() < required {
                     limbs.resize(required, 0.0);
                 } else {
@@ -813,7 +813,7 @@ impl CompactLimbs {
             }),
             Self::Heap(limbs) => {
                 let mut clone = Vec::new();
-                clone.try_reserve(limbs.len()).ok()?;
+                clone.reserve(limbs.len());
                 clone.extend_from_slice(limbs);
                 Some(Self::Heap(clone))
             },
@@ -1552,7 +1552,7 @@ impl LiftedRingFill {
             None
         } else {
             let mut latitudes = Vec::new();
-            latitudes.try_reserve(chain.vertices.len()).ok()?;
+            latitudes.reserve(chain.vertices.len());
             latitudes.extend(chain.vertices.iter().map(|vertex| vertex.latitude));
             // Closed chains retain their repeated first vertex, so adjacent
             // spans include the represented closing edge without a synthetic
@@ -1781,7 +1781,7 @@ impl PeriodicParityBuckets {
             return None;
         }
         let mut events = Vec::new();
-        events.try_reserve_exact(length).ok()?;
+        events.reserve_exact(length);
         events.resize(length, false);
         Some(Self {
             first,
@@ -2534,8 +2534,8 @@ impl LiftedChain {
         }
         let mut vertices = Vec::new();
         let mut edges = Vec::new();
-        vertices.try_reserve(points.len()).ok()?;
-        edges.try_reserve(points.len().saturating_sub(1)).ok()?;
+        vertices.reserve(points.len());
+        edges.reserve(points.len().saturating_sub(1));
         vertices.push(LiftedVertex {
             longitude: LiftedLongitude {
                 raw: points[0].0,
@@ -2754,7 +2754,7 @@ impl SymbolicAffineEdge {
         kind: LiftKind,
     ) -> Option<Self> {
         let mut parameters = Vec::new();
-        parameters.try_reserve(8).ok()?;
+        parameters.reserve(8);
         parameters.push(ExactParentParameter::start()?);
         parameters.push(ExactParentParameter::end()?);
         let mut result = Self {
@@ -2838,7 +2838,7 @@ impl SymbolicAffineEdge {
                 Ordering::Greater => {},
             }
         }
-        self.parameters.try_reserve(1).ok()?;
+        self.parameters.reserve(1);
         self.parameters.insert(insert_at, parameter);
         Some(())
     }
@@ -3187,7 +3187,7 @@ impl SymbolicAffineEdge {
 
     fn selection_pieces(&self, output: &mut Vec<SelectionAffinePiece>) -> Option<()> {
         for parameters in self.parameters.windows(2) {
-            output.try_reserve(1).ok()?;
+            output.reserve(1);
             output.push(
                 self.selection_piece(parameters[0].try_clone()?, parameters[1].try_clone()?)?,
             );
@@ -3213,7 +3213,7 @@ impl SymbolicAffineEdge {
             {
                 continue;
             }
-            output.try_reserve(1).ok()?;
+            output.reserve(1);
             output.push(AuthorityAffinePiece {
                 edge: self.key,
                 polygon: self.polygon,
@@ -3429,21 +3429,16 @@ fn authority_edge_proxy_envelopes(edge: &SymbolicAffineEdge) -> Option<[AABB<[f6
 /// useful index.
 fn build_authority_edge_index(
     edges: &[SymbolicAffineEdge],
-) -> Result<Option<BulkRTree<AuthorityEdgeProxy>>, TryReserveError> {
-    let Some(capacity) = edges.len().checked_mul(3) else {
-        return Ok(None);
-    };
+) -> Option<BulkRTree<AuthorityEdgeProxy>> {
+    let capacity = edges.len().checked_mul(3)?;
     let mut entries = Vec::new();
-    entries.try_reserve(capacity)?;
+    entries.reserve(capacity);
     for (edge, authority_edge) in edges.iter().enumerate() {
-        let Some(envelopes) = authority_edge_proxy_envelopes(authority_edge) else {
-            return Ok(None);
-        };
-        for envelope in envelopes {
+        for envelope in authority_edge_proxy_envelopes(authority_edge)? {
             entries.push(AuthorityEdgeProxy { edge, envelope });
         }
     }
-    Ok(Some(BulkRTree::bulk_load_with_params(entries)))
+    Some(BulkRTree::bulk_load_with_params(entries))
 }
 
 /// Normalize a query window into the same nearby sheet used by the proxy
@@ -3846,11 +3841,11 @@ impl GeographicCoverageSource {
         let mut authority_edges = Vec::new();
         let mut authority_pieces = Vec::new();
         let mut selection_edges = Vec::new();
-        lifted.try_reserve(chains.len())?;
-        ring_fills.try_reserve(chains.len())?;
-        authority_points.try_reserve(points.len())?;
-        selection_points.try_reserve(points.len())?;
-        authority_pieces.try_reserve(chains.len())?;
+        lifted.reserve(chains.len());
+        ring_fills.reserve(chains.len());
+        authority_points.reserve(points.len());
+        selection_points.reserve(points.len());
+        authority_pieces.reserve(chains.len());
         for input in &chains {
             append_lifted_chain(
                 input,
@@ -3860,7 +3855,7 @@ impl GeographicCoverageSource {
                 &mut authority_pieces,
                 &mut selection_edges,
                 &mut unknown,
-            )?;
+            );
         }
         for input in points {
             let (Some(longitude), Some(latitude)) = (
@@ -3882,7 +3877,7 @@ impl GeographicCoverageSource {
             append_source_point(&point, &mut selection_points, &mut unknown);
             authority_points.push(point);
         }
-        let authority_edge_index = build_authority_edge_index(&authority_edges)?;
+        let authority_edge_index = build_authority_edge_index(&authority_edges);
         Ok(Self {
             target,
             exact_axis_rect,
@@ -4524,10 +4519,10 @@ fn append_lifted_chain(
     authority_pieces: &mut Vec<AuthorityAffinePiece>,
     selection_edges: &mut Vec<SelectionAffinePiece>,
     unknown: &mut bool,
-) -> Result<(), TryReserveError> {
+) {
     let Some(chain) = LiftedChain::from_points(&input.points, input.closed) else {
         *unknown = true;
-        return Ok(());
+        return;
     };
     let chain_index = lifted.len();
     for (ordinal, edge_kind) in chain.edges.iter().copied().enumerate() {
@@ -4569,7 +4564,7 @@ fn append_lifted_chain(
         if edge.authority_pieces(authority_pieces).is_none() {
             *unknown = true;
         }
-        authority_edges.try_reserve(1)?;
+        authority_edges.reserve(1);
         authority_edges.push(edge);
     }
     debug_assert_eq!(chain_index, lifted.len());
@@ -4583,7 +4578,7 @@ fn append_lifted_chain(
         }
     }
     lifted.push(chain);
-    Ok(())
+
 }
 
 /// Retain the raw authority point even when its selection transform cannot be
@@ -4625,45 +4620,45 @@ fn collect_shape_chains(
 ) -> Result<(), TryReserveError> {
     match shape {
         Shape::Point(point) => {
-            push_point(*point, *component, 0, points)?;
+            push_point(*point, *component, 0, points);
             *component = component.saturating_add(1);
         },
         Shape::MultiPoint(input) => {
-            points.try_reserve(input.len())?;
+            points.reserve(input.len());
             for (ordinal, point) in input.points().enumerate() {
-                push_point(point, *component, ordinal, points)?;
+                push_point(point, *component, ordinal, points);
             }
             *component = component.saturating_add(1);
         },
         Shape::Empty(..) => {},
         Shape::LineString(line) => {
             if let Some(pole) = physical_pole_chain(line) {
-                push_point(pole, *component, 0, points)?;
+                push_point(pole, *component, 0, points);
             } else {
-                push_chain(line, false, *component, 0, output)?;
+                push_chain(line, false, *component, 0, output);
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiLineString(lines) => {
             for line in lines {
                 if let Some(pole) = physical_pole_chain(line) {
-                    push_point(pole, *component, 0, points)?;
+                    push_point(pole, *component, 0, points);
                 } else {
-                    push_chain(line, false, *component, 0, output)?;
+                    push_chain(line, false, *component, 0, output);
                 }
                 *component = component.saturating_add(1);
             }
         },
         Shape::Polygon(polygon) => {
             for (ring_index, ring) in polygon.rings().enumerate() {
-                push_chain(ring, true, *component, ring_index, output)?;
+                push_chain(ring, true, *component, ring_index, output);
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
                 for (ring_index, ring) in polygon.rings().enumerate() {
-                    push_chain(ring, true, *component, ring_index, output)?;
+                    push_chain(ring, true, *component, ring_index, output);
                 }
                 *component = component.saturating_add(1);
             }
@@ -4698,15 +4693,13 @@ fn push_point(
     component: usize,
     ordinal: usize,
     output: &mut Vec<SourcePointInput>,
-) -> Result<(), TryReserveError> {
-    output.try_reserve(1)?;
+) {
     output.push(SourcePointInput {
         component,
         ordinal,
         longitude: point.x,
         latitude: point.y,
     });
-    Ok(())
 }
 
 fn push_chain(
@@ -4715,18 +4708,14 @@ fn push_chain(
     component: usize,
     ring: usize,
     output: &mut Vec<SourceChainInput>,
-) -> Result<(), TryReserveError> {
-    let mut points = Vec::new();
-    points.try_reserve(coords.len())?;
-    points.extend(coords.points().map(|point| (point.x, point.y)));
-    output.try_reserve(1)?;
+) {
+    let points = coords.points().map(|point| (point.x, point.y)).collect();
     output.push(SourceChainInput {
         component,
         ring,
         points,
         closed,
     });
-    Ok(())
 }
 
 #[cfg(test)]

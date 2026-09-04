@@ -1604,11 +1604,7 @@ pub(crate) fn constrained_triangle_vertices<'a>(
     #[cfg(test)]
     note_constrained_output_reserve();
     let mut output = Vec::new();
-    output.try_reserve_exact(capacity).map_err(|_| {
-        GeometryErrorKind::triangulation(format!(
-            "could not allocate {capacity} constrained-triangulation coordinates"
-        ))
-    })?;
+    output.reserve_exact(capacity);
     for face in cdt.inner_faces() {
         if exterior.contains(&face.fix()) {
             continue;

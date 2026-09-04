@@ -40,7 +40,7 @@ impl PyGeometryArray {
                     } else {
                         value.into_py_any(py)?
                     };
-                    crate::try_push(&mut output, value)?;
+                    output.push(value);
                 }
                 let rows = output;
                 rows.into_py_any(py)
@@ -237,7 +237,7 @@ impl PyGeometryArray {
                 let issue = crate::geometry::validate_data_in_frame(&plan, domain);
                 Some(PyValidationReport { geometry, issue })
             };
-            crate::try_push(&mut reports, report)?;
+            reports.push(report);
         }
         Ok(reports)
     }

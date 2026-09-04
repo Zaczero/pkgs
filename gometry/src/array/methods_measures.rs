@@ -55,7 +55,7 @@ impl PyGeometryArray {
                 ))
             })?;
             self.ensure_concat_frame(&other, index)?;
-            crate::try_push(&mut borrowed, other)?;
+            borrowed.push(other);
         }
         let mut arrays = crate::try_vec_with_capacity(
             borrowed
@@ -63,9 +63,9 @@ impl PyGeometryArray {
                 .checked_add(1)
                 .ok_or_else(|| PyOverflowError::new_err("too many arrays to concatenate"))?,
         )?;
-        crate::try_push(&mut arrays, self)?;
+        arrays.push(self);
         for array in &borrowed {
-            crate::try_push(&mut arrays, &**array)?;
+            arrays.push(&**array);
         }
         if arrays.len() == 2 {
             self.concat_pair(arrays[1])
@@ -371,7 +371,7 @@ impl PyGeometryArray {
         let strictness = crate::geometry::Strictness::Lenient;
         let shapes = if let Some(multipoint) = self.packed_points_as_multipoint()? {
             let mut shapes = crate::try_vec_with_capacity(1)?;
-            crate::try_push(&mut shapes, multipoint)?;
+            shapes.push(multipoint);
             shapes
         } else {
             self.with_borrowed_shapes(|borrowed| {
@@ -429,7 +429,7 @@ impl PyGeometryArray {
             let mut kept = crate::try_vec_with_capacity(keys.len())?;
             for (key, missing) in keys.iter().zip(mask.iter()) {
                 if !missing {
-                    crate::try_push(&mut kept, key.clone())?;
+                    kept.push(key.clone());
                 }
             }
             let kept_list = pyo3::types::PyList::new(py, &kept)?;
@@ -474,17 +474,17 @@ impl PyGeometryArray {
                 equal
             };
             if let Some(index) = index {
-                crate::try_push(&mut group_shapes[index], shape.into_owned())?;
+                group_shapes[index].push(shape.into_owned());
             } else {
                 let index = groups.len();
-                crate::try_push(&mut groups, key.clone().unbind())?;
+                groups.push(key.clone().unbind());
                 let mut values = crate::try_vec_with_capacity(1)?;
-                crate::try_push(&mut values, shape.into_owned())?;
-                crate::try_push(&mut group_shapes, values)?;
+                values.push(shape.into_owned());
+                group_shapes.push(values);
                 if hashable {
                     hash_groups.set_item(key, index)?;
                 } else {
-                    crate::try_push(&mut unhashable_groups, index)?;
+                    unhashable_groups.push(index);
                 }
             }
         }
@@ -493,7 +493,7 @@ impl PyGeometryArray {
         let mut shapes = crate::try_vec_with_capacity(group_shapes.len())?;
         for group in group_shapes {
             let shape = py.detach(move || Shape::union_all_topo(&group, domain, strictness))?;
-            crate::try_push(&mut shapes, shape)?;
+            shapes.push(shape);
         }
         Ok((Self::from_shapes(shapes, frame), groups)
             .into_pyobject(py)?
@@ -856,7 +856,7 @@ impl PyGeometryArray {
         let mut shapes = crate::try_vec_with_capacity(total_rows)?;
         for array in arrays {
             for (_, shape) in array.present_shape_rows() {
-                crate::try_push(&mut shapes, shape.into_owned())?;
+                shapes.push(shape.into_owned());
             }
         }
         Ok(Self::from_shapes(shapes, first.frame.clone()).with_missing_mask(merged_mask))
@@ -882,10 +882,10 @@ impl PyGeometryArray {
             })?;
             let mut shapes = crate::try_vec_with_capacity(total_rows)?;
             for (_, shape) in self.present_shape_rows() {
-                crate::try_push(&mut shapes, shape.into_owned())?;
+                shapes.push(shape.into_owned());
             }
             for (_, shape) in other.present_shape_rows() {
-                crate::try_push(&mut shapes, shape.into_owned())?;
+                shapes.push(shape.into_owned());
             }
             return Ok(Self::from_shapes(shapes, self.frame.clone()));
         }
@@ -963,10 +963,10 @@ impl PyGeometryArray {
             .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))?;
         let mut shapes = crate::try_vec_with_capacity(total_rows)?;
         for (_, shape) in self.present_shape_rows() {
-            crate::try_push(&mut shapes, shape.into_owned())?;
+            shapes.push(shape.into_owned());
         }
         for (_, shape) in other.present_shape_rows() {
-            crate::try_push(&mut shapes, shape.into_owned())?;
+            shapes.push(shape.into_owned());
         }
         Ok(Self::from_shapes(shapes, self.frame.clone()))
     }

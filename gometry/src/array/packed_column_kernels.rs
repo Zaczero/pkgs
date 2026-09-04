@@ -17,7 +17,7 @@
 use std::num::NonZeroU32;
 
 use crate::array::packed_columns::{
-    LineColumns, PackedColumnError, PackedColumnResult, PackedColumns, PointColumns, PointRows,
+    LineColumns, PackedColumnResult, PackedColumns, PointColumns, PointRows,
     PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
 };
 use crate::array::storage_helpers::{
@@ -72,8 +72,8 @@ pub(crate) fn buffer_point_columns(
 
     let mut unit_x = Vec::new();
     let mut unit_y = Vec::new();
-    crate::try_reserve_vec(&mut unit_x, steps).map_err(PackedColumnError::Batch)?;
-    crate::try_reserve_vec(&mut unit_y, steps).map_err(PackedColumnError::Batch)?;
+    unit_x.reserve(steps);
+    unit_y.reserve(steps);
     let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
     let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
     for step in 0..steps {
@@ -83,8 +83,8 @@ pub(crate) fn buffer_point_columns(
                 sin_theta * cos_step + cos_theta * sin_step,
             );
         }
-        crate::try_push_vec(&mut unit_x, cos_theta).map_err(PackedColumnError::Batch)?;
-        crate::try_push_vec(&mut unit_y, sin_theta).map_err(PackedColumnError::Batch)?;
+        unit_x.push(cos_theta);
+        unit_y.push(sin_theta);
     }
 
     let XyColumns {
@@ -93,8 +93,8 @@ pub(crate) fn buffer_point_columns(
     } = points.physical_xy();
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    crate::try_reserve_vec(&mut xs, total).map_err(PackedColumnError::Batch)?;
-    crate::try_reserve_vec(&mut ys, total).map_err(PackedColumnError::Batch)?;
+    xs.reserve(total);
+    ys.reserve(total);
     let mut ring_offsets = CsrOffsetBuilder::new();
     let mut polygon_offsets = CsrOffsetBuilder::new();
     let mut ring_count = 0_usize;
@@ -108,13 +108,13 @@ pub(crate) fn buffer_point_columns(
                 if !x.is_finite() || !y.is_finite() {
                     return Ok(None);
                 }
-                crate::try_push_vec(&mut xs, x).map_err(PackedColumnError::Batch)?;
-                crate::try_push_vec(&mut ys, y).map_err(PackedColumnError::Batch)?;
+                xs.push(x);
+                ys.push(y);
             }
             let first = xs[xs.len() - steps];
             let first_y = ys[ys.len() - steps];
-            crate::try_push_vec(&mut xs, first).map_err(PackedColumnError::Batch)?;
-            crate::try_push_vec(&mut ys, first_y).map_err(PackedColumnError::Batch)?;
+            xs.push(first);
+            ys.push(first_y);
             ring_count += 1;
             ring_offsets
                 .push_end(xs.len(), i32::MAX as usize)
@@ -807,8 +807,8 @@ pub(crate) fn map_masked_point_columns_to_crs(
     let mut ys = Vec::new();
     let mut zs = coords.zs().map(|_| Vec::new());
     let mut ms = coords.ms().map(|_| Vec::new());
-    crate::try_reserve_vec(&mut xs, present_count)?;
-    crate::try_reserve_vec(&mut ys, present_count)?;
+    xs.reserve(present_count);
+    ys.reserve(present_count);
     if let Some(zs) = zs.as_mut() {
         crate::try_reserve_vec(zs, present_count)?;
     }
@@ -819,8 +819,8 @@ pub(crate) fn map_masked_point_columns_to_crs(
         let Some(physical) = physical else {
             continue;
         };
-        crate::try_push_vec(&mut xs, coords.xs()[physical])?;
-        crate::try_push_vec(&mut ys, coords.ys()[physical])?;
+        xs.push(coords.xs()[physical]);
+        ys.push(coords.ys()[physical]);
         if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
             crate::try_push_vec(output, source[physical])?;
         }
@@ -911,28 +911,28 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
             let rows = point_columns.rows();
             for (_, physical) in rows.cursor() {
                 let Some(physical) = physical else {
-                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
+                    values.push([f64::NAN; 4]);
                     continue;
                 };
                 let (x, y) = (xs[physical], ys[physical]);
-                crate::try_push_vec(&mut values, [x, y, x, y])?;
+                values.push([x, y, x, y]);
             }
         },
         PackedColumns::Lines(line_columns) => {
             for row in 0..line_columns.rows() {
                 if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
-                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
+                    values.push([f64::NAN; 4]);
                     continue;
                 }
                 let window = line_columns.row_window(row);
-                crate::try_push_vec(&mut values, row_bounds_values(xs, ys, window))?;
+                values.push(row_bounds_values(xs, ys, window));
             }
         },
         PackedColumns::Polygons(polygon_columns) => {
             let ring_offsets = polygon_columns.ring_offsets();
             for row in 0..polygon_columns.rows() {
                 if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
-                    crate::try_push_vec(&mut values, [f64::NAN; 4])?;
+                    values.push([f64::NAN; 4]);
                     continue;
                 }
                 let rings = polygon_columns.polygon_rings(row);
@@ -943,7 +943,7 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
                         ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize;
                     row_bounds_values(xs, ys, shell)
                 };
-                crate::try_push_vec(&mut values, bounds)?;
+                values.push(bounds);
             }
         },
     }

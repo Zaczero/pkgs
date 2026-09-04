@@ -1514,9 +1514,7 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
     edge.end.longitude.raw = f64::MAX;
     assert!(authority_edge_proxy_envelopes(&edge).is_none());
     assert!(
-        build_authority_edge_index(std::slice::from_ref(&edge))
-            .unwrap()
-            .is_none()
+        build_authority_edge_index(std::slice::from_ref(&edge)).is_none()
     );
 
     let source = GeographicCoverageSource {

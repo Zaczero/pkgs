@@ -658,7 +658,7 @@ impl PyGeometryArray {
         let Some(bounds) = bounds else {
             let mut keys = crate::try_vec_with_capacity(self.len())?;
             for _ in 0..self.len() {
-                crate::try_push(&mut keys, u64::MAX)?;
+                keys.push(u64::MAX);
             }
             return Ok(keys);
         };
@@ -671,7 +671,7 @@ impl PyGeometryArray {
                     .row()
                     .with_shape(|shape| kind.key(&frame, shape).unwrap_or(u64::MAX)),
             };
-            crate::try_push(&mut keys, key)?;
+            keys.push(key);
         }
         Ok(keys)
     }
@@ -689,7 +689,7 @@ impl PyGeometryArray {
         // geometry_at cache so repeated items()/arr[i] share ShapeData.
         let mut items = crate::try_vec_with_capacity(self.len())?;
         for index in 0..self.len() {
-            crate::try_push(&mut items, self.geometry_at(index))?;
+            items.push(self.geometry_at(index));
         }
         Ok(std::borrow::Cow::Owned(items))
     }

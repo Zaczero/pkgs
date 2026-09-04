@@ -147,11 +147,7 @@ impl Shape {
         let mut vertices = Vec::new();
         #[cfg(test)]
         note_delaunay_output_reserve();
-        vertices.try_reserve_exact(capacity).map_err(|_| {
-            GeometryErrorKind::triangulation(format!(
-                "could not allocate {capacity} Delaunay-triangulation coordinates"
-            ))
-        })?;
+        vertices.reserve_exact(capacity);
         let mut triangles = triangulation.triangles().to_vec();
         triangles.sort_unstable_by_key(|triangle| {
             let mut key = *triangle;

@@ -112,7 +112,7 @@ where
     let values = readonly.as_array();
     let mut out = crate::try_vec_with_capacity(values.len())?;
     for value in values.iter().copied() {
-        crate::try_push(&mut out, value)?;
+        out.push(value);
     }
     Ok(out)
 }
@@ -213,7 +213,7 @@ fn classify_and_collect_generic_sequence(
             if matches!(kind, FancyIndex::Invalid) {
                 return Ok(CollectedFancyIndex::Invalid);
             }
-            crate::try_push(&mut mask, bound.extract::<bool>()?)?;
+            mask.push(bound.extract::<bool>()?);
         } else {
             let integer = match crate::py_index_object("index", bound) {
                 Ok(integer) => integer,
@@ -266,9 +266,9 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
             let item = unsafe { tuple.get_item_unchecked(i) };
             let ptr = item.as_ptr();
             if ptr == true_ptr {
-                crate::try_push(&mut mask, true)?;
+                mask.push(true);
             } else if ptr == false_ptr {
-                crate::try_push(&mut mask, false)?;
+                mask.push(false);
             } else {
                 return Ok(CollectedFancyIndex::Invalid);
             }
@@ -765,7 +765,7 @@ impl PyGeometryArray {
             }
             let row = position as usize;
             if value.is_none() {
-                crate::try_push(&mut rows, (row, None))?;
+                rows.push((row, None));
                 continue;
             }
             let Some(geometry) = exact_geometry(&value) else {
@@ -777,7 +777,7 @@ impl PyGeometryArray {
             // The column keeps its own stored label; the scattered row only
             // has to name the same frame.
             self.frame.compatible(&geometry.frame, "_replace_at")?;
-            crate::try_push(&mut rows, (row, Some(geometry.shape.shape().clone())))?;
+            rows.push((row, Some(geometry.shape.shape().clone())));
         }
         // Packed identity XY points: copy ordinate columns once and patch
         // selected rows (cost ~O(n) memcpy of f64 columns, not per-row Shape).

@@ -308,7 +308,6 @@ pub(crate) fn segmentize_points_budgeted(
     subdivide_columns(
         points,
         placement,
-        "segmentize",
         |segment| length_of(segment).map(|length| segmentize_steps(length, max_segment_length)),
         budget,
     )
@@ -354,7 +353,6 @@ pub(crate) fn densify_points_budgeted_with_placement(
     subdivide_columns(
         points,
         placement,
-        "densify",
         |segment| Ok(densify_steps(segment, steps)),
         budget,
     )
@@ -431,29 +429,15 @@ struct SubdivisionColumns<'a> {
 }
 
 impl<'a> SubdivisionColumns<'a> {
-    fn new(
-        points: &'a CoordSeq,
-        placement: SegmentPlacement<'a>,
-        operation: &'static str,
-        total: usize,
-    ) -> Result<Self> {
-        let reserve = |column: &str| -> Result<Vec<f64>> {
-            let mut values = Vec::new();
-            values.try_reserve_exact(total).map_err(|_| {
-                GeometryErrorKind::message(format!(
-                    "{operation} could not allocate {total} output {column} ordinates"
-                ))
-            })?;
-            Ok(values)
-        };
-        Ok(Self {
+    fn new(points: &'a CoordSeq, placement: SegmentPlacement<'a>, total: usize) -> Self {
+        Self {
             points,
             placement,
-            xs: reserve("x")?,
-            ys: reserve("y")?,
-            zs: points.zs().map(|_| reserve("z")).transpose()?,
-            ms: points.ms().map(|_| reserve("m")).transpose()?,
-        })
+            xs: Vec::with_capacity(total),
+            ys: Vec::with_capacity(total),
+            zs: points.zs().map(|_| Vec::with_capacity(total)),
+            ms: points.ms().map(|_| Vec::with_capacity(total)),
+        }
     }
 
     fn finish(self) -> CoordSeq {
@@ -590,7 +574,6 @@ impl SubdivisionSink for SubdivisionColumns<'_> {
 pub(crate) fn subdivide_columns(
     points: &CoordSeq,
     placement: SegmentPlacement<'_>,
-    operation: &'static str,
     steps_for: impl Fn(Segment) -> Result<usize>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
@@ -615,7 +598,7 @@ pub(crate) fn subdivide_columns(
         // the input IS the output, share it.
         return Ok(points.clone());
     }
-    let mut output = SubdivisionColumns::new(points, placement, operation, total)?;
+    let mut output = SubdivisionColumns::new(points, placement, total);
     emit_subdivision(&steps, &mut output)?;
     Ok(output.finish())
 }

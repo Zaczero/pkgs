@@ -31,7 +31,7 @@ use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
 fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -> PyResult<Vec<T>> {
     let mut output = crate::try_vec_with_capacity(capacity)?;
     for value in values {
-        crate::try_push(&mut output, value)?;
+        output.push(value);
     }
     Ok(output)
 }
@@ -349,9 +349,9 @@ impl PyGeometryArray {
         for item in &raw_items {
             let missing = item.is_none();
             has_missing |= missing;
-            crate::try_push(&mut mask, missing)?;
+            mask.push(missing);
             if !missing {
-                crate::try_push(&mut present, item.clone())?;
+                present.push(item.clone());
             }
         }
         let explicit_crs = parse_crs(crs)?;
@@ -1062,7 +1062,7 @@ impl PyGeometryArray {
         match self.storage() {
             GeometryArrayStorage::Points { .. } => {
                 for _ in 0..self.len() {
-                    crate::try_push(&mut output, false)?;
+                    output.push(false);
                 }
             },
             GeometryArrayStorage::Lines {
@@ -1091,7 +1091,7 @@ impl PyGeometryArray {
             },
             GeometryArrayStorage::Mixed(_) => {
                 for shape in self.storage().iter_shapes() {
-                    crate::try_push(&mut output, shape.is_empty())?;
+                    output.push(shape.is_empty());
                 }
             },
         }
@@ -1140,7 +1140,7 @@ impl PyGeometryArray {
                 return Some((|| {
                     let mut values = crate::try_vec_with_capacity(self.len())?;
                     for _ in 0..self.len() {
-                        crate::try_push(&mut values, true)?;
+                        values.push(true);
                     }
                     Ok(values)
                 })());
@@ -1163,7 +1163,7 @@ impl PyGeometryArray {
             return Some((|| {
                 let mut values = crate::try_vec_with_capacity(mask.len())?;
                 for is_missing in mask.iter() {
-                    crate::try_push(&mut values, !is_missing)?;
+                    values.push(!is_missing);
                 }
                 Ok(values)
             })());
@@ -1192,7 +1192,7 @@ impl PyGeometryArray {
                                 _ => false,
                             },
                         };
-                        crate::try_push(&mut values, value)?;
+                        values.push(value);
                     }
                     Ok(values)
                 })());
@@ -1201,7 +1201,7 @@ impl PyGeometryArray {
                 let mut values = crate::try_vec_with_capacity(len)?;
                 for logical in 0..len {
                     let point = coords.point_at(physical_row(map, logical));
-                    crate::try_push(&mut values, point.x.is_finite() && point.y.is_finite())?;
+                    values.push(point.x.is_finite() && point.y.is_finite());
                 }
                 Ok(values)
             })());
@@ -1223,7 +1223,7 @@ impl PyGeometryArray {
         match self.storage() {
             GeometryArrayStorage::Points { .. } | GeometryArrayStorage::Lines { .. } => {
                 for _ in 0..self.len() {
-                    crate::try_push(&mut output, false)?;
+                    output.push(false);
                 }
             },
             GeometryArrayStorage::Polygons { .. } | GeometryArrayStorage::Mixed(_) => {
@@ -1238,7 +1238,7 @@ impl PyGeometryArray {
                             _ => false,
                         }
                     };
-                    crate::try_push(&mut output, value)?;
+                    output.push(value);
                 }
             },
         }
