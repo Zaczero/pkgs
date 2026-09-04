@@ -34,7 +34,7 @@ pub(crate) use access::{
 #[cfg(test)]
 pub(crate) use area::ring_area_measure_columns;
 pub(crate) use area::{
-    AreaSign, FaceDecisionArea, RingDecisionArea, RingWinding, closed_columns_winding,
+    AreaSign, RingDecisionArea, RingWinding, closed_columns_winding,
     exact_ring_area_centroid_sums_local, open_point_cycle_decision, open_point_cycle_winding,
     open_xy_cycle_decision, open_xy_cycle_sign, open_xy_cycle_winding,
     polygon_area_measure_columns, polygon_area_measure_with, ring_area_measure, ring_decision_area,

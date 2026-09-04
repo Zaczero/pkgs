@@ -1,4 +1,4 @@
-use crate::geometry::{FaceDecisionArea, HashMap, PointKey, XY};
+use crate::geometry::{AreaSign, HashMap, PointKey, XY};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
@@ -63,7 +63,7 @@ pub(crate) struct Face {
     /// every other constructor (winding consumers walk boundaries through
     /// [`Arrangement::region_rings`] instead).
     pub ring: Vec<XY>,
-    pub decision_area: FaceDecisionArea,
+    pub area_sign: AreaSign,
     pub component: u32,
 }
 
@@ -359,7 +359,7 @@ mod tests {
             let mut core = arrangement_spares();
             core.points.reserve_exact(64);
         }
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             arrangement_spares().points.reserve_exact(64);
         });
         assert_eq!(allocations, 0);
@@ -368,7 +368,7 @@ mod tests {
             let mut region = region_spares();
             region.ring.reserve_exact(64);
         }
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             region_spares().ring.reserve_exact(64);
         });
         assert_eq!(allocations, 0);
@@ -378,7 +378,7 @@ mod tests {
                 let mut scratch = typed_spares::<[i32; 2]>();
                 scratch.edges.reserve_exact(64);
                 drop(scratch);
-                let (_, allocations) = crate::test_support::allocation_count(|| {
+                let ((), allocations) = crate::test_support::allocation_count(|| {
                     typed_spares::<[i32; 2]>().edges.reserve_exact(64);
                 });
                 assert_eq!(allocations, 0);
@@ -386,7 +386,7 @@ mod tests {
                 let mut scratch = typed_spares::<i32>();
                 scratch.edges.reserve_exact(64);
                 drop(scratch);
-                let (_, allocations) = crate::test_support::allocation_count(|| {
+                let ((), allocations) = crate::test_support::allocation_count(|| {
                     typed_spares::<i32>().edges.reserve_exact(64);
                 });
                 assert_eq!(allocations, 0);
@@ -395,11 +395,11 @@ mod tests {
 
         clear_core_pool();
         assert_eq!(arrangement_spares().points.capacity(), 0);
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             arrangement_spares().points.reserve_exact(64);
         });
         assert_eq!(allocations, 1);
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             arrangement_spares().points.reserve_exact(64);
         });
         assert_eq!(allocations, 0);

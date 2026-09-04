@@ -1,3 +1,4 @@
+use crate::geometry::arrangement;
 use super::winding::twin_slot_spares;
 use crate::geometry::arrangement::{
     Arrangement, Columns, Face, FinishSpares, TypedSpares, WindingWeight, arrangement_spares,
@@ -362,7 +363,7 @@ impl<W: WindingWeight> Arrangement<W> {
         connected: bool,
         mut spares: FinishSpares,
         mut core: crate::scratch_pool::ScratchLease<
-            crate::geometry::arrangement::ArrangementSpares,
+            arrangement::ArrangementSpares,
         >,
         mut typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
     ) -> Self {
@@ -490,8 +491,8 @@ impl<W: WindingWeight> Arrangement<W> {
         for (face_id, face) in self.faces.iter().enumerate() {
             let slot = &mut outer[face.component as usize];
             let better = slot.is_none_or(|current| {
-                face.decision_area
-                    .prefers_as_outer_face_than(self.faces[current as usize].decision_area)
+                face.area_sign
+                    .prefers_as_outer_face_than(self.faces[current as usize].area_sign)
             });
             if better {
                 *slot = Some(face_id as u32);

@@ -16,7 +16,7 @@ use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
     SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, dimension,
-    point_on_segment, same_point, segment_projection, segment_vs_rect, shared_segment_part,
+    point_on_segment, same_point, segment_vs_rect, shared_segment_part,
 };
 use crate::heap_size::HeapSize;
 
@@ -102,6 +102,7 @@ pub(crate) struct SourcePoint {
 
 /// Source support attached to a quotient node. These flags intentionally keep
 /// point support separate from line vertices and polygon ring vertices.
+#[expect(clippy::struct_excessive_bools, reason = "a support set is four independent flags; a bitset would only rename them")]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct NodeSupport {
     pub(crate) point: bool,
@@ -339,7 +340,7 @@ impl TopologyGraph {
         }
     }
 
-    pub(crate) fn has_area_interior(&self) -> bool {
+    pub(crate) const fn has_area_interior(&self) -> bool {
         self.support.area.has_area()
     }
 
@@ -363,7 +364,7 @@ impl TopologyGraph {
         !self.source_points.is_empty()
     }
 
-    pub(crate) fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
+    pub(crate) const fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
         edge.line_support
     }
 
@@ -382,6 +383,7 @@ impl TopologyGraph {
                     })
             })
     }
+
 
     pub(crate) fn edge_has_line_source_for_row(
         &self,
@@ -587,6 +589,7 @@ pub(crate) enum TopologyKey {
     Pole(bool),
 }
 
+#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
 fn quotient_key(domain: TopologyDomain, point: XY) -> TopologyKey {
     if let TopologyDomain::Geographic(frame) = domain {
         if point.y == frame.pole() {
@@ -608,6 +611,7 @@ fn quotient_key(domain: TopologyDomain, point: XY) -> TopologyKey {
     TopologyKey::Coordinate(PointKey::new(point))
 }
 
+#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
 fn point_on_graph_segment(domain: TopologyDomain, point: XY, segment: Segment) -> bool {
     if let TopologyDomain::Geographic(frame) = domain {
         if point.y.abs() == frame.pole() && (segment.start.y == point.y || segment.end.y == point.y)
@@ -651,7 +655,7 @@ pub(crate) enum AreaSupport {
 }
 
 impl AreaSupport {
-    pub(crate) fn source(&self) -> &Polygon {
+    pub(crate) const fn source(&self) -> &Polygon {
         match self {
             Self::Cartesian { source } | Self::Geographic { source, .. } => source,
         }
@@ -673,6 +677,7 @@ impl AsRef<Polygon> for AreaSupport {
     }
 }
 
+#[expect(clippy::struct_excessive_bools, reason = "pole and boundary contacts are four independent facts about a ring")]
 #[derive(Clone, Debug)]
 pub(crate) struct ChartRing {
     pub(crate) points: Box<[XY]>,
@@ -818,7 +823,7 @@ impl AreaMembership {
         }
     }
 
-    fn has_area(&self) -> bool {
+    const fn has_area(&self) -> bool {
         match self {
             Self::Cartesian { polygons, .. } => polygons.len() != 0,
             Self::Geographic { polygons, .. } => polygons.len() != 0,
@@ -871,6 +876,7 @@ impl AreaMembership {
 }
 
 impl GeographicAreaCandidate {
+    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
     fn may_contain(&self, y: f64, copies: &[f64; 3], pole: f64, period: f64) -> bool {
         if self.full_band
             || (self.north_pole && y > self.chart_north)
@@ -934,6 +940,7 @@ impl TopologySupport {
         }
     }
 
+    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
     fn for_each_edge_at<B>(
         &self,
         domain: TopologyDomain,
@@ -1049,12 +1056,7 @@ impl TopologySupport {
         // A line component can mark a point Interior while it lies in an
         // areal hole; covering a two-dimensional rectangle needs area
         // support, not merely generic point location.
-        if graph.locate_point(center) == TopologyLocation::Exterior
-            || !graph.contains_area_interior(center)
-        {
-            return Some(false);
-        }
-        Some(true)
+        Some(graph.locate_point(center) != TopologyLocation::Exterior && graph.contains_area_interior(center))
     }
 }
 
@@ -1178,7 +1180,7 @@ impl GraphBuilder {
         }
     }
 
-    fn component(&mut self) -> u32 {
+    const fn component(&mut self) -> u32 {
         let component = self.next_component;
         self.next_component = self.next_component.saturating_add(1);
         component
@@ -1217,9 +1219,13 @@ impl GraphBuilder {
     }
 
     fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) {
-        // Cartesian collinear rings enclose nothing and therefore contribute
-        // their closed linework, not surface support. A lon/lat-collinear ring
-        // can still enclose a polar cap, so geographic graphs retain area.
+        // A polygon whose every ring is collinear encloses nothing, so it IS
+        // its linework: staging it as area support would give it an interior
+        // it does not have, and a boundary its rings do not bound. Routing it
+        // here makes it relate exactly as the equivalent closed line, which is
+        // the one rule a caller can predict.
+        // Cartesian only: a ring collinear in lon/lat can still bound a polar
+        // cap on the sphere, where "encloses nothing" is not a planar test.
         if !self.domain.space().is_geographic()
             && polygon
                 .rings()
@@ -1331,6 +1337,7 @@ impl GraphBuilder {
         );
     }
 
+    #[expect(clippy::large_types_passed_by_value, reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow")]
     fn push_source_edge_charted(
         &mut self,
         support: SourceSupport,
@@ -1373,6 +1380,7 @@ impl GraphBuilder {
         }
     }
 
+    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
     fn chart_ring(&self, ring: &CoordSeq) -> StagedChartRing {
         let mut points: Vec<XY> = Vec::with_capacity(ring.len());
         let mut segments = Vec::with_capacity(ring.len().saturating_sub(1));
@@ -1523,8 +1531,12 @@ impl GraphBuilder {
         is_collection: bool,
         has_polygonal_members: bool,
     ) -> TopologyGraph {
-        // A Cartesian polygon with no area support was staged as linework.
-        // Its effective dimension follows that staged support, not its tag.
+        // A shape declares surface dimension for holding a polygon at all, but
+        // a polygon that encloses nothing was staged as linework and left no
+        // area support behind. Reading the dimension back off what was staged
+        // keeps that shape from claiming a two-dimensional interior, and stays
+        // right in the geographic domain, where a ring collinear in lon/lat can
+        // still bound a polar cap and therefore does stage area support.
         let effective_dimension = match declared_dimension {
             Some(Dimension::Surface) if self.area_support.is_empty() => {
                 (!self.source_edges.is_empty()).then_some(Dimension::Curve)
@@ -1557,13 +1569,11 @@ impl GraphBuilder {
                         polygon,
                         interior_left,
                     } => {
-                        let direction = if matches!(self.domain, TopologyDomain::Cartesian) {
-                            source_direction(piece, chart.segment)
-                                * if interior_left { 1 } else { -1 }
-                        } else {
-                            let reversed = reversed ^ piece_reversed;
-                            if interior_left != reversed { 1 } else { -1 }
-                        };
+                        // The noding provenance already says whether this
+                        // piece runs against its source; the direction is
+                        // combinatorial, never a projection.
+                        let reversed = reversed ^ piece_reversed;
+                        let direction = if interior_left == reversed { -1 } else { 1 };
                         if let Some((_, net)) = bundle
                             .area_transitions
                             .iter_mut()
@@ -1805,7 +1815,7 @@ struct EdgeBundleKey {
 }
 
 impl EdgeBundle {
-    fn new(segment: Segment) -> Self {
+    const fn new(segment: Segment) -> Self {
         Self {
             segment,
             sources: Vec::new(),
@@ -1814,19 +1824,13 @@ impl EdgeBundle {
     }
 }
 
-fn source_direction(piece: Segment, source: Segment) -> i32 {
-    let start = segment_projection(piece.start, source);
-    let end = segment_projection(piece.end, source);
-    if end.cmp_along(&start).is_ge() { 1 } else { -1 }
-}
-
+#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
 fn ray_germ_key(domain: TopologyDomain, origin: XY, target: XY) -> RayGermKey {
     let longitude = match domain {
-        TopologyDomain::Cartesian => 0,
         TopologyDomain::Geographic(frame) if origin.y.abs() == frame.pole() => {
             canonical_f64_bits(origin.x)
         },
-        TopologyDomain::Geographic(_) => 0,
+        TopologyDomain::Cartesian | TopologyDomain::Geographic(_) => 0,
     };
     RayGermKey {
         longitude,
@@ -1900,6 +1904,7 @@ struct QuotientDart {
     segment: Segment,
 }
 
+#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
 fn compare_quotient_rays(
     frame: crate::geographic::GeographicFrame,
     origin: XY,
@@ -1951,6 +1956,188 @@ fn compare_quotient_rays(
     )
 }
 
+/// One step of union-find with path halving.
+const fn quotient_root(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
+}
+
+/// The half-edge arrangement of a geographic quotient graph: every edge as a
+/// pair of opposite darts, the darts around each node in ray order, and the
+/// faces those two together induce.
+///
+/// The phases below share this state by necessity — the face walk reads the
+/// rotation system, and the interior propagation reads both the faces and the
+/// component each belongs to — so they are methods on it rather than free
+/// functions threading seven buffers between them.
+struct QuotientArrangement {
+    darts: Vec<QuotientDart>,
+    /// Darts leaving each node, in ray order around it.
+    outgoing: Vec<Vec<usize>>,
+    /// Each dart's index within its origin's `outgoing` row.
+    position: Vec<usize>,
+    /// The face each dart borders.
+    face_of: Vec<usize>,
+    /// Per face: its connected component, and the dart the walk entered by.
+    face_component: Vec<usize>,
+    face_seed: Vec<usize>,
+}
+
+impl QuotientArrangement {
+    /// Stage every edge as two opposite darts, order the rotation system
+    /// around each node, and walk the faces that induces.
+    fn build(
+        frame: crate::geographic::GeographicFrame,
+        edges: &[TopologyEdge],
+        origins: &[XY],
+        node_id: impl Fn(XY) -> TopologyNodeId,
+    ) -> Self {
+        let mut darts = Vec::with_capacity(edges.len() * 2);
+        let mut outgoing = vec![Vec::<usize>::new(); origins.len()];
+        let mut parent: Vec<usize> = (0..origins.len()).collect();
+        for (edge, data) in edges.iter().enumerate() {
+            let start = node_id(data.segment.start);
+            let end = node_id(data.segment.end);
+            let forward = darts.len();
+            darts.push(QuotientDart {
+                edge,
+                from: start,
+                to: end,
+                segment: data.segment,
+            });
+            darts.push(QuotientDart {
+                edge,
+                from: end,
+                to: start,
+                segment: Segment {
+                    start: data.segment.end,
+                    end: data.segment.start,
+                },
+            });
+            outgoing[start.index()].push(forward);
+            outgoing[end.index()].push(forward + 1);
+            let left = quotient_root(&mut parent, start.index());
+            let right = quotient_root(&mut parent, end.index());
+            if left != right {
+                parent[right] = left;
+            }
+        }
+        let mut arrangement = Self {
+            darts,
+            outgoing,
+            position: Vec::new(),
+            face_of: Vec::new(),
+            face_component: Vec::new(),
+            face_seed: Vec::new(),
+        };
+        arrangement.sort_rotation_system(frame, origins);
+        arrangement.walk_faces(&mut parent);
+        arrangement
+    }
+
+    /// Order the darts around each node by the direction they leave it, and
+    /// record where each one sits, which is what makes the face walk below a
+    /// lookup rather than a search.
+    fn sort_rotation_system(&mut self, frame: crate::geographic::GeographicFrame, origins: &[XY]) {
+        let Self {
+            darts,
+            outgoing,
+            position,
+            ..
+        } = self;
+        for (node, row) in outgoing.iter_mut().enumerate() {
+            let origin = origins[node];
+            row.sort_by(|&left, &right| {
+                compare_quotient_rays(frame, origin, &darts[left], &darts[right])
+            });
+        }
+        *position = vec![0_usize; darts.len()];
+        for row in outgoing.iter() {
+            for (index, &dart) in row.iter().enumerate() {
+                position[dart] = index;
+            }
+        }
+    }
+
+    /// Walk each face by repeatedly taking the dart before the twin in its
+    /// origin's rotation: the standard half-edge face traversal.
+    fn walk_faces(&mut self, parent: &mut [usize]) {
+        self.face_of = vec![usize::MAX; self.darts.len()];
+        for seed in 0..self.darts.len() {
+            if self.face_of[seed] != usize::MAX {
+                continue;
+            }
+            let face = self.face_component.len();
+            self.face_component
+                .push(quotient_root(parent, self.darts[seed].from.index()));
+            self.face_seed.push(seed);
+            let mut dart = seed;
+            loop {
+                self.face_of[dart] = face;
+                let twin = dart ^ 1;
+                let row = &self.outgoing[self.darts[dart].to.index()];
+                let twin_position = self.position[twin];
+                dart = row[(twin_position + row.len() - 1) % row.len()];
+                if dart == seed {
+                    break;
+                }
+                assert_eq!(
+                    self.face_of[dart], usize::MAX,
+                    "quotient face walk must close"
+                );
+            }
+        }
+    }
+
+    /// The face adjacency and one seed per component, handed to the shared
+    /// labelling pass.
+    fn face_interior(
+        &self,
+        polygons: &[AreaSupport],
+        edges: &[TopologyEdge],
+        transitions: &[Vec<(u32, i32)>],
+        area_membership: &AreaMembership,
+    ) -> Vec<bool> {
+        let mut adjacency = vec![Vec::<(usize, usize)>::new(); self.face_component.len()];
+        for edge in 0..edges.len() {
+            let left = self.face_of[edge * 2];
+            let right = self.face_of[edge * 2 + 1];
+            if left != right {
+                adjacency[left].push((right, edge));
+                adjacency[right].push((left, edge));
+            }
+        }
+        let mut seed_for_component = HashMap::new();
+        for (face, &component) in self.face_component.iter().enumerate() {
+            seed_for_component.entry(component).or_insert(face);
+        }
+        let seeds: Vec<FaceSeed> = seed_for_component
+            .values()
+            .map(|&face| {
+                let dart = self.face_seed[face];
+                let edge = self.darts[dart].edge;
+                FaceSeed {
+                    face,
+                    segment: self.darts[dart].segment,
+                    edge,
+                    forward: dart == edge * 2,
+                }
+            })
+            .collect();
+        propagate_face_interior(
+            self.face_component.len(),
+            &adjacency,
+            &seeds,
+            polygons,
+            transitions,
+            area_membership,
+        )
+    }
+}
+
 fn condense_geographic_area_face_support(
     frame: crate::geographic::GeographicFrame,
     polygons: &[AreaSupport],
@@ -1960,148 +2147,20 @@ fn condense_geographic_area_face_support(
     area_membership: &AreaMembership,
     node_lookup: &HashMap<TopologyKey, TopologyNodeId>,
 ) {
-    fn root(parent: &mut [usize], mut node: usize) -> usize {
-        while parent[node] != node {
-            parent[node] = parent[parent[node]];
-            node = parent[node];
-        }
-        node
-    }
-
     if polygons.is_empty() || edges.is_empty() {
         return;
     }
     let domain = TopologyDomain::Geographic(frame);
-    let node_id = |point| node_lookup[&quotient_key(domain, point)];
-    let mut darts = Vec::with_capacity(edges.len() * 2);
-    let mut outgoing = vec![Vec::<usize>::new(); nodes.len()];
-    let mut parent: Vec<usize> = (0..nodes.len()).collect();
-    for (edge, data) in edges.iter().enumerate() {
-        let start = node_id(data.segment.start);
-        let end = node_id(data.segment.end);
-        let forward = darts.len();
-        darts.push(QuotientDart {
-            edge,
-            from: start,
-            to: end,
-            segment: data.segment,
-        });
-        darts.push(QuotientDart {
-            edge,
-            from: end,
-            to: start,
-            segment: Segment {
-                start: data.segment.end,
-                end: data.segment.start,
-            },
-        });
-        outgoing[start.index()].push(forward);
-        outgoing[end.index()].push(forward + 1);
-        let left = root(&mut parent, start.index());
-        let right = root(&mut parent, end.index());
-        if left != right {
-            parent[right] = left;
-        }
-    }
-    for (node, row) in outgoing.iter_mut().enumerate() {
-        let origin = nodes[node].point;
-        row.sort_by(|&left, &right| {
-            compare_quotient_rays(frame, origin, &darts[left], &darts[right])
-        });
-    }
-    let mut position = vec![0_usize; darts.len()];
-    for row in &outgoing {
-        for (index, &dart) in row.iter().enumerate() {
-            position[dart] = index;
-        }
-    }
-    let mut face_of = vec![usize::MAX; darts.len()];
-    let mut face_component = Vec::new();
-    let mut face_seed = Vec::new();
-    for seed in 0..darts.len() {
-        if face_of[seed] != usize::MAX {
-            continue;
-        }
-        let face = face_component.len();
-        face_component.push(root(&mut parent, darts[seed].from.index()));
-        face_seed.push(seed);
-        let mut dart = seed;
-        loop {
-            face_of[dart] = face;
-            let twin = dart ^ 1;
-            let row = &outgoing[darts[dart].to.index()];
-            let twin_position = position[twin];
-            dart = row[(twin_position + row.len() - 1) % row.len()];
-            if dart == seed {
-                break;
-            }
-            assert_eq!(face_of[dart], usize::MAX, "quotient face walk must close");
-        }
-    }
-    let mut adjacency = vec![Vec::<(usize, usize)>::new(); face_component.len()];
-    for edge in 0..edges.len() {
-        let left = face_of[edge * 2];
-        let right = face_of[edge * 2 + 1];
-        if left != right {
-            adjacency[left].push((right, edge));
-            adjacency[right].push((left, edge));
-        }
-    }
-    let mut seed_for_component = HashMap::new();
-    for (face, &component) in face_component.iter().enumerate() {
-        seed_for_component.entry(component).or_insert(face);
-    }
-    let mut face_interior = vec![false; face_component.len()];
-    let mut visited = vec![false; face_component.len()];
-    for &seed in seed_for_component.values() {
-        let seed_dart = face_seed[seed];
-        let edge = darts[seed_dart].edge;
-        let segment = darts[seed_dart].segment;
-        let midpoint = XY::new(
-            f64::midpoint(segment.start.x, segment.end.x),
-            f64::midpoint(segment.start.y, segment.end.y),
-        );
-        let mut membership = ActivePolygons::default();
-        let _: Option<()> = area_membership.for_each_area_interior(polygons, midpoint, |polygon| {
-            membership.insert(polygon);
-            std::ops::ControlFlow::Continue(())
-        });
-        let forward = seed_dart == edge * 2;
-        for &(polygon, net) in &transitions[edge] {
-            if net != 0 {
-                membership.set(polygon, (net > 0) == forward);
-            }
-        }
-        let mut aggregate = membership.count();
-        visited[seed] = true;
-        face_interior[seed] = aggregate != 0;
-        let mut stack: Vec<(usize, usize, Option<usize>)> = vec![(seed, 0, None)];
-        while let Some((face, next, incoming)) = stack.pop() {
-            if next == adjacency[face].len() {
-                if let Some(edge) = incoming {
-                    toggle_membership(
-                        &mut membership,
-                        &mut aggregate,
-                        transitions[edge].as_slice(),
-                    );
-                }
-                continue;
-            }
-            stack.push((face, next + 1, incoming));
-            let (neighbor, edge) = adjacency[face][next];
-            if visited[neighbor] {
-                continue;
-            }
-            toggle_membership(
-                &mut membership,
-                &mut aggregate,
-                transitions[edge].as_slice(),
-            );
-            visited[neighbor] = true;
-            face_interior[neighbor] = aggregate != 0;
-            stack.push((neighbor, 0, Some(edge)));
-        }
-    }
+    let origins: Vec<XY> = nodes.iter().map(|node| node.point).collect();
+    let arrangement = QuotientArrangement::build(frame, edges, &origins, |point| {
+        node_lookup[&quotient_key(domain, point)]
+    });
+    let face_interior = arrangement.face_interior(polygons, edges, transitions, area_membership);
+    let (darts, outgoing, face_of) = (
+        &arrangement.darts,
+        &arrangement.outgoing,
+        &arrangement.face_of,
+    );
     // A quotient singularity can make both darts share one face. In that
     // case, recover the two source-side memberships instead of treating the
     // singular face as covering both sides.
@@ -2151,7 +2210,7 @@ fn condense_geographic_area_face_support(
         } else {
             AreaNodeSupport::None
         };
-        nodes[node].support.area_boundary = any && !all || (degenerate_boundary && !all);
+        nodes[node].support.area_boundary = !all && (any || degenerate_boundary);
     }
 }
 
@@ -2222,6 +2281,79 @@ fn geographic_edge_side_support(
     (left.any(), right.any())
 }
 
+/// Where a face-labelling walk starts: one face per connected component,
+/// with the boundary segment whose midpoint seeds its membership.
+struct FaceSeed {
+    face: usize,
+    segment: Segment,
+    edge: usize,
+    /// Whether `segment` runs along its edge's own direction.
+    forward: bool,
+}
+
+/// Label every face inside or outside the area, by locating ONE seed face per
+/// connected component and toggling membership across each edge the walk
+/// crosses.
+///
+/// Both condensers land here. Only the geometry that produces the faces
+/// differs — the planar one reads a prebuilt arrangement, the geographic one
+/// walks the quotient half-edge structure it builds itself — while the
+/// labelling is one algorithm and lives here once.
+fn propagate_face_interior(
+    face_count: usize,
+    adjacency: &[Vec<(usize, usize)>],
+    seeds: &[FaceSeed],
+    polygons: &[AreaSupport],
+    transitions: &[Vec<(u32, i32)>],
+    area_membership: &AreaMembership,
+) -> Vec<bool> {
+    let mut face_interior = vec![false; face_count];
+    let mut visited = vec![false; face_count];
+    for seed in seeds {
+        let midpoint = XY::new(
+            f64::midpoint(seed.segment.start.x, seed.segment.end.x),
+            f64::midpoint(seed.segment.start.y, seed.segment.end.y),
+        );
+        let mut membership = ActivePolygons::default();
+        let _: Option<()> =
+            area_membership.for_each_area_interior(polygons, midpoint, |polygon| {
+                membership.insert(polygon);
+                std::ops::ControlFlow::Continue(())
+            });
+        for &(polygon, net) in &transitions[seed.edge] {
+            if net != 0 {
+                membership.set(polygon, (net > 0) == seed.forward);
+            }
+        }
+        let mut aggregate = membership.count();
+        visited[seed.face] = true;
+        face_interior[seed.face] = aggregate != 0;
+        let mut stack: Vec<(usize, usize, Option<usize>)> = vec![(seed.face, 0, None)];
+        while let Some((face, next, incoming)) = stack.pop() {
+            if next == adjacency[face].len() {
+                if let Some(edge) = incoming {
+                    toggle_membership(
+                        &mut membership,
+                        &mut aggregate,
+                        transitions[edge].as_slice(),
+                    );
+                }
+                continue;
+            }
+            stack.push((face, next + 1, incoming));
+            let (neighbor, edge) = adjacency[face][next];
+            if visited[neighbor] {
+                continue;
+            }
+            toggle_membership(&mut membership, &mut aggregate, transitions[edge].as_slice());
+            visited[neighbor] = true;
+            face_interior[neighbor] = aggregate != 0;
+            stack.push((neighbor, 0, Some(edge)));
+        }
+    }
+    face_interior
+}
+
 fn toggle_membership(
     membership: &mut ActivePolygons,
     aggregate: &mut usize,
@@ -2272,64 +2404,38 @@ fn condense_area_face_support(
     for (face, data) in arrangement.faces.iter().enumerate() {
         let candidate = &mut outer[data.component as usize];
         if candidate.is_none_or(|current| {
-            data.decision_area
-                .prefers_as_outer_face_than(arrangement.faces[current].decision_area)
+            data.area_sign
+                .prefers_as_outer_face_than(arrangement.faces[current].area_sign)
         }) {
             *candidate = Some(face);
         }
     }
-    let mut face_interior = vec![false; arrangement.faces.len()];
-    let mut visited = vec![false; arrangement.faces.len()];
-    for seed in outer.into_iter().flatten() {
-        let slot = arrangement.face_slots[arrangement.face_starts[seed] as usize] as usize;
-        let start = arrangement.points[arrangement.owners[slot] as usize];
-        let end = arrangement.points[arrangement.targets[slot] as usize];
-        let segment = Segment { start, end };
-        let midpoint = XY::new(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y));
-        let mut membership = ActivePolygons::default();
-        let _: Option<()> = area_membership.for_each_area_interior(polygons, midpoint, |polygon| {
-            membership.insert(polygon);
-            std::ops::ControlFlow::Continue(())
-        });
-        let seed_edge = edge_of_slot[slot];
-        let same_direction = segment_direction_matches(segment, edges[seed_edge].segment);
-        for &(polygon, net) in &transitions[seed_edge] {
-            if net != 0 {
-                membership.set(polygon, (net > 0) == same_direction);
+    let seeds: Vec<FaceSeed> = outer
+        .into_iter()
+        .flatten()
+        .map(|face| {
+            let slot = arrangement.face_slots[arrangement.face_starts[face] as usize] as usize;
+            let segment = Segment {
+                start: arrangement.points[arrangement.owners[slot] as usize],
+                end: arrangement.points[arrangement.targets[slot] as usize],
+            };
+            let edge = edge_of_slot[slot];
+            FaceSeed {
+                face,
+                segment,
+                edge,
+                forward: segment_direction_matches(segment, edges[edge].segment),
             }
-        }
-        let mut aggregate_count = membership.count();
-        visited[seed] = true;
-        face_interior[seed] = aggregate_count != 0;
-        let mut stack = vec![(seed, 0_usize, None)];
-        while let Some((face, next, incoming)) = stack.pop() {
-            if next == adjacency[face].len() {
-                if let Some(edge) = incoming {
-                    for &(polygon, net) in &transitions[edge] {
-                        if net != 0 {
-                            membership.toggle(polygon);
-                            aggregate_count = membership.count();
-                        }
-                    }
-                }
-                continue;
-            }
-            stack.push((face, next + 1, incoming));
-            let (neighbor, edge) = adjacency[face][next];
-            if visited[neighbor] {
-                continue;
-            }
-            for &(polygon, net) in &transitions[edge] {
-                if net != 0 {
-                    membership.toggle(polygon);
-                    aggregate_count = membership.count();
-                }
-            }
-            visited[neighbor] = true;
-            face_interior[neighbor] = aggregate_count != 0;
-            stack.push((neighbor, 0, Some(edge)));
-        }
-    }
+        })
+        .collect();
+    let face_interior = propagate_face_interior(
+        arrangement.faces.len(),
+        &adjacency,
+        &seeds,
+        polygons,
+        transitions,
+        area_membership,
+    );
     for (edge, &(start, end)) in edges.iter_mut().zip(bundle_endpoints) {
         let slot = arrangement.slot(start, end);
         let twin = arrangement.twin_slot(slot);
@@ -2418,6 +2524,7 @@ fn polygon_contains_interior(space: TopologySpace, polygon: &AreaSupport, point:
         .all(|hole| geographic_ring_location(hole, point) == RingLocation::Outside)
 }
 
+#[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
 fn geographic_ring_location(ring: &ChartRing, point: XY) -> RingLocation {
     if point.y == ring.pole || point.y == -ring.pole {
         let north = point.y == ring.pole;
@@ -2676,6 +2783,7 @@ mod tests {
         assert!(graph.has_area_boundary(XY::new(5.0, 3.0)));
     }
 
+    #[expect(clippy::float_cmp, reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it")]
     #[test]
     fn geographic_donut_hole_stays_outside_across_the_seam() {
         let shape = Shape::Polygon(polygon(
@@ -2805,7 +2913,7 @@ mod tests {
             XY::new(23.0, 30.0),
             XY::new(-123.0, 90.0),
         ];
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             for _ in 0..8 {
                 for point in points {
                     let _ = graph.locate_point(point);
@@ -2819,12 +2927,12 @@ mod tests {
     fn geographic_high_degree_absent_queries_reuse_index_without_allocations() {
         let lines = (0..64)
             .map(|index| {
-                let offset = (index as f64 + 0.5) / 64.0 - 0.5;
+                let offset = (f64::from(index) + 0.5) / 64.0 - 0.5;
                 Shape::LineString(line(&[(-1.0, -1.0 + offset), (1.0, 1.0 + offset)]))
             })
             .collect();
         let graph = TopologyGraph::geographic(&collection(lines), degrees());
-        let (_, allocations) = crate::test_support::allocation_count(|| {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             for _ in 0..8 {
                 let _ = graph.locate_point(XY::new(0.0, 0.0));
                 let _ = graph.locate_point(XY::new(360.0, 0.0));
@@ -3225,7 +3333,7 @@ mod tests {
             assert!(graph.node_for(edge.segment.start).is_some());
             assert!(graph.node_for(edge.segment.end).is_some());
             assert!(!edge.sources.is_empty());
-            for &source in edge.sources.iter() {
+            for &source in &edge.sources {
                 let source = &graph.source_edges[source as usize];
                 assert!(
                     chart_segments(graph.domain, source.segment)

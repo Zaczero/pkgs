@@ -87,50 +87,6 @@ impl RingDecisionArea {
     }
 }
 
-/// Face walks retain a magnitude only for consumers that keep the walk itself;
-/// winding-only consumers need just the exact sign.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum FaceDecisionArea {
-    Sign(AreaSign),
-    Exact(RingDecisionArea),
-}
-
-impl FaceDecisionArea {
-    pub(crate) const fn sign(self) -> AreaSign {
-        match self {
-            Self::Sign(sign) => sign,
-            Self::Exact(area) => area.sign(),
-        }
-    }
-
-    pub(crate) const fn sign_only(sign: AreaSign) -> Self {
-        Self::Sign(sign)
-    }
-
-    pub(crate) const fn exact(area: RingDecisionArea) -> Self {
-        Self::Exact(area)
-    }
-
-    /// True when `self` is a better outer-face candidate than `other`.
-    pub(crate) fn prefers_as_outer_face_than(self, other: Self) -> bool {
-        let (self_sign, other_sign) = (self.sign(), other.sign());
-        if self_sign == AreaSign::Negative && other_sign != AreaSign::Negative {
-            return true;
-        }
-        if other_sign == AreaSign::Negative {
-            return false;
-        }
-        match (self_sign, other_sign) {
-            (AreaSign::Zero, AreaSign::Positive) => true,
-            (AreaSign::Positive, AreaSign::Positive) => match (self, other) {
-                (Self::Exact(left), Self::Exact(right)) => left.magnitude().abs_cmp(right.magnitude()).is_lt(),
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-}
-
 impl AreaSign {
     /// True when a face walk with this sign is a better outer-face candidate
     /// for its component than one with `other`. A nondegenerate component's

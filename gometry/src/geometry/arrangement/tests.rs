@@ -1,3 +1,4 @@
+use crate::geometry::predicates;
 use crate::geometry::arrangement::*;
 use crate::geometry::*;
 
@@ -44,12 +45,7 @@ fn assert_bit_parity(fast: &mut Arrangement<i32>, slow: &mut Arrangement<i32>) {
     assert_eq!(fast.faces.len(), slow.faces.len(), "face count diverges");
     for (left, right) in std::iter::zip(&fast.faces, &slow.faces) {
         assert_eq!(bits(&left.ring), bits(&right.ring), "face ring diverges");
-        assert_eq!(left.decision_area.sign(), right.decision_area.sign());
-        assert_eq!(
-            matches!(left.decision_area, FaceDecisionArea::Exact(_)),
-            matches!(right.decision_area, FaceDecisionArea::Exact(_)),
-            "face area availability diverges"
-        );
+        assert_eq!(left.area_sign, right.area_sign);
         assert_eq!(left.component, right.component);
     }
     let windings = fast.face_windings(&[0]);
@@ -265,20 +261,12 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
         segment.start.x * segment.end.y - segment.end.x * segment.start.y == 0.0
     }));
     let mut winding = Arrangement::new(&segments);
-    assert!(
-        winding
-            .faces
-            .iter()
-            .all(|face| matches!(face.decision_area, FaceDecisionArea::Sign(_)))
-    );
-    assert!(winding.faces.iter().any(|face| matches!(
-        face.decision_area,
-        FaceDecisionArea::Sign(AreaSign::Positive)
-    )));
+    assert!(winding.faces.iter().all(|face| face.ring.is_empty()));
+    assert!(winding.faces.iter().any(|face| face.area_sign == AreaSign::Positive));
 
     let mut rings = Arrangement::new_with_rings(&segments);
     assert!(rings.faces.iter().all(|face| {
-        matches!(face.decision_area, FaceDecisionArea::Exact(area) if area.magnitude().get() > 0.0)
+        open_xy_cycle_decision(&face.ring).magnitude().get() > 0.0
     }));
     assert_eq!(winding.face_windings(&[0]), rings.face_windings(&[0]));
 }
@@ -287,8 +275,8 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
 fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
     assert_eq!(
-        crate::geometry::predicates::pseudo_angle(1.0, 1.0),
-        crate::geometry::predicates::pseudo_angle(1.0, high),
+        predicates::pseudo_angle(1.0, 1.0),
+        predicates::pseudo_angle(1.0, high),
         "adjacent diagonal rays collide after pseudo-angle rounding"
     );
 
