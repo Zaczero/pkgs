@@ -675,6 +675,7 @@ pub(crate) fn topology_scalar_pair(
         && let Some(verdict) =
             crate::geometry::direct_linework_predicate(spec, left.shape(), right.shape())
                 .or_else(|| crate::geometry::direct_areal_predicate(spec, left, right))
+                .or_else(|| crate::geometry::direct_areal_linework_predicate(spec, left, right))
     {
         return verdict;
     }

@@ -114,6 +114,18 @@ impl De9imInterval {
         self.hi[index(row, col)] = self.lo[index(row, col)];
     }
 
+    /// The same interval with operand rows and columns exchanged.
+    pub(crate) const fn transpose(&self) -> Self {
+        const fn swap(cells: [Cell; 9]) -> [Cell; 9] {
+            let m = cells;
+            [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
+        }
+        Self {
+            lo: swap(self.lo),
+            hi: swap(self.hi),
+        }
+    }
+
     pub(crate) fn is_decided(&self) -> bool {
         self.lo == self.hi
     }

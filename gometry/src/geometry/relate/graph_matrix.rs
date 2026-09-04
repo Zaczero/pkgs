@@ -78,6 +78,9 @@ pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> De
     if let Some(matrix) = try_cartesian_polygon_line_relate(left, right) {
         return matrix;
     }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+        return matrix;
+    }
     if let Some(matrix) = super::direct_linework_relate(left.shape(), right.shape()) {
         return matrix;
     }
@@ -127,6 +130,9 @@ pub(crate) fn graph_relate_data_with_left_graph(
     {
         return matrix;
     }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
+        return matrix;
+    }
     if let Some(point) = shape_point(right.shape()) {
         return graph_relate_to_point(left_graph, point);
     }
@@ -149,6 +155,9 @@ pub(crate) fn graph_relate_data_with_right_graph(
     if let Some(matrix) =
         try_cartesian_polygon_line_relate_with_graphs(left, right, None, Some(right_graph))
     {
+        return matrix;
+    }
+    if let Some(matrix) = super::direct_areal_linework_relate(left, right) {
         return matrix;
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -278,7 +287,7 @@ pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, ro
     matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
 }
 
-fn try_cartesian_polygon_line_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
+pub(super) fn try_cartesian_polygon_line_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
     try_cartesian_polygon_line_relate_with_graphs(left, right, None, None)
 }
 

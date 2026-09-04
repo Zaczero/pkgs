@@ -627,6 +627,296 @@ pub(crate) fn direct_areal_predicate(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Areal against linework
+// ---------------------------------------------------------------------------
+
+/// One cut of a line segment by the area's boundary, positioned along the
+/// segment by exact projection.
+#[derive(Clone)]
+struct Cut {
+    at: crate::geometry::SegmentProjection,
+    point: XY,
+    /// A shared span opens (`+1`) or closes (`-1`) here; a point contact is `0`.
+    span_delta: i8,
+}
+
+/// Relate an areal operand (rows) to a linework operand (columns) from
+/// boundary contacts alone, with no topology graph for either side.
+///
+/// The sweep cuts every line segment where it meets the area's boundary —
+/// crossings, touches, and the two ends of each shared span. Between two
+/// consecutive cuts the line never meets the boundary, so that whole piece
+/// (across as many vertices as it spans) lies on one side of the area, and
+/// ONE located point decides it: a line inside a ring costs one location, not
+/// one per vertex. A piece inside a shared span lies on the boundary itself.
+/// Each cut point is a boundary point of the area, in the line's boundary or
+/// interior by mod-2 parity; a line end that is not a cut sits wherever the
+/// piece it belongs to does. A bounded area leaves interior and exterior on
+/// both sides of any finite line, and its boundary reaches the line's
+/// exterior unless shared spans cover every ring segment end to end.
+fn relate_areal_linework(
+    area: &PreparedPlan,
+    line: &Shape,
+    mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
+) -> Option<Outcome> {
+    let polygons = admitted_polygons(area)?;
+    let lines = admitted_lines(line)?;
+
+    let mut chains = LineworkChains::default();
+    let rings = ArealOperand::stage(&mut chains, &polygons);
+    let linework = Operand::stage(&mut chains, &lines);
+    let mut interval = De9imInterval::open(ArealOperand::shape(), linework.shape());
+    interval.witness(Loc::Interior, Loc::Exterior, Dimension::Surface);
+    if let Some(verdict) = decide(&interval) {
+        return Some(Outcome::Verdict(verdict));
+    }
+
+    let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.count];
+    let mut ring_spans: Vec<(usize, XY, XY)> = Vec::new();
+    let verdict = sweep_contacts(&chains, &rings.staged, |ring_ordinal, line_ordinal, contact| {
+        let Some(contact_point) = cut_line_at_contact(
+            chains.segments[line_ordinal],
+            contact,
+            &mut cuts[line_ordinal - linework.first],
+        ) else {
+            return None;
+        };
+        if let Contact::Collinear { span } = contact
+            && !same_point(span.start, span.end)
+        {
+            ring_spans.push((ring_ordinal, span.start, span.end));
+            interval.witness(Loc::Boundary, Loc::Interior, Dimension::Curve);
+        }
+        interval.witness(Loc::Boundary, linework.class_of(contact_point), Dimension::Point);
+        decide(&interval)
+    });
+    if let Some(verdict) = verdict {
+        return Some(Outcome::Verdict(verdict));
+    }
+
+    for line_index in 0..chains.line_count() {
+        let Some(span) = chains.line_span(line_index) else {
+            continue;
+        };
+        if span.start < linework.first {
+            continue; // a ring
+        }
+        let walked = walk_line_pieces(&chains, &linework, &polygons, span, &mut cuts, &mut interval);
+        // Line ends in the boundary column: on a cut they are boundary points
+        // of the area, otherwise they sit where their piece does.
+        if let Some((start, end)) = chains.line_ends(line_index) {
+            for (point, piece) in [(start, walked.first_piece), (end, walked.last_piece)] {
+                if linework.class_of(point) != Loc::Boundary {
+                    continue;
+                }
+                let row = if walked.ends_on_cut(point) {
+                    Loc::Boundary
+                } else {
+                    piece.expect("an open line has at least one piece")
+                };
+                interval.witness(row, Loc::Boundary, Dimension::Point);
+            }
+        }
+        if let Some(verdict) = decide(&interval) {
+            return Some(Outcome::Verdict(verdict));
+        }
+    }
+
+    ring_spans.sort_unstable_by_key(|&(ordinal, _, _)| ordinal);
+    let ring_segments = &chains.segments[rings.staged.first..rings.staged.first + rings.staged.count];
+    let boundary_covered = ring_segments
+        .iter()
+        .enumerate()
+        .all(|(offset, segment)| covered(*segment, &ring_spans, rings.staged.first + offset));
+    if !boundary_covered {
+        interval.witness(Loc::Boundary, Loc::Exterior, Dimension::Curve);
+    }
+    for row in [Loc::Interior, Loc::Boundary, Loc::Exterior] {
+        for col in [Loc::Interior, Loc::Boundary, Loc::Exterior] {
+            interval.settle(row, col);
+        }
+    }
+    if let Some(verdict) = decide(&interval) {
+        return Some(Outcome::Verdict(verdict));
+    }
+    Some(Outcome::Matrix(
+        interval.matrix().expect("every cell of an areal/linework relation is settled"),
+    ))
+}
+
+/// Record one boundary contact as cuts of the line segment it fell on, and
+/// return one point of it (`None` for no contact).
+fn cut_line_at_contact(segment: Segment, contact: Contact, cuts: &mut Vec<Cut>) -> Option<XY> {
+    use crate::geometry::segment_projection;
+    let mut point_cut = |point: XY| {
+        cuts.push(Cut {
+            at: segment_projection(point, segment),
+            point,
+            span_delta: 0,
+        });
+        point
+    };
+    Some(match contact {
+        Contact::Disjoint => return None,
+        Contact::Cross { point } | Contact::Touch { point } => point_cut(point),
+        Contact::Collinear { span } if same_point(span.start, span.end) => point_cut(span.start),
+        Contact::Collinear { span } => {
+            let (open, close) = order_along(segment, span.start, span.end);
+            cuts.push(Cut {
+                at: segment_projection(open, segment),
+                point: open,
+                span_delta: 1,
+            });
+            cuts.push(Cut {
+                at: segment_projection(close, segment),
+                point: close,
+                span_delta: -1,
+            });
+            span.start
+        },
+    })
+}
+
+/// The two ends of a shared span in the order the line segment runs.
+fn order_along(segment: Segment, first: XY, second: XY) -> (XY, XY) {
+    use crate::geometry::segment_projection;
+    if segment_projection(second, segment)
+        .cmp_along(&segment_projection(first, segment))
+        .is_lt()
+    {
+        (second, first)
+    } else {
+        (first, second)
+    }
+}
+
+/// What one line's piece walk learned that its ends need.
+struct WalkedLine {
+    first_piece: Option<Loc>,
+    last_piece: Option<Loc>,
+    cut_ends: [Option<PointKey>; 2],
+}
+
+impl WalkedLine {
+    fn ends_on_cut(&self, point: XY) -> bool {
+        self.cut_ends.contains(&Some(PointKey::new(point)))
+    }
+}
+
+/// Walk one line's segments in order, cutting each at its boundary contacts
+/// and witnessing every piece and cut. A piece that continues across a
+/// vertex keeps its location; a cut ends it.
+fn walk_line_pieces(
+    chains: &LineworkChains,
+    linework: &Operand,
+    polygons: &[&crate::geometry::Polygon],
+    span: std::ops::Range<usize>,
+    cuts: &mut [Vec<Cut>],
+    interval: &mut De9imInterval,
+) -> WalkedLine {
+    use crate::geometry::segment_midpoint;
+    let mut walked = WalkedLine {
+        first_piece: None,
+        last_piece: None,
+        cut_ends: [None, None],
+    };
+    let mut piece: Option<Loc> = None;
+    let mut span_depth = 0_i32;
+    let (line_start, line_end) = (
+        chains.segments[span.start].start,
+        chains.segments[span.end - 1].end,
+    );
+    for ordinal in span.clone() {
+        let segment = chains.segments[ordinal];
+        let slot = &mut cuts[ordinal - linework.first];
+        slot.sort_by(|left, right| left.at.cmp_along(&right.at));
+        let mut cursor = segment.start;
+        let mut index = 0;
+        while index < slot.len() {
+            // Every cut at this position, together.
+            let at = index;
+            let point = slot[at].point;
+            let mut delta = 0_i32;
+            while index < slot.len() && slot[index].at.cmp_along(&slot[at].at).is_eq() {
+                delta += i32::from(slot[index].span_delta);
+                index += 1;
+            }
+            if !same_point(cursor, point) {
+                if span_depth > 0 {
+                    piece = None; // inside a shared span: on the boundary
+                } else {
+                    let location = *piece.get_or_insert_with(|| {
+                        locate_in_polygons(polygons, segment_midpoint(Segment { start: cursor, end: point }).xy())
+                    });
+                    interval.witness(location, Loc::Interior, Dimension::Curve);
+                    walked.first_piece.get_or_insert(location);
+                    walked.last_piece = Some(location);
+                }
+            }
+            interval.witness(Loc::Boundary, linework.class_of(point), Dimension::Point);
+            if same_point(point, line_start) {
+                walked.cut_ends[0] = Some(PointKey::new(point));
+            }
+            if same_point(point, line_end) {
+                walked.cut_ends[1] = Some(PointKey::new(point));
+            }
+            span_depth += delta;
+            cursor = point;
+            piece = None;
+        }
+        if !same_point(cursor, segment.end) && span_depth == 0 {
+            let location = *piece.get_or_insert_with(|| {
+                locate_in_polygons(polygons, segment_midpoint(Segment { start: cursor, end: segment.end }).xy())
+            });
+            interval.witness(location, Loc::Interior, Dimension::Curve);
+            walked.first_piece.get_or_insert(location);
+            walked.last_piece = Some(location);
+        }
+    }
+    walked
+}
+
+/// The full matrix of an areal operand against a linework operand, in
+/// either order, or `None` when either is not admitted here.
+pub(crate) fn direct_areal_linework_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
+    let unwrap = |outcome: Outcome| match outcome {
+        Outcome::Matrix(matrix) => matrix,
+        Outcome::Verdict(_) => unreachable!("no predicate was asked"),
+    };
+    if let Some(outcome) = relate_areal_linework(left, right.shape(), |_| None) {
+        return Some(unwrap(outcome));
+    }
+    relate_areal_linework(right, left.shape(), |_| None).map(|outcome| unwrap(outcome).transpose())
+}
+
+/// One named predicate over an areal and a linework operand, in either
+/// order, decided as early as the evidence allows.
+pub(crate) fn direct_areal_linework_predicate(
+    spec: &PredicateSpec,
+    left: &PreparedPlan,
+    right: &PreparedPlan,
+) -> Option<bool> {
+    let finish = |outcome: Outcome, spec: &PredicateSpec| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
+    };
+    if let Some(outcome) = relate_areal_linework(left, right.shape(), |interval| {
+        predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Curve)
+    }) {
+        return Some(finish(outcome, spec));
+    }
+    // Swapped operands: the predicate on the (line, area) pair is the same
+    // predicate on the transposed (area, line) interval.
+    relate_areal_linework(right, left.shape(), |interval| {
+        predicate_verdict(&interval.transpose(), spec.predicate, Dimension::Curve, Dimension::Surface)
+    })
+    .map(|outcome| match outcome {
+        Outcome::Verdict(verdict) => verdict,
+        Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix.transpose()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! Differential against the graph path, which stays as the oracle. Every
@@ -1018,4 +1308,120 @@ mod tests {
         }
     }
 
+    mod areal_linework {
+        use super::*;
+        use crate::geometry::relate::graph_matrix::try_cartesian_polygon_line_relate;
+        use crate::geometry::{Polygon, Ring};
+
+        fn ring(points: &[(f64, f64)]) -> Ring {
+            let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+            Ring::closed_coordseq(CoordSeq::from_xy(&xy)).unwrap()
+        }
+        fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
+            Shape::Polygon(Polygon {
+                shell: ring(shell),
+                holes: holes.iter().map(|hole| ring(hole)).collect::<Vec<_>>().into(),
+            })
+        }
+        fn square(x: f64, y: f64, size: f64) -> Vec<(f64, f64)> {
+            vec![(x, y), (x + size, y), (x + size, y + size), (x, y + size), (x, y)]
+        }
+
+        /// The polygon/line fold is the oracle wherever it admits the pair: it
+        /// agrees with GEOS where the graph does not (the graph drops a plain
+        /// boundary crossing on the star below — see the ledger). Outside its
+        /// admission the graph is what there is.
+        fn check(label: &str, area: &Shape, line: &Shape) {
+            let (area_plan, line_plan) = (PreparedPlan::transient(area), PreparedPlan::transient(line));
+            let graph = try_cartesian_polygon_line_relate(&area_plan, &line_plan)
+                .unwrap_or_else(|| oracle(area, line));
+            let direct = direct_areal_linework_relate(&area_plan, &line_plan)
+                .unwrap_or_else(|| panic!("{label}: admitted"));
+            assert_eq!(direct.text(), graph.text(), "{label}: direct matrix");
+            let swapped = direct_areal_linework_relate(&line_plan, &area_plan).unwrap();
+            assert_eq!(swapped.text(), graph.transpose().text(), "{label}: swapped matrix");
+            for predicate in every_predicate() {
+                let spec = spec_of(predicate);
+                let early = direct_areal_linework_predicate(&spec, &area_plan, &line_plan)
+                    .unwrap_or_else(|| panic!("{label}: {predicate:?} admitted"));
+                assert_eq!(early, predicate_matrix_value(&spec, graph), "{label}: {predicate:?}");
+                let early_swapped =
+                    direct_areal_linework_predicate(&spec, &line_plan, &area_plan).unwrap();
+                assert_eq!(
+                    early_swapped,
+                    predicate_matrix_value(&spec, graph.transpose()),
+                    "{label}: {predicate:?} swapped"
+                );
+            }
+        }
+
+        #[test]
+        fn structured_corpus_matches_the_graph_oracle() {
+            let unit = polygon(&square(0.0, 0.0, 4.0), &[]);
+            let holed = polygon(&square(0.0, 0.0, 6.0), &[&square(2.0, 2.0, 2.0)]);
+            let cases: Vec<(&str, &Shape, Shape)> = vec![
+                ("crossing", &unit, line(&[(-1.0, 1.0), (5.0, 1.0)])),
+                ("inside", &unit, line(&[(1.0, 1.0), (2.0, 2.0)])),
+                ("outside, overlapping bounds", &unit, line(&[(-1.0, 5.0), (5.0, -1.0)])),
+                ("along an edge", &unit, line(&[(1.0, 0.0), (3.0, 0.0)])),
+                ("touching a vertex from outside", &unit, line(&[(4.0, 4.0), (6.0, 6.0)])),
+                ("through a vertex", &unit, line(&[(3.0, 5.0), (5.0, 3.0)])),
+                ("ending on the boundary from inside", &unit, line(&[(2.0, 2.0), (4.0, 2.0)])),
+                ("ending on the boundary from outside", &unit, line(&[(6.0, 2.0), (4.0, 2.0)])),
+                ("entering, leaving, re-entering", &unit, line(&[(2.0, 2.0), (6.0, 2.0), (6.0, 3.0), (2.0, 3.0)])),
+                ("covering the whole boundary", &unit, line(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)])),
+                ("covering the boundary and more", &unit, line(&[(-1.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)])),
+                ("inside a hole", &holed, line(&[(2.5, 2.5), (3.5, 3.5)])),
+                ("crossing a hole", &holed, line(&[(1.0, 3.0), (5.0, 3.0)])),
+                ("along a hole edge", &holed, line(&[(2.0, 2.0), (4.0, 2.0)])),
+                ("multi: one part inside, one outside", &unit, multi(&[&[(1.0, 1.0), (2.0, 2.0)], &[(10.0, 10.0), (11.0, 11.0)]])),
+                ("multi: parts meeting on the boundary", &unit, multi(&[&[(2.0, 2.0), (4.0, 2.0)], &[(4.0, 2.0), (6.0, 2.0)]])),
+                ("closed line inside", &unit, line(&[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 1.0)])),
+                ("collinear touch at a segment end", &unit, line(&[(4.0, 1.0), (4.0, 0.0), (5.0, 0.0)])),
+            ];
+            for (label, area, probe) in &cases {
+                check(label, area, probe);
+            }
+        }
+
+        #[test]
+        fn seeded_lattice_lines_against_a_star_match_the_graph_oracle() {
+            let mut state = 0x1234_5678_9ABC_DEF1_u64;
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let star: Vec<(f64, f64)> = {
+                let n = 9;
+                let mut points: Vec<(f64, f64)> = (0..n)
+                    .map(|i| {
+                        let angle = i as f64 / n as f64 * std::f64::consts::TAU;
+                        let radius = if i % 2 == 0 { 3.0 } else { 1.5 };
+                        ((3.0 + radius * angle.cos()).round(), (3.0 + radius * angle.sin()).round())
+                    })
+                    .collect();
+                points.push(points[0]);
+                points
+            };
+            let area = polygon(&star, &[]);
+            let mut checked = 0;
+            for _ in 0..3000 {
+                let count = 2 + (next() % 4) as usize;
+                let points: Vec<(f64, f64)> = (0..count)
+                    .map(|_| ((next() % 8) as f64, (next() % 8) as f64))
+                    .collect();
+                let probe = line(&points);
+                if direct_linework_relate(&probe, &probe).is_none()
+                    || !PreparedPlan::transient(&probe).is_simple_cached()
+                {
+                    continue;
+                }
+                check(&format!("fuzz star={star:?} line={points:?}"), &area, &probe);
+                checked += 1;
+            }
+            assert!(checked > 1000, "only {checked} pairs checked");
+        }
+    }
 }
