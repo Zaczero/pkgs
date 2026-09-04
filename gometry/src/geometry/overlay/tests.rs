@@ -2212,3 +2212,21 @@ mod binary_areal_overlay_tests {
         assert_eq!(polygon.holes.len(), 1);
     }
 }
+
+/// Every overlay lane leaves through one builder, so nodes on straight runs
+/// never survive to output rings.
+#[test]
+fn overlay_output_rings_carry_no_collinear_nodes() {
+    let shape = |wkt: &str| crate::io::parse_wkt(wkt).unwrap();
+    let wkt = |shape: &Shape| crate::io::to_wkt(shape).unwrap();
+    let holed = shape("POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))");
+    let plain = shape("POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
+    let partner = shape("POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1))");
+    let strict = Strictness::Strict;
+    assert_eq!(wkt(&plain.union(&partner, strict).unwrap()), "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
+    assert_eq!(wkt(&holed.union(&partner, strict).unwrap()), "POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))");
+    assert_eq!(
+        wkt(&holed.difference(&partner, strict).unwrap()),
+        "POLYGON ((0 0, 4 0, 4 4, 3 4, 3 1, 1 1, 1 4, 0 4, 0 0))"
+    );
+}

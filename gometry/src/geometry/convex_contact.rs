@@ -118,6 +118,9 @@ enum ScanFlow {
     Bail,
 }
 
+/// Total staged shell vertices above which the general segment sweep wins.
+const CONVEX_CONTACT_MAX_VERTICES: usize = 1000;
+
 fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> {
     if pool.rings.len() != 2 {
         return None;
@@ -135,14 +138,16 @@ fn eligible_rings(pool: &OperandPool) -> Option<(&OrientedRing, &OrientedRing)> 
     }
     let a = left.points.as_ref();
     let b = right.points.as_ref();
-    if a.len() < 3 || b.len() < 3 {
+    if a.len() < 3 || b.len() < 3 || a.len() + b.len() > CONVEX_CONTACT_MAX_VERTICES {
+        return None;
+    }
+    // Convexity uses an exact orientation per vertex, so reject disjoint
+    // envelopes before paying for it.
+    if !Bounds::from_xy_iter(a.iter().copied()).intersects(Bounds::from_xy_iter(b.iter().copied()))
+    {
         return None;
     }
     if !shell_is_convex(a) || !shell_is_convex(b) {
-        return None;
-    }
-    if !Bounds::from_xy_iter(a.iter().copied()).intersects(Bounds::from_xy_iter(b.iter().copied()))
-    {
         return None;
     }
     Some((left, right))

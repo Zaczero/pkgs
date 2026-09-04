@@ -5,13 +5,50 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
-    HashSet, LineSeq, Point, PointKey, Polygon, Segment, Shape, point_on_segment,
+    HashSet, LineSeq, Point, PointKey, Polygon, Ring, Segment, Shape, point_on_segment,
 };
 
 /// Order-preserving topological dedup of overlay output points.
 pub(crate) fn dedup_points(points: &mut Vec<Point>) {
     let mut seen: HashSet<PointKey> = HashSet::with_capacity(points.len());
     points.retain(|point| seen.insert(PointKey::new(*point)));
+}
+
+/// Overlay nodes rings where boundaries meet; a node on a straight run does
+/// not define the output region and is removed before the result is emitted.
+fn drop_collinear_ring_vertices(polygon: &Polygon) -> Polygon {
+    let simplify = |ring: &Ring| Ring::from_closed(drop_collinear_vertices(ring.coords().iter_coords().collect()));
+    Polygon::new(simplify(&polygon.shell), polygon.holes.iter().map(simplify).collect())
+}
+
+/// One stack pass plus the seam removes vertices between collinear neighbours.
+pub(crate) fn drop_collinear_vertices(mut vertices: Vec<Point>) -> Vec<Point> {
+    if vertices.len() <= 4 {
+        return vertices;
+    }
+    vertices.pop();
+    let mut kept = Vec::with_capacity(vertices.len());
+    for vertex in vertices {
+        while kept.len() >= 2 && point_on_segment(kept[kept.len() - 1], kept[kept.len() - 2], vertex) {
+            kept.pop();
+        }
+        kept.push(vertex);
+    }
+    loop {
+        let count = kept.len();
+        if count <= 3 {
+            break;
+        }
+        if point_on_segment(kept[count - 1], kept[count - 2], kept[0]) {
+            kept.pop();
+        } else if point_on_segment(kept[0], kept[count - 1], kept[1]) {
+            kept.remove(0);
+        } else {
+            break;
+        }
+    }
+    kept.push(kept[0]);
+    kept
 }
 /// Canonicalize overlay buckets into the narrowest representable `Shape`.
 ///
@@ -227,6 +264,7 @@ pub(crate) fn build_overlay_shape_from_chains(
     lines: Vec<CoordSeq>,
     polygons: Vec<Polygon>,
 ) -> crate::error::Result<Shape> {
+    let polygons: Vec<Polygon> = polygons.iter().map(drop_collinear_ring_vertices).collect();
     let polygon_bounds: Vec<Option<Bounds>> =
         polygons.iter().map(|polygon| polygon.bounds()).collect();
     let mut surviving: Vec<Point> = points

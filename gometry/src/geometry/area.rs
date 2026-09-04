@@ -247,20 +247,19 @@ pub(crate) fn exact_ring_area_centroid_sums_local(
 /// Axis residual extent for scale selection. Prefer the finite `|x - origin|`
 /// span; when subtraction overflows, fall back to `max(|x|, |origin|)` so a
 /// power-of-two scale still maps `x*s - origin*s` into a normal range.
-fn axis_extent_for_scale(values: impl IntoIterator<Item = f64>, origin: f64) -> (f64, bool) {
+fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: f64) -> (f64, bool) {
     let mut max_delta = 0.0_f64;
-    let mut max_abs = origin.abs();
     let mut overflow = false;
-    for x in values {
-        max_abs = max_abs.max(x.abs());
+    for x in values.clone() {
         let d = (x - origin).abs();
-        if d.is_finite() {
-            max_delta = max_delta.max(d);
-        } else {
-            overflow = true;
-        }
+        let finite = d < f64::INFINITY;
+        max_delta = max_delta.max(if finite { d } else { 0.0 });
+        overflow |= !finite;
     }
     if overflow {
+        let max_abs = values
+            .into_iter()
+            .fold(origin.abs(), |extent, x| extent.max(x.abs()));
         (max_abs, true)
     } else {
         (max_delta, false)
