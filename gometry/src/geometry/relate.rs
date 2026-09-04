@@ -25,11 +25,11 @@ pub(crate) use direct::{
     direct_linework_predicate, direct_linework_relate, stage_linework, stage_rings,
 };
 pub(crate) use graph_matrix::{
-    GeographicPrepared, graph_intersects_rectangle_data, graph_relate_data,
+    GeographicPrepared, collect_polygons, graph_intersects_rectangle_data, graph_relate_data,
     graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
     graph_relate_data_geographic_with_right_graph, graph_relate_data_with_left_graph,
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
-    line_scalar_prefers_direct_polygon_relate,
+    line_scalar_prefers_direct_polygon_relate, ring_is_sound,
 };
 pub(crate) use operands::{
     line_has_nonzero_segment, multiline_has_nonzero_segment, polygon_has_nondegenerate_area,

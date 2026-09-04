@@ -215,6 +215,7 @@ struct TopologyPlan {
     /// The direct relation engines' stagings, built once per operand.
     linework: OnceLock<Box<Option<crate::geometry::StagedLinework>>>,
     rings: OnceLock<Box<Option<crate::geometry::StagedRings>>>,
+    areal_rings_sound: OnceLock<bool>,
 }
 
 /// Shape-derived metric products shared by persistent and transient plans.
@@ -340,6 +341,18 @@ impl PreparedPlan {
             .get_or_init(|| Box::new(crate::geometry::stage_linework(self.shape())))
             .as_ref()
             .as_ref()
+    }
+
+    /// Whether every ring is sound for the direct areal engines, cached so a
+    /// predicate probe need not repeat exact area or zero-edge admission.
+    pub(crate) fn areal_rings_sound(&self) -> bool {
+        *self.topology().areal_rings_sound.get_or_init(|| {
+            let mut polygons = Vec::new();
+            crate::geometry::collect_polygons(self.shape(), &mut polygons).is_some()
+                && polygons
+                    .iter()
+                    .all(|polygon| polygon.rings().all(crate::geometry::ring_is_sound))
+        })
     }
 
     /// The shape's rings staged for the direct relation engine, `None` when

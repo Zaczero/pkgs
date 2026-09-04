@@ -912,12 +912,17 @@ fn fast_ring_area_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<(f64, 
 }
 
 pub(crate) fn ring_decision_area<C: Coordinates + ?Sized>(points: &C) -> RingDecisionArea {
+    RingDecisionArea {
+        sign: ring_area_sign(points),
+        magnitude: ring_area_measure(points),
+    }
+}
+
+/// The exact sign of a closed ring's area without computing its magnitude.
+pub(crate) fn ring_area_sign<C: Coordinates + ?Sized>(points: &C) -> AreaSign {
     let pairs = points.coord_count().saturating_sub(1);
     if pairs == 0 {
-        return RingDecisionArea {
-            sign: AreaSign::Zero,
-            magnitude: AreaMeasure(0.0),
-        };
+        return AreaSign::Zero;
     }
     let sign = if let Some((xs, ys)) = points.xy_columns() {
         exact_ring_area_sign_columns(xs, ys, pairs)
@@ -931,14 +936,11 @@ pub(crate) fn ring_decision_area<C: Coordinates + ?Sized>(points: &C) -> RingDec
         }
         exact_ring_area_sign_columns(&xs, &ys, pairs)
     };
-    RingDecisionArea {
-        sign,
-        magnitude: ring_area_measure(points),
-    }
+    sign
 }
 
 pub(crate) fn ring_winding<C: Coordinates + ?Sized>(points: &C) -> RingWinding {
-    area_sign_to_winding(ring_decision_area(points).sign())
+    area_sign_to_winding(ring_area_sign(points))
 }
 
 pub(crate) fn closed_columns_winding(xs: &[f64], ys: &[f64], pairs: usize) -> RingWinding {

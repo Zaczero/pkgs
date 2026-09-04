@@ -220,6 +220,7 @@ pub(crate) use relate::{
     graph_relate_data_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
     line_scalar_prefers_direct_polygon_relate,
 };
+pub(crate) use relate::{collect_polygons, ring_is_sound};
 pub(crate) use relate::{
     StagedLinework, StagedRings, direct_areal_linework_predicate,
     direct_areal_predicate, direct_linework_predicate, stage_linework, stage_rings,

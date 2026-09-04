@@ -139,6 +139,25 @@ pub(crate) enum Outcome {
     Matrix(De9im),
 }
 
+/// Whether a caller needs a complete matrix or can stop at a predicate result.
+enum Ask<'a> {
+    Matrix,
+    Predicate(&'a mut dyn FnMut(&De9imInterval) -> Option<bool>),
+}
+
+impl Ask<'_> {
+    fn decide(&mut self, interval: &De9imInterval) -> Option<bool> {
+        match self {
+            Self::Matrix => None,
+            Self::Predicate(decide) => decide(interval),
+        }
+    }
+
+    const fn probes(&self) -> bool {
+        matches!(self, Self::Predicate(_))
+    }
+}
+
 /// Relate two admitted linework operands, stopping as soon as `decide` returns
 /// a verdict. `None` when either operand is not admitted.
 fn relate_linework(
@@ -398,11 +417,10 @@ pub(crate) struct StagedRings {
     ring_vertices: Vec<XY>,
 }
 
-/// Stage an areal operand's rings, or `None` when it is not areal here (see
-/// `collect_areal_polygons`); admission proper is decided per call.
+/// Stage an areal operand's rings, or `None` when it is not areal here.
 pub(crate) fn stage_rings(shape: &Shape) -> Option<StagedRings> {
     let mut polygons = Vec::new();
-    super::graph_matrix::collect_areal_polygons(shape, &mut polygons)?;
+    super::graph_matrix::collect_polygons(shape, &mut polygons)?;
     if polygons.is_empty() {
         return None;
     }
@@ -436,17 +454,25 @@ impl StagedRings {
 /// Those can only arise in a multi-part or holed operand, so exactly those
 /// are admitted only once validated (cached on a prepared operand, the way
 /// the polygon/line fold already gates); a plain polygon costs nothing here.
-fn admitted_polygons(plan: &PreparedPlan) -> Option<Vec<&crate::geometry::Polygon>> {
+fn polygons_of(plan: &PreparedPlan) -> Option<Vec<&crate::geometry::Polygon>> {
     let mut polygons = Vec::new();
-    super::graph_matrix::collect_areal_polygons(plan.shape(), &mut polygons)?;
-    if polygons.is_empty() {
-        return None;
+    super::graph_matrix::collect_polygons(plan.shape(), &mut polygons)?;
+    (!polygons.is_empty()).then_some(polygons)
+}
+
+/// The stricter admission required only before a boundary sweep. Point probes
+/// read shell-minus-holes directly and remain sound for every structural shape.
+fn sweep_admits(plan: &PreparedPlan, polygons: &[&crate::geometry::Polygon]) -> bool {
+    if !plan.areal_rings_sound() {
+        return false;
     }
     let adjacency_possible = polygons.len() > 1 || polygons.iter().any(|polygon| !polygon.holes.is_empty());
-    if adjacency_possible && plan.validate_cached().is_some() {
-        return None;
-    }
-    Some(polygons)
+    !adjacency_possible || plan.validate_cached().is_none()
+}
+
+fn first_vertex(polygon: &crate::geometry::Polygon) -> XY {
+    let shell = polygon.shell.coords();
+    XY::new(shell.xs()[0], shell.ys()[0])
 }
 
 /// Where a point lies with respect to the union of `polygons`: on one of
@@ -502,16 +528,37 @@ fn locate_off_boundary(polygons: &[&crate::geometry::Polygon], point: XY) -> Opt
 fn relate_areal(
     left: &PreparedPlan,
     right: &PreparedPlan,
-    mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
+    mut ask: Ask<'_>,
 ) -> Option<Outcome> {
-    let left_polygons = admitted_polygons(left)?;
-    let right_polygons = admitted_polygons(right)?;
-    let a = left.staged_rings()?;
-    let b = right.staged_rings()?;
+    let left_polygons = polygons_of(left)?;
+    let right_polygons = polygons_of(right)?;
     let mut interval = De9imInterval::open(StagedRings::shape(), StagedRings::shape());
-    if let Some(verdict) = decide(&interval) {
+    if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
+    if ask.probes() {
+        interval.witness(
+            Loc::Boundary,
+            locate_in_polygons(&right_polygons, first_vertex(left_polygons[0])),
+            Dimension::Point,
+        );
+        if let Some(verdict) = ask.decide(&interval) {
+            return Some(Outcome::Verdict(verdict));
+        }
+        interval.witness(
+            locate_in_polygons(&left_polygons, first_vertex(right_polygons[0])),
+            Loc::Boundary,
+            Dimension::Point,
+        );
+        if let Some(verdict) = ask.decide(&interval) {
+            return Some(Outcome::Verdict(verdict));
+        }
+    }
+    if !sweep_admits(left, &left_polygons) || !sweep_admits(right, &right_polygons) {
+        return None;
+    }
+    let a = left.staged_rings()?;
+    let b = right.staged_rings()?;
 
     let mut boundaries_met = false;
     let verdict = sweep_contacts(&a.chains, &b.chains, |_ia, _ib, contact| {
@@ -542,7 +589,7 @@ fn relate_areal(
             },
         }
         boundaries_met = true;
-        decide(&interval)
+        ask.decide(&interval)
     });
     if let Some(verdict) = verdict {
         return Some(Outcome::Verdict(verdict));
@@ -577,7 +624,7 @@ fn relate_areal(
             interval.settle(row, col);
         }
     }
-    if let Some(verdict) = decide(&interval) {
+    if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
     Some(Outcome::Matrix(
@@ -589,7 +636,7 @@ fn relate_areal(
 /// never meet, or `None` for the touching cases the contact sweep cannot
 /// settle alone.
 pub(crate) fn direct_areal_relate(left: &PreparedPlan, right: &PreparedPlan) -> Option<De9im> {
-    match relate_areal(left, right, |_| None)? {
+    match relate_areal(left, right, Ask::Matrix)? {
         Outcome::Matrix(matrix) => Some(matrix),
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
     }
@@ -602,9 +649,9 @@ pub(crate) fn direct_areal_predicate(
     left: &PreparedPlan,
     right: &PreparedPlan,
 ) -> Option<bool> {
-    Some(match relate_areal(left, right, |interval| {
+    Some(match relate_areal(left, right, Ask::Predicate(&mut |interval| {
         predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Surface)
-    })? {
+    }))? {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
     })
@@ -641,16 +688,30 @@ struct Cut {
 fn relate_areal_linework(
     area: &PreparedPlan,
     line: &PreparedPlan,
-    mut decide: impl FnMut(&De9imInterval) -> Option<bool>,
+    mut ask: Ask<'_>,
 ) -> Option<Outcome> {
-    let polygons = admitted_polygons(area)?;
-    let rings = area.staged_rings()?;
+    let polygons = polygons_of(area)?;
     let linework = line.staged_linework()?;
     let mut interval = De9imInterval::open(StagedRings::shape(), linework.shape());
     interval.witness(Loc::Interior, Loc::Exterior, Dimension::Surface);
-    if let Some(verdict) = decide(&interval) {
+    if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
+    if ask.probes() {
+        let probe = linework.chains.segments[0].start;
+        interval.witness(
+            locate_in_polygons(&polygons, probe),
+            linework.class_of(probe),
+            Dimension::Point,
+        );
+        if let Some(verdict) = ask.decide(&interval) {
+            return Some(Outcome::Verdict(verdict));
+        }
+    }
+    if !sweep_admits(area, &polygons) {
+        return None;
+    }
+    let rings = area.staged_rings()?;
 
     let mut cuts: Vec<Vec<Cut>> = vec![Vec::new(); linework.chains.segments.len()];
     let mut ring_spans: Vec<(usize, XY, XY)> = Vec::new();
@@ -667,7 +728,7 @@ fn relate_areal_linework(
             interval.witness(Loc::Boundary, Loc::Interior, Dimension::Curve);
         }
         interval.witness(Loc::Boundary, linework.class_of(contact_point), Dimension::Point);
-        decide(&interval)
+        ask.decide(&interval)
     });
     if let Some(verdict) = verdict {
         return Some(Outcome::Verdict(verdict));
@@ -693,7 +754,7 @@ fn relate_areal_linework(
                 interval.witness(row, Loc::Boundary, Dimension::Point);
             }
         }
-        if let Some(verdict) = decide(&interval) {
+        if let Some(verdict) = ask.decide(&interval) {
             return Some(Outcome::Verdict(verdict));
         }
     }
@@ -713,7 +774,7 @@ fn relate_areal_linework(
             interval.settle(row, col);
         }
     }
-    if let Some(verdict) = decide(&interval) {
+    if let Some(verdict) = ask.decide(&interval) {
         return Some(Outcome::Verdict(verdict));
     }
     Some(Outcome::Matrix(
@@ -860,10 +921,10 @@ pub(crate) fn direct_areal_linework_relate(left: &PreparedPlan, right: &Prepared
         Outcome::Matrix(matrix) => matrix,
         Outcome::Verdict(_) => unreachable!("no predicate was asked"),
     };
-    if let Some(outcome) = relate_areal_linework(left, right, |_| None) {
+    if let Some(outcome) = relate_areal_linework(left, right, Ask::Matrix) {
         return Some(unwrap(outcome));
     }
-    relate_areal_linework(right, left, |_| None).map(|outcome| unwrap(outcome).transpose())
+    relate_areal_linework(right, left, Ask::Matrix).map(|outcome| unwrap(outcome).transpose())
 }
 
 /// One named predicate over an areal and a linework operand, in either
@@ -877,16 +938,16 @@ pub(crate) fn direct_areal_linework_predicate(
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix),
     };
-    if let Some(outcome) = relate_areal_linework(left, right, |interval| {
+    if let Some(outcome) = relate_areal_linework(left, right, Ask::Predicate(&mut |interval| {
         predicate_verdict(interval, spec.predicate, Dimension::Surface, Dimension::Curve)
-    }) {
+    })) {
         return Some(finish(outcome, spec));
     }
     // Swapped operands: the predicate on the (line, area) pair is the same
     // predicate on the transposed (area, line) interval.
-    relate_areal_linework(right, left, |interval| {
+    relate_areal_linework(right, left, Ask::Predicate(&mut |interval| {
         predicate_verdict(&interval.transpose(), spec.predicate, Dimension::Curve, Dimension::Surface)
-    })
+    }))
     .map(|outcome| match outcome {
         Outcome::Verdict(verdict) => verdict,
         Outcome::Matrix(matrix) => predicate_matrix_value(spec, matrix.transpose()),
@@ -1059,6 +1120,25 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 1000, "only {checked} admitted pairs");
+    }
+
+    /// Two long jagged lines exercise the two-pool sweep above its brute-force
+    /// threshold, both for crossing and separated bands.
+    #[test]
+    fn long_jagged_lines_reach_the_two_pool_sweep() {
+        let jagged = |count: usize, dx: f64, dy: f64| -> Shape {
+            let points: Vec<(f64, f64)> = (0..count)
+                .map(|i| {
+                    let x = i as f64 * 0.37 + dx;
+                    let y = if i % 2 == 0 { 0.0 } else { 1.0 } + dy + (i % 7) as f64 * 0.05;
+                    (x, y)
+                })
+                .collect();
+            line(&points)
+        };
+        check("long jagged, crossing", &jagged(400, 0.0, 0.0), &jagged(400, 0.185, -0.4));
+        check("long jagged, disjoint", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 5.0));
+        check("long jagged, separated bands", &jagged(300, 0.0, 0.0), &jagged(300, 0.0, 2.0));
     }
 
     #[test]

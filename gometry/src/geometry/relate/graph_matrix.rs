@@ -597,18 +597,20 @@ pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     Some(matrix)
 }
 
-pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
+/// Every polygon of an areal shape, structurally, or `None` otherwise.
+pub(crate) fn collect_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
     match shape {
-        Shape::Polygon(polygon) => collect_areal_polygon(polygon, polygons),
+        Shape::Polygon(polygon) => {
+            polygons.push(polygon);
+            Some(())
+        },
         Shape::MultiPolygon(parts) => {
-            for polygon in parts {
-                collect_areal_polygon(polygon, polygons)?;
-            }
+            polygons.extend(parts.iter());
             Some(())
         },
         Shape::GeometryCollection(parts) => {
             for part in parts {
-                collect_areal_polygons(part, polygons)?;
+                collect_polygons(part, polygons)?;
             }
             Some(())
         },
@@ -620,18 +622,20 @@ pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'
     }
 }
 
-fn collect_areal_polygon<'a>(polygon: &'a Polygon, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
-    if polygon.rings().any(|ring| {
-        ring.coord_count() < Ring::MIN_VERTICES_CLOSED
-            || crate::geometry::ring_winding(ring).is_degenerate()
-            || ring
-                .segment_pairs()
-                .any(|[start, end]| same_point(start, end))
-    }) {
-        return None;
-    }
-    polygons.push(polygon);
-    Some(())
+pub(super) fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
+    let first = polygons.len();
+    collect_polygons(shape, polygons)?;
+    polygons[first..]
+        .iter()
+        .all(|polygon| polygon.rings().all(ring_is_sound))
+        .then_some(())
+}
+
+/// A closed ring with nonzero area and no zero-length segment.
+pub(crate) fn ring_is_sound(ring: &Ring) -> bool {
+    ring.coord_count() >= Ring::MIN_VERTICES_CLOSED
+        && !crate::geometry::ring_winding(ring).is_degenerate()
+        && !ring.segment_pairs().any(|[start, end]| same_point(start, end))
 }
 
 const fn areal_location(winding: i32) -> Loc {
