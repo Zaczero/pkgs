@@ -64,21 +64,6 @@ const FULL_TURN_DEGREES: f64 = 360.0;
 const HALF_TURN_DEGREES: f64 = 180.0;
 const ORIENTATION_ERRBOUND: f64 = 128.0 * f64::EPSILON;
 
-#[cfg(test)]
-std::thread_local! {
-    static AUTHORITY_EDGE_EXACT_REFINEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn reset_authority_edge_exact_refinements() {
-    AUTHORITY_EDGE_EXACT_REFINEMENTS.set(0);
-}
-
-#[cfg(test)]
-fn authority_edge_exact_refinements() -> usize {
-    AUTHORITY_EDGE_EXACT_REFINEMENTS.get()
-}
-
 /// Canonical grid-topology spelling of a geographically admitted source.
 ///
 /// The latitude admission sliver at either pole names the pole itself.  Every
@@ -666,8 +651,6 @@ fn exact_authority_edge_touches_rectangle(
     longitude: Bound,
     latitude: Bound,
 ) -> Option<bool> {
-    #[cfg(test)]
-    AUTHORITY_EDGE_EXACT_REFINEMENTS.set(AUTHORITY_EDGE_EXACT_REFINEMENTS.get().saturating_add(1));
     let start = ExactPlanarPoint::from_lifted(edge.start)?;
     let end = ExactPlanarPoint::from_lifted(edge.end)?;
     let start_latitude = degree_expansion_bound(&start.latitude)?;

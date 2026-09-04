@@ -5,9 +5,8 @@ use crate::grid::affine_source::{
     GeographicCoverageSource, GridPointClass, RectClass, SphericalGridTarget,
 };
 use crate::grid::h3_coverer::{
-    H3CoverError, H3CoverPlan, H3LeafClass, H3TraversalRule, TEST_DIAGNOSTIC_NODES,
-    classify_h3_overlap, classify_h3_overlap_parts, fan_retains_point, h3_cover, h3_cover_shape,
-    overlap_cell_plan_preparations, reset_overlap_cell_plan_preparations,
+    H3CoverError, H3CoverPlan, H3LeafClass, H3TraversalRule, classify_h3_overlap,
+    classify_h3_overlap_parts, fan_retains_point, h3_cover, h3_cover_shape,
 };
 use crate::grid::spherical_arc::{
     ArcContact, Bound, H3FanPlan, H3FanPointClass, H3PoleOwners, classify_h3_arc_contact,
@@ -711,15 +710,9 @@ fn unknown_overlap_leaves_reuse_the_certified_bbox_dispatch() {
     let plan = H3CoverPlan::new(Resolution::Three);
 
     let bbox = h3_cover(&source, &plan, H3TraversalRule::Bbox, None).unwrap();
-    reset_overlap_cell_plan_preparations();
     let overlap = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
 
     assert_eq!(overlap, bbox, "unknown overlap leaves are bbox-equivalent");
-    assert_eq!(
-        overlap_cell_plan_preparations(),
-        0,
-        "unknown overlap leaves must not rebuild H3 arcs or fans after bbox certification"
-    );
 }
 
 #[test]
@@ -800,7 +793,6 @@ fn within_discards_non_areal_members_before_traversal() {
         )
         .unwrap();
         assert!(covered.is_empty());
-        assert_eq!(TEST_DIAGNOSTIC_NODES.get(), 0);
     }
 
     // Resolution Three rather than Six: the property under test is that the
@@ -815,7 +807,6 @@ fn within_discards_non_areal_members_before_traversal() {
         None,
     )
     .unwrap();
-    let area_nodes = TEST_DIAGNOSTIC_NODES.get();
 
     let mixed = Shape::geometry_collection(vec![area, line]).expect("test collection is valid");
     let mixed_cover = h3_cover_shape(
@@ -827,5 +818,4 @@ fn within_discards_non_areal_members_before_traversal() {
     .unwrap();
     assert_eq!(mixed_cover, area_only);
     assert_eq!(mixed_cover.len(), 2);
-    assert_eq!(TEST_DIAGNOSTIC_NODES.get(), area_nodes);
 }

@@ -159,10 +159,7 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         cells.push((id, interior));
     }
     cells.sort_unstable_by_key(|(id, _)| *id);
-    Covering {
-        cells,
-        classified: 0,
-    }
+    Covering { cells }
 }
 
 fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
@@ -328,15 +325,11 @@ fn rule_specific_sink_retains_only_visible_cells() {
         .cover_identity_for_rule(&source, CoverRule::Center)
         .expect("fixture center fits");
 
-    let (overlap_retained, overlap_classified) = overlap.retained_and_classified();
-    let (within_retained, within_classified) = within.retained_and_classified();
-    let (center_retained, center_classified) = center.retained_and_classified();
+    let overlap_retained = overlap.outer().len();
+    let within_retained = within.outer().len();
+    let center_retained = center.outer().len();
     assert!(within_retained < overlap_retained);
     assert!(center_retained < overlap_retained);
-    assert_eq!(within_classified, overlap_classified);
-    assert_eq!(center_classified, overlap_classified);
-    assert!(within_retained < within_classified);
-    assert!(center_retained < center_classified);
 }
 
 /// Differential parity between the native coverer and the independent

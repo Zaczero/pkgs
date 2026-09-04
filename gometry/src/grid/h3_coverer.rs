@@ -9,7 +9,6 @@
 //! planar-tile implementation detail, never authority for an exact H3
 //! negative.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use h3o::{CellIndex, LatLng, Resolution};
 
@@ -25,29 +24,6 @@ use crate::grid::spherical_arc::{
     h3_bbox_positive_witnesses, h3_cell_plan,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
-
-static H3_DIAGNOSTIC_NODES: AtomicUsize = AtomicUsize::new(0);
-static H3_DIAGNOSTIC_BBOX_LEAVES: AtomicUsize = AtomicUsize::new(0);
-
-// The unknown-source dispatch is a performance property, not a semantic one:
-// source.is_unknown() would make the relation fail open after the same bbox
-// exclusion.  Keep its preparation-free shape observable without adding any
-// production state.
-#[cfg(test)]
-std::thread_local! {
-    static OVERLAP_CELL_PLAN_PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static TEST_DIAGNOSTIC_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn reset_overlap_cell_plan_preparations() {
-    OVERLAP_CELL_PLAN_PREPARATIONS.set(0);
-}
-
-#[cfg(test)]
-fn overlap_cell_plan_preparations() -> usize {
-    OVERLAP_CELL_PLAN_PREPARATIONS.get()
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum H3TraversalRule {
@@ -102,13 +78,6 @@ pub(crate) fn h3_cover_shape(
     rule: H3TraversalRule,
     max_cells: Option<usize>,
 ) -> Result<Vec<H3CoveredCell>, H3CoverError> {
-    let diagnostic = std::env::var_os("GOMETRY_H3_DIAGNOSTIC").is_some();
-    if diagnostic {
-        H3_DIAGNOSTIC_NODES.store(0, Ordering::Relaxed);
-        H3_DIAGNOSTIC_BBOX_LEAVES.store(0, Ordering::Relaxed);
-    }
-    #[cfg(test)]
-    TEST_DIAGNOSTIC_NODES.set(0);
     // `within` is a claim about the complete source union. Decomposing an
     // aggregate would miss a cell jointly covered by touching components even
     // though neither component contains it alone.
@@ -208,7 +177,6 @@ pub(crate) fn h3_cover(
     max_cells: Option<usize>,
 ) -> Result<Vec<H3CoveredCell>, H3CoverError> {
     const MAX_DFS_FRONTIER: usize = 212; // 122 roots + 6 * 15 depth-first growth.
-    let diagnostic = std::env::var_os("GOMETRY_H3_DIAGNOSTIC").is_some();
     let mut stack = Vec::new();
     stack
         .try_reserve_exact(MAX_DFS_FRONTIER)
@@ -218,11 +186,6 @@ pub(crate) fn h3_cover(
 
     let mut covered = Vec::new();
     while let Some(cell) = stack.pop() {
-        if diagnostic {
-            H3_DIAGNOSTIC_NODES.fetch_add(1, Ordering::Relaxed);
-        }
-        #[cfg(test)]
-        TEST_DIAGNOSTIC_NODES.set(TEST_DIAGNOSTIC_NODES.get() + 1);
         let depth = cell.resolution();
         let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
             source.classify_rect(cap.descendant_windows(cell, plan.poles))
@@ -262,14 +225,6 @@ pub(crate) fn h3_cover(
             .all(|pair| u64::from(pair[0].cell) < u64::from(pair[1].cell)),
         "all root branches must remain disjoint"
     );
-    if diagnostic {
-        eprintln!(
-            "h3 diagnostic: nodes={}, bbox_leaves={}, emitted={}",
-            H3_DIAGNOSTIC_NODES.load(Ordering::Relaxed),
-            H3_DIAGNOSTIC_BBOX_LEAVES.load(Ordering::Relaxed),
-            covered.len(),
-        );
-    }
     Ok(covered)
 }
 
@@ -309,8 +264,6 @@ fn emit_overlap_leaf(
     if source.is_unknown() {
         return emit_bbox_leaf(source, cell, max_cells, covered);
     }
-    #[cfg(test)]
-    OVERLAP_CELL_PLAN_PREPARATIONS.set(OVERLAP_CELL_PLAN_PREPARATIONS.get() + 1);
     let cell_plan = h3_cell_plan(cell, plan.poles);
     if source.classify_rect(cell_plan.bbox()) == RectClass::Outside {
         return Ok(());
@@ -332,9 +285,6 @@ fn emit_bbox_leaf(
     max_cells: Option<usize>,
     covered: &mut Vec<H3CoveredCell>,
 ) -> Result<(), H3CoverError> {
-    if std::env::var_os("GOMETRY_H3_DIAGNOSTIC").is_some() {
-        H3_DIAGNOSTIC_BBOX_LEAVES.fetch_add(1, Ordering::Relaxed);
-    }
     // A point or line source has no area, so it cannot contain a cell rectangle.
     // Skipping the positive-only witness pass here is exact: its only possible
     // outcome for these sources is `Boundary`, after which we run the certified

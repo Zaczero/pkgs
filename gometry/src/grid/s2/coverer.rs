@@ -80,8 +80,6 @@ pub(crate) enum CoverRule {
 #[derive(Clone, Debug)]
 pub(crate) struct Covering {
     cells: Vec<(CellId, bool)>,
-    #[cfg(test)]
-    classified: usize,
 }
 
 impl Covering {
@@ -105,10 +103,6 @@ impl Covering {
             .collect()
     }
 
-    #[cfg(test)]
-    fn retained_and_classified(&self) -> (usize, usize) {
-        (self.cells.len(), self.classified)
-    }
 }
 
 /// The prepared classification context: built once per covering, reused by
@@ -243,11 +237,7 @@ impl Coverer {
         )?;
 
         cells.sort_unstable_by_key(|(id, _)| *id);
-        Ok(Covering {
-            cells,
-            #[cfg(test)]
-            classified: ctx.classes.borrow().len(),
-        })
+        Ok(Covering { cells })
     }
 
     #[cfg(test)]

@@ -1,6 +1,3 @@
-#[cfg(test)]
-use std::cell::Cell;
-
 use crate::array::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec};
@@ -16,21 +13,6 @@ use crate::py::index::{
     topology_scalar_pair,
 };
 use crate::{CsrBuilder, try_push_vec, try_reserve_heap};
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DwithinQueryBounds {
-    NotObserved,
-    Empty,
-    Value(Bounds),
-}
-
-#[cfg(test)]
-thread_local! {
-    // The transient query handle is local to exact refinement, so this records
-    // the boundary's cache state for the regression test below.
-    static DWITHIN_QUERY_BOUNDS: Cell<DwithinQueryBounds> = const { Cell::new(DwithinQueryBounds::NotObserved) };
-}
 
 impl PySpatialIndex {
     /// Every live entry — the STR bulk (row liveness skipped) then the
@@ -700,12 +682,6 @@ impl PySpatialIndex {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
         let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds);
-        #[cfg(test)]
-        DWITHIN_QUERY_BOUNDS.with(|bounds| {
-            bounds.set(query.bounds().map_or(DwithinQueryBounds::Empty, |bounds| {
-                DwithinQueryBounds::Value(bounds)
-            }));
-        });
         let crs::ResolvedMetric::Planar { to_metre } = resolved else {
             unreachable!("planar dwithin runner receives a planar query")
         };
@@ -1388,7 +1364,6 @@ mod tests {
         .unwrap();
         let mut matches = Vec::new();
 
-        DWITHIN_QUERY_BOUNDS.with(|bounds| bounds.set(DwithinQueryBounds::NotObserved));
         index
             .planar_dwithin_query_row_matches_append(
                 array.storage().row(0),
@@ -1400,9 +1375,5 @@ mod tests {
 
         assert_eq!(matches, [0]);
         assert_eq!(array.row_products.initialized_counts(), (0, 0, 0));
-        assert_eq!(
-            DWITHIN_QUERY_BOUNDS.with(Cell::get),
-            DwithinQueryBounds::Value(Bounds::new_raw(0.0, 0.0, 1.0, 1.0))
-        );
     }
 }

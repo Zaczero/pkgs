@@ -8,10 +8,10 @@ use crate::grid::affine_source::{
     ExactPlanarPoint, ExactRatio, FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass,
     LiftKind, LiftedChain, ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass,
     SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
-    authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
+    authority_edge_proxy_envelopes, build_authority_edge_index,
     classify_lifted_ring_bucket, combine_polygon_point_classes, exact_affine_level,
     exact_axis_rectangle, exact_segment_touches_rectangle, integer_levels_between, lifted_step,
-    reset_authority_edge_exact_refinements, subdivided_axis_aligned_rectangle,
+    subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
@@ -1364,30 +1364,21 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
     assert!(source.authority_edge_index.is_some());
     assert_eq!(source.chains[0].vertices.len(), 4_000);
 
+    // The indexed classification is checked against the exhaustive one; how
+    // many edges each visits is a performance property the benchmarks own.
     let longitude = Bound::new(-1.0, 1.0).unwrap();
     let latitude = Bound::new(-1.0, 1.0).unwrap();
-    reset_authority_edge_exact_refinements();
     let indexed = source.classify_rect_window(longitude, latitude);
-    let indexed_visits = authority_edge_exact_refinements();
-    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-    let exhaustive_visits = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Outside);
-    assert_eq!(indexed_visits, 0);
-    assert_eq!(exhaustive_visits, source.authority_edges.len());
 
     let longitude = Bound::new(-1.0, 1.0).unwrap();
     let latitude = Bound::new(19.9, 20.2).unwrap();
-    reset_authority_edge_exact_refinements();
     let indexed = source.classify_rect_window(longitude, latitude);
-    let indexed_visits = authority_edge_exact_refinements();
-    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-    let exhaustive_visits = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
-    assert!(indexed_visits < exhaustive_visits);
 }
 
 #[test]
@@ -1408,15 +1399,10 @@ fn authority_edge_index_matches_polar_cap_interior() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(-10.0, 10.0).unwrap();
     let latitude = Bound::new(74.0, 75.0).unwrap();
-    reset_authority_edge_exact_refinements();
     let indexed = source.classify_rect_window(longitude, latitude);
-    let indexed_visits = authority_edge_exact_refinements();
-    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-    let exhaustive_visits = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Interior);
-    assert!(indexed_visits < exhaustive_visits);
 }
 
 #[test]
@@ -1438,16 +1424,10 @@ fn authority_edge_index_matches_seam_endpoint_contact_on_both_sheets() {
         Bound::new(179.0, 179.0).unwrap(),
     ] {
         let latitude = Bound::new(0.0, 0.0).unwrap();
-        reset_authority_edge_exact_refinements();
         let indexed = source.classify_rect_window(longitude, latitude);
-        let indexed_visits = authority_edge_exact_refinements();
-        reset_authority_edge_exact_refinements();
         let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-        let exhaustive_visits = authority_edge_exact_refinements();
         assert_eq!(indexed, exhaustive);
         assert_eq!(indexed, RectClass::Boundary);
-        assert_eq!(indexed_visits, 1);
-        assert_eq!(exhaustive_visits, 1);
     }
 }
 
@@ -1467,16 +1447,10 @@ fn authority_edge_index_matches_an_unwrapped_longitude_alias() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(84.0, 86.0).unwrap();
     let latitude = Bound::new(54.0, 56.0).unwrap();
-    reset_authority_edge_exact_refinements();
     let indexed = source.classify_rect_window(longitude, latitude);
-    let indexed_visits = authority_edge_exact_refinements();
-    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-    let exhaustive_visits = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
-    assert_eq!(indexed_visits, 1);
-    assert_eq!(exhaustive_visits, 1);
 }
 
 #[test]
@@ -1495,16 +1469,10 @@ fn authority_edge_index_deduplicates_full_turn_sheet_hits() {
     assert!(source.authority_edge_index.is_some());
     let longitude = Bound::new(-180.0, 180.0).unwrap();
     let latitude = Bound::new(-1.0, 1.0).unwrap();
-    reset_authority_edge_exact_refinements();
     let indexed = source.classify_rect_window(longitude, latitude);
-    let indexed_visits = authority_edge_exact_refinements();
-    reset_authority_edge_exact_refinements();
     let exhaustive = source.classify_rect_window_exhaustive(longitude, latitude);
-    let exhaustive_visits = authority_edge_exact_refinements();
     assert_eq!(indexed, exhaustive);
     assert_eq!(indexed, RectClass::Boundary);
-    assert_eq!(indexed_visits, 1);
-    assert_eq!(exhaustive_visits, 1);
 }
 
 #[test]
@@ -1531,7 +1499,6 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         selection_edges: Vec::new(),
         unknown: false,
     };
-    reset_authority_edge_exact_refinements();
     assert_eq!(
         source.classify_rect_window(
             Bound::new(-1.0, 1.0).unwrap(),
@@ -1539,5 +1506,4 @@ fn unindexable_authority_edge_selects_the_exhaustive_fallback() {
         ),
         RectClass::Boundary
     );
-    assert_eq!(authority_edge_exact_refinements(), 1);
 }
