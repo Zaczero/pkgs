@@ -195,4 +195,4 @@ impl AxisFrame {
     }
 }
 
-pub(crate) use crate::geometry::tessellation::exact::incircle_sign as exact_incircle_sign;
+pub(crate) use crate::geometry::tessellation::exact::incircle as exact_incircle_sign;

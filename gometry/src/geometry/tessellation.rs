@@ -3,6 +3,7 @@
 //! polygonization.
 
 mod boundary;
+mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 mod earcut;

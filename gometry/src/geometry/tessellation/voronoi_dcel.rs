@@ -878,7 +878,7 @@ fn build_primitives(
         .collect();
     frame_inputs.extend(clip.rings.iter().flatten().cloned());
     frame_inputs.extend((0..complex.component_count()).map(|id| complex.center(id).clone()));
-    let frame = match exact::enclosing_frame_binary64(&frame_inputs) {
+    let frame = match exact::enclosing_frame_binary64(frame_inputs.iter()) {
         Some(frame) => frame,
         None => exact::enclosing_frame(&frame_inputs)?,
     };
@@ -4546,7 +4546,7 @@ fn dual_build_rings(
         .collect();
     frame_inputs.extend(clip.rings.iter().flatten().cloned());
     frame_inputs.extend(centers.iter().cloned());
-    let frame = match exact::enclosing_frame_binary64(&frame_inputs) {
+    let frame = match exact::enclosing_frame_binary64(frame_inputs.iter()) {
         Some(frame) => frame,
         None => exact::enclosing_frame(&frame_inputs)?,
     };
