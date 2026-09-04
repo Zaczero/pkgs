@@ -3,6 +3,42 @@ use crate::geometry::*;
 mod binary_areal_overlay_tests {
     use super::*;
 
+    /// Partitioning bounds-disconnected inputs must agree with one joint
+    /// arrangement, including singleton point and empty components.
+    #[test]
+    fn partitioned_union_matches_the_single_arrangement() {
+        use crate::geometry::{Strictness, TopologyDomain};
+        let blob = |cx: f64, cy: f64, r: f64| -> Shape {
+            let points: Vec<(f64, f64)> = (0..12)
+                .map(|i| {
+                    let theta = i as f64 / 12.0 * std::f64::consts::TAU;
+                    (cx + r * theta.cos(), cy + r * theta.sin())
+                })
+                .chain(std::iter::once((cx + r, cy)))
+                .collect();
+            Shape::Polygon(polygon(&points))
+        };
+        let mut inputs = Vec::new();
+        for (ox, oy) in [(0.0, 0.0), (100.0, 0.0), (0.0, 100.0)] {
+            for k in 0..5 {
+                inputs.push(blob(ox + 1.3 * k as f64, oy + 0.7 * k as f64, 1.5));
+            }
+        }
+        inputs.push(Shape::Point(Point::new_raw_xy(50.0, 50.0)));
+        inputs.push(Shape::empty_polygon());
+        for op in [OverlayOp::Union, OverlayOp::SymmetricDifference] {
+            let partitioned = super::nary::overlay_all_with_bounds_certificates(
+                &inputs, TopologyDomain::Cartesian, op, Strictness::Lenient, true,
+            )
+            .unwrap();
+            let single = super::nary::overlay_all_with_bounds_certificates(
+                &inputs, TopologyDomain::Cartesian, op, Strictness::Lenient, false,
+            )
+            .unwrap();
+            assert!(partitioned.equals(&single), "{op:?}: partitioned overlay differs");
+        }
+    }
+
     fn polygon(points: &[(f64, f64)]) -> Polygon {
         Polygon::new(
             Ring::from_closed(

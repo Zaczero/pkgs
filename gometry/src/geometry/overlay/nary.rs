@@ -103,7 +103,7 @@ pub(super) fn binary_intersection_without_convex_shortcut(
     )
 }
 
-fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
+pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     geometries: &[S],
     domain: TopologyDomain,
     op: OverlayOp,
@@ -179,10 +179,22 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     if geometries.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
         return Ok(geometries[0].borrow().clone());
     }
-    let disjoint_bounds = bounds_certificates
+    let components = if bounds_certificates
         && geometries.len() > 1
         && bounds_facts.raw_coordinate_bounds_sound
-        && disjoint_bounds_certify(&bounds_facts.bounds, op);
+    {
+        match op {
+            OverlayOp::Union | OverlayOp::SymmetricDifference => {
+                let bounds = refs.iter().map(|shape| shape.bounds()).collect::<Vec<_>>();
+                Some(bounds_components(&bounds)).filter(|components| components.len() > 1)
+            },
+            OverlayOp::Difference | OverlayOp::Intersection => disjoint_bounds_certify(&bounds_facts.bounds, op)
+                .then(|| (0..refs.len()).map(|index| vec![index]).collect()),
+        }
+    } else {
+        None
+    };
+    let disjoint_bounds = components.is_some();
     let convex_shape = if !disjoint_bounds
         && domain == TopologyDomain::Cartesian
         && geometries.len() == 2
@@ -204,9 +216,15 @@ fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
     let line_only_eligible = !disjoint_bounds
         && domain == TopologyDomain::Cartesian
         && refs.iter().all(|input| nondegenerate_line_only(input));
-    let (shape, line_graph) = if disjoint_bounds {
+    let (shape, line_graph) = if let Some(components) = components {
         (
-            assemble_disjoint_overlay(&refs, domain, op, bounds_facts.raw_polygon_loops_eligible)?,
+            assemble_components_overlay(
+                &refs,
+                &components,
+                domain,
+                op,
+                bounds_facts.raw_polygon_loops_eligible,
+            )?,
             None,
         )
     } else if let Some(shape) = convex_shape {
@@ -620,6 +638,37 @@ fn overlay_bounds_facts<S: Borrow<Shape>>(
     }
 }
 
+/// Bounds-overlap components, built from the existing overlap sweep.
+fn bounds_components(bounds: &[Option<Bounds>]) -> Vec<Vec<usize>> {
+    fn root(parent: &mut [usize], mut node: usize) -> usize {
+        while parent[node] != node {
+            parent[node] = parent[parent[node]];
+            node = parent[node];
+        }
+        node
+    }
+    let mut parent: Vec<usize> = (0..bounds.len()).collect();
+    let _ = crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
+        let (a, b) = (root(&mut parent, left), root(&mut parent, right));
+        if a != b {
+            parent[b] = a;
+        }
+        ControlFlow::Continue(())
+    });
+    let mut slots = vec![usize::MAX; bounds.len()];
+    let mut components = Vec::new();
+    for index in 0..bounds.len() {
+        let representative = root(&mut parent, index);
+        if slots[representative] == usize::MAX {
+            slots[representative] = components.len();
+            components.push(vec![index]);
+        } else {
+            components[slots[representative]].push(index);
+        }
+    }
+    components
+}
+
 fn disjoint_bounds_certify(bounds: &[Option<Bounds>], op: OverlayOp) -> bool {
     match op {
         OverlayOp::Difference => bounds
@@ -744,6 +793,30 @@ fn assemble_overlay(
     let polygon_edges = output_polygon_edges(&polygons);
     let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op);
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op);
+    build_overlay_shape(points, lines, polygons)
+}
+
+/// Assemble each bounds-connected component independently, then feed their
+/// parts into the one shared output tail so canonicalization and ordinate
+/// restoration still see the whole operation.
+fn assemble_components_overlay(
+    inputs: &[&Shape],
+    components: &[Vec<usize>],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    raw_polygon_loops_eligible: bool,
+) -> Result<Shape> {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    let mut polygons = Vec::new();
+    for component in components {
+        if op == OverlayOp::Difference && !component.contains(&0) {
+            continue;
+        }
+        let subset = component.iter().map(|&index| inputs[index]).collect::<Vec<_>>();
+        let shape = assemble_overlay(&subset, domain, op, raw_polygon_loops_eligible)?;
+        append_overlay_parts(shape, &mut points, &mut lines, &mut polygons);
+    }
     build_overlay_shape(points, lines, polygons)
 }
 
