@@ -4,35 +4,14 @@
 //! finite or infinite IEEE result, while bounded exact predicates can decline a
 //! result that exceeds their capacity or finite domain.
 
+pub(crate) use crate::geometry::exact_arith::{fast_two_sum, two_product_exact as two_product, two_sum};
 use std::cmp::Ordering;
 
-/// Knuth two-sum. Callers that require a finite expansion must admit `head`
-/// before retaining this pair.
-pub(crate) fn two_sum(left: f64, right: f64) -> (f64, f64) {
-    let sum = left + right;
-    let right_virtual = sum - left;
-    (
-        sum,
-        (left - (sum - right_virtual)) + (right - right_virtual),
-    )
-}
 
-pub(crate) fn fast_two_sum(left: f64, right: f64) -> (f64, f64) {
-    let sum = left + right;
-    (sum, right - (sum - left))
-}
 
-/// Fused multiply-add retains the exact residual without Dekker splitting's
-/// overflow-prone enlarged intermediate.
-pub(crate) fn two_product(left: f64, right: f64) -> (f64, f64) {
-    let product = left * right;
-    let tail = if product.is_finite() {
-        left.mul_add(right, -product)
-    } else {
-        0.0
-    };
-    (product, tail)
-}
+
+
+
 
 /// Sum two increasing-magnitude expansions into caller-owned storage.
 ///

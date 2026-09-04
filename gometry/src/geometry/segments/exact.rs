@@ -5,55 +5,23 @@
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
-use crate::geometry::tessellation::exact::{Interval, two_sum};
+pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
+use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
+use crate::geometry::tessellation::exact::Interval;
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
 use exact_orientation::orientation_xy as certified_orientation_xy;
 
 // Dekker's split constant for binary64: 2^ceil(53 / 2) + 1.
-const SPLITTER: f64 = 134_217_729.0;
-const MAX_SPLITTABLE: f64 = f64::MAX / SPLITTER;
-const MAX_CROSS_COORD_EXPONENT: i32 = 480;
-const MIN_CROSS_COORD_EXPONENT: i32 = -400;
 
-/// Error-free product without FMA for finite, non-underflowing binary64
-/// products, including mixed-exponent operands that overflow the splitter.
-fn two_product(lhs: f64, rhs: f64) -> (f64, f64) {
-    let head = lhs * rhs;
-    if !head.is_finite() || head == 0.0 {
-        return (head, 0.0);
-    }
-    if lhs.abs() <= MAX_SPLITTABLE && rhs.abs() <= MAX_SPLITTABLE {
-        return two_product_safe(lhs, rhs, head);
-    }
 
-    // Normalize each factor independently so an ordinary mixed-exponent
-    // product such as 2^1000 * 2^-1000 cannot overflow Dekker's splitter.
-    let lhs_shift = scale_shift_for_magnitude(lhs.abs());
-    let rhs_shift = scale_shift_for_magnitude(rhs.abs());
-    let total_shift = lhs_shift + rhs_shift;
-    let scaled_lhs = lhs * exact_power_of_two(lhs_shift);
-    let scaled_rhs = rhs * exact_power_of_two(rhs_shift);
-    let scaled_head = scaled_lhs * scaled_rhs;
-    let (_, scaled_tail) = two_product_safe(scaled_lhs, scaled_rhs, scaled_head);
-    let head_in_scaled_frame = head * exact_power_of_two(total_shift);
-    let (delta, delta_tail) = two_sum(scaled_head, -head_in_scaled_frame);
-    let error_in_scaled_frame = delta + (delta_tail + scaled_tail);
-    (
-        head,
-        error_in_scaled_frame * exact_power_of_two(-total_shift),
-    )
-}
 
-fn two_product_safe(lhs: f64, rhs: f64, head: f64) -> (f64, f64) {
-    let (lhs_hi, lhs_lo) = split(lhs);
-    let (rhs_hi, rhs_lo) = split(rhs);
-    let error_1 = head - lhs_hi * rhs_hi;
-    let error_2 = error_1 - lhs_lo * rhs_hi;
-    let error_3 = error_2 - lhs_hi * rhs_lo;
-    (head, lhs_lo * rhs_lo - error_3)
-}
+
+
+
+
+
 
 /// Dekker product with an explicit representability certificate for every
 /// intermediate that the error-free-transform proof depends on. A subnormal
@@ -118,26 +86,13 @@ const fn same_stored_value(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits() || (binary_zero(left) && binary_zero(right))
 }
 
-fn split(value: f64) -> (f64, f64) {
-    let scaled = SPLITTER * value;
-    let large = scaled - value;
-    let high = scaled - large;
-    (high, value - high)
-}
 
-pub(super) fn dd_diff(end: f64, start: f64) -> (f64, f64) {
-    two_sum(end, -start)
-}
 
-fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
-    let (head, head_err) = two_product(lhs.0, rhs.0);
-    two_sum(head, head_err + (lhs.0 * rhs.1 + lhs.1 * rhs.0))
-}
 
-fn dd_add(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
-    let (head, head_err) = two_sum(lhs.0, rhs.0);
-    two_sum(head, head_err + (lhs.1 + rhs.1))
-}
+
+
+
+
 
 pub(super) fn dd_cross(
     left_a: (f64, f64),
@@ -525,40 +480,11 @@ pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, 
     )
 }
 
-fn scale_shift_for_magnitude(largest: f64) -> i16 {
-    if largest == 0.0 {
-        return 0;
-    }
-    let exponent = floor_binary_exponent(largest);
-    let shift = if exponent > MAX_CROSS_COORD_EXPONENT {
-        MAX_CROSS_COORD_EXPONENT - exponent
-    } else if exponent < MIN_CROSS_COORD_EXPONENT {
-        MIN_CROSS_COORD_EXPONENT - exponent
-    } else {
-        0
-    };
-    i16::try_from(shift).expect("binary64 normalization shift fits i16")
-}
 
-fn floor_binary_exponent(value: f64) -> i32 {
-    debug_assert!(value.is_finite() && value > 0.0);
-    let bits = value.to_bits();
-    let stored = ((bits >> 52) & 0x7FF) as i32;
-    if stored != 0 {
-        stored - 1023
-    } else {
-        let significand = bits & ((1_u64 << 52) - 1);
-        debug_assert_ne!(significand, 0);
-        let highest_bit = 63 - significand.leading_zeros() as i32;
-        -1074 + highest_bit
-    }
-}
 
-pub(super) fn exact_power_of_two(shift: i16) -> f64 {
-    let stored = i32::from(shift) + 1023;
-    debug_assert!((1..=2046).contains(&stored));
-    f64::from_bits((stored as u64) << 52)
-}
+
+
+
 
 pub(in crate::geometry) fn orientation_xy(
     ax: f64,

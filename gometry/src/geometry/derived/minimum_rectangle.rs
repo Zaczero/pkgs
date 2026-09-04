@@ -8,7 +8,7 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
-use crate::geometry::tessellation::exact::two_sum;
+use crate::geometry::exact_arith::{checked_dd_mul as double_double_mul, checked_two_product as two_product, dd_add as double_double_add, dd_sub as double_double_sub, two_sum};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Orientation, Point, axis_pow2_scale, orientation, point_distance,
 };
@@ -732,58 +732,13 @@ fn double_double_delta(
     (result.0.is_finite() && result.1.is_finite()).then_some(result)
 }
 
-/// Dekker two-product, declining above the splittable range.
-///
-/// NOTE — this is the most conservative of the crate's four private error-free
-/// transform layers, and deliberately so: it declines (`None`) once an operand
-/// exceeds `f64::MAX / SPLITTER` (~1.34e300), where `geometry/segments/exact.rs`
-/// rescales by a power of two and `geometry/area.rs` / `grid/affine_source.rs`
-/// use FMA, all three staying exact there. The callers here treat `None` as
-/// "no certificate", which is sound — it can only widen a result, never produce
-/// a wrong one — and `minimum_rotated_rectangle` was verified correct across
-/// 1e299..1e307 with enclosure preserved. Unifying the four layers was
-/// considered and rejected: they differ in return type, in failure policy
-/// (infallible vs `Option`), and in overflow strategy, so a common helper would
-/// need a generic over failure policy — new indirection in the crate's most
-/// numerically-sensitive code to save ~45 lines. If that is ever revisited,
-/// this bail is the one behavioural difference to reconcile, not just the
-/// shared algebra.
-fn two_product(left: f64, right: f64) -> Option<DoubleDouble> {
-    const SPLITTER: f64 = 134_217_729.0;
-    let product = left * right;
-    if !product.is_finite() || left.abs() > f64::MAX / SPLITTER || right.abs() > f64::MAX / SPLITTER
-    {
-        return None;
-    }
-    let left_split = SPLITTER * left;
-    let left_high = left_split - (left_split - left);
-    let left_low = left - left_high;
-    let right_split = SPLITTER * right;
-    let right_high = right_split - (right_split - right);
-    let right_low = right - right_high;
-    Some((
-        product,
-        ((left_high * right_high - product) + left_high * right_low + left_low * right_high)
-            + left_low * right_low,
-    ))
-}
 
-fn double_double_add(left: DoubleDouble, right: DoubleDouble) -> DoubleDouble {
-    let (sum, error) = two_sum(left.0, right.0);
-    quick_two_sum(sum, error + left.1 + right.1)
-}
 
-fn double_double_sub(left: DoubleDouble, right: DoubleDouble) -> DoubleDouble {
-    double_double_add(left, (-right.0, -right.1))
-}
 
-fn double_double_mul(left: DoubleDouble, right: DoubleDouble) -> Option<DoubleDouble> {
-    let (product, error) = two_product(left.0, right.0)?;
-    let correction = error + left.0 * right.1 + left.1 * right.0;
-    correction
-        .is_finite()
-        .then(|| quick_two_sum(product, correction))
-}
+
+
+
+
 
 fn double_double_div(numerator: DoubleDouble, denominator: DoubleDouble) -> Option<DoubleDouble> {
     let quotient = numerator.0 / denominator.0;
@@ -798,10 +753,7 @@ fn double_double_div(numerator: DoubleDouble, denominator: DoubleDouble) -> Opti
         .then(|| double_double_add((quotient, 0.0), (correction, 0.0)))
 }
 
-fn quick_two_sum(left: f64, right: f64) -> DoubleDouble {
-    let sum = left + right;
-    (sum, right - (sum - left))
-}
+
 
 /// A certified floating filter for the exact score.  It deliberately charges
 /// the input-coordinate products, rather than trusting a rounded

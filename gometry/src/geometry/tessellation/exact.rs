@@ -57,18 +57,7 @@ impl ExactSign {
     }
 }
 
-/// Error-free sum (Knuth two-sum): `head + tail == left + right` exactly
-/// whenever the rounded head is finite.  Callers that need a fallible lane
-/// check that head before using the pair; the shared transform itself keeps
-/// the infallible EFT contract used by the segment and rectangle kernels.
-pub(in crate::geometry) fn two_sum(left: f64, right: f64) -> (f64, f64) {
-    let sum = left + right;
-    let right_virtual = sum - left;
-    (
-        sum,
-        (left - (sum - right_virtual)) + (right - right_virtual),
-    )
-}
+
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactDyadic {

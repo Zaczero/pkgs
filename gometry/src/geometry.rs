@@ -21,6 +21,7 @@ pub(crate) use frame::{
     scale_by_power_of_two, scaled_residual, unscale_area,
 };
 mod area;
+pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 pub(crate) use access::{
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero, centroid_ring_sums,
