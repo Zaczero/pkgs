@@ -559,17 +559,15 @@ pub(crate) fn dwithin(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    // `py` is already held here; re-attaching would only pay for a token
+    // this call was handed.
     if let Ok(prepared) = left.cast::<crate::PyPreparedGeometry>() {
-        return Python::attach(|py| {
-            let geometry = prepared.get().as_geometry().into_pyobject(py)?;
-            dwithin(py, geometry.as_any(), right, distance, unit)
-        });
+        let geometry = prepared.get().as_geometry().into_pyobject(py)?;
+        return dwithin(py, geometry.as_any(), right, distance, unit);
     }
     if let Ok(prepared) = right.cast::<crate::PyPreparedGeometry>() {
-        return Python::attach(|py| {
-            let geometry = prepared.get().as_geometry().into_pyobject(py)?;
-            dwithin(py, left, geometry.as_any(), distance, unit)
-        });
+        let geometry = prepared.get().as_geometry().into_pyobject(py)?;
+        return dwithin(py, left, geometry.as_any(), distance, unit);
     }
     // The per-element distance lane needs an array operand (its result is one
     // bool per row); the broadcast length comes from that operand.

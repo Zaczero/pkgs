@@ -490,11 +490,14 @@ impl PyGeometryArray {
         }
         let frame = self.frame.clone();
         let domain = crate::geometry::topology_domain(&frame)?;
-        let mut shapes = crate::try_vec_with_capacity(group_shapes.len())?;
-        for group in group_shapes {
-            let shape = py.detach(move || Shape::union_all_topo(&group, domain, strictness))?;
-            shapes.push(shape);
-        }
+        // One detach around the whole loop: the union of every group needs no
+        // Python, and a GIL round-trip per group was the loop's fixed cost.
+        let shapes: Vec<Shape> = py.detach(move || {
+            group_shapes
+                .into_iter()
+                .map(|group| Shape::union_all_topo(&group, domain, strictness))
+                .collect::<Result<_, _>>()
+        })?;
         Ok((Self::from_shapes(shapes, frame), groups)
             .into_pyobject(py)?
             .into_any()
