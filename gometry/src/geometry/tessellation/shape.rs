@@ -415,7 +415,7 @@ impl Shape {
         }
         let points: Vec<_> = canonical.iter().map(|site| site.point).collect();
         if monotone_chain_hull(&points).len() >= 3 {
-            return Ok(voronoi_dcel::build(&canonical, boundary, budget, false)?
+            return Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?
                 .into_edges()
                 .into_iter()
                 .map(Self::LineString)
