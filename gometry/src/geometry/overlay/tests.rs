@@ -1884,7 +1884,7 @@ mod binary_areal_overlay_tests {
 
         for case in cases {
             let inputs = case.iter().collect::<Vec<_>>();
-            for op in [OverlayOp::Union, OverlayOp::Intersection] {
+            for op in EVERY_OP {
                 assert_line_overlay_matches_generic(&inputs, op);
             }
         }
@@ -1895,8 +1895,52 @@ mod binary_areal_overlay_tests {
             line(&[(2.0, 0.0), (5.0, 0.0)]),
         ];
         let inputs = nary.iter().collect::<Vec<_>>();
-        assert_line_overlay_matches_generic(&inputs, OverlayOp::Union);
-        assert_line_overlay_matches_generic(&inputs, OverlayOp::Intersection);
+        for op in EVERY_OP {
+            assert_line_overlay_matches_generic(&inputs, op);
+        }
+    }
+
+    const EVERY_OP: [OverlayOp; 4] = [
+        OverlayOp::Union,
+        OverlayOp::Intersection,
+        OverlayOp::Difference,
+        OverlayOp::SymmetricDifference,
+    ];
+
+    #[test]
+    fn line_only_overlay_matches_generic_assembly_on_lattice_fuzz() {
+        // Small integer lattices make shared vertices, T-junctions, collinear
+        // stretches and crossings common; two and three rows, every op.
+        let mut state = 0x7A3C_9E1B_5D4F_2A6C_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0;
+        for _ in 0..800 {
+            let rows = 2 + (next() % 2) as usize;
+            let shapes: Vec<Shape> = (0..rows)
+                .map(|_| {
+                    let count = 2 + (next() % 3) as usize;
+                    let points: Vec<(f64, f64)> =
+                        std::iter::repeat_with(|| ((next() % 4) as f64, (next() % 4) as f64))
+                            .take(count)
+                            .collect();
+                    line(&points)
+                })
+                .collect();
+            let inputs: Vec<&Shape> = shapes.iter().collect();
+            if !inputs.iter().all(|shape| super::super::nary::nondegenerate_line_only(shape)) {
+                continue;
+            }
+            for op in EVERY_OP {
+                assert_line_overlay_matches_generic(&inputs, op);
+            }
+            checked += 1;
+        }
+        assert!(checked > 500, "only {checked} cases checked");
     }
 
     #[test]
@@ -1919,7 +1963,7 @@ mod binary_areal_overlay_tests {
     fn line_only_overlay_preserves_zm_and_operand_order() {
         let left = zm_line((0.0, 0.0), (2.0, 2.0));
         let right = zm_line((0.0, 2.0), (2.0, 0.0));
-        for op in [OverlayOp::Union, OverlayOp::Intersection] {
+        for op in EVERY_OP {
             let forward = overlay_all(
                 &[&left, &right],
                 crate::geometry::TopologyDomain::Cartesian,
@@ -1934,7 +1978,9 @@ mod binary_areal_overlay_tests {
                 Strictness::Strict,
             )
             .unwrap();
-            assert_eq!(wkb(&forward), wkb(&reverse), "{}", op.name());
+            if op != OverlayOp::Difference {
+                assert_eq!(wkb(&forward), wkb(&reverse), "{}", op.name());
+            }
             assert!(forward.has_z() && forward.has_m(), "{forward:?}");
             forward.for_each_point(|point| {
                 assert!(point.z().is_some(), "{forward:?}");

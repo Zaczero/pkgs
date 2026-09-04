@@ -101,14 +101,17 @@ mod shape;
 pub(in crate::geometry) use areal::{
     binary_areal_overlay, build_areal_arrangement, outside_winding_seeds,
 };
-pub(crate) use assembly::{build_overlay_shape, dedup_points, empty_overlay_shape, merge_chains};
+pub(crate) use assembly::{
+    build_overlay_shape, build_overlay_shape_from_chains, dedup_points,
+    empty_overlay_shape, merge_chain_edges, merge_chains,
+};
 pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use clip::{
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     line_parts_to_shape,
 };
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
-pub(in crate::geometry) use noding::full_noding_events;
+pub(in crate::geometry) use noding::{NodingScan, full_noding_events};
 pub(crate) use noding::{self_node_segments, self_node_segments_sourced};
 pub(crate) use rect::rect_polygon;
 #[cfg(test)]

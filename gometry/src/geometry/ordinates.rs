@@ -393,18 +393,29 @@ pub(crate) fn carry_direct_point_ordinates(
 /// Carry ordinates onto a directly admitted point-set intersection shape. This
 /// uses the same resolver as topology-backed overlays, but gathers source
 /// vertices and edges without constructing a graph.
-pub(crate) fn carry_direct_points_ordinates(
+/// Carry ordinates for an overlay assembled without a topology graph: the
+/// sources are the inputs' own vertices and segments, so a crossing or a
+/// split vertex resolves by interpolation along the segment it lies on.
+pub(crate) fn carry_direct_overlay_ordinates(
     output: Shape,
     inputs: &[&Shape],
+    operation: OverlayOp,
     strict: bool,
 ) -> Result<Shape> {
     if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
         return Ok(output);
     }
     let source = OrdinateSource::build_direct(inputs);
-    let declared_axes =
-        crate::geometry::overlay::overlay_declared_axes(inputs, OverlayOp::Intersection);
-    carry_or_degrade(&output, &source, declared_axes, "intersection", strict)
+    let declared_axes = crate::geometry::overlay::overlay_declared_axes(inputs, operation);
+    carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
+}
+
+pub(crate) fn carry_direct_points_ordinates(
+    output: Shape,
+    inputs: &[&Shape],
+    strict: bool,
+) -> Result<Shape> {
+    carry_direct_overlay_ordinates(output, inputs, OverlayOp::Intersection, strict)
 }
 
 fn observe_direct_ordinates<C: Coordinates + ?Sized>(

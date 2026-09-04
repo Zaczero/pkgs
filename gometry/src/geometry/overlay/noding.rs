@@ -247,13 +247,13 @@ pub(crate) fn self_node_segments_sourced(
 }
 
 fn self_node_segments_sourced_unique(segments: &[Segment]) -> (Vec<Segment>, Vec<u32>) {
-    let (events, overlaps_found) = full_noding_events(segments);
+    let NodingScan { events, overlaps_found, .. } = full_noding_events(segments);
     if !overlaps_found {
         return split_by_events_sourced(segments, events);
     }
     let (pre_split, pre_sources) =
         split_by_events_sourced(segments, collinear_overlap_events(segments));
-    let (events, _) = full_noding_events(&pre_split);
+    let NodingScan { events, .. } = full_noding_events(&pre_split);
     let (atomic, mid_sources) = split_by_events_sourced(&pre_split, events);
     let sources = mid_sources
         .into_iter()
@@ -330,17 +330,29 @@ fn push_collinear_overlap_cuts(
 /// also reporting whether any collinear OVERLAP pair was seen (the trigger
 /// for the exactness pre-pass).
 pub(crate) fn full_noding_pass(segments: &[Segment]) -> (Vec<Segment>, bool) {
-    let (events, overlaps_found) = full_noding_events(segments);
+    let NodingScan { events, overlaps_found, .. } = full_noding_events(segments);
     (split_by_events(segments, events), overlaps_found)
+}
+
+/// What one pass of the candidate sweep learned about a segment pool.
+pub(in crate::geometry) struct NodingScan {
+    pub(in crate::geometry) events: Vec<(u32, XY)>,
+    pub(in crate::geometry) overlaps_found: bool,
+    pub(in crate::geometry) junctions_found: bool,
+    /// `(cut segment, point, landing segment)` for a vertex landing on an
+    /// interior cut, which a line dissolve must treat as a splitting node.
+    pub(in crate::geometry) touches: Vec<(u32, XY, u32)>,
 }
 
 /// The cut events of [`full_noding_pass`], plus the collinear-overlap flag.
 /// Also the noding front end of [`Arrangement::from_single_loop`], which
 /// replays [`split_by_events`]' ordering bit-for-bit without materializing
 /// the atomic segment soup.
-pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32, XY)>, bool) {
+pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> NodingScan {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let mut overlaps_found = false;
+    let mut junctions_found = false;
+    let mut touches: Vec<(u32, XY, u32)> = Vec::new();
     // L1-aware sweep: large pools take the monotone-run path, avoiding the flat
     // SweepEntry sort that exceeds L1 at ~1 K segments (the arrangement noding
     // behind union/difference fallback, symmetric_difference, intersection,
@@ -360,30 +372,42 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> (Vec<(u32
             return std::ops::ControlFlow::Continue(());
         }
         let orientations = PairOrientations::new(a, b);
+        let shares_endpoint = same_point(a.start, b.start)
+            || same_point(a.start, b.end)
+            || same_point(a.end, b.start)
+            || same_point(a.end, b.end);
+        junctions_found |= shares_endpoint && right != left + 1;
         let collinear = orientations.right_start == Orientation::Collinear
             && orientations.right_end == Orientation::Collinear;
         if collinear {
-            overlaps_found |=
-                push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
+            let identical = (same_point(a.start, b.start) && same_point(a.end, b.end))
+                || (same_point(a.start, b.end) && same_point(a.end, b.start));
+            overlaps_found |= identical
+                || push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
             return std::ops::ControlFlow::Continue(());
         }
-        if same_point(a.start, b.start)
-            || same_point(a.start, b.end)
-            || same_point(a.end, b.start)
-            || same_point(a.end, b.end)
-        {
+        if shares_endpoint {
             return std::ops::ControlFlow::Continue(());
         }
         if let Some(point) = segment_cross_point_with_orientations(a, b, orientations) {
-            for (target, segment) in [(left, a), (right, b)] {
+            for (target, segment, other) in [(left, a, right), (right, b, left)] {
                 if !same_point(point, segment.start) && !same_point(point, segment.end) {
                     events.push((target as u32, point));
+                    let landing = segments[other];
+                    if same_point(point, landing.start) || same_point(point, landing.end) {
+                        touches.push((target as u32, point, other as u32));
+                    }
                 }
             }
         }
         std::ops::ControlFlow::Continue(())
     });
-    (events, overlaps_found)
+    NodingScan {
+        events,
+        overlaps_found,
+        junctions_found,
+        touches,
+    }
 }
 
 /// Split every segment at its collected `(ordinal, cut)` events — the

@@ -5,7 +5,7 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, GeometryKind, HashMap, HashMapExt as _,
-    HashSet, LineSeq, Point, PointKey, Polygon, Shape, point_on_segment,
+    HashSet, LineSeq, Point, PointKey, Polygon, Segment, Shape, point_on_segment,
 };
 
 /// Order-preserving topological dedup of overlay output points.
@@ -48,125 +48,161 @@ pub(crate) fn empty_overlay_shape(a: &Shape, b: &Shape, op: OverlayOp) -> Shape 
 /// through it. Deterministic and hash-order independent: open chains seed from
 /// barrier endpoints in first-seen edge order, then any remaining all-degree-2
 /// cycles are walked from their lowest unused edge.
-pub(crate) fn merge_chains(edges: Vec<CoordSeq>) -> Vec<CoordSeq> {
-    // Drop degenerate edges with no extent (fewer than two DISTINCT vertices) —
-    // a zero-length stroke is not linework and must not leak out as an awkward
-    // Empty linework is not emitted as an invalid `LineString`; it simply
-    // vanishes from the result.
-    let edges: Vec<CoordSeq> = edges
-        .into_iter()
-        .filter(|edge| {
-            let mut points = edge.iter();
-            let Some(first) = points.next().map(PointKey::new) else {
-                return false;
-            };
-            points.any(|point| PointKey::new(point) != first)
-        })
-        .collect();
-    if edges.len() <= 1 {
-        return edges;
-    }
-    let endpoints: Vec<[PointKey; 2]> = edges
-        .iter()
-        .map(|edge| {
+/// One edge of a linework arrangement as the dissolve sees it: its two end
+/// keys, and its points streamed in either direction.
+pub(crate) trait ChainEdge {
+    /// `None` for an edge with no extent (fewer than two distinct vertices),
+    /// which is not linework and vanishes from the result.
+    fn ends(&self) -> Option<[PointKey; 2]>;
+    /// Append the edge's points departing from `from`, dropping the first
+    /// `skip` (the join vertex the chain already holds).
+    fn extend_from(&self, from: PointKey, skip: usize, out: &mut Vec<Point>);
+}
+
+impl ChainEdge for CoordSeq {
+    fn ends(&self) -> Option<[PointKey; 2]> {
+        let mut points = self.iter();
+        let first = PointKey::new(points.next()?);
+        points.any(|point| PointKey::new(point) != first).then(|| {
             [
-                PointKey::new(edge.first().expect("edge has >= 2 vertices")),
-                PointKey::new(edge.last().expect("edge has >= 2 vertices")),
+                first,
+                PointKey::new(self.last().expect("edge has >= 2 vertices")),
             ]
         })
-        .collect();
-    // Incident edge-ends per node, in first-seen edge order — the walk picks the
-    // lowest unused continuation, so output is independent of hash iteration.
-    let mut incident: HashMap<PointKey, Vec<usize>> = HashMap::new();
-    for (index, [start, end]) in endpoints.iter().enumerate() {
-        incident.entry(*start).or_default().push(index);
-        incident.entry(*end).or_default().push(index);
     }
 
-    let mut used = vec![false; edges.len()];
+    fn extend_from(&self, from: PointKey, skip: usize, out: &mut Vec<Point>) {
+        if PointKey::new(self.first().expect("edge has >= 2 vertices")) == from {
+            out.extend(self.iter().skip(skip));
+        } else {
+            out.extend(self.iter().rev().skip(skip));
+        }
+    }
+}
+
+impl ChainEdge for Segment {
+    fn ends(&self) -> Option<[PointKey; 2]> {
+        let ends = [PointKey::new(self.start), PointKey::new(self.end)];
+        (ends[0] != ends[1]).then_some(ends)
+    }
+
+    fn extend_from(&self, from: PointKey, skip: usize, out: &mut Vec<Point>) {
+        let (near, far) = if PointKey::new(self.start) == from {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        };
+        if skip == 0 {
+            out.push(near.point());
+        }
+        out.push(far.point());
+    }
+}
+
+/// Dissolve linework edges into maximal chains, split only at genuine
+/// junctions (nodes of degree other than two). Every edge is consumed once;
+/// output order follows the lowest unused seed, so it is independent of
+/// hash iteration. Node incidence is a CSR over the distinct end keys: one
+/// map lookup per edge end and no per-node allocation, which is what an
+/// overlay of thousands of atomic segments spends its time on otherwise.
+pub(crate) fn merge_chains(edges: Vec<CoordSeq>) -> Vec<CoordSeq> {
+    merge_chain_edges(&edges)
+}
+
+pub(crate) fn merge_chain_edges<E: ChainEdge>(edges: &[E]) -> Vec<CoordSeq> {
+    let mut ends: Vec<[PointKey; 2]> = Vec::with_capacity(edges.len());
+    let mut live: Vec<usize> = Vec::with_capacity(edges.len());
+    for (index, edge) in edges.iter().enumerate() {
+        if let Some(pair) = edge.ends() {
+            ends.push(pair);
+            live.push(index);
+        }
+    }
+    if live.len() <= 1 {
+        return live
+            .into_iter()
+            .map(|index| {
+                let mut coords = Vec::new();
+                edges[index].extend_from(ends[0][0], 0, &mut coords);
+                coords.into()
+            })
+            .collect();
+    }
+    let mut node_of: HashMap<PointKey, u32> = HashMap::with_capacity(ends.len());
+    let mut degree: Vec<u32> = Vec::new();
+    let mut node_ends: Vec<[u32; 2]> = Vec::with_capacity(ends.len());
+    for pair in &ends {
+        let mut ids = [0_u32; 2];
+        for (slot, key) in pair.iter().enumerate() {
+            let next = degree.len() as u32;
+            let id = *node_of.entry(*key).or_insert(next);
+            if id == next {
+                degree.push(0);
+            }
+            degree[id as usize] += 1;
+            ids[slot] = id;
+        }
+        node_ends.push(ids);
+    }
+    let mut offsets: Vec<u32> = Vec::with_capacity(degree.len() + 1);
+    offsets.push(0);
+    for &count in &degree {
+        offsets.push(offsets[offsets.len() - 1] + count);
+    }
+    let mut cursor = offsets.clone();
+    let mut slots = vec![0_u32; offsets[degree.len()] as usize];
+    for (edge, ids) in node_ends.iter().enumerate() {
+        for &id in ids {
+            slots[cursor[id as usize] as usize] = edge as u32;
+            cursor[id as usize] += 1;
+        }
+    }
+    let incident = |node: u32| &slots[offsets[node as usize] as usize..offsets[node as usize + 1] as usize];
+
+    let mut used = vec![false; ends.len()];
     let mut chains: Vec<CoordSeq> = Vec::new();
-    // Open chains: every edge with a barrier endpoint (degree != 2) starts a
-    // chain that runs until the next barrier. Edges interior to such a chain are
-    // consumed mid-walk and skipped when their own seed turn comes.
-    for seed in 0..edges.len() {
+    let mut walk = |seed: usize, start_slot: usize, used: &mut [bool]| -> CoordSeq {
+        let mut coords: Vec<Point> = Vec::new();
+        let mut edge = seed;
+        let mut from = node_ends[seed][start_slot];
+        loop {
+            used[edge] = true;
+            let [a, b] = node_ends[edge];
+            let from_key = ends[edge][usize::from(a != from)];
+            edges[live[edge]].extend_from(from_key, usize::from(!coords.is_empty()), &mut coords);
+            let far = if a == from { b } else { a };
+            if degree[far as usize] != 2 {
+                break;
+            }
+            match incident(far).iter().copied().find(|&next| next as usize != edge && !used[next as usize]) {
+                Some(next) => {
+                    edge = next as usize;
+                    from = far;
+                },
+                None => break,
+            }
+        }
+        coords.into()
+    };
+    // Open chains first: every edge with a barrier end (degree != 2) starts
+    // a chain that runs until the next barrier; edges interior to such a
+    // chain are consumed mid-walk and skipped when their own seed turn comes.
+    for seed in 0..ends.len() {
         if used[seed] {
             continue;
         }
-        if let Some(end) = (0..2).find(|&end| incident[&endpoints[seed][end]].len() != 2) {
-            let chain = walk_chain(
-                seed,
-                endpoints[seed][end],
-                &edges,
-                &endpoints,
-                &incident,
-                &mut used,
-            );
-            chains.push(chain);
+        if let Some(slot) = (0..2).find(|&slot| degree[node_ends[seed][slot] as usize] != 2) {
+            chains.push(walk(seed, slot, &mut used));
         }
     }
-    // Whatever remains is an all-degree-2 cycle (a closed ring with no
-    // junction); walk each from its lowest unused edge.
-    for seed in 0..edges.len() {
+    // Whatever remains is an all-degree-2 cycle; walk each from its lowest
+    // unused edge.
+    for seed in 0..ends.len() {
         if !used[seed] {
-            let chain = walk_chain(
-                seed,
-                endpoints[seed][0],
-                &edges,
-                &endpoints,
-                &incident,
-                &mut used,
-            );
-            chains.push(chain);
+            chains.push(walk(seed, 0, &mut used));
         }
     }
     chains
-}
-
-/// Walk one maximal chain from `start` departing along `seed`, following
-/// degree-2 nodes (reversing edges as needed) until a barrier or a closed loop,
-/// marking edges used. Helper of [`merge_chains`].
-pub(crate) fn walk_chain(
-    seed: usize,
-    start: PointKey,
-    edges: &[CoordSeq],
-    endpoints: &[[PointKey; 2]],
-    incident: &HashMap<PointKey, Vec<usize>>,
-    used: &mut [bool],
-) -> CoordSeq {
-    let mut coords: Vec<Point> = Vec::new();
-    let mut edge = seed;
-    let mut from = start;
-    loop {
-        used[edge] = true;
-        let [a, b] = endpoints[edge];
-        // Orient the edge to depart `from`, streaming its points straight into
-        // `coords` (forward or reversed) — no per-edge `Vec` allocation. The
-        // shared join vertex is dropped via `skip(1)` on every edge after the
-        // first. `far` is the arrival node.
-        let skip = usize::from(!coords.is_empty());
-        let far = if a == from {
-            coords.extend(edges[edge].iter().skip(skip));
-            b
-        } else {
-            coords.extend(edges[edge].iter().rev().skip(skip));
-            a
-        };
-        if incident.get(&far).map_or(0, Vec::len) != 2 {
-            break;
-        }
-        match incident[&far]
-            .iter()
-            .copied()
-            .find(|&index| index != edge && !used[index])
-        {
-            Some(index) => {
-                edge = index;
-                from = far;
-            },
-            None => break,
-        }
-    }
-    coords.into()
 }
 
 #[expect(
@@ -174,6 +210,19 @@ pub(crate) fn walk_chain(
     reason = "Polygon::bounds lives in a private module; closure keeps the call site readable"
 )]
 pub(crate) fn build_overlay_shape(
+    points: Vec<Point>,
+    lines: Vec<CoordSeq>,
+    polygons: Vec<Polygon>,
+) -> crate::error::Result<Shape> {
+    // Overlays node linework into atomic per-vertex segments; dissolve them back
+    // into maximal chains (split only at genuine degree-`>= 3` junctions), so a
+    // result reads as the cleanest lines representing its point set rather than
+    // a `MultiLineString` of one segment per span.
+    build_overlay_shape_from_chains(points, merge_chains(lines), polygons)
+}
+
+/// [`build_overlay_shape`] for a lane that dissolved its linework itself.
+pub(crate) fn build_overlay_shape_from_chains(
     points: Vec<Point>,
     lines: Vec<CoordSeq>,
     polygons: Vec<Polygon>,
@@ -198,11 +247,6 @@ pub(crate) fn build_overlay_shape(
         .collect();
     dedup_points(&mut surviving);
 
-    // Overlays node linework into atomic per-vertex segments; dissolve them back
-    // into maximal chains (split only at genuine degree-`>= 3` junctions), so a
-    // result reads as the cleanest lines representing its point set rather than
-    // a `MultiLineString` of one segment per span.
-    let lines = merge_chains(lines);
     let line_part = (!lines.is_empty()).then(|| {
         Shape::narrow_lines(
             CoordinateAxes::XY,
