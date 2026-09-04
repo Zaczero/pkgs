@@ -3073,8 +3073,10 @@ pub(super) fn build(
         let xy = site.point.xy();
         (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal())
     });
+    // Three non-collinear sites are one certified face; the dual needs no
+    // more than that. Subnormal coordinates stay on the exact lane.
     if combinatorial_dual
-        && sites.len() > 5
+        && sites.len() >= 3
         && normal_or_zero
         && std::env::var_os("GOMETRY_VORO_REFERENCE").is_none()
         && matches!(
@@ -4415,6 +4417,29 @@ mod convex_cell_certificate {
 
     fn xy(points: &[(f64, f64)]) -> Vec<XY> {
         points.iter().map(|&(x, y)| XY::new(x, y)).collect()
+    }
+
+    /// A square of sites with its centre: every circumcenter lies on the
+    /// envelope, so a clip hit and a center share one vertex, and the diagram
+    /// must still cancel every interior edge at any scale.
+    #[test]
+    fn clip_hits_coinciding_with_centers_share_one_vertex() {
+        for scale in [1.0, 1e-20, 1e-150, 1e150] {
+            let sites: Vec<Site> = shape::canonical_voronoi_sites(
+                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)]
+                    .into_iter()
+                    .map(|(x, y)| Point::new_raw_xy(x * scale, y * scale))
+                    .collect(),
+                0.0,
+            );
+            let mut budget = ExpansionBudget::new("test", "coinciding vertices");
+            let cells = build(&sites, VoronoiBoundary::Envelope, &mut budget, true)
+                .unwrap_or_else(|error| panic!("scale {scale:e}: {error:?}"))
+                .into_polygons();
+            assert_eq!(cells.len(), 5);
+            let area: f64 = cells.iter().map(|cell| cell.shell.iter().count() as f64).sum();
+            assert!(area > 0.0);
+        }
     }
 
     #[test]
