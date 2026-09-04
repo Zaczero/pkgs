@@ -1202,10 +1202,22 @@ fn pair_edges(
                 merge_location(slot, location);
             }
         }
-        by_segment.insert(
-            crate::geometry::undirected_segment_edge_key(segment),
-            (segment, label),
-        );
+        // Two atomic pieces with the same ends retain both operands' labels,
+        // even when their independent noding produced the same crossing.
+        match by_segment.entry(crate::geometry::undirected_segment_edge_key(segment)) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let (_, existing): &mut (Segment, EdgeLabel) = entry.get_mut();
+                if let Some(location) = label.left {
+                    merge_coincident_piece(&mut existing.left, location);
+                }
+                if let Some(location) = label.right {
+                    merge_coincident_piece(&mut existing.right, location);
+                }
+            },
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert((segment, label));
+            },
+        }
     }
     (by_segment.into_values().collect(), hints)
 }
@@ -1216,6 +1228,20 @@ fn edge_location(edge: &crate::geometry::topology::TopologyEdge) -> TopologyLoca
     } else {
         TopologyLocation::Interior
     }
+}
+
+// Coincident edge copies prefer boundary support; node hints below prefer
+// interior support. Degenerate rings can contribute both edge labels.
+fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
+    *slot = Some(match (*slot, location) {
+        (Some(TopologyLocation::Boundary), _) | (_, TopologyLocation::Boundary) => {
+            TopologyLocation::Boundary
+        },
+        (Some(TopologyLocation::Interior), _) | (_, TopologyLocation::Interior) => {
+            TopologyLocation::Interior
+        },
+        _ => TopologyLocation::Exterior,
+    });
 }
 
 fn merge_location(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
@@ -1350,16 +1376,17 @@ fn locate_node_with_hint(
     owns_node: bool,
     hint: Option<TopologyLocation>,
 ) -> TopologyLocation {
-    let location = if owns_node {
-        graph
+    if owns_node {
+        return graph
             .node_location(point)
-            .expect("node provenance must resolve in its owning graph")
-    } else {
-        graph.locate_point(point)
-    };
-    match (location, hint) {
-        (TopologyLocation::Exterior, Some(hint)) => hint,
-        (location, _) => location,
+            .expect("node provenance must resolve in its owning graph");
+    }
+    // Rounded crossings can land inside an area even though their source
+    // edge is its boundary. Line hints still defer to mod-2 node location.
+    match (hint, graph.locate_point(point)) {
+        (Some(TopologyLocation::Boundary), _) => TopologyLocation::Boundary,
+        (Some(hint), TopologyLocation::Exterior) => hint,
+        (_, location) => location,
     }
 }
 
@@ -1375,6 +1402,34 @@ const fn to_loc(location: TopologyLocation) -> Loc {
 mod tests {
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring};
+
+    #[test]
+    fn a_computed_crossing_node_keeps_its_boundary_provenance() {
+        let star = Shape::Polygon(polygon(&[
+            [6.0, 3.0], [4.0, 4.0], [4.0, 6.0], [2.0, 4.0], [0.0, 4.0],
+            [2.0, 2.0], [1.0, 0.0], [3.0, 2.0], [5.0, 1.0], [6.0, 3.0],
+        ]));
+        let probe = Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_xy(&[XY::new(1.0, 2.0), XY::new(3.0, 3.0)])).unwrap(),
+        );
+        let matrix = graph_relate_data_oracle(
+            &PreparedPlan::transient(&star),
+            &PreparedPlan::transient(&probe),
+        );
+        assert_eq!(matrix.text(), "1020F1102");
+    }
+
+    #[test]
+    fn a_shared_segment_split_by_the_other_operand_keeps_both_owners() {
+        let line = |points: &[(f64, f64)]| {
+            let xy: Vec<XY> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+            Shape::LineString(LineSeq::try_new(CoordSeq::from_xy(&xy)).unwrap())
+        };
+        let a = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 0.0), (1.0, 0.0)]);
+        let b = line(&[(1.0, 1.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0), (2.0, 1.0), (1.0, 2.0)]);
+        let matrix = graph_relate_data_oracle(&PreparedPlan::transient(&a), &PreparedPlan::transient(&b));
+        assert_eq!(matrix.text(), "1F1F00102");
+    }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         Polygon::new(
@@ -1722,7 +1777,7 @@ mod tests {
             ("hole", &hole, &square, "212F11FF2"),
             ("concave", &concave, &square, "212111212"),
             ("invalid", &invalid, &square, "FF2111212"),
-            ("collapsed", &collapsed, &square, "FF2F0F212"),
+            ("collapsed", &collapsed, &square, "F12F0F212"),
             ("nonstrict", &nonstrict, &far, "FF2FF1212"),
             ("right edge apex", &square4, &right_edge_apex, "212F01FF2"),
             ("left edge apex", &square4, &left_edge_apex, "212F01FF2"),
