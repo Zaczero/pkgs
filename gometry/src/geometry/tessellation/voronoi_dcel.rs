@@ -834,6 +834,51 @@ fn orient_separator(
     Ok((start, end))
 }
 
+/// Certified lazy intersections of a site-pair bisector with a binary64 frame,
+/// falling back to the exact line path when certification declines.
+fn bisector_frame_intersections(
+    sites: [XY; 2],
+    frame: &[exact::ExactPoint; 4],
+) -> Result<Vec<(u8, exact::ExactPoint)>> {
+    let corners: Option<[XY; 4]> = frame
+        .iter()
+        .map(exact::ExactPoint::as_double)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|corners| corners.try_into().ok());
+    if let Some(corners) = corners {
+        let mut hits = Vec::new();
+        let mut certified = true;
+        for side in 0..4 {
+            let ends = [corners[side], corners[(side + 1) % 4]];
+            match exact::ExactPoint::certified_bisector_hit(sites, ends) {
+                exact::FrameHit::Declined => {
+                    certified = false;
+                    break;
+                },
+                exact::FrameHit::Parallel => {},
+                exact::FrameHit::Point(hit) => {
+                    let within = |low: &exact::ExactPoint, high: &exact::ExactPoint| {
+                        let x = (hit.compare_x(low) != Ordering::Less && hit.compare_x(high) != Ordering::Greater)
+                            || (hit.compare_x(high) != Ordering::Less && hit.compare_x(low) != Ordering::Greater);
+                        let y = (hit.compare_y(low) != Ordering::Less && hit.compare_y(high) != Ordering::Greater)
+                            || (hit.compare_y(high) != Ordering::Less && hit.compare_y(low) != Ordering::Greater);
+                        x && y
+                    };
+                    if within(&frame[side], &frame[(side + 1) % 4]) {
+                        hits.push((side as u8, hit));
+                    }
+                },
+            }
+        }
+        if certified {
+            hits.sort_by(|left, right| left.1.compare_lex(&right.1).then(left.0.cmp(&right.0)));
+            hits.dedup_by(|left, right| left.1.same_position(&right.1));
+            return Ok(hits);
+        }
+    }
+    frame_intersections(&exact::ExactLine::perpendicular_bisector(sites[0], sites[1]), frame)
+}
+
 fn frame_intersections(
     line: &exact::ExactLine,
     frame: &[exact::ExactPoint; 4],
@@ -963,7 +1008,10 @@ fn build_primitives(
                     &exact::ExactPoint::from_xy(sites[pair[1]].point.xy()),
                     &opposite_point,
                 );
-                let hits = frame_intersections(&line, &frame)?;
+                let hits = bisector_frame_intersections(
+                    [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
+                    &frame,
+                )?;
                 let hit = hits
                     .into_iter()
                     .map(|(_, point)| point)
@@ -4315,7 +4363,7 @@ fn dual_ray_hit(
         &right,
         &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
     );
-    frame_intersections(&line, frame)?
+    bisector_frame_intersections([sites[pair[0]].point.xy(), sites[pair[1]].point.xy()], frame)?
         .into_iter()
         .find(|(_, point)| exact::orient_points(&left, &right, point) != opposite_sign)
         .ok_or_else(|| voronoi_error("certified Voronoi hull ray misses exact frame"))
