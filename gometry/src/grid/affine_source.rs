@@ -51,7 +51,6 @@ use crate::geometry::{
     uses_linear_plan_for_len,
 };
 use crate::grid::s2::cell::Cell as S2Cell;
-use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
 use crate::grid::spherical_arc::{
     AffineEndpointIdentity, AffineParentMap, AffineSourceArc, AffineStructure, AxisLatitude,
@@ -3902,7 +3901,7 @@ impl GeographicCoverageSource {
     ///
     /// This is only a veto: malformed or out-of-domain authority retains the
     /// candidate rather than choosing a rounded replacement owner.
-    pub(crate) fn s2_raw_owner_descends_from(&self, candidate: CellId) -> bool {
+    pub(crate) fn s2_raw_owner_descends_from(&self, candidate: S2Cell) -> bool {
         // A structural axis rectangle is a complete carrier. Its exact
         // rectangle classification already contains every true S2 cell, so a
         // later source-lift uncertainty or canonical pole owner cannot veto
@@ -3923,7 +3922,7 @@ impl GeographicCoverageSource {
             // closed cell, otherwise an unrelated face can retain a whole
             // seam/polar subtree. This is positive-only: a rounding ambiguity
             // here can widen a cover but cannot prune one.
-            S2Cell::from_id(candidate).contains_point(s2_lonlat_to_point(longitude, latitude))
+            candidate.contains_point(s2_lonlat_to_point(longitude, latitude))
         };
         self.unknown
             || self.authority_points.iter().any(|point| {

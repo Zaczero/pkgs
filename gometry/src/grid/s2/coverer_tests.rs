@@ -650,7 +650,7 @@ fn polar_cap_affine_certificate_prunes_the_south() {
     let ctx = CoverContext::prepare(&cap, &affine, WorkingShapeRelation::Identity).unwrap();
     assert!(ctx.corroborate, "the polar carrier is corroborated");
     assert!(
-        !affine.s2_raw_owner_descends_from(id),
+        !affine.s2_raw_owner_descends_from(cell),
         "the south cell owns no retained cap endpoint"
     );
     assert_eq!(

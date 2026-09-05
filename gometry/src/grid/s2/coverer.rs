@@ -770,7 +770,7 @@ fn classify_uncached(ctx: &CoverContext<'_>, id: CellId) -> CellClass {
     merge_certified_rect(
         proposed,
         ctx.affine.classify_rect(certified_rect_windows(rect)),
-        ctx.affine.s2_raw_owner_descends_from(id),
+        ctx.affine.s2_raw_owner_descends_from(cell),
     )
 }
 
