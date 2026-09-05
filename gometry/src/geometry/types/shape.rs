@@ -1106,30 +1106,6 @@ impl MultiPolygon {
         self.iter().next()
     }
 
-    pub(crate) fn pop(&mut self) -> Option<Polygon> {
-        if matches!(self.members, MultipartMembers::Dense) {
-            return if self.values.len() == 1 {
-                self.values.last().cloned()
-            } else {
-                self.values.pop()
-            };
-        }
-        let mut members = self.members().collect::<Vec<_>>();
-        let value = members.pop().and_then(|member| match member {
-            MultiMember::Value(index) => {
-                debug_assert_eq!(index + 1, self.values.len());
-                self.values.pop()
-            },
-            MultiMember::Empty => None,
-        });
-        if members.is_empty() {
-            return value;
-        }
-        self.members = MultipartMembers::from_indices(members)
-            .expect("remaining multipart members are nonempty");
-        value
-    }
-
     pub(crate) fn as_slice(&self) -> &[Polygon] {
         &self.values
     }
