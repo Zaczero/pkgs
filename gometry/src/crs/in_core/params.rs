@@ -207,23 +207,6 @@ fn admit_projection_spec<K: ProjectionKernel>(
         values.push((code, value));
     }
 
-    let declared_codes: Vec<&str> = spec
-        .params
-        .iter()
-        .map(|p| p.id.code)
-        .chain([
-            spec.frame.lon_0.code,
-            spec.frame.x_0.code,
-            spec.frame.y_0.code,
-        ])
-        .collect();
-
-    for (code, _) in &values {
-        if !declared_codes.contains(code) {
-            return None;
-        }
-    }
-
     let mut frame = ProjectionFrame::ZERO;
     let mut params = spec.defaults;
 
@@ -343,7 +326,9 @@ pub(in crate::crs) fn parse_param_value(
 #[cfg(test)]
 mod tests {
     use super::super::kernel::Ellipsoid;
+    use super::super::tmerc::Tmerc;
     use super::*;
+    use crate::crs::MethodInfo;
 
     #[derive(Clone, Copy)]
     struct IdentityKernel;
@@ -371,6 +356,66 @@ mod tests {
         }
     }
 
+    fn degree(authority: &str, code: &str, value: f64) -> OperationParameterInfo {
+        param(authority, code, value, DEGREE_TO_RADIAN, None, None)
+    }
+
+    fn grs80() -> Ellipsoid {
+        Ellipsoid::from_a_f(6_378_137.0, 1.0 / 298.257_222_101)
+    }
+
+    fn metre(authority: &str, code: &str, value: f64) -> OperationParameterInfo {
+        param(authority, code, value, 1.0, Some("9001"), Some("linear"))
+    }
+
+    fn param(
+        authority: &str,
+        code: &str,
+        value: f64,
+        unit_conversion_factor: f64,
+        unit_code: Option<&str>,
+        unit_category: Option<&str>,
+    ) -> OperationParameterInfo {
+        OperationParameterInfo {
+            name: None,
+            authority: Some(authority.to_owned()),
+            code: Some(code.to_owned()),
+            value,
+            value_string: None,
+            unit_conversion_factor,
+            unit_name: None,
+            unit_authority: None,
+            unit_code: unit_code.map(str::to_owned),
+            unit_category: unit_category.map(str::to_owned),
+        }
+    }
+
+    fn tmerc_operation(parameters: Vec<OperationParameterInfo>) -> CrsCoordinateOperationInfo {
+        CrsCoordinateOperationInfo {
+            name: None,
+            definition: None,
+            description: None,
+            accuracy: None,
+            has_inverse: false,
+            has_ballpark_transformation: false,
+            requires_coordinate_epoch: false,
+            instantiable: true,
+            method: Some(MethodInfo {
+                name: None,
+                authority: Some("EPSG".to_owned()),
+                code: Some("9807".to_owned()),
+            }),
+            parameters,
+            grids: Vec::new(),
+            steps: Vec::new(),
+            area_of_use: None,
+        }
+    }
+
+    fn unity(authority: &str, code: &str, value: f64) -> OperationParameterInfo {
+        param(authority, code, value, 1.0, Some("9201"), Some("scale"))
+    }
+
     #[test]
     fn non_metre_zero_origin_frame_preserves_signed_zero() {
         let scale = AxisScale::from_unit_to_metre(0.304_800_609_601_219_24).unwrap();
@@ -382,5 +427,97 @@ mod tests {
         let (x, y) = projected.forward_xy(-0.0, -0.0).unwrap();
         assert_eq!(x.to_bits(), (-0.0_f64).to_bits());
         assert_eq!(y.to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn tmerc_admission_accepts_complete_operation_and_matches_forward() {
+        let operation = tmerc_operation(vec![
+            degree("EPSG", "8801", 42.5),
+            degree("EPSG", "8802", -72.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+            metre("EPSG", "8807", 0.0),
+        ]);
+        let projected = admit_projection::<Tmerc>(&operation, grs80())
+            .expect("complete Transverse Mercator operation must admit");
+        let (x, y) = projected.forward_xy(-72.5, 43.0).unwrap();
+        assert!((x - 500_000.0).abs() < 1e-3, "x={x}");
+        assert!((y - 55_541.950_175_844_83).abs() < 1e-3, "y={y}");
+    }
+
+    #[test]
+    fn tmerc_admission_rejects_duplicate_parameter_code() {
+        let operation = tmerc_operation(vec![
+            degree("EPSG", "8801", 42.5),
+            degree("EPSG", "8802", -72.5),
+            degree("ESRI", "8802", -71.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+            metre("EPSG", "8807", 0.0),
+        ]);
+        assert!(
+            admit_projection::<Tmerc>(&operation, grs80()).is_none(),
+            "duplicate parameter code must refuse admission"
+        );
+    }
+
+    #[test]
+    fn tmerc_admission_rejects_empty_authority() {
+        let operation = tmerc_operation(vec![
+            degree("EPSG", "8801", 42.5),
+            degree("", "8802", -72.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+            metre("EPSG", "8807", 0.0),
+        ]);
+        assert!(
+            admit_projection::<Tmerc>(&operation, grs80()).is_none(),
+            "empty parameter authority must refuse admission"
+        );
+    }
+
+    #[test]
+    fn tmerc_admission_rejects_missing_frame_parameter() {
+        let operation = tmerc_operation(vec![
+            degree("EPSG", "8801", 42.5),
+            degree("EPSG", "8802", -72.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+        ]);
+        assert!(
+            admit_projection::<Tmerc>(&operation, grs80()).is_none(),
+            "missing false northing must refuse admission"
+        );
+    }
+
+    #[test]
+    fn tmerc_admission_rejects_unit_mismatch() {
+        let operation = tmerc_operation(vec![
+            metre("EPSG", "8801", 42.5),
+            degree("EPSG", "8802", -72.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+            metre("EPSG", "8807", 0.0),
+        ]);
+        assert!(
+            admit_projection::<Tmerc>(&operation, grs80()).is_none(),
+            "degree parameter reported as metre must refuse admission"
+        );
+    }
+
+    #[test]
+    fn tmerc_admission_rejects_unknown_parameter_code() {
+        let operation = tmerc_operation(vec![
+            degree("EPSG", "8801", 42.5),
+            degree("EPSG", "8802", -72.5),
+            unity("EPSG", "8805", 0.999_964_286),
+            metre("EPSG", "8806", 500_000.0),
+            metre("EPSG", "8807", 0.0),
+            degree("EPSG", "8811", 44.0),
+        ]);
+        assert!(
+            admit_projection::<Tmerc>(&operation, grs80()).is_none(),
+            "undeclared parameter code must refuse admission"
+        );
     }
 }
