@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 from itertools import combinations
+from math import inf, nextafter
 
 import gometry as gm
 import pytest
@@ -41,6 +42,26 @@ def _assert_partition(cells: gm.GeometryArray, clip: gm.Polygon) -> None:
     assert all(cell.is_valid for cell in cells)
     for left, right in combinations(cells, 2):
         assert gm.relate_pattern(left, right, 'F********'), gm.relate(left, right)
+
+
+@pytest.mark.parametrize('frontend', ['scalar', 'packed'])
+@pytest.mark.parametrize('excluded_by', ['outside', 'hole'])
+def test_discarded_voronoi_centers_do_not_reject_representable_clip(
+    frontend: str, excluded_by: str
+) -> None:
+    source = gm.MultiPoint([(4, 4), (6, 4), (4, 6), (6, nextafter(6.0, inf))])
+    if excluded_by == 'outside':
+        clip = gm.box(4.125, 4.125, 4.25, 4.25)
+    else:
+        clip = gm.from_wkt(
+            'POLYGON ((3 3,7 3,7 7,3 7,3 3),'
+            '(4.5 4.5,4.5 5.5,5.5 5.5,5.5 4.5,4.5 4.5))'
+        )
+    cells = _cells(source, clip, frontend)
+    _assert_partition(cells, clip)
+    if excluded_by == 'outside':
+        assert len(cells) == 1
+        assert gm.equals(cells[0], clip)
 
 
 def _near_vertices(cells: gm.GeometryArray) -> set[tuple[float, float]]:

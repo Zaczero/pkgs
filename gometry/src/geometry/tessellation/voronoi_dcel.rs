@@ -3375,6 +3375,45 @@ pub(super) fn build_collinear_edges(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_dual_subnormal_admission_matches_legacy_builder() {
+        for (units, admitted) in [(1_u64, false), (4, true)] {
+            let step = f64::from_bits(units);
+            let sites: Vec<_> = [(0.0, 0.0), (step, 0.0), (0.0, step)]
+                .into_iter()
+                .enumerate()
+                .map(|(id, (x, y))| Site { id, point: Point::new_raw_xy(x, y) })
+                .collect();
+            let mut dual_budget = ExpansionBudget::new("test", "subnormal dual");
+            let dual = dual_build(&sites, VoronoiBoundary::Envelope, &mut dual_budget);
+            let mut legacy_budget = ExpansionBudget::new("test", "subnormal legacy");
+            let legacy = build(&sites, VoronoiBoundary::Envelope, &mut legacy_budget, false);
+
+            match (admitted, dual, legacy) {
+                (false, Err(dual), Err(legacy)) => {
+                    assert!(matches!(dual.kind(), crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))));
+                    assert!(matches!(legacy.kind(), crate::error::ErrorKind::Geometry(GeometryErrorKind::Voronoi(_))));
+                }
+                (true, Ok(dual), Ok(legacy)) => {
+                    for diagram in [dual, legacy] {
+                        assert_eq!(diagram.polygons.len(), 3, "units={units}");
+                        let cells: Vec<_> = diagram.polygons.iter().cloned().map(Shape::Polygon).collect();
+                        assert!(cells.iter().all(|cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon))));
+                        assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
+                        let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
+                        assert!(diagram.clip.difference(&union, Strictness::Lenient).unwrap().is_empty());
+                        assert!(union.difference(&diagram.clip, Strictness::Lenient).unwrap().is_empty());
+                    }
+                }
+                (expected, dual, legacy) => panic!(
+                    "units={units} expected admitted={expected}, dual admitted={}, legacy admitted={}",
+                    dual.is_ok(),
+                    legacy.is_ok(),
+                ),
+            }
+        }
+    }
+
     use super::*;
 
     fn cycle(points: &[(f64, f64)]) -> Vec<exact::ExactPoint> {
