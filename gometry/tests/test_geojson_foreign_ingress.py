@@ -354,6 +354,17 @@ def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface()
         )
 
 
+def test_geojson_multipolygon_invalid_ordinate_reports_nested_path() -> None:
+    payload = {
+        'type': 'MultiPolygon',
+        'coordinates': [[[[0, 0], [1, {'bad': True}], [0, 1], [0, 0]]]],
+    }
+
+    with pytest.raises(gm.ParseError) as exc_info:
+        gm.from_geojson(payload, crs=None)
+    assert exc_info.value.path == '$.coordinates[0][0][1][1]'
+
+
 def test_require_feature_projection_ignores_opaque_properties() -> None:
     class Opaque:
         pass

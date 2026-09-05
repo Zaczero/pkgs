@@ -5,6 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::io::*;
+use crate::test_support::allocation_count;
 
 fn point(x: f64, y: f64) -> Point {
     Point::new(x, y).expect("finite test coordinate")
@@ -164,6 +165,15 @@ fn empty_geojson_coordinate_arrays_become_typed_empty_shapes() {
             Shape::typed_empty(expected, CoordinateAxes::XY)
         );
     }
+}
+
+#[test]
+fn value_point_parse_does_not_allocate_a_path() {
+    let value = json!({"type": "Point", "coordinates": [1.0, 2.0]});
+    let (parsed, allocations) = allocation_count(|| parse_geojson(&value));
+
+    assert_eq!(parsed.unwrap(), Shape::Point(point(1.0, 2.0)));
+    assert_eq!(allocations, 0);
 }
 
 #[test]
