@@ -445,14 +445,20 @@ pub(crate) fn pair_select_mask(
     let (ry_chunks, _) = ry.as_chunks::<REDUCE_LANES>();
     {
         let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..lx_chunks.len() {
+        let inputs = std::iter::zip(
+            std::iter::zip(lx_chunks, ly_chunks),
+            std::iter::zip(rx_chunks, ry_chunks),
+        );
+        for (((lx_chunk, ly_chunk), (rx_chunk, ry_chunk)), out_chunk) in
+            std::iter::zip(inputs, out_chunks)
+        {
             let mask = vector(
-                ReduceSimd::from_array(lx_chunks[chunk]),
-                ReduceSimd::from_array(ly_chunks[chunk]),
-                ReduceSimd::from_array(rx_chunks[chunk]),
-                ReduceSimd::from_array(ry_chunks[chunk]),
+                ReduceSimd::from_array(*lx_chunk),
+                ReduceSimd::from_array(*ly_chunk),
+                ReduceSimd::from_array(*rx_chunk),
+                ReduceSimd::from_array(*ry_chunk),
             );
-            out_chunks[chunk] = mask.to_array();
+            *out_chunk = mask.to_array();
         }
     }
     let lanes = lx_chunks.len() * REDUCE_LANES;
