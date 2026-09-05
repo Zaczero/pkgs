@@ -1063,30 +1063,6 @@ pub(crate) fn transform_coordinates_with_pipeline(
     }
 }
 
-pub(crate) fn transform_proj_shapes(
-    transformer: &ProjPipeline,
-    shapes: &[&Shape],
-    source_epoch: Option<f64>,
-    execution: &crate::crs::TransformExecution,
-) -> Result<Vec<Shape>> {
-    let mut output = TransformOutputPlan::try_new(shapes)?;
-    if source_epoch.is_none() {
-        transformer.require_epoch_lane()?;
-    }
-    output.execute(|x, y, z| {
-        let mut epoch = source_epoch.map(|epoch| [epoch]);
-        transformer.transform_lanes(
-            x,
-            y,
-            z,
-            epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
-            ProjDirection::Forward,
-            execution,
-        )
-    })?;
-    output.finish(shapes)
-}
-
 pub(crate) fn transform_proj_shapes_indexed(
     transformer: &ProjPipeline,
     shapes: &[&Shape],
@@ -1315,13 +1291,6 @@ impl TransformOutputPlan {
         })
     }
 
-    pub(crate) fn execute(
-        &mut self,
-        mut transform: impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
-    ) -> Result<()> {
-        self.execute_with_capacities(XY_CHUNK_VERTICES, XYZ_CHUNK_VERTICES, &mut transform)
-    }
-
     pub(crate) fn execute_indexed(
         &mut self,
         mut transform: impl FnMut(
@@ -1331,16 +1300,6 @@ impl TransformOutputPlan {
         ) -> std::result::Result<(), TransformFailure>,
     ) -> std::result::Result<(), TransformFailure> {
         self.execute_with_capacities_indexed(XY_CHUNK_VERTICES, XYZ_CHUNK_VERTICES, &mut transform)
-    }
-
-    fn execute_with_capacities(
-        &mut self,
-        xy_capacity: usize,
-        xyz_capacity: usize,
-        transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
-    ) -> Result<()> {
-        self.execute_axes(false, xy_capacity, transform)?;
-        self.execute_axes(true, xyz_capacity, transform)
     }
 
     fn execute_with_capacities_indexed(
@@ -1371,16 +1330,6 @@ impl TransformOutputPlan {
             },
             Err(failure) => Err(failure),
         }
-    }
-
-    fn execute_axes(
-        &mut self,
-        has_z: bool,
-        capacity: usize,
-        transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
-    ) -> Result<()> {
-        let columns = if has_z { &mut self.xyz } else { &mut self.xy };
-        execute_batch(columns, capacity, transform)
     }
 
     fn execute_axes_indexed(
@@ -1447,27 +1396,6 @@ impl TransformOutputPlan {
             .map(|shape| rebuild_shape_columns(shape, &mut cursor))
             .collect::<Result<Vec<_>>>()
     }
-}
-
-fn execute_batch(
-    columns: &mut OutputColumns,
-    capacity: usize,
-    transform: &mut impl FnMut(&mut [f64], &mut [f64], Option<&mut [f64]>) -> Result<()>,
-) -> Result<()> {
-    let capacity = capacity.max(1);
-    let OutputColumns { xs, ys, zs } = columns;
-    let mut zs = zs.as_mut().map(Vec::as_mut_slice);
-    let mut offset = 0;
-    while offset < xs.len() {
-        let end = xs.len().min(offset.saturating_add(capacity));
-        transform(
-            &mut xs[offset..end],
-            &mut ys[offset..end],
-            zs.as_deref_mut().map(|values| &mut values[offset..end]),
-        )?;
-        offset = end;
-    }
-    Ok(())
 }
 
 fn execute_batch_indexed(
@@ -1619,7 +1547,7 @@ mod lane_tests {
         let refs: Vec<_> = shapes.iter().collect();
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
         let mut calls = Vec::new();
-        plan.execute_with_capacities(2, 1, &mut |x, y, z| {
+        plan.execute_with_capacities_indexed(2, 1, &mut |x, y, z| {
             calls.push((z.is_some(), x.len()));
             for value in x.iter_mut().chain(y.iter_mut()) {
                 *value += 100.0;
@@ -1752,7 +1680,7 @@ mod lane_tests {
         let refs: Vec<_> = shapes.iter().collect();
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
         let mut calls = Vec::new();
-        plan.execute_with_capacities(2, 2, &mut |x, y, z| {
+        plan.execute_with_capacities_indexed(2, 2, &mut |x, y, z| {
             calls.push((z.is_some(), x.len()));
             for value in x {
                 *value += 100.0;
@@ -1850,7 +1778,7 @@ mod lane_tests {
         ];
         let refs: Vec<_> = shapes.iter().collect();
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
-        plan.execute_with_capacities(2, 2, &mut |x, y, _| {
+        plan.execute_with_capacities_indexed(2, 2, &mut |x, y, _| {
             for value in x.iter_mut().chain(y.iter_mut()) {
                 *value += 1.0;
             }
@@ -1892,7 +1820,7 @@ mod lane_tests {
         let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
         let refs = [&shape];
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
-        plan.execute_with_capacities(1, 1, &mut |_, _, _| Ok(()))
+        plan.execute_with_capacities_indexed(1, 1, &mut |_, _, _| Ok(()))
             .unwrap();
         assert!(Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));
         let Shape::MultiPoint(output) = plan.finish(&refs).unwrap().pop().unwrap() else {
@@ -1914,7 +1842,7 @@ mod lane_tests {
         let shape = Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(seq).unwrap());
         let refs = [&shape];
         let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
-        plan.execute_with_capacities(1, 1, &mut |_, _, _| Ok(()))
+        plan.execute_with_capacities_indexed(1, 1, &mut |_, _, _| Ok(()))
             .unwrap();
         assert_eq!(plan.sequences[0].ms.as_deref().unwrap(), [5.0, 6.0]);
         assert!(!Arc::ptr_eq(plan.sequences[0].ms.as_ref().unwrap(), &ms));

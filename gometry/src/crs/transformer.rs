@@ -15,7 +15,7 @@ use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformFailure, TransformOptions, begin_transform_observation, coordinate_identity_crs,
     ensure_geographic_domain_in_frame, record_transform_engine, runtime_state_snapshot,
-    transform_in_core_xy_batch, transform_proj_shapes, try_in_core_transform_with_state,
+    transform_in_core_xy_batch, try_in_core_transform_with_state,
     validate_coordinate_lanes, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 use crate::error::{ErrorKind, Result};
@@ -100,18 +100,7 @@ impl TransformPlan {
         begin_transform_observation();
     }
 
-    fn finish_execution<T>(&self, result: Result<T>, executed: bool) -> Result<T> {
-        if executed && result.is_ok() && self.is_in_core() {
-            record_transform_engine(true);
-        }
-        result
-    }
-
-    fn finish_execution_indexed<T>(
-        &self,
-        result: std::result::Result<T, TransformFailure>,
-        executed: bool,
-    ) -> std::result::Result<T, TransformFailure> {
+    fn finish_execution<T, E>(&self, result: Result<T, E>, executed: bool) -> Result<T, E> {
         if executed && result.is_ok() && self.is_in_core() {
             record_transform_engine(true);
         }
@@ -131,50 +120,8 @@ impl TransformPlan {
     /// elements — need not deep-clone their inputs into an owned
     /// `Vec<Shape>`.
     pub(crate) fn transform_shapes(&self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
-        self.begin_execution();
-        let result = match &self.operation {
-            TransformOperation::Identity { source_domain } => {
-                if let TopologyDomain::Geographic(frame) = source_domain {
-                    for shape in shapes {
-                        ensure_geographic_domain_in_frame(*frame, shape)?;
-                    }
-                }
-                Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
-            },
-            TransformOperation::InCore(operation) => {
-                let mut output = TransformOutputPlan::try_new(shapes)?;
-                output.execute(|x, y, _| {
-                    transform_in_core_xy_with_domains(
-                        operation,
-                        self.source_domain,
-                        self.target_domain,
-                        x,
-                        y,
-                    )
-                })?;
-                output.finish(shapes)
-            },
-            TransformOperation::Proj {
-                source,
-                target,
-                options,
-            } => with_proj_pipeline_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| {
-                    transform_proj_shapes(
-                        transformer,
-                        shapes,
-                        options.source_epoch,
-                        &self.execution,
-                    )
-                },
-            ),
-        };
-        self.finish_execution(result, !shapes.is_empty())
+        self.transform_shapes_indexed(shapes)
+            .map_err(|failure| failure.error)
     }
 
     pub(crate) fn transform_shapes_indexed(
@@ -225,7 +172,7 @@ impl TransformPlan {
                 },
             ),
         };
-        self.finish_execution_indexed(result, !shapes.is_empty())
+        self.finish_execution(result, !shapes.is_empty())
     }
 
     pub(crate) fn transform_coordinates(
@@ -234,116 +181,8 @@ impl TransformPlan {
         y: &mut [f64],
         zt: crate::ZtLanes<'_>,
     ) -> Result<()> {
-        self.begin_execution();
-        match &zt {
-            crate::Zt::None => validate_coordinate_lanes(x, y, crate::Zt::None)?,
-            crate::Zt::Z(z) => validate_coordinate_lanes(x, y, crate::Zt::Z(&**z))?,
-            crate::Zt::T(t) => validate_coordinate_lanes(x, y, crate::Zt::T(&**t))?,
-            crate::Zt::Zt { z, t } => {
-                validate_coordinate_lanes(x, y, crate::Zt::Zt { z: &**z, t: &**t })?;
-            },
-        }
-        let result = match &self.operation {
-            TransformOperation::Identity { source_domain } => {
-                if let TopologyDomain::Geographic(frame) = source_domain {
-                    for (&lon, &lat) in x.iter().zip(y.iter()) {
-                        crate::crs::ensure_geographic_lonlat_in_frame(*frame, lon, lat)?;
-                    }
-                }
-                Ok(())
-            },
-            TransformOperation::InCore(operation) => {
-                // Lane-direct: the planar formulas never touch Z/T, and the
-                // slices were already boundary-validated finite — transform
-                // XY in place, leave the other lanes untouched. The operation
-                // variant is resolved once per batch via `transform_in_core_xy_batch`.
-                transform_in_core_xy_with_domains(
-                    operation,
-                    self.source_domain,
-                    self.target_domain,
-                    x,
-                    y,
-                )
-            },
-            TransformOperation::Proj {
-                source,
-                target,
-                options,
-            } => with_proj_pipeline_at(
-                source,
-                target,
-                options,
-                &self.state,
-                &self.execution,
-                |transformer| match zt {
-                    crate::Zt::None => {
-                        if let Some(epoch) = options.source_epoch {
-                            // PROJ broadcasts a length-1 time lane as a constant
-                            // across every coordinate — no per-vertex epoch buffer.
-                            let mut t = [epoch];
-                            transformer.transform_lanes(
-                                x,
-                                y,
-                                None,
-                                Some(t.as_mut_slice()),
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        } else {
-                            transformer.require_epoch_lane()?;
-                            transformer.transform_lanes(
-                                x,
-                                y,
-                                None,
-                                None,
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        }
-                    },
-                    crate::Zt::Z(z) => {
-                        if let Some(epoch) = options.source_epoch {
-                            let mut t = [epoch];
-                            transformer.transform_lanes(
-                                x,
-                                y,
-                                Some(z),
-                                Some(t.as_mut_slice()),
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        } else {
-                            transformer.require_epoch_lane()?;
-                            transformer.transform_lanes(
-                                x,
-                                y,
-                                Some(z),
-                                None,
-                                ProjDirection::Forward,
-                                &self.execution,
-                            )
-                        }
-                    },
-                    crate::Zt::T(t) => transformer.transform_lanes(
-                        x,
-                        y,
-                        None,
-                        Some(t),
-                        ProjDirection::Forward,
-                        &self.execution,
-                    ),
-                    crate::Zt::Zt { z, t } => transformer.transform_lanes(
-                        x,
-                        y,
-                        Some(z),
-                        Some(t),
-                        ProjDirection::Forward,
-                        &self.execution,
-                    ),
-                },
-            ),
-        };
-        self.finish_execution(result, !x.is_empty())
+        self.transform_coordinates_indexed(x, y, zt)
+            .map_err(|failure| failure.error)
     }
 
     #[expect(
@@ -470,7 +309,7 @@ impl TransformPlan {
                 },
             ),
         };
-        self.finish_execution_indexed(result, !x.is_empty())
+        self.finish_execution(result, !x.is_empty())
     }
 
     pub(crate) fn transform_bounds(

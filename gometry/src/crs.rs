@@ -141,7 +141,7 @@ pub(crate) use runtime::{
 pub(crate) use transform::{
     apply_operation, coordinates_are_finite, is_wgs84_lonlat, parse_epsg, proj_transform_error,
     transform, transform_at, transform_bounds, transform_bounds_3d, transform_bounds_3d_many,
-    transform_bounds_many, transform_coordinates, transform_proj_shapes, validate_coordinate_lanes,
+    transform_bounds_many, transform_coordinates, validate_coordinate_lanes,
 };
 pub(crate) use transformer::TransformPlan;
 pub(crate) use types::{

@@ -161,3 +161,20 @@ def test_successful_homogeneous_packed_transform_stays_one_batch_invocation() ->
 
     assert transformed.geometry_type == ['Point', 'Point']
     assert gm.crs_cache_info()['transform_invocations'] == 1
+
+
+def test_successful_mixed_xyz_and_xy_transform_preserves_known_values_and_engine() -> None:
+    gm.crs_clear_cache()
+    values = gm.GeometryArray([
+        gm.Point(1.0, 2.0, z=7.0, crs=4326),
+        gm.Point(-3.0, 4.0, crs=4326),
+    ])
+
+    transformed = values.to_crs(3857)
+
+    assert transformed[0].x == pytest.approx(111319.49079327357)
+    assert transformed[0].y == pytest.approx(222684.20850554405)
+    assert transformed[0].z == pytest.approx(7.0)
+    assert transformed[1].x == pytest.approx(-333958.4723798207)
+    assert transformed[1].y == pytest.approx(445640.10965602624)
+    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
