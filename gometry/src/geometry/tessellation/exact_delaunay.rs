@@ -25,7 +25,8 @@
 
 use crate::collections::HashSet;
 
-use crate::geometry::tessellation::exact::{self, ExactSign};
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
 
 use super::exact_corner_hull_cycle;

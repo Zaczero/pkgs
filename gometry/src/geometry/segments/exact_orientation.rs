@@ -6,8 +6,9 @@
 //! `2^-1074`).
 
 use super::CCW_ERRBOUND_A;
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::Orientation;
-use crate::geometry::tessellation::exact::{ExactSign, Interval};
+use crate::geometry::tessellation::exact::Interval;
 
 const LIMBS: usize = 68;
 
@@ -144,15 +145,48 @@ impl ExactInteger {
         result.negative = self.negative != other.negative && !result.is_zero();
         result
     }
-    fn orientation(self) -> Orientation {
+    fn sign(self) -> ExactSign {
         if self.is_zero() {
-            Orientation::Collinear
+            ExactSign::Zero
         } else if self.negative {
-            Orientation::Clockwise
+            ExactSign::Negative
         } else {
-            Orientation::CounterClockwise
+            ExactSign::Positive
         }
     }
+}
+
+/// Exact sign of the stored-binary64 orientation after the caller's fast path
+/// has declined. The outward interval proves ordinary cases; fixed-width
+/// integer arithmetic resolves its remaining full-range cases.
+pub(in crate::geometry) fn stored_orientation_sign(
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+    cx: f64,
+    cy: f64,
+) -> ExactSign {
+    let exact = Interval::exact;
+    let (bax, bay) = (exact(bx).sub(exact(ax)), exact(by).sub(exact(ay)));
+    let (cax, cay) = (exact(cx).sub(exact(ax)), exact(cy).sub(exact(ay)));
+    if bax.is_finite()
+        && bay.is_finite()
+        && cax.is_finite()
+        && cay.is_finite()
+        && let Some(sign) = bax.mul(cay).sub(bay.mul(cax)).sign()
+    {
+        return sign;
+    }
+    let (bax, bay) = (
+        ExactInteger::from_f64(bx).subtract(ExactInteger::from_f64(ax)),
+        ExactInteger::from_f64(by).subtract(ExactInteger::from_f64(ay)),
+    );
+    let (cax, cay) = (
+        ExactInteger::from_f64(cx).subtract(ExactInteger::from_f64(ax)),
+        ExactInteger::from_f64(cy).subtract(ExactInteger::from_f64(ay)),
+    );
+    bax.product(&cay).subtract(bay.product(&cax)).sign()
 }
 
 #[expect(clippy::float_cmp, reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact")]
@@ -179,30 +213,11 @@ pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f6
     if (ax == bx && ax == cx) || (ay == by && ay == cy) {
         return Orientation::Collinear;
     }
-    let exact = Interval::exact;
-    let (bax, bay) = (exact(bx).sub(exact(ax)), exact(by).sub(exact(ay)));
-    let (cax, cay) = (exact(cx).sub(exact(ax)), exact(cy).sub(exact(ay)));
-    if bax.is_finite()
-        && bay.is_finite()
-        && cax.is_finite()
-        && cay.is_finite()
-        && let Some(sign) = bax.mul(cay).sub(bay.mul(cax)).sign()
-    {
-        return match sign {
-            ExactSign::Negative => Orientation::Clockwise,
-            ExactSign::Positive => Orientation::CounterClockwise,
-            ExactSign::Zero => unreachable!("an interval sign excludes zero"),
-        };
+    match stored_orientation_sign(ax, ay, bx, by, cx, cy) {
+        ExactSign::Negative => Orientation::Clockwise,
+        ExactSign::Zero => Orientation::Collinear,
+        ExactSign::Positive => Orientation::CounterClockwise,
     }
-    let (bax, bay) = (
-        ExactInteger::from_f64(bx).subtract(ExactInteger::from_f64(ax)),
-        ExactInteger::from_f64(by).subtract(ExactInteger::from_f64(ay)),
-    );
-    let (cax, cay) = (
-        ExactInteger::from_f64(cx).subtract(ExactInteger::from_f64(ax)),
-        ExactInteger::from_f64(cy).subtract(ExactInteger::from_f64(ay)),
-    );
-    bax.product(&cay).subtract(bay.product(&cax)).orientation()
 }
 
 #[cfg(test)]
@@ -262,5 +277,26 @@ mod tests {
             orientation_xy(0.0, ay, 1.0, by, 2.0, ay),
             Orientation::Clockwise
         );
+    }
+
+    #[test]
+    fn stored_orientation_preserves_all_underflow_ray_permutations() {
+        let mu = f64::from_bits(1);
+        let a = (1.0, -4096.0 * mu);
+        let b = (-2.0_f64.powi(-12), 6144.0 * mu);
+        let p = (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
+        for ((left, middle, right), expected) in [
+            ((a, b, p), ExactSign::Positive),
+            ((a, p, b), ExactSign::Negative),
+            ((b, a, p), ExactSign::Negative),
+            ((b, p, a), ExactSign::Positive),
+            ((p, a, b), ExactSign::Positive),
+            ((p, b, a), ExactSign::Negative),
+        ] {
+            assert_eq!(
+                stored_orientation_sign(left.0, left.1, middle.0, middle.1, right.0, right.1),
+                expected
+            );
+        }
     }
 }

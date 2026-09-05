@@ -12,6 +12,7 @@ use crate::geometry::tessellation::exact::Interval;
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
 use exact_orientation::orientation_xy as certified_orientation_xy;
+pub(in crate::geometry) use exact_orientation::stored_orientation_sign;
 
 // Dekker's split constant for binary64: 2^ceil(53 / 2) + 1.
 

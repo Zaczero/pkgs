@@ -20,7 +20,8 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::geometry::tessellation::exact::{self, ExactSign};
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
 
 use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};

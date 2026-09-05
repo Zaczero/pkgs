@@ -13,6 +13,13 @@
 
 pub(crate) mod product_sum;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::geometry) enum ExactSign {
+    Negative,
+    Zero,
+    Positive,
+}
+
 /// Error-free sum (Knuth two-sum): `head + tail == left + right` exactly
 /// whenever the rounded head is finite.  Callers that need a fallible lane
 /// check that head before using the pair; the shared transform itself keeps

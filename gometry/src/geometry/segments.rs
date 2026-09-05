@@ -10,7 +10,8 @@
 //! projection, and interpolation primitives used across distance, overlay,
 //! linear-referencing, and predicate modules.
 
-use crate::geometry::tessellation::exact::{ExactDyadic, ExactSign, compare_ratios, round_ratio};
+use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
     Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, XY, ZOrdinate,
     axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
@@ -19,6 +20,7 @@ use crate::geometry::{
 mod exact;
 
 pub(crate) use exact::orientation;
+pub(in crate::geometry) use exact::stored_orientation_sign;
 pub(super) use exact::{CCW_ERRBOUND_A, orientation_xy, ray_crossing_is_right};
 use exact::{
     certified_projection, dd_clamp_unit, dd_cross, dd_diff, dd_interpolate, dd_quotient,

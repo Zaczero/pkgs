@@ -14,14 +14,8 @@ use std::cmp::Ordering;
 
 #[cfg(test)]
 use crate::geometry::GENERATED_ITEM_LIMIT;
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::geometry) enum ExactSign {
-    Negative,
-    Zero,
-    Positive,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PointInCycle {
@@ -409,36 +403,6 @@ fn difference(left: f64, right: f64) -> ExactDyadic {
     ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
 }
 
-/// V10: interval filter for the stored-binary64 orientation.
-///
-/// The three inputs are exact binary64, so each starts as a degenerate
-/// interval; every subsequent step rounds outward, and the resulting interval
-/// therefore CONTAINS the exact determinant. A sign is returned only when the
-/// interval excludes zero.
-///
-/// This is deliberately NOT `robust::orient2d`. Shewchuk's adaptive predicates
-/// are exact only while their error-free transformations hold, which requires
-/// no underflow: on the tessellation corpus's subnormal case
-/// (`5e-324`/`1e-300` sites) `robust::orient2d` returns `0` for a determinant
-/// that is genuinely negative — measured, not conjectured. gometry's
-/// tessellation predicate is specified over the WHOLE binary64 range
-/// (`exact_signs_cover_full_binary64_range` pins `f64::from_bits(1)`), so the
-/// filter must degrade to the exact dyadic determinant there, and an outward
-/// interval does exactly that: when every product underflows, the interval
-/// straddles zero and declines.
-fn orient2d_filtered(a: XY, b: XY, c: XY) -> Option<ExactSign> {
-    let value = Interval::exact;
-    let bax = value(b.x).sub(value(a.x));
-    let bay = value(b.y).sub(value(a.y));
-    let cax = value(c.x).sub(value(a.x));
-    let cay = value(c.y).sub(value(a.y));
-    if !(bax.is_finite() && bay.is_finite() && cax.is_finite() && cay.is_finite()) {
-        return None;
-    }
-    let determinant = bax.mul(cay).sub(bay.mul(cax));
-    determinant.sign()
-}
-
 /// Shewchuk's stage-A orientation filter: the plain float determinant is the
 /// answer whenever its magnitude clears an a-priori bound on its rounding
 /// error, `(3 + 16ε)ε` times the sum of the term magnitudes, which covers
@@ -595,31 +559,22 @@ fn incircle_lattice(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
 
 pub(super) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
     if let Some(sign) = orient2d_float(a, b, c) {
-        debug_assert_eq!(sign, orient2d_dyadic(a, b, c), "float-filtered orient2d disagrees");
+        debug_assert_eq!(
+            sign,
+            crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
+            "float-filtered orient2d disagrees"
+        );
         return sign;
     }
     if let Some(sign) = orient2d_lattice(a, b, c) {
-        debug_assert_eq!(sign, orient2d_dyadic(a, b, c), "lattice orient2d disagrees");
+        debug_assert_eq!(
+            sign,
+            crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
+            "lattice orient2d disagrees"
+        );
         return sign;
     }
-    if let Some(sign) = orient2d_filtered(a, b, c) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                sign,
-                orient2d_dyadic(a, b, c),
-                "filtered orient2d disagrees"
-            );
-        }
-        return sign;
-    }
-    orient2d_dyadic(a, b, c)
-}
-
-fn orient2d_dyadic(a: XY, b: XY, c: XY) -> ExactSign {
-    difference(b.x, a.x)
-        .product(&difference(c.y, a.y))
-        .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
-        .sign()
+    crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y)
 }
 
 /// V10: the same interval filter for the in-circle determinant, with the same
@@ -2159,6 +2114,8 @@ pub(in crate::geometry) fn round_ratio(
 
 #[cfg(test)]
 mod tests {
+    use crate::geometry::exact_arith::ExactSign;
+
     #[test]
     fn predicate_filters_preserve_signs_across_exponent_ranges() {
         for exponent in [-600, -451, -450, -201, -200, 0, 199, 200, 449, 450, 600] {
@@ -2169,34 +2126,34 @@ mod tests {
             let inside = XY::new(scale * 0.25, scale * 0.25);
             assert_eq!(
                 super::orient2d(origin, east, north),
-                super::ExactSign::Positive
+                ExactSign::Positive
             );
             assert_eq!(
                 super::incircle(origin, east, north, inside),
-                super::ExactSign::Positive
+                ExactSign::Positive
             );
             if let Some(sign) = super::orient2d_float(origin, east, north) {
                 assert_eq!(
                     sign,
-                    super::ExactSign::Positive,
+                    ExactSign::Positive,
                     "orientation exponent {exponent}"
                 );
             }
             if let Some(sign) = super::incircle_float(origin, east, north, inside) {
                 assert_eq!(
                     sign,
-                    super::ExactSign::Positive,
+                    ExactSign::Positive,
                     "incircle exponent {exponent}"
                 );
             }
             if exponent == 0 {
                 assert_eq!(
                     super::orient2d_float(origin, east, north),
-                    Some(super::ExactSign::Positive)
+                    Some(ExactSign::Positive)
                 );
                 assert_eq!(
                     super::incircle_float(origin, east, north, inside),
-                    Some(super::ExactSign::Positive)
+                    Some(ExactSign::Positive)
                 );
             }
         }
@@ -2211,11 +2168,11 @@ mod tests {
             XY::new(-3.0 * scale, 4.0 * scale),
         ];
         let [a, b, c, d] = points;
-        assert_eq!(super::incircle_dyadic(a, b, c, d), super::ExactSign::Zero);
+        assert_eq!(super::incircle_dyadic(a, b, c, d), ExactSign::Zero);
         if let Some(sign) = super::incircle_float(a, b, c, d) {
-            assert_eq!(sign, super::ExactSign::Zero, "scale exponent {exponent}");
+            assert_eq!(sign, ExactSign::Zero, "scale exponent {exponent}");
         }
-        assert_eq!(super::incircle(a, b, c, d), super::ExactSign::Zero);
+        assert_eq!(super::incircle(a, b, c, d), ExactSign::Zero);
     }
 
     #[test]
@@ -2226,6 +2183,47 @@ mod tests {
     #[test]
     fn incircle_cocircular_underflow_negative() {
         check_cocircular_underflow(-271);
+    }
+
+    #[test]
+    fn incircle_cocircular_squares_underflow_to_opposite_wrong_signs() {
+        for scale in [3.0 * 2.0_f64.powi(-270), 13.0 * 2.0_f64.powi(-272)] {
+            let [a, b, c, d] = [
+                XY::new(0.0, 0.0),
+                XY::new(scale, 0.0),
+                XY::new(scale, scale),
+                XY::new(0.0, scale),
+            ];
+            assert_eq!(super::incircle_dyadic(a, b, c, d), ExactSign::Zero);
+            if let Some(sign) = super::incircle_float(a, b, c, d) {
+                assert_eq!(sign, ExactSign::Zero, "scale {scale:?}");
+            }
+            assert_eq!(super::incircle(a, b, c, d), ExactSign::Zero);
+        }
+    }
+
+    #[test]
+    fn orient2d_uses_the_shared_underflow_ray_resolver_for_all_permutations() {
+        let mu = f64::from_bits(1);
+        let a = XY::new(1.0, -4096.0 * mu);
+        let b = XY::new(-2.0_f64.powi(-12), 6144.0 * mu);
+        let p = XY::new(f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
+        for ((left, middle, right), expected) in [
+            ((a, b, p), ExactSign::Positive),
+            ((a, p, b), ExactSign::Negative),
+            ((b, a, p), ExactSign::Negative),
+            ((b, p, a), ExactSign::Positive),
+            ((p, a, b), ExactSign::Positive),
+            ((p, b, a), ExactSign::Negative),
+        ] {
+            assert_eq!(super::orient2d(left, middle, right), expected);
+            assert_eq!(
+                crate::geometry::segments::stored_orientation_sign(
+                    left.x, left.y, middle.x, middle.y, right.x, right.y
+                ),
+                expected
+            );
+        }
     }
 
     /// The stage-A filters are sound only if a decided verdict always equals
@@ -2280,7 +2278,13 @@ mod tests {
             }
             match super::orient2d_float(a, b, d) {
                 Some(sign) => {
-                    assert_eq!(sign, super::orient2d_dyadic(a, b, d), "orient2d case {case}");
+                    assert_eq!(
+                        sign,
+                        crate::geometry::segments::stored_orientation_sign(
+                            a.x, a.y, b.x, b.y, d.x, d.y
+                        ),
+                        "orient2d case {case}"
+                    );
                     decided[0] += 1;
                 }
                 None => declined[0] += 1,
@@ -2670,7 +2674,6 @@ mod tests {
         let b = XY::new(tiny, 0.0);
         let c = XY::new(1.0e-300, 1.0e-300);
         assert_eq!(orient2d(a, b, c), ExactSign::Positive);
-        assert_eq!(orient2d_filtered(a, b, c), None);
 
         let ordinary = [
             XY::new(-3.0, 2.0),
@@ -2678,11 +2681,16 @@ mod tests {
             XY::new(4.0, 7.0),
             XY::new(-2.0, -6.0),
         ];
-        let filtered = orient2d_filtered(ordinary[0], ordinary[1], ordinary[2])
-            .expect("ordinary orientation should hit the interval filter");
         assert_eq!(
-            filtered,
-            orient2d_dyadic(ordinary[0], ordinary[1], ordinary[2])
+            crate::geometry::segments::stored_orientation_sign(
+                ordinary[0].x,
+                ordinary[0].y,
+                ordinary[1].x,
+                ordinary[1].y,
+                ordinary[2].x,
+                ordinary[2].y,
+            ),
+            ExactSign::Positive
         );
         let filtered = incircle_filtered(ordinary[0], ordinary[1], ordinary[2], ordinary[3])
             .expect("ordinary incircle should hit the interval filter");
@@ -2741,7 +2749,11 @@ mod lattice_predicates {
                 decided += 1;
             }
             if let Some(sign) = orient2d_lattice(a, b, c) {
-                assert_eq!(sign, orient2d_dyadic(a, b, c), "{a:?} {b:?} {c:?}");
+                assert_eq!(
+                    sign,
+                    crate::geometry::segments::stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y),
+                    "{a:?} {b:?} {c:?}"
+                );
             }
         }
         assert!(decided > 100_000, "the lattice path decided only {decided}");

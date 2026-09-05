@@ -25,6 +25,7 @@ use std::collections::VecDeque;
 use rstar::AABB;
 
 use crate::error::Result;
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, certified_delaunay, delaunay_complex, exact};
 use crate::geometry::{
     BulkRTree, CoordSeq, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, LineSeq,
@@ -627,9 +628,9 @@ fn normalize_clip<'a>(
                 let (mut points, mut coordinates) = open_ring(ring)?;
                 let orientation = exact::cycle_orientation(&points)?;
                 let wanted = if ring_index == 0 {
-                    exact::ExactSign::Positive
+                    ExactSign::Positive
                 } else {
-                    exact::ExactSign::Negative
+                    ExactSign::Negative
                 };
                 if orientation != wanted {
                     reverse_ring(&mut points, &mut coordinates);
@@ -822,9 +823,9 @@ fn orient_separator(
         &end,
         &exact::ExactPoint::from_xy(input[sites[0].0 as usize].point.xy()),
     ) {
-        exact::ExactSign::Positive => {},
-        exact::ExactSign::Negative => std::mem::swap(&mut start, &mut end),
-        exact::ExactSign::Zero => {
+        ExactSign::Positive => {},
+        ExactSign::Negative => std::mem::swap(&mut start, &mut end),
+        ExactSign::Zero => {
             return Err(voronoi_error("Voronoi separator contains its source site"));
         },
     }
@@ -889,7 +890,7 @@ fn frame_intersections(
     for side in 0..4 {
         let edge = exact::ExactLine::through_points(&frame[side], &frame[(side + 1) % 4])?;
         let hit = exact::line_intersection(line, &edge);
-        if exact::signed_line_product(line, &hit) == exact::ExactSign::Zero
+        if exact::signed_line_product(line, &hit) == ExactSign::Zero
             && exact::point_in_cycle(frame, &hit) != exact::PointInCycle::Outside
             && exact::segment_intersection(&frame[side], &frame[(side + 1) % 4], &hit, &hit)
                 .is_point()
@@ -1054,8 +1055,8 @@ fn build_primitives(
         });
     }
     for (index, primitive) in primitives.iter_mut().enumerate() {
-        if exact::signed_line_product(&primitive.line, &primitive.start) != exact::ExactSign::Zero
-            || exact::signed_line_product(&primitive.line, &primitive.end) != exact::ExactSign::Zero
+        if exact::signed_line_product(&primitive.line, &primitive.start) != ExactSign::Zero
+            || exact::signed_line_product(&primitive.line, &primitive.end) != ExactSign::Zero
         {
             return Err(voronoi_error(
                 "exact Voronoi primitive endpoints leave their support line",
@@ -1363,7 +1364,7 @@ struct WalkedHalfEdge {
 struct LocalOrbit {
     seed: HalfEdgeId,
     component: GraphComponentId,
-    orientation: exact::ExactSign,
+    orientation: ExactSign,
     half_edges: Box<[HalfEdgeId]>,
 }
 
@@ -1564,7 +1565,7 @@ fn build_local_dcel(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<L
         for half_edge in &cycle {
             orbit_by_halfedge[half_edge.0 as usize] = orbit;
         }
-        if orientation == exact::ExactSign::Negative
+        if orientation == ExactSign::Negative
             && exterior[component.0 as usize].replace(orbit).is_some()
         {
             return Err(voronoi_error(
@@ -1798,7 +1799,7 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
                 .enumerate()
                 .filter(|(_, orbit)| {
                     orbit.component.0 as usize == component
-                        && orbit.orientation == exact::ExactSign::Positive
+                        && orbit.orientation == ExactSign::Positive
                 })
                 .map(|(orbit, _)| OrbitId(orbit as u32))
                 .collect()
@@ -2037,7 +2038,7 @@ struct ExactSimpleRing {
     face: FaceId,
     vertices: Box<[VertexId]>,
     edges: Box<[EdgeId]>,
-    orientation: exact::ExactSign,
+    orientation: ExactSign,
 }
 
 struct ExactCellPart {
@@ -2175,13 +2176,13 @@ fn assemble_cells(
         let positives: Vec<_> = rings
             .iter()
             .enumerate()
-            .filter(|(_, ring)| ring.orientation == exact::ExactSign::Positive)
+            .filter(|(_, ring)| ring.orientation == ExactSign::Positive)
             .map(|(index, _)| index)
             .collect();
         let negatives: Vec<_> = rings
             .iter()
             .enumerate()
-            .filter(|(_, ring)| ring.orientation == exact::ExactSign::Negative)
+            .filter(|(_, ring)| ring.orientation == ExactSign::Negative)
             .map(|(index, _)| index)
             .collect();
         let mut ring_points = Vec::new();
@@ -2681,9 +2682,9 @@ fn embed(
             let left_point = exact::ExactPoint::from_xy(sites[left.0 as usize].point.xy());
             let right_point = exact::ExactPoint::from_xy(sites[right.0 as usize].point.xy());
             if exact::orient_points(&rounded[0], &rounded[1], &left_point)
-                != exact::ExactSign::Positive
+                != ExactSign::Positive
                 || exact::orient_points(&rounded[0], &rounded[1], &right_point)
-                    != exact::ExactSign::Negative
+                    != ExactSign::Negative
             {
                 return Err(embedding_failure());
             }
@@ -3154,14 +3155,14 @@ pub(super) fn build_collinear_edges(
                 let end = &ring[(edge + 1) % ring.len()];
                 let start_sign = exact::signed_line_product(&line, start);
                 let end_sign = exact::signed_line_product(&line, end);
-                if start_sign == exact::ExactSign::Zero {
+                if start_sign == ExactSign::Zero {
                     budgeted_try_push(&mut events, start.clone(), budget)?;
                 }
-                if end_sign == exact::ExactSign::Zero {
+                if end_sign == ExactSign::Zero {
                     budgeted_try_push(&mut events, end.clone(), budget)?;
                 }
-                if start_sign != exact::ExactSign::Zero
-                    && end_sign != exact::ExactSign::Zero
+                if start_sign != ExactSign::Zero
+                    && end_sign != ExactSign::Zero
                     && start_sign != end_sign
                 {
                     let support = exact::ExactLine::through_points(start, end)?;
@@ -4570,7 +4571,7 @@ mod convex_cell_certificate {
             .collect();
         for index in 0..5 {
             let (a, b, c) = (pentagram[index], pentagram[(index + 1) % 5], pentagram[(index + 2) % 5]);
-            assert_eq!(exact::orient2d(a, b, c), exact::ExactSign::Positive);
+            assert_eq!(exact::orient2d(a, b, c), ExactSign::Positive);
         }
         assert!(!certify_convex_cell(&pentagram, XY::new(0.0, 0.0)));
         // Too few vertices.
@@ -4738,7 +4739,7 @@ fn dual_close_hull_chain(
     }
     dedup_tagged(&mut ring, center_points);
     let vertices: Vec<DualVertex> = ring.iter().map(|tagged| tagged.vertex.clone()).collect();
-    if dual_cycle_orientation(&vertices, center_points)? == exact::ExactSign::Negative {
+    if dual_cycle_orientation(&vertices, center_points)? == ExactSign::Negative {
         reverse_tagged(&mut ring);
     }
     Ok(ring)
@@ -4757,7 +4758,7 @@ fn dual_vertex_point<'a>(
 fn dual_cycle_orientation(
     ring: &[DualVertex],
     centers: &[exact::ExactPoint],
-) -> Result<exact::ExactSign> {
+) -> Result<ExactSign> {
     if ring.len() < 3 {
         return Err(voronoi_error("exact cycle has fewer than three vertices"));
     }
@@ -4768,7 +4769,7 @@ fn dual_cycle_orientation(
         let right =
             dual_vertex_point(&ring[(index + 2) % ring.len()], centers).expect("valid center id");
         let sign = exact::orient_points(left, center, right);
-        if sign != exact::ExactSign::Zero {
+        if sign != ExactSign::Zero {
             return Ok(sign);
         }
     }
@@ -4786,7 +4787,7 @@ fn dual_point_in_cycle(
             (left != Ordering::Less && right != Ordering::Greater)
                 || (right != Ordering::Less && left != Ordering::Greater)
         };
-        exact::orient_points(start, end, point) == exact::ExactSign::Zero
+        exact::orient_points(start, end, point) == ExactSign::Zero
             && between(point.compare_x(start), point.compare_x(end))
             && between(point.compare_y(start), point.compare_y(end))
     };
@@ -4802,12 +4803,12 @@ fn dual_point_in_cycle(
         let orientation = exact::orient_points(start, end, point);
         if start_y != Ordering::Greater
             && end_y == Ordering::Greater
-            && orientation == exact::ExactSign::Positive
+            && orientation == ExactSign::Positive
         {
             winding += 1;
         } else if end_y != Ordering::Greater
             && start_y == Ordering::Greater
-            && orientation == exact::ExactSign::Negative
+            && orientation == ExactSign::Negative
         {
             winding -= 1;
         }
@@ -4854,7 +4855,7 @@ fn dual_clip_convex(
         let (a, b) = (&rect[side], &rect[(side + 1) % 4]);
         let inside = |point: &exact::ExactPoint| -> bool {
             if !axis_aligned {
-                return exact::orient_points(a, b, point) != exact::ExactSign::Negative;
+                return exact::orient_points(a, b, point) != ExactSign::Negative;
             }
             match side {
                 0 => point.compare_y(&rect[0]) != Ordering::Less,
@@ -5068,7 +5069,7 @@ fn dual_build_rings(
                     clockwise
                 } else {
                     let clockwise =
-                        dual_cycle_orientation(&untag(&ring), centers)? == exact::ExactSign::Negative;
+                        dual_cycle_orientation(&untag(&ring), centers)? == ExactSign::Negative;
                     walk_clockwise = Some(clockwise);
                     clockwise
                 };
@@ -5082,7 +5083,7 @@ fn dual_build_rings(
             }
             dedup_tagged(&mut ring, centers);
             if ring.len() >= 3
-                && dual_cycle_orientation(&untag(&ring), centers)? == exact::ExactSign::Negative
+                && dual_cycle_orientation(&untag(&ring), centers)? == ExactSign::Negative
             {
                 reverse_tagged(&mut ring);
             }
@@ -5129,19 +5130,19 @@ fn certify_convex_cell(ring: &[XY], site: XY) -> bool {
         // frame or clip edge) are exactly collinear; no filter can certify
         // a zero, so decide it on the shared coordinate.
         let turn = if (a.x == b.x && b.x == c.x) || (a.y == b.y && b.y == c.y) {
-            exact::ExactSign::Zero
+            ExactSign::Zero
         } else {
             exact::orient2d(a, b, c)
         };
         match turn {
-            exact::ExactSign::Positive => {},
-            exact::ExactSign::Zero if ahead == onward && ahead != Ordering::Equal => {},
-            exact::ExactSign::Zero | exact::ExactSign::Negative => return false,
+            ExactSign::Positive => {},
+            ExactSign::Zero if ahead == onward && ahead != Ordering::Equal => {},
+            ExactSign::Zero | ExactSign::Negative => return false,
         }
         if ahead != onward {
             direction_changes += 1;
         }
-        if exact::orient2d(a, b, site) == exact::ExactSign::Negative {
+        if exact::orient2d(a, b, site) == ExactSign::Negative {
             return false;
         }
     }
@@ -5263,7 +5264,7 @@ fn dual_embed(
         let site_xy = sites[site_index].point.xy();
         if !certify_convex_cell(rounded, site_xy) {
             let rounded_ring: Vec<_> = rounded.iter().map(|&xy| exact::ExactPoint::from_xy(xy)).collect();
-            if exact::cycle_orientation(&rounded_ring)? != exact::ExactSign::Positive {
+            if exact::cycle_orientation(&rounded_ring)? != ExactSign::Positive {
                 return Err(embedding_failure());
             }
             let closed: Vec<Point> = rounded

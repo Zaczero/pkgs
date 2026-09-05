@@ -10,6 +10,7 @@
 use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use crate::geometry::tessellation::{EMPTY, Triangulation, exact, next_halfedge, prev_halfedge};
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::{
     AreaSign, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
     Orientation, Point, PointKey, Result, XY, orientation, ring_decision_area, same_point,
@@ -300,16 +301,16 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
         if order.len() < 3
             || order
                 .iter()
-                .all(|&site| orient(order[0], last, site) == exact::ExactSign::Zero)
+                .all(|&site| orient(order[0], last, site) == ExactSign::Zero)
         {
             return collinear_order(points);
         }
     }
-    let pops = |sign: exact::ExactSign| {
+    let pops = |sign: ExactSign| {
         if corners {
-            sign != exact::ExactSign::Positive
+            sign != ExactSign::Positive
         } else {
-            sign == exact::ExactSign::Negative
+            sign == ExactSign::Negative
         }
     };
     let mut lower: Vec<usize> = Vec::new();
