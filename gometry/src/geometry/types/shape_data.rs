@@ -208,13 +208,13 @@ struct TopologyPlan {
     cartesian_graph: OnceLock<Box<crate::geometry::topology::TopologyGraph>>,
     #[cfg(test)]
     cartesian_graph_accesses: AtomicUsize,
-    validity: OnceLock<Box<Option<ValidationIssue>>>,
+    validity: OnceLock<Option<Box<ValidationIssue>>>,
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
-    point_tester: OnceLock<Box<Option<PointBatchTester>>>,
+    point_tester: OnceLock<Option<Box<PointBatchTester>>>,
     /// The direct relation engines' stagings, built once per operand.
-    linework: OnceLock<Box<Option<crate::geometry::StagedLinework>>>,
-    rings: OnceLock<Box<Option<crate::geometry::StagedRings>>>,
+    linework: OnceLock<Option<Box<crate::geometry::StagedLinework>>>,
+    rings: OnceLock<Option<Box<crate::geometry::StagedRings>>>,
     /// Whether every ring of an areal shape has area (the direct engines'
     /// gate); `false` for a non-areal shape. Each ring is scanned once per
     /// plan.
@@ -339,11 +339,10 @@ impl PreparedPlan {
     /// The shape staged as linework for the direct relation engine, `None`
     /// when it is not a line operand they admit.
     pub(crate) fn staged_linework(&self) -> Option<&crate::geometry::StagedLinework> {
-        Option::as_ref(
-            self.topology()
-                .linework
-                .get_or_init(|| Box::new(crate::geometry::stage_linework(self.shape()))),
-        )
+        self.topology()
+            .linework
+            .get_or_init(|| crate::geometry::stage_linework(self.shape()).map(Box::new))
+            .as_deref()
     }
 
     /// Whether every ring of this areal shape has a nonzero exact area
@@ -361,19 +360,17 @@ impl PreparedPlan {
     /// The shape's rings staged for the direct relation engine, `None` when
     /// it is not an areal operand.
     pub(crate) fn staged_rings(&self) -> Option<&crate::geometry::StagedRings> {
-        Option::as_ref(
-            self.topology()
-                .rings
-                .get_or_init(|| Box::new(crate::geometry::stage_rings(self.shape()))),
-        )
+        self.topology()
+            .rings
+            .get_or_init(|| crate::geometry::stage_rings(self.shape()).map(Box::new))
+            .as_deref()
     }
 
     pub(crate) fn validate_cached(&self) -> Option<&ValidationIssue> {
         self.topology()
             .validity
-            .get_or_init(|| Box::new(self.shape().validate()))
-            .as_ref()
-            .as_ref()
+            .get_or_init(|| self.shape().validate().map(Box::new))
+            .as_deref()
     }
 
     pub(crate) fn is_simple_cached(&self) -> bool {
@@ -480,13 +477,10 @@ impl PreparedPlan {
         self.topology()
             .point_tester
             .get_or_init(|| {
-                Box::new(
-                    matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_))
-                        .then(|| PointBatchTester::new(self.shape())),
-                )
+                matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_))
+                    .then(|| Box::new(PointBatchTester::new(self.shape())))
             })
-            .as_ref()
-            .as_ref()
+            .as_deref()
     }
 
     pub(crate) fn with_seeded_bounds(self, bounds: Option<Bounds>) -> Self {
