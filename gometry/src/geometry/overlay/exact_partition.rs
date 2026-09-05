@@ -1,21 +1,18 @@
 //! Exact source partition of unique stored segments.
 //!
-//! Borrows unique undirected representatives and existing CSR provenance,
-//! then owns a copy of those representatives so retained constructed recipes
-//! (`unique` + exact parameter) cannot outlive an unrelated slice. Constructed
-//! nodes keep one source-parameter recipe after equal-param union; stored
-//! nodes keep `PointKey`. Arrangement, overlay, and checked embedding are
-//! later cuts.
+//! Borrows unique undirected representatives and existing CSR provenance.
+//! Constructed nodes keep one source-parameter recipe after equal-param union;
+//! stored nodes keep `PointKey`. Arrangement, overlay, and checked embedding
+//! are later cuts.
 //!
-//! Candidate completeness is every unique pair (and every isolated point
-//! against every unique). The shared sweep's scratch `reserve` is infallible,
-//! so this kernel does not call it; pair counts are charged to
-//! [`PAIRWISE_WORK_LIMIT`] before the scan. Contact-derived cuts are generated
-//! items; compact nodes and canonical atoms are too. Allocation failures stay
+//! Candidates come from the shared fallible sweep over unique segments plus
+//! extra isolated points as zero-length items. Contact-derived cuts, compact
+//! nodes, and canonical atoms are generated items. Sweep scratch is
 //! [`ResourceError`], not the item cap.
 
 use std::cmp::Ordering;
 use std::mem;
+use std::ops::ControlFlow;
 
 use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
@@ -26,7 +23,7 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
 use crate::geometry::{
     ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, PointKey, Result, Segment, XY,
-    same_point,
+    same_point, single_chain, try_for_each_candidate_pair,
 };
 use crate::try_reserve_vec;
 
@@ -51,17 +48,17 @@ pub(in crate::geometry) struct ExactSpan {
 }
 
 #[derive(Debug)]
-pub(in crate::geometry) struct ExactPartition {
-    unique: Vec<Segment>,
+pub(in crate::geometry) struct ExactPartition<'a> {
+    unique: &'a [Segment],
     pub recipes: Vec<NodeRecipe>,
     pub spans: Vec<ExactSpan>,
     pub provenance: SegmentProvenance,
     pub isolated: Vec<NodeId>,
 }
 
-impl ExactPartition {
-    pub(in crate::geometry) fn unique(&self) -> &[Segment] {
-        &self.unique
+impl<'a> ExactPartition<'a> {
+    pub(in crate::geometry) fn unique(&self) -> &'a [Segment] {
+        self.unique
     }
 
     pub(in crate::geometry) fn recipe(&self, node: NodeId) -> &NodeRecipe {
@@ -117,9 +114,10 @@ struct SourceCut {
     handle: u32,
 }
 
+#[derive(Clone, Copy)]
 enum HandleKind {
     Stored(PointKey),
-    Constructed { unique: u32 },
+    Constructed { unique: u32, cut: u32 },
 }
 
 struct Forest {
@@ -174,8 +172,8 @@ impl Forest {
                 Ok(())
             },
             (
-                HandleKind::Constructed { unique: left },
-                HandleKind::Constructed { unique: right },
+                HandleKind::Constructed { unique: left, .. },
+                HandleKind::Constructed { unique: right, .. },
             ) => {
                 if right < left {
                     self.parent[a as usize] = b;
@@ -188,19 +186,15 @@ impl Forest {
     }
 }
 
-pub(in crate::geometry) fn partition_unique_segments(
-    unique: &[Segment],
+pub(in crate::geometry) fn partition_unique_segments<'a>(
+    unique: &'a [Segment],
     provenance: &SegmentProvenance,
     isolated: &[XY],
     budget: &mut ExpansionBudget,
-) -> Result<ExactPartition> {
+) -> Result<ExactPartition<'a>> {
     debug_assert_eq!(provenance.len(), unique.len());
     let zero = ExactDyadic::try_from_f64(0.0)?;
     let one = ExactDyadic::try_from_f64(1.0)?;
-
-    let mut owned_unique = Vec::new();
-    try_reserve_vec(&mut owned_unique, unique.len())?;
-    owned_unique.extend_from_slice(unique);
 
     let mut endpoint_of: HashMap<PointKey, u32> = HashMap::new();
     endpoint_of
@@ -237,79 +231,61 @@ pub(in crate::geometry) fn partition_unique_segments(
         start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
         end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
     }
-    let mut isolated_handles = Vec::new();
-    try_reserve_vec(&mut isolated_handles, isolated.len())?;
-    for &point in isolated {
-        isolated_handles.push(intern_stored(point, &mut endpoint_of, &mut forest)?);
-    }
-
     let mut cuts: Vec<Vec<SourceCut>> = Vec::new();
     try_reserve_vec(&mut cuts, unique.len())?;
     for _ in 0..unique.len() {
         cuts.push(Vec::new());
     }
 
-    ExpansionBudget::pairwise("exact_partition", "pairs", unique.len(), unique.len())?;
-    for left in 0..unique.len() {
-        for right in (left + 1)..unique.len() {
-            classify_pair_into(
-                unique,
-                left,
-                right,
-                &start_handle,
-                &end_handle,
-                &mut cuts,
-                &mut forest,
-                budget,
-                &zero,
-                &one,
-            )?;
-        }
-    }
-
-    ExpansionBudget::pairwise(
-        "exact_partition",
-        "isolated_pairs",
-        isolated_handles.len(),
-        unique.len(),
-    )?;
-    for &handle in &isolated_handles {
-        let HandleKind::Stored(key) = forest.kind[handle as usize] else {
-            continue;
-        };
-        let point = key.xy();
-        for source in 0..unique.len() {
-            push_point_on_source(
-                unique[source],
-                point,
-                handle,
-                &mut cuts[source],
-                budget,
-                &zero,
-                &one,
-            )?;
-        }
-    }
-    for source in 0..unique.len() {
-        if !same_point(unique[source].start, unique[source].end) {
+    let mut pool = Vec::new();
+    try_reserve_vec(&mut pool, unique.len().saturating_add(isolated.len()))?;
+    pool.extend_from_slice(unique);
+    let mut extra_handles = Vec::new();
+    try_reserve_vec(&mut extra_handles, isolated.len())?;
+    for &point in isolated {
+        let key = PointKey::new(point);
+        let existed = endpoint_of.contains_key(&key);
+        intern_stored(point, &mut endpoint_of, &mut forest)?;
+        if existed {
             continue;
         }
-        let handle = start_handle[source];
-        let point = unique[source].start;
-        for other in 0..unique.len() {
-            if other == source {
-                continue;
+        extra_handles.push(endpoint_of[&key]);
+        pool.push(Segment {
+            start: point,
+            end: point,
+        });
+    }
+    let unique_len = unique.len();
+    let mut pair_error = None;
+    match try_for_each_candidate_pair(&pool, single_chain, |left, right| {
+        match visit_pool_pair(
+            unique,
+            unique_len,
+            left,
+            right,
+            &start_handle,
+            &end_handle,
+            &extra_handles,
+            &pool,
+            &mut cuts,
+            &mut forest,
+            budget,
+            &zero,
+            &one,
+        ) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => {
+                pair_error = Some(error);
+                ControlFlow::Break(())
+            },
+        }
+    })? {
+        ControlFlow::Break(()) => {
+            if let Some(error) = pair_error {
+                return Err(error);
             }
-            push_point_on_source(
-                unique[other],
-                point,
-                handle,
-                &mut cuts[other],
-                budget,
-                &zero,
-                &one,
-            )?;
-        }
+        },
+        ControlFlow::Continue(()) => {},
     }
 
     let mut order: Vec<Vec<u32>> = Vec::new();
@@ -334,14 +310,24 @@ pub(in crate::geometry) fn partition_unique_segments(
         }
         budget.add(1)?;
         let id = u32::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        match &forest.kind[root as usize] {
+        match forest.kind[root as usize] {
             HandleKind::Stored(key) => {
                 try_reserve_vec(&mut recipes, 1)?;
-                recipes.push(NodeRecipe::Stored(*key));
+                recipes.push(NodeRecipe::Stored(key));
             },
-            HandleKind::Constructed { unique: _ } => {
+            HandleKind::Constructed { unique, cut } => {
+                let param = mem::replace(
+                    &mut cuts[unique as usize][cut as usize].param,
+                    SourceParam::Start,
+                );
+                let SourceParam::Ratio { num, den } = param else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "constructed partition node has no source-parameter recipe".into(),
+                    )
+                    .into());
+                };
                 try_reserve_vec(&mut recipes, 1)?;
-                recipes.push(NodeRecipe::Stored(PointKey::new(XY::new(0.0, 0.0))));
+                recipes.push(NodeRecipe::Constructed { unique, num, den });
             },
         }
         compact_of[root as usize] = Some(id);
@@ -375,8 +361,6 @@ pub(in crate::geometry) fn partition_unique_segments(
         }
     }
 
-    take_constructed_recipes(&mut cuts, &mut forest, &compact_of, &mut recipes)?;
-
     let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, budget)?;
 
     let mut degree: Vec<u32> = Vec::new();
@@ -395,7 +379,7 @@ pub(in crate::geometry) fn partition_unique_segments(
     }
 
     Ok(ExactPartition {
-        unique: owned_unique,
+        unique,
         recipes,
         spans,
         provenance: atom_provenance,
@@ -466,6 +450,62 @@ fn endpoint_handle(source: usize, at_start: bool, start_handle: &[u32], end_hand
     }
 }
 
+fn visit_pool_pair(
+    unique: &[Segment],
+    unique_len: usize,
+    left: usize,
+    right: usize,
+    start_handle: &[u32],
+    end_handle: &[u32],
+    extra_handles: &[u32],
+    pool: &[Segment],
+    cuts: &mut [Vec<SourceCut>],
+    forest: &mut Forest,
+    budget: &mut ExpansionBudget,
+    zero: &ExactDyadic,
+    one: &ExactDyadic,
+) -> Result<()> {
+    match (left < unique_len, right < unique_len) {
+        (true, true) => classify_pair_into(
+            unique,
+            left,
+            right,
+            start_handle,
+            end_handle,
+            cuts,
+            forest,
+            budget,
+            zero,
+            one,
+        ),
+        (true, false) => {
+            let handle = extra_handles[right - unique_len];
+            push_point_on_source(
+                unique[left],
+                pool[right].start,
+                handle,
+                &mut cuts[left],
+                budget,
+                zero,
+                one,
+            )
+        },
+        (false, true) => {
+            let handle = extra_handles[left - unique_len];
+            push_point_on_source(
+                unique[right],
+                pool[left].start,
+                handle,
+                &mut cuts[right],
+                budget,
+                zero,
+                one,
+            )
+        },
+        (false, false) => Ok(()),
+    }
+}
+
 fn classify_pair_into(
     unique: &[Segment],
     left: usize,
@@ -532,9 +572,16 @@ fn classify_pair_into(
                 u32::try_from(left.min(right)).map_err(|_| ResourceError::SizeOverflow)?;
             let handle = forest.push(HandleKind::Constructed {
                 unique: unique_index,
+                cut: 0,
             })?;
             push_contact_cut(&mut cuts[left], t, handle, budget)?;
-            push_contact_cut(&mut cuts[right], u, handle, budget)
+            push_contact_cut(&mut cuts[right], u, handle, budget)?;
+            let cut = u32::try_from(cuts[unique_index as usize].len() - 1)
+                .map_err(|_| ResourceError::SizeOverflow)?;
+            if let HandleKind::Constructed { cut: slot, .. } = &mut forest.kind[handle as usize] {
+                *slot = cut;
+            }
+            Ok(())
         },
     }
 }
@@ -566,51 +613,11 @@ fn union_equal_params(
     Ok(())
 }
 
-fn take_constructed_recipes(
-    cuts: &mut [Vec<SourceCut>],
-    forest: &mut Forest,
-    compact_of: &[Option<u32>],
-    recipes: &mut [NodeRecipe],
-) -> Result<()> {
-    for handle in 0..forest.parent.len() {
-        let root = forest.find(handle as u32);
-        if root != handle as u32 {
-            continue;
-        }
-        let HandleKind::Constructed { unique } = forest.kind[root as usize] else {
-            continue;
-        };
-        let id = compact_of[root as usize].ok_or_else(|| {
-            GeometryErrorKind::Invalid("constructed partition root was not compacted".into())
-        })? as usize;
-        let mut taken = None;
-        for cut in &mut cuts[unique as usize] {
-            if forest.find(cut.handle) == root && matches!(cut.param, SourceParam::Ratio { .. }) {
-                taken = Some(mem::replace(&mut cut.param, SourceParam::Start));
-                break;
-            }
-        }
-        match taken {
-            Some(SourceParam::Ratio { num, den }) => {
-                recipes[id] = NodeRecipe::Constructed { unique, num, den };
-            },
-            _ => {
-                return Err(GeometryErrorKind::Invalid(
-                    "constructed partition node has no source-parameter recipe".into(),
-                )
-                .into());
-            },
-        }
-    }
-    Ok(())
-}
-
 fn aggregate_atoms(
-    mut intervals: Vec<(u32, u32, u32)>,
+    intervals: Vec<(u32, u32, u32)>,
     source_provenance: &SegmentProvenance,
     budget: &mut ExpansionBudget,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
-    intervals.sort_unstable_by_key(|&(unique, ..)| unique);
     let mut atom_of: HashMap<(u32, u32), u32> = HashMap::new();
     atom_of
         .try_reserve(intervals.len())
@@ -955,19 +962,60 @@ mod tests {
         }
     }
 
-    fn run(segments: &[Segment]) -> ExactPartition {
-        let mut edges = Vec::new();
-        let mut isolated = Vec::new();
-        for &segment in segments {
-            if same_point(segment.start, segment.end) {
-                isolated.push(segment.start);
-            } else {
-                edges.push(segment);
+    struct Case {
+        unique: Vec<Segment>,
+        provenance: SegmentProvenance,
+        isolated: Vec<XY>,
+    }
+
+    impl Case {
+        fn from_segments(segments: &[Segment]) -> Self {
+            let mut edges = Vec::new();
+            let mut isolated = Vec::new();
+            for &segment in segments {
+                if same_point(segment.start, segment.end) {
+                    isolated.push(segment.start);
+                } else {
+                    edges.push(segment);
+                }
+            }
+            let (unique, provenance) = dedup_undirected_segments_sourced(edges);
+            Self {
+                unique,
+                provenance,
+                isolated,
             }
         }
-        let (unique, provenance) = dedup_undirected_segments_sourced(edges);
-        let mut budget = ExpansionBudget::new("exact_partition", "items");
-        partition_unique_segments(&unique, &provenance, &isolated, &mut budget).unwrap()
+
+        fn partition(&self) -> ExactPartition<'_> {
+            let mut budget = ExpansionBudget::new("exact_partition", "items");
+            partition_unique_segments(&self.unique, &self.provenance, &self.isolated, &mut budget)
+                .unwrap()
+        }
+    }
+
+    fn run(segments: &[Segment]) -> Case {
+        Case::from_segments(segments)
+    }
+
+    fn constructed_recipe<'a>(partition: &'a ExactPartition<'_>) -> &'a NodeRecipe {
+        partition
+            .recipes
+            .iter()
+            .find(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
+            .expect("expected a constructed recipe")
+    }
+
+    fn assert_ratio_eq(
+        num: &ExactDyadic,
+        den: &ExactDyadic,
+        expected_n: &ExactDyadic,
+        expected_d: &ExactDyadic,
+    ) {
+        assert_eq!(
+            try_compare_ratios(num, den, expected_n, expected_d).unwrap(),
+            Ordering::Equal
+        );
     }
 
     fn constructed_count(partition: &ExactPartition) -> usize {
@@ -1038,11 +1086,12 @@ mod tests {
     #[test]
     fn generated_t_has_seven_nodes_five_spans_two_components() {
         let rn_sixth = 1.0_f64 / 6.0;
-        let partition = run(&[
+        let case = run(&[
             seg(0.0, 0.0, 3.0, 1.0),
             seg(1.0, -1.0, 1.0, 1.0),
             seg(0.5, 0.0, 0.5, rn_sixth),
         ]);
+        let partition = case.partition();
         assert_eq!(partition.unique().len(), 3);
         assert_eq!(partition.recipes.len(), 7);
         assert_eq!(partition.spans.len(), 5);
@@ -1054,29 +1103,24 @@ mod tests {
             .iter()
             .any(|span| span.unique == 0 && (span.start == c_end || span.end == c_end));
         assert!(!on_a, "C's endpoint must not node onto A");
-        let NodeRecipe::Constructed { unique, num, den } = partition
-            .recipes
-            .iter()
-            .find(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
-            .unwrap()
-        else {
+        let NodeRecipe::Constructed { unique, num, den } = constructed_recipe(&partition) else {
             panic!("expected a constructed recipe");
         };
-        assert!(*unique < 2);
         let one = ExactDyadic::try_from_f64(1.0).unwrap();
         let three = ExactDyadic::try_from_f64(3.0).unwrap();
-        if *unique == 0 {
-            assert_eq!(
-                try_compare_ratios(num, den, &one, &three).unwrap(),
-                Ordering::Equal
-            );
+        let two = ExactDyadic::try_from_f64(2.0).unwrap();
+        match *unique {
+            0 => assert_ratio_eq(num, den, &one, &three),
+            1 => assert_ratio_eq(num, den, &two, &three),
+            other => panic!("unexpected constructed unique {other}"),
         }
     }
 
     #[test]
     fn endpoint_near_miss_five_nodes_four_spans() {
         let nd = 1.0_f64.next_down();
-        let partition = run(&[seg(0.0, 0.0, 1.0, 1.0), seg(1.0, nd, 0.0, 2.0)]);
+        let case = run(&[seg(0.0, 0.0, 1.0, 1.0), seg(1.0, nd, 0.0, 2.0)]);
+        let partition = case.partition();
         assert_eq!(partition.recipes.len(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 1);
@@ -1098,56 +1142,47 @@ mod tests {
             unique,
             num,
             den: recipe_den,
-        } = partition
-            .recipes
-            .iter()
-            .find(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
-            .unwrap()
+        } = constructed_recipe(&partition)
         else {
             panic!("expected a constructed recipe");
         };
-        if *unique == 0 {
-            assert_eq!(
-                try_compare_ratios(num, recipe_den, &p54, &den).unwrap(),
-                Ordering::Equal
-            );
+        match *unique {
+            0 => assert_ratio_eq(num, recipe_den, &p54, &den),
+            other => panic!("unexpected constructed unique {other}"),
         }
     }
 
     #[test]
     fn concurrent_three_sources_one_constructed_node() {
-        let partition = run(&[
+        let case = run(&[
             seg(0.0, 0.0, 3.0, 1.0),
             seg(1.0, -1.0, 1.0, 1.0),
             seg(0.0, 1.0, 3.0, -1.0),
         ]);
+        let partition = case.partition();
         assert_eq!(constructed_count(&partition), 1);
-        let NodeRecipe::Constructed { unique, num, den } = partition
-            .recipes
-            .iter()
-            .find(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
-            .unwrap()
-        else {
+        let NodeRecipe::Constructed { unique, num, den } = constructed_recipe(&partition) else {
             panic!("expected a constructed recipe");
         };
         let one = ExactDyadic::try_from_f64(1.0).unwrap();
+        let two = ExactDyadic::try_from_f64(2.0).unwrap();
         let three = ExactDyadic::try_from_f64(3.0).unwrap();
-        if *unique == 0 {
-            assert_eq!(
-                try_compare_ratios(num, den, &one, &three).unwrap(),
-                Ordering::Equal
-            );
+        match *unique {
+            0 => assert_ratio_eq(num, den, &one, &three),
+            1 => assert_ratio_eq(num, den, &two, &three),
+            other => panic!("unexpected constructed unique {other}"),
         }
     }
 
     #[test]
     fn overlap_reversed_duplicate_keeps_reverse_owner() {
-        let partition = run(&[
+        let case = run(&[
             seg(0.0, 0.0, 4.0, 0.0),
             seg(1.0, 0.0, 3.0, 0.0),
             seg(2.0, -1.0, 2.0, 1.0),
             seg(4.0, 0.0, 0.0, 0.0),
         ]);
+        let partition = case.partition();
         let reversed = partition.spans.iter().enumerate().any(|(index, _)| {
             partition
                 .owners(index)
@@ -1168,7 +1203,8 @@ mod tests {
 
     #[test]
     fn overlap_aggregate_owners_are_one_atom() {
-        let partition = run(&[seg(0.0, 0.0, 4.0, 0.0), seg(1.0, 0.0, 3.0, 0.0)]);
+        let case = run(&[seg(0.0, 0.0, 4.0, 0.0), seg(1.0, 0.0, 3.0, 0.0)]);
+        let partition = case.partition();
         let shared: Vec<_> = partition
             .spans
             .iter()
@@ -1185,7 +1221,8 @@ mod tests {
 
     #[test]
     fn degenerate_point_is_isolated_node() {
-        let partition = run(&[seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 1.0, 1.0, 1.0)]);
+        let case = run(&[seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 1.0, 1.0, 1.0)]);
+        let partition = case.partition();
         assert_eq!(partition.isolated.len(), 1);
         assert_eq!(
             stored_node(&partition, XY::new(1.0, 1.0)),
@@ -1207,7 +1244,8 @@ mod tests {
 
     #[test]
     fn signed_zero_endpoints_share_a_stored_node() {
-        let partition = run(&[seg(-0.0, 0.0, 1.0, 0.0), seg(0.0, 0.0, 0.0, 1.0)]);
+        let case = run(&[seg(-0.0, 0.0, 1.0, 0.0), seg(0.0, 0.0, 0.0, 1.0)]);
+        let partition = case.partition();
         let a = stored_node(&partition, XY::new(-0.0, 0.0)).unwrap();
         let b = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
         assert_eq!(a, b);
@@ -1218,7 +1256,8 @@ mod tests {
         let min_sub = f64::from_bits(1);
         let a = seg(0.0, 0.0, f64::MAX, min_sub);
         let b = seg(min_sub, -f64::MAX, f64::MAX, f64::MAX);
-        let partition = run(&[a, b]);
+        let case = run(&[a, b]);
+        let partition = case.partition();
         assert_eq!(partition.recipes.len(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 1);
@@ -1274,11 +1313,12 @@ mod tests {
 
     #[test]
     fn stored_endpoint_concurrency_is_six_nodes_five_spans() {
-        let partition = run(&[
+        let case = run(&[
             seg(0.0, 0.0, 2.0, 0.0),
             seg(1.0, 0.0, 1.0, 1.0),
             seg(0.0, 1.0, 2.0, -1.0),
         ]);
+        let partition = case.partition();
         assert_eq!(partition.recipes.len(), 6);
         assert_eq!(partition.spans.len(), 5);
         assert_eq!(constructed_count(&partition), 0);
@@ -1289,6 +1329,67 @@ mod tests {
             .filter(|span| span.start == junction || span.end == junction)
             .count();
         assert_eq!(incident, 5);
+    }
+
+    #[test]
+    fn concurrent_three_sources_recipe_when_vertical_is_first() {
+        let case = run(&[
+            seg(1.0, -1.0, 1.0, 1.0),
+            seg(0.0, 0.0, 3.0, 1.0),
+            seg(0.0, 1.0, 3.0, -1.0),
+        ]);
+        let partition = case.partition();
+        assert_eq!(constructed_count(&partition), 1);
+        let NodeRecipe::Constructed { unique, num, den } = constructed_recipe(&partition) else {
+            panic!("expected a constructed recipe");
+        };
+        let two = ExactDyadic::try_from_f64(2.0).unwrap();
+        let three = ExactDyadic::try_from_f64(3.0).unwrap();
+        match *unique {
+            0 => assert_ratio_eq(num, den, &two, &three),
+            1 => {
+                let one = ExactDyadic::try_from_f64(1.0).unwrap();
+                assert_ratio_eq(num, den, &one, &three);
+            },
+            other => panic!("unexpected constructed unique {other}"),
+        }
+    }
+
+    #[test]
+    fn star_crossings_keep_one_recipe_per_constructed_node() {
+        let mut segments = vec![seg(0.0, 0.0, 5.0, 0.0)];
+        for x in 1..=4 {
+            segments.push(seg(f64::from(x), -1.0, f64::from(x), 1.0));
+        }
+        let case = run(&segments);
+        let partition = case.partition();
+        assert_eq!(constructed_count(&partition), 4);
+        let five = ExactDyadic::try_from_f64(5.0).unwrap();
+        for recipe in &partition.recipes {
+            let NodeRecipe::Constructed { unique, num, den } = recipe else {
+                continue;
+            };
+            assert_eq!(*unique, 0);
+            let k = (1..=4).find(|&k| {
+                let k_dy = ExactDyadic::try_from_f64(f64::from(k)).unwrap();
+                try_compare_ratios(num, den, &k_dy, &five).unwrap() == Ordering::Equal
+            });
+            assert!(k.is_some(), "constructed param must be k/5 for k=1..=4");
+        }
+    }
+
+    #[test]
+    fn disjoint_thirty_two_thousand_segments_are_not_capped_as_pairs() {
+        let mut segments = Vec::with_capacity(32_000);
+        for index in 0..32_000 {
+            let x = index as f64;
+            segments.push(seg(x, 0.0, x, 1.0));
+        }
+        let case = run(&segments);
+        let partition = case.partition();
+        assert_eq!(partition.recipes.len(), 64_000);
+        assert_eq!(partition.spans.len(), 32_000);
+        assert_eq!(constructed_count(&partition), 0);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair, single_chain,
+    try_for_each_candidate_pair,
 };
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
 
@@ -108,6 +109,34 @@ mod sweep_characterization {
         sorted_unique(seen)
     }
 
+    fn every_candidate_try(pool: &[Segment]) -> Vec<u64> {
+        let mut seen = Vec::new();
+        let _ = try_for_each_candidate_pair(pool, single_chain, |a, b| {
+            seen.push(pair_key(a, b));
+            ControlFlow::Continue(())
+        })
+        .expect("sweep scratch allocation");
+        sorted_unique(seen)
+    }
+
+    #[test]
+    fn try_for_each_candidate_pair_matches_for_each() {
+        for &n in &[4_usize, 20, 200] {
+            let pool = structured_pool(n);
+            assert_eq!(every_candidate(&pool), every_candidate_try(&pool));
+        }
+    }
+
+    #[test]
+    fn brute_and_sweep_visit_the_same_pairs_on_a_shared_pattern() {
+        // n=4 is the brute branch; n=8 takes the sweep. Both APIs must agree
+        // with themselves on each pool.
+        let brute = structured_pool(4);
+        let swept = structured_pool(8);
+        assert_eq!(every_candidate(&brute), every_candidate_try(&brute));
+        assert_eq!(every_candidate(&swept), every_candidate_try(&swept));
+    }
+
     #[test]
     fn sweep_covers_every_intersecting_pair() {
         // Sizes spanning the brute branch (< SWEEP_MIN_ITEMS) and the two sweep
@@ -164,7 +193,10 @@ mod sweep_characterization {
 mod indexed_bounds_characterization {
     use super::*;
 
-    #[expect(clippy::unnecessary_wraps, reason = "a row is an optional bounds, and the fixtures spell present rows")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a row is an optional bounds, and the fixtures spell present rows"
+    )]
     fn bounds(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Option<Bounds> {
         Some(Bounds::new_raw(minx, miny, maxx, maxy))
     }
@@ -215,7 +247,8 @@ mod indexed_bounds_characterization {
 
     #[test]
     fn indexed_bounds_short_circuit_on_first_touch() {
-        let rows = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0)).take(4096)
+        let rows = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0))
+            .take(4096)
             .collect::<Vec<_>>();
         let mut work = 0;
         let result = for_each_indexed_overlapping_bounds_pair(&rows, |_, _| {
@@ -252,7 +285,8 @@ mod indexed_bounds_characterization {
             assert_eq!(indexed_pairs(&diagonal).1, 0, "diagonal n={count}");
             assert_eq!(indexed_pairs(&cross_axis).1, 0, "cross-axis n={count}");
 
-            let dense = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0)).take(count)
+            let dense = std::iter::repeat_with(|| bounds(0.0, 0.0, 1.0, 1.0))
+                .take(count)
                 .collect::<Vec<_>>();
             let mut first_hit_work = 0;
             let result = for_each_indexed_overlapping_bounds_pair(&dense, |_, _| {
@@ -281,8 +315,14 @@ mod run_collapse_dispatch {
     fn chain_of(points: &[(f64, f64)], pool: &mut Vec<Segment>) {
         for pair in points.windows(2) {
             pool.push(Segment {
-                start: XY { x: pair[0].0, y: pair[0].1 },
-                end: XY { x: pair[1].0, y: pair[1].1 },
+                start: XY {
+                    x: pair[0].0,
+                    y: pair[0].1,
+                },
+                end: XY {
+                    x: pair[1].0,
+                    y: pair[1].1,
+                },
             });
         }
     }

@@ -2,11 +2,25 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
+use std::alloc::{Layout, handle_alloc_error};
 use std::ops::ControlFlow;
 
 use rstar::{AABB, RTreeObject};
 
+use crate::error::{ResourceError, Result};
 use crate::geometry::{Bounds, PointKey, Segment, XY};
+use crate::try_reserve_vec;
+
+fn abort_on_alloc(result: Result<ControlFlow<()>>) -> ControlFlow<()> {
+    match result {
+        Ok(flow) => flow,
+        Err(_) => handle_alloc_error(Layout::from_size_align(1, 1).expect("valid layout")),
+    }
+}
+
+fn u32_ordinal(value: usize) -> Result<u32> {
+    u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())
+}
 
 /// Below this many candidate *pairs* the brute-force double loop wins: the
 /// index build (sort + tree nodes) costs more than it saves.
@@ -157,13 +171,21 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
         }
         return ControlFlow::Continue(());
     }
+    abort_on_alloc(try_overlapping_bounds_sweep(bounds, &mut visit))
+}
+
+fn try_overlapping_bounds_sweep(
+    bounds: &[Bounds],
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>> {
+    let count = bounds.len();
     thread_local! {
         static BOUNDS_SCRATCH: crate::scratch_pool::ScratchPool<Vec<SweepEntry>> = const {
             crate::scratch_pool::ScratchPool::new(Vec::new())
         };
     }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&BOUNDS_SCRATCH);
-    entries.reserve(count);
+    try_reserve_vec(&mut entries, count)?;
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (ordinal, b) in bounds.iter().enumerate() {
@@ -177,13 +199,11 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
             sweep_max: x_hi,
             cross_min: y_lo,
             cross_max: y_hi,
-            ordinal: ordinal as u32,
+            ordinal: u32_ordinal(ordinal)?,
             side: 0,
         });
     }
     finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
-    // Dense-enough sets take the banded windows; otherwise the plain
-    // forward window (same split the segment sweep uses for large pools).
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
         let cross_lo = entries
@@ -195,9 +215,9 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
             .map(|e| e.cross_max)
             .fold(f64::NEG_INFINITY, f64::max);
         let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
-        banded_windows(&entries, bands, cross_lo, band_height, &mut visit)
+        try_banded_windows(&entries, bands, cross_lo, band_height, visit)
     } else {
-        plain_windows(&entries, &mut visit)
+        Ok(plain_windows(&entries, visit))
     }
 }
 
@@ -232,18 +252,26 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair(
 pub(in crate::geometry) fn for_each_candidate_pair(
     pool: &[Segment],
     chain_of: impl Fn(usize) -> u32,
-    mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+    visit: impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
-    // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
-    // this run buffer was their only allocation.
+    abort_on_alloc(try_for_each_candidate_pair(pool, chain_of, visit))
+}
+
+/// Fallible candidate sweep. Scratch growth is [`ResourceError`]; visit
+/// `Break` is `Ok(ControlFlow::Break(()))`.
+pub(in crate::geometry) fn try_for_each_candidate_pair(
+    pool: &[Segment],
+    chain_of: impl Fn(usize) -> u32,
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>> {
     thread_local! {
         static RUNS: crate::scratch_pool::ScratchPool<Vec<MonotoneRun>> = const {
             crate::scratch_pool::ScratchPool::new(Vec::new())
         };
     }
     let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
-    monotone_runs(pool, &chain_of, &mut runs);
-    candidate_pairs_over_staged_runs(
+    try_monotone_runs(pool, &chain_of, &mut runs)?;
+    try_candidate_pairs_over_staged_runs(
         pool,
         &runs,
         || Bounds::from_xy_iter(pool.iter().flat_map(|segment| [segment.start, segment.end])),
@@ -261,16 +289,29 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs(
     bounds: impl FnOnce() -> Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    abort_on_alloc(try_candidate_pairs_over_staged_runs(
+        pool, runs, bounds, visit,
+    ))
+}
+
+fn try_candidate_pairs_over_staged_runs(
+    pool: &[Segment],
+    runs: &[MonotoneRun],
+    bounds: impl FnOnce() -> Bounds,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
         for left in 0..count {
             for right in (left + 1)..count {
-                visit(left, right)?;
+                if let ControlFlow::Break(()) = visit(left, right) {
+                    return Ok(ControlFlow::Break(()));
+                }
             }
         }
-        return ControlFlow::Continue(());
+        return Ok(ControlFlow::Continue(()));
     }
-    candidate_pairs_over_runs(pool, runs, bounds(), visit)
+    try_candidate_pairs_over_runs(pool, runs, bounds(), visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -283,12 +324,25 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
 /// during linework staging — see `LineworkChains`): skips the per-call
 /// extent and run-decomposition passes entirely. Small inputs should
 /// take the brute loop upstream; this always sweeps.
+#[allow(
+    dead_code,
+    reason = "ControlFlow wrapper over the fallible run sweep; staged callers use the try_ path"
+)]
 pub(in crate::geometry) fn candidate_pairs_over_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
     bounds: Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    abort_on_alloc(try_candidate_pairs_over_runs(pool, runs, bounds, visit))
+}
+
+fn try_candidate_pairs_over_runs(
+    pool: &[Segment],
+    runs: &[MonotoneRun],
+    bounds: Bounds,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     thread_local! {
@@ -297,9 +351,8 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
         };
     }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
-    entries.reserve(runs.len());
+    try_reserve_vec(&mut entries, runs.len())?;
     for (ordinal, run) in runs.iter().enumerate() {
-        // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
         let (first, last) = match segs {
             [only] => (only.start, only.end),
@@ -313,15 +366,11 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
             sweep_max: x_hi,
             cross_min: y_lo,
             cross_max: y_hi,
-            ordinal: ordinal as u32,
+            ordinal: u32_ordinal(ordinal)?,
             side: 0,
         });
     }
     finish_sweep_entries(&mut entries, swapped);
-    // Large sets band the CROSS axis: a pure 1-D sweep's forward window
-    // grows linearly with density, while B bands cut it by B. An envelope
-    // joins every band its cross extent overlaps, and a pair is visited
-    // only in the FIRST band both share.
     let (cross_lo, cross_hi) = if swapped {
         (min_x, max_x)
     } else {
@@ -337,9 +386,9 @@ pub(in crate::geometry) fn candidate_pairs_over_runs(
         run_pair_join(pool, &runs[left], &runs[right], swapped, visit)
     };
     if bands > 1 && band_height > 0.0 {
-        banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
+        try_banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
     } else {
-        plain_windows(&entries, &mut run_visit)
+        Ok(plain_windows(&entries, &mut run_visit))
     }
 }
 
@@ -353,6 +402,16 @@ pub(in crate::geometry) fn monotone_runs(
     chain_of: &impl Fn(usize) -> u32,
     runs: &mut Vec<MonotoneRun>,
 ) {
+    let _ =
+        abort_on_alloc(try_monotone_runs(pool, chain_of, runs).map(|()| ControlFlow::Continue(())));
+}
+
+fn try_monotone_runs(
+    pool: &[Segment],
+    chain_of: &impl Fn(usize) -> u32,
+    runs: &mut Vec<MonotoneRun>,
+) -> Result<()> {
+    try_reserve_vec(runs, pool.len())?;
     let mut start = 0_u32;
     let (mut sign_x, mut sign_y) = (0_i8, 0_i8);
     let close = |runs: &mut Vec<MonotoneRun>, start: u32, end: u32, sign_x: i8, sign_y: i8| {
@@ -366,11 +425,12 @@ pub(in crate::geometry) fn monotone_runs(
         }
     };
     for (index, segment) in pool.iter().enumerate() {
+        let index_u32 = u32_ordinal(index)?;
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
         let (sx, sy) = (sign_of(dx), sign_of(dy));
         let degenerate = sx == 0 && sy == 0;
-        let chained = index as u32 > start
+        let chained = index_u32 > start
             && !degenerate
             && chain_of(index - 1) == chain_of(index)
             && PointKey::new(pool[index - 1].end) == PointKey::new(segment.start)
@@ -385,16 +445,20 @@ pub(in crate::geometry) fn monotone_runs(
             }
             continue;
         }
-        close(runs, start, index as u32, sign_x, sign_y);
-        start = index as u32;
+        close(runs, start, index_u32, sign_x, sign_y);
+        start = index_u32;
         (sign_x, sign_y) = (sx, sy);
         if degenerate {
-            close(runs, start, index as u32 + 1, 0, 0);
-            start = index as u32 + 1;
+            let end = index_u32
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+            close(runs, start, end, 0, 0);
+            start = end;
             (sign_x, sign_y) = (0, 0);
         }
     }
-    close(runs, start, pool.len() as u32, sign_x, sign_y);
+    close(runs, start, u32_ordinal(pool.len())?, sign_x, sign_y);
+    Ok(())
 }
 
 pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
@@ -420,6 +484,15 @@ pub(in crate::geometry) fn candidate_pairs_between(
     bounds: Bounds,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
+    abort_on_alloc(try_candidate_pairs_between(a, b, bounds, visit))
+}
+
+fn try_candidate_pairs_between(
+    a: (&[Segment], &[MonotoneRun]),
+    b: (&[Segment], &[MonotoneRun]),
+    bounds: Bounds,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
+) -> Result<ControlFlow<()>> {
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     thread_local! {
@@ -428,7 +501,11 @@ pub(in crate::geometry) fn candidate_pairs_between(
         };
     }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
-    entries.reserve(a.1.len() + b.1.len());
+    let total =
+        a.1.len()
+            .checked_add(b.1.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+    try_reserve_vec(&mut entries, total)?;
     for (side, (pool, runs)) in [(1_u8, a), (2_u8, b)] {
         for (index, run) in runs.iter().enumerate() {
             let segs = &pool[run.start as usize..run.end as usize];
@@ -439,13 +516,19 @@ pub(in crate::geometry) fn candidate_pairs_between(
             };
             let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
             let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
+            let ordinal = if side == 1 {
+                index
+            } else {
+                index
+                    .checked_add(a.1.len())
+                    .ok_or(ResourceError::SizeOverflow)?
+            };
             entries.push(SweepEntry {
                 sweep_min: x_lo,
                 sweep_max: x_hi,
                 cross_min: y_lo,
                 cross_max: y_hi,
-                // Ordinal space: `a`'s runs first, then `b`'s.
-                ordinal: (index + if side == 1 { 0 } else { a.1.len() }) as u32,
+                ordinal: u32_ordinal(ordinal)?,
                 side,
             });
         }
@@ -456,7 +539,6 @@ pub(in crate::geometry) fn candidate_pairs_between(
     } else {
         (min_y, max_y)
     };
-    let total = a.1.len() + b.1.len();
     let bands = if total >= SWEEP_BAND_MIN {
         (total / SWEEP_BAND_GRAIN).next_power_of_two().min(64)
     } else {
@@ -464,8 +546,6 @@ pub(in crate::geometry) fn candidate_pairs_between(
     };
     let band_height = (cross_hi - cross_lo) / bands as f64;
     let mut run_visit = |left: usize, right: usize| -> ControlFlow<()> {
-        // `left < right` in ordinal space, and the sides differ, so `left` is
-        // an `a` run and `right` a `b` run.
         let (a_run, b_run) = (&a.1[left], &b.1[right - a.1.len()]);
         let (a_chain, b_chain) = (
             RunChain {
@@ -479,12 +559,20 @@ pub(in crate::geometry) fn candidate_pairs_between(
                 swapped,
             },
         );
-        bisect_runs(&a_chain, 0, a_chain.len(), &b_chain, 0, b_chain.len(), visit)
+        bisect_runs(
+            &a_chain,
+            0,
+            a_chain.len(),
+            &b_chain,
+            0,
+            b_chain.len(),
+            visit,
+        )
     };
     if bands > 1 && band_height > 0.0 {
-        banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
+        try_banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
     } else {
-        plain_windows(&entries, &mut run_visit)
+        Ok(plain_windows(&entries, &mut run_visit))
     }
 }
 
@@ -647,39 +735,51 @@ fn plain_windows(
 /// The banded forward-window scan (see [`for_each_candidate_pair`]): CSR
 /// band membership over the cross axis, a window per band, each pair
 /// visited only in the first band both envelopes share.
-fn banded_windows(
+fn try_banded_windows(
     entries: &[SweepEntry],
     bands: usize,
     cross_lo: f64,
     band_height: f64,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
+) -> Result<ControlFlow<()>> {
     let band_of =
         |cross: f64| -> usize { (((cross - cross_lo) / band_height) as usize).min(bands - 1) };
-    // Entries are already in sweep order, so every band row is too.
-    let mut starts = vec![0_u32; bands + 1];
+    let start_len = bands.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    let mut starts = Vec::new();
+    try_reserve_vec(&mut starts, start_len)?;
+    starts.resize(start_len, 0_usize);
     for entry in entries {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
-            starts[band + 1] += 1;
+            starts[band + 1] = starts[band + 1]
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
         }
     }
     for band in 0..bands {
-        starts[band + 1] += starts[band];
+        starts[band + 1] = starts[band + 1]
+            .checked_add(starts[band])
+            .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut cursor = starts.clone();
-    let mut slots = vec![0_u32; starts[bands] as usize];
+    let mut cursor = Vec::new();
+    try_reserve_vec(&mut cursor, start_len)?;
+    cursor.extend_from_slice(&starts);
+    let mut slots = Vec::new();
+    try_reserve_vec(&mut slots, starts[bands])?;
+    slots.resize(starts[bands], 0_usize);
     for (position, entry) in entries.iter().enumerate() {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
-            slots[cursor[band] as usize] = position as u32;
-            cursor[band] += 1;
+            slots[cursor[band]] = position;
+            cursor[band] = cursor[band]
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
         }
     }
     for band in 0..bands {
-        let row = &slots[starts[band] as usize..starts[band + 1] as usize];
+        let row = &slots[starts[band]..starts[band + 1]];
         for (offset, &left_slot) in row.iter().enumerate() {
-            let left = &entries[left_slot as usize];
+            let left = &entries[left_slot];
             for &right_slot in &row[(offset + 1)..] {
-                let right = &entries[right_slot as usize];
+                let right = &entries[right_slot];
                 if right.sweep_min > left.sweep_max {
                     break;
                 }
@@ -688,12 +788,14 @@ fn banded_windows(
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
                 {
-                    visit_ordered(left, right, visit)?;
+                    if let ControlFlow::Break(()) = visit_ordered(left, right, visit) {
+                        return Ok(ControlFlow::Break(()));
+                    }
                 }
             }
         }
     }
-    ControlFlow::Continue(())
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Forward one candidate pair in input-ordinal order (`low < high`).
