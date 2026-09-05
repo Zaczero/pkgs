@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
@@ -365,3 +366,152 @@ def test_lcc2sp_and_mercator_a_and_unsupported_units_unchanged() -> None:
     assert 'grid_mapping_name' not in unsupported
     assert 'units' not in unsupported
     assert 'crs_wkt' in unsupported
+
+
+_DEG = 'ANGLEUNIT["degree",0.0174532925199433]'
+_METRE = 'LENGTHUNIT["metre",1]'
+
+
+def _merc_a_wkt(*, extra_8823: bool = False) -> str:
+    extra = (
+        f'  PARAMETER["Latitude of 1st standard parallel",30,{_DEG},ID["EPSG",8823]],\n'
+        if extra_8823
+        else ''
+    )
+    return f"""PROJCRS["probe A",
+ BASEGEOGCRS["WGS 84",
+  DATUM["World Geodetic System 1984",
+   ELLIPSOID["WGS 84",6378137,298.257223563,{_METRE}]],
+  PRIMEM["Greenwich",0,{_DEG}]],
+ CONVERSION["Mercator A",
+  METHOD["Mercator (variant A)",ID["EPSG",9804]],
+  PARAMETER["Latitude of natural origin",0,{_DEG},ID["EPSG",8801]],
+  PARAMETER["Longitude of natural origin",10,{_DEG},ID["EPSG",8802]],
+  PARAMETER["Scale factor at natural origin",0.8,SCALEUNIT["unity",1],ID["EPSG",8805]],
+{extra}  PARAMETER["False easting",1,{_METRE},ID["EPSG",8806]],
+  PARAMETER["False northing",2,{_METRE},ID["EPSG",8807]]],
+ CS[Cartesian,2],
+  AXIS["easting (X)",east,ORDER[1],{_METRE}],
+  AXIS["northing (Y)",north,ORDER[2],{_METRE}]]"""
+
+
+def _merc_b_wkt(*, extra_8805: bool = False) -> str:
+    extra = (
+        '  PARAMETER["Scale factor at natural origin",0.8,SCALEUNIT["unity",1],ID["EPSG",8805]],\n'
+        if extra_8805
+        else ''
+    )
+    return f"""PROJCRS["probe B",
+ BASEGEOGCRS["WGS 84",
+  DATUM["World Geodetic System 1984",
+   ELLIPSOID["WGS 84",6378137,298.257223563,{_METRE}]],
+  PRIMEM["Greenwich",0,{_DEG}]],
+ CONVERSION["Mercator B",
+  METHOD["Mercator (variant B)",ID["EPSG",9805]],
+  PARAMETER["Latitude of 1st standard parallel",42,{_DEG},ID["EPSG",8823]],
+  PARAMETER["Longitude of natural origin",51,{_DEG},ID["EPSG",8802]],
+{extra}  PARAMETER["False easting",0,{_METRE},ID["EPSG",8806]],
+  PARAMETER["False northing",0,{_METRE},ID["EPSG",8807]]],
+ CS[Cartesian,2],
+  AXIS["easting (X)",east,ORDER[1],{_METRE}],
+  AXIS["northing (Y)",north,ORDER[2],{_METRE}]]"""
+
+
+def _lcc1sp_origin(*, latitudes: list[float], longitude: float | None = -100.0) -> str:
+    lat_lines = ''.join(
+        f'  PARAMETER["Latitude of natural origin",{lat},{_DEG},ID["EPSG",8801]],\n'
+        for lat in latitudes
+    )
+    lon_line = (
+        f'  PARAMETER["Longitude of natural origin",{longitude},{_DEG},ID["EPSG",8802]],\n'
+        if longitude is not None
+        else ''
+    )
+    return f"""PROJCRS["probe LCC origin",
+ BASEGEOGCRS["WGS 84",
+  DATUM["World Geodetic System 1984",
+   ELLIPSOID["WGS 84",6378137,298.257223563,{_METRE}]],
+  PRIMEM["Greenwich",0,{_DEG}]],
+ CONVERSION["LCC 1SP",
+  METHOD["Lambert Conic Conformal (1SP)",ID["EPSG",9801]],
+{lat_lines}{lon_line}  PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1],ID["EPSG",8805]],
+  PARAMETER["False easting",0,{_METRE},ID["EPSG",8806]],
+  PARAMETER["False northing",0,{_METRE},ID["EPSG",8807]]],
+ CS[Cartesian,2],
+  AXIS["easting (X)",east,ORDER[1],{_METRE}],
+  AXIS["northing (Y)",north,ORDER[2],{_METRE}]]"""
+
+
+def test_mercator_a_stray_8823_exports_scale_only() -> None:
+    extra = _merc_a_wkt(extra_8823=True)
+    plain = _merc_a_wkt()
+    cf = _cf(extra)
+    assert cf['grid_mapping_name'] == 'mercator'
+    assert cf['scale_factor_at_projection_origin'] == pytest.approx(0.8)
+    assert 'standard_parallel' not in cf
+    xy = (1_000_000.0, 2_000_000.0)
+    assert gm.crs_transform(extra, 4326, *xy) == pytest.approx(
+        gm.crs_transform(plain, 4326, *xy)
+    )
+    _assert_pure_cf_transform(extra, *xy)
+
+
+def test_mercator_b_extra_8805_is_wkt_only() -> None:
+    wkt = _merc_b_wkt(extra_8805=True)
+    cf = _cf(wkt)
+    assert 'grid_mapping_name' not in cf
+    assert 'crs_wkt' in cf
+    scales = _scale_params(wkt)
+    assert any(param.get('code') == '8805' for param in scales)
+
+
+def test_mercator_json_extras_match_wkt() -> None:
+    a_json = json.loads(gm.CRS(_merc_a_wkt()).to_projjson())
+    a_json['conversion']['parameters'].append({
+        'name': 'Latitude of 1st standard parallel',
+        'value': 30.0,
+        'unit': 'degree',
+        'id': {'authority': 'EPSG', 'code': 8823},
+    })
+    a_cf = _cf(a_json)
+    assert a_cf['grid_mapping_name'] == 'mercator'
+    assert a_cf['scale_factor_at_projection_origin'] == pytest.approx(0.8)
+    assert 'standard_parallel' not in a_cf
+    _assert_pure_cf_transform(a_json, 1_000_000.0, 2_000_000.0)
+
+    b_json = json.loads(gm.CRS(_merc_b_wkt()).to_projjson())
+    b_json['conversion']['parameters'].append({
+        'name': 'Scale factor at natural origin',
+        'value': 0.8,
+        'unit': 'unity',
+        'id': {'authority': 'EPSG', 'code': 8805},
+    })
+    b_cf = _cf(b_json)
+    assert 'grid_mapping_name' not in b_cf
+    assert 'crs_wkt' in b_cf
+
+
+def test_lcc1sp_missing_and_duplicate_origin_are_wkt_only() -> None:
+    missing_lat = _lcc1sp_origin(latitudes=[])
+    missing_lon = _lcc1sp_origin(latitudes=[40.0], longitude=None)
+    duplicate = _lcc1sp_origin(latitudes=[40.0, 50.0])
+    for wkt in (missing_lat, missing_lon, duplicate):
+        cf = _cf(wkt)
+        assert 'grid_mapping_name' not in cf
+        assert 'crs_wkt' in cf
+
+
+def test_catalog_3388_3395_24200_3448_unchanged() -> None:
+    merc_b = _cf(3388)
+    assert merc_b['grid_mapping_name'] == 'mercator'
+    assert merc_b['standard_parallel'] == pytest.approx(42.0)
+    assert 'scale_factor_at_projection_origin' not in merc_b
+    merc_a = _cf(3395)
+    assert merc_a['grid_mapping_name'] == 'mercator'
+    assert merc_a['scale_factor_at_projection_origin'] == pytest.approx(1.0)
+    assert 'standard_parallel' not in merc_a
+    for code in (24200, 3448):
+        lcc = _cf(code)
+        assert lcc['grid_mapping_name'] == 'lambert_conformal_conic'
+        assert lcc['standard_parallel'] == pytest.approx(18.0)
+        assert 'scale_factor_at_projection_origin' not in lcc

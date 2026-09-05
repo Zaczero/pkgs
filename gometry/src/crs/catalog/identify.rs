@@ -4,9 +4,10 @@ use crate::crs::catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT,
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
     add_cf_lambert_conformal_conic_1sp_parameters, add_cf_lambert_conformal_conic_parameters,
-    add_cf_lambert_cylindrical_equal_area_parameters, add_cf_mercator_parameters,
-    add_cf_polar_stereographic_parameters, add_cf_projection_parameters, cached_export,
-    cf_lcc_1sp_stored_unity_scale, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
+    add_cf_lambert_cylindrical_equal_area_parameters, add_cf_mercator_variant_a_parameters,
+    add_cf_mercator_variant_b_parameters, add_cf_polar_stereographic_parameters,
+    add_cf_projection_parameters, cached_export, cf_lcc_1sp_admits_mapping,
+    cf_mercator_b_has_scale, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
     export, is_operation_method, is_transverse_mercator,
 };
 use crate::crs::{
@@ -355,7 +356,7 @@ fn push_cf_grid_mapping(
             axis_to_metre,
         )?;
     } else if is_operation_method(operation, "9801", "Lambert Conic Conformal (1SP)")
-        && cf_lcc_1sp_stored_unity_scale(&operation.parameters)
+        && cf_lcc_1sp_admits_mapping(&operation.parameters)
     {
         items.push((
             "grid_mapping_name",
@@ -367,11 +368,14 @@ fn push_cf_grid_mapping(
             &operation.parameters,
             axis_to_metre,
         )?;
-    } else if is_operation_method(operation, "9804", "Mercator (variant A)")
-        || is_operation_method(operation, "9805", "Mercator (variant B)")
+    } else if is_operation_method(operation, "9804", "Mercator (variant A)") {
+        items.push(("grid_mapping_name", CfValue::String("mercator".to_owned())));
+        add_cf_mercator_variant_a_parameters(crs, items, &operation.parameters, axis_to_metre)?;
+    } else if is_operation_method(operation, "9805", "Mercator (variant B)")
+        && !cf_mercator_b_has_scale(&operation.parameters)
     {
         items.push(("grid_mapping_name", CfValue::String("mercator".to_owned())));
-        add_cf_mercator_parameters(crs, items, &operation.parameters, axis_to_metre)?;
+        add_cf_mercator_variant_b_parameters(crs, items, &operation.parameters, axis_to_metre)?;
     } else if is_operation_method(operation, "9829", "Polar Stereographic (variant B)")
         || is_operation_method(operation, "9810", "Polar Stereographic (variant A)")
     {

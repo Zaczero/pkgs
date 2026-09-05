@@ -281,7 +281,7 @@ const CF_LAMBERT_AZIMUTHAL_EQUAL_AREA_PARAMETERS: &[CfParameterMapping] = &[
     },
 ];
 
-const CF_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
+const CF_MERCATOR_FRAME: &[CfParameterMapping] = &[
     CfParameterMapping {
         codes: &["8801"],
         names: &["Latitude of natural origin"],
@@ -293,18 +293,6 @@ const CF_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
         names: &["Longitude of natural origin"],
         cf_key: "longitude_of_projection_origin",
         kind: CfNumericKind::Angle,
-    },
-    CfParameterMapping {
-        codes: &["8823"],
-        names: &["Latitude of 1st standard parallel"],
-        cf_key: "standard_parallel",
-        kind: CfNumericKind::Angle,
-    },
-    CfParameterMapping {
-        codes: &["8805"],
-        names: &["Scale factor at natural origin"],
-        cf_key: "scale_factor_at_projection_origin",
-        kind: CfNumericKind::Scale,
     },
     CfParameterMapping {
         codes: &["8806"],
@@ -319,6 +307,20 @@ const CF_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
         kind: CfNumericKind::Length,
     },
 ];
+
+const CF_MERCATOR_A_DEFINING: &[CfParameterMapping] = &[CfParameterMapping {
+    codes: &["8805"],
+    names: &["Scale factor at natural origin"],
+    cf_key: "scale_factor_at_projection_origin",
+    kind: CfNumericKind::Scale,
+}];
+
+const CF_MERCATOR_B_DEFINING: &[CfParameterMapping] = &[CfParameterMapping {
+    codes: &["8823"],
+    names: &["Latitude of 1st standard parallel"],
+    cf_key: "standard_parallel",
+    kind: CfNumericKind::Angle,
+}];
 
 const CF_POLAR_STEREOGRAPHIC_PARAMETERS: &[CfParameterMapping] = &[
     CfParameterMapping {
@@ -401,33 +403,52 @@ const CF_LAMBERT_CONFORMAL_CONIC_1SP_FRAME: &[CfParameterMapping] = &[
     },
 ];
 
-fn is_lcc_1sp_scale(parameter: &OperationParameterInfo) -> bool {
-    parameter.code.as_deref() == Some("8805")
-        || parameter.name.as_deref() == Some("Scale factor at natural origin")
+fn parameter_matches(parameter: &OperationParameterInfo, code: &str, name: &str) -> bool {
+    parameter.code.as_deref() == Some(code) || parameter.name.as_deref() == Some(name)
 }
 
-fn is_lcc_1sp_natural_origin_latitude(parameter: &OperationParameterInfo) -> bool {
-    parameter.code.as_deref() == Some("8801")
-        || parameter.name.as_deref() == Some("Latitude of natural origin")
-}
-
-/// Admit CF 1SP Lambert conformal only when stored scale is unity.
-///
-/// Exactly one 8805 (code or name) with `value == 1.0` and conversion factor
-/// `== 1.0`. Missing, duplicate, non-unity factor, or any other stored value
-/// fail closed — no product, epsilon, or converted identity.
-pub(crate) fn cf_lcc_1sp_stored_unity_scale(parameters: &[OperationParameterInfo]) -> bool {
+fn unique_matching_parameter<'a>(
+    parameters: &'a [OperationParameterInfo],
+    code: &str,
+    name: &str,
+) -> Option<&'a OperationParameterInfo> {
     let mut found = None;
     for parameter in parameters {
-        if !is_lcc_1sp_scale(parameter) {
+        if !parameter_matches(parameter, code, name) {
             continue;
         }
         if found.is_some() {
-            return false;
+            return None;
         }
         found = Some(parameter);
     }
-    found.is_some_and(|parameter| parameter.value == 1.0 && parameter.unit_conversion_factor == 1.0)
+    found
+}
+
+fn is_lcc_1sp_natural_origin_latitude(parameter: &OperationParameterInfo) -> bool {
+    parameter_matches(parameter, "8801", "Latitude of natural origin")
+}
+
+fn cf_lcc_1sp_stored_unity_scale(parameters: &[OperationParameterInfo]) -> bool {
+    unique_matching_parameter(parameters, "8805", "Scale factor at natural origin")
+        .is_some_and(|parameter| parameter.value == 1.0 && parameter.unit_conversion_factor == 1.0)
+}
+
+/// Admit CF 1SP Lambert conformal when origin, meridian, and unity scale are unique.
+///
+/// Exactly one 8801, one 8802, and one stored-unity 8805 (code or name). Missing
+/// or duplicate origin/meridian, or a non-unity scale, fail closed.
+pub(crate) fn cf_lcc_1sp_admits_mapping(parameters: &[OperationParameterInfo]) -> bool {
+    unique_matching_parameter(parameters, "8801", "Latitude of natural origin").is_some()
+        && unique_matching_parameter(parameters, "8802", "Longitude of natural origin").is_some()
+        && cf_lcc_1sp_stored_unity_scale(parameters)
+}
+
+/// True when Mercator variant B carries any 8805 scale (code or name).
+pub(crate) fn cf_mercator_b_has_scale(parameters: &[OperationParameterInfo]) -> bool {
+    parameters
+        .iter()
+        .any(|parameter| parameter_matches(parameter, "8805", "Scale factor at natural origin"))
 }
 
 pub(crate) fn add_cf_lambert_conformal_conic_1sp_parameters(
@@ -540,17 +561,43 @@ pub(crate) fn add_cf_lambert_conformal_conic_parameters(
     Ok(())
 }
 
-pub(crate) fn add_cf_mercator_parameters(
+fn add_cf_mercator_with_defining(
+    crs: &str,
+    items: &mut Vec<(&'static str, CfValue)>,
+    parameters: &[OperationParameterInfo],
+    defining: &[CfParameterMapping],
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    add_cf_projection_parameters(crs, items, parameters, CF_MERCATOR_FRAME, axis_to_metre)?;
+    add_cf_projection_parameters(crs, items, parameters, defining, axis_to_metre)
+}
+
+pub(crate) fn add_cf_mercator_variant_a_parameters(
     crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
     axis_to_metre: Option<f64>,
 ) -> Result<()> {
-    add_cf_projection_parameters(
+    add_cf_mercator_with_defining(
         crs,
         items,
         parameters,
-        CF_MERCATOR_PARAMETERS,
+        CF_MERCATOR_A_DEFINING,
+        axis_to_metre,
+    )
+}
+
+pub(crate) fn add_cf_mercator_variant_b_parameters(
+    crs: &str,
+    items: &mut Vec<(&'static str, CfValue)>,
+    parameters: &[OperationParameterInfo],
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    add_cf_mercator_with_defining(
+        crs,
+        items,
+        parameters,
+        CF_MERCATOR_B_DEFINING,
         axis_to_metre,
     )
 }
@@ -627,7 +674,9 @@ pub(crate) fn add_cf_lambert_cylindrical_equal_area_parameters(
 
 #[cfg(test)]
 mod lcc_1sp_scale_tests {
-    use super::cf_lcc_1sp_stored_unity_scale;
+    use super::{
+        cf_lcc_1sp_admits_mapping, cf_lcc_1sp_stored_unity_scale, cf_mercator_b_has_scale,
+    };
     use crate::crs::OperationParameterInfo;
 
     fn param(
@@ -705,6 +754,60 @@ mod lcc_1sp_scale_tests {
         )]));
         assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(
             1.0_f64.next_down(),
+            1.0
+        )]));
+    }
+
+    fn origin() -> OperationParameterInfo {
+        param(Some("8801"), Some("Latitude of natural origin"), 40.0, 1.0)
+    }
+
+    fn meridian() -> OperationParameterInfo {
+        param(
+            Some("8802"),
+            Some("Longitude of natural origin"),
+            -100.0,
+            1.0,
+        )
+    }
+
+    #[test]
+    fn admits_mapping_requires_unique_origin_and_meridian() {
+        assert!(cf_lcc_1sp_admits_mapping(&[
+            origin(),
+            meridian(),
+            scale(1.0, 1.0)
+        ]));
+        assert!(!cf_lcc_1sp_admits_mapping(&[meridian(), scale(1.0, 1.0)]));
+        assert!(!cf_lcc_1sp_admits_mapping(&[origin(), scale(1.0, 1.0)]));
+        assert!(!cf_lcc_1sp_admits_mapping(&[
+            origin(),
+            origin(),
+            meridian(),
+            scale(1.0, 1.0)
+        ]));
+        assert!(!cf_lcc_1sp_admits_mapping(&[
+            origin(),
+            meridian(),
+            meridian(),
+            scale(1.0, 1.0)
+        ]));
+        assert!(cf_lcc_1sp_admits_mapping(&[
+            param(None, Some("Latitude of natural origin"), 18.0, 1.0),
+            param(None, Some("Longitude of natural origin"), -77.0, 1.0),
+            param(None, Some("Scale factor at natural origin"), 1.0, 1.0),
+        ]));
+    }
+
+    #[test]
+    fn mercator_b_detects_any_scale() {
+        assert!(!cf_mercator_b_has_scale(&[origin(), meridian()]));
+        assert!(cf_mercator_b_has_scale(&[scale(1.0, 1.0)]));
+        assert!(cf_mercator_b_has_scale(&[scale(0.8, 1.0)]));
+        assert!(cf_mercator_b_has_scale(&[param(
+            None,
+            Some("Scale factor at natural origin"),
+            0.8,
             1.0
         )]));
     }
