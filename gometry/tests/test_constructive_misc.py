@@ -687,6 +687,60 @@ def test_build_area_and_node_surfaces_agree() -> None:
     assert z_crossing.node().coordinate_axes == 'XYZ'
 
 
+def test_build_area_preserves_mixed_member_axes() -> None:
+    source = gm.from_wkt(
+        'GEOMETRYCOLLECTION ('
+        'LINESTRING (0 0, 2 0, 2 2, 0 2, 0 0), '
+        'LINESTRING Z (10 0 7, 12 0 8, 12 2 9, 10 2 10, 10 0 7))'
+    )
+    expected_wkt = (
+        'GEOMETRYCOLLECTION ('
+        'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0)), '
+        'POLYGON Z ((10 0 7, 12 0 8, 12 2 9, 10 2 10, 10 0 7)))'
+    )
+
+    result = source.build_area()
+    assert result.to_wkt() == expected_wkt
+    assert result.geometry_type == 'GeometryCollection'
+    assert result.coordinate_axes == 'XYZ'
+    parts = list(result.parts)
+    assert [part.coordinate_axes for part in parts] == ['XY', 'XYZ']
+    assert list(parts[1].coords) == [
+        (10.0, 0.0, 7.0),
+        (12.0, 0.0, 8.0),
+        (12.0, 2.0, 9.0),
+        (10.0, 2.0, 10.0),
+        (10.0, 0.0, 7.0),
+    ]
+    assert result.area == pytest.approx(8.0)
+
+    array_result = gm.GeometryArray([source]).build_area()[0]
+    assert array_result.to_wkt() == expected_wkt
+    assert [part.coordinate_axes for part in array_result.parts] == ['XY', 'XYZ']
+
+
+def test_build_area_keeps_homogeneous_and_empty_output_shapes() -> None:
+    xyz = gm.from_wkt(
+        'GEOMETRYCOLLECTION ('
+        'LINESTRING Z (0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1), '
+        'LINESTRING Z (10 0 11, 12 0 12, 12 2 13, 10 2 14, 10 0 11))'
+    )
+    assert xyz.build_area().to_wkt() == (
+        'MULTIPOLYGON Z ('
+        '((0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1)), '
+        '((10 0 11, 12 0 12, 12 2 13, 10 2 14, 10 0 11)))'
+    )
+
+    singleton = gm.from_wkt('LINESTRING Z (0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1)')
+    assert singleton.build_area().to_wkt() == (
+        'POLYGON Z ((0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1))'
+    )
+
+    assert gm.from_wkt('LINESTRING Z (0 0 1, 1 1 2)').build_area().to_wkt() == (
+        'POLYGON EMPTY'
+    )
+
+
 def test_w4b_smooth_catmull_and_chaikin_bit_stable_and_budget() -> None:
     """W4B-topology: Catmull-Rom knot prep + SoA emission stay bit-stable;
     budget still rejects pathological iterations before allocation.

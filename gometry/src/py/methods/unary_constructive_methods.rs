@@ -34,13 +34,17 @@ GeometryArray
 method_doc! {
     doc_build_area;
     body: r"Assemble linework into one areal geometry. Input ordinates are carried
-where vertices can be sourced; otherwise the mathematically planar result is XY.";
+where vertices can be sourced; otherwise the mathematically planar result is XY.
+When returned polygons retain different coordinate axes, they remain separate
+members of a GeometryCollection rather than being promoted or flattened.";
     scalar: r"
 
 Returns
 -------
-Polygon or MultiPolygon
-    The maximal areal geometry covered by the input.
+Polygon, MultiPolygon, or GeometryCollection
+    The maximal areal geometry covered by the input. A GeometryCollection is
+    returned only when multiple output polygons retain different coordinate axes;
+    each polygon member preserves its own ordinates.
 
 ";
     array: r"

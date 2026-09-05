@@ -538,7 +538,9 @@ GeometryKind::MultiPoint, axes) => {
     /// Assemble this geometry's linework into one areal geometry (GEOS
     /// `BuildArea`): nested rings alternate solid/hole by even-odd fill, so a
     /// ring enclosing a hole becomes one holed polygon. Returns `POLYGON EMPTY`
-    /// when no ring closes, a `Polygon` for one face, or a `MultiPolygon`.
+    /// when no ring closes, a `Polygon` for one face, a `MultiPolygon` when all
+    /// returned polygons share axes, or a `GeometryCollection` when their axes
+    /// differ.
     pub fn build_area(&self, strict: bool) -> Result<Self> {
         let polygons: Vec<Polygon> = Self::build_area_all(&[self], strict)?
             .into_iter()
@@ -547,10 +549,26 @@ GeometryKind::MultiPoint, axes) => {
                 _ => unreachable!("build_area_all yields only polygons"),
             })
             .collect();
-        Ok(Self::narrow_polygons(
-            crate::geometry::CoordinateAxes::XY,
-            polygons,
-        ))
+        match polygons.len() {
+            0 => Ok(Self::empty_polygon()),
+            1 => Ok(Self::Polygon(polygons.into_iter().next().expect("one polygon"))),
+            _ => {
+                let axes = polygons[0].axes();
+                if polygons.iter().all(|polygon| polygon.axes() == axes) {
+                    let members = polygons
+                        .into_iter()
+                        .map(crate::geometry::MultiMember::Value)
+                        .collect();
+                    Ok(Self::MultiPolygon(
+                        crate::geometry::MultiPolygon::try_new(axes, members)?,
+                    ))
+                } else {
+                    Self::geometry_collection(
+                        polygons.into_iter().map(Self::Polygon).collect(),
+                    )
+                }
+            },
+        }
     }
 
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for

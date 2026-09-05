@@ -3473,14 +3473,18 @@ class Geometry:
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
-    def build_area(self) -> Polygon | MultiPolygon:
+    def build_area(self) -> Polygon | MultiPolygon | GeometryCollection:
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
+        When returned polygons retain different coordinate axes, they remain separate
+        members of a GeometryCollection rather than being promoted or flattened.
 
         Returns
         -------
-        Polygon or MultiPolygon
-            The maximal areal geometry covered by the input.
+        Polygon, MultiPolygon, or GeometryCollection
+            The maximal areal geometry covered by the input. A GeometryCollection is
+            returned only when multiple output polygons retain different coordinate axes;
+            each polygon member preserves its own ordinates.
 
 
         Raises
@@ -8632,9 +8636,11 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
-    def build_area(self) -> GeometryArray[Polygon | MultiPolygon]:
+    def build_area(self) -> GeometryArray[Polygon | MultiPolygon | GeometryCollection]:
         """Assemble linework into one areal geometry. Input ordinates are carried
         where vertices can be sourced; otherwise the mathematically planar result is XY.
+        When returned polygons retain different coordinate axes, they remain separate
+        members of a GeometryCollection rather than being promoted or flattened.
 
         Returns
         -------

@@ -39,9 +39,9 @@ use crate::geometry::tessellation::earcut::{
 };
 use crate::geometry::tessellation::sampling::triangle_corners;
 use crate::geometry::{
-    CdtRefinement, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    MOrdinate, Point, Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision,
-    orientation, ring_contains_interior,
+    CdtRefinement, CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
+    GeometryErrorKind, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, Strictness, ZOrdinate,
+    open_point_cycle_decision, orientation, ring_contains_interior,
 };
 
 fn xy(x: f64, y: f64) -> Point {
@@ -214,6 +214,39 @@ fn delaunay_triangles_accept_mixed_axis_collection_without_panicking() {
         let corners = triangle_corners(&triangle).expect("triangle polygon");
         assert_eq!(corners.len(), 3);
     }
+}
+
+#[test]
+fn build_area_strict_rejects_mixed_output_axes() {
+    let square = |points: Vec<Point>| {
+        Shape::LineString(LineSeq::from_proven(CoordSeq::from_points(&points)))
+    };
+    let source = Shape::geometry_collection(vec![
+        square(vec![
+            xy(0.0, 0.0),
+            xy(2.0, 0.0),
+            xy(2.0, 2.0),
+            xy(0.0, 2.0),
+            xy(0.0, 0.0),
+        ]),
+        square(vec![
+            xyz(10.0, 0.0, 7.0),
+            xyz(12.0, 0.0, 8.0),
+            xyz(12.0, 2.0, 9.0),
+            xyz(10.0, 2.0, 10.0),
+            xyz(10.0, 0.0, 7.0),
+        ]),
+    ])
+    .expect("mixed-axis collection is valid");
+
+    let error = source
+        .build_area(true)
+        .expect_err("strict ordinate carry must reject mixed output axes");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(operation))
+            if operation.as_ref() == "build_area"
+    ));
 }
 
 #[test]
