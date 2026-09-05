@@ -3,6 +3,7 @@ use crate::grid::s2::bounding::{
     LonLatBBox, bbox_closed_in_cell, bbox_hilbert_samples, bbox_margin_in_cell, bounding_cell,
     bounding_cell_bbox, hilbert_samples_ok,
 };
+use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::CellId;
 
 fn line(a: (f64, f64), b: (f64, f64)) -> Shape {
@@ -36,8 +37,9 @@ fn bbox_sound_ok(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f64) {
         lat0: miny.to_radians(),
         lat1: maxy.to_radians(),
     };
+    let vertices = Cell::from_id(cell).vertices_point();
     assert!(
-        bbox_closed_in_cell(cell, &bbox),
+        bbox_closed_in_cell(&vertices, &bbox),
         "cell {} L{} must closed-contain bbox ({minx},{miny},{maxx},{maxy})",
         cell.token(),
         cell.level(),
@@ -59,8 +61,9 @@ fn bbox_sound_ok(cell: CellId, minx: f64, miny: f64, maxx: f64, maxy: f64) {
     // Deepest-provable: no child clears the positive margin.
     if let Some(children) = cell.children() {
         for child in children {
+            let vertices = Cell::from_id(child).vertices_point();
             assert!(
-                !bbox_margin_in_cell(child, &bbox),
+                !bbox_margin_in_cell(&vertices, &bbox),
                 "cell {} L{} is not deepest-provable: child {} still margin-contains",
                 cell.token(),
                 cell.level(),

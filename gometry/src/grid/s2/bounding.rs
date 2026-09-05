@@ -111,9 +111,10 @@ fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
         level -= 1;
     };
     loop {
+        let vertices = Cell::from_id(candidate).vertices_point();
         if windows
             .iter()
-            .all(|window| bbox_closed_in_cell(candidate, window))
+            .all(|window| bbox_closed_in_cell(&vertices, window))
         {
             return Some(deepest_margin_child_regions(candidate, &windows));
         }
@@ -159,9 +160,10 @@ fn deepest_margin_child_regions(root: CellId, windows: &[LonLatBBox]) -> CellId 
             return current;
         };
         let mut containing = children.into_iter().filter(|&child| {
+            let vertices = Cell::from_id(child).vertices_point();
             windows
                 .iter()
-                .all(|window| bbox_margin_in_cell(child, window))
+                .all(|window| bbox_margin_in_cell(&vertices, window))
         });
         let Some(child) = containing.next() else {
             return current;
@@ -210,12 +212,13 @@ pub(crate) fn bounding_cell_bbox(bounds: Bounds) -> Option<CellId> {
     let mut n_closed = 0_usize;
     for face in Face::ALL {
         let root = CellId::from_face(face);
-        if !bbox_closed_in_cell(root, &bbox) {
+        let vertices = Cell::from_id(root).vertices_point();
+        if !bbox_closed_in_cell(&vertices, &bbox) {
             continue;
         }
         n_closed += 1;
         closed_root = Some(root);
-        if bbox_margin_in_cell(root, &bbox) {
+        if bbox_margin_in_cell(&vertices, &bbox) {
             margin_root = Some(root);
         }
     }
@@ -285,7 +288,8 @@ fn deepest_margin_child(root: CellId, bbox: &LonLatBBox) -> CellId {
         let mut margin = [CellId::from_face(Face::ALL[0]); 4];
         let mut n = 0_usize;
         for child in children {
-            if bbox_margin_in_cell(child, bbox) {
+            let vertices = Cell::from_id(child).vertices_point();
+            if bbox_margin_in_cell(&vertices, bbox) {
                 margin[n] = child;
                 n += 1;
             }
@@ -345,8 +349,7 @@ fn margin_eps(normal: Point3) -> f64 {
 }
 
 /// Closed containment with relative root slack: min ≥ −[`closed_eps`].
-fn bbox_closed_in_cell(id: CellId, bbox: &LonLatBBox) -> bool {
-    let vertices = Cell::from_id(id).vertices_point();
+fn bbox_closed_in_cell(vertices: &[Point3; 4], bbox: &LonLatBBox) -> bool {
     for k in 0..4 {
         let a = vertices[k];
         let b = vertices[(k + 1) & 3];
@@ -359,8 +362,7 @@ fn bbox_closed_in_cell(id: CellId, bbox: &LonLatBBox) -> bool {
 }
 
 /// Provable positive-margin containment used for **descent** only.
-fn bbox_margin_in_cell(id: CellId, bbox: &LonLatBBox) -> bool {
-    let vertices = Cell::from_id(id).vertices_point();
+fn bbox_margin_in_cell(vertices: &[Point3; 4], bbox: &LonLatBBox) -> bool {
     for k in 0..4 {
         let a = vertices[k];
         let b = vertices[(k + 1) & 3];
