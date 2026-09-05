@@ -151,7 +151,7 @@ pub(super) fn transform_in_core_xy_batch(
     x: &mut [f64],
     y: &mut [f64],
 ) -> Result<()> {
-    resolve_in_core_xy(operation).apply_batch(x, y)
+    transform_in_core_xy_batch_indexed(operation, x, y).map_err(|failure| failure.error)
 }
 
 pub(super) fn transform_in_core_xy_batch_indexed(
@@ -159,112 +159,57 @@ pub(super) fn transform_in_core_xy_batch_indexed(
     x: &mut [f64],
     y: &mut [f64],
 ) -> std::result::Result<(), TransformFailure> {
-    resolve_in_core_xy(operation).apply_batch_indexed(x, y)
-}
-
-/// Resolved in-core XY kernel — the `One`/`Two` + `Forward`/`Inverse` +
-/// `ProjSetup` matches happen once per batch; [`apply`](Self::apply) is a
-/// single flat dispatch.
-#[derive(Clone, Copy)]
-enum ResolvedInCoreXy<'a> {
-    RawWebMercFwd,
-    RawWebMercInv,
-    WebMercFwd(&'a Projected<webmerc::WebMerc>),
-    WebMercInv(&'a Projected<webmerc::WebMerc>),
-    TmercFwd(&'a Projected<tmerc::Tmerc>),
-    TmercInv(&'a Projected<tmerc::Tmerc>),
-    LccFwd(&'a Projected<lcc::Lcc>),
-    LccInv(&'a Projected<lcc::Lcc>),
-    LaeaFwd(&'a Projected<laea::Laea>),
-    LaeaInv(&'a Projected<laea::Laea>),
-    AeaFwd(&'a Projected<aea::Aea>),
-    AeaInv(&'a Projected<aea::Aea>),
-    PolarStereoFwd(&'a Projected<stere::PolarStereo>),
-    PolarStereoInv(&'a Projected<stere::PolarStereo>),
-    StereaFwd(&'a Projected<sterea::Sterea>),
-    StereaInv(&'a Projected<sterea::Sterea>),
-    WebMercToUtm {
-        webmerc: &'a Projected<webmerc::WebMerc>,
-        tmerc: &'a Projected<tmerc::Tmerc>,
-    },
-    UtmToWebMerc {
-        tmerc: &'a Projected<tmerc::Tmerc>,
-        webmerc: &'a Projected<webmerc::WebMerc>,
-    },
-    TwoGeneric {
-        inverse: &'a ProjSetup,
-        forward: &'a ProjSetup,
-    },
-}
-
-impl ResolvedInCoreXy<'_> {
-    fn apply_batch(self, x: &mut [f64], y: &mut [f64]) -> Result<()> {
-        match self {
-            Self::RawWebMercFwd => webmerc::raw_forward_batch(x, y),
-            Self::RawWebMercInv => webmerc::raw_inverse_batch(x, y),
-            Self::WebMercFwd(p) => projected_batch::<webmerc::WebMerc, true>(p, x, y),
-            Self::WebMercInv(p) => projected_batch::<webmerc::WebMerc, false>(p, x, y),
-            Self::TmercFwd(p) => projected_batch::<tmerc::Tmerc, true>(p, x, y),
-            Self::TmercInv(p) => projected_batch::<tmerc::Tmerc, false>(p, x, y),
-            Self::LccFwd(p) => projected_batch::<lcc::Lcc, true>(p, x, y),
-            Self::LccInv(p) => projected_batch::<lcc::Lcc, false>(p, x, y),
-            Self::LaeaFwd(p) => projected_batch::<laea::Laea, true>(p, x, y),
-            Self::LaeaInv(p) => projected_batch::<laea::Laea, false>(p, x, y),
-            Self::AeaFwd(p) => projected_batch::<aea::Aea, true>(p, x, y),
-            Self::AeaInv(p) => projected_batch::<aea::Aea, false>(p, x, y),
-            Self::PolarStereoFwd(p) => projected_batch::<stere::PolarStereo, true>(p, x, y),
-            Self::PolarStereoInv(p) => projected_batch::<stere::PolarStereo, false>(p, x, y),
-            Self::StereaFwd(p) => projected_batch::<sterea::Sterea, true>(p, x, y),
-            Self::StereaInv(p) => projected_batch::<sterea::Sterea, false>(p, x, y),
-            Self::WebMercToUtm { webmerc, tmerc } => webmerc_to_utm_batch(webmerc, tmerc, x, y),
-            Self::UtmToWebMerc { tmerc, webmerc } => utm_to_webmerc_batch(tmerc, webmerc, x, y),
-            Self::TwoGeneric { inverse, forward } => two_generic_batch(inverse, forward, x, y),
-        }
-    }
-
-    fn apply_batch_indexed(
-        self,
-        x: &mut [f64],
-        y: &mut [f64],
-    ) -> std::result::Result<(), TransformFailure> {
-        match self {
-            Self::RawWebMercFwd => webmerc::raw_forward_batch_indexed(x, y),
-            Self::RawWebMercInv => webmerc::raw_inverse_batch_indexed(x, y),
-            Self::WebMercFwd(p) => projected_batch_indexed::<webmerc::WebMerc, true>(p, x, y),
-            Self::WebMercInv(p) => projected_batch_indexed::<webmerc::WebMerc, false>(p, x, y),
-            Self::TmercFwd(p) => projected_batch_indexed::<tmerc::Tmerc, true>(p, x, y),
-            Self::TmercInv(p) => projected_batch_indexed::<tmerc::Tmerc, false>(p, x, y),
-            Self::LccFwd(p) => projected_batch_indexed::<lcc::Lcc, true>(p, x, y),
-            Self::LccInv(p) => projected_batch_indexed::<lcc::Lcc, false>(p, x, y),
-            Self::LaeaFwd(p) => projected_batch_indexed::<laea::Laea, true>(p, x, y),
-            Self::LaeaInv(p) => projected_batch_indexed::<laea::Laea, false>(p, x, y),
-            Self::AeaFwd(p) => projected_batch_indexed::<aea::Aea, true>(p, x, y),
-            Self::AeaInv(p) => projected_batch_indexed::<aea::Aea, false>(p, x, y),
-            Self::PolarStereoFwd(p) => projected_batch_indexed::<stere::PolarStereo, true>(p, x, y),
-            Self::PolarStereoInv(p) => {
-                projected_batch_indexed::<stere::PolarStereo, false>(p, x, y)
-            },
-            Self::StereaFwd(p) => projected_batch_indexed::<sterea::Sterea, true>(p, x, y),
-            Self::StereaInv(p) => projected_batch_indexed::<sterea::Sterea, false>(p, x, y),
-            Self::WebMercToUtm { webmerc, tmerc } => {
-                webmerc_to_utm_batch_indexed(webmerc, tmerc, x, y)
-            },
-            Self::UtmToWebMerc { tmerc, webmerc } => {
-                utm_to_webmerc_batch_indexed(tmerc, webmerc, x, y)
-            },
-            Self::TwoGeneric { inverse, forward } => {
-                two_generic_batch_indexed(inverse, forward, x, y)
-            },
-        }
+    match operation {
+        InCoreTransform::RawWebMercatorForward => webmerc::raw_forward_batch_indexed(x, y),
+        InCoreTransform::RawWebMercatorInverse => webmerc::raw_inverse_batch_indexed(x, y),
+        InCoreTransform::One(InCoreStep::Forward(setup)) => {
+            one_batch_indexed::<true>(setup, x, y)
+        },
+        InCoreTransform::One(InCoreStep::Inverse(setup)) => {
+            one_batch_indexed::<false>(setup, x, y)
+        },
+        InCoreTransform::Two {
+            inverse: ProjSetup::WebMercator(webmerc),
+            forward: ProjSetup::Tmerc(tmerc),
+        } => webmerc_to_utm_batch_indexed(webmerc, tmerc, x, y),
+        InCoreTransform::Two {
+            inverse: ProjSetup::Tmerc(tmerc),
+            forward: ProjSetup::WebMercator(webmerc),
+        } => utm_to_webmerc_batch_indexed(tmerc, webmerc, x, y),
+        InCoreTransform::Two { inverse, forward } => {
+            two_generic_batch_indexed(inverse, forward, x, y)
+        },
     }
 }
 
-fn projected_batch<K: ProjectionKernel, const FORWARD: bool>(
-    projected: &Projected<K>,
+fn one_batch_indexed<const FORWARD: bool>(
+    setup: &ProjSetup,
     x: &mut [f64],
     y: &mut [f64],
-) -> Result<()> {
-    projected_batch_indexed::<K, FORWARD>(projected, x, y).map_err(|failure| failure.error)
+) -> std::result::Result<(), TransformFailure> {
+    match setup {
+        ProjSetup::WebMercator(projected) => {
+            projected_batch_indexed::<webmerc::WebMerc, FORWARD>(projected, x, y)
+        },
+        ProjSetup::Tmerc(projected) => {
+            projected_batch_indexed::<tmerc::Tmerc, FORWARD>(projected, x, y)
+        },
+        ProjSetup::Lcc(projected) => {
+            projected_batch_indexed::<lcc::Lcc, FORWARD>(projected, x, y)
+        },
+        ProjSetup::Laea(projected) => {
+            projected_batch_indexed::<laea::Laea, FORWARD>(projected, x, y)
+        },
+        ProjSetup::Aea(projected) => {
+            projected_batch_indexed::<aea::Aea, FORWARD>(projected, x, y)
+        },
+        ProjSetup::PolarStereo(projected) => {
+            projected_batch_indexed::<stere::PolarStereo, FORWARD>(projected, x, y)
+        },
+        ProjSetup::Sterea(projected) => {
+            projected_batch_indexed::<sterea::Sterea, FORWARD>(projected, x, y)
+        },
+    }
 }
 
 fn projected_batch_indexed<K: ProjectionKernel, const FORWARD: bool>(
@@ -318,15 +263,6 @@ fn validate_geographic_coordinate(lon_deg: f64, lat_deg: f64) -> Result<()> {
     Ok(())
 }
 
-fn webmerc_to_utm_batch(
-    webmerc: &Projected<webmerc::WebMerc>,
-    tmerc: &Projected<tmerc::Tmerc>,
-    x: &mut [f64],
-    y: &mut [f64],
-) -> Result<()> {
-    webmerc_to_utm_batch_indexed(webmerc, tmerc, x, y).map_err(|failure| failure.error)
-}
-
 fn webmerc_to_utm_batch_indexed(
     webmerc: &Projected<webmerc::WebMerc>,
     tmerc: &Projected<tmerc::Tmerc>,
@@ -343,15 +279,6 @@ fn webmerc_to_utm_batch_indexed(
             .map_err(|error| TransformFailure::at(error, index))?;
     }
     Ok(())
-}
-
-fn utm_to_webmerc_batch(
-    tmerc: &Projected<tmerc::Tmerc>,
-    webmerc: &Projected<webmerc::WebMerc>,
-    x: &mut [f64],
-    y: &mut [f64],
-) -> Result<()> {
-    utm_to_webmerc_batch_indexed(tmerc, webmerc, x, y).map_err(|failure| failure.error)
 }
 
 fn utm_to_webmerc_batch_indexed(
@@ -371,84 +298,19 @@ fn utm_to_webmerc_batch_indexed(
     Ok(())
 }
 
-fn two_generic_batch(
-    inverse: &ProjSetup,
-    forward: &ProjSetup,
-    x: &mut [f64],
-    y: &mut [f64],
-) -> Result<()> {
-    two_generic_batch_indexed(inverse, forward, x, y).map_err(|failure| failure.error)
-}
-
 fn two_generic_batch_indexed(
     inverse: &ProjSetup,
     forward: &ProjSetup,
     x: &mut [f64],
     y: &mut [f64],
 ) -> std::result::Result<(), TransformFailure> {
-    let snap_latitude = is_webmerc_to_utm_composition(inverse, forward);
     for (index, (x, y)) in std::iter::zip(x, y).enumerate() {
-        let (out_x, mut out_y) =
+        let (out_x, out_y) =
             inverse_setup(inverse, *x, *y).map_err(|error| TransformFailure::at(error, index))?;
-        if snap_latitude {
-            out_y = snap_webmerc_to_utm_latitude(out_y);
-        }
         (*x, *y) = forward_setup(forward, out_x, out_y)
             .map_err(|error| TransformFailure::at(error, index))?;
     }
     Ok(())
-}
-
-const fn resolve_in_core_xy(operation: &InCoreTransform) -> ResolvedInCoreXy<'_> {
-    match operation {
-        InCoreTransform::RawWebMercatorForward => ResolvedInCoreXy::RawWebMercFwd,
-        InCoreTransform::RawWebMercatorInverse => ResolvedInCoreXy::RawWebMercInv,
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::WebMercator(p))) => {
-            ResolvedInCoreXy::WebMercFwd(p)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::WebMercator(p))) => {
-            ResolvedInCoreXy::WebMercInv(p)
-        },
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::Tmerc(p))) => {
-            ResolvedInCoreXy::TmercFwd(p)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::Tmerc(p))) => {
-            ResolvedInCoreXy::TmercInv(p)
-        },
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::Lcc(p))) => ResolvedInCoreXy::LccFwd(p),
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::Lcc(p))) => ResolvedInCoreXy::LccInv(p),
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::Laea(p))) => {
-            ResolvedInCoreXy::LaeaFwd(p)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::Laea(p))) => {
-            ResolvedInCoreXy::LaeaInv(p)
-        },
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::Aea(p))) => ResolvedInCoreXy::AeaFwd(p),
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::Aea(p))) => ResolvedInCoreXy::AeaInv(p),
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::PolarStereo(p))) => {
-            ResolvedInCoreXy::PolarStereoFwd(p)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::PolarStereo(p))) => {
-            ResolvedInCoreXy::PolarStereoInv(p)
-        },
-        InCoreTransform::One(InCoreStep::Forward(ProjSetup::Sterea(p))) => {
-            ResolvedInCoreXy::StereaFwd(p)
-        },
-        InCoreTransform::One(InCoreStep::Inverse(ProjSetup::Sterea(p))) => {
-            ResolvedInCoreXy::StereaInv(p)
-        },
-        InCoreTransform::Two {
-            inverse: ProjSetup::WebMercator(webmerc),
-            forward: ProjSetup::Tmerc(tmerc),
-        } => ResolvedInCoreXy::WebMercToUtm { webmerc, tmerc },
-        InCoreTransform::Two {
-            inverse: ProjSetup::Tmerc(tmerc),
-            forward: ProjSetup::WebMercator(webmerc),
-        } => ResolvedInCoreXy::UtmToWebMerc { tmerc, webmerc },
-        InCoreTransform::Two { inverse, forward } => {
-            ResolvedInCoreXy::TwoGeneric { inverse, forward }
-        },
-    }
 }
 
 /// Snap composition-boundary latitudes onto the UTM domain edge after a Web
@@ -461,13 +323,6 @@ fn snap_webmerc_to_utm_latitude(lat: f64) -> f64 {
     } else {
         lat
     }
-}
-
-const fn is_webmerc_to_utm_composition(inverse: &ProjSetup, forward: &ProjSetup) -> bool {
-    matches!(
-        (inverse, forward),
-        (ProjSetup::WebMercator(_), ProjSetup::Tmerc(_))
-    )
 }
 
 #[expect(
@@ -557,7 +412,7 @@ mod tests {
         let projected = identity_projected();
         let mut x = [-0.0];
         let mut y = [-0.0];
-        projected_batch::<IdentityKernel, true>(&projected, &mut x, &mut y).unwrap();
+        projected_batch_indexed::<IdentityKernel, true>(&projected, &mut x, &mut y).unwrap();
         assert_eq!(x[0].to_bits(), (-0.0_f64).to_bits());
         assert_eq!(y[0].to_bits(), (-0.0_f64).to_bits());
     }
@@ -580,8 +435,13 @@ mod tests {
     fn batch_forward_rejects_latitude_outside_closed_domain() {
         let mut x = [0.0];
         let mut y = [100.0];
-        let error = projected_batch::<IdentityKernel, true>(&identity_projected(), &mut x, &mut y)
-            .unwrap_err();
+        let error = projected_batch_indexed::<IdentityKernel, true>(
+            &identity_projected(),
+            &mut x,
+            &mut y,
+        )
+        .unwrap_err()
+        .error;
         assert!(error.to_string().contains("latitude"));
     }
 

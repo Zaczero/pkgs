@@ -600,6 +600,49 @@ def test_utm_forward_inverse_round_trip_sparse(
     assert gometry_lonlat[1] == pytest.approx(test_lat, abs=ABS_TOL_DEG)
 
 
+@pytest.mark.parametrize(
+    ('source', 'target'),
+    [('EPSG:32632', 'EPSG:32633'), ('EPSG:32633', 'EPSG:32632')],
+    ids=['utm32-to-utm33', 'utm33-to-utm32'],
+)
+def test_projected_to_projected_generic_pair_matches_pyproj_in_coordinates_and_bounds(
+    source: str, target: str
+) -> None:
+    source_xy = gm.crs_transform(WGS84, source, 12.0, 42.0)
+    forward = pyproj.Transformer.from_crs(source, target, always_xy=True)
+    expected_xy = forward.transform(*source_xy)
+
+    gm.crs_clear_cache()
+    actual_xy = gm.crs_transform(source, target, *source_xy)
+    _assert_xy_parity(actual_xy, expected_xy, tol=ABS_TOL_M, context=f'{source}->{target}')
+    assert last_transform_engine() == 'in_core'
+
+    actual_back = gm.crs_transform(target, source, *actual_xy)
+    reverse = pyproj.Transformer.from_crs(target, source, always_xy=True)
+    expected_back = reverse.transform(*actual_xy)
+    _assert_xy_parity(
+        actual_back,
+        expected_back,
+        tol=ABS_TOL_M,
+        context=f'{target}->{source}',
+    )
+    assert last_transform_engine() == 'in_core'
+
+    bounds = (
+        source_xy[0] - 1_000.0,
+        source_xy[1] - 1_000.0,
+        source_xy[0] + 1_000.0,
+        source_xy[1] + 1_000.0,
+    )
+    expected_bounds = pyproj.Transformer.from_crs(
+        source, target, always_xy=True
+    ).transform_bounds(*bounds, densify_pts=2)
+    gm.crs_clear_cache()
+    actual_bounds = gm.crs_transform_bounds(source, target, bounds, densify=2)
+    assert actual_bounds == pytest.approx(expected_bounds, abs=ABS_TOL_M)
+    assert last_transform_engine() == 'in_core'
+
+
 # Pair-local transformers for the fixed 4326↔3857 sparse matrix (built once).
 _WEB_MERCATOR_FWD: object | None = None
 _WEB_MERCATOR_INV: object | None = None

@@ -34,10 +34,6 @@ pub(in crate::crs) const WGS84_WEB_MERCATOR: Projected<WebMerc> = Projected {
     },
 };
 
-pub(super) fn raw_forward_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
-    raw_forward_batch_indexed(x, y).map_err(|failure| failure.error)
-}
-
 pub(super) fn raw_forward_batch_indexed(
     x: &mut [f64],
     y: &mut [f64],
@@ -67,10 +63,6 @@ pub(super) fn raw_forward_batch_indexed(
         (*lon, *lat) = (out_x, out_y);
     }
     Ok(())
-}
-
-pub(super) fn raw_inverse_batch(x: &mut [f64], y: &mut [f64]) -> Result<()> {
-    raw_inverse_batch_indexed(x, y).map_err(|failure| failure.error)
 }
 
 pub(super) fn raw_inverse_batch_indexed(
