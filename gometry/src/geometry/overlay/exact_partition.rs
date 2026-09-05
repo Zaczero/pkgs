@@ -361,6 +361,86 @@ impl<'a> ExactPartition<'a> {
         })
     }
 
+    fn visit_face_windings(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        faces: &GlobalFaces,
+        source_rings: &[Option<u32>],
+        ring_count: usize,
+        mut visit: impl FnMut(u32, &[i64]) -> Result<()>,
+    ) -> Result<()> {
+        let count = faces.count as usize;
+        let mut starts = Vec::new();
+        try_reserve_vec(&mut starts, count + 1)?;
+        starts.resize(count + 1, 0_usize);
+        for &walk in &topology.face_of {
+            starts[faces.walk_faces[walk as usize] as usize + 1] += 1;
+        }
+        for face in 0..count {
+            starts[face + 1] += starts[face];
+        }
+        let mut cursor = Vec::new();
+        try_reserve_vec(&mut cursor, count)?;
+        cursor.extend_from_slice(&starts[..count]);
+        let mut slots = Vec::new();
+        try_reserve_vec(&mut slots, edges.len())?;
+        slots.resize(edges.len(), 0_u32);
+        for (slot, &walk) in topology.face_of.iter().enumerate() {
+            let face = faces.walk_faces[walk as usize] as usize;
+            slots[cursor[face]] = slot as u32;
+            cursor[face] += 1;
+        }
+        let mut winding = Vec::new();
+        try_reserve_vec(&mut winding, ring_count)?;
+        winding.resize(ring_count, 0_i64);
+        let cross = |winding: &mut [i64], slot: u32, direction: i64| {
+            let slot = slot as usize;
+            let edge = edges[slot] as usize;
+            let backward = topology.owners[slot] != self.spans[edge].start.0;
+            for &(source, reversed) in self.owners(edge) {
+                if let Some(ring) = source_rings[source as usize] {
+                    winding[ring as usize] += if reversed ^ backward {
+                        direction
+                    } else {
+                        -direction
+                    };
+                }
+            }
+        };
+        let mut visited = Vec::new();
+        try_reserve_vec(&mut visited, count)?;
+        visited.resize(count, false);
+        let mut stack = Vec::new();
+        try_reserve_vec(&mut stack, count)?;
+        visited[0] = true;
+        visit(0, &winding)?;
+        stack.push((0_u32, starts[0], None));
+        while let Some((face, next, incoming)) = stack.last_mut() {
+            if *next == starts[*face as usize + 1] {
+                if let Some(slot) = *incoming {
+                    cross(&mut winding, slot, -1);
+                }
+                stack.pop();
+                continue;
+            }
+            let slot = slots[*next];
+            *next += 1;
+            let twin = topology.twins[slot as usize] as usize;
+            let neighbor = faces.walk_faces[topology.face_of[twin] as usize];
+            if visited[neighbor as usize] {
+                continue;
+            }
+            cross(&mut winding, slot, 1);
+            visited[neighbor as usize] = true;
+            visit(neighbor, &winding)?;
+            stack.push((neighbor, starts[neighbor as usize], Some(slot)));
+        }
+        debug_assert!(visited.iter().all(|&seen| seen));
+        debug_assert!(winding.iter().all(|&value| value == 0));
+        Ok(())
+    }
+
     fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], hit: VisibilityHit) -> u32 {
         let slot = match hit {
             VisibilityHit::Node(node) => {
@@ -1959,6 +2039,99 @@ mod tests {
         assert_eq!(faces.walk_faces[exterior as usize], 0);
         let host = partition.contact_walk(&topology, &edges, VisibilityHit::Node(contact));
         assert_eq!(faces.walk_faces[host as usize], 0);
+        let mut windings = Vec::new();
+        partition
+            .visit_face_windings(
+                &topology,
+                &edges,
+                &faces,
+                &[Some(0), Some(0), Some(0), Some(1), Some(1), Some(1), None],
+                2,
+                |_, winding| {
+                    windings.push([winding[0], winding[1]]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        windings.sort_unstable();
+        assert_eq!(windings, [[0, 0], [0, 1], [1, 0]]);
+    }
+
+    #[test]
+    fn face_windings_keep_nested_reversed_ring_multiplicity() {
+        let case = run(&[
+            seg(0.0, 0.0, 8.0, 0.0),
+            seg(8.0, 0.0, 8.0, 8.0),
+            seg(8.0, 8.0, 0.0, 8.0),
+            seg(0.0, 8.0, 0.0, 0.0),
+            seg(2.0, 2.0, 3.0, 4.0),
+            seg(3.0, 4.0, 4.0, 2.0),
+            seg(4.0, 2.0, 2.0, 2.0),
+            seg(2.0, 2.0, 3.0, 4.0),
+            seg(3.0, 4.0, 4.0, 2.0),
+            seg(4.0, 2.0, 2.0, 2.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let mut windings = Vec::new();
+        partition
+            .visit_face_windings(
+                &topology,
+                &edges,
+                &faces,
+                &[
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                    Some(0),
+                    Some(1),
+                    Some(1),
+                    Some(1),
+                    Some(1),
+                    Some(1),
+                    Some(1),
+                ],
+                2,
+                |_, winding| {
+                    windings.push([winding[0], winding[1]]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        windings.sort_unstable();
+        assert_eq!(windings, [[0, 0], [1, -2], [1, 0]]);
+    }
+
+    #[test]
+    fn face_windings_cancel_opposite_sources_and_ignore_open_linework() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(4.0, 0.0, 2.0, 3.0),
+            seg(2.0, 3.0, 0.0, 0.0),
+            seg(0.0, 0.0, 2.0, 3.0),
+            seg(2.0, 3.0, 4.0, 0.0),
+            seg(4.0, 0.0, 0.0, 0.0),
+            seg(-1.0, 1.0, 5.0, 1.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let mut windings = Vec::new();
+        partition
+            .visit_face_windings(
+                &topology,
+                &edges,
+                &faces,
+                &[Some(0), Some(0), Some(0), Some(0), Some(0), Some(0), None],
+                1,
+                |_, winding| {
+                    windings.push(winding[0]);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(windings, [0, 0, 0]);
     }
 
     #[test]
