@@ -13,6 +13,23 @@ import pytest
 from tests._support import ids, pair_rows
 
 
+def test_outlying_hole_boundary_is_not_rejected_by_polygon_bounds() -> None:
+    polygon = gm.from_wkt(
+        'POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))'
+    )
+    point = gm.Point(5, 5)
+    assert not polygon.is_valid
+    assert polygon.bounds == (0, 0, 6, 6)
+    assert gm.intersects(polygon, point)
+    assert gm.intersects(point, polygon)
+    polygons = gm.GeometryArray([polygon, polygon])
+    np.testing.assert_array_equal(polygons.bounds, [[0, 0, 6, 6], [0, 0, 6, 6]])
+    np.testing.assert_array_equal(gm.intersects(polygons, point), [True, True])
+    np.testing.assert_array_equal(
+        gm.SpatialIndex([polygon]).query(point, predicate='intersects'), [0]
+    )
+
+
 def test_polygon_planar_measurements_and_predicates() -> None:
     polygon = gm.box(-1, -1, 1, 1)
     point = gm.Point(0, 0)

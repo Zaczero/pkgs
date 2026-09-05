@@ -939,9 +939,9 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
                 let bounds = if rings.is_empty() {
                     [f64::NAN; 4]
                 } else {
-                    let shell =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize;
-                    row_bounds_values(xs, ys, shell)
+                    let vertices =
+                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+                    row_bounds_values(xs, ys, vertices)
                 };
                 values.push(bounds);
             }
@@ -1041,8 +1041,8 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                 let bounds = if rings.is_empty() {
                     [f64::NAN; 4]
                 } else {
-                    let shell =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.start + 1] as usize;
+                    let vertices =
+                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
                     let shape = Shape::Polygon(GeometryArrayStorage::polygon_view(
                         coords,
                         ring_offsets,
@@ -1052,7 +1052,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)
                     } else {
-                        row_bounds_values(xs, ys, shell)
+                        row_bounds_values(xs, ys, vertices)
                     }
                 };
                 values.extend_from_slice(&bounds);

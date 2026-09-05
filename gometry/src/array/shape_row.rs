@@ -58,12 +58,10 @@ impl ShapeRow<'_> {
                 );
                 (!xs.is_empty()).then(|| row_bounds(xs, ys))
             },
-            Self::Rings(coords, ring_offsets, start, _) => {
-                // Holes lie inside the shell: the shell window IS the bounds.
-                let shell = ring_offsets[start] as usize..ring_offsets[start + 1] as usize;
+            Self::Rings(coords, ring_offsets, start, end) => {
                 let window = VertexWindow {
-                    start: shell.start,
-                    end: shell.end,
+                    start: ring_offsets[start] as usize,
+                    end: ring_offsets[end] as usize,
                 };
                 ShapeRow::Line(coords, window.start, window.end).quick_bounds()
             },

@@ -605,10 +605,16 @@ impl Polygon {
     }
 
     fn bounds(&self) -> Option<Bounds> {
-        // Holes lie inside the shell for valid polygons, so the shell envelope
-        // IS the polygon envelope (matches the packed bounds path and OGC
-        // envelope semantics) — no hole fold needed.
-        Bounds::from_coords(self.shell.coords())
+        self.rings()
+            .filter_map(|ring| Bounds::from_coords(ring.coords()))
+            .reduce(|left, right| {
+                Bounds::new_raw(
+                    left.minx().min(right.minx()),
+                    left.miny().min(right.miny()),
+                    left.maxx().max(right.maxx()),
+                    left.maxy().max(right.maxy()),
+                )
+            })
     }
 
     fn length(&self) -> f64 {

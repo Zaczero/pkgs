@@ -492,8 +492,8 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
                     ring_offsets,
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
-                    false,
-                    |window| window.and_then(|shell| row_bounds(xs, ys, shell)),
+                    true,
+                    |window| window.and_then(|vertices| row_bounds(xs, ys, vertices)),
                 ))
             },
             Self::Packed(PackedStorage::Lines {

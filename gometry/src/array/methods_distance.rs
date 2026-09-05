@@ -281,9 +281,11 @@ impl PyGeometryArray {
                         column_window(ys, &window),
                     ))
                 },
-                |_, xs, ys, ring_offsets, rings, shell, crossings| {
-                    let row_bounds = shell.map(|shell| {
-                        let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, shell);
+                |_, xs, ys, ring_offsets, rings, _, crossings| {
+                    let row_bounds = (!rings.is_empty()).then(|| {
+                        let vertices = ring_offsets[rings.start] as usize
+                            ..ring_offsets[rings.end] as usize;
+                        let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, vertices);
                         Bounds::new_raw(minx, miny, maxx, maxy)
                     });
                     packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
