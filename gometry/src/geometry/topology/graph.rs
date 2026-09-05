@@ -416,15 +416,24 @@ impl TopologyGraph {
         end: XY,
         source_row: u32,
     ) -> Option<bool> {
-        edge.sources.iter().find_map(|&source| {
+        let mut side = None;
+        for &source in &edge.sources {
             let source = self.source_edges[source as usize];
-            (source.source_row == source_row
+            if source.source_row == source_row
                 && matches!(
                     source.support,
                     SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
-                ))
-            .then(|| segment_direction_matches(Segment { start, end }, source.segment))
-        })
+                )
+            {
+                let direction = segment_direction_matches(Segment { start, end }, source.segment);
+                // Opposite traversals can be a zero-area spur, not a face boundary.
+                if side.is_some_and(|previous| previous != direction) {
+                    return None;
+                }
+                side = Some(direction);
+            }
+        }
+        side
     }
 
     pub(crate) fn has_interior_support_other_than(&self, point: XY) -> bool {

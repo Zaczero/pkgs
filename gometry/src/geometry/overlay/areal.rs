@@ -8,8 +8,8 @@
 )]
 use crate::geometry::overlay::{OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
-    Arrangement, Bounds, Polygon, RingWinding, Segment, SegmentIndex, Shape, XY,
-    assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
+    Arrangement, Bounds, CoordSeq, Point, Polygon, RingWinding, Segment, SegmentIndex, Shape,
+    XY, assemble_region_polygons, ray_crossing_is_right, ring_winding, same_point, wrap_index,
 };
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
@@ -51,6 +51,62 @@ impl ArealArrangement {
             }
         };
         assemble_region_polygons(self.arrangement.region_rings(&self.windings, interior))
+    }
+
+    /// The intersection of the two operands as the mixed-dimension parts a
+    /// graph overlay reports: the region where both windings are nonzero,
+    /// every boundary run both operands share that bounds no kept face (a
+    /// line), and every isolated meeting of the two boundaries (a point).
+    /// A vertex with a kept face around it, or on an emitted line, is
+    /// already represented.
+    pub(in crate::geometry) fn intersection_parts(&self) -> (Vec<Point>, Vec<CoordSeq>, Vec<Polygon>) {
+        let polygons = self.overlay_polygons(OverlayOp::Intersection);
+        let winding = |face: u32| self.windings[face as usize];
+        let kept = |face: u32| {
+            let [left, right] = winding(face);
+            left != 0 && right != 0
+        };
+        let arrangement = &self.arrangement;
+        let mut lines = Vec::new();
+        let mut on_line = vec![false; arrangement.points.len()];
+        arrangement.for_each_edge_piece(|_, from, to, left_face, right_face| {
+            if kept(left_face) || kept(right_face) {
+                return;
+            }
+            let (left, right) = (winding(left_face), winding(right_face));
+            let shared = (left[0] != 0) != (right[0] != 0) && (left[1] != 0) != (right[1] != 0);
+            if shared {
+                lines.push(CoordSeq::from_xy(&[
+                    arrangement.points[from as usize],
+                    arrangement.points[to as usize],
+                ]));
+                on_line[from as usize] = true;
+                on_line[to as usize] = true;
+            }
+        });
+        let mut points = Vec::new();
+        for vertex in 0..arrangement.points.len() {
+            if on_line[vertex] {
+                continue;
+            }
+            let slots = arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
+            let (mut any_kept, mut left_any, mut left_all, mut right_any, mut right_all) =
+                (false, false, true, false, true);
+            for slot in slots {
+                let face = arrangement.face_of[slot];
+                any_kept |= kept(face);
+                let [left, right] = winding(face);
+                left_any |= left != 0;
+                left_all &= left != 0;
+                right_any |= right != 0;
+                right_all &= right != 0;
+            }
+            if !any_kept && left_any && !left_all && right_any && !right_all {
+                let point = arrangement.points[vertex];
+                points.push(Point::new_raw_xy(point.x, point.y));
+            }
+        }
+        (points, lines, polygons)
     }
 }
 

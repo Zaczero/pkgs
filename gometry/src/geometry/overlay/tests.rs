@@ -356,6 +356,150 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    /// The areal arrangement lane reports every lower-dimensional contact the
+    /// joint graph does: shared boundary runs, isolated touches, a region plus
+    /// a separate touch, nested with a shared side, identical operands.
+    #[test]
+    fn areal_intersection_lane_matches_joint_graph_on_contacts() {
+        let cases = [
+            ("shared edge", square(0.0, 0.0, 2.0, 2.0), square(2.0, 0.0, 4.0, 2.0)),
+            ("corner touch", square(0.0, 0.0, 2.0, 2.0), square(2.0, 2.0, 4.0, 4.0)),
+            ("edge interior touch", square(0.0, 0.0, 2.0, 2.0), square(2.0, 1.0, 4.0, 3.0)),
+            (
+                "two separate shared boundary runs",
+                Shape::Polygon(polygon(&[
+                    (0.0, 0.0),
+                    (4.0, 0.0),
+                    (4.0, 1.0),
+                    (1.0, 1.0),
+                    (1.0, 3.0),
+                    (4.0, 3.0),
+                    (4.0, 4.0),
+                    (0.0, 4.0),
+                    (0.0, 0.0),
+                ])),
+                Shape::Polygon(polygon(&[
+                    (2.0, 1.0),
+                    (6.0, 1.0),
+                    (6.0, 3.0),
+                    (2.0, 3.0),
+                    (2.0, 1.0),
+                ])),
+            ),
+            ("nested sharing a side", square(0.0, 0.0, 4.0, 4.0), square(0.0, 1.0, 2.0, 3.0)),
+            ("identical", square(0.0, 0.0, 2.0, 2.0), square(0.0, 0.0, 2.0, 2.0)),
+            ("disjoint", square(0.0, 0.0, 2.0, 2.0), square(3.0, 3.0, 4.0, 4.0)),
+            (
+                "hole boundary touch",
+                Shape::Polygon(Polygon::new(
+                    polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+                    vec![polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]).shell],
+                )),
+                square(2.0, 2.0, 3.0, 3.0),
+            ),
+        ];
+        for (name, left, right) in cases {
+            let forward = assert_intersection_matches_joint_graph(name, &left, &right);
+            let reverse = assert_intersection_matches_joint_graph(name, &right, &left);
+            assert_eq!(wkb(&forward), wkb(&reverse), "{name}");
+        }
+    }
+
+    #[test]
+    fn areal_intersection_preserves_region_and_isolated_point() {
+        let left = Shape::geometry_collection(
+            vec![square(0.0, 0.0, 2.0, 2.0), square(4.0, 4.0, 6.0, 6.0)],
+        ).unwrap();
+        let right = square(1.0, 1.0, 4.0, 4.0);
+        let expected = Shape::geometry_collection(
+            vec![
+                square(1.0, 1.0, 2.0, 2.0),
+                Shape::Point(Point::new_raw_xy(4.0, 4.0)),
+            ],
+        ).unwrap();
+        for (left, right) in [(&left, &right), (&right, &left)] {
+            let result = assert_intersection_matches_joint_graph("region and isolated point", left, right);
+            assert!(result.equals(&expected), "{result:?} != {expected:?}");
+        }
+    }
+
+    #[test]
+    fn areal_intersection_matches_graph_on_degenerate_boundaries() {
+        let cases: &[(&str, &[(f64, f64)])] = &[
+            ("collapsed ring", &[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (0.0, 0.0)]),
+            ("repeated vertex", &[(0.0, 0.0), (2.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+            ("retraced exterior spur", &[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+        ];
+        for &(name, coordinates) in cases {
+            let left = Shape::Polygon(polygon(coordinates));
+            let right = square(3.0, -1.0, 5.0, 1.0);
+            for (left, right) in [(&left, &right), (&right, &left)] {
+                let result = assert_intersection_matches_joint_graph(name, left, right);
+                if name == "retraced exterior spur" {
+                    // Opposite traversals cancel under the areal nonzero rule.
+                    assert!(result.is_empty(), "{result:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn areal_intersection_matches_joint_graph_on_triangle_contacts() {
+        let left = square(0.0, 0.0, 2.0, 2.0);
+        let cases: &[(&str, &[(f64, f64)])] = &[
+            ("vertex on edge", &[(2.0, 1.0), (3.0, 0.0), (3.0, 2.0), (2.0, 1.0)]),
+            ("shared diagonal endpoints", &[(0.0, 0.0), (2.0, 2.0), (3.0, 0.0), (0.0, 0.0)]),
+            ("crossing edges", &[(-1.0, 1.0), (3.0, 1.0), (1.0, 3.0), (-1.0, 1.0)]),
+            ("shared edge reversed", &[(0.0, 0.0), (1.0, -2.0), (2.0, 0.0), (0.0, 0.0)]),
+        ];
+        for &(name, coordinates) in cases {
+            let right = Shape::Polygon(polygon(coordinates));
+            assert_intersection_matches_joint_graph(name, &left, &right);
+            assert_intersection_matches_joint_graph(name, &right, &left);
+        }
+    }
+
+    #[test]
+    fn areal_intersection_lane_preserves_zm_and_operand_order() {
+        let left = zm_square(0.0, 0.0, 2.0, 2.0, 10.0);
+        for right in [
+            zm_square(1.0, 1.0, 3.0, 3.0, 20.0),
+            zm_square(2.0, 0.0, 4.0, 2.0, 20.0),
+            zm_square(2.0, 2.0, 4.0, 4.0, 20.0),
+        ] {
+            for strictness in [Strictness::Strict, Strictness::Lenient] {
+                let fast = overlay_all(
+                    &[&left, &right],
+                    crate::geometry::TopologyDomain::Cartesian,
+                    OverlayOp::Intersection,
+                    strictness,
+                );
+                let reverse = overlay_all(
+                    &[&right, &left],
+                    crate::geometry::TopologyDomain::Cartesian,
+                    OverlayOp::Intersection,
+                    strictness,
+                );
+                let joint = super::super::nary::binary_intersection_joint_graph(&left, &right, strictness);
+                match (fast, reverse, joint) {
+                    (Ok(fast), Ok(reverse), Ok(joint)) => {
+                        assert_eq!(wkb(&fast), wkb(&joint), "{fast:?} != {joint:?}");
+                        assert_eq!(wkb(&fast), wkb(&reverse), "{fast:?} != {reverse:?}");
+                        assert_eq!(fast.has_z(), joint.has_z(), "{fast:?}");
+                        assert_eq!(fast.has_m(), joint.has_m(), "{fast:?}");
+                    },
+                    (Err(fast), Err(reverse), Err(joint)) => {
+                        assert_eq!(fast.to_string(), joint.to_string());
+                        assert_eq!(fast.to_string(), reverse.to_string());
+                    },
+                    (fast, reverse, joint) => {
+                        panic!("diverged: fast={fast:?} reverse={reverse:?} joint={joint:?}")
+                    },
+                }
+            }
+        }
+    }
+
     fn assert_intersection_matches_joint_graph(name: &str, left: &Shape, right: &Shape) -> Shape {
         let fast = overlay_all(
             &[left, right],
@@ -364,7 +508,7 @@ mod binary_areal_overlay_tests {
             Strictness::Strict,
         )
         .unwrap();
-        let exact = super::super::nary::binary_intersection_without_convex_shortcut(
+        let exact = super::super::nary::binary_intersection_joint_graph(
             left,
             right,
             Strictness::Strict,
@@ -835,7 +979,7 @@ mod binary_areal_overlay_tests {
             let left = Shape::Polygon(left);
             let right = Shape::Polygon(right);
             let expected = Shape::Polygon(expected);
-            let result = super::super::nary::binary_intersection_without_convex_shortcut(
+            let result = super::super::nary::binary_intersection_joint_graph(
                 &left,
                 &right,
                 Strictness::Strict,
@@ -847,7 +991,7 @@ mod binary_areal_overlay_tests {
 
         let square = square(0.0, 0.0, 4.0, 4.0);
         let partial_boundary = line(&[(1.0, 0.0), (3.0, 0.0)]);
-        let result = super::super::nary::binary_intersection_without_convex_shortcut(
+        let result = super::super::nary::binary_intersection_joint_graph(
             &square,
             &partial_boundary,
             Strictness::Strict,
@@ -869,7 +1013,7 @@ mod binary_areal_overlay_tests {
             OverlayOp::Intersection,
             strictness,
         );
-        let generic = super::super::nary::binary_intersection_without_convex_shortcut(
+        let generic = super::super::nary::binary_intersection_joint_graph(
             left, right, strictness,
         );
         match (fast, generic) {

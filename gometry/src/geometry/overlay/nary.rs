@@ -79,7 +79,7 @@ pub(super) fn overlay_all_without_bounds_certificates<S: Borrow<Shape>>(
 }
 
 #[cfg(test)]
-pub(super) fn binary_intersection_without_convex_shortcut(
+pub(super) fn binary_intersection_joint_graph(
     left: &Shape,
     right: &Shape,
     strictness: crate::geometry::Strictness,
@@ -87,7 +87,7 @@ pub(super) fn binary_intersection_without_convex_shortcut(
     let mut sources = [left.normalize()?, right.normalize()?];
     sources.sort_unstable_by(crate::geometry::compare_shapes);
     let refs: Vec<&Shape> = sources.iter().collect();
-    let shape = assemble_overlay(
+    let shape = assemble_joint_graph_overlay(
         &refs,
         TopologyDomain::Cartesian,
         OverlayOp::Intersection,
@@ -764,26 +764,38 @@ fn assemble_overlay(
     // native areal relate; the public binary overlay path never reached it and
     // paid the n-ary topology graph instead.
     //
-    // Not for intersection. Two areal operands that meet along a boundary
-    // intersect in a *line*, and an area-only answer would drop it — the rule
-    // `binary_areal_overlay`'s own clean lane encodes in its `op` guard, that
-    // `overlay_lines` encodes by admitting a non-line-source edge only for
-    // intersection, and that `convex_intersection_defers_contacts_and_
-    // concavity_to_joint_graph` exists to hold. The other three operations on
-    // two areal operands are areal.
+    // Intersection also needs the arrangement's boundary contacts: an
+    // area-only answer would drop touching lines and isolated points.
     if domain == TopologyDomain::Cartesian
-        && op != OverlayOp::Intersection
         && let [left, right] = inputs
         && let (Some(left_polygons), Some(right_polygons)) =
             (areal_only_polygons(left), areal_only_polygons(right))
         && !left_polygons.is_empty()
         && !right_polygons.is_empty()
     {
-        return build_overlay_shape(
-            Vec::new(),
-            &[],
-            &crate::geometry::binary_areal_overlay(&left_polygons, &right_polygons, op),
-        );
+        if op != OverlayOp::Intersection {
+            return build_overlay_shape(
+                Vec::new(),
+                &[],
+                &crate::geometry::binary_areal_overlay(&left_polygons, &right_polygons, op),
+            );
+        }
+        // Intersection of two areal operands is mixed-dimension: boundaries
+        // that touch yield lines and points. The same arrangement carries
+        // them (it is how the native areal relate reads its boundary rows),
+        // for rings the areal engines can reason about; a collapsed or
+        // zero-length ring keeps the graph path, which retains such
+        // degeneracies as boundary.
+        if left_polygons
+            .iter()
+            .chain(&right_polygons)
+            .all(|polygon| polygon.rings().all(relate::ring_is_sound))
+        {
+            let (points, lines, polygons) =
+                super::build_areal_arrangement(&left_polygons, &right_polygons)
+                    .intersection_parts();
+            return build_overlay_shape(points, &lines, &polygons);
+        }
     }
     if raw_polygon_loops_eligible {
         let loops = shape_polygon_loops(inputs);
@@ -795,6 +807,16 @@ fn assemble_overlay(
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
+    assemble_joint_graph_overlay(inputs, domain, op, raw_polygon_loops_eligible)
+}
+
+/// Mixed-dimensional overlay from joint noding and per-operand membership.
+fn assemble_joint_graph_overlay(
+    inputs: &[&Shape],
+    domain: TopologyDomain,
+    op: OverlayOp,
+    raw_polygon_loops_eligible: bool,
+) -> Result<Shape> {
     let graph = match domain {
         TopologyDomain::Cartesian => TopologyGraph::cartesian_many(inputs),
         TopologyDomain::Geographic(frame) => TopologyGraph::geographic_many(inputs, frame),
