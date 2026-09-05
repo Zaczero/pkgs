@@ -11,6 +11,8 @@
 //! the subnormal grid, at most one subnormal ulp off, and the expansion
 //! arithmetic takes [`two_product_exact`] instead. A test below pins both.
 
+pub(crate) mod product_sum;
+
 /// Error-free sum (Knuth two-sum): `head + tail == left + right` exactly
 /// whenever the rounded head is finite.  Callers that need a fallible lane
 /// check that head before using the pair; the shared transform itself keeps
