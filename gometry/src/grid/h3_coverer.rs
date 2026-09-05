@@ -9,7 +9,6 @@
 //! planar-tile implementation detail, never authority for an exact H3
 //! negative.
 
-
 use h3o::{CellIndex, LatLng, Resolution};
 
 use crate::geometry::Shape;
@@ -20,7 +19,7 @@ use crate::grid::affine_source::{
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
     ArcContact, Bound, CertifiedH3DescendantCap, DegreeWindowResult, H3ArcSet, H3CellPlan,
-    H3FanPlan, H3FanPointClass, H3PoleOwners, classify_h3_arc_contact, exact_h3_bbox_for_cell,
+    H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
     h3_bbox_positive_witnesses, h3_cell_plan,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
@@ -52,7 +51,6 @@ pub(crate) enum H3CoverError {
 pub(crate) struct H3CoverPlan {
     target: Resolution,
     cap: Option<CertifiedH3DescendantCap>,
-    poles: H3PoleOwners,
 }
 
 impl H3CoverPlan {
@@ -60,7 +58,6 @@ impl H3CoverPlan {
         Self {
             target,
             cap: CertifiedH3DescendantCap::for_target(target),
-            poles: H3PoleOwners::for_target(target),
         }
     }
 }
@@ -192,7 +189,7 @@ pub(crate) fn h3_cover(
     while let Some(cell) = stack.pop() {
         let depth = cell.resolution();
         let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
-            source.classify_rect(cap.descendant_windows(cell, plan.poles))
+            source.classify_rect(cap.descendant_windows(cell))
         });
         match relation {
             RectClass::Outside => {},
@@ -237,7 +234,7 @@ fn emit_within_leaf(
     max_cells: Option<usize>,
     covered: &mut Vec<H3CoveredCell>,
 ) -> Result<(), H3CoverError> {
-    let cell_plan = h3_cell_plan(cell, plan.poles);
+    let cell_plan = h3_cell_plan(cell, plan.target);
     match source.classify_rect(cell_plan.bbox()) {
         RectClass::Interior => return emit_leaf(cell, true, max_cells, covered),
         RectClass::Outside => return Ok(()),
@@ -266,7 +263,7 @@ fn emit_overlap_leaf(
     if source.is_unknown() {
         return emit_bbox_leaf(source, cell, max_cells, covered);
     }
-    let cell_plan = h3_cell_plan(cell, plan.poles);
+    let cell_plan = h3_cell_plan(cell, plan.target);
     if source.classify_rect(cell_plan.bbox()) == RectClass::Outside {
         return Ok(());
     }

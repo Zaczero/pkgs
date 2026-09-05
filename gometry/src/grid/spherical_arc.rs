@@ -698,13 +698,9 @@ impl CertifiedH3DescendantCap {
         (depth <= self.target).then(|| self.angular_radii[usize::from(depth)])
     }
 
-    pub(crate) fn descendant_windows(
-        &self,
-        cell: h3o::CellIndex,
-        poles: H3PoleOwners,
-    ) -> DegreeWindowResult {
+    pub(crate) fn descendant_windows(&self, cell: h3o::CellIndex) -> DegreeWindowResult {
         let Some(result) = (|| {
-            if poles.target != self.target || cell.resolution() > self.target {
+            if cell.resolution() > self.target {
                 return None;
             }
             let center = CertifiedCapCenter::for_target_cell(
@@ -1545,21 +1541,6 @@ pub(crate) struct H3ArcSet {
     len: u8,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct H3PoleOwners {
-    // The former north/south-owner widening was redundant: every one of the
-    // 16x2 exact pole-owner ancestor chains reaches this generic full-longitude
-    // fallback (pinned by `generic_cap_fallback_covers_every_bilateral_pole_owner_ancestor`).
-    // Keep only the target coherence token; a second pole path would be dead.
-    target: Resolution,
-}
-
-impl H3PoleOwners {
-    pub(crate) const fn for_target(target: Resolution) -> Self {
-        Self { target }
-    }
-}
-
 /// Outward point windows which may establish only a positive target-leaf
 /// witness.  This deliberately carries no fan: a missed witness falls
 /// through to the logical-bbox classifier rather than becoming a negative.
@@ -2258,11 +2239,11 @@ impl H3Fan {
 /// assumption.
 #[cfg(test)]
 pub(crate) fn h3_fan_plan(cell: h3o::CellIndex) -> H3FanPlan {
-    h3_cell_plan(cell, H3PoleOwners::for_target(cell.resolution())).fan
+    h3_cell_plan(cell, cell.resolution()).fan
 }
 
-pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, poles: H3PoleOwners) -> H3CellPlan {
-    let arcs = (poles.target == cell.resolution())
+pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, target: Resolution) -> H3CellPlan {
+    let arcs = (target == cell.resolution())
         .then(|| h3_ordered_arcs(cell))
         .flatten();
     let fan = arcs.as_ref().map_or(H3FanPlan::Uncertain, |arcs| {
@@ -4921,7 +4902,7 @@ mod tests {
                     let DegreeWindowResult::Windows(CertifiedDegreeWindows {
                         latitude,
                         longitude: CertifiedLongitudeDegrees::Full,
-                    }) = cap.descendant_windows(cell, H3PoleOwners::for_target(target))
+                    }) = cap.descendant_windows(cell)
                     else {
                         panic!("{target:?} {depth:?} must take the generic pole fallback");
                     };
@@ -5165,12 +5146,7 @@ mod tests {
         let target = Resolution::Two;
         let cap = CertifiedH3DescendantCap::for_target(target).unwrap();
         let windows = h3o::CellIndex::base_cells()
-            .filter(|&cell| {
-                matches!(
-                    cap.descendant_windows(cell, H3PoleOwners::for_target(target)),
-                    DegreeWindowResult::Windows(_)
-                )
-            })
+            .filter(|&cell| matches!(cap.descendant_windows(cell), DegreeWindowResult::Windows(_)))
             .count();
         assert_eq!(
             windows, 122,
@@ -5429,12 +5405,12 @@ mod tests {
                 ..
             })
         ));
-        let plan = h3_cell_plan(cell, H3PoleOwners::for_target(cell.resolution()));
+        let plan = h3_cell_plan(cell, cell.resolution());
         assert_eq!(plan.cell, cell);
         assert_eq!(plan.arcs.as_ref().map(H3ArcSet::len), Some(arcs.len()));
         assert!(matches!(plan.bbox, DegreeWindowResult::Windows(_)));
         assert!(matches!(plan.fan, H3FanPlan::Certified(_)));
-        let mismatched = h3_cell_plan(cell, H3PoleOwners::for_target(Resolution::Two));
+        let mismatched = h3_cell_plan(cell, Resolution::Two);
         assert!(mismatched.arcs.is_none());
         assert_eq!(mismatched.bbox, DegreeWindowResult::Boundary);
         assert!(matches!(mismatched.fan, H3FanPlan::Uncertain));

@@ -9,8 +9,8 @@ use crate::grid::h3_coverer::{
     classify_h3_overlap_parts, fan_retains_point, h3_cover, h3_cover_shape,
 };
 use crate::grid::spherical_arc::{
-    ArcContact, Bound, H3FanPlan, H3FanPointClass, H3PoleOwners, classify_h3_arc_contact,
-    exact_h3_bbox_for_cell, h3_cell_plan,
+    ArcContact, Bound, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
+    h3_cell_plan,
 };
 
 const CELL: u64 = 0x0827_54FF_FFFF_FFFF;
@@ -52,7 +52,7 @@ fn classify(shape: &Shape) -> H3LeafClass {
     let cell = CellIndex::try_from(CELL).unwrap();
     let source =
         GeographicCoverageSource::new(shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
-    let plan = h3_cell_plan(cell, H3PoleOwners::for_target(Resolution::Two));
+    let plan = h3_cell_plan(cell, Resolution::Two);
     classify_h3_overlap(&source, &plan)
 }
 
@@ -64,7 +64,7 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    let plan = h3_cell_plan(cell, H3PoleOwners::for_target(Resolution::Two));
+    let plan = h3_cell_plan(cell, Resolution::Two);
     let center = h3o::LatLng::from(cell);
     assert!(!source.is_unknown());
     assert_eq!(
@@ -169,7 +169,7 @@ fn wrapped_selection_image_does_not_turn_an_unrelated_leaf_into_contact() {
     let source =
         GeographicCoverageSource::new(&line, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let far = CellIndex::try_from(CELL).unwrap();
-    let plan = h3_cell_plan(far, H3PoleOwners::for_target(Resolution::Two));
+    let plan = h3_cell_plan(far, Resolution::Two);
     assert!(
         source
             .selection_pieces()
@@ -195,7 +195,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
         .unwrap()
         .to_cell(Resolution::Two);
     let inside_center = h3o::LatLng::from(inside);
-    let inside_plan = h3_cell_plan(inside, H3PoleOwners::for_target(Resolution::Two));
+    let inside_plan = h3_cell_plan(inside, Resolution::Two);
     assert_eq!(
         source.positive_selection_point_class(inside_center.lng(), inside_center.lat()),
         GridPointClass::Interior,
@@ -208,7 +208,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
 
     let far = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(Resolution::Two);
     let far_center = h3o::LatLng::from(far);
-    let far_plan = h3_cell_plan(far, H3PoleOwners::for_target(Resolution::Two));
+    let far_plan = h3_cell_plan(far, Resolution::Two);
     assert_eq!(
         source.positive_selection_point_class(far_center.lng(), far_center.lat()),
         GridPointClass::Exterior,
@@ -248,7 +248,7 @@ fn uncertified_fan_cannot_reach_an_empty_source_negative() {
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
-    let plan = h3_cell_plan(cell, H3PoleOwners::for_target(Resolution::Two));
+    let plan = h3_cell_plan(cell, Resolution::Two);
     assert_eq!(
         classify_h3_overlap_parts(&source, cell, plan.arcs().unwrap(), &H3FanPlan::Uncertain),
         H3LeafClass::Boundary,
@@ -261,7 +261,7 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
     let pole = h3o::LatLng::new(90.0, 0.0)
         .unwrap()
         .to_cell(Resolution::Two);
-    let plan = h3_cell_plan(pole, H3PoleOwners::for_target(Resolution::Two));
+    let plan = h3_cell_plan(pole, Resolution::Two);
     for longitude in [-180.0, 180.0] {
         let source = GeographicCoverageSource::new(
             &Shape::LineString(
@@ -405,11 +405,7 @@ fn periodic_polar_annulus_cap_never_prunes_an_intersecting_leaf() {
     .unwrap();
     let plan = H3CoverPlan::new(Resolution::Two);
     let cell = CellIndex::try_from(0x0820_007F_FFFF_FFFF_u64).unwrap();
-    let cap = plan
-        .cap
-        .as_ref()
-        .unwrap()
-        .descendant_windows(cell, plan.poles);
+    let cap = plan.cap.as_ref().unwrap().descendant_windows(cell);
     assert_ne!(
         source.classify_rect(cap),
         RectClass::Outside,
@@ -441,11 +437,7 @@ fn periodic_polar_winding_caps_retain_each_analytic_owner() {
             .unwrap()
             .to_cell(Resolution::Two);
         let plan = H3CoverPlan::new(Resolution::Two);
-        let cap = plan
-            .cap
-            .as_ref()
-            .unwrap()
-            .descendant_windows(owner, plan.poles);
+        let cap = plan.cap.as_ref().unwrap().descendant_windows(owner);
         assert_ne!(source.classify_rect(cap), RectClass::Outside);
         assert!(
             h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
@@ -727,7 +719,7 @@ fn global_unknown_veto_cannot_suppress_north_cap_bulk_certificates() {
         .unwrap()
         .to_cell(Resolution::Two);
     let relation = plan.cap.as_ref().map_or(RectClass::Boundary, |cap| {
-        source.classify_rect(cap.descendant_windows(bulk_parent, plan.poles))
+        source.classify_rect(cap.descendant_windows(bulk_parent))
     });
     assert_eq!(
         relation,
