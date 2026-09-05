@@ -144,7 +144,6 @@ impl GridKind {
     }
 
     pub(crate) fn cell_from_id(self, py: Python<'_>, id: u64) -> PyResult<Bound<'_, PyAny>> {
-        self.validate_id(id)?;
         match self {
             Self::H3Cell => {
                 let cell = PyH3Cell {
