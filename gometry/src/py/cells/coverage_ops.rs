@@ -11,7 +11,7 @@ use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
 use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
-use crate::grid::coverer;
+use crate::grid::coverer::{self, RectCoverRule};
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
@@ -235,53 +235,27 @@ where
     else {
         unreachable!("normalized coverage geometry has a geographic frame")
     };
-    let ids = match cell_rule {
-        CellRule::Overlap | CellRule::Bbox => crate::try_collect_results(
-            coverer::cover(
-                authority,
-                &cover_shape,
-                &authority_plan,
-                &authority_cache,
-                frame,
-                S::roots(),
-                depth,
-                max_cells,
-            )
-            .map_err(cover_error)?
-            .into_iter()
-            .map(|(cell, _)| Ok::<_, PyErr>(S::id(&cell))),
-        )?,
-        CellRule::Within => crate::try_collect_results(
-            coverer::cover_within(
-                authority,
-                &cover_shape,
-                &authority_plan,
-                &authority_cache,
-                frame,
-                S::roots(),
-                depth,
-                max_cells,
-            )
-            .map_err(cover_error)?
-            .into_iter()
-            .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
-        )?,
-        CellRule::Center => crate::try_collect_results(
-            coverer::cover_center(
-                authority,
-                &cover_shape,
-                &authority_plan,
-                &authority_cache,
-                frame,
-                S::roots(),
-                depth,
-                max_cells,
-            )
-            .map_err(cover_error)?
-            .into_iter()
-            .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
-        )?,
+    let rule = match cell_rule {
+        CellRule::Overlap | CellRule::Bbox => RectCoverRule::Overlap,
+        CellRule::Within => RectCoverRule::Within,
+        CellRule::Center => RectCoverRule::Center,
     };
+    let ids = crate::try_collect_results(
+        coverer::cover(
+            authority,
+            &cover_shape,
+            &authority_plan,
+            &authority_cache,
+            frame,
+            rule,
+            S::roots(),
+            depth,
+            max_cells,
+        )
+        .map_err(cover_error)?
+        .into_iter()
+        .map(|cell| Ok::<_, PyErr>(S::id(&cell))),
+    )?;
     Ok(SortedCells::from_sorted(ids).into_vec())
 }
 

@@ -82,6 +82,14 @@ pub(crate) enum RectClass {
     Boundary,
 }
 
+/// Rectangular-grid cell selection policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RectCoverRule {
+    Overlap,
+    Center,
+    Within,
+}
+
 /// Native rectangle-vs-geometry classifier shared by the rectangular grids
 /// and S2's lon/lat rectangle certificates.
 pub(crate) struct NativeRectClassifier {
@@ -431,8 +439,9 @@ const fn rect_probe(bounds: Bounds) -> Segment {
 /// the system's base cells), so each target-depth cell is classified exactly
 /// once and the outputs need ordering but never dedup.
 ///
-/// Returns a sorted `(cell, is_interior)` stream — ready for
-/// [`CoveragePartition::from_sorted_tagged`] without a second sort.
+/// Returns a sorted cell vector. `Overlap` retains interior and refined
+/// boundary cells, `Center` retains interior cells and boundary cells whose
+/// binary64 midpoint is covered, and `Within` retains only interior cells.
 ///
 /// The emitted cell count is bounded by `max_cells` (when `Some`), checked at
 /// every emission: a world-scale geometry at a fine `target_depth` fails with
@@ -444,10 +453,11 @@ pub(crate) fn cover<C: RectCell>(
     authority_plan: &PreparedPlan,
     authority_cache: &crate::geometry::FrameDependentCaches,
     frame: crate::geographic::GeographicFrame,
+    rule: RectCoverRule,
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
-) -> Result<Vec<(C, bool)>, CoverError> {
+) -> Result<Vec<C>, CoverError> {
     let classifier = GeographicCandidateClassifier::new(
         authority,
         working,
@@ -463,11 +473,15 @@ pub(crate) fn cover<C: RectCell>(
         .map(|cell| (cell, cell.bounds()))
         .collect();
     let mut interior: Vec<C> = Vec::new();
+    let mut emit = |cell| {
+        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
+        cells.push(cell);
+        Ok::<_, crate::grid::CoverBudgetExceeded>(())
+    };
     loop {
         while let Some(cell) = interior.pop() {
             if cell.depth() >= target_depth {
-                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                cells.push((cell, true));
+                emit(cell)?;
             } else {
                 interior.extend(cell.children());
             }
@@ -479,8 +493,7 @@ pub(crate) fn cover<C: RectCell>(
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push((cell, true));
+                    emit(cell)?;
                 } else {
                     interior.extend(cell.children());
                 }
@@ -490,18 +503,27 @@ pub(crate) fn cover<C: RectCell>(
                     RectClass::Outside => {},
                     RectClass::Interior => {
                         if cell.depth() >= target_depth {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push((cell, true));
+                            emit(cell)?;
                         } else {
                             interior.extend(cell.children());
                         }
                     },
                     RectClass::Boundary => {
                         if cell.depth() >= target_depth {
-                            // A boundary cell at the target depth intersects but is
-                            // not fully covered.
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push((cell, false));
+                            let visible = match rule {
+                                RectCoverRule::Overlap => true,
+                                RectCoverRule::Center => {
+                                    let center = Point::new_raw_xy(
+                                        f64::midpoint(bounds.minx(), bounds.maxx()),
+                                        f64::midpoint(bounds.miny(), bounds.maxy()),
+                                    );
+                                    classifier.covers_point(center)
+                                },
+                                RectCoverRule::Within => false,
+                            };
+                            if visible {
+                                emit(cell)?;
+                            }
                         } else {
                             // Expand in place onto `boundary` — avoid a side buffer
                             // that copies twice. Children derived from parent edges
@@ -510,163 +532,6 @@ pub(crate) fn cover<C: RectCell>(
                         }
                     },
                 }
-            },
-        }
-    }
-    cells.sort_unstable_by_key(|(cell, _)| *cell);
-    Ok(cells)
-}
-
-/// Cover `source` with target-depth cells whose **centers** are covered.
-///
-/// Descent:
-/// - `Outside` → prune
-/// - certified `Interior` → bulk-emit every target-depth descendant (center
-///   covered by the interior certificate, no probe)
-/// - `Boundary` → descend; at **target depth only**, emit iff the cell center
-///   is covered
-///
-/// `max_cells` counts only visible emitted center cells (not a superset overlap
-/// product). Returns a sorted unique cell vector.
-pub(crate) fn cover_center<C: RectCell>(
-    authority: &Shape,
-    working: &Shape,
-    authority_plan: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
-    roots: Vec<C>,
-    target_depth: u8,
-    max_cells: Option<usize>,
-) -> Result<Vec<C>, CoverError> {
-    let classifier = GeographicCandidateClassifier::new(
-        authority,
-        working,
-        authority_plan,
-        authority_cache,
-        frame,
-    )?;
-    let mut cells = Vec::new();
-    let mut boundary: Vec<(C, Bounds)> = roots
-        .into_iter()
-        .map(|cell| (cell, cell.bounds()))
-        .collect();
-    let mut interior: Vec<C> = Vec::new();
-    loop {
-        while let Some(cell) = interior.pop() {
-            if cell.depth() >= target_depth {
-                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                cells.push(cell);
-            } else {
-                interior.extend(cell.children());
-            }
-        }
-        let Some((cell, bounds)) = boundary.pop() else {
-            break;
-        };
-        match classifier.classify_bounds(bounds) {
-            RectClass::Outside => {},
-            RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push(cell);
-                } else {
-                    interior.extend(cell.children());
-                }
-            },
-            RectClass::Boundary => match classifier.refine_bounds(bounds) {
-                RectClass::Outside => {},
-                RectClass::Interior => {
-                    if cell.depth() >= target_depth {
-                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                        cells.push(cell);
-                    } else {
-                        interior.extend(cell.children());
-                    }
-                },
-                RectClass::Boundary => {
-                    if cell.depth() >= target_depth {
-                        let center = Point::new_raw_xy(
-                            f64::midpoint(bounds.minx(), bounds.maxx()),
-                            f64::midpoint(bounds.miny(), bounds.maxy()),
-                        );
-                        if classifier.covers_point(center) {
-                            ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                            cells.push(cell);
-                        }
-                    } else {
-                        cell.push_children_bounds(bounds, &mut boundary);
-                    }
-                },
-            },
-        }
-    }
-    cells.sort_unstable();
-    Ok(cells)
-}
-
-/// Cover `source` with target-depth cells fully contained by it.
-///
-/// Boundary descendants remain traversal state but are never retained or
-/// charged to `max_cells`; only visible interior cells consume the output
-/// budget.
-pub(crate) fn cover_within<C: RectCell>(
-    authority: &Shape,
-    working: &Shape,
-    authority_plan: &PreparedPlan,
-    authority_cache: &crate::geometry::FrameDependentCaches,
-    frame: crate::geographic::GeographicFrame,
-    roots: Vec<C>,
-    target_depth: u8,
-    max_cells: Option<usize>,
-) -> Result<Vec<C>, CoverError> {
-    let classifier = GeographicCandidateClassifier::new(
-        authority,
-        working,
-        authority_plan,
-        authority_cache,
-        frame,
-    )?;
-    let mut cells = Vec::new();
-    let mut boundary: Vec<(C, Bounds)> = roots
-        .into_iter()
-        .map(|cell| (cell, cell.bounds()))
-        .collect();
-    let mut interior: Vec<C> = Vec::new();
-    loop {
-        while let Some(cell) = interior.pop() {
-            if cell.depth() >= target_depth {
-                ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                cells.push(cell);
-            } else {
-                interior.extend(cell.children());
-            }
-        }
-        let Some((cell, bounds)) = boundary.pop() else {
-            break;
-        };
-        match classifier.classify_bounds(bounds) {
-            RectClass::Outside => {},
-            RectClass::Interior => {
-                if cell.depth() >= target_depth {
-                    ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                    cells.push(cell);
-                } else {
-                    interior.extend(cell.children());
-                }
-            },
-            RectClass::Boundary => match classifier.refine_bounds(bounds) {
-                RectClass::Interior => {
-                    if cell.depth() >= target_depth {
-                        ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-                        cells.push(cell);
-                    } else {
-                        interior.extend(cell.children());
-                    }
-                },
-                RectClass::Boundary if cell.depth() < target_depth => {
-                    cell.push_children_bounds(bounds, &mut boundary);
-                },
-                RectClass::Outside | RectClass::Boundary => {},
             },
         }
     }
@@ -690,7 +555,7 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
     roots: Vec<C>,
     target_depth: u8,
     max_cells: Option<usize>,
-) -> Result<Vec<(C, bool)>, CoverError> {
+) -> Result<Vec<C>, CoverError> {
     let classifier = NativeRectClassifier::new(source)?;
     let mut cells = Vec::new();
     let mut stack: Vec<(C, bool)> = roots.into_iter().map(|cell| (cell, false)).collect();
@@ -704,7 +569,7 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
-                    cells.push((cell, true));
+                    cells.push(cell);
                     ensure_cover_budget(cells.len(), max_cells)?;
                 } else {
                     stack.extend(cell.children().map(|child| (child, true)));
@@ -712,7 +577,7 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
             },
             RectClass::Boundary => {
                 if cell.depth() >= target_depth {
-                    cells.push((cell, false));
+                    cells.push(cell);
                     ensure_cover_budget(cells.len(), max_cells)?;
                 } else {
                     stack.extend(cell.children().map(|child| (child, false)));
@@ -720,7 +585,7 @@ pub(crate) fn cover_recompute_baseline<C: RectCell>(
             },
         }
     }
-    cells.sort_unstable_by_key(|(cell, _)| *cell);
+    cells.sort_unstable();
     Ok(cells)
 }
 
@@ -832,6 +697,7 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             geohash::roots(),
             1,
             None,
@@ -868,17 +734,14 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             vec![tile::root()],
             target,
             None,
         )
         .expect("cover");
         let old = cover_recompute_baseline(&band, vec![tile::root()], target, None).expect("base");
-        assert_eq!(
-            new.iter().map(|(c, i)| (*c, *i)).collect::<Vec<_>>(),
-            old.iter().map(|(c, i)| (*c, *i)).collect::<Vec<_>>(),
-            "bounds-carry must emit identical (cell, interior) sets"
-        );
+        assert_eq!(new, old, "bounds-carry must emit identical cells");
     }
 
     /// A near-world polygon covered at a fine depth expands past the shared
@@ -903,6 +766,7 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             geohash::roots(),
             10,
             Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
@@ -917,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn cover_center_emits_only_center_covered_cells() {
+    fn center_rule_emits_only_center_covered_cells() {
         use crate::geometry::Ring;
         // Unit square: center-rule at coarse precision should match
         // overlap-then-filter on the same classifier.
@@ -932,12 +796,13 @@ mod tests {
         let authority_plan = PreparedPlan::new(poly.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
-        let center = cover_center(
+        let center = cover(
             &poly,
             &poly,
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Center,
             geohash::roots(),
             depth,
             None,
@@ -949,6 +814,7 @@ mod tests {
             &authority_plan,
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             geohash::roots(),
             depth,
             None,
@@ -960,10 +826,7 @@ mod tests {
         );
         let filtered: Vec<_> = overlap
             .into_iter()
-            .filter_map(|(cell, interior)| {
-                if interior {
-                    return Some(cell);
-                }
+            .filter_map(|cell| {
                 let bounds = cell.bounds();
                 let c = Point::new_raw_xy(
                     f64::midpoint(bounds.minx(), bounds.maxx()),
@@ -1040,12 +903,13 @@ mod tests {
                 "cell {token}"
             );
         }
-        let cells = cover_within(
+        let cells = cover(
             &source,
             &source,
             &plan,
             &cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Within,
             geohash::roots(),
             1,
             None,
@@ -1157,6 +1021,7 @@ mod tests {
             &raw_plan,
             &raw_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             geohash::roots(),
             3,
             None,
@@ -1168,14 +1033,12 @@ mod tests {
             &chart_plan,
             &chart_cache,
             crate::geographic::GeographicFrame::crs84(),
+            RectCoverRule::Overlap,
             geohash::roots(),
             3,
             None,
         )
         .unwrap();
-        assert_eq!(
-            from_raw.iter().map(|(cell, _)| cell).collect::<Vec<_>>(),
-            from_chart.iter().map(|(cell, _)| cell).collect::<Vec<_>>()
-        );
+        assert_eq!(from_raw, from_chart);
     }
 }

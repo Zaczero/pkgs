@@ -76,6 +76,8 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
         keys = [cell.token if hasattr(cell, 'token') else cell.id for cell in cells]
         assert keys == sorted(set(keys))
         assert keys
+        at_limit = cover(polygon, cell_rule=rule, max_cells=len(keys), **depth)
+        assert [cell.token if hasattr(cell, 'token') else cell.id for cell in at_limit] == keys
         with pytest.raises(gm.GeometryError):
             cover(polygon, cell_rule=rule, max_cells=len(keys) - 1, **depth)
 
