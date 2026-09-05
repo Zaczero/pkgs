@@ -188,39 +188,66 @@ def test_packed_row_map_total_bounds_excludes_unselected_rows(kind: RowMapKind) 
     assert selected.total_bounds == oracle.total_bounds == expected
 
 
-def test_packed_polygon_total_bounds_ignores_an_external_hole() -> None:
-    """Packed bounds have the scalar shell-only contract for invalid holes."""
-    shell = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
-    external_hole = [(100.0, 100.0), (101.0, 100.0), (101.0, 101.0), (100.0, 101.0)]
-    polygon = gm.Polygon(shell, [external_hole], crs=3857)
-    values = gm.GeometryArray([polygon, gm.box(10.0, 10.0, 11.0, 11.0, crs=3857)])
-    expected = (0.0, 0.0, 11.0, 11.0)
-    assert polygon.bounds == (0.0, 0.0, 2.0, 2.0)
-    np.testing.assert_array_equal(
-        values.bounds,
-        np.array([[0.0, 0.0, 2.0, 2.0], [10.0, 10.0, 11.0, 11.0]]),
-    )
-    assert values.total_bounds == expected
-    assert values[[1, 0]].total_bounds == expected
+_EXTERNAL_HOLE_BOUNDS = (0.0, 0.0, 11.0, 11.0)
 
 
-def test_packed_polygon_bounds_keep_empty_and_missing_rows() -> None:
-    """Per-row bounds ignore holes without collapsing fixed-width sentinels."""
-    shell = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
-    external_hole = [(100.0, 100.0), (101.0, 100.0), (101.0, 101.0), (100.0, 101.0)]
-    values = gm.GeometryArray([
-        gm.Polygon(shell, [external_hole], crs=3857),
-        gm.Polygon([], crs=3857),
-        None,
-    ], crs=3857)
+def _external_hole_polygon() -> gm.Polygon:
+    shell = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]
+    external_hole = [
+        (10.0, 10.0),
+        (11.0, 10.0),
+        (11.0, 11.0),
+        (10.0, 11.0),
+        (10.0, 10.0),
+    ]
+    return gm.Polygon(shell, [external_hole], crs=3857)
+
+
+def _external_hole_array(*, degenerate_sibling: bool = False) -> gm.GeometryArray:
+    rows: list[gm.Polygon] = [_external_hole_polygon()]
+    if degenerate_sibling:
+        rows.append(gm.Polygon([(0.0, 0.0)] * 4, crs=3857))
+    return gm.GeometryArray(rows, crs=3857)
+
+
+def test_packed_polygon_scalar_bounds_include_external_hole() -> None:
+    assert _external_hole_polygon().bounds == _EXTERNAL_HOLE_BOUNDS
+
+
+def test_packed_polygon_per_row_bounds_include_external_hole() -> None:
     np.testing.assert_array_equal(
-        values.bounds,
-        np.array([
-            [0.0, 0.0, 2.0, 2.0],
-            [np.nan, np.nan, np.nan, np.nan],
-            [np.nan, np.nan, np.nan, np.nan],
-        ]),
+        _external_hole_array().bounds,
+        np.array([_EXTERNAL_HOLE_BOUNDS]),
     )
+
+
+def test_packed_polygon_cold_total_bounds_include_external_hole() -> None:
+    assert _external_hole_array().total_bounds == _EXTERNAL_HOLE_BOUNDS
+
+
+def test_packed_polygon_warm_total_bounds_include_external_hole() -> None:
+    values = _external_hole_array()
+    _ = values.bounds
+    assert values.total_bounds == _EXTERNAL_HOLE_BOUNDS
+
+
+def test_packed_polygon_duplicate_selection_total_bounds_include_external_hole() -> None:
+    values = _external_hole_array()
+    assert values[[0, 0]].total_bounds == _EXTERNAL_HOLE_BOUNDS
+
+
+def test_packed_polygon_envelope_fallback_bounds_include_external_hole() -> None:
+    values = _external_hole_array(degenerate_sibling=True)
+    assert values.envelope()[0].bounds == _EXTERNAL_HOLE_BOUNDS
+
+
+@pytest.mark.parametrize('curve', ['hilbert', 'morton'])
+def test_packed_polygon_default_curve_frame_includes_external_hole(curve: str) -> None:
+    values = _external_hole_array()
+    assert values.spatial_key(curve=curve).tolist() == values.spatial_key(
+        curve=curve,
+        bounds=_EXTERNAL_HOLE_BOUNDS,
+    ).tolist()
 
 
 @pytest.mark.parametrize('kind', ROW_MAP_KINDS, ids=lambda k: k.name)

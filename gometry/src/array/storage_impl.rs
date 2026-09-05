@@ -375,9 +375,6 @@ impl GeometryArrayStorage {
     /// -------
     /// tuple or None
     pub fn total_bounds(&self) -> Option<Bounds> {
-        // Points and lines use every stored ordinate. Polygon envelopes use
-        // only shells: external holes are invalid but still representable, and
-        // must not expand an array bound beyond the scalar polygon contract.
         if let Self::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
@@ -389,13 +386,13 @@ impl GeometryArrayStorage {
             let mut total: Option<Bounds> = None;
             for row in 0..polygon_offsets.len().saturating_sub(1) {
                 let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
-                let Some(shell_index) = (!rings.is_empty()).then_some(rings.start) else {
+                if rings.is_empty() {
                     continue;
-                };
-                let shell =
-                    ring_offsets[shell_index] as usize..ring_offsets[shell_index + 1] as usize;
-                let (minx, maxx) = crate::geometry::column_minmax(&coords.xs()[shell.clone()])?;
-                let (miny, maxy) = crate::geometry::column_minmax(&coords.ys()[shell])?;
+                }
+                let vertices =
+                    ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+                let (minx, maxx) = crate::geometry::column_minmax(&coords.xs()[vertices.clone()])?;
+                let (miny, maxy) = crate::geometry::column_minmax(&coords.ys()[vertices])?;
                 let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
                 match &mut total {
                     Some(current) => current.include_bounds(bounds),
@@ -448,9 +445,11 @@ PackedStorage::Lines { coords, row_map, .. }) => row_map.is_identity().then_some
                     ring_offsets,
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
-                    false,
+                    true,
                     |window| {
-                        window.map_or_else(Shape::empty_polygon, |shell| row_box(xs, ys, shell))
+                        window.map_or_else(Shape::empty_polygon, |vertices| {
+                            row_box(xs, ys, vertices)
+                        })
                     },
                 ))
             },

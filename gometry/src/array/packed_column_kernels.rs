@@ -1064,9 +1064,6 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
 
 pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {
     if let PackedColumns::Polygons(polygons) = columns {
-        // Polygon envelopes are defined by their shells. Invalid external
-        // holes remain representable for validation/repair, but must not make
-        // a packed array disagree with scalar Polygon::bounds().
         let XyColumns { xs, ys } = polygons.physical_xy();
         let ring_offsets = polygons.ring_offsets();
         let mut total: Option<Bounds> = None;
@@ -1075,12 +1072,12 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
                 continue;
             }
             let rings = polygons.polygon_rings(row);
-            let Some(shell_index) = (!rings.is_empty()).then_some(rings.start) else {
+            if rings.is_empty() {
                 continue;
-            };
-            let shell = ring_offsets[shell_index] as usize..ring_offsets[shell_index + 1] as usize;
-            let (minx, maxx) = crate::geometry::column_minmax(&xs[shell.clone()])?;
-            let (miny, maxy) = crate::geometry::column_minmax(&ys[shell])?;
+            }
+            let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+            let (minx, maxx) = crate::geometry::column_minmax(&xs[vertices.clone()])?;
+            let (miny, maxy) = crate::geometry::column_minmax(&ys[vertices])?;
             let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
             match &mut total {
                 Some(current) => current.include_bounds(bounds),
