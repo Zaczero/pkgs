@@ -2,6 +2,7 @@ use crate::geometry::topology::{
     Cut, Operand, OperandPool, Segment, XY, polygon_rings_contain_interior,
 };
 use crate::geometry::{Bounds, point_on_segment};
+use crate::geometry::segments::compare_along_segment;
 
 pub(in crate::geometry) fn sort_dedup_cuts(segment: Segment, cuts: &mut Vec<Cut>) {
     if cuts.is_empty() {
@@ -18,36 +19,6 @@ pub(in crate::geometry) fn sort_dedup_cuts(segment: Segment, cuts: &mut Vec<Cut>
         }
     }
     cuts.truncate(write);
-}
-
-pub(in crate::geometry) fn compare_along_segment(
-    segment: Segment,
-    left: XY,
-    right: XY,
-) -> std::cmp::Ordering {
-    let dx = segment.end.x - segment.start.x;
-    let dy = segment.end.y - segment.start.y;
-    let x_dominant = dx.abs() >= dy.abs() && dx != 0.0;
-    let primary = if x_dominant {
-        compare_axis(left.x, right.x, dx > 0.0)
-    } else {
-        compare_axis(left.y, right.y, dy >= 0.0)
-    };
-    primary.then_with(|| {
-        if x_dominant {
-            compare_axis(left.y, right.y, dy >= 0.0)
-        } else {
-            compare_axis(left.x, right.x, dx >= 0.0)
-        }
-    })
-}
-
-fn compare_axis(left: f64, right: f64, forward: bool) -> std::cmp::Ordering {
-    if forward {
-        left.total_cmp(&right)
-    } else {
-        right.total_cmp(&left)
-    }
 }
 
 pub(in crate::geometry) fn other_contains(pool: &OperandPool, operand: Operand, point: XY) -> bool {

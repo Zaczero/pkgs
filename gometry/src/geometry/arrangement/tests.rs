@@ -83,7 +83,7 @@ fn figure_eight_matches_general() {
 }
 
 #[test]
-fn pentagram_matches_general() {
+fn pentagram_multi_cut_fast_path_matches_general_noder() {
     // Five transversal crossings, winding 2 in the core — a closed
     // {5/2} star walked vertex order 0, 2, 4, 1, 3.
     let points: Vec<(f64, f64)> = [0, 2, 4, 1, 3]
@@ -94,7 +94,16 @@ fn pentagram_matches_general() {
             (angle.cos(), angle.sin())
         })
         .collect();
-    assert_parity(&points, true);
+    let segments = loop_segments(&points);
+    let (cuts, _) = single_loop_cuts(&segments).expect("pentagram is a positional loop");
+    assert!(
+        cuts.iter().filter(|cut| cut.ordinal == 0).count() >= 2,
+        "the first edge must exercise per-segment cut ordering",
+    );
+    let mut fast =
+        Arrangement::from_single_loop(&segments).expect("pentagram fast path must accept");
+    let mut slow = general(&segments);
+    assert_bit_parity(&mut fast, &mut slow);
 }
 
 #[test]

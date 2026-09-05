@@ -2617,26 +2617,34 @@ pub(crate) fn points_dwithin(left: impl Into<XY>, right: impl Into<XY>, limit: f
     }
 }
 
-/// Total order of distances from `origin` to two points — overflow-safe
-/// (squared space when finite, hypot otherwise). Used by noding cut sorts
-/// that must not reorder under squared overflow.
-pub(crate) fn distance_order_from_origin(origin: XY, left: XY, right: XY) -> std::cmp::Ordering {
-    let key = |point: XY| {
-        let dx = origin.x - point.x;
-        let dy = origin.y - point.y;
-        let squared = dx * dx + dy * dy;
-        if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0) {
-            (true, squared)
+/// Order cuts from `segment.start` to `segment.end` without measuring a
+/// distance. A nonconstant source coordinate is monotone along an exact
+/// straight segment, so X suffices unless it is constant. The other axis
+/// makes rounded off-support cuts deterministic and keeps equal point keys
+/// adjacent for deduplication.
+pub(crate) fn compare_along_segment(
+    segment: Segment,
+    left: XY,
+    right: XY,
+) -> std::cmp::Ordering {
+    let x_primary = segment.start.x != segment.end.x;
+    let compare_axis = |left: f64, right: f64, start: f64, end: f64| {
+        if left == right {
+            std::cmp::Ordering::Equal
+        } else if start <= end {
+            left.total_cmp(&right)
         } else {
-            (false, point_distance(origin, point))
+            right.total_cmp(&left)
         }
     };
-    let left_key = key(left);
-    let right_key = key(right);
-    match (left_key.0, right_key.0) {
-        (true, true) | (false, false) => left_key.1.total_cmp(&right_key.1),
-        (true, false) => left_key.1.sqrt().total_cmp(&right_key.1),
-        (false, true) => left_key.1.total_cmp(&right_key.1.sqrt()),
+    if x_primary {
+        compare_axis(left.x, right.x, segment.start.x, segment.end.x).then_with(|| {
+            compare_axis(left.y, right.y, segment.start.y, segment.end.y)
+        })
+    } else {
+        compare_axis(left.y, right.y, segment.start.y, segment.end.y).then_with(|| {
+            compare_axis(left.x, right.x, segment.start.x, segment.end.x)
+        })
     }
 }
 

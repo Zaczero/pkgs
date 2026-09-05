@@ -74,7 +74,7 @@ pub(crate) fn positional_loop_cuts(
     }
     // Replay split_by_events' ordering exactly: the same unstable sort on
     // the same event list yields the same within-ordinal permutation the
-    // general path's stable distance sort starts from.
+    // general path's stable directed-coordinate sort starts from.
     events.sort_unstable_by_key(|&(ordinal, _)| ordinal);
     let n_events = events.len();
     // Group the cut events by exact point: one transversal crossing is the
@@ -117,9 +117,8 @@ pub(crate) fn positional_loop_cuts(
     if !keys.iter().all(|&key| seen.insert(key)) {
         return None;
     }
-    // Cuts per ordinal, ordered exactly like split_segment_at: a STABLE
-    // sort by squared distance from the segment start (ordinal and group
-    // ride along as payload).
+    // Cuts per ordinal, ordered exactly like split_segment_at: a stable
+    // directed-coordinate sort (ordinal and group ride along as payload).
     let mut cuts: Vec<LoopCut> = std::iter::zip(&events, &group_of)
         .map(|(&(ordinal, point), &group)| LoopCut {
             ordinal,
@@ -134,10 +133,10 @@ pub(crate) fn positional_loop_cuts(
         while slice_end < n_events && events[slice_end].0 == ordinal {
             slice_end += 1;
         }
-        let origin = segments[ordinal as usize].start;
+        let segment = segments[ordinal as usize];
         let slice = &mut cuts[slice_start..slice_end];
         slice.sort_by(|left, right| {
-            crate::geometry::segments::distance_order_from_origin(origin, left.point, right.point)
+            crate::geometry::segments::compare_along_segment(segment, left.point, right.point)
         });
         // Same-coordinate neighbors are impossible here: `same_point` and
         // `PointKey` share one canonicalization, so topologically equal

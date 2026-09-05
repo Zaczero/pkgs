@@ -1,8 +1,93 @@
 use crate::geometry::segments::{
-    ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority, clip_segment_liang_barsky,
-    segment_nearest_points,
+    ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority,
+    clip_segment_liang_barsky, compare_along_segment, segment_nearest_points,
 };
 use crate::geometry::*;
+
+#[test]
+fn cuts_sort_by_directed_coordinate_at_float_extremes() {
+    let cases = [
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            },
+            XY::new(1.0, 0.0),
+            XY::new(3.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(0.0, 4.0),
+            },
+            XY::new(0.0, 1.0),
+            XY::new(0.0, 3.0),
+        ),
+        (
+            Segment {
+                start: XY::new(4.0, 0.0),
+                end: XY::new(0.0, 0.0),
+            },
+            XY::new(3.0, 0.0),
+            XY::new(1.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(-4.0, 0.0),
+                end: XY::new(0.0, 0.0),
+            },
+            XY::new(-3.0, 0.0),
+            XY::new(-1.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0 * f64::from_bits(1), 0.0),
+            },
+            XY::new(f64::from_bits(1), 0.0),
+            XY::new(3.0 * f64::from_bits(1), 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(-f64::MAX, 0.0),
+                end: XY::new(f64::MAX, 0.0),
+            },
+            XY::new(-f64::MAX / 2.0, 0.0),
+            XY::new(f64::MAX / 2.0, 0.0),
+        ),
+    ];
+    for (segment, first, second) in cases {
+        assert_eq!(
+            compare_along_segment(segment, first, second),
+            std::cmp::Ordering::Less
+        );
+    }
+}
+
+#[test]
+fn cut_order_canonicalizes_signed_zero_before_secondary_ties() {
+    let diagonal = Segment {
+        start: XY::new(-2.0, 0.0),
+        end: XY::new(2.0, 4.0),
+    };
+    assert_eq!(
+        compare_along_segment(diagonal, XY::new(0.0, 1.0), XY::new(-0.0, 3.0)),
+        std::cmp::Ordering::Less
+    );
+    assert_eq!(
+        compare_along_segment(diagonal, XY::new(-0.0, 2.0), XY::new(0.0, 2.0)),
+        std::cmp::Ordering::Equal
+    );
+
+    let descending = Segment {
+        start: XY::new(0.0, 4.0),
+        end: XY::new(4.0, 0.0),
+    };
+    assert_eq!(
+        compare_along_segment(descending, XY::new(2.0, 3.0), XY::new(2.0, 1.0)),
+        std::cmp::Ordering::Less
+    );
+}
 
 fn nearest_rect_edge(point: XY, rect: Bounds) -> usize {
     [

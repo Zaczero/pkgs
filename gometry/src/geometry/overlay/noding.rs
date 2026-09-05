@@ -480,8 +480,8 @@ pub(crate) fn split_segment_at(segment: Segment, cuts: &mut Vec<XY>, out: &mut V
         out.push(segment);
         return;
     }
-    cuts.sort_by_cached_key(|cut| {
-        crate::geometry::segments::point_distance_squared(segment.start, *cut).to_bits()
+    cuts.sort_by(|left, right| {
+        crate::geometry::segments::compare_along_segment(segment, *left, *right)
     });
     dedup_consecutive_xy(cuts);
     let mut previous = segment.start;

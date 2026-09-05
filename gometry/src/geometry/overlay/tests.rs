@@ -1,5 +1,43 @@
 use crate::geometry::overlay::*;
 use crate::geometry::*;
+
+#[test]
+fn sourced_noder_orders_extreme_horizontal_cuts_and_keeps_owner() {
+    for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
+        let source = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(4.0 * scale, 0.0),
+        };
+        let cutters = [3.0, 1.0, 2.0].map(|multiple| Segment {
+            start: XY::new(multiple * scale, -scale),
+            end: XY::new(multiple * scale, scale),
+        });
+        let (atomic, provenance) =
+            self_node_segments_sourced(std::iter::once(source).chain(cutters));
+        let source_atoms: Vec<_> = atomic
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| segment.start.y == 0.0 && segment.end.y == 0.0)
+            .collect();
+        assert_eq!(source_atoms.len(), 4);
+        assert_eq!(
+            source_atoms
+                .iter()
+                .map(|(_, segment)| (segment.start.x, segment.end.x))
+                .collect::<Vec<_>>(),
+            vec![
+                (0.0, scale),
+                (scale, 2.0 * scale),
+                (2.0 * scale, 3.0 * scale),
+                (3.0 * scale, 4.0 * scale),
+            ]
+        );
+        for (index, _) in source_atoms {
+            assert_eq!(provenance.owners(index), &[(0, false)]);
+        }
+    }
+}
+
 mod binary_areal_overlay_tests {
     use super::*;
 
@@ -2093,6 +2131,19 @@ mod binary_areal_overlay_tests {
         let inputs = nary.iter().collect::<Vec<_>>();
         for op in EVERY_OP {
             assert_line_overlay_matches_generic(&inputs, op);
+        }
+
+        for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
+            let cuts = [3.0, 1.0, 2.0].map(|multiple| {
+                line(&[(multiple * scale, -scale), (multiple * scale, scale)])
+            });
+            let source = line(&[(0.0, 0.0), (4.0 * scale, 0.0)]);
+            let inputs = std::iter::once(&source)
+                .chain(cuts.iter())
+                .collect::<Vec<_>>();
+            for op in EVERY_OP {
+                assert_line_overlay_matches_generic(&inputs, op);
+            }
         }
     }
 

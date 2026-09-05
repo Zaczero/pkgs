@@ -21,7 +21,7 @@ pub(super) use graph::{
     SourceSupport, TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace,
 };
 pub(super) use sections::{
-    compare_along_segment, operand_covers_boundary, other_contains, sort_dedup_cuts,
+    operand_covers_boundary, other_contains, sort_dedup_cuts,
 };
 use staging::oriented_open_ring;
 
@@ -604,6 +604,36 @@ mod tests {
                 "ring={ring:?} point={point:?}",
             );
         }
+    }
+
+    #[test]
+    fn cut_sort_canonicalizes_signed_zero_before_deduplication() {
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(4.0, 4.0),
+        };
+        let zero = XY::new(-0.0, 2.0);
+        let mut cuts = vec![
+            Cut {
+                point: zero,
+                key: PointKey::new(zero),
+                cross: false,
+            },
+            Cut {
+                point: XY::new(-0.0, 3.0),
+                key: PointKey::new(XY::new(-0.0, 3.0)),
+                cross: false,
+            },
+            Cut {
+                point: XY::new(0.0, 2.0),
+                key: PointKey::new(XY::new(0.0, 2.0)),
+                cross: true,
+            },
+        ];
+        sort_dedup_cuts(segment, &mut cuts);
+        assert_eq!(cuts.len(), 2);
+        assert_eq!(cuts[0].key, PointKey::new(zero));
+        assert!(cuts[0].cross);
     }
 
     fn edge_probes(ring: &[XY]) -> Vec<XY> {

@@ -18,7 +18,7 @@ use crate::geometry::{
     SegmentIndex, Shape, TopologyDomain, TopologyGraph, XY, carry_direct_points_ordinates,
     carry_direct_overlay_ordinates, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
     column_all_finite, ordered_edge,
-    point_distance_squared, point_on_segment, same_point, segment_midpoint, shell_is_convex,
+    point_on_segment, same_point, segment_midpoint, shell_is_convex,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -1153,7 +1153,13 @@ fn cut_lines_overlay(inputs: &[&Shape], pool: &[Segment], op: OverlayOp) -> Resu
             // Every cut is a vertex of the noded line, in the order the
             // segment meets them; the chain ends there only where two or more
             // kept segments meet, as the dissolve's degree rule has it.
-            cuts.sort_by_cached_key(|cut| point_distance_squared(start, *cut).to_bits());
+            cuts.sort_by(|left, right| {
+                crate::geometry::segments::compare_along_segment(
+                    Segment { start, end },
+                    *left,
+                    *right,
+                )
+            });
             for &cut in &cuts {
                 if points.last().is_some_and(|last| same_point(last.xy(), cut)) {
                     continue;
