@@ -30,7 +30,11 @@ The wheel carries the geometry engine and the CRS authority together: the
 bundled PROJ database, its datum pipelines, and the grid files shipped with the
 package, with no system PROJ shared library and no `PROJ_LIB` data directory.
 [`gm.crs_configure(search_paths=...)`][gometry.crs_configure] makes additional grids of your own visible;
-gometry does not download grids at runtime.
+gometry does not download grids at runtime. Configured directories are search
+locations, not an exclusive whitelist: when a named grid is absent there,
+PROJ may also try that grid's bare filename in the current working directory.
+Consequently, a matching cwd grid can change availability, the selected
+transformation, and whether a missing-grid `AccuracyWarning` is emitted.
 
 ## Optional extras
 

@@ -17711,9 +17711,18 @@ def crs_configure(
     Parameters
     ----------
     search_paths : str, path, or sequence of these, optional
-        Directories PROJ searches for its database and grids.
+        Directories PROJ searches for its database and grids. When a named grid
+        is absent from these directories, PROJ may also try the bare grid
+        filename in the current working directory.
     user_writable_directory : str or path, optional
         Directory PROJ includes in local grid lookup.
+
+    Notes
+    -----
+    The configured directories are not an exclusive grid-file whitelist. A
+    grid in the current working directory can therefore change grid
+    availability, the selected transformation, and whether ``AccuracyWarning``
+    is emitted after the configured directories miss.
 
     Returns
     -------
