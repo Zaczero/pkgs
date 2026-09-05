@@ -50,7 +50,7 @@ dense_id!(EdgeId);
 dense_id!(HalfEdgeId);
 dense_id!(GraphComponentId);
 dense_id!(OrbitId);
-dense_id!(FaceId);
+dense_id!(RegionId);
 dense_id!(EmbeddedVertexId);
 dense_id!(ClipSegmentId);
 
@@ -1637,11 +1637,11 @@ struct GlobalHalfEdge {
     edge: EdgeId,
     component: GraphComponentId,
     orbit: OrbitId,
-    face: FaceId,
+    face: RegionId,
     transition: Transition,
 }
 
-struct ExactFace {
+struct ExactRegion {
     outer: Option<OrbitId>,
     inner: Vec<OrbitId>,
     label: FaceLabel,
@@ -1654,12 +1654,12 @@ struct ExactSubdivision {
     half_edges: Vec<GlobalHalfEdge>,
     stars: Vec<HalfEdgeId>,
     orbits: Vec<LocalOrbit>,
-    faces: Vec<ExactFace>,
-    unbounded: FaceId,
+    faces: Vec<ExactRegion>,
+    unbounded: RegionId,
 }
 
 fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
-    if subdivision.unbounded != FaceId(0)
+    if subdivision.unbounded != RegionId(0)
         || subdivision.faces.first().is_none_or(|face| !face.unbounded)
         || subdivision.faces.iter().skip(1).any(|face| face.unbounded)
     {
@@ -1907,9 +1907,9 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
         .ok_or_else(|| voronoi_error("exact component containment forest is cyclic"))?;
     let mut order: Vec<_> = (0..component_count).collect();
     order.sort_by_key(|&component| (depth[component], component_min[component]));
-    let mut face_of_orbit: Vec<Option<FaceId>> = vec![None; local.orbits.len()];
+    let mut face_of_orbit: Vec<Option<RegionId>> = vec![None; local.orbits.len()];
     let mut label_of_orbit: Vec<Option<FaceLabel>> = vec![None; local.orbits.len()];
-    let mut faces = vec![ExactFace {
+    let mut faces = vec![ExactRegion {
         outer: None,
         inner: Vec::new(),
         label: FaceLabel {
@@ -1922,7 +1922,7 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
     for component in order {
         let exterior = local.exterior_orbit[component];
         let (exterior_face, exterior_label) = if component == local.frame_component.0 as usize {
-            (FaceId(0), faces[0].label)
+            (RegionId(0), faces[0].label)
         } else {
             let parent = parent_orbit[component].expect("child parent");
             let face = face_of_orbit[parent.0 as usize]
@@ -1933,11 +1933,11 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
         face_of_orbit[exterior.0 as usize] = Some(exterior_face);
         label_of_orbit[exterior.0 as usize] = Some(exterior_label);
         for &orbit in &positive[component] {
-            let face = FaceId(
+            let face = RegionId(
                 u32::try_from(faces.len()).map_err(|_| voronoi_error("too many exact faces"))?,
             );
             face_of_orbit[orbit.0 as usize] = Some(face);
-            faces.push(ExactFace {
+            faces.push(ExactRegion {
                 outer: Some(orbit),
                 inner: Vec::new(),
                 label: exterior_label,
@@ -2028,14 +2028,14 @@ fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<Ex
         stars: local.stars,
         orbits: local.orbits,
         faces,
-        unbounded: FaceId(0),
+        unbounded: RegionId(0),
     };
     validate_exact_subdivision(&subdivision)?;
     Ok(subdivision)
 }
 
 struct ExactSimpleRing {
-    face: FaceId,
+    face: RegionId,
     vertices: Box<[VertexId]>,
     edges: Box<[EdgeId]>,
     orientation: ExactSign,
@@ -2043,7 +2043,7 @@ struct ExactSimpleRing {
 
 struct ExactCellPart {
     owner: SiteId,
-    face: FaceId,
+    face: RegionId,
     shell: ExactSimpleRing,
     holes: Vec<ExactSimpleRing>,
 }
@@ -2074,7 +2074,7 @@ fn canonicalize_ring(vertices: &mut Vec<VertexId>, edges: &mut Vec<EdgeId>) {
 
 fn split_orbit(
     subdivision: &ExactSubdivision,
-    face: FaceId,
+    face: RegionId,
     orbit: OrbitId,
 ) -> Result<Vec<ExactSimpleRing>> {
     let walk = &subdivision.orbits[orbit.0 as usize].half_edges;
@@ -2168,7 +2168,7 @@ fn assemble_cells(
         if face.label.frame_winding != 1 || face.label.clip_winding != 1 {
             continue;
         }
-        let face_id = FaceId(face_index as u32);
+        let face_id = RegionId(face_index as u32);
         let mut rings = Vec::new();
         for orbit in face.outer.into_iter().chain(face.inner.iter().copied()) {
             rings.extend(split_orbit(subdivision, face_id, orbit)?);
@@ -3339,7 +3339,7 @@ pub(super) fn build_collinear_edges(
         half_edges: Vec::new(),
         stars: Vec::new(),
         orbits: Vec::new(),
-        faces: vec![ExactFace {
+        faces: vec![ExactRegion {
             outer: None,
             inner: Vec::new(),
             label: FaceLabel {
@@ -3349,7 +3349,7 @@ pub(super) fn build_collinear_edges(
             },
             unbounded: true,
         }],
-        unbounded: FaceId(0),
+        unbounded: RegionId(0),
     };
     let embedded = embed(
         &subdivision,
