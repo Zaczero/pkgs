@@ -22,9 +22,6 @@ impl RectCoverSpec for TileCoverSpec {
     fn id(cell: &Tile) -> u64 {
         cell.id()
     }
-    fn coverage_label() -> &'static str {
-        "tile"
-    }
 }
 pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult<PyCellArray> {
     rect_cell_array_for::<TileCoverSpec>(cells)
@@ -105,13 +102,19 @@ pub(super) fn tile_cover(
         GridKind::Tile,
         max_cells,
         |geometry, effective_max_cells| {
-            let (_, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
+            let (membership, cover_shape) = coverage_factory_shapes(geometry, "Tile")?;
             if let Err(lat) = ensure_cover_shape_in_tile_domain(&cover_shape) {
                 return Err(InvalidGeometryError::new_err(format!(
                     "latitude {lat} is outside the Web Mercator domain ±85.05112878 degrees"
                 )));
             }
-            build_rect_coverage_ids::<TileCoverSpec>(geometry, zoom, cell_rule, effective_max_cells)
+            build_rect_coverage_ids::<TileCoverSpec>(
+                &membership,
+                &cover_shape,
+                zoom,
+                cell_rule,
+                effective_max_cells,
+            )
         },
     )
 }

@@ -2,7 +2,8 @@
 
 use crate::grid::geohash::{self as kernel, Geohash};
 use crate::py::cells::coverage_ops::{
-    RectCoverSpec, build_rect_coverage_ids, parse_max_cells, rect_cell_array_for,
+    RectCoverSpec, build_rect_coverage_ids, coverage_factory_shapes, parse_max_cells,
+    rect_cell_array_for,
 };
 use crate::py::cells::geohash::cell::parse_geohash_precision;
 use crate::py::cells::{
@@ -19,9 +20,6 @@ impl RectCoverSpec for GeohashCoverSpec {
     }
     fn id(cell: &Geohash) -> u64 {
         cell.identity_key()
-    }
-    fn coverage_label() -> &'static str {
-        "geohash"
     }
 }
 pub(super) fn geohash_cell_array(
@@ -101,8 +99,10 @@ pub(super) fn geohash_cover(
         GridKind::GeohashCell,
         max_cells,
         |geometry, effective_max_cells| {
+            let (membership, cover_shape) = coverage_factory_shapes(geometry, "geohash")?;
             build_rect_coverage_ids::<GeohashCoverSpec>(
-                geometry,
+                &membership,
+                &cover_shape,
                 precision,
                 cell_rule,
                 effective_max_cells,

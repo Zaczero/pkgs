@@ -214,12 +214,13 @@ pub(crate) trait RectCoverSpec {
 
     fn roots() -> Vec<Self::Cell>;
     fn id(cell: &Self::Cell) -> u64;
-    fn coverage_label() -> &'static str;
 }
 
-/// Build the public rectangular-grid result directly as canonical cell ids.
+/// Build canonical cell ids from an admitted membership source and its working
+/// shape. Callers own source admission so tile-specific gates run before this.
 pub(crate) fn build_rect_coverage_ids<S>(
-    geometry: &PyGeometry,
+    membership: &PyGeometry,
+    cover_shape: &Shape,
     depth: u8,
     cell_rule: CellRule,
     max_cells: Option<usize>,
@@ -227,7 +228,6 @@ pub(crate) fn build_rect_coverage_ids<S>(
 where
     S: RectCoverSpec,
 {
-    let (membership, cover_shape) = coverage_factory_shapes(geometry, S::coverage_label())?;
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient();
     let authority_cache = membership.frame_cache();
@@ -243,7 +243,7 @@ where
     let ids = crate::try_collect_results(
         coverer::cover(
             authority,
-            &cover_shape,
+            cover_shape,
             &authority_plan,
             &authority_cache,
             frame,
