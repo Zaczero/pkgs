@@ -2559,9 +2559,7 @@ impl LiftedChain {
     fn closure_degree(&self) -> Option<i64> {
         let first = *self.vertices.first()?;
         let last = *self.vertices.last()?;
-        if !same_physical_latitude(first.latitude, last.latitude)
-            || !same_physical_longitude(first.longitude.raw, last.longitude.raw)
-        {
+        if !same_physical_latitude(first.latitude, last.latitude) {
             return None;
         }
         let total = last.longitude.difference(first.longitude)?;
@@ -3617,14 +3615,6 @@ fn exact_floor_level(value: &ExactExpansion, base: i64, stride: i64) -> Option<i
 
 const fn same_physical_latitude(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits()
-}
-
-fn same_physical_longitude(left: f64, right: f64) -> bool {
-    left.to_bits() == right.to_bits()
-        || (left.to_bits() == (-HALF_TURN_DEGREES).to_bits()
-            && right.to_bits() == HALF_TURN_DEGREES.to_bits())
-        || (left.to_bits() == HALF_TURN_DEGREES.to_bits()
-            && right.to_bits() == (-HALF_TURN_DEGREES).to_bits())
 }
 
 fn can_coalesce(previous: LiftedVertex, current: LiftedVertex, next: LiftedVertex) -> Option<bool> {

@@ -483,6 +483,23 @@ fn full_and_half_world_edges_preserve_the_written_direction() {
 }
 
 #[test]
+fn closure_degree_accepts_both_antimeridian_alias_directions() {
+    let positive = LiftedChain::from_points(
+        &[(-180.0, 0.0), (-90.0, 10.0), (0.0, 0.0), (180.0, 0.0)],
+        true,
+    )
+    .unwrap();
+    assert_eq!(positive.degree, Some(1));
+
+    let negative = LiftedChain::from_points(
+        &[(180.0, 0.0), (90.0, 10.0), (0.0, 0.0), (-180.0, 0.0)],
+        true,
+    )
+    .unwrap();
+    assert_eq!(negative.degree, Some(-1));
+}
+
+#[test]
 fn full_edge_splits_symbolically_before_selection_wrap() {
     let edge = symbolic_edge(&[(-180.0, 0.0), (180.0, 0.0)], LiftKind::FullPositive);
     assert!(edge.parameters.iter().any(|parameter| {
