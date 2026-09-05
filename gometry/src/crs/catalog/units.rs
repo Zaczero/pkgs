@@ -8,7 +8,6 @@ use crate::crs::{
     with_proj_context_at,
 };
 use crate::error::Result;
-use crate::text::str_contains_ignore_ascii_case;
 
 pub(crate) fn utm_zones(options: &UtmCatalogOptions) -> Result<Vec<CrsCatalogInfo>> {
     let state = crate::crs::runtime_state_snapshot()?;
@@ -51,10 +50,10 @@ fn is_utm_crs_info(info: &CrsCatalogInfo, datum_name: Option<&str>) -> bool {
     let Some(name) = &info.name else {
         return false;
     };
-    if !name.contains(" / UTM zone ") {
+    let Some((prefix, _)) = name.split_once(" / UTM zone ") else {
         return false;
-    }
-    datum_name.is_none_or(|datum_name| str_contains_ignore_ascii_case(name, datum_name))
+    };
+    datum_name.is_none_or(|datum_name| prefix.eq_ignore_ascii_case(datum_name))
 }
 
 pub(crate) fn unit_info(authority: &str, code: &str) -> Result<UnitInfo> {

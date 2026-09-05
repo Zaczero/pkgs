@@ -17953,7 +17953,13 @@ def crs_utm_zones(
     Parameters
     ----------
     datum_name : str, optional
-        Restrict to this datum.
+        Restrict to projected CRSs whose displayed name starts with this datum
+        prefix followed by ``" / UTM zone "``. Matching is ASCII
+        case-insensitive, but spaces and punctuation are significant. For
+        example, use ``"WGS 84"``, ``"NAD83(CSRS)"``, or
+        ``"ETRS89/DREF91/2016"``. Only CRSs named ``"UTM zone"`` are
+        included; arbitrary substrings and long datum descriptions do not
+        match.
     area_of_interest : sequence of float, dict, or object, optional
         Filter area as ``(west, south, east, north)`` in DEGREES, an area
         mapping, or an AreaOfInterest-like object.

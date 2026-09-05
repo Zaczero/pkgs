@@ -796,6 +796,41 @@ def test_crs_namespace_exposes_proj_authority_metadata() -> None:
     _assert_crs_namespace_operations_geodesic_and_transforms()
 
 
+def test_utm_catalog_matches_the_named_datum_prefix() -> None:
+    def names(datum_name: str) -> list[str]:
+        return [item['name'] for item in gm.crs_utm_zones(datum_name=datum_name)]
+
+    nad83 = names('NAD83')
+    assert 'NAD83 / UTM zone 18N' in nad83
+    assert all(name.startswith('NAD83 / UTM zone ') for name in nad83)
+    assert not any(
+        'HARN' in name or 'CSRS' in name or '2011' in name for name in nad83
+    )
+
+    csrs = names('NAD83(CSRS)')
+    assert 'NAD83(CSRS) / UTM zone 18N' in csrs
+    assert all(name.startswith('NAD83(CSRS) / UTM zone ') for name in csrs)
+    assert not any(name.startswith('NAD83(CSRS)v2 /') for name in csrs)
+    assert names('nad83(csrs)') == csrs
+
+    etrs89 = names('ETRS89')
+    assert 'ETRS89 / UTM zone 32N' in etrs89
+    assert all(name.startswith('ETRS89 / UTM zone ') for name in etrs89)
+    assert not any(
+        'DREF91' in name or name.startswith('SRB_ETRS89 /') for name in etrs89
+    )
+
+    dref = names('ETRS89/DREF91/2016')
+    assert 'ETRS89/DREF91/2016 / UTM zone 32N' in dref
+    assert all(name.startswith('ETRS89/DREF91/2016 / UTM zone ') for name in dref)
+
+    assert gm.crs_utm_zones(datum_name='WGS84') == []
+    warsaw = gm.crs_utm_zones(
+        datum_name='wgs 84', area_of_interest=(20.0, 51.0, 22.0, 53.0)
+    )
+    assert [item['crs'] for item in warsaw] == ['EPSG:32634']
+
+
 def test_crs_units_and_celestial_bodies_cache_identity() -> None:
     """Catalog list reads are process/thread-cached; clear resets, warm is identical."""
     gm.crs_clear_cache()
