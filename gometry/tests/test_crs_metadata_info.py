@@ -1004,51 +1004,44 @@ def test_crs_operations_dict_cache_isolation() -> None:
 
 def _bundled_proj_db_src():
     """Locate the generated proj.db matching the bundled runtime."""
-    import json
     import os
     import sqlite3
-    import subprocess
     from pathlib import Path
 
-    configured = os.environ.get('CARGO_TARGET_DIR')
-    if configured is None:
-        metadata = subprocess.run(
-            ['cargo', 'metadata', '--format-version=1', '--no-deps'],
-            cwd=Path(__file__).resolve().parents[1],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        configured = json.loads(metadata.stdout)['target_directory']
-    target_dir = Path(configured).resolve()
     engine = gm.crs_engine()
     expected = engine['database_metadata']
-    runtime_paths = {
+    search_path = engine['search_path']
+    if not isinstance(search_path, str) or not search_path:
+        pytest.fail(
+            f'bundled PROJ did not expose a non-empty search path: {search_path!r}'
+        )
+    candidates = [
         Path(path).resolve() / 'proj.db'
-        for path in engine['search_path'].split(os.pathsep)
-    }
-    candidates = [path for path in runtime_paths if path.is_file()]
-    candidates.extend(
-        path
-        for path in target_dir.glob('**/proj-sys-*/out/**/proj.db')
-        if path.resolve() not in runtime_paths
-    )
+        for path in search_path.split(os.pathsep)
+        if path
+    ]
     identity_keys = (
         'PROJ.VERSION',
         'DATABASE.LAYOUT.VERSION.MAJOR',
         'DATABASE.LAYOUT.VERSION.MINOR',
     )
     for candidate in candidates:
-        con = sqlite3.connect(candidate)
+        if not candidate.is_file():
+            continue
         try:
-            metadata = dict(con.execute('SELECT key, value FROM metadata'))
-        finally:
-            con.close()
+            con = sqlite3.connect(candidate.as_uri() + '?mode=ro', uri=True)
+            try:
+                metadata = dict(con.execute('SELECT key, value FROM metadata'))
+            finally:
+                con.close()
+        except sqlite3.Error:
+            continue
         if all(metadata.get(key) == expected[key] for key in identity_keys):
             return candidate
     pytest.fail(
-        f'no generated proj-sys proj.db under {target_dir} matches bundled '
-        f'PROJ {engine["version"]} metadata; build gometry before this test'
+        f'no generated proj-sys proj.db in runtime search path {search_path!r} '
+        f'matches bundled PROJ {engine["version"]} metadata; '
+        'build gometry before this test'
     )
 
 
