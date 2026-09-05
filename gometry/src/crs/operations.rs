@@ -63,18 +63,20 @@ pub(crate) fn roundtrip_errors(
             options.clone(),
             std::sync::Arc::clone(&state),
         )?;
-        let reverse = TransformPlan::new_with_options_at(
-            &target,
-            &source,
-            TransformOptions::default(),
-            std::sync::Arc::clone(&state),
-        )?;
-        if forward.is_in_core() && reverse.is_in_core() {
-            return roundtrip_errors_with_transformers(
-                &forward, &reverse, direction, iterations, x, y, zt,
-            )
-            .map(|errors| (errors, forward.execution()))
-            .map_err(|error| CrsError::transform(source, target, error.to_string()));
+        if forward.is_in_core() {
+            let reverse = TransformPlan::new_with_options_at(
+                &target,
+                &source,
+                TransformOptions::default(),
+                std::sync::Arc::clone(&state),
+            )?;
+            if reverse.is_in_core() {
+                return roundtrip_errors_with_transformers(
+                    &forward, &reverse, direction, iterations, x, y, zt,
+                )
+                .map(|errors| (errors, forward.execution()))
+                .map_err(|error| CrsError::transform(source, target, error.to_string()));
+            }
         }
     }
     let execution = TransformExecution::default();
