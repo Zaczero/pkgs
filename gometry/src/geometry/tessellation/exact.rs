@@ -1430,9 +1430,10 @@ pub(super) fn point_in_cycle(open_cycle: &[ExactPoint], point: &ExactPoint) -> P
     }
 }
 
-/// V11: the same filter for "which stored site is nearer this exact point".
-/// Comparing the two affine squared distances is equivalent to the exact
-/// homogeneous form (both are scaled by the same positive `w²`).
+/// Filter for "which stored site is nearer this exact point".
+/// The exact fallback evaluates the stored sites' perpendicular bisector at
+/// the homogeneous point; its signed line product accounts for the sign of
+/// the point weight.
 fn squared_distance_cmp_point_filtered(
     origin: &ExactPoint,
     left: XY,
@@ -1472,16 +1473,12 @@ pub(super) fn squared_distance_cmp_point(origin: &ExactPoint, left: XY, right: X
 }
 
 fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) -> Ordering {
-    let squared = |point: XY| {
-        let x = ExactDyadic::from_f64(point.x)
-            .product(origin.w())
-            .subtract(origin.x().clone());
-        let y = ExactDyadic::from_f64(point.y)
-            .product(origin.w())
-            .subtract(origin.y().clone());
-        x.square().add(y.square())
-    };
-    squared(left).cmp(&squared(right))
+    debug_assert!(origin.is_finite());
+    match signed_line_product(&ExactLine::perpendicular_bisector(left, right), origin) {
+        ExactSign::Negative => Ordering::Less,
+        ExactSign::Zero => Ordering::Equal,
+        ExactSign::Positive => Ordering::Greater,
+    }
 }
 
 /// V3: a private frame whose four corners are stored binary64 (`w == 1`).
@@ -2658,6 +2655,65 @@ mod tests {
                 &ExactDyadic::one(),
                 &ExactDyadic::from_f64(2.0),
             ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn squared_distance_cmp_point_exact_returns_tie_on_site_bisector() {
+        let origin = ExactPoint::from_xy(XY::new(1.0, 3.0));
+        assert_eq!(
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn squared_distance_cmp_point_exact_accounts_for_negative_projective_weight() {
+        let origin = ExactPoint::homogeneous(
+            ExactDyadic::from_f64(-1.0),
+            ExactDyadic::from_f64(-1.0),
+            ExactDyadic::from_f64(-1.0),
+        );
+        assert_eq!(
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(3.0, 0.0)),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn squared_distance_cmp_point_exact_orders_full_binary64_site_spread() {
+        let origin = ExactPoint::from_xy(XY::new(1.0, 0.0));
+        assert_eq!(
+            squared_distance_cmp_point_exact(
+                &origin,
+                XY::new(f64::MAX, 0.0),
+                XY::new(f64::from_bits(1), 0.0),
+            ),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn squared_distance_cmp_point_exact_orders_subnormal_site() {
+        let origin = ExactPoint::from_xy(XY::new(0.0, 0.0));
+        assert_eq!(
+            squared_distance_cmp_point_exact(
+                &origin,
+                XY::new(f64::from_bits(1), 0.0),
+                XY::new(0.0, 0.0),
+            ),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn squared_distance_cmp_point_exact_orders_midpoint_origin() {
+        let first = ExactPoint::from_xy(XY::new(-4.0, 2.0));
+        let second = ExactPoint::from_xy(XY::new(6.0, 4.0));
+        let origin = first.midpoint(&second);
+        assert_eq!(
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
             Ordering::Less
         );
     }
