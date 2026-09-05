@@ -54,6 +54,8 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     pub spans: Vec<ExactSpan>,
     pub provenance: SegmentProvenance,
     pub isolated: Vec<NodeId>,
+    /// Node ownership in explicit input-point occurrence order, including duplicates.
+    pub point_nodes: Vec<NodeId>,
 }
 
 impl<'a> ExactPartition<'a> {
@@ -242,14 +244,17 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     pool.extend_from_slice(unique);
     let mut extra_handles = Vec::new();
     try_reserve_vec(&mut extra_handles, isolated.len())?;
+    let mut point_handles = Vec::new();
+    try_reserve_vec(&mut point_handles, isolated.len())?;
     for &point in isolated {
         let key = PointKey::new(point);
         let existed = endpoint_of.contains_key(&key);
-        intern_stored(point, &mut endpoint_of, &mut forest)?;
+        let handle = intern_stored(point, &mut endpoint_of, &mut forest)?;
+        point_handles.push(handle);
         if existed {
             continue;
         }
-        extra_handles.push(endpoint_of[&key]);
+        extra_handles.push(handle);
         pool.push(Segment {
             start: point,
             end: point,
@@ -383,12 +388,22 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
     }
 
+    let mut point_nodes = Vec::new();
+    try_reserve_vec(&mut point_nodes, point_handles.len())?;
+    for handle in point_handles {
+        let node = compact_of[handle as usize].ok_or_else(|| {
+            GeometryErrorKind::Invalid("point source handle was not compacted".into())
+        })?;
+        point_nodes.push(NodeId(node));
+    }
+
     Ok(ExactPartition {
         unique,
         recipes,
         spans,
         provenance: atom_provenance,
         isolated: isolated_nodes,
+        point_nodes,
     })
 }
 
@@ -1269,6 +1284,55 @@ mod tests {
             stored_node(&partition, XY::new(1.0, 1.0)),
             Some(partition.isolated[0])
         );
+    }
+
+    #[test]
+    fn explicit_point_occurrences_retain_incident_and_isolated_ownership() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(2.0, 0.0, 2.0, 0.0),
+            seg(0.0, 0.0, 0.0, 0.0),
+            seg(2.0, 0.0, 2.0, 0.0),
+            seg(7.0, 3.0, 7.0, 3.0),
+        ]);
+        let partition = case.partition();
+        let middle = stored_node(&partition, XY::new(2.0, 0.0)).unwrap();
+        let endpoint = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
+        let isolated = stored_node(&partition, XY::new(7.0, 3.0)).unwrap();
+        assert_eq!(partition.point_nodes, [middle, endpoint, middle, isolated]);
+        assert_eq!(partition.isolated, [isolated]);
+        assert_eq!(partition.spans.len(), 2);
+    }
+
+    #[test]
+    fn constructed_crossing_splits_every_overlapping_source_in_both_orders() {
+        let mut sources = [
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(1.0, 0.0, 3.0, 0.0),
+            seg(0.0, -1.0, 4.0, 2.0),
+            seg(4.0, 0.0, 0.0, 0.0),
+            seg(10.0, 10.0, 11.0, 11.0),
+            seg(11.0, 11.0, 12.0, 12.0),
+            seg(20.0, 10.0, 21.0, 11.0),
+        ];
+        for reverse in [false, true] {
+            if reverse {
+                sources.reverse();
+            }
+            let case = run(&sources);
+            let partition = case.partition();
+            let constructed: Vec<_> = partition.recipes.iter().enumerate()
+                .filter(|(_, recipe)| matches!(recipe, NodeRecipe::Constructed { .. }))
+                .map(|(index, _)| NodeId(index as u32)).collect();
+            assert_eq!(constructed.len(), 1);
+            let crossing = constructed[0];
+            let mut owner_counts: Vec<_> = partition.spans.iter().enumerate()
+                .filter(|(_, span)| span.start == crossing || span.end == crossing)
+                .map(|(index, _)| partition.owners(index).len()).collect();
+            owner_counts.sort_unstable();
+            assert_eq!(owner_counts, [1, 1, 3, 3]);
+            assert_eq!(partition.spans.len(), 9);
+        }
     }
 
     #[test]
