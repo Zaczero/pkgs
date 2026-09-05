@@ -375,16 +375,26 @@ fn arrangement_regions(faces: &[Vec<XY>]) -> Vec<Polygon> {
         let mut best: Option<usize> = None;
         for candidate in boxes_at_point(&tree, probe.x, probe.y) {
             if candidate == face
-                || areas[candidate] <= areas[face]
+                || crate::geometry::cmp_area_keys_then_closed(
+                    areas[candidate],
+                    areas[face],
+                    &faces[candidate][..],
+                    &faces[face][..],
+                ) != std::cmp::Ordering::Greater
                 || !ring_contains_interior(&faces[candidate], probe)
             {
                 continue;
             }
             // Smallest container wins; on an exact area tie keep the larger
-            // index, matching the previous smallest-larger-first scan order.
+            // index.
             let better =
                 best.is_none_or(
-                    |current| match areas[candidate].total_cmp(&areas[current]) {
+                    |current| match crate::geometry::cmp_area_keys_then_closed(
+                        areas[candidate],
+                        areas[current],
+                        &faces[candidate][..],
+                        &faces[current][..],
+                    ) {
                         std::cmp::Ordering::Less => true,
                         std::cmp::Ordering::Equal => candidate > current,
                         std::cmp::Ordering::Greater => false,
@@ -690,5 +700,32 @@ mod tests {
             .expect("indexed cleanup succeeds");
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn overflow_nested_faces_keep_strict_parent() {
+        let width = 2.0_f64.powi(1023);
+        let inset = 2.0_f64.powi(971);
+        let outer = vec![
+            XY::new(0.0, 0.0),
+            XY::new(width, 0.0),
+            XY::new(width, 8.0),
+            XY::new(0.0, 8.0),
+            XY::new(0.0, 0.0),
+        ];
+        let inner = vec![
+            XY::new(inset, 1.0),
+            XY::new(width - inset, 1.0),
+            XY::new(width - inset, 7.0),
+            XY::new(inset, 7.0),
+            XY::new(inset, 1.0),
+        ];
+        let regions = arrangement_regions(&[outer, inner]);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(
+            regions.iter().filter(|region| !region.holes.is_empty()).count(),
+            1,
+            "the overflowing inner face must remain a hole of the outer"
+        );
     }
 }

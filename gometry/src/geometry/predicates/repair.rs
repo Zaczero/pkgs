@@ -5,7 +5,7 @@ use crate::geometry::overlay::outside_winding_seeds;
 use crate::geometry::predicates::{prune_dangles, validate_points};
 use crate::geometry::{
     AreaSign, Arrangement, Coordinates, GeometryErrorKind, HashMap, HashMapExt as _, HashSet,
-    OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, RingDecisionArea, Segment, Shape, XY,
+    OverlayOp, Point, PointKey, Polygon, RepairMethod, Ring, Segment, Shape, XY,
     assemble_region_polygons, binary_areal_overlay, line_segments, ordered_edge,
     polygon_parts_to_shape, ring_decision_area, same_point, self_node_segments, winding_region,
     wrap_index,
@@ -81,12 +81,19 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         let loops = split_pinched_ring(&shell);
         let dominant = loops
             .iter()
-            .map(|ring| ring_decision_area(ring.coords()))
-            .max_by(|left, right| left.magnitude().abs_cmp(right.magnitude()))
-            .map_or(AreaSign::Zero, RingDecisionArea::sign);
+            .map(|ring| (ring, ring_decision_area(ring.coords())))
+            .max_by(|(left, left_area), (right, right_area)| {
+                crate::geometry::cmp_area_keys_then_closed(
+                    left_area.magnitude().get(),
+                    right_area.magnitude().get(),
+                    left.coords(),
+                    right.coords(),
+                )
+            })
+            .map_or(AreaSign::Zero, |(_, decision)| decision.sign());
         let (shells, mut holes): (Vec<Ring>, Vec<Ring>) = loops
             .into_iter()
-            .partition(|ring| ring_decision_area(ring.coords()).sign() == dominant);
+            .partition(|ring| crate::geometry::area::ring_area_sign(ring.coords()) == dominant);
         holes.extend(
             polygon
                 .holes

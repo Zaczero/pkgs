@@ -795,7 +795,16 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Vec<
             AreaSign::Zero => {},
         }
     }
-    shells.sort_by(|left, right| left.1.total_cmp(&right.1));
+    shells.sort_by(|left, right| {
+        crate::geometry::cmp_area_keys_then_open_columns(
+            left.1,
+            right.1,
+            left.0.coords().xs(),
+            left.0.coords().ys(),
+            right.0.coords().xs(),
+            right.0.coords().ys(),
+        )
+    });
     let mut shell_indexes: Vec<Option<ShellCoverageIndex>> =
         std::iter::repeat_with(|| None).take(shells.len()).collect();
     let shell_tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>> =

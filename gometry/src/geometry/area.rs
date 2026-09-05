@@ -9,6 +9,7 @@ use crate::geometry::expansion::two_sum;
 use crate::geometry::expansion::{
     expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };
+use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
 
@@ -19,10 +20,6 @@ pub(crate) struct AreaMeasure(f64);
 impl AreaMeasure {
     pub(crate) const fn get(self) -> f64 {
         self.0
-    }
-
-    pub(crate) fn abs_cmp(self, other: Self) -> std::cmp::Ordering {
-        self.0.abs().total_cmp(&other.0.abs())
     }
 }
 
@@ -35,10 +32,6 @@ pub(crate) struct SignedAreaMeasure(f64);
 impl SignedAreaMeasure {
     const fn new(value: f64) -> Self {
         Self(value)
-    }
-
-    const fn magnitude(self) -> AreaMeasure {
-        AreaMeasure(self.0.abs())
     }
 }
 
@@ -664,27 +657,75 @@ fn shoelace_shifted_needs_exact(
     measured.abs() <= roundoff
 }
 
+fn closed_ring_sum_columns(xs: &[f64], ys: &[f64], pairs: usize) -> ExactSum {
+    let mut sum = ExactSum::zero();
+    for index in 0..pairs {
+        sum.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+    }
+    sum
+}
+
+fn closed_ring_sum<C: Coordinates + ?Sized>(points: &C) -> ExactSum {
+    if let Some((xs, ys)) = points.xy_columns() {
+        return closed_ring_sum_columns(xs, ys, points.coord_count().saturating_sub(1));
+    }
+    let mut sum = ExactSum::zero();
+    let mut coords = points.iter_coords();
+    let Some(mut prev) = coords.next() else {
+        return sum;
+    };
+    for next in coords {
+        sum.add_cross(prev.x, prev.y, next.x, next.y);
+        prev = next;
+    }
+    sum
+}
+
+fn open_cycle_sum_columns(xs: &[f64], ys: &[f64]) -> ExactSum {
+    let mut sum = ExactSum::zero();
+    let count = xs.len();
+    if count < 2 {
+        return sum;
+    }
+    for index in 0..count - 1 {
+        sum.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+    }
+    sum.add_cross(xs[count - 1], ys[count - 1], xs[0], ys[0]);
+    sum
+}
+
+fn open_cycle_sum<C: Coordinates + ?Sized>(points: &C) -> ExactSum {
+    if let Some((xs, ys)) = points.xy_columns() {
+        return open_cycle_sum_columns(xs, ys);
+    }
+    let mut coords = points.iter_coords();
+    let Some(first) = coords.next() else {
+        return ExactSum::zero();
+    };
+    let Some(second) = coords.next() else {
+        return ExactSum::zero();
+    };
+    let mut sum = ExactSum::zero();
+    sum.add_cross(first.x, first.y, second.x, second.y);
+    let mut prev = second;
+    for next in coords {
+        sum.add_cross(prev.x, prev.y, next.x, next.y);
+        prev = next;
+    }
+    sum.add_cross(prev.x, prev.y, first.x, first.y);
+    sum
+}
+
+fn unsigned_area(sum: &ExactSum) -> AreaMeasure {
+    AreaMeasure(sum.round_to_area().abs())
+}
+
 pub(crate) fn ring_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaMeasure {
-    shoelace_measure_columns(xs, ys, pairs).magnitude()
+    unsigned_area(&closed_ring_sum_columns(xs, ys, pairs))
 }
 
 pub(crate) fn ring_area_measure<C: Coordinates + ?Sized>(points: &C) -> AreaMeasure {
-    let pairs = points.coord_count().saturating_sub(1);
-    if pairs == 0 {
-        return AreaMeasure(0.0);
-    }
-    if let Some((xs, ys)) = points.xy_columns() {
-        ring_area_measure_columns(xs, ys, pairs)
-    } else {
-        let count = points.coord_count();
-        let mut xs = Vec::with_capacity(count);
-        let mut ys = Vec::with_capacity(count);
-        for point in points.iter_coords() {
-            xs.push(point.x);
-            ys.push(point.y);
-        }
-        ring_area_measure_columns(&xs, &ys, pairs)
-    }
+    unsigned_area(&closed_ring_sum(points))
 }
 
 /// Polygon area in one common, power-of-two-normalized frame for the shell
@@ -919,35 +960,48 @@ pub(crate) fn open_point_cycle_decision(points: &[Point]) -> RingDecisionArea {
     }
 }
 
-fn open_cycle_magnitude_columns(xs: &[f64], ys: &[f64]) -> AreaMeasure {
-    if xs.len() < 2 {
-        return AreaMeasure(0.0);
-    }
-    let count = xs.len();
-    AreaMeasure(
-        exact_cycle_area_measure_columns(xs, ys, count, |index| {
-            (index, wrap_index(index + 1, count))
-        })
-        .abs(),
-    )
-}
-
 pub(crate) fn open_point_cycle_magnitude(points: &[Point]) -> AreaMeasure {
-    if points.len() < 2 {
-        return AreaMeasure(0.0);
-    }
-    let xs: Vec<f64> = points.iter().map(|point| point.x).collect();
-    let ys: Vec<f64> = points.iter().map(|point| point.y).collect();
-    open_cycle_magnitude_columns(&xs, &ys)
+    unsigned_area(&open_cycle_sum(points))
 }
 
 fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
-    if points.len() < 2 {
-        return AreaMeasure(0.0);
+    unsigned_area(&open_cycle_sum(points))
+}
+
+fn cmp_closed_ring_magnitude<C: Coordinates + ?Sized>(
+    left: &C,
+    right: &C,
+) -> std::cmp::Ordering {
+    closed_ring_sum(left).compare_unsigned(&closed_ring_sum(right))
+}
+
+/// Float order when it distinguishes; original-coordinate ExactSum on a tie
+/// (including `0`/`0` and `∞`/`∞`).
+pub(crate) fn cmp_area_keys_then_closed<C: Coordinates + ?Sized>(
+    left_key: f64,
+    right_key: f64,
+    left: &C,
+    right: &C,
+) -> std::cmp::Ordering {
+    match left_key.total_cmp(&right_key) {
+        std::cmp::Ordering::Equal => cmp_closed_ring_magnitude(left, right),
+        ordering => ordering,
     }
-    let xs: Vec<f64> = points.iter().map(|point| point.x).collect();
-    let ys: Vec<f64> = points.iter().map(|point| point.y).collect();
-    open_cycle_magnitude_columns(&xs, &ys)
+}
+
+pub(crate) fn cmp_area_keys_then_open_columns(
+    left_key: f64,
+    right_key: f64,
+    left_xs: &[f64],
+    left_ys: &[f64],
+    right_xs: &[f64],
+    right_ys: &[f64],
+) -> std::cmp::Ordering {
+    match left_key.total_cmp(&right_key) {
+        std::cmp::Ordering::Equal => open_cycle_sum_columns(left_xs, left_ys)
+            .compare_unsigned(&open_cycle_sum_columns(right_xs, right_ys)),
+        ordering => ordering,
+    }
 }
 
 #[cfg(test)]
@@ -1331,9 +1385,8 @@ mod tests {
 
     #[test]
     fn shoelace_simd_large_absolute_coords_match_shifted_truth() {
-        // Same UTM-scale conditioning on the SIMD path: a circle of radius 10
-        // translated to (500000, 5200000), pairs past the gate. Both paths use
-        // the origin shift, so they must agree; naive (unshifted) diverges.
+        // UTM-scale circle past the SIMD gate. Original-coordinate ExactSum
+        // rounds to the origin-shifted reference; naive unshifted products diverge.
         let k = SHOELACE_SIMD_MIN + 9;
         let ox = 500_000.0_f64;
         let oy = 5_200_000.0_f64;
@@ -1401,6 +1454,85 @@ mod tests {
         assert_eq!(
             polygon_area_measure_columns(&xs, &ys, &[0, 5, 10], 0..2),
             0.0
+        );
+    }
+
+    #[test]
+    fn equal_float_keys_defer_to_exact_ring_order() {
+        let width = 2.0_f64.powi(1023);
+        let inset = 2.0_f64.powi(971);
+        let outer = [
+            XY::new(0.0, 0.0),
+            XY::new(width, 0.0),
+            XY::new(width, 8.0),
+            XY::new(0.0, 8.0),
+            XY::new(0.0, 0.0),
+        ];
+        let inner = [
+            XY::new(inset, 1.0),
+            XY::new(width - inset, 1.0),
+            XY::new(width - inset, 7.0),
+            XY::new(inset, 7.0),
+            XY::new(inset, 1.0),
+        ];
+        let outer_key = ring_area_measure(&outer[..]).get();
+        let inner_key = ring_area_measure(&inner[..]).get();
+        assert!(outer_key.is_infinite() && inner_key.is_infinite());
+        assert_eq!(outer_key.total_cmp(&inner_key), std::cmp::Ordering::Equal);
+        assert_eq!(
+            cmp_area_keys_then_closed(outer_key, inner_key, &outer[..], &inner[..]),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn thin_triangle_original_coords_round_to_known_area() {
+        // Exact Σ = -2^-54 on the stored vertices; |Σ|/2 is exactly 2^-55.
+        let tiny = 2.0_f64.powi(-54);
+        let closed = [
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(tiny, 1.0),
+            Point::new_raw_xy(1.0, 0.0),
+        ];
+        assert_eq!(
+            ring_area_measure(&closed[..]).get().to_bits(),
+            2.0_f64.powi(-55).to_bits()
+        );
+        let open = [
+            XY::new(1.0, 0.0),
+            XY::new(0.0, 1.0),
+            XY::new(tiny, 1.0),
+        ];
+        assert_eq!(
+            open_xy_cycle_magnitude(&open).get().to_bits(),
+            2.0_f64.powi(-55).to_bits()
+        );
+        let open_points = [
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(tiny, 1.0),
+        ];
+        assert_eq!(
+            open_point_cycle_magnitude(&open_points).get().to_bits(),
+            2.0_f64.powi(-55).to_bits()
+        );
+    }
+
+    #[test]
+    fn subnormal_ring_original_coords_round_to_least_subnormal() {
+        // Unit-width rectangle of height 2^-1074 has exact area 2^-1074.
+        let tiny = f64::from_bits(1);
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(1.0, tiny),
+            Point::new_raw_xy(0.0, tiny),
+            Point::new_raw_xy(0.0, 0.0),
+        ];
+        assert_eq!(
+            ring_area_measure(&points[..]).get().to_bits(),
+            tiny.to_bits()
         );
     }
 }

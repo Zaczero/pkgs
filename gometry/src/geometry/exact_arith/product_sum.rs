@@ -43,15 +43,43 @@ impl ExactSum {
         let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
         let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP)
             .expect("finite f64 product fits the fixed exact accumulator");
-        add_shifted_words(
+        add_shifted_product(
             if negative {
                 &mut self.negative
             } else {
                 &mut self.positive
             },
-            &[product as u64, (product >> 64) as u64],
+            product,
             shift,
         );
+    }
+
+    pub(crate) fn add_cross(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
+        self.add_product(1, x0, y1);
+        self.add_product(-1, x1, y0);
+    }
+
+    pub(crate) fn compare_unsigned(&self, other: &Self) -> Ordering {
+        let (_, left) = self.signed_magnitude();
+        let (_, right) = other.signed_magnitude();
+        cmp_magnitude(&left, &right)
+    }
+
+    /// Round doubled area `/ 2` to binary64, ties-to-even. Exact zero and
+    /// either-signed underflow become `+0.0`; overflow becomes `±∞`.
+    pub(crate) fn round_to_area(&self) -> f64 {
+        let (sign, magnitude) = self.signed_magnitude();
+        if sign == Ordering::Equal {
+            return 0.0;
+        }
+        let value = round_nonnegative_area(&magnitude);
+        if value == 0.0 {
+            0.0
+        } else if sign == Ordering::Less {
+            -value
+        } else {
+            value
+        }
     }
 
     pub(crate) fn ordering(&self) -> Ordering {
@@ -345,6 +373,51 @@ fn add_shifted_words<const N: usize>(target: &mut [u64; N], words: &[u64], shift
     }
 }
 
+/// Place a 106-bit finite product at bit `shift` of the degree-2 accumulator.
+///
+/// Finite binary64 products have `shift <= 4090`, so the 2- or 3-limb window
+/// ends at index 65, inside [`LIMBS`]. Carry uses the same 4352-bit capacity
+/// already proven for the signed accumulators.
+fn add_shifted_product(target: &mut [u64; LIMBS], product: u128, shift: usize) {
+    debug_assert!(shift <= 4090);
+    let word = shift / 64;
+    let bits = shift % 64;
+    let lo = product as u64;
+    let hi = (product >> 64) as u64;
+    let (low, mid, high) = if bits == 0 {
+        (lo, hi, 0_u64)
+    } else {
+        (
+            lo << bits,
+            (lo >> (64 - bits)) | (hi << bits),
+            hi >> (64 - bits),
+        )
+    };
+    let mut acc = u128::from(target[word]) + u128::from(low);
+    target[word] = acc as u64;
+    acc >>= 64;
+    if mid == 0 && high == 0 && acc == 0 {
+        return;
+    }
+    acc += u128::from(target[word + 1]) + u128::from(mid);
+    target[word + 1] = acc as u64;
+    acc >>= 64;
+    if high == 0 && acc == 0 {
+        return;
+    }
+    acc += u128::from(target[word + 2]) + u128::from(high);
+    target[word + 2] = acc as u64;
+    acc >>= 64;
+    let mut index = word + 3;
+    while acc != 0 {
+        acc += u128::from(target[index]);
+        target[index] = acc as u64;
+        acc >>= 64;
+        index += 1;
+        debug_assert!(index <= LIMBS);
+    }
+}
+
 fn add_word<const N: usize>(target: &mut [u64; N], mut index: usize, mut value: u64) {
     while value != 0 {
         let (sum, carry) = target[index].overflowing_add(value);
@@ -385,6 +458,88 @@ fn subtract_magnitude<const N: usize>(larger: &[u64; N], smaller: &[u64; N]) -> 
     result
 }
 
+/// `magnitude` is the exact `|Σ x_i y_{i+1} − x_{i+1} y_i|` in units of
+/// `2^-2148`. The returned value is `|Σ|/2` rounded to binary64.
+///
+/// Area `A = M · 2^-2149`. With `k = ⌊log₂ M⌋`, a normal encoding has unbiased
+/// exponent `k - 2149` and is used iff `k >= 1127` (`A >= 2^-1022`).
+fn round_nonnegative_area(magnitude: &[u64; LIMBS]) -> f64 {
+    let Some(k) = most_significant_bit(magnitude) else {
+        return 0.0;
+    };
+    if k < 1127 {
+        let mut units = bits_from(magnitude, 1126, 52);
+        let guard = limb_bit(magnitude, 1074);
+        let sticky = or_bits_through(magnitude, 1073);
+        if guard && (sticky || units & 1 != 0) {
+            units += 1;
+        }
+        f64::from_bits(units)
+    } else {
+        let mut mantissa = bits_from(magnitude, k, 53);
+        let guard = limb_bit(magnitude, k - 53);
+        let sticky = or_bits_through(magnitude, k - 54);
+        if guard && (sticky || mantissa & 1 != 0) {
+            mantissa += 1;
+        }
+        let mut exponent = k as i32 - 2149;
+        if mantissa == 1_u64 << 53 {
+            mantissa = 1_u64 << 52;
+            exponent += 1;
+        }
+        if exponent > 1023 {
+            return f64::INFINITY;
+        }
+        let biased = (exponent + 1023) as u64;
+        let fraction = mantissa & ((1_u64 << 52) - 1);
+        f64::from_bits((biased << 52) | fraction)
+    }
+}
+
+fn most_significant_bit(limbs: &[u64; LIMBS]) -> Option<usize> {
+    for word in (0..LIMBS).rev() {
+        let value = limbs[word];
+        if value != 0 {
+            return Some(word * 64 + (63 - value.leading_zeros() as usize));
+        }
+    }
+    None
+}
+
+fn limb_bit(limbs: &[u64; LIMBS], bit: usize) -> bool {
+    debug_assert!(bit < LIMBS * 64);
+    (limbs[bit / 64] >> (bit % 64)) & 1 != 0
+}
+
+fn or_bits_through(limbs: &[u64; LIMBS], last: usize) -> bool {
+    debug_assert!(last < LIMBS * 64);
+    let last_word = last / 64;
+    let last_off = last % 64;
+    for word in 0..last_word {
+        if limbs[word] != 0 {
+            return true;
+        }
+    }
+    let mask = if last_off == 63 {
+        u64::MAX
+    } else {
+        (1_u64 << (last_off + 1)) - 1
+    };
+    limbs[last_word] & mask != 0
+}
+
+fn bits_from(limbs: &[u64; LIMBS], high: usize, width: u32) -> u64 {
+    debug_assert!((1..=53).contains(&width));
+    debug_assert!(high < LIMBS * 64);
+    let low = high + 1 - width as usize;
+    let word = low / 64;
+    let offset = low % 64;
+    let mut value = limbs[word] >> offset;
+    if offset != 0 && word + 1 < LIMBS {
+        value |= limbs[word + 1] << (64 - offset);
+    }
+    value & ((1_u64 << width) - 1)
+}
 
 #[cfg(test)]
 mod tests {
@@ -525,5 +680,286 @@ mod tests {
         let mut magnitude = [0_u64; CUBIC_LIMBS];
         magnitude[0] = 3;
         assert_eq!(exact_centroid_quotient(&negative_moment(magnitude), &area, Ordering::Greater).unwrap().to_bits(), 0);
+    }
+
+    fn doubled_sum(magnitude: [u64; LIMBS], sign: Ordering) -> ExactSum {
+        match sign {
+            Ordering::Equal => ExactSum::zero(),
+            Ordering::Greater => ExactSum { positive: magnitude, negative: [0; LIMBS] },
+            Ordering::Less => ExactSum { positive: [0; LIMBS], negative: magnitude },
+        }
+    }
+
+    fn set_bit(limbs: &mut [u64; LIMBS], bit: usize) {
+        limbs[bit / 64] |= 1_u64 << (bit % 64);
+    }
+
+    fn area_bits(bits: &[usize]) -> [u64; LIMBS] {
+        let mut limbs = [0_u64; LIMBS];
+        for &bit in bits {
+            set_bit(&mut limbs, bit);
+        }
+        limbs
+    }
+
+    fn area_range(low: usize, high: usize) -> [u64; LIMBS] {
+        let mut limbs = [0_u64; LIMBS];
+        for bit in low..=high {
+            set_bit(&mut limbs, bit);
+        }
+        limbs
+    }
+
+    fn add_product_bits(limbs: &mut [u64; LIMBS], product: u128, shift: usize) {
+        let mut value = product;
+        let mut bit = shift;
+        while value != 0 {
+            if value & 1 != 0 {
+                let mut index = bit / 64;
+                let mut add = 1_u64 << (bit % 64);
+                while add != 0 {
+                    let (sum, carry) = limbs[index].overflowing_add(add);
+                    limbs[index] = sum;
+                    add = u64::from(carry);
+                    index += 1;
+                }
+            }
+            value >>= 1;
+            bit += 1;
+        }
+    }
+
+    fn expected_sum(terms: &[(i8, f64, f64)]) -> ExactSum {
+        let mut positive = [0_u64; LIMBS];
+        let mut negative = [0_u64; LIMBS];
+        for &(coefficient, lhs, rhs) in terms {
+            let (lhs_negative, lhs_mantissa, lhs_exponent) = decompose(lhs);
+            let (rhs_negative, rhs_mantissa, rhs_exponent) = decompose(rhs);
+            if lhs_mantissa == 0 || rhs_mantissa == 0 {
+                continue;
+            }
+            let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
+            let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP).unwrap();
+            if (coefficient < 0) ^ lhs_negative ^ rhs_negative {
+                add_product_bits(&mut negative, product, shift);
+            } else {
+                add_product_bits(&mut positive, product, shift);
+            }
+        }
+        ExactSum { positive, negative }
+    }
+
+    fn actual_sum(terms: &[(i8, f64, f64)]) -> ExactSum {
+        let mut sum = ExactSum::zero();
+        for &(coefficient, lhs, rhs) in terms {
+            sum.add_product(coefficient, lhs, rhs);
+        }
+        sum
+    }
+
+    fn assert_terms(terms: &[(i8, f64, f64)]) {
+        let expected = expected_sum(terms);
+        let actual = actual_sum(terms);
+        assert_eq!(actual.positive, expected.positive, "positive {terms:?}");
+        assert_eq!(actual.negative, expected.negative, "negative {terms:?}");
+    }
+
+    #[test]
+    fn add_product_places_min_subnormal_square_at_bit_zero() {
+        let tiny = f64::from_bits(1);
+        assert_terms(&[(1, tiny, tiny)]);
+        let sum = actual_sum(&[(1, tiny, tiny)]);
+        assert_eq!(sum.positive[0], 1);
+        assert_eq!(sum.round_to_area().to_bits(), 0);
+    }
+
+    #[test]
+    fn add_product_places_max_square_at_hand_computed_bits() {
+        // (2^53-1)^2 * 2^4090 = (2^106 - 2^54 + 1) * 2^4090
+        // = 2^4090 + 2^4144 * (2^52 - 1): bits 4090 and 4144..=4195.
+        assert_terms(&[(1, f64::MAX, f64::MAX)]);
+        let sum = actual_sum(&[(1, f64::MAX, f64::MAX)]);
+        assert!(limb_bit(&sum.positive, 4090));
+        assert!(limb_bit(&sum.positive, 4144));
+        assert!(limb_bit(&sum.positive, 4195));
+        assert!(!limb_bit(&sum.positive, 4143));
+        assert!(!limb_bit(&sum.positive, 4196));
+    }
+
+    fn product_bit_offset(lhs: f64, rhs: f64) -> usize {
+        let (_, _, left) = decompose(lhs);
+        let (_, _, right) = decompose(rhs);
+        usize::try_from(left + right - PRODUCT_MIN_EXP).unwrap()
+    }
+
+    #[test]
+    fn add_product_aligned_and_end_shifts() {
+        assert_eq!(product_bit_offset(1.0, 16.0) % 64, 0);
+        assert_eq!(product_bit_offset(1.0, 32.0) % 64, 1);
+        assert_eq!(product_bit_offset(1.0, 8.0) % 64, 63);
+        assert_terms(&[(1, 1.0, 16.0)]);
+        assert_terms(&[(1, 1.0, 32.0)]);
+        assert_terms(&[(1, 1.0, 8.0)]);
+    }
+
+    #[test]
+    fn add_product_carry_into_second_third_and_higher_limbs() {
+        let mut second = [0_u64; LIMBS];
+        second[2] = u64::MAX;
+        add_shifted_product(&mut second, 1, 128);
+        assert_eq!(second[2], 0);
+        assert_eq!(second[3], 1);
+
+        let mut third = [0_u64; LIMBS];
+        third[4] = u64::MAX;
+        third[5] = u64::MAX;
+        add_shifted_product(&mut third, 1, 256);
+        assert_eq!(third[4], 0);
+        assert_eq!(third[5], 0);
+        assert_eq!(third[6], 1);
+
+        let mut higher = [0_u64; LIMBS];
+        for word in 2..8 {
+            higher[word] = u64::MAX;
+        }
+        add_shifted_product(&mut higher, 1, 128);
+        assert_eq!(higher[2], 0);
+        assert_eq!(higher[7], 0);
+        assert_eq!(higher[8], 1);
+
+        assert_terms(&[(1, 1.0, 1.0), (1, 1.0, 1.0)]);
+    }
+
+    #[test]
+    fn add_product_cancels_across_sign_banks_to_plus_zero() {
+        assert_terms(&[(1, 3.0, 5.0), (-1, 3.0, 5.0)]);
+        assert_terms(&[(1, 3.0, 5.0), (1, -3.0, 5.0)]);
+        let cancelled = actual_sum(&[(1, 3.0, 5.0), (-1, 3.0, 5.0)]);
+        assert_eq!(cancelled.ordering(), Ordering::Equal);
+        assert_eq!(cancelled.round_to_area().to_bits(), 0);
+        let opposite = actual_sum(&[(1, 3.0, 5.0), (1, -3.0, 5.0)]);
+        assert_eq!(opposite.ordering(), Ordering::Equal);
+        assert_eq!(opposite.round_to_area().to_bits(), 0);
+    }
+
+    #[test]
+    fn add_product_signed_zero_is_a_no_op() {
+        assert_terms(&[(1, 0.0, 1.0), (1, -0.0, 1.0), (1, 1.0, -0.0)]);
+        let mut sum = ExactSum::zero();
+        sum.add_product(1, 0.0, 1.0);
+        sum.add_product(1, -0.0, -0.0);
+        assert_eq!(sum.ordering(), Ordering::Equal);
+        assert_eq!(sum.round_to_area().to_bits(), 0);
+    }
+
+    #[test]
+    fn area_finish_rounds_exact_half_min_to_plus_zero() {
+        assert_eq!(round_nonnegative_area(&area_bits(&[1074])).to_bits(), 0);
+        assert_eq!(
+            doubled_sum(area_bits(&[1074]), Ordering::Less)
+                .round_to_area()
+                .to_bits(),
+            0
+        );
+    }
+
+    #[test]
+    fn area_finish_sticky_above_half_min_is_least_subnormal() {
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[1074, 0])),
+            f64::from_bits(1)
+        );
+        assert_eq!(
+            doubled_sum(area_bits(&[1074, 0]), Ordering::Less).round_to_area(),
+            -f64::from_bits(1)
+        );
+    }
+
+    #[test]
+    fn area_finish_exact_min_subnormal() {
+        assert_eq!(round_nonnegative_area(&area_bits(&[1075])), f64::from_bits(1));
+    }
+
+    #[test]
+    fn area_finish_exact_min_normal() {
+        assert_eq!(round_nonnegative_area(&area_bits(&[1127])), f64::MIN_POSITIVE);
+        assert_eq!(
+            doubled_sum(area_bits(&[1127]), Ordering::Less).round_to_area(),
+            -f64::MIN_POSITIVE
+        );
+    }
+
+    #[test]
+    fn area_finish_subnormal_tie_carries_to_min_normal() {
+        assert_eq!(
+            round_nonnegative_area(&area_range(1074, 1126)),
+            f64::MIN_POSITIVE
+        );
+        assert_eq!(
+            doubled_sum(area_range(1074, 1126), Ordering::Less).round_to_area(),
+            -f64::MIN_POSITIVE
+        );
+    }
+
+    #[test]
+    fn area_finish_rounds_normal_tie_even_and_odd() {
+        assert_eq!(round_nonnegative_area(&area_bits(&[2149, 2096])), 1.0);
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[2149, 2097, 2096])),
+            f64::from_bits(1.0_f64.to_bits() + 2)
+        );
+    }
+
+    #[test]
+    fn area_finish_sticky_strictly_above_one_midpoint() {
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[2149, 2096, 2049])),
+            1.0_f64.next_up()
+        );
+    }
+
+    #[test]
+    fn area_finish_power_of_two_carry() {
+        assert_eq!(round_nonnegative_area(&area_range(2096, 2149)), 2.0);
+    }
+
+    #[test]
+    fn area_finish_double_rounding_countercase_is_just_above_half_min_normal() {
+        assert_eq!(
+            round_nonnegative_area(&area_bits(&[1126, 1074, 0])),
+            f64::from_bits((1_u64 << 51) + 1)
+        );
+    }
+
+    #[test]
+    fn area_finish_overflows_at_the_max_midpoint() {
+        let midpoint = area_range(3119, 3172);
+        assert_eq!(round_nonnegative_area(&midpoint), f64::INFINITY);
+        assert_eq!(
+            doubled_sum(midpoint, Ordering::Less).round_to_area(),
+            f64::NEG_INFINITY
+        );
+    }
+
+    #[test]
+    fn area_finish_one_below_overflow_midpoint_is_max() {
+        let mut just_below = area_range(0, 3172);
+        just_below[3119 / 64] &= !(1_u64 << (3119 % 64));
+        assert_eq!(round_nonnegative_area(&just_below), f64::MAX);
+        assert_eq!(
+            doubled_sum(just_below, Ordering::Less).round_to_area(),
+            -f64::MAX
+        );
+    }
+
+    #[test]
+    fn area_finish_preserves_representable_max() {
+        let mut maximum = [0_u64; LIMBS];
+        add_shifted_words(&mut maximum, &[(1_u64 << 53) - 1], 3120);
+        assert_eq!(round_nonnegative_area(&maximum), f64::MAX);
+        assert_eq!(
+            doubled_sum(maximum, Ordering::Less).round_to_area(),
+            -f64::MAX
+        );
     }
 }

@@ -50,14 +50,11 @@ pub(crate) fn arrangement_minimal_faces(arrangement: &mut Arrangement) -> Vec<Fa
 pub(crate) fn polygonize_faces_from_arrangement(
     arrangement: &mut Arrangement,
 ) -> (Vec<Face>, Vec<Option<usize>>) {
-    // Faces carry their |area| from here on: the size sort and the parent
-    // query below compare areas constantly, and the shoelace over a Point-slice
-    // ring gathers columns per call — at 1.5k faces the recomputation was 60%
-    // of a polygonize profile.
+    // Faces keep one rounded |area| key for the descending sort and parent
+    // scan; equal keys break on the original-coordinate ExactSum order.
     let mut faces = arrangement_minimal_faces(arrangement);
     faces.sort_by(|(left_ring, left_area), (right_ring, right_area)| {
-        right_area
-            .total_cmp(left_area)
+        crate::geometry::cmp_area_keys_then_closed(*right_area, *left_area, right_ring, left_ring)
             .then_with(|| compare_point_slices(left_ring, right_ring))
     });
     // Envelope per face: the nesting scan rejects nearly every candidate on
