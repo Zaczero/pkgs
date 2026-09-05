@@ -2,8 +2,6 @@
     clippy::similar_names,
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
-use std::num::NonZeroU32;
-
 use smol_str::SmolStr;
 
 use crate::{
@@ -22,9 +20,7 @@ use crate::{
 
 pub(crate) type Crs = SmolStr;
 
-pub(crate) const QUADRANT_SEGMENTS_DEFAULT: NonZeroU32 = NonZeroU32::new(8).unwrap();
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
-const _: () = assert!(QUADRANT_SEGMENTS_DEFAULT.get() == QUADRANT_SEGMENTS_DEFAULT_I64 as u32);
 
 /// Cached `gometry._types.Extremes` constructor — `extremes()` runs in
 /// user loops, so the per-call module import + attribute lookup is hoisted

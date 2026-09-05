@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use crate::error::Result;
 use crate::geometry::derived::{
     areal_centroid, canonicalize_concave_hull_points, collection_surface_point, lineal_centroid,
@@ -10,6 +12,8 @@ use crate::geometry::{
     Point, Polygon, Ring, Shape, bounds_to_shape, carry_ordinates, empty_geometry,
 };
 use crate::{NonNegative, Positive};
+
+const CIRCLE_QUADRANT_SEGMENTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is non-zero");
 
 impl Shape {
     pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
@@ -204,16 +208,17 @@ impl Shape {
             // `MultiPoint`.)
             return Ok(Self::Point(center));
         }
-        // The buffer emitter places 64 vertices on its requested radius, so
-        // using the exact radius would create an inscribed polygon that can
-        // exclude support points between vertices. Scale to the 64-gon's
-        // circumradius so every edge is tangent to the exact enclosing circle.
-        let polygon_radius = radius / (std::f64::consts::PI / 64.0).cos();
+        // The buffer emitter places vertices on the requested radius, so using
+        // the exact radius would create an inscribed polygon that can exclude
+        // support points between vertices. Scale to its circumradius so every
+        // edge is tangent to the exact enclosing circle.
+        let vertex_count = 4.0 * f64::from(CIRCLE_QUADRANT_SEGMENTS.get());
+        let polygon_radius = radius / (std::f64::consts::PI / vertex_count).cos();
         Self::Point(center).buffer_with_style(
             polygon_radius,
             BufferCapStyle::Round,
             BufferJoinStyle::Round,
-            std::num::NonZeroU32::new(16).expect("16 is non-zero"),
+            CIRCLE_QUADRANT_SEGMENTS,
             Positive::try_new("miter_limit", DEFAULT_MITER_LIMIT)?,
         )
     }
@@ -254,7 +259,7 @@ impl Shape {
                     radius,
                     BufferCapStyle::Round,
                     BufferJoinStyle::Round,
-                    std::num::NonZeroU32::new(16).expect("16 is non-zero"),
+                    CIRCLE_QUADRANT_SEGMENTS,
                     Positive::try_new("miter_limit", DEFAULT_MITER_LIMIT)?,
                 )
             },
