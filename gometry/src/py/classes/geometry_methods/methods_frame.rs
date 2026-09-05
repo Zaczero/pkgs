@@ -9,8 +9,8 @@ use crate::py::classes::geometry_methods::{
 use crate::py::crs::drain_accuracy_warning;
 use crate::py::replace::{ReplacePresence, reject_unknown_kwargs, replace_crs, replace_epoch};
 use crate::{
-    GeometryTransformFrame, PyCrs, PyPreparedGeometry, coordinate_epoch_option, crs, crs_arc,
-    parse_crs, parse_geometry_transform_options,
+    GeometryTransformFrame, PyCrs, PyPreparedGeometry, TransformOptionArgs, coordinate_epoch_option,
+    crs, crs_arc, parse_crs,
 };
 
 #[pymethods]
@@ -277,14 +277,17 @@ impl PyGeometry {
     ) -> PyResult<Typed> {
         let target =
             parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
-        let options = parse_geometry_transform_options(
+        let options = TransformOptionArgs {
             area_of_interest,
+            source_epoch: None,
+            target_epoch: None,
             authority,
             accuracy,
             allow_ballpark,
             only_best,
             force_over,
-        )?;
+        }
+        .parse()?;
         let frame = GeometryTransformFrame::new(
             &self.frame,
             target,

@@ -11,21 +11,9 @@ use pyo3::exceptions::PyTypeError;
 use crate::check_i32_min;
 use crate::py::crs::{
     Bound, CrsCoordinateArgs, IntoPyObject as _, Py, PyAny, PyAnyMethods as _, PyErr, PyResult,
-    Python, accuracy_option, coordinate_epoch_option, crs, crs_normalize,
-    finite_coordinate_required, parse_area, pyfunction,
+    Python, TransformOptionArgs, crs, crs_normalize, finite_coordinate_required, pyfunction,
 };
 use crate::py::errors::{AccuracyWarning, GeometryError};
-
-pub(crate) struct TransformOptionArgs<'py> {
-    pub area_of_interest: Option<&'py Bound<'py, PyAny>>,
-    pub source_epoch: Option<&'py Bound<'py, PyAny>>,
-    pub target_epoch: Option<&'py Bound<'py, PyAny>>,
-    pub authority: Option<String>,
-    pub accuracy: Option<&'py Bound<'py, PyAny>>,
-    pub allow_ballpark: Option<bool>,
-    pub only_best: Option<bool>,
-    pub force_over: bool,
-}
 
 /// Drain the one diagnostic published by the shared PROJ pipeline seam.
 ///
@@ -42,21 +30,6 @@ pub(crate) fn drain_accuracy_warning(
         PyErr::warn(py, &py.get_type::<AccuracyWarning>(), &message, 1)?;
     }
     Ok(())
-}
-
-impl TransformOptionArgs<'_> {
-    pub(crate) fn parse(self) -> PyResult<crs::TransformOptions> {
-        Ok(crs::TransformOptions {
-            area_of_interest: parse_area(self.area_of_interest, "area_of_interest")?,
-            source_epoch: coordinate_epoch_option("source_epoch", self.source_epoch)?,
-            target_epoch: coordinate_epoch_option("target_epoch", self.target_epoch)?,
-            authority: self.authority,
-            accuracy: accuracy_option(self.accuracy)?,
-            allow_ballpark: self.allow_ballpark,
-            only_best: self.only_best,
-            force_over: self.force_over,
-        })
-    }
 }
 
 /// Information about a transformation grid.

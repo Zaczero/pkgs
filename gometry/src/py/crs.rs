@@ -10,9 +10,9 @@ use serde_json::Value;
 
 use crate::py::errors::{CRSError, GeometryError};
 use crate::{
-    CoordinateInput, Crs, CrsCoordinateArgs, accuracy_option, broadcast_coordinate_group,
-    coordinate_epoch_option, crs, crs_arc, finite_coordinate_required, finite_f64_required,
-    json_to_py, parameter_input_with_expected, parse_area, parse_crs,
+    CoordinateInput, Crs, CrsCoordinateArgs, broadcast_coordinate_group, crs, crs_arc,
+    finite_coordinate_required, finite_f64_required, json_to_py, parameter_input_with_expected,
+    parse_area, parse_crs,
 };
 
 mod functions;
@@ -46,11 +46,13 @@ pub(crate) use functions_geodesic::{
 };
 pub(crate) use functions_misc::{crs_engine, crs_normalize, crs_parse_required};
 pub(crate) use functions_transform::{
-    TransformOptionArgs, crs_apply, crs_grid, crs_operation, crs_operation_at, crs_operations,
-    crs_roundtrip, crs_transform, crs_transform_bounds, drain_accuracy_warning,
+    crs_apply, crs_grid, crs_operation, crs_operation_at, crs_operations, crs_roundtrip,
+    crs_transform, crs_transform_bounds, drain_accuracy_warning,
 };
 pub(crate) use parsing::parse_crs_inner;
 pub(crate) use py_crs::PyCrs;
+
+pub(crate) use crate::boundary::TransformOptionArgs;
 
 /// Register the CRS class and flat `crs_*` functions on the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

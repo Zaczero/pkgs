@@ -4,9 +4,8 @@
 )]
 use crate::array::{
     Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryArrayStorage, GeometryTransformFrame,
-    Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, ValidityMask,
-    coordinate_epoch_option, crs, note_array_row, parse_crs, parse_geometry_transform_options,
-    pymethods,
+    Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
+    ValidityMask, coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
 };
 
 fn transform_failure_pyerr(failure: crate::crs::TransformFailure) -> PyErr {
@@ -186,14 +185,17 @@ impl PyGeometryArray {
         {
             let target =
                 parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
-            let options = parse_geometry_transform_options(
+            let options = TransformOptionArgs {
                 area_of_interest,
+                source_epoch: None,
+                target_epoch: None,
                 authority,
                 accuracy,
                 allow_ballpark,
                 only_best,
                 force_over,
-            )?;
+            }
+            .parse()?;
             let frame = GeometryTransformFrame::new(
                 &self.frame,
                 target,
@@ -249,14 +251,17 @@ impl PyGeometryArray {
         }
         let target =
             parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
-        let options = parse_geometry_transform_options(
+        let options = TransformOptionArgs {
             area_of_interest,
+            source_epoch: None,
+            target_epoch: None,
             authority,
             accuracy,
             allow_ballpark,
             only_best,
             force_over,
-        )?;
+        }
+        .parse()?;
         let frame = GeometryTransformFrame::new(
             &self.frame,
             target,

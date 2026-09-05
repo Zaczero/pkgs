@@ -402,28 +402,33 @@ pub(crate) fn parse_sample_seed(value: &Bound<'_, PyAny>) -> PyResult<u64> {
     Ok(py_i64_required("seed", value)? as u64)
 }
 
-/// Transform options for the geometry/array `to_crs` surface: the source epoch
-/// is the geometry's own metadata (not a kwarg) and the output epoch is set by
-/// the caller, so this parser carries no `source_epoch`/`target_epoch` and
-/// leaves both `None` for the caller to fill.
-pub(crate) fn parse_geometry_transform_options(
-    area_of_interest: Option<&Bound<'_, PyAny>>,
-    authority: Option<String>,
-    accuracy: Option<&Bound<'_, PyAny>>,
-    allow_ballpark: Option<bool>,
-    only_best: Option<bool>,
-    force_over: bool,
-) -> PyResult<crs::TransformOptions> {
-    Ok(crs::TransformOptions {
-        area_of_interest: parse_area(area_of_interest, "area_of_interest")?,
-        source_epoch: None,
-        target_epoch: None,
-        authority,
-        accuracy: accuracy_option(accuracy)?,
-        allow_ballpark,
-        only_best,
-        force_over,
-    })
+/// Python transform options shared by raw CRS operations and geometry `to_crs`.
+/// Geometry callers leave both epoch inputs as `None`; the frame owner fills
+/// them from its source metadata and output epoch policy after this parse.
+pub(crate) struct TransformOptionArgs<'py> {
+    pub area_of_interest: Option<&'py Bound<'py, PyAny>>,
+    pub source_epoch: Option<&'py Bound<'py, PyAny>>,
+    pub target_epoch: Option<&'py Bound<'py, PyAny>>,
+    pub authority: Option<String>,
+    pub accuracy: Option<&'py Bound<'py, PyAny>>,
+    pub allow_ballpark: Option<bool>,
+    pub only_best: Option<bool>,
+    pub force_over: bool,
+}
+
+impl TransformOptionArgs<'_> {
+    pub(crate) fn parse(self) -> PyResult<crs::TransformOptions> {
+        Ok(crs::TransformOptions {
+            area_of_interest: parse_area(self.area_of_interest, "area_of_interest")?,
+            source_epoch: coordinate_epoch_option("source_epoch", self.source_epoch)?,
+            target_epoch: coordinate_epoch_option("target_epoch", self.target_epoch)?,
+            authority: self.authority,
+            accuracy: accuracy_option(self.accuracy)?,
+            allow_ballpark: self.allow_ballpark,
+            only_best: self.only_best,
+            force_over: self.force_over,
+        })
+    }
 }
 
 /// Parse an angle argument, converting degrees to radians unless `radians` is

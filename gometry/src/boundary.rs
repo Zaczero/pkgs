@@ -22,11 +22,11 @@ pub(crate) use coordinate_input::{
 };
 pub(crate) use geographic::{point_xy, validate_lonlat_shape};
 pub(crate) use input::{
-    GridOrigin, OriginSpec, accuracy_option, angle_radians, cdt_refinement_values,
+    GridOrigin, OriginSpec, TransformOptionArgs, angle_radians, cdt_refinement_values,
     coordinate_epoch_option, f64_required, f64_scalar_named, finite_coordinate_required,
     finite_f64_required, non_negative_int, parse_affine_matrix, parse_area, parse_cdt_refinement,
-    parse_geometry_transform_options, parse_grid_size, parse_sample_count, parse_sample_seed,
-    positive_int, py_i64_bounded, py_i64_required, py_index_object, py_isize_required,
+    parse_grid_size, parse_sample_count, parse_sample_seed, positive_int, py_i64_bounded,
+    py_i64_required, py_index_object, py_isize_required,
     py_u64_if_index, py_u64_required, py_usize_required, strict_i32, strict_i32_overflow,
     strict_i64, strict_i64_overflow, strict_i128, strict_optional_i64, strict_u64,
     validate_subdivide_max_vertices,
