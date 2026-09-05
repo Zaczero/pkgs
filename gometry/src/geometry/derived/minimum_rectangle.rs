@@ -482,13 +482,13 @@ fn mul_136_68(left: &[u64; DOUBLE_LIMBS], right: &[u64; LIMBS]) -> [u64; TRIPLE_
     result
 }
 
-fn add_double_magnitude(
-    left: &[u64; DOUBLE_LIMBS],
-    right: &[u64; DOUBLE_LIMBS],
-) -> [u64; DOUBLE_LIMBS] {
-    let mut result = [0_u64; DOUBLE_LIMBS];
+fn add_triple_magnitude(
+    left: &[u64; TRIPLE_LIMBS],
+    right: &[u64; TRIPLE_LIMBS],
+) -> [u64; TRIPLE_LIMBS] {
+    let mut result = [0_u64; TRIPLE_LIMBS];
     let mut carry = false;
-    for index in 0..DOUBLE_LIMBS {
+    for index in 0..TRIPLE_LIMBS {
         let (sum, first_carry) = left[index].overflowing_add(right[index]);
         let (sum, second_carry) = sum.overflowing_add(u64::from(carry));
         result[index] = sum;
@@ -496,16 +496,6 @@ fn add_double_magnitude(
     }
     debug_assert!(!carry);
     result
-}
-
-fn cmp_double_magnitude(left: &[u64; DOUBLE_LIMBS], right: &[u64; DOUBLE_LIMBS]) -> Ordering {
-    for index in (0..DOUBLE_LIMBS).rev() {
-        match left[index].cmp(&right[index]) {
-            Ordering::Equal => {},
-            ordering => return ordering,
-        }
-    }
-    Ordering::Equal
 }
 
 fn nonzero_span(words: &[u64]) -> Option<(usize, usize)> {
@@ -1328,8 +1318,8 @@ fn magnitude_product_order(magnitude: &[u64; LIMBS], denominator: f64, candidate
 }
 
 /// Finite feasibility is decided on the four square boundaries.  We enumerate
-/// all boundary candidates and choose the exact minimum squared Euclidean
-/// displacement from the preferred corner; equal exact distances break by
+/// all boundary candidates and choose the exact minimum squared world-coordinate
+/// Euclidean displacement from the preferred corner; equal exact distances break by
 /// total-order x/y bits.  This is deterministic, constant work, and unlike a
 /// fixed boundary order is an actual minimum-displacement rule.
 fn finite_support_wedge_point(
@@ -1466,7 +1456,7 @@ fn nearest_feasible_coordinate(
 fn displacement_order(left: Point, right: Point, preferred: &PreferredCorner) -> Ordering {
     let left_distance = exact_squared_distance(left, preferred);
     let right_distance = exact_squared_distance(right, preferred);
-    match cmp_double_magnitude(&left_distance, &right_distance) {
+    match cmp_wide(&left_distance, &right_distance) {
         Ordering::Equal => total_order_bits(left.x)
             .cmp(&total_order_bits(right.x))
             .then_with(|| total_order_bits(left.y).cmp(&total_order_bits(right.y))),
@@ -1474,7 +1464,7 @@ fn displacement_order(left: Point, right: Point, preferred: &PreferredCorner) ->
     }
 }
 
-fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; DOUBLE_LIMBS] {
+fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; TRIPLE_LIMBS] {
     let x = preferred
         .coordinate_difference(Axis::X, point.x)
         .signed_magnitude()
@@ -1483,7 +1473,20 @@ fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; DO
         .coordinate_difference(Axis::Y, point.y)
         .signed_magnitude()
         .1;
-    add_double_magnitude(&mul_68(&x, &x), &mul_68(&y, &y))
+    let denominator_square = |axis: Axis| {
+        let denominator = preferred.denominator[axis.index()];
+        let mut square = ExactSum::zero();
+        square.add_product(1, denominator, denominator);
+        square.signed_magnitude().1
+    };
+    let x_denominator_square = denominator_square(Axis::X);
+    let y_denominator_square = denominator_square(Axis::Y);
+    // `(Rx / Dx)^2 + (Ry / Dy)^2` has common positive denominator
+    // `Dx^2 * Dy^2`, so compare its exact numerator instead.
+    add_triple_magnitude(
+        &mul_136_68(&mul_68(&x, &x), &y_denominator_square),
+        &mul_136_68(&mul_68(&y, &y), &x_denominator_square),
+    )
 }
 
 const fn total_order_bits(value: f64) -> u64 {
@@ -1637,6 +1640,53 @@ mod tests {
         let far = point(-f64::MAX, 0.0);
         assert_eq!(
             displacement_order(boundary, far, &preferred),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn anisotropic_displacement_uses_world_coordinate_denominators() {
+        let preferred = PreferredCorner {
+            point: point(0.0, 0.0),
+            numerator: [ExactSum::zero(), ExactSum::zero()],
+            denominator: [1.0, 2.0],
+            anisotropic_frame: true,
+        };
+        // These candidates have world squared distances 1 and 2.25. Their raw
+        // residual-numerator scores are 4 and 2.25, the inverse ordering.
+        assert_eq!(
+            displacement_order(point(0.0, 1.0), point(1.5, 0.0), &preferred),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn equal_denominator_displacement_keeps_the_raw_residual_order() {
+        let preferred = PreferredCorner {
+            point: point(0.0, 0.0),
+            numerator: [ExactSum::zero(), ExactSum::zero()],
+            denominator: [2.0; 2],
+            anisotropic_frame: false,
+        };
+        assert_eq!(
+            displacement_order(point(0.0, 1.0), point(1.5, 0.0), &preferred),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn anisotropic_displacement_weights_negative_axis_residuals() {
+        let preferred = PreferredCorner {
+            point: point(0.0, 0.0),
+            numerator: [ExactSum::zero(), ExactSum::zero()],
+            denominator: [2.0, 1.0],
+            anisotropic_frame: true,
+        };
+        // The x candidate is 1 away in world coordinates, while the negative
+        // y candidate is 2.25 away. Their raw residual scores are 4 and 2.25,
+        // so numerator-only ranking incorrectly chooses the y candidate.
+        assert_eq!(
+            displacement_order(point(1.0, 0.0), point(0.0, -1.5), &preferred),
             Ordering::Less
         );
     }
