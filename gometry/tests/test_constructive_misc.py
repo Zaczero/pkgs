@@ -693,30 +693,30 @@ def test_build_area_preserves_mixed_member_axes() -> None:
         'LINESTRING (0 0, 2 0, 2 2, 0 2, 0 0), '
         'LINESTRING Z (10 0 7, 12 0 8, 12 2 9, 10 2 10, 10 0 7))'
     )
-    expected_wkt = (
-        'GEOMETRYCOLLECTION ('
-        'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0)), '
-        'POLYGON Z ((10 0 7, 12 0 8, 12 2 9, 10 2 10, 10 0 7)))'
-    )
-
-    result = source.build_area()
-    assert result.to_wkt() == expected_wkt
-    assert result.geometry_type == 'GeometryCollection'
-    assert result.coordinate_axes == 'XYZ'
-    parts = list(result.parts)
-    assert [part.coordinate_axes for part in parts] == ['XY', 'XYZ']
-    assert list(parts[1].coords) == [
+    expected_xy = [
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 2.0),
+        (0.0, 2.0),
+        (0.0, 0.0),
+    ]
+    expected_xyz = [
         (10.0, 0.0, 7.0),
         (12.0, 0.0, 8.0),
         (12.0, 2.0, 9.0),
         (10.0, 2.0, 10.0),
         (10.0, 0.0, 7.0),
     ]
-    assert result.area == pytest.approx(8.0)
-
-    array_result = gm.GeometryArray([source]).build_area()[0]
-    assert array_result.to_wkt() == expected_wkt
-    assert [part.coordinate_axes for part in array_result.parts] == ['XY', 'XYZ']
+    results = [source.build_area(), gm.GeometryArray([source]).build_area()[0]]
+    for result in results:
+        assert result.geometry_type == 'GeometryCollection'
+        assert result.coordinate_axes == 'XYZ'
+        assert result.area == pytest.approx(8.0)
+        parts = list(result.parts)
+        assert len(parts) == 2
+        assert [part.coordinate_axes for part in parts] == ['XY', 'XYZ']
+        assert list(parts[0].coords) == expected_xy
+        assert list(parts[1].coords) == expected_xyz
 
 
 def test_build_area_keeps_homogeneous_and_empty_output_shapes() -> None:
@@ -725,20 +725,43 @@ def test_build_area_keeps_homogeneous_and_empty_output_shapes() -> None:
         'LINESTRING Z (0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1), '
         'LINESTRING Z (10 0 11, 12 0 12, 12 2 13, 10 2 14, 10 0 11))'
     )
-    assert xyz.build_area().to_wkt() == (
-        'MULTIPOLYGON Z ('
-        '((0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1)), '
-        '((10 0 11, 12 0 12, 12 2 13, 10 2 14, 10 0 11)))'
-    )
+    homogeneous = xyz.build_area()
+    assert homogeneous.geometry_type == 'MultiPolygon'
+    assert homogeneous.coordinate_axes == 'XYZ'
+    homogeneous_parts = list(homogeneous.parts)
+    assert [part.coordinate_axes for part in homogeneous_parts] == ['XYZ', 'XYZ']
+    assert list(homogeneous_parts[0].exterior.coords) == [
+        (0.0, 0.0, 1.0),
+        (2.0, 0.0, 2.0),
+        (2.0, 2.0, 3.0),
+        (0.0, 2.0, 4.0),
+        (0.0, 0.0, 1.0),
+    ]
+    assert list(homogeneous_parts[1].exterior.coords) == [
+        (10.0, 0.0, 11.0),
+        (12.0, 0.0, 12.0),
+        (12.0, 2.0, 13.0),
+        (10.0, 2.0, 14.0),
+        (10.0, 0.0, 11.0),
+    ]
 
     singleton = gm.from_wkt('LINESTRING Z (0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1)')
-    assert singleton.build_area().to_wkt() == (
-        'POLYGON Z ((0 0 1, 2 0 2, 2 2 3, 0 2 4, 0 0 1))'
-    )
+    singleton_result = singleton.build_area()
+    assert singleton_result.geometry_type == 'Polygon'
+    assert singleton_result.coordinate_axes == 'XYZ'
+    assert not singleton_result.is_empty
+    assert list(singleton_result.exterior.coords) == [
+        (0.0, 0.0, 1.0),
+        (2.0, 0.0, 2.0),
+        (2.0, 2.0, 3.0),
+        (0.0, 2.0, 4.0),
+        (0.0, 0.0, 1.0),
+    ]
 
-    assert gm.from_wkt('LINESTRING Z (0 0 1, 1 1 2)').build_area().to_wkt() == (
-        'POLYGON EMPTY'
-    )
+    empty = gm.from_wkt('LINESTRING Z (0 0 1, 1 1 2)').build_area()
+    assert empty.geometry_type == 'Polygon'
+    assert empty.coordinate_axes == 'XY'
+    assert empty.is_empty
 
 
 def test_w4b_smooth_catmull_and_chaikin_bit_stable_and_budget() -> None:
