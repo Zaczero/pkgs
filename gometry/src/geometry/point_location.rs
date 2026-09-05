@@ -11,26 +11,29 @@
 //! Crossing arithmetic reuses [`ray_crossing_is_right`] / [`orientation_xy`].
 
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use crate::HeapSize;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape, ring_edge_membership,
-    xy_bounds_columns,
+    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, Shape,
+    ring_edge_membership, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
 pub(crate) struct RingPointIndex {
     bounds: Bounds,
-    xs: Box<[f64]>,
-    ys: Box<[f64]>,
+    xs: Arc<[f64]>,
+    ys: Arc<[f64]>,
     /// Edge start indices (`0..n-1`) stabbed by Y — dense CSR stores edge
     /// ids directly (no items-vector indirection).
     edges: EdgeYIndex,
 }
 
 impl RingPointIndex {
-    fn build(xs: &[f64], ys: &[f64]) -> Self {
+    fn build(coords: &CoordSeq) -> Self {
+        let xs = coords.xs();
+        let ys = coords.ys();
         let n = xs.len();
         debug_assert_eq!(n, ys.len());
         let bounds = if n == 0 {
@@ -46,8 +49,8 @@ impl RingPointIndex {
         };
         Self {
             bounds,
-            xs: xs.to_vec().into_boxed_slice(),
-            ys: ys.to_vec().into_boxed_slice(),
+            xs: coords.carried_xs(),
+            ys: coords.carried_ys(),
             edges: EdgeYIndex::build(ys),
         }
     }
@@ -136,7 +139,7 @@ impl PolygonPointIndex {
         let hole_rings: Vec<RingPointIndex> = polygon
             .holes
             .iter()
-            .map(|hole| RingPointIndex::build(hole.coords().xs(), hole.coords().ys()))
+            .map(|hole| RingPointIndex::build(hole.coords()))
             .collect();
         index.holes = YStabbingIndex::build(hole_rings, |ring| {
             (
@@ -150,9 +153,9 @@ impl PolygonPointIndex {
     }
 
     pub(in crate::geometry) fn build_shell(shell: &Ring) -> Self {
-        let shell_index = RingPointIndex::build(shell.coords().xs(), shell.coords().ys());
+        let shell_index = RingPointIndex::build(shell.coords());
         Self {
-            bounds: Bounds::from_coords(shell.coords()),
+            bounds: Some(shell_index.bounds),
             shell: shell_index,
             holes: YStabbingIndex::build(Vec::new(), |_| {
                 (
@@ -457,7 +460,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::geometry::{XY, ring_classify_point};
+    use crate::geometry::{CoordWindow, XY, ring_classify_point};
     use crate::{CoordSeq, Ring};
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
@@ -517,7 +520,7 @@ mod tests {
         points.push(XY::new(0.0, 0.0));
         let coords = CoordSeq::from(points);
         assert_eq!(coords.xs().len() - 1, 36);
-        let ring = RingPointIndex::build(coords.xs(), coords.ys());
+        let ring = RingPointIndex::build(&coords);
         assert!(ring.edges.dense_band_edges(5.0).is_some());
 
         for (x, y) in [(5.0, 0.0), (5.0, 5.0), (9.0, 5.0), (-1.0, 5.0)] {
@@ -527,6 +530,81 @@ mod tests {
                 "classification mismatch at ({x}, {y})"
             );
         }
+    }
+
+    #[test]
+    fn full_window_ring_index_shares_xy_and_survives_source_drop() {
+        let coords = CoordSeq::from_columns(
+            [0.0, 2.0, 2.0, 0.0, 0.0].into(),
+            [0.0, 0.0, 2.0, 2.0, 0.0].into(),
+            None,
+            None,
+        );
+        let columns = coords.column_arcs();
+        let source_xs = Arc::clone(&columns.xs);
+        let source_ys = Arc::clone(&columns.ys);
+        let ring = RingPointIndex::build(&coords);
+
+        assert!(Arc::ptr_eq(&ring.xs, &source_xs));
+        assert!(Arc::ptr_eq(&ring.ys, &source_ys));
+
+        drop(columns);
+        drop(coords);
+        drop(source_xs);
+        drop(source_ys);
+
+        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
+        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
+        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
+    }
+
+    #[test]
+    fn windowed_ring_index_classifies_visible_coordinates() {
+        let source_xs: Arc<[f64]> = [1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0].into();
+        let source_ys: Arc<[f64]> = [1000.0, 0.0, 0.0, 2.0, 2.0, 0.0, -1000.0].into();
+        let source_xs_weak = Arc::downgrade(&source_xs);
+        let source_ys_weak = Arc::downgrade(&source_ys);
+        let coords =
+            CoordSeq::from_columns(Arc::clone(&source_xs), Arc::clone(&source_ys), None, None);
+        let visible = coords.view(CoordWindow::from_range(1..6, coords.len()));
+        let ring = RingPointIndex::build(&visible);
+
+        drop(visible);
+        drop(coords);
+        drop(source_xs);
+        drop(source_ys);
+        assert!(source_xs_weak.upgrade().is_none());
+        assert!(source_ys_weak.upgrade().is_none());
+
+        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
+        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
+        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
+    }
+
+    #[test]
+    fn xyzm_ring_index_classifies_from_xy_columns() {
+        let coords = CoordSeq::from_columns(
+            [0.0, 2.0, 2.0, 0.0, 0.0].into(),
+            [0.0, 0.0, 2.0, 2.0, 0.0].into(),
+            Some([10.0, 11.0, 12.0, 13.0, 10.0].into()),
+            Some([20.0, 21.0, 22.0, 23.0, 20.0].into()),
+        );
+        let columns = coords.column_arcs();
+        let z_weak = Arc::downgrade(columns.zs.as_ref().expect("Z column"));
+        let m = columns.m_parts().expect("M column").0;
+        let m_weak = Arc::downgrade(&m);
+        let ring = RingPointIndex::build(&coords);
+
+        assert!(Arc::ptr_eq(&ring.xs, &columns.xs));
+        assert!(Arc::ptr_eq(&ring.ys, &columns.ys));
+        drop(m);
+        drop(columns);
+        drop(coords);
+        assert!(z_weak.upgrade().is_none());
+        assert!(m_weak.upgrade().is_none());
+        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
+        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
+        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
     }
 
     fn square_with_hole() -> Polygon {
