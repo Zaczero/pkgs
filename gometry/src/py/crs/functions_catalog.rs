@@ -238,7 +238,7 @@ pub(crate) fn crs_celestial_bodies<'py>(
     py: Python<'py>,
     authority: Option<&str>,
 ) -> PyResult<Bound<'py, PyList>> {
-    // Warm path: shallow list.copy of a generation-stamped cached PyList.
+    // Warm path: isolation-copy the generation-stamped cached record list.
     super::list_cache::celestial_bodies_py_list(py, authority)
 }
 

@@ -329,8 +329,8 @@ pub(crate) fn crs_units<'py>(
     category: Option<&str>,
     allow_deprecated: bool,
 ) -> PyResult<Bound<'py, PyList>> {
-    // Warm path returns a shallow list.copy of a cached PyList (dict objects
-    // reused); PROJ work lives in the Rust CRS_UNITS_CACHE LRU.
+    // Warm path copies the cached list and each flat record; PROJ work lives in
+    // the Rust CRS_UNITS_CACHE LRU.
     super::list_cache::units_py_list(py, authority, category, allow_deprecated)
 }
 

@@ -832,25 +832,77 @@ def test_utm_catalog_matches_the_named_datum_prefix() -> None:
 
 
 def test_crs_units_and_celestial_bodies_cache_identity() -> None:
-    """Catalog list reads are process/thread-cached; clear resets, warm is identical."""
+    """Catalog records stay isolated across cold and warm cached reads."""
     gm.crs_clear_cache()
     cold_units = gm.crs_units('EPSG', category='linear')
+    expected_units = [dict(unit) for unit in cold_units]
+    cold_unit = next(unit for unit in cold_units if unit['code'] == '9001')
+    unit_name = cold_unit['name']
+    cold_unit['name'] = 'POISON_COLD'
+    pristine_units = gm.crs_units('EPSG', category='linear')
+    assert pristine_units == expected_units
+    assert (
+        next(unit for unit in pristine_units if unit['code'] == '9001')['name']
+        == unit_name
+    )
+
     warm_units = gm.crs_units('EPSG', category='linear')
-    assert cold_units == warm_units
-    assert any(u.get('code') == '9001' for u in warm_units)
-    # Returned list is a shallow copy: mutating it must not poison the cache.
+    warm_unit = next(unit for unit in warm_units if unit['code'] == '9001')
+    warm_unit['name'] = 'POISON_WARM'
+    after_warm_unit_mutation = gm.crs_units('EPSG', category='linear')
+    assert (
+        next(unit for unit in after_warm_unit_mutation if unit['code'] == '9001')[
+            'name'
+        ]
+        == unit_name
+    )
     warm_units[0] = {'poison': True}
-    assert gm.crs_units('EPSG', category='linear') == cold_units
+    assert gm.crs_units('EPSG', category='linear') == after_warm_unit_mutation
 
     cold_bodies = gm.crs_celestial_bodies()
+    expected_bodies = [dict(body) for body in cold_bodies]
+    assert {'authority': 'PROJ', 'name': 'Earth'} in cold_bodies
+    cold_earth = next(
+        body
+        for body in cold_bodies
+        if body['authority'] == 'PROJ' and body['name'] == 'Earth'
+    )
+    body_name = cold_earth['name']
+    cold_earth['name'] = 'POISON_COLD'
+    pristine_bodies = gm.crs_celestial_bodies()
+    assert pristine_bodies == expected_bodies
+    assert (
+        next(
+            body
+            for body in pristine_bodies
+            if body['authority'] == 'PROJ' and body['name'] == 'Earth'
+        )['name']
+        == body_name
+    )
+
     warm_bodies = gm.crs_celestial_bodies()
-    assert cold_bodies == warm_bodies
-    assert {'authority': 'PROJ', 'name': 'Earth'} in warm_bodies
+    warm_earth = next(
+        body
+        for body in warm_bodies
+        if body['authority'] == 'PROJ' and body['name'] == 'Earth'
+    )
+    warm_earth['name'] = 'POISON_WARM'
+    after_warm_body_mutation = gm.crs_celestial_bodies()
+    assert (
+        next(
+            body
+            for body in after_warm_body_mutation
+            if body['authority'] == 'PROJ' and body['name'] == 'Earth'
+        )['name']
+        == body_name
+    )
+    warm_bodies[0] = {'poison': True}
+    assert gm.crs_celestial_bodies() == after_warm_body_mutation
 
     # After clear, a fresh PROJ read still matches the prior snapshot.
     gm.crs_clear_cache()
-    assert gm.crs_units('EPSG', category='linear') == cold_units
-    assert gm.crs_celestial_bodies() == warm_bodies
+    assert gm.crs_units('EPSG', category='linear') == expected_units
+    assert gm.crs_celestial_bodies() == expected_bodies
 
     info = gm.crs_cache_info()
     names = {bucket['name'] for bucket in info['buckets']}

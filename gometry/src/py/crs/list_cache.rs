@@ -11,8 +11,9 @@
 //!
 //! Isolation contract: nested dicts are frozen as `MappingProxyType` and nested
 //! lists as tuples inside those proxies, so in-place leaf mutation cannot poison
-//! the cache. Top-level lists stay real lists and are shallow-copied on return
-//! (new list, shared frozen elements). Top-level dicts are shallow-copied.
+//! the cache. Top-level lists stay real lists. Authority lists are shallow-copied
+//! on return because their elements are immutable strings; record lists copy each
+//! top-level dict. Top-level dicts are shallow-copied.
 
 use std::cell::RefCell;
 
@@ -79,7 +80,7 @@ thread_local! {
     static OPERATIONS_PY_CACHE: RefCell<Vec<OperationsPyEntry>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Drop stale entries and return a shallow copy of a cached list, or build one.
+/// Return a shallow copy of a cached authority list.
 fn shallow_copy_list<'py>(py: Python<'py>, list: &Py<PyList>) -> PyResult<Bound<'py, PyList>> {
     // list.copy() is a shallow copy: new list, same element objects — O(n)
     // pointer writes, not re-IntoPyObject. Matches the public "fresh list"
@@ -206,7 +207,7 @@ pub(crate) fn units_py_list<'py>(
                     && e.category.as_deref() == category
                     && e.allow_deprecated == allow_deprecated
             },
-            |e| shallow_copy_list(py, &e.list),
+            |e| isolation_copy_record_list(py, &e.list),
             || {
                 let items = crs::units_with_state(authority, category, allow_deprecated, &state)?;
                 let list = PyList::empty(py);
@@ -239,7 +240,7 @@ pub(crate) fn celestial_bodies_py_list<'py>(
             generation,
             |e| e.generation,
             |e| e.authority.as_deref() == authority,
-            |e| shallow_copy_list(py, &e.list),
+            |e| isolation_copy_record_list(py, &e.list),
             || {
                 let items = crs::celestial_bodies_with_state(authority, &state)?;
                 let list = PyList::empty(py);
@@ -365,7 +366,7 @@ pub(crate) fn crs_operations_py_list<'py>(
             generation,
             |e| e.generation,
             |e| e.source == source && e.target == target && e.options == *options,
-            |e| isolation_copy_operations_list(py, &e.list),
+            |e| isolation_copy_record_list(py, &e.list),
             || {
                 let items = crs::operations_info_with_state(source, target, options, &state)?;
                 let list = PyList::empty(py);
@@ -385,8 +386,8 @@ pub(crate) fn crs_operations_py_list<'py>(
     })
 }
 
-/// New list of isolation-copied operation dicts (each top-level list key copied).
-fn isolation_copy_operations_list<'py>(
+/// New list of isolation-copied record dicts.
+fn isolation_copy_record_list<'py>(
     py: Python<'py>,
     cached: &Py<PyList>,
 ) -> PyResult<Bound<'py, PyList>> {
