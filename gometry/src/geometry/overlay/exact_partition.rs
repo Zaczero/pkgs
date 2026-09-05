@@ -15,6 +15,7 @@ use std::mem;
 use std::ops::ControlFlow;
 
 use crate::error::ResourceError;
+use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
@@ -69,6 +70,148 @@ impl<'a> ExactPartition<'a> {
 
     pub(in crate::geometry) fn owners(&self, span: usize) -> &[SegmentSource] {
         self.provenance.owners(span)
+    }
+
+    /// Temporary homogeneous coordinates; node identity remains the recipe index.
+    pub(in crate::geometry) fn homogeneous(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {
+        match self.recipe(node) {
+            NodeRecipe::Stored(key) => {
+                let point = key.xy();
+                Ok([
+                    ExactDyadic::try_from_f64(point.x)?,
+                    ExactDyadic::try_from_f64(point.y)?,
+                    ExactDyadic::try_from_f64(1.0)?,
+                ])
+            },
+            NodeRecipe::Constructed { unique, num, den } => {
+                let source = self.unique[*unique as usize];
+                let coordinate = |start, end| -> Result<ExactDyadic> {
+                    let start = ExactDyadic::try_from_f64(start)?;
+                    let delta = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
+                    den.try_product(&start)?.try_add(num.try_product(&delta)?)
+                };
+                Ok([
+                    coordinate(source.start.x, source.end.x)?,
+                    coordinate(source.start.y, source.end.y)?,
+                    den.try_clone()?,
+                ])
+            },
+        }
+    }
+
+    pub(in crate::geometry) fn compare_nodes(&self, left: NodeId, right: NodeId) -> Result<Ordering> {
+        if left == right {
+            return Ok(Ordering::Equal);
+        }
+        let [lx, ly, lw] = self.homogeneous(left)?;
+        let [rx, ry, rw] = self.homogeneous(right)?;
+        let x = try_compare_ratios(&lx, &lw, &rx, &rw)?;
+        if x == Ordering::Equal {
+            try_compare_ratios(&ly, &lw, &ry, &rw)
+        } else {
+            Ok(x)
+        }
+    }
+
+    fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Result<Ordering> {
+        let departure = |index: usize| {
+            let span = self.spans[index];
+            debug_assert!(span.start == origin || span.end == origin);
+            let source = self.unique[span.unique as usize];
+            if span.start == origin {
+                (source.start, source.end)
+            } else {
+                (source.end, source.start)
+            }
+        };
+        // An atom follows its representative source's increasing parameter.
+        let (a, b) = departure(left);
+        let (c, d) = departure(right);
+        let upper = |start: XY, end: XY| {
+            end.y > start.y || (end.y == start.y && end.x > start.x)
+        };
+        let halves = upper(c, d).cmp(&upper(a, b));
+        if halves != Ordering::Equal {
+            return Ok(halves);
+        }
+        let difference = |end, start| {
+            ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
+        };
+        let ax = difference(b.x, a.x)?;
+        let ay = difference(b.y, a.y)?;
+        let bx = difference(d.x, c.x)?;
+        let by = difference(d.y, c.y)?;
+        let sign = ax.try_product(&by)?.try_subtract(ay.try_product(&bx)?)?.sign();
+        debug_assert!(left == right || sign != ExactSign::Zero, "distinct atoms share a departure ray");
+        Ok(match sign {
+            ExactSign::Positive => Ordering::Less,
+            ExactSign::Negative => Ordering::Greater,
+            ExactSign::Zero => Ordering::Equal,
+        })
+    }
+
+    pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
+        let vertices = self.recipes.len();
+        let slots = self.spans.len().checked_mul(2).ok_or(ResourceError::SizeOverflow)?;
+        u32::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?;
+        let mut topology = IndexedTopology::default();
+        try_reserve_vec(&mut topology.starts, vertices.checked_add(1).ok_or(ResourceError::SizeOverflow)?)?;
+        topology.starts.resize(vertices + 1, 0);
+        for span in &self.spans {
+            topology.starts[span.start.0 as usize + 1] += 1;
+            topology.starts[span.end.0 as usize + 1] += 1;
+        }
+        for node in 0..vertices {
+            topology.starts[node + 1] += topology.starts[node];
+        }
+        let mut cursor = Vec::new();
+        try_reserve_vec(&mut cursor, vertices)?;
+        cursor.extend_from_slice(&topology.starts[..vertices]);
+        let mut edge_of_slot = Vec::new();
+        try_reserve_vec(&mut edge_of_slot, slots)?;
+        edge_of_slot.resize(slots, 0);
+        for (edge, span) in self.spans.iter().enumerate() {
+            for node in [span.start, span.end] {
+                edge_of_slot[cursor[node.0 as usize] as usize] = edge as u32;
+                cursor[node.0 as usize] += 1;
+            }
+        }
+        let mut row = Vec::new();
+        for node in 0..vertices {
+            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            if range.len() <= 2 {
+                continue;
+            }
+            row.clear();
+            try_reserve_vec(&mut row, range.len())?;
+            row.extend_from_slice(&edge_of_slot[range.clone()]);
+            let order = try_sort_indices(row.len(), |left, right| {
+                self.compare_departures(NodeId(node as u32), row[left as usize] as usize, row[right as usize] as usize)
+            })?;
+            for (slot, index) in range.zip(order) {
+                edge_of_slot[slot] = row[index as usize];
+            }
+        }
+        try_reserve_vec(&mut topology.targets, slots)?;
+        for node in 0..vertices {
+            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            for &edge in &edge_of_slot[range] {
+                let span = self.spans[edge as usize];
+                topology.targets.push(if span.start.0 == node as u32 { span.end.0 } else { span.start.0 });
+            }
+        }
+        try_reserve_vec(&mut topology.owners, slots)?;
+        try_reserve_vec(&mut topology.twins, slots)?;
+        try_reserve_vec(&mut topology.component_of, vertices)?;
+        try_reserve_vec(&mut topology.face_of, slots)?;
+        try_reserve_vec(&mut topology.face_starts, slots.checked_add(1).ok_or(ResourceError::SizeOverflow)?)?;
+        try_reserve_vec(&mut topology.face_slots, slots)?;
+        let mut scratch = IndexedTopologyScratch::default();
+        try_reserve_vec(&mut scratch.component_stack, vertices)?;
+        try_reserve_vec(&mut scratch.successor, slots)?;
+        try_reserve_vec(&mut scratch.edge_slots, self.spans.len())?;
+        topology.finish(&edge_of_slot, &mut scratch);
+        Ok((topology, edge_of_slot))
     }
 }
 
@@ -299,7 +442,9 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             push_contact_cut(&mut cuts[source], SourceParam::Start, start_handle[source])?;
             push_contact_cut(&mut cuts[source], SourceParam::End, end_handle[source])?;
         }
-        order.push(try_sort_indices(&cuts[source], &zero, &one)?);
+        order.push(try_sort_indices(cuts[source].len(), |left, right| {
+            cuts[source][left as usize].param.cmp(&cuts[source][right as usize].param, &zero, &one)
+        })?);
         union_equal_params(&cuts[source], &order[source], &mut forest, &zero, &one)?;
     }
 
@@ -682,11 +827,11 @@ fn aggregate_atoms(
     Ok((spans, SegmentProvenance::from_csr(offsets, entries)))
 }
 
-fn try_sort_indices(cuts: &[SourceCut], zero: &ExactDyadic, one: &ExactDyadic) -> Result<Vec<u32>> {
-    let n = cuts.len();
+fn try_sort_indices(n: usize, mut compare: impl FnMut(u32, u32) -> Result<Ordering>) -> Result<Vec<u32>> {
+    let count = u32::try_from(n).map_err(|_| ResourceError::SizeOverflow)?;
     let mut src = Vec::new();
     try_reserve_vec(&mut src, n)?;
-    src.extend(0..n as u32);
+    src.extend(0..count);
     if n < 2 {
         return Ok(src);
     }
@@ -699,7 +844,7 @@ fn try_sort_indices(cuts: &[SourceCut], zero: &ExactDyadic, one: &ExactDyadic) -
         while start < n {
             let mid = start.saturating_add(width).min(n);
             let end = mid.saturating_add(width).min(n);
-            merge_indices(&src, &mut dst, start, mid, end, cuts, zero, one)?;
+            merge_indices(&src, &mut dst, start, mid, end, &mut compare)?;
             start = end;
         }
         mem::swap(&mut src, &mut dst);
@@ -714,18 +859,13 @@ fn merge_indices(
     start: usize,
     mid: usize,
     end: usize,
-    cuts: &[SourceCut],
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
+    compare: &mut impl FnMut(u32, u32) -> Result<Ordering>,
 ) -> Result<()> {
     let mut left = start;
     let mut right = mid;
     let mut out = start;
     while left < mid && right < end {
-        let order =
-            cuts[src[left] as usize]
-                .param
-                .cmp(&cuts[src[right] as usize].param, zero, one)?;
+        let order = compare(src[left], src[right])?;
         if order.is_le() {
             dst[out] = src[left];
             left += 1;
@@ -1326,6 +1466,42 @@ mod tests {
                 .map(|(index, _)| NodeId(index as u32)).collect();
             assert_eq!(constructed.len(), 1);
             let crossing = constructed[0];
+            let departures: Vec<_> = [
+                XY::new(3.0, 0.0),
+                XY::new(4.0, 2.0),
+                XY::new(1.0, 0.0),
+                XY::new(0.0, -1.0),
+            ].into_iter().map(|point| {
+                let target = stored_node(&partition, point).unwrap();
+                partition.spans.iter().position(|span| {
+                    (span.start == crossing && span.end == target)
+                        || (span.end == crossing && span.start == target)
+                }).unwrap()
+            }).collect();
+            for (position, &left) in departures.iter().enumerate() {
+                for &right in &departures[position + 1..] {
+                    assert_eq!(partition.compare_departures(crossing, left, right).unwrap(), Ordering::Less);
+                    assert_eq!(partition.compare_departures(crossing, right, left).unwrap(), Ordering::Greater);
+                }
+            }
+            let [x, y, w] = partition.homogeneous(crossing).unwrap();
+            let (topology, edges) = partition.local_topology().unwrap();
+            let row = topology.starts[crossing.0 as usize] as usize
+                ..topology.starts[crossing.0 as usize + 1] as usize;
+            assert_eq!(row.len(), 4);
+            for (&edge, &expected) in edges[row].iter().zip(&departures) {
+                assert_eq!(edge as usize, expected);
+            }
+            let four = ExactDyadic::try_from_f64(4.0).unwrap();
+            let three = ExactDyadic::try_from_f64(3.0).unwrap();
+            let zero = ExactDyadic::try_from_f64(0.0).unwrap();
+            let one = ExactDyadic::try_from_f64(1.0).unwrap();
+            assert_eq!(try_compare_ratios(&x, &w, &four, &three).unwrap(), Ordering::Equal);
+            assert_eq!(try_compare_ratios(&y, &w, &zero, &one).unwrap(), Ordering::Equal);
+            let left = stored_node(&partition, XY::new(1.0, 0.0)).unwrap();
+            let right = stored_node(&partition, XY::new(3.0, 0.0)).unwrap();
+            assert_eq!(partition.compare_nodes(left, crossing).unwrap(), Ordering::Less);
+            assert_eq!(partition.compare_nodes(right, crossing).unwrap(), Ordering::Greater);
             let mut owner_counts: Vec<_> = partition.spans.iter().enumerate()
                 .filter(|(_, span)| span.start == crossing || span.end == crossing)
                 .map(|(index, _)| partition.owners(index).len()).collect();
@@ -1333,6 +1509,39 @@ mod tests {
             assert_eq!(owner_counts, [1, 1, 3, 3]);
             assert_eq!(partition.spans.len(), 9);
         }
+    }
+
+    #[test]
+    fn local_walks_keep_nested_components_and_bridge_sides_separate() {
+        let case = run(&[
+            seg(0.0, 0.0, 8.0, 0.0),
+            seg(8.0, 0.0, 8.0, 8.0),
+            seg(8.0, 8.0, 0.0, 8.0),
+            seg(0.0, 8.0, 0.0, 0.0),
+            seg(2.0, 2.0, 4.0, 2.0),
+            seg(4.0, 2.0, 3.0, 4.0),
+            seg(3.0, 4.0, 2.0, 2.0),
+            seg(8.0, 8.0, 9.0, 9.0),
+            seg(6.0, 6.0, 6.0, 6.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let outer = stored_node(&partition, XY::new(0.0, 0.0)).unwrap().0 as usize;
+        let inner = stored_node(&partition, XY::new(2.0, 2.0)).unwrap().0 as usize;
+        let isolated = stored_node(&partition, XY::new(6.0, 6.0)).unwrap().0 as usize;
+        assert_ne!(topology.component_of[outer], topology.component_of[inner]);
+        assert_ne!(topology.component_of[outer], topology.component_of[isolated]);
+        assert_ne!(topology.component_of[inner], topology.component_of[isolated]);
+        assert_eq!(topology.starts[isolated], topology.starts[isolated + 1]);
+        let mut lengths: Vec<_> = topology.face_starts.windows(2)
+            .map(|window| window[1] - window[0]).collect();
+        lengths.sort_unstable();
+        assert_eq!(lengths, [3, 3, 4, 6]);
+        let tip = stored_node(&partition, XY::new(9.0, 9.0)).unwrap().0 as usize;
+        let slot = topology.starts[tip] as usize;
+        let twin = topology.twins[slot] as usize;
+        assert_eq!(topology.face_of[slot], topology.face_of[twin]);
+        assert_eq!(edges[slot], edges[twin]);
     }
 
     #[test]
