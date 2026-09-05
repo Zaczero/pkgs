@@ -1,9 +1,9 @@
 //! Lazy per-row prepared handles for packed array rows.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Deref;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::array::{
@@ -15,7 +15,9 @@ use crate::heap_size::HeapSize;
 const ROWS_PER_CHUNK: usize = 64;
 
 #[cfg(test)]
-static DIRECTORY_RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static DIRECTORY_RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Default)]
 struct RowProductCell {
@@ -66,7 +68,7 @@ impl RowProductOwner {
         let chunk_index = physical / ROWS_PER_CHUNK;
         let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
-        DIRECTORY_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
         let mut chunks = self
             .chunks
             .lock()
@@ -93,7 +95,7 @@ impl RowProductOwner {
         let chunk_index = physical / ROWS_PER_CHUNK;
         let offset = physical % ROWS_PER_CHUNK;
         #[cfg(test)]
-        DIRECTORY_RESOLUTIONS.fetch_add(1, Ordering::Relaxed);
+        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
         let chunks = self
             .chunks
             .lock()
@@ -398,12 +400,12 @@ impl RowProducts {
 
     #[cfg(test)]
     pub(crate) fn reset_directory_resolution_count() {
-        DIRECTORY_RESOLUTIONS.store(0, Ordering::Relaxed);
+        DIRECTORY_RESOLUTIONS.with(|count| count.set(0));
     }
 
     #[cfg(test)]
     pub(crate) fn directory_resolution_count() -> usize {
-        DIRECTORY_RESOLUTIONS.load(Ordering::Relaxed)
+        DIRECTORY_RESOLUTIONS.with(Cell::get)
     }
 
     fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
