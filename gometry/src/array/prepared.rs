@@ -114,6 +114,7 @@ pub(crate) struct RowProducts {
 #[derive(Debug)]
 struct ResolvedRowProductChunk {
     physical: usize,
+    offset: usize,
     owner: Arc<RowProductOwner>,
     chunk_index: usize,
     chunk: Arc<RowProductChunk>,
@@ -245,6 +246,7 @@ impl RowProductsHandle {
             let (owner, offset, chunk) = self.owner.cell(physical)?;
             self.current = Some(ResolvedRowProductChunk {
                 physical,
+                offset,
                 owner,
                 chunk_index: physical / ROWS_PER_CHUNK,
                 chunk,
@@ -257,7 +259,11 @@ impl RowProductsHandle {
         Ok(self
             .current
             .as_ref()
-            .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK)))
+            .map(|current| (&current.chunk, if has_aliases {
+                current.offset
+            } else {
+                physical % ROWS_PER_CHUNK
+            })))
     }
 
     fn existing_cell(&mut self, logical: usize) -> Option<(&Arc<RowProductChunk>, usize)> {
@@ -275,6 +281,7 @@ impl RowProductsHandle {
             let (owner, offset, chunk) = self.owner.existing_cell(physical)?;
             self.current = Some(ResolvedRowProductChunk {
                 physical,
+                offset,
                 owner,
                 chunk_index: physical / ROWS_PER_CHUNK,
                 chunk,
@@ -286,7 +293,11 @@ impl RowProductsHandle {
         }
         self.current
             .as_ref()
-            .map(|current| (&current.chunk, physical % ROWS_PER_CHUNK))
+            .map(|current| (&current.chunk, if has_aliases {
+                current.offset
+            } else {
+                physical % ROWS_PER_CHUNK
+            }))
     }
 
     pub(crate) fn frame_cache(&mut self, logical: usize) -> Arc<FrameDependentCaches> {
@@ -399,13 +410,6 @@ impl RowProducts {
         let current = self.selection.as_deref();
         let physical_len = self.owner.physical_len;
         let selection = crate::array::row_selection_from_logical_rows(current, physical_len, rows);
-        Self {
-            owner: Arc::clone(&self.owner),
-            selection,
-        }
-    }
-
-    pub(super) fn with_selection(&self, selection: RowSelection) -> Self {
         Self {
             owner: Arc::clone(&self.owner),
             selection,
@@ -873,6 +877,57 @@ mod frame_cache_row_tests {
         assert!(handle.cached_prepared_plan(0).is_none());
         assert!(products.owner.chunks.lock().unwrap().is_empty());
         assert_eq!(RowProducts::directory_resolution_count(), 1);
+    }
+
+    #[test]
+    fn aliased_products_keep_source_identity_on_repeated_access() {
+        for source_row in [2, ROWS_PER_CHUNK + 1] {
+            let source = RowProducts::fresh(source_row + 1);
+            let selected = source.selected([source_row]);
+            let aliases = RowProducts::preserving_physical_rows(1, &selected, &[0])
+                .expect("alias construction");
+            let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
+            let expected_plan = source.prepared_plan(source_row, Arc::clone(&shape));
+            let expected_frame = source.frame_cache(source_row);
+
+            let mut handle = aliases.operation();
+            for _ in 0..2 {
+                let plan = handle.cached_prepared_plan(0).expect("source prepared product");
+                assert!(Arc::ptr_eq(&plan, &expected_plan));
+                assert!(Arc::ptr_eq(&handle.frame_cache(0), &expected_frame));
+                assert!(Arc::ptr_eq(&handle.prepared_plan(0, Arc::clone(&shape)), &expected_plan));
+            }
+
+            let mut handle = aliases.operation();
+            assert!(Arc::ptr_eq(&handle.frame_cache(0), &expected_frame));
+            assert!(Arc::ptr_eq(
+                &handle.cached_prepared_plan(0).expect("source prepared product"),
+                &expected_plan
+            ));
+        }
+    }
+
+    #[test]
+    fn point_selection_preserves_source_products_after_payload_rebasing() {
+        use crate::py::row::RowGetItemContainer as _;
+
+        let source = PyGeometryArray::packed_points(
+            CoordSeq::from_vecs(vec![3.0, 7.0, 13.0], vec![5.0, 11.0, 17.0], None, None),
+            Frame::None,
+        );
+        let expected = source.row_products.frame_cache(1);
+        let other = source.row_products.frame_cache(0);
+        assert!(!Arc::ptr_eq(&expected, &other));
+        for selected in [
+            source.gather_logical_row_range(1..3),
+            source.gather_logical_rows(&[1, 2]),
+            source.slice_rows(1, 3, 1),
+            source.slice_rows(1, -1, -1),
+        ] {
+            assert!(Arc::ptr_eq(&selected.row_products.frame_cache(0), &expected));
+            let duplicates = selected.gather_logical_rows(&[0, 0]);
+            assert!(Arc::ptr_eq(&duplicates.row_products.frame_cache(1), &expected));
+        }
     }
 
     #[test]

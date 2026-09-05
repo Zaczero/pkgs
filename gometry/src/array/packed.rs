@@ -655,18 +655,7 @@ PackedStorage::Polygons { .. }) => {
         source: &Self,
         rows: impl IntoIterator<Item = usize>,
     ) -> Self {
-        if source.is_compact_nullable() {
-            self.row_products = source.selected_row_products(rows);
-            return self;
-        }
-        self.row_products = match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. } |
-PackedStorage::Lines { row_map, .. } | PackedStorage::Polygons { row_map, ..
-}) => {
-                source.row_products.with_selection(row_map.clone())
-            },
-            GeometryArrayStorage::Mixed(_) => source.selected_row_products(rows),
-        };
+        self.row_products = source.selected_row_products(rows);
         self
     }
 

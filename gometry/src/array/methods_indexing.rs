@@ -342,18 +342,16 @@ impl RowGetItemContainer for PyGeometryArray {
     }
 
     fn slice_rows(&self, start: isize, stop: isize, step: isize) -> Self {
+        if step == 1 {
+            return self.gather_logical_row_range(start as usize..stop.max(start) as usize);
+        }
         if matches!(self.storage(), GeometryArrayStorage::Packed(PackedStorage::Points { .. }))
             && !self.is_compact_nullable()
         {
-            let mut out = self.slice_packed_points(start, stop, step);
-            let GeometryArrayStorage::Packed(PackedStorage::Points { row_map, .. }) = out.storage() else {
-                unreachable!("packed point slicing preserves point storage")
-            };
-            out.row_products = self.row_products.with_selection(row_map.clone());
-            return out;
-        }
-        if self.is_compact_nullable() && step == 1 {
-            return self.gather_logical_row_range(start as usize..stop as usize);
+            let rows = collect_slice_rows(start, stop, step);
+            return self.slice_packed_points(start, stop, step)
+                .with_missing_mask(self.gather_missing(&rows))
+                .with_selected_caches_from(self, rows);
         }
         self.gather_logical_rows(&collect_slice_rows(start, stop, step))
     }
