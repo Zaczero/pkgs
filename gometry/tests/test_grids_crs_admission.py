@@ -327,6 +327,63 @@ def test_c2_polar_stereo_variant_b_uses_standard_parallel():
     assert 'k_0=' not in text and '+k=' not in text
 
 
+def test_c8_mercator_rejects_conflicting_defining_parameters():
+    with pytest.raises(gm.CRSError):
+        gm.CRS({
+            'grid_mapping_name': 'mercator',
+            'longitude_of_projection_origin': 0.0,
+            'standard_parallel': 30.0,
+            'scale_factor_at_projection_origin': 0.8,
+            'false_easting': 1234.0,
+            'false_northing': -567.0,
+            'semi_major_axis': 6_378_137.0,
+            'inverse_flattening': 298.257223563,
+        })
+
+
+def test_c8_mercator_single_key_controls_match_independent_proj_definitions():
+    common = {
+        'grid_mapping_name': 'mercator',
+        'longitude_of_projection_origin': 0.0,
+        'false_easting': 1234.0,
+        'false_northing': -567.0,
+        'semi_major_axis': 6_378_137.0,
+        'inverse_flattening': 298.257223563,
+    }
+    standard_parallel = {**common, 'standard_parallel': 30.0}
+    scale_factor = {**common, 'scale_factor_at_projection_origin': 0.8}
+    standard_proj = (
+        '+proj=merc +lat_0=0 +lon_0=0 +lat_ts=30 '
+        '+x_0=1234 +y_0=-567 +a=6378137 +rf=298.257223563 '
+        '+units=m +type=crs'
+    )
+    scale_proj = (
+        '+proj=merc +lat_0=0 +lon_0=0 +k_0=0.8 '
+        '+x_0=1234 +y_0=-567 +a=6378137 +rf=298.257223563 '
+        '+units=m +type=crs'
+    )
+    x, y = 1_000_000.0, 2_000_000.0
+    assert gm.crs_transform(standard_parallel, 4326, x, y) == pytest.approx(
+        gm.crs_transform(standard_proj, 4326, x, y)
+    )
+    assert gm.crs_transform(scale_factor, 4326, x, y) == pytest.approx(
+        gm.crs_transform(scale_proj, 4326, x, y)
+    )
+
+
+def test_c8_mercator_wkt_precedence_survives_parameter_conflict():
+    cf = {
+        'grid_mapping_name': 'mercator',
+        'longitude_of_projection_origin': 0.0,
+        'standard_parallel': 30.0,
+        'scale_factor_at_projection_origin': 0.8,
+        'semi_major_axis': 6_378_137.0,
+        'inverse_flattening': 298.257223563,
+        'crs_wkt': gm.CRS(3395).to_wkt(),
+    }
+    assert gm.CRS(cf).to_epsg() == 3395
+
+
 _DEG = math.pi / 180.0
 _GRAD = math.pi / 200.0
 # International foot (EPSG:9002), exact.

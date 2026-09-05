@@ -385,10 +385,17 @@ fn cf_mercator_proj(
     false_easting: f64,
     false_northing: f64,
 ) -> PyResult<String> {
-    let scale = dict_f64(dict, "scale_factor_at_projection_origin")?
+    let scale = dict_f64(dict, "scale_factor_at_projection_origin")?;
+    let lat_ts = cf_optional_standard_parallel(dict)?;
+    if scale.is_some() && lat_ts.is_some() {
+        return Err(CRSError::new_err(
+            "CF CRS dictionary mercator cannot combine standard_parallel and scale_factor_at_projection_origin",
+        ));
+    }
+    let scale = scale
         .map(|value| format!(" +k_0={value}"))
         .unwrap_or_default();
-    let lat_ts = cf_optional_standard_parallel(dict)?
+    let lat_ts = lat_ts
         .map(|value| format!(" +lat_ts={value}"))
         .unwrap_or_default();
     Ok(format!(
