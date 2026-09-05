@@ -21,7 +21,7 @@ use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
     point_in_segment_envelope, segment_envelopes_disjoint, stored_orientation_sign,
 };
-use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
+use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, try_compare_ratios};
 use crate::geometry::{
     ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Polygon, Result, Segment, XY,
     for_each_candidate_pair, same_point, single_chain,
@@ -211,6 +211,21 @@ impl<'a> ExactPartition<'a> {
                 ])
             },
         }
+    }
+
+    fn round_nodes(&self, nodes: &[NodeId]) -> Result<Vec<XY>> {
+        let mut coordinates = Vec::new();
+        try_reserve_vec(&mut coordinates, nodes.len())?;
+        for &node in nodes {
+            coordinates.push(match self.recipe(node) {
+                NodeRecipe::Stored(key) => key.xy(),
+                NodeRecipe::Constructed { .. } => {
+                    let [x, y, w] = self.homogeneous(node)?;
+                    XY::new(round_ratio(&x, &w)?, round_ratio(&y, &w)?)
+                },
+            });
+        }
+        Ok(coordinates)
     }
 
     pub(in crate::geometry) fn compare_nodes(
@@ -1498,6 +1513,28 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selected_nodes_round_in_requested_order() {
+        let case = run(&[seg(0.0, 0.0, 3.0, 1.0), seg(1.0, -1.0, 1.0, 1.0)]);
+        let partition = case.partition();
+        let crossing = NodeId(
+            partition
+                .recipes
+                .iter()
+                .position(|recipe| matches!(recipe, NodeRecipe::Constructed { .. }))
+                .unwrap() as u32,
+        );
+        let endpoint = stored_node(&partition, XY::new(3.0, 1.0)).unwrap();
+        let rounded = partition
+            .round_nodes(&[endpoint, crossing, endpoint])
+            .unwrap();
+        assert_eq!(rounded[0], XY::new(3.0, 1.0));
+        assert_eq!(rounded[1].x, 1.0);
+        assert_eq!(rounded[1].y.to_bits(), 0x3FD5555555555555);
+        assert_eq!(rounded[2], XY::new(3.0, 1.0));
+        assert!(partition.round_nodes(&[]).unwrap().is_empty());
+    }
+
     #[test]
     fn stored_ring_sources_keep_direction_and_shell_hole_composition() {
         let polygon = |wkt| match crate::io::parse_wkt(wkt).unwrap() {
