@@ -193,12 +193,17 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
     Ring::closed_coordseq(coords)
 }
 
-/// Reject multipart layouts that would invent missing Z/M under a union axes
-/// header when writing WKT/WKB.
+/// Reject polygon layouts that would invent missing Z/M under a union axes
+/// header when admitting or writing a multipart geometry.
 pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
     match shape {
         Shape::Polygon(polygon) => {
             polygon_output_axes(polygon)?;
+        },
+        Shape::MultiPolygon(polygons) => {
+            for polygon in polygons {
+                polygon_output_axes(polygon)?;
+            }
         },
         Shape::GeometryCollection(members) => {
             for member in members {
@@ -212,19 +217,38 @@ pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
 
 /// Axes of a single polygon's rings (must be homogeneous).
 pub(crate) fn polygon_output_axes(polygon: &Polygon) -> Result<CoordinateAxes> {
+    polygon_output_axes_with(polygon, |_, detail| GeometryErrorKind::message(detail))
+}
+
+/// The one ring-axis traversal behind serialization and input admission.
+///
+/// The mismatch callback owns the error boundary: serializers retain the
+/// existing geometry error, while GeoJSON can attach the offending ring path
+/// before the generic parser wrapper fills in any missing context.
+pub(crate) fn polygon_output_axes_with<F>(
+    polygon: &Polygon,
+    mut on_mismatch: F,
+) -> Result<CoordinateAxes, CrateError>
+where
+    F: FnMut(usize, Box<str>) -> CrateError,
+{
     let mut axes: Option<CoordinateAxes> = None;
-    for ring in polygon.rings() {
+    for (index, ring) in polygon.rings().enumerate() {
         let member = ring.axes();
         match axes {
             None => axes = Some(member),
             Some(prev) if prev == member => {},
             Some(prev) => {
-                return Err(GeometryErrorKind::message(format!(
-                    "Polygon rings must share one coordinate axes layout for serialization; \
-                     got {} and {} — promote with force_3d/set_m first",
-                    prev.as_str(),
-                    member.as_str(),
-                )));
+                return Err(on_mismatch(
+                    index,
+                    format!(
+                        "Polygon rings must share one coordinate axes layout for serialization; \
+                         got {} and {} — promote with force_3d/set_m first",
+                        prev.as_str(),
+                        member.as_str(),
+                    )
+                    .into_boxed_str(),
+                ));
             },
         }
     }
@@ -344,3 +368,37 @@ pub(crate) use wkt::{
     WktDimension, WktNumberFormat, classify_wkt_type_token, parse_wkt, to_wkt, to_wkt_display,
     to_wkt_preview, to_wkt_with_dimension,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{MOrdinate, MultiMember, MultiPolygon, ZOrdinate};
+
+    fn ring(axes: CoordinateAxes) -> Ring {
+        let point = |x: f64, y: f64, z: Option<f64>| {
+            Point::new_axes(x, y, ZOrdinate(z), MOrdinate(None)).expect("finite test point")
+        };
+        let points = [
+            point(0.0, 0.0, axes.has_z().then_some(1.0)),
+            point(2.0, 0.0, axes.has_z().then_some(1.0)),
+            point(0.0, 2.0, axes.has_z().then_some(1.0)),
+            point(0.0, 0.0, axes.has_z().then_some(1.0)),
+        ];
+        Ring::from_closed(CoordSeq::from_points(&points))
+    }
+
+    #[test]
+    fn serializable_axes_reject_mixed_multipolygon_rings() {
+        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
+        let shape = Shape::MultiPolygon(
+            MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
+                .expect("polygon aggregate axes match"),
+        );
+        let error = require_serializable_axes(&shape).expect_err("mixed rings must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("Polygon rings must share one coordinate axes layout")
+        );
+    }
+}

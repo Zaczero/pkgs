@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 import types
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import gometry as gm
 import pytest
@@ -658,3 +661,84 @@ def test_d20_from_features_valid_feature() -> None:
     feats = gm.from_features(feature)
     assert feats.geometries.to_wkt() == ['POINT (1 2)']
     assert feats.properties == ({'a': 1},)
+
+
+def _mixed_ring_polygon() -> dict[str, object]:
+    return {
+        'type': 'Polygon',
+        'coordinates': [
+            [[0, 0, 1], [4, 0, 1], [0, 4, 1], [0, 0, 1]],
+            [[1, 1], [2, 1], [1, 2], [1, 1]],
+        ],
+    }
+
+
+def _assert_mixed_ring_parse_error(call: Callable[[], object], path: str) -> None:
+    with pytest.raises(
+        gm.ParseError,
+        match=r'Polygon rings must share one coordinate axes',
+    ) as exc_info:
+        call()
+    assert exc_info.value.format == 'geojson'
+    assert exc_info.value.path == path
+
+
+def test_d24_mixed_polygon_ring_axes_reject_all_geojson_readers() -> None:
+    """Mixed shell/hole axes reject with the reader's precise ring path."""
+    geometry = _mixed_ring_polygon()
+    encoded = [geometry, json.dumps(geometry), json.dumps(geometry).encode()]
+    for data in encoded:
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_geojson(data, crs=None),
+            '$.coordinates[1]',
+        )
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.require(data, crs=None),
+            '$.coordinates[1]',
+        )
+
+    feature = {'type': 'Feature', 'geometry': geometry, 'properties': {}}
+    for data in [feature, json.dumps(feature), json.dumps(feature).encode()]:
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_features(data, crs=None),
+            '$.geometry.coordinates[1]',
+        )
+
+    collection = {'type': 'FeatureCollection', 'features': [feature]}
+    for data in [collection, json.dumps(collection), json.dumps(collection).encode()]:
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_geojson(data, crs=None),
+            '$.features[0].geometry.coordinates[1]',
+        )
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_features(data, crs=None),
+            '$.features[0].geometry.coordinates[1]',
+        )
+
+
+def test_d24_mixed_multipolygon_ring_axes_reject_all_geojson_readers() -> None:
+    """The nested MultiPolygon ring path uses the same admission owner."""
+    geometry = {
+        'type': 'MultiPolygon',
+        'coordinates': [[
+            [[0, 0, 1], [4, 0, 1], [0, 4, 1], [0, 0, 1]],
+            [[1, 1], [2, 1], [1, 2], [1, 1]],
+        ]],
+    }
+    encoded = [geometry, json.dumps(geometry), json.dumps(geometry).encode()]
+    for data in encoded:
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_geojson(data, crs=None),
+            '$.coordinates[0][1]',
+        )
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.require(data, crs=None),
+            '$.coordinates[0][1]',
+        )
+
+    feature = {'type': 'Feature', 'geometry': geometry, 'properties': {}}
+    for data in [feature, json.dumps(feature), json.dumps(feature).encode()]:
+        _assert_mixed_ring_parse_error(
+            lambda data=data: gm.from_features(data, crs=None),
+            '$.geometry.coordinates[0][1]',
+        )

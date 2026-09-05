@@ -106,6 +106,27 @@ def test_multi_polygons_round_trip() -> None:
     assert gm.equals(multipolys[0], gm.MultiPolygon([left, right], crs=4326))
 
 
+def test_multi_polygons_rejects_mixed_member_and_ring_axes() -> None:
+    """Raw and nested exact multipolygon members never reach unchecked packing."""
+    xy = [[(0, 0), (4, 0), (0, 4), (0, 0)]]
+    xyz = [[(0, 0, 1), (4, 0, 1), (0, 4, 1), (0, 0, 1)]]
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'MultiPolygon members must share one coordinate axes',
+    ):
+        gm.multi_polygons([[xy, xyz]])
+
+    mixed = [
+        [(0, 0, 1), (4, 0, 1), (0, 4, 1), (0, 0, 1)],
+        [(1, 1), (2, 1), (1, 2), (1, 1)],
+    ]
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'Polygon rings must share one coordinate axes',
+    ):
+        gm.multi_polygons([[mixed]])
+
+
 def test_plural_coordinate_factories_reject_built_geometries() -> None:
     members = [gm.LineString([(0, 0), (1, 1)]), gm.LineString([(2, 2), (3, 3)])]
     shell = [(0, 0), (1, 0), (1, 1), (0, 1)]

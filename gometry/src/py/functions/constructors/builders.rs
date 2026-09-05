@@ -708,8 +708,20 @@ pub(super) fn multi_line_string_from_data_item(item: &Bound<'_, PyAny>) -> PyRes
 pub(super) fn multi_polygon_from_data_item(item: &Bound<'_, PyAny>) -> PyResult<Shape> {
     geometry_from_data_item(item, "MultiPolygon", |item| {
         let polygons = extract_polygons(item)?;
+        if polygons.is_empty() {
+            return Ok(Shape::typed_empty(
+                GeometryKind::MultiPolygon,
+                CoordinateAxes::XY,
+            ));
+        }
         let axes = polygons.first().map_or(CoordinateAxes::XY, Polygon::axes);
-        let shape = Shape::multi_polygon(axes, polygons);
+        let members = polygons.into_iter().map(MultiMember::Value).collect();
+        let shape = Shape::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(|_| {
+            InvalidGeometryError::new_err(
+                "MultiPolygon members must share one coordinate axes layout \
+                 (XY, XYZ, XYM, or XYZM)",
+            )
+        })?);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         Ok(shape)
     })

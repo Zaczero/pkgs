@@ -454,7 +454,11 @@ fn parse_polygon(value: &Value, path: &JsonPath<'_>) -> Result<Polygon> {
     for (index, ring) in rings.iter().enumerate().skip(1) {
         crate::boundary::try_push_vec(&mut holes, parse_geojson_ring(ring, &path.index(index))?)?;
     }
-    Ok(Polygon::new(shell, holes))
+    let polygon = Polygon::new(shell, holes);
+    crate::io::polygon_output_axes_with(&polygon, |index, detail| {
+        IoError::geojson(detail).with_parse_path(&path.index(index).render())
+    })?;
+    Ok(polygon)
 }
 
 fn parse_geojson_ring(value: &Value, path: &JsonPath<'_>) -> Result<Ring> {
