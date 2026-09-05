@@ -38,12 +38,16 @@ impl fmt::Debug for FrameDependentCaches {
 
 impl HeapSize for FrameDependentCaches {
     fn heap_bytes(&self) -> usize {
-        self.entry.lock().ok().map_or(0, |entry| entry.heap_bytes())
-            + self.geographic_topology.lock().ok().map_or(0, |slot| {
-                slot.graph.as_ref().map_or(0, |graph| {
+        self.entry.heap_bytes()
+            + self
+                .geographic_topology
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .graph
+                .as_ref()
+                .map_or(0, |graph| {
                     std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes()
                 })
-            })
     }
 }
 
@@ -617,6 +621,8 @@ mod footprint_tests {
 
 #[cfg(test)]
 mod frame_cache_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
     use crate::geometry::{CoordSeq, LineSeq};
 
@@ -687,6 +693,54 @@ mod frame_cache_tests {
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
             .expect("cached line index");
         assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn frame_entry_heap_bytes_survive_poison() {
+        let shape = PreparedPlan::new(Shape::LineString(
+            LineSeq::try_new(CoordSeq::from_vecs(
+                vec![0.0, 1.0, 2.0],
+                vec![0.0, 1.0, 0.0],
+                None,
+                None,
+            ))
+            .expect("line coordinate sequence must contain at least two vertices"),
+        ));
+        let cache = FrameDependentCaches::default();
+        shape
+            .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
+            .expect("line index");
+        let before = cache.heap_bytes();
+        assert!(before > 0);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = cache.entry.lock().unwrap();
+            panic!("poison the frame entry mutex");
+        }));
+        assert!(result.is_err());
+
+        assert_eq!(cache.heap_bytes(), before);
+    }
+
+    #[test]
+    fn geographic_graph_heap_bytes_survive_poison() {
+        let cache = FrameDependentCaches::default();
+        let graph = Arc::new(crate::geometry::TopologyGraph::cartesian(&Shape::Point(
+            Point::new_raw_xy(1.0, 2.0),
+        )));
+        let expected = std::mem::size_of_val(graph.as_ref()) + graph.heap_bytes();
+        assert!(expected > 0);
+        cache.geographic_topology.lock().unwrap().graph = Some(Arc::clone(&graph));
+        let before = cache.heap_bytes();
+        assert_eq!(before, expected);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = cache.geographic_topology.lock().unwrap();
+            panic!("poison the geographic graph mutex");
+        }));
+        assert!(result.is_err());
+
+        assert_eq!(cache.heap_bytes(), before);
     }
 
     #[test]

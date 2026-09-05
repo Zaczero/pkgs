@@ -145,6 +145,30 @@ impl<T: HeapSize> HeapSize for OnceLock<T> {
 
 impl<T: HeapSize> HeapSize for Mutex<T> {
     fn heap_bytes(&self) -> usize {
-        self.lock().ok().map_or(0, |value| value.heap_bytes())
+        self.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .heap_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+
+    #[test]
+    fn poisoned_mutex_heap_bytes_keeps_populated_vec() {
+        let value = Mutex::new(Vec::<u8>::with_capacity(16));
+        let before = value.heap_bytes();
+        assert!(before > 0);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = value.lock().unwrap();
+            panic!("poison the accounting mutex");
+        }));
+        assert!(result.is_err());
+
+        assert_eq!(value.heap_bytes(), before);
     }
 }
