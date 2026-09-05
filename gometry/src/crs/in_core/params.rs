@@ -326,7 +326,10 @@ fn classify_param_unit(param: &OperationParameterInfo) -> Option<ParamUnit> {
     None
 }
 
-fn parse_param_value(param: &OperationParameterInfo, unit: ParamUnit) -> Option<f64> {
+pub(in crate::crs) fn parse_param_value(
+    param: &OperationParameterInfo,
+    unit: ParamUnit,
+) -> Option<f64> {
     if !param.value.is_finite() {
         return None;
     }

@@ -7,11 +7,12 @@
 
 use std::borrow::Cow;
 
-use crate::crs::in_core::Pole;
+use super::catalog::catalog_with_state;
+use crate::crs::in_core::{DatumKey, ParamUnit, Pole, datum_key, parse_param_value};
 use crate::crs::{
-    AreaOfInterest, CrsError, RuntimeState, Shape, UtmCatalogOptions, factors_at, info_with_state,
+    AreaOfInterest, CrsCatalogOptions, CrsCoordinateOperationInfo, CrsError, CrsInfo,
+    CrsObjectKind, OperationParameterInfo, RuntimeState, Shape, factors_at, info_with_state,
     is_wgs84_lonlat, normalize, parse_epsg, to_projjson_with_options_at, transform_at, utm_crs,
-    utm_zones_at,
 };
 use crate::error::Result;
 
@@ -288,19 +289,20 @@ fn best_utm_from_anchor(
     } else {
         Pole::South
     };
-    if !has_wgs84_datum_fast_path(crs)
-        && let Some(source_datum) = source_utm_datum_name(crs, state)?
-        && !is_wgs84_utm_datum_name(&source_datum)
-        && let Some(candidate) = best_utm_from_catalog(
-            &source_datum,
-            local.longitude,
-            local.latitude,
-            zone,
-            pole,
-            state,
-        )?
-    {
-        return Ok(candidate);
+    if !has_wgs84_datum_fast_path(crs) {
+        let info = info_with_state(crs, state)?;
+        if let Some(source_datum) = datum_key(&info)
+            && let Some(candidate) = best_utm_from_catalog(
+                &source_datum,
+                local.longitude,
+                local.latitude,
+                zone,
+                pole,
+                state,
+            )?
+        {
+            return Ok(candidate);
+        }
     }
     Ok(wgs84_utm_crs(zone, pole))
 }
@@ -309,30 +311,18 @@ fn has_wgs84_datum_fast_path(crs: &str) -> bool {
     is_wgs84_lonlat(crs) || parse_epsg(crs) == Some(3857) || utm_crs(crs).is_some()
 }
 
-fn source_utm_datum_name(crs: &str, state: &RuntimeState) -> Result<Option<String>> {
-    let info = info_with_state(crs, state)?;
-    Ok(info
-        .geodetic_crs
-        .as_ref()
-        .and_then(|geodetic| geodetic.name.clone())
-        .or_else(|| info.datum.as_ref().and_then(|datum| datum.name.clone())))
-}
-
-fn is_wgs84_utm_datum_name(name: &str) -> bool {
-    matches!(name, "WGS 84" | "World Geodetic System 1984 ensemble")
-}
-
 fn best_utm_from_catalog(
-    datum_name: &str,
+    source_datum: &DatumKey,
     lon: f64,
     lat: f64,
     zone: UtmZone,
     pole: Pole,
     state: &RuntimeState,
 ) -> Result<Option<String>> {
-    let items = utm_zones_at(
-        &UtmCatalogOptions {
-            datum_name: Some(datum_name.to_owned()),
+    let items = catalog_with_state(
+        Some("EPSG"),
+        &CrsCatalogOptions {
+            kind: Some(CrsObjectKind::ProjectedCrs),
             area: Some(AreaOfInterest {
                 west: lon,
                 south: lat,
@@ -341,27 +331,114 @@ fn best_utm_from_catalog(
             }),
             contains_area: false,
             allow_deprecated: false,
+            celestial_body: Some("Earth".to_owned()),
         },
         state,
     )?;
-    Ok(items
-        .into_iter()
-        .find(|item| {
-            item.name.as_deref().is_some_and(|name| {
-                let Some((_, suffix)) = name.rsplit_once(" / UTM zone ") else {
-                    return false;
-                };
-                let zone_text = zone.get().to_string();
-                let Some(hemisphere) = suffix.strip_prefix(&zone_text) else {
-                    return false;
-                };
-                matches!(
-                    (pole, hemisphere.chars().next()),
-                    (Pole::North, Some('N')) | (Pole::South, Some('S'))
-                )
-            })
-        })
-        .map(|item| item.crs))
+    let mut best: Option<String> = None;
+    for item in items {
+        if item.projection_method_name.as_deref() != Some("Transverse Mercator") {
+            continue;
+        }
+        let info = info_with_state(&item.crs, state)?;
+        if datum_key(&info).as_ref() != Some(source_datum) {
+            continue;
+        }
+        if !is_east_north_metre_axes(&info) {
+            continue;
+        }
+        if !is_utm_operation(&info, zone, pole) {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|current| utm_survivor_rank(&item.crs) < utm_survivor_rank(current))
+        {
+            best = Some(item.crs);
+        }
+    }
+    Ok(best)
+}
+
+fn utm_survivor_rank(crs: &str) -> (u32, &str) {
+    (parse_epsg(crs).unwrap_or(u32::MAX), crs)
+}
+
+fn is_east_north_metre_axes(info: &CrsInfo) -> bool {
+    let [east, north] = info.axes.as_slice() else {
+        return false;
+    };
+    east.direction.as_deref() == Some("east")
+        && north.direction.as_deref() == Some("north")
+        && east.unit_conversion_factor == 1.0
+        && north.unit_conversion_factor == 1.0
+}
+
+fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
+    let Some(operation) = info.coordinate_operation.as_ref() else {
+        return false;
+    };
+    let Some(method) = operation.method.as_ref() else {
+        return false;
+    };
+    if method.authority.as_deref() != Some("EPSG") || method.code.as_deref() != Some("9807") {
+        return false;
+    }
+    let expected_lon0 = f64::from(zone.get()) * 6.0 - 183.0;
+    let expected_northing = match pole {
+        Pole::North => 0.0,
+        Pole::South => 10_000_000.0,
+    };
+    angular_param_matches_degrees(operation, "8801", 0.0)
+        && angular_param_matches_degrees(operation, "8802", expected_lon0)
+        && linear_or_unity_param_matches(operation, "8805", ParamUnit::Unity, super::UTM_K0)
+        && linear_or_unity_param_matches(operation, "8806", ParamUnit::Metre, 500_000.0)
+        && linear_or_unity_param_matches(operation, "8807", ParamUnit::Metre, expected_northing)
+}
+
+fn angular_param_matches_degrees(
+    operation: &CrsCoordinateOperationInfo,
+    code: &str,
+    expected_degrees: f64,
+) -> bool {
+    let Some(param) = unique_epsg_param(operation, code) else {
+        return false;
+    };
+    param.value.is_finite()
+        && param.unit_conversion_factor == super::DEGREE_TO_RADIAN
+        && param.value == expected_degrees
+}
+
+fn linear_or_unity_param_matches(
+    operation: &CrsCoordinateOperationInfo,
+    code: &str,
+    unit: ParamUnit,
+    expected: f64,
+) -> bool {
+    let Some(param) = unique_epsg_param(operation, code) else {
+        return false;
+    };
+    parse_param_value(param, unit) == Some(expected)
+}
+
+fn unique_epsg_param<'a>(
+    operation: &'a CrsCoordinateOperationInfo,
+    code: &str,
+) -> Option<&'a OperationParameterInfo> {
+    let mut found = None;
+    for param in &operation.parameters {
+        if param.authority.as_deref() != Some("EPSG") || param.code.as_deref() != Some(code) {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        if !param.unit_conversion_factor.is_finite() || param.unit_conversion_factor <= 0.0 {
+            return None;
+        }
+        found = Some(param);
+    }
+    found
 }
 
 fn wgs84_utm_crs(zone: UtmZone, pole: Pole) -> String {
@@ -406,4 +483,84 @@ fn utm_zone(lon: f64, lat: f64) -> UtmZone {
     }
     let zone = ((lon + 180.0) / 6.0).floor().clamp(0.0, 59.0) as u32 + 1;
     UtmZone::try_new(zone).expect("clamped UTM zone is valid")
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    fn epsg_param(code: &str, value: f64, factor: f64) -> OperationParameterInfo {
+        OperationParameterInfo {
+            name: None,
+            authority: Some("EPSG".to_owned()),
+            code: Some(code.to_owned()),
+            value,
+            value_string: None,
+            unit_conversion_factor: factor,
+            unit_name: None,
+            unit_authority: None,
+            unit_code: None,
+            unit_category: None,
+        }
+    }
+
+    fn operation(parameters: Vec<OperationParameterInfo>) -> CrsCoordinateOperationInfo {
+        CrsCoordinateOperationInfo {
+            name: None,
+            definition: None,
+            description: None,
+            accuracy: None,
+            has_inverse: false,
+            has_ballpark_transformation: false,
+            requires_coordinate_epoch: false,
+            instantiable: true,
+            method: None,
+            parameters,
+            grids: Vec::new(),
+            steps: Vec::new(),
+            area_of_use: None,
+        }
+    }
+
+    #[test]
+    fn stored_degree_equality_rejects_adjacent_floats_that_share_a_radian_product() {
+        let factor = super::super::DEGREE_TO_RADIAN;
+        let op = |code: &str, value: f64| operation(vec![epsg_param(code, value, factor)]);
+        assert!(angular_param_matches_degrees(&op("8802", 15.0), "8802", 15.0));
+        assert!(angular_param_matches_degrees(&op("8801", 0.0), "8801", 0.0));
+        for expected in [-117.0_f64, -15.0, 15.0, 123.0] {
+            let up = expected.next_up();
+            let down = expected.next_down();
+            let adjacent = if up * factor == expected * factor {
+                up
+            } else if down * factor == expected * factor {
+                down
+            } else {
+                panic!("{expected} has no adjacent float with the same radian product");
+            };
+            assert_ne!(adjacent, expected);
+            assert!(!angular_param_matches_degrees(
+                &op("8802", adjacent),
+                "8802",
+                expected
+            ));
+        }
+        let min_sub = f64::from_bits(1);
+        assert_eq!(min_sub * factor, 0.0);
+        assert!(!angular_param_matches_degrees(
+            &op("8801", min_sub),
+            "8801",
+            0.0
+        ));
+    }
+
+    #[test]
+    fn invalid_matched_param_is_not_replaced_by_a_later_duplicate() {
+        let op = operation(vec![
+            epsg_param("8802", 9.0, f64::NAN),
+            epsg_param("8802", 9.0, super::super::DEGREE_TO_RADIAN),
+        ]);
+        assert!(unique_epsg_param(&op, "8802").is_none());
+        assert!(!angular_param_matches_degrees(&op, "8802", 9.0));
+    }
 }

@@ -29,7 +29,7 @@ const KERNEL_REFUSED_METHOD_CODES: &[(&str, &[&str])] =
     &[("aea", &["9801", "9802"]), ("sterea", &["9810", "9829"])];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DatumKey {
+pub(in crate::crs) struct DatumKey {
     authority: String,
     code: String,
 }
@@ -330,7 +330,7 @@ fn ellipsoid_from_info(ellipsoid: Option<&EllipsoidInfo>) -> Option<Ellipsoid> {
     ))
 }
 
-fn datum_key(info: &CrsInfo) -> Option<DatumKey> {
+pub(in crate::crs) fn datum_key(info: &CrsInfo) -> Option<DatumKey> {
     if let Some(datum) = info.horizontal_datum.as_ref() {
         return datum_key_from_authority(datum.authority.as_deref(), datum.code.as_deref());
     }

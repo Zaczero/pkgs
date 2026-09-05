@@ -56,4 +56,4 @@ pub(crate) use lookup::{
     authorities_with_state, catalog, catalog_with_state, celestial_bodies_with_state, codes,
     geoid_models,
 };
-pub(crate) use units::{unit_info, units_with_state, utm_zones, utm_zones_at};
+pub(crate) use units::{unit_info, units_with_state, utm_zones};

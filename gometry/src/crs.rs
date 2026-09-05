@@ -75,7 +75,7 @@ pub(crate) use catalog::{
     identify_with_state, non_deprecated, prime_meridians, proj_operations, same, search, to_2d,
     to_3d, to_authority, to_authority_with_state, to_cf, to_epsg, to_proj, to_projjson,
     to_projjson_with_options, to_projjson_with_options_at, to_wkt_with_options, unit_info,
-    units_with_state, utm_zones, utm_zones_at, validate_search_limit,
+    units_with_state, utm_zones, validate_search_limit,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::CrsError;

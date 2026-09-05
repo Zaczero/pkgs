@@ -2,6 +2,8 @@
 runtime config, cache info, and the PROJ authority metadata surface.
 """
 
+import json
+
 import gometry as gm
 import pytest
 
@@ -203,6 +205,91 @@ def test_estimate_local_crs_normalizes_frames_and_preserves_datums() -> None:
     assert gm.Point(0.0, -89.0, crs=4326).estimate_local_crs().is_projected
     with pytest.raises(ValueError, match='present, non-empty'):
         gm.GeometryArray([], crs=4326).estimate_local_crs()
+
+
+_LOCAL_SURVEY_CRS = json.dumps({
+    '$schema': 'https://proj.org/schemas/v0.7/projjson.schema.json',
+    'type': 'GeographicCRS',
+    'name': 'Local survey geographic',
+    'datum': {
+        'type': 'GeodeticReferenceFrame',
+        'name': 'Local survey datum',
+        'ellipsoid': {
+            'name': 'Local ellipsoid',
+            'semi_major_axis': 6378137,
+            'inverse_flattening': 298.257223563,
+        },
+    },
+    'coordinate_system': {
+        'subtype': 'ellipsoidal',
+        'axis': [
+            {
+                'name': 'Longitude',
+                'abbreviation': 'lon',
+                'direction': 'east',
+                'unit': 'degree',
+            },
+            {
+                'name': 'Latitude',
+                'abbreviation': 'lat',
+                'direction': 'north',
+                'unit': 'degree',
+            },
+        ],
+    },
+})
+
+
+@pytest.mark.parametrize(
+    ('x', 'y', 'z', 'crs', 'expected'),
+    [
+        (10.0, 51.0, None, 4258, 'EPSG:25832'),
+        (10.0, 51.0, 0.0, 4937, 'EPSG:25832'),
+        (-74.0, 46.0, None, 4617, 'EPSG:2959'),
+        (-74.0, 46.0, 0.0, 4955, 'EPSG:2959'),
+        (-74.0, 41.0, None, 4269, 'EPSG:26918'),
+        (500000.0, 4500000.0, None, 26918, 'EPSG:26918'),
+        (-74.0, 41.0, None, 6318, 'EPSG:6347'),
+        (-74.0, 41.0, 0.0, 6319, 'EPSG:6347'),
+        (151.2, -33.9, None, 4283, 'EPSG:28356'),
+        (151.2, -33.9, 0.0, 4939, 'EPSG:28356'),
+        (151.2, -33.9, None, 7844, 'EPSG:7856'),
+        (151.2, -33.9, 0.0, 7843, 'EPSG:7856'),
+        (151.2, -33.9, None, 4202, 'EPSG:20256'),
+        (21.0, 52.0, None, _LOCAL_SURVEY_CRS, 'EPSG:32634'),
+        (4.0, 60.0, None, 4258, 'EPSG:32632'),
+        (9.0, 78.0, None, 4258, 'EPSG:32633'),
+        (6.0, 60.0, None, 4326, 'EPSG:32632'),
+        (9.0, 78.0, None, 4326, 'EPSG:32633'),
+        (21.0, 52.0, 9.0, 4979, 'EPSG:32634'),
+    ],
+    ids=[
+        'etrs89_2d_germany',
+        'etrs89_3d_germany',
+        'csrs_2d_quebec',
+        'csrs_3d_quebec',
+        'nad83_2d_ny',
+        'nad83_utm_ny',
+        'nad83_2011_2d_ny',
+        'nad83_2011_3d_ny',
+        'gda94_2d_sydney',
+        'gda94_3d_sydney',
+        'gda2020_2d_sydney',
+        'gda2020_3d_sydney',
+        'agd66_sydney',
+        'custom_no_id_warsaw',
+        'etrs89_norway_west_fallback',
+        'etrs89_svalbard_fallback',
+        'wgs84_norway',
+        'wgs84_svalbard',
+        'wgs84_3d_warsaw',
+    ],
+)
+def test_estimate_local_crs_selects_utm_by_datum_and_operation_metadata(
+    x: float, y: float, z: float | None, crs: int | str, expected: str
+) -> None:
+    point = gm.Point(x, y, crs=crs) if z is None else gm.Point(x, y, z=z, crs=crs)
+    assert point.estimate_local_crs() == expected
 
 
 def test_derived_geometries_inherit_the_full_frame() -> None:
