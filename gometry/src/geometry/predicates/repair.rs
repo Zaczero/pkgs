@@ -120,7 +120,9 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
                 }
             }
             for (lobe, holes) in lobes.iter_mut().zip(lobe_holes) {
-                lobe.holes = holes.into();
+                if !holes.is_empty() {
+                    lobe.holes = holes.into();
+                }
             }
             cleaned.extend(lobes);
         }

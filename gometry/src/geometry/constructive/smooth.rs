@@ -1,7 +1,7 @@
-use crate::geometry::constructive::{Arc, Result};
+use crate::geometry::constructive::Result;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq,
-    MOrdinate, Point, Polygon, Ring, Shape, SmoothMethod, ZOrdinate, interpolate_f64, lerp_point,
+    MOrdinate, Point, Polygon, Shape, SmoothMethod, ZOrdinate, interpolate_f64, lerp_point,
     point_distance,
 };
 
@@ -451,27 +451,9 @@ fn smooth_polygon_rings(
     keep_endpoints: bool,
     budget: &mut ExpansionBudget,
 ) -> Result<Polygon> {
-    let shell = Ring::from_closed(smooth_coord_seq::<true>(
-        polygon.shell.coords(),
-        iterations,
-        method,
-        keep_endpoints,
-        budget,
-    )?);
-    let holes = polygon
-        .holes
-        .iter()
-        .map(|hole| {
-            Ok(Ring::from_closed(smooth_coord_seq::<true>(
-                hole.coords(),
-                iterations,
-                method,
-                keep_endpoints,
-                budget,
-            )?))
-        })
-        .collect::<Result<Arc<[Ring]>>>()?;
-    Ok(Polygon { shell, holes })
+    polygon.try_map_ring_seqs(|ring| {
+        smooth_coord_seq::<true>(ring, iterations, method, keep_endpoints, budget)
+    })
 }
 
 #[cfg(test)]

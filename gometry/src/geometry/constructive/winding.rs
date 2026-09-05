@@ -354,10 +354,7 @@ fn simple_stroke_polygon(
     let ring = CoordSeq::from_columns(ring_xs.into(), ring_ys.into(), None, None);
     Ok((ring_winding(&ring).is_ccw()
         && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple())
-    .then(|| Polygon {
-        shell: Ring::from_closed(ring),
-        holes: Vec::new().into(),
-    }))
+    .then(|| Polygon::new(Ring::from_closed(ring), Vec::new())))
 }
 
 /// Buffer of a whole `GeometryCollection` in ONE winding pass: every part

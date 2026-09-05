@@ -31,10 +31,10 @@ impl Shape {
                 false,
             );
         }
-        Ok(Self::Polygon(Polygon {
-            shell: Ring::from_closed(minimum_area_rectangle(&open)?),
-            holes: Vec::new().into(),
-        }))
+        Ok(Self::Polygon(Polygon::new(
+            Ring::from_closed(minimum_area_rectangle(&open)?),
+            Vec::new(),
+        )))
     }
 
     pub fn centroid(&self) -> Result<Self> {

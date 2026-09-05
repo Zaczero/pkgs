@@ -1487,16 +1487,8 @@ fn rebuild_polygon_columns(
     polygon: &crate::geometry::Polygon,
     cursor: &mut TransformCursor,
 ) -> crate::geometry::Polygon {
-    use crate::geometry::Ring;
-    crate::geometry::Polygon {
-        // CRS rebuild only rewrites coordinates, preserving ring structure.
-        shell: Ring::from_closed(rebuild_seq_columns(polygon.shell.coords(), cursor)),
-        holes: polygon
-            .holes
-            .iter()
-            .map(|hole| Ring::from_closed(rebuild_seq_columns(hole.coords(), cursor)))
-            .collect(),
-    }
+    // CRS rebuild only rewrites coordinates, preserving ring structure.
+    polygon.map_ring_seqs(|ring| rebuild_seq_columns(ring, cursor))
 }
 
 fn rebuild_seq_columns(seq: &CoordSeq, cursor: &mut TransformCursor) -> CoordSeq {

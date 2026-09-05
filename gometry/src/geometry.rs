@@ -562,8 +562,8 @@ impl Polygon {
     /// the common case — a polygon with no holes — paid one heap allocation
     /// each. Sharing a single empty makes that a refcount bump. The field type
     /// stays `Arc<[Ring]>` deliberately: `Option<Arc<[Ring]>>` is the same 16
-    /// bytes via the null niche, but it would rewrite 136 `.holes` access
-    /// sites for the same win.
+    /// bytes via the null niche, but it would rewrite every `.holes` access
+    /// site for the same win.
     fn empty_holes() -> Arc<[Ring]> {
         static EMPTY: std::sync::LazyLock<Arc<[Ring]>> = std::sync::LazyLock::new(|| Arc::from([]));
         Arc::clone(&EMPTY)
@@ -679,14 +679,16 @@ impl Polygon {
         &self,
         mut transform: impl FnMut(&CoordSeq) -> Result<CoordSeq, E>,
     ) -> Result<Self, E> {
-        Ok(Self {
-            shell: Ring::from_closed(transform(self.shell.coords())?),
-            holes: self
-                .holes
+        let shell = Ring::from_closed(transform(self.shell.coords())?);
+        let holes = if self.holes.is_empty() {
+            Self::empty_holes()
+        } else {
+            self.holes
                 .iter()
                 .map(|hole| Ok(Ring::from_closed(transform(hole.coords())?)))
-                .collect::<Result<_, E>>()?,
-        })
+                .collect::<Result<Arc<[Ring]>, E>>()?
+        };
+        Ok(Self { shell, holes })
     }
 
     fn segmentize_budgeted(
@@ -717,26 +719,30 @@ impl Polygon {
 
     /// Rebuild every ring through a columnar transform that preserves ring
     /// validity (closure and length) — no `AoS` `Vec<Point>` round-trip.
-    fn map_ring_seqs(&self, transform: impl Fn(&CoordSeq) -> CoordSeq) -> Self {
-        Self {
-            shell: Ring::from_closed(transform(self.shell.coords())),
-            holes: self
-                .holes
+    pub(crate) fn map_ring_seqs(&self, mut transform: impl FnMut(&CoordSeq) -> CoordSeq) -> Self {
+        let shell = Ring::from_closed(transform(self.shell.coords()));
+        let holes = if self.holes.is_empty() {
+            Self::empty_holes()
+        } else {
+            self.holes
                 .iter()
                 .map(|hole| Ring::from_closed(transform(hole.coords())))
-                .collect(),
-        }
+                .collect::<Arc<[Ring]>>()
+        };
+        Self { shell, holes }
     }
 
     fn orient(&self, exterior_cw: bool) -> Self {
-        Self {
-            shell: Ring::from_closed(orient_ring(self.shell.coords(), exterior_cw)),
-            holes: self
-                .holes
+        let shell = Ring::from_closed(orient_ring(self.shell.coords(), exterior_cw));
+        let holes = if self.holes.is_empty() {
+            Self::empty_holes()
+        } else {
+            self.holes
                 .iter()
                 .map(|hole| Ring::from_closed(orient_ring(hole.coords(), !exterior_cw)))
-                .collect(),
-        }
+                .collect::<Arc<[Ring]>>()
+        };
+        Self { shell, holes }
     }
 
     fn normalize(&self) -> Self {
@@ -750,10 +756,10 @@ impl Polygon {
             .map(|hole| Ring::from_closed(canonical_ring_seq(hole.coords(), true)))
             .collect::<Vec<_>>();
         holes.sort_by(compare_point_slices);
-        Self {
-            shell: Ring::from_closed(canonical_ring_seq(self.shell.coords(), false)),
-            holes: holes.into(),
-        }
+        Self::new(
+            Ring::from_closed(canonical_ring_seq(self.shell.coords(), false)),
+            holes,
+        )
     }
 
     fn equals_exact_impl<const Z: bool, const M: bool>(
