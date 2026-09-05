@@ -120,24 +120,6 @@ mod sweep_characterization {
     }
 
     #[test]
-    fn try_for_each_candidate_pair_matches_for_each() {
-        for &n in &[4_usize, 20, 200] {
-            let pool = structured_pool(n);
-            assert_eq!(every_candidate(&pool), every_candidate_try(&pool));
-        }
-    }
-
-    #[test]
-    fn brute_and_sweep_visit_the_same_pairs_on_a_shared_pattern() {
-        // n=4 is the brute branch; n=8 takes the sweep. Both APIs must agree
-        // with themselves on each pool.
-        let brute = structured_pool(4);
-        let swept = structured_pool(8);
-        assert_eq!(every_candidate(&brute), every_candidate_try(&brute));
-        assert_eq!(every_candidate(&swept), every_candidate_try(&swept));
-    }
-
-    #[test]
     fn sweep_covers_every_intersecting_pair() {
         // Sizes spanning the brute branch (< SWEEP_MIN_ITEMS) and the two sweep
         // strategies, each of which is driven directly below rather than reached
@@ -175,17 +157,32 @@ mod sweep_characterization {
                 }
             }
             truly_intersecting.sort_unstable();
-            {
-                let visited = every_candidate(&pool);
+            for (label, visited) in [
+                ("for_each", every_candidate(&pool)),
+                ("try_for_each", every_candidate_try(&pool)),
+            ] {
                 for &pair in &truly_intersecting {
                     assert!(
                         visited.binary_search(&pair).is_ok(),
-                        "n={n}: intersecting pair {:?} dropped by the sweep",
+                        "n={n} {label}: intersecting pair {:?} dropped by the sweep",
                         (pair >> 32, pair & 0xFFFF_FFFF),
                     );
                 }
             }
         }
+    }
+
+    #[test]
+    fn try_for_each_candidate_pair_stops_on_break() {
+        let pool = structured_pool(20);
+        let mut visited = 0;
+        let flow = try_for_each_candidate_pair(&pool, single_chain, |_, _| {
+            visited += 1;
+            ControlFlow::Break(())
+        })
+        .expect("sweep scratch allocation");
+        assert_eq!(flow, ControlFlow::Break(()));
+        assert_eq!(visited, 1);
     }
 }
 

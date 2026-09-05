@@ -568,20 +568,18 @@ fn classify_pair_into(
             Ok(())
         },
         PairContact::Cross { t, u } => {
-            let unique_index =
-                u32::try_from(left.min(right)).map_err(|_| ResourceError::SizeOverflow)?;
-            let handle = forest.push(HandleKind::Constructed {
-                unique: unique_index,
-                cut: 0,
-            })?;
-            push_contact_cut(&mut cuts[left], t, handle, budget)?;
-            push_contact_cut(&mut cuts[right], u, handle, budget)?;
-            let cut = u32::try_from(cuts[unique_index as usize].len() - 1)
-                .map_err(|_| ResourceError::SizeOverflow)?;
-            if let HandleKind::Constructed { cut: slot, .. } = &mut forest.kind[handle as usize] {
-                *slot = cut;
-            }
-            Ok(())
+            let unique_index = left.min(right);
+            let unique = u32::try_from(unique_index).map_err(|_| ResourceError::SizeOverflow)?;
+            let (first_param, second, second_param) = if unique_index == left {
+                (t, right, u)
+            } else {
+                (u, left, t)
+            };
+            let cut =
+                u32::try_from(cuts[unique_index].len()).map_err(|_| ResourceError::SizeOverflow)?;
+            let handle = forest.push(HandleKind::Constructed { unique, cut })?;
+            push_contact_cut(&mut cuts[unique_index], first_param, handle, budget)?;
+            push_contact_cut(&mut cuts[second], second_param, handle, budget)
         },
     }
 }

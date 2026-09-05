@@ -204,6 +204,8 @@ fn try_overlapping_bounds_sweep(
         });
     }
     finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
+    // Dense-enough sets take the banded windows; otherwise the plain
+    // forward window (same split the segment sweep uses for large pools).
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
         let cross_lo = entries
@@ -264,6 +266,8 @@ pub(in crate::geometry) fn try_for_each_candidate_pair(
     chain_of: impl Fn(usize) -> u32,
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Result<ControlFlow<()>> {
+    // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
+    // this run buffer was their only allocation.
     thread_local! {
         static RUNS: crate::scratch_pool::ScratchPool<Vec<MonotoneRun>> = const {
             crate::scratch_pool::ScratchPool::new(Vec::new())
@@ -320,23 +324,6 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
     0
 }
 
-/// [`for_each_candidate_pair`] over PRE-STAGED runs and bounds (built
-/// during linework staging — see `LineworkChains`): skips the per-call
-/// extent and run-decomposition passes entirely. Small inputs should
-/// take the brute loop upstream; this always sweeps.
-#[allow(
-    dead_code,
-    reason = "ControlFlow wrapper over the fallible run sweep; staged callers use the try_ path"
-)]
-pub(in crate::geometry) fn candidate_pairs_over_runs(
-    pool: &[Segment],
-    runs: &[MonotoneRun],
-    bounds: Bounds,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    abort_on_alloc(try_candidate_pairs_over_runs(pool, runs, bounds, visit))
-}
-
 fn try_candidate_pairs_over_runs(
     pool: &[Segment],
     runs: &[MonotoneRun],
@@ -353,6 +340,7 @@ fn try_candidate_pairs_over_runs(
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_SCRATCH);
     try_reserve_vec(&mut entries, runs.len())?;
     for (ordinal, run) in runs.iter().enumerate() {
+        // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
         let (first, last) = match segs {
             [only] => (only.start, only.end),
@@ -371,6 +359,10 @@ fn try_candidate_pairs_over_runs(
         });
     }
     finish_sweep_entries(&mut entries, swapped);
+    // Large sets band the CROSS axis: a pure 1-D sweep's forward window
+    // grows linearly with density, while B bands cut it by B. An envelope
+    // joins every band its cross extent overlaps, and a pair is visited
+    // only in the FIRST band both share.
     let (cross_lo, cross_hi) = if swapped {
         (min_x, max_x)
     } else {
@@ -411,21 +403,11 @@ fn try_monotone_runs(
     chain_of: &impl Fn(usize) -> u32,
     runs: &mut Vec<MonotoneRun>,
 ) -> Result<()> {
-    try_reserve_vec(runs, pool.len())?;
+    let len = u32_ordinal(pool.len())?;
     let mut start = 0_u32;
     let (mut sign_x, mut sign_y) = (0_i8, 0_i8);
-    let close = |runs: &mut Vec<MonotoneRun>, start: u32, end: u32, sign_x: i8, sign_y: i8| {
-        if end > start {
-            runs.push(MonotoneRun {
-                start,
-                end,
-                sign_x,
-                sign_y,
-            });
-        }
-    };
     for (index, segment) in pool.iter().enumerate() {
-        let index_u32 = u32_ordinal(index)?;
+        let index_u32 = index as u32;
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
         let (sx, sy) = (sign_of(dx), sign_of(dy));
@@ -445,19 +427,37 @@ fn try_monotone_runs(
             }
             continue;
         }
-        close(runs, start, index_u32, sign_x, sign_y);
+        push_run(runs, start, index_u32, sign_x, sign_y)?;
         start = index_u32;
         (sign_x, sign_y) = (sx, sy);
         if degenerate {
             let end = index_u32
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            close(runs, start, end, 0, 0);
+            push_run(runs, start, end, 0, 0)?;
             start = end;
             (sign_x, sign_y) = (0, 0);
         }
     }
-    close(runs, start, u32_ordinal(pool.len())?, sign_x, sign_y);
+    push_run(runs, start, len, sign_x, sign_y)
+}
+
+fn push_run(
+    runs: &mut Vec<MonotoneRun>,
+    start: u32,
+    end: u32,
+    sign_x: i8,
+    sign_y: i8,
+) -> Result<()> {
+    if end > start {
+        try_reserve_vec(runs, 1)?;
+        runs.push(MonotoneRun {
+            start,
+            end,
+            sign_x,
+            sign_y,
+        });
+    }
     Ok(())
 }
 
@@ -516,6 +516,7 @@ fn try_candidate_pairs_between(
             };
             let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
             let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
+            // Ordinal space: `a`'s runs first, then `b`'s.
             let ordinal = if side == 1 {
                 index
             } else {
@@ -546,6 +547,8 @@ fn try_candidate_pairs_between(
     };
     let band_height = (cross_hi - cross_lo) / bands as f64;
     let mut run_visit = |left: usize, right: usize| -> ControlFlow<()> {
+        // `left < right` in ordinal space, and the sides differ, so `left` is
+        // an `a` run and `right` a `b` run.
         let (a_run, b_run) = (&a.1[left], &b.1[right - a.1.len()]);
         let (a_chain, b_chain) = (
             RunChain {
@@ -744,6 +747,7 @@ fn try_banded_windows(
 ) -> Result<ControlFlow<()>> {
     let band_of =
         |cross: f64| -> usize { (((cross - cross_lo) / band_height) as usize).min(bands - 1) };
+    // Entries are already in sweep order, so every band row is too.
     let start_len = bands.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
     let mut starts = Vec::new();
     try_reserve_vec(&mut starts, start_len)?;
@@ -810,4 +814,57 @@ fn visit_ordered(
         (right.ordinal, left.ordinal)
     };
     visit(low as usize, high as usize)
+}
+
+#[cfg(test)]
+mod run_capacity {
+    use super::{single_chain, try_monotone_runs};
+    use crate::geometry::{Segment, XY};
+
+    fn chained_polyline(len: usize) -> Vec<Segment> {
+        (0..len)
+            .map(|index| {
+                let x = index as f64;
+                Segment {
+                    start: XY::new(x, 0.0),
+                    end: XY::new(x + 1.0, 0.0),
+                }
+            })
+            .collect()
+    }
+
+    fn unchained_verticals(len: usize) -> Vec<Segment> {
+        (0..len)
+            .map(|index| {
+                let x = index as f64;
+                Segment {
+                    start: XY::new(x, 0.0),
+                    end: XY::new(x, 1.0),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_long_chain_does_not_reserve_n_runs() {
+        let pool = chained_polyline(64);
+        let mut runs = Vec::new();
+        try_monotone_runs(&pool, &single_chain, &mut runs).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert!(
+            runs.capacity() < pool.len(),
+            "one monotone chain reserved {} run slots for {} segments",
+            runs.capacity(),
+            pool.len()
+        );
+    }
+
+    #[test]
+    fn many_runs_grow_with_closes() {
+        let pool = unchained_verticals(16);
+        let mut runs = Vec::new();
+        try_monotone_runs(&pool, &single_chain, &mut runs).unwrap();
+        assert_eq!(runs.len(), pool.len());
+        assert!(runs.capacity() >= runs.len());
+    }
 }
