@@ -173,9 +173,23 @@ Beyond OGC validity, a boundary can require a CRS, valid topology, or a
 particular dimensionality.
 `gm.require` is the single boundary API: it accepts an
 existing geometry or an external geometry-like object, returns the geometry
-unchanged on success, and raises the matching specific exception otherwise —
-[`CRSMismatchError`][gometry.CRSMismatchError] for a frame contract,
-`InvalidGeometryError` for validity and axes.
+with its coordinate values unchanged on success, and raises the matching
+specific exception otherwise. With `crs=`, it stamps CRS-free coordinates,
+relabels an operationally equivalent existing CRS to the requested spelling,
+and rejects a conflicting frame with [`CRSMismatchError`][gometry.CRSMismatchError].
+When `crs` is omitted or `None`, an existing CRS is preserved. Coordinate
+epochs are preserved and revalidated against the resulting CRS.
+
+The `crs=` parameter uses the `CrsInput` contract documented by
+[`CRS`][gometry.CRS]. Accepted forms include an EPSG integer, an authority,
+WKT, or PROJ string, an `(authority, code)` pair, a PROJJSON or CF mapping,
+and an object exposing `to_wkt()`, such as `gometry.CRS` or `pyproj.CRS`.
+Conflicting legacy CRS metadata in GeoJSON raises [`ParseError`][gometry.ParseError];
+native geometries and EWKT/EWKB embedded SRIDs raise
+[`CRSMismatchError`][gometry.CRSMismatchError].
+
+`InvalidGeometryError` remains the exception for invalid geometry or mismatched
+axes.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

@@ -31,8 +31,16 @@ use crate::{
 ///     iterable. Foreign scalar inputs may be WKT, WKB, GeoJSON mappings/text,
 ///     or ``__geo_interface__`` objects. Geometry-valued groups are flattened
 ///     in group order and return a `GeometryArray`.
-/// crs : str or int, optional
-///     CRS as an EPSG code or authority/WKT string to attach.
+/// crs : CrsInput, optional
+///     Expected CRS for the result. CRS-free coordinates are stamped with
+///     this CRS; coordinates are never transformed. An existing CRS that is
+///     operationally equivalent is relabelled to this requested spelling,
+///     while a conflicting CRS raises ``CRSMismatchError``. When omitted or
+///     ``None``, no target is required and an existing CRS is preserved.
+///     Accepted forms are an EPSG integer, authority/WKT/PROJ string,
+///     ``(authority, code)`` pair, PROJJSON/CF mapping, or an object exposing
+///     ``to_wkt()`` such as ``gometry.CRS`` or ``pyproj.CRS``. Coordinate
+///     epochs are preserved and revalidated against the resulting CRS.
 /// axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
 ///     If given, require the geometry's coordinate axes to match exactly,
 ///     otherwise raise.
@@ -50,8 +58,8 @@ use crate::{
 ///     If foreign GeoJSON is malformed, or its legacy ``crs`` member is
 ///     unsupported or conflicts with ``crs`` (``format`` is ``"GeoJSON"``).
 /// CRSMismatchError
-///     If an already-decoded / native / non-GeoJSON geometry's CRS differs
-///     from ``crs``.
+///     If an already-decoded / native / non-GeoJSON geometry's CRS conflicts
+///     with ``crs``. EWKT/EWKB embedded SRID conflicts use this error too.
 /// InvalidGeometryError
 ///     If the geometry is invalid, or its axes differ from ``axes``.
 ///     Geographic antimeridian crossings are validated after topology
