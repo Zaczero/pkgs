@@ -231,30 +231,54 @@ fn require_array_contract(
         .apply(&array.frame)?;
         array = array.retag_frame(frame);
     }
-    if let Some(axes) = axes
-        && array.uniform_axes() != Some(axes)
-    {
-        let mut seen: Vec<&'static str> = Vec::new();
-        for (_, shape) in array.present_shape_rows() {
-            let row_axes = shape.axes().as_str();
-            if !seen.contains(&row_axes) {
-                seen.push(row_axes);
+    if let Some(axes) = axes {
+        let axes_diagnostic = if let Some(actual) = array.storage().packed_axes() {
+            (actual != axes).then(|| {
+                let row = array
+                    .row_operation()
+                    .present_rows()
+                    .next()
+                    .map(|row| row.logical());
+                (format!("{:?}", actual.as_str()), row)
+            })
+        } else {
+            let mut seen: Vec<CoordinateAxes> = Vec::new();
+            let mut first_mismatch = None;
+            for row in array.row_operation().present_rows() {
+                let row_axes = row.row().with_shape(|shape| shape.axes());
+                if !seen.contains(&row_axes) {
+                    seen.push(row_axes);
+                }
+                if first_mismatch.is_none() && row_axes != axes {
+                    first_mismatch = Some(row.logical());
+                }
             }
-        }
-        let got = match seen.as_slice() {
-            [] | [_] => format!("{:?}", array.coordinate_axes().unwrap_or("mixed")),
-            many => format!("mixed ({})", many.join(", ")),
+            let mismatch = first_mismatch.is_some()
+                || (seen.is_empty() && axes != CoordinateAxes::XY);
+            mismatch.then(|| {
+                let got = match seen.as_slice() {
+                    [] => format!("{:?}", CoordinateAxes::XY.as_str()),
+                    [one] => format!("{:?}", one.as_str()),
+                    many => format!(
+                        "mixed ({})",
+                        many.iter()
+                            .map(|axes| axes.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
+                (got, first_mismatch)
+            })
         };
-        let row = array
-            .present_shape_rows()
-            .find_map(|(row, shape)| (shape.axes().as_str() != axes.as_str()).then_some(row));
-        let issue = ValidationIssue::new(
-            "coordinate_axes_mismatch",
-            format!("expected axes {:?}, got {got}", axes.as_str()),
-            None,
-            "$",
-        );
-        return Err(errors::invalid_geometry_issue(&issue, row));
+        if let Some((got, row)) = axes_diagnostic {
+            let issue = ValidationIssue::new(
+                "coordinate_axes_mismatch",
+                format!("expected axes {:?}, got {got}", axes.as_str()),
+                None,
+                "$",
+            );
+            return Err(errors::invalid_geometry_issue(&issue, row));
+        }
     }
     let domain = geometry::topology_domain(&array.frame)?;
     if let Some(py) = py {
