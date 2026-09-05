@@ -1137,7 +1137,7 @@ impl std::ops::Deref for MultiPolygon {
 
 impl Coordinates for MultiPoint {
     fn coord_count(&self) -> usize {
-        self.iter().count()
+        self.coords.len()
     }
 
     fn nth_coord(&self, index: usize) -> Point {
@@ -1145,15 +1145,15 @@ impl Coordinates for MultiPoint {
     }
 
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {
-        None
+        self.coords.xy_columns()
     }
 
     fn z_column(&self) -> Option<&[f64]> {
-        None
+        self.coords.z_column()
     }
 
     fn m_column(&self) -> Option<&[f64]> {
-        None
+        self.coords.m_column()
     }
 }
 
