@@ -8,7 +8,7 @@ use crate::crs::in_core::adjlon;
 use crate::crs::in_core::kernel::{Ellipsoid, ProjectionKernel, eccentricity};
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, ParamUnit, Projected, Requirement, admit_projection,
-    epsg, param_field,
+    epsg, param_field, set_positive_finite,
 };
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
@@ -42,12 +42,7 @@ fn set_lat_0(p: &mut StereaParams, v: f64) -> bool {
     }
 }
 fn set_k0(p: &mut StereaParams, v: f64) -> bool {
-    if v.is_finite() && v > 0.0 {
-        p.k0 = v;
-        true
-    } else {
-        false
-    }
+    set_positive_finite(&mut p.k0, v)
 }
 fn finalize(p: StereaParams) -> Option<StereaParams> {
     (p.k0 > 0.0).then_some(p)

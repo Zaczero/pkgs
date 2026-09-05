@@ -11,7 +11,7 @@ use crate::crs::in_core::kernel::{
 };
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, ParamUnit, Projected, Requirement, admit_projection,
-    epsg, param_field,
+    epsg, param_field, set_finite,
 };
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
@@ -35,28 +35,13 @@ pub(in crate::crs) struct Setup {
 }
 
 const fn set_lat_0(p: &mut AeaParams, v: f64) -> bool {
-    if v.is_finite() {
-        p.lat_0 = v;
-        true
-    } else {
-        false
-    }
+    set_finite(&mut p.lat_0, v)
 }
 const fn set_lat_1(p: &mut AeaParams, v: f64) -> bool {
-    if v.is_finite() {
-        p.lat_1 = v;
-        true
-    } else {
-        false
-    }
+    set_finite(&mut p.lat_1, v)
 }
 const fn set_lat_2(p: &mut AeaParams, v: f64) -> bool {
-    if v.is_finite() {
-        p.lat_2 = v;
-        true
-    } else {
-        false
-    }
+    set_finite(&mut p.lat_2, v)
 }
 fn finalize(p: AeaParams) -> Option<AeaParams> {
     ((p.lat_1 + p.lat_2).to_radians().abs() >= EPS10).then_some(p)

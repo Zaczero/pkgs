@@ -10,7 +10,7 @@ use crate::crs::in_core::kernel::{
 };
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, Requirement, admit_projection, epsg,
-    param_field,
+    param_field, set_finite, set_positive_finite,
 };
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
@@ -167,31 +167,19 @@ pub(super) fn lcc_to_geographic_unframed(
 }
 
 fn set_lat_0(params: &mut LccParams, value: f64) -> bool {
-    value.is_finite().then(|| {
-        params.lat_0_deg = value;
-        true
-    }) == Some(true)
+    set_finite(&mut params.lat_0_deg, value)
 }
 
 fn set_lat_1(params: &mut LccParams, value: f64) -> bool {
-    value.is_finite().then(|| {
-        params.lat_1_deg = value;
-        true
-    }) == Some(true)
+    set_finite(&mut params.lat_1_deg, value)
 }
 
 fn set_lat_2(params: &mut LccParams, value: f64) -> bool {
-    value.is_finite().then(|| {
-        params.lat_2_deg = value;
-        true
-    }) == Some(true)
+    set_finite(&mut params.lat_2_deg, value)
 }
 
 fn set_k0(params: &mut LccParams, value: f64) -> bool {
-    (value.is_finite() && value > 0.0).then(|| {
-        params.k0 = value;
-        true
-    }) == Some(true)
+    set_positive_finite(&mut params.k0, value)
 }
 
 fn finalize_lcc_1sp(mut params: LccParams) -> Option<LccParams> {

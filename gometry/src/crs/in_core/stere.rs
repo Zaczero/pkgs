@@ -10,7 +10,7 @@ use crate::crs::in_core::kernel::{
 };
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, Requirement, admit_projection, epsg,
-    param_field,
+    param_field, set_positive_finite,
 };
 use crate::error::Result;
 use crate::geometry::GeometryErrorKind;
@@ -173,12 +173,7 @@ fn set_lat_0(params: &mut PolarStereoParams, value: f64) -> bool {
 }
 
 fn set_k0(params: &mut PolarStereoParams, value: f64) -> bool {
-    if value.is_finite() && value > 0.0 {
-        params.k0 = value;
-        true
-    } else {
-        false
-    }
+    set_positive_finite(&mut params.k0, value)
 }
 
 fn set_lat_ts(params: &mut PolarStereoParams, value: f64) -> bool {

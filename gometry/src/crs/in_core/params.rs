@@ -97,6 +97,24 @@ pub(super) const fn apply_false_origin(value: f64, false_origin: f64) -> f64 {
     }
 }
 
+pub(super) const fn set_finite(target: &mut f64, value: f64) -> bool {
+    if value.is_finite() {
+        *target = value;
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) const fn set_positive_finite(target: &mut f64, value: f64) -> bool {
+    if value.is_finite() && value > 0.0 {
+        *target = value;
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(in crate::crs) struct Projected<K: ProjectionKernel> {
     pub frame: ProjectionFrame,
@@ -427,6 +445,36 @@ mod tests {
         let (x, y) = projected.forward_xy(-0.0, -0.0).unwrap();
         assert_eq!(x.to_bits(), (-0.0_f64).to_bits());
         assert_eq!(y.to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn set_finite_preserves_bits_and_rejects_nonfinite_without_mutation() {
+        for value in [0.0, -0.0, 1.25, -2.5] {
+            let mut target = 7.25;
+            assert!(set_finite(&mut target, value));
+            assert_eq!(target.to_bits(), value.to_bits());
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut target: f64 = 7.25;
+            let initial = target.to_bits();
+            assert!(!set_finite(&mut target, value));
+            assert_eq!(target.to_bits(), initial);
+        }
+    }
+
+    #[test]
+    fn set_positive_finite_preserves_bits_and_rejects_nonpositive_without_mutation() {
+        for value in [f64::from_bits(1), 1.25, f64::MAX] {
+            let mut target = 7.25;
+            assert!(set_positive_finite(&mut target, value));
+            assert_eq!(target.to_bits(), value.to_bits());
+        }
+        for value in [0.0, -0.0, -1.25, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut target: f64 = 7.25;
+            let initial = target.to_bits();
+            assert!(!set_positive_finite(&mut target, value));
+            assert_eq!(target.to_bits(), initial);
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel};
 use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
-    admit_projection, epsg, param_field,
+    admit_projection, epsg, param_field, set_finite, set_positive_finite,
 };
 use crate::crs::in_core::{Pole, UtmZone, adjlon};
 use crate::error::Result;
@@ -85,21 +85,11 @@ pub(super) fn wgs84_utm_projected(zone: UtmZone) -> Projected<Tmerc> {
 }
 
 const fn set_lat_0(params: &mut TmercParams, value: f64) -> bool {
-    if value.is_finite() {
-        params.lat_0_deg = value;
-        true
-    } else {
-        false
-    }
+    set_finite(&mut params.lat_0_deg, value)
 }
 
 fn set_k0(params: &mut TmercParams, value: f64) -> bool {
-    if value.is_finite() && value > 0.0 {
-        params.k0 = value;
-        true
-    } else {
-        false
-    }
+    set_positive_finite(&mut params.k0, value)
 }
 
 fn finalize_tmerc(params: TmercParams) -> Option<TmercParams> {
