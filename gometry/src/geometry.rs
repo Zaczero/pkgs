@@ -595,35 +595,6 @@ impl Polygon {
         std::iter::once(&self.shell).chain(self.holes.iter())
     }
 
-    /// Apply a per-ring coordinate transform to the shell and every hole. The
-    /// transform preserves ring validity by construction (it operates on an
-    /// already-valid ring), so results are wrapped with [`Ring::from_closed`].
-    fn map_rings(&self, transform: impl Fn(&CoordSeq) -> Vec<Point>) -> Self {
-        Self {
-            shell: Ring::from_closed(transform(self.shell.coords())),
-            holes: self
-                .holes
-                .iter()
-                .map(|hole| Ring::from_closed(transform(hole.coords())))
-                .collect(),
-        }
-    }
-
-    /// Fallible variant of [`map_rings`].
-    fn try_map_rings<E>(
-        &self,
-        transform: impl Fn(&CoordSeq) -> Result<Vec<Point>, E>,
-    ) -> Result<Self, E> {
-        Ok(Self {
-            shell: Ring::from_closed(transform(self.shell.coords())?),
-            holes: self
-                .holes
-                .iter()
-                .map(|hole| transform(hole.coords()).map(Ring::from_closed))
-                .collect::<Result<_, _>>()?,
-        })
-    }
-
     fn area(&self) -> f64 {
         polygon_area_measure_with(|visit| {
             visit(self.shell.coords().xs(), self.shell.coords().ys(), false);
@@ -689,14 +660,7 @@ impl Polygon {
         &self,
         op: impl Fn(f64, f64) -> Result<(f64, f64), E> + Copy,
     ) -> Result<Self, E> {
-        Ok(Self {
-            shell: Ring::from_closed(self.shell.coords().try_map_xy_with(op)?),
-            holes: self
-                .holes
-                .iter()
-                .map(|hole| Ok(Ring::from_closed(hole.coords().try_map_xy_with(op)?)))
-                .collect::<Result<_, E>>()?,
-        })
+        self.try_map_ring_seqs(|ring| ring.try_map_xy_with(op))
     }
 
     /// Fallible per-ring `CoordSeq` transform over the shell and every hole,
@@ -808,11 +772,13 @@ impl Polygon {
     where
         F: Fn(Point) -> Result<Point> + ?Sized,
     {
-        self.try_map_rings(|ring| ring.iter().map(transform).collect())
+        self.try_map_ring_seqs(|ring| {
+            ring.iter().map(transform).collect::<Result<Vec<_>>>().map(CoordSeq::from)
+        })
     }
 
     fn snap_to_reference(&self, reference: &SnapReference) -> Self {
-        self.map_rings(|ring| snap_ring_to_reference(ring, reference))
+        self.map_ring_seqs(|ring| CoordSeq::from(snap_ring_to_reference(ring, reference)))
     }
 
     fn segments(&self) -> impl Iterator<Item = Segment> + '_ {
