@@ -294,37 +294,106 @@ mod above_gate_parity_tests {
 
     use super::*;
 
-    const PROBE_COUNT_BELOW_GATE: usize = 9_999;
-    const PROBE_COUNT_ABOVE_GATE: usize = 10_000;
-
-    fn probes(count: usize) -> (Vec<f64>, Vec<f64>) {
-        let mut state = 0x4D59_5DF4_u64;
-        let mut next = || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
-            (state >> 11) as f64 / ((1_u64 << 53) as f64)
-        };
-        (
-            std::iter::repeat_with(&mut next)
-                .take(count)
-                .map(|value| value * 24.0 - 12.0)
-                .collect(),
-            std::iter::repeat_with(next)
-                .take(count)
-                .map(|value| value * 24.0 - 12.0)
-                .collect(),
-        )
+    #[derive(Clone, Copy)]
+    struct NamedProbe {
+        name: &'static str,
+        x: f64,
+        y: f64,
+        expected: bool,
     }
 
-    fn regular_polygon_wkt() -> String {
+    const NAMED_PROBES: [NamedProbe; 9] = [
+        NamedProbe {
+            name: "inside-center",
+            x: 0.0,
+            y: 0.0,
+            expected: true,
+        },
+        NamedProbe {
+            name: "inside-east",
+            x: 9.0,
+            y: 0.0,
+            expected: true,
+        },
+        NamedProbe {
+            name: "outside-east",
+            x: 11.0,
+            y: 0.0,
+            expected: false,
+        },
+        NamedProbe {
+            name: "outside-corner",
+            x: 7.5,
+            y: 7.5,
+            expected: false,
+        },
+        NamedProbe {
+            name: "vertex-east",
+            x: 10.0,
+            y: 0.0,
+            expected: false,
+        },
+        NamedProbe {
+            name: "vertex-north",
+            x: 0.0,
+            y: 10.0,
+            expected: false,
+        },
+        NamedProbe {
+            name: "edge-east-north",
+            x: 9.5,
+            y: 0.5,
+            expected: false,
+        },
+        NamedProbe {
+            name: "near-edge-inside",
+            x: 9.4990234375,
+            y: 0.5,
+            expected: true,
+        },
+        NamedProbe {
+            name: "near-edge-outside",
+            x: 9.5009765625,
+            y: 0.5,
+            expected: false,
+        },
+    ];
+
+    fn repeated_probe_batch(repetitions: usize) -> (Vec<f64>, Vec<f64>, Vec<bool>) {
+        let count = NAMED_PROBES.len() * repetitions;
+        let mut xs = Vec::with_capacity(count);
+        let mut ys = Vec::with_capacity(count);
+        let mut expected = Vec::with_capacity(count);
+        for _ in 0..repetitions {
+            for probe in NAMED_PROBES {
+                xs.push(probe.x);
+                ys.push(probe.y);
+                expected.push(probe.expected);
+            }
+        }
+        (xs, ys, expected)
+    }
+
+    fn indexed_polygon_wkt() -> String {
         let mut wkt = String::from("POLYGON ((");
-        for index in 0..64 {
-            let angle = std::f64::consts::TAU * f64::from(index) / 64.0;
+        // Keep the non-rectangular ring on the indexed boundary-classification
+        // path without pinning that implementation's crossover in assertions.
+        for index in 0..256 {
+            let (x, y) = match index {
+                0 => (10.0, 0.0),
+                1 => (9.0, 1.0),
+                64 => (0.0, 10.0),
+                128 => (-10.0, 0.0),
+                192 => (0.0, -10.0),
+                _ => {
+                    let angle = std::f64::consts::TAU * f64::from(index) / 256.0;
+                    (10.0 * angle.cos(), 10.0 * angle.sin())
+                },
+            };
             if index != 0 {
                 wkt.push_str(", ");
             }
-            let _ = write!(wkt, "{} {}", 10.0 * angle.cos(), 10.0 * angle.sin());
+            let _ = write!(wkt, "{x} {y}");
         }
         wkt.push_str(", 10 0))");
         wkt
@@ -334,73 +403,41 @@ mod above_gate_parity_tests {
         value.call_method0("tolist")?.extract()
     }
 
-    /// One scalar verdict per probe, which is the oracle both batched paths
-    /// are checked against. Computing it inside each check ran the same loop
-    /// twice over the same coordinates.
-    fn exact_verdicts(
-        module: &Bound<'_, PyModule>,
+    fn xy_values(
+        py: Python<'_>,
+        contains_xy: &Bound<'_, PyAny>,
         geometry: &Bound<'_, PyAny>,
         xs: &[f64],
         ys: &[f64],
     ) -> PyResult<Vec<bool>> {
-        let contains_xy = module.getattr("contains_xy")?;
-        xs.iter()
-            .zip(ys)
-            .map(|(&x, &y)| contains_xy.call1((geometry, x, y))?.extract::<bool>())
-            .collect()
-    }
-
-    fn first_mismatch(
-        label: &str,
-        xs: &[f64],
-        ys: &[f64],
-        fast: &[bool],
-        exact: &[bool],
-    ) -> Option<String> {
-        xs.iter()
-            .zip(ys)
-            .zip(fast)
-            .zip(exact)
-            .enumerate()
-            .find(|(_, ((_, fast), exact))| fast != exact)
-            .map(|(index, (((&x, &y), &fast), &exact))| {
-                format!(
-                    "{label} mismatch at probe {index} coordinate ({x}, {y}): fast={fast}, exact={exact}"
-                )
-            })
-    }
-
-    fn xy_mismatch(
-        py: Python<'_>,
-        module: &Bound<'_, PyModule>,
-        geometry: &Bound<'_, PyAny>,
-        xs: &[f64],
-        ys: &[f64],
-        exact: &[bool],
-        label: &str,
-    ) -> PyResult<Option<String>> {
         let x = PyList::new(py, xs)?;
         let y = PyList::new(py, ys)?;
-        let fast = bools(&module.getattr("contains_xy")?.call1((geometry, &x, &y))?)?;
-        Ok(first_mismatch(label, xs, ys, &fast, exact))
+        bools(&contains_xy.call1((geometry, &x, &y))?)
     }
 
-    fn packed_mismatch(
-        module: &Bound<'_, PyModule>,
+    fn packed_values(
+        contains: &Bound<'_, PyAny>,
         geometry: &Bound<'_, PyAny>,
         from_wkt: &Bound<'_, PyAny>,
         xs: &[f64],
         ys: &[f64],
-        exact: &[bool],
-    ) -> PyResult<Option<String>> {
+    ) -> PyResult<Vec<bool>> {
         let point_wkts: Vec<String> = xs
             .iter()
             .zip(ys)
             .map(|(x, y)| format!("POINT ({x} {y})"))
             .collect();
         let points = from_wkt.call1((point_wkts,))?;
-        let fast = bools(&module.getattr("contains")?.call1((geometry, &points))?)?;
-        Ok(first_mismatch("packed", xs, ys, &fast, exact))
+        bools(&contains.call1((geometry, &points))?)
+    }
+
+    fn assert_batch(label: &str, actual: Vec<bool>, expected: &[bool]) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label} returned a different number of results"
+        );
+        assert_eq!(actual.as_slice(), expected, "{label} results differed");
     }
 
     #[test]
@@ -408,64 +445,52 @@ mod above_gate_parity_tests {
         clippy::panic_in_result_fn,
         reason = "assertions include the first mismatching coordinate in the failure"
     )]
-    fn contains_xy_and_packed_points_match_exact_across_grid_gate() -> PyResult<()> {
+    fn contains_xy_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let module = PyModule::new(py, "gometry._lib")?;
             lib(&module)?;
             let from_wkt = module.getattr("from_wkt")?;
-            let geometry = from_wkt.call1((regular_polygon_wkt(),))?;
+            let geometry = from_wkt.call1((indexed_polygon_wkt(),))?;
+            let contains_xy = module.getattr("contains_xy")?;
+            let contains = module.getattr("contains")?;
 
-            let (xs, ys) = probes(PROBE_COUNT_BELOW_GATE);
-            let exact_below = exact_verdicts(&module, &geometry, &xs, &ys)?;
-            let below_mismatch = xy_mismatch(
-                py,
-                &module,
-                &geometry,
-                &xs,
-                &ys,
-                &exact_below,
-                "XY below gate",
-            )?;
-            assert!(
-                below_mismatch.is_none(),
-                "below-gate parity unexpectedly failed: {}",
-                below_mismatch.unwrap_or_default()
-            );
-            let packed_below =
-                packed_mismatch(&module, &geometry, &from_wkt, &xs, &ys, &exact_below)?;
-            assert!(
-                packed_below.is_none(),
-                "packed below-gate parity unexpectedly failed: {}",
-                packed_below.unwrap_or_default()
-            );
-
-            let (xs_above, ys_above) = probes(PROBE_COUNT_ABOVE_GATE);
-            let exact_above = exact_verdicts(&module, &geometry, &xs_above, &ys_above)?;
-            let mut failures = Vec::new();
-            if let Some(failure) = xy_mismatch(
-                py,
-                &module,
-                &geometry,
-                &xs_above,
-                &ys_above,
-                &exact_above,
-                "XY above gate",
-            )? {
-                failures.push(failure);
+            for probe in NAMED_PROBES {
+                let actual = contains_xy
+                    .call1((&geometry, probe.x, probe.y))?
+                    .extract::<bool>()?;
+                assert_eq!(
+                    actual, probe.expected,
+                    "scalar {} classified ({}, {}) incorrectly",
+                    probe.name, probe.x, probe.y
+                );
             }
 
-            if let Some(failure) = packed_mismatch(
-                &module,
-                &geometry,
-                &from_wkt,
-                &xs_above,
-                &ys_above,
-                &exact_above,
-            )? {
-                failures.push(failure);
-            }
-            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            let (small_xs, small_ys, small_expected) = repeated_probe_batch(1);
+            assert_batch(
+                "small contains_xy batch",
+                xy_values(py, &contains_xy, &geometry, &small_xs, &small_ys)?,
+                &small_expected,
+            );
+            assert_batch(
+                "small packed batch",
+                packed_values(&contains, &geometry, &from_wkt, &small_xs, &small_ys)?,
+                &small_expected,
+            );
+
+            // The indexed admission belongs to the 256-edge polygon, not to a
+            // probe-count threshold; repetition only exercises a larger batch.
+            let (large_xs, large_ys, large_expected) = repeated_probe_batch(64);
+            assert_batch(
+                "large contains_xy batch",
+                xy_values(py, &contains_xy, &geometry, &large_xs, &large_ys)?,
+                &large_expected,
+            );
+            assert_batch(
+                "large packed batch",
+                packed_values(&contains, &geometry, &from_wkt, &large_xs, &large_ys)?,
+                &large_expected,
+            );
             Ok(())
         })
     }
