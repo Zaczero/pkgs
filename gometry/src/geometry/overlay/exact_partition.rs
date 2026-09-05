@@ -60,6 +60,41 @@ struct GlobalFaces {
     count: u32,
 }
 
+impl GlobalFaces {
+    fn quotient(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        retained: &[bool],
+    ) -> Result<Vec<u32>> {
+        let mut parents = Vec::new();
+        try_reserve_vec(&mut parents, self.count as usize)?;
+        parents.extend(0..self.count);
+        for (slot, &edge) in edges.iter().enumerate() {
+            let twin = topology.twins[slot] as usize;
+            if slot > twin || retained[edge as usize] {
+                continue;
+            }
+            let mut left = self.walk_faces[topology.face_of[slot] as usize];
+            let mut right = self.walk_faces[topology.face_of[twin] as usize];
+            while parents[left as usize] != left {
+                parents[left as usize] = parents[parents[left as usize] as usize];
+                left = parents[left as usize];
+            }
+            while parents[right as usize] != right {
+                parents[right as usize] = parents[parents[right as usize] as usize];
+                right = parents[right as usize];
+            }
+            // Keep infinity's identity when its face absorbs a bounded face.
+            parents[left.max(right) as usize] = left.min(right);
+        }
+        for face in 0..parents.len() {
+            parents[face] = parents[parents[face] as usize];
+        }
+        Ok(parents)
+    }
+}
+
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactPartition<'a> {
     unique: &'a [Segment],
@@ -2101,6 +2136,43 @@ mod tests {
             .unwrap();
         windings.sort_unstable();
         assert_eq!(windings, [[0, 0], [1, -2], [1, 0]]);
+    }
+
+    #[test]
+    fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
+        let case = run(&[
+            seg(0.0, 0.0, 4.0, 0.0),
+            seg(4.0, 0.0, 4.0, 4.0),
+            seg(4.0, 4.0, 0.0, 4.0),
+            seg(0.0, 4.0, 0.0, 0.0),
+            seg(0.0, 0.0, 4.0, 4.0),
+            seg(1.0, 2.0, 1.0, 2.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(faces.count, 3);
+        let mut retained = vec![true; partition.spans.len()];
+        let identity = faces.quotient(&topology, &edges, &retained).unwrap();
+        for (face, &mapped) in identity.iter().enumerate() {
+            assert_eq!(mapped as usize, face);
+        }
+        for (edge, span) in partition.spans.iter().enumerate() {
+            let source = partition.unique[span.unique as usize];
+            if source.start.x != source.end.x && source.start.y != source.end.y {
+                retained[edge] = false;
+            }
+        }
+        let merged = faces.quotient(&topology, &edges, &retained).unwrap();
+        assert_eq!(merged[0], 0);
+        assert_ne!(merged[1], 0);
+        assert_eq!(merged[1], merged[2]);
+        let point = stored_node(&partition, XY::new(1.0, 2.0)).unwrap();
+        let host = faces.component_hosts[topology.component_of[point.0 as usize] as usize];
+        assert_eq!(merged[host as usize], merged[1]);
+        retained.fill(false);
+        let erased = faces.quotient(&topology, &edges, &retained).unwrap();
+        assert_eq!(erased, [0, 0, 0]);
     }
 
     #[test]
