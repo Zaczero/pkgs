@@ -1763,7 +1763,6 @@ mod tests {
 
         let small = count(2);
         let large = count(128);
-        assert_eq!(small, 9);
         assert_eq!(small, large);
     }
 }

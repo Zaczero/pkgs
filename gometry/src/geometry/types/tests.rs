@@ -183,6 +183,19 @@ mod csr_offset_column_tests {
     }
 
     #[test]
+    fn csr_offset_builder_rejects_invalid_final_capacity() {
+        for (end, cap) in [(7, 6), (2_147_483_648, 2_147_483_648)] {
+            let mut builder = CsrOffsetBuilder::new();
+            builder.push_end(end, end).unwrap();
+            let error = builder.finish(cap).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+            ));
+        }
+    }
+
+    #[test]
     fn csr_offset_rejects_overflow_at_freeze() {
         let overflow = (i32::MAX as usize).saturating_add(1);
         let _ = CsrOffsetColumn::<()>::try_new(vec![0, overflow], overflow).unwrap_err();

@@ -134,15 +134,21 @@ impl CsrOffsetBuilder {
 
     pub(crate) fn finish(self, vertex_cap: usize) -> Result<CsrOffsetColumn> {
         let (_, offsets) = self.builder.finish();
-        let mut ends = Vec::new();
-        crate::boundary::try_reserve_vec(&mut ends, offsets.len())?;
+        if offsets.last().is_some_and(|&last| last as usize > vertex_cap) {
+            return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
+        }
+        let mut values = Vec::new();
+        crate::boundary::try_reserve_vec(&mut values, offsets.len())?;
         for offset in offsets {
             crate::boundary::try_push_vec(
-                &mut ends,
-                usize::try_from(offset).expect("CSR offsets are non-negative"),
+                &mut values,
+                CsrOffset(i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?),
             )?;
         }
-        CsrOffsetColumn::from_builder_ends(ends, vertex_cap)
+        Ok(CsrOffsetColumn {
+            offsets: values.into(),
+            _level: PhantomData,
+        })
     }
 }
 
@@ -187,23 +193,6 @@ impl<Level> CsrOffsetColumn<Level> {
     /// count for line/`ring_offsets` columns, ring count for `polygon_offsets`.
     pub fn try_new(ends: Vec<usize>, end_cap: usize) -> Result<Self> {
         validate_csr_ends(&ends, end_cap)?;
-        let offsets = offsets_from_ends(ends)?;
-        Ok(Self {
-            offsets,
-            _level: PhantomData,
-        })
-    }
-
-    /// Trusted finalizer for `CsrOffsetBuilder`: `push_end` already guarantees
-    /// `ends[0]==0` and monotonic non-decreasing ends, so only the O(1)
-    /// `last <= end_cap` bound (offsets index coord columns — a safety
-    /// boundary) is re-checked here; the O(n) monotonicity re-walk of
-    /// `validate_csr_ends` is skipped. Untrusted paths (`try_new`,
-    /// `try_from_arc_i32`, `rebase_concat`) keep full validation.
-    pub(crate) fn from_builder_ends(ends: Vec<usize>, end_cap: usize) -> Result<Self> {
-        if ends.last().is_some_and(|&last| last > end_cap) {
-            return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
-        }
         let offsets = offsets_from_ends(ends)?;
         Ok(Self {
             offsets,
