@@ -1,6 +1,6 @@
 use crate::geometry::{Point, Shape};
 use crate::grid::cell::{CellPickleArg, GridCell};
-use crate::grid::s2::cell::Cell as S2GeomCell;
+use crate::grid::s2::cell::{Cell as S2GeomCell, area_m2 as s2_area_m2};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 
@@ -25,7 +25,7 @@ impl GridCell for CellId {
     }
 
     fn area_m2(self) -> f64 {
-        S2GeomCell::from_id(self).area_m2()
+        s2_area_m2(self)
     }
 
     fn neighbors(self) -> Vec<Self> {

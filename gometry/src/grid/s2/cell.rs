@@ -265,33 +265,26 @@ impl Cell {
         };
         u >= self.uv.u_lo && u <= self.uv.u_hi && v >= self.uv.v_lo && v <= self.uv.v_hi
     }
+}
 
-    /// Exact spherical area in steradians (two spherical triangles).
-    pub(crate) fn area_steradians(self) -> f64 {
-        // Spans are derived area-locally (not stored on every Cell) so
-        // coverer/containment paths stay untouched.
-        let (_, _, _, _, u_span, v_span) = self.id.bound_uv_with_spans();
-        let UvRect {
-            u_lo,
-            u_hi,
-            v_lo,
-            v_hi,
-        } = self.uv;
-        let [a, b, c, d] = [
-            face_uv_to_xyz(self.face, u_lo, v_lo),
-            face_uv_to_xyz(self.face, u_hi, v_lo),
-            face_uv_to_xyz(self.face, u_hi, v_hi),
-            face_uv_to_xyz(self.face, u_lo, v_hi),
-        ];
-        let determinant = (u_span * v_span).abs();
-        triangle_area_raw(a, b, c, determinant) + triangle_area_raw(a, c, d, determinant)
-    }
+/// Exact spherical area in steradians (two spherical triangles).
+pub(crate) fn area_steradians(id: CellId) -> f64 {
+    let (u_lo, u_hi, v_lo, v_hi, u_span, v_span) = id.bound_uv_with_spans();
+    let face = id.face();
+    let [a, b, c, d] = [
+        face_uv_to_xyz(face, u_lo, v_lo),
+        face_uv_to_xyz(face, u_hi, v_lo),
+        face_uv_to_xyz(face, u_hi, v_hi),
+        face_uv_to_xyz(face, u_lo, v_hi),
+    ];
+    let determinant = (u_span * v_span).abs();
+    triangle_area_raw(a, b, c, determinant) + triangle_area_raw(a, c, d, determinant)
+}
 
-    /// Exact geodesic area in square meters on the authalic sphere (the
-    /// same model the H3 backend uses, so the two grids compare).
-    pub(crate) fn area_m2(self) -> f64 {
-        self.area_steradians() * EARTH_AUTHALIC_RADIUS_M * EARTH_AUTHALIC_RADIUS_M
-    }
+/// Exact geodesic area in square meters on the authalic sphere (the
+/// same model the H3 backend uses, so the two grids compare).
+pub(crate) fn area_m2(id: CellId) -> f64 {
+    area_steradians(id) * EARTH_AUTHALIC_RADIUS_M * EARTH_AUTHALIC_RADIUS_M
 }
 
 /// Spherical triangle area from unnormalized face vectors. Normalization
@@ -353,7 +346,7 @@ mod tests {
             // either implementation, so the differential tolerance is
             // relative 1e-6 — far below any practical meaning (7e-11 m²
             // at leaf scale); the invariant tests pin the math itself.
-            let area = cell.area_steradians();
+            let area = area_steradians(id);
             let oracle_area = oracle.exact_area();
             assert!(
                 (area - oracle_area).abs() <= 1e-6 * oracle_area.max(1e-30),
@@ -369,22 +362,19 @@ mod tests {
     fn area_invariants() {
         let full: f64 = Face::ALL
             .into_iter()
-            .map(|face| Cell::from_id(CellId::from_face(face)).area_steradians())
+            .map(|face| area_steradians(CellId::from_face(face)))
             .sum();
         assert!((full - 4.0 * std::f64::consts::PI).abs() < 1e-9);
         for face in Face::ALL {
-            let area = Cell::from_id(CellId::from_face(face)).area_steradians();
+            let area = area_steradians(CellId::from_face(face));
             assert!((area - 4.0 * std::f64::consts::PI / 6.0).abs() < 1e-10);
         }
         for id in sample_cells() {
             let Some(children) = id.children() else {
                 continue;
             };
-            let parent_area = Cell::from_id(id).area_steradians();
-            let child_sum: f64 = children
-                .iter()
-                .map(|&child| Cell::from_id(child).area_steradians())
-                .sum();
+            let parent_area = area_steradians(id);
+            let child_sum: f64 = children.iter().map(|&child| area_steradians(child)).sum();
             assert!(
                 (parent_area - child_sum).abs() <= 1e-9 * parent_area.max(1e-30),
                 "children do not sum to parent at level {}",
