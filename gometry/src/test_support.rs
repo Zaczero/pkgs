@@ -8,6 +8,18 @@ pub(crate) struct CountingAllocator;
 thread_local! {
     static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+    static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+fn reject_allocation() -> bool {
+    FAIL_AFTER.with(|remaining| match remaining.get() {
+        None => false,
+        Some(0) => true,
+        Some(count) => {
+            remaining.set(Some(count - 1));
+            false
+        },
+    })
 }
 
 fn count_allocation() {
@@ -18,16 +30,22 @@ fn count_allocation() {
     });
 }
 
-// SAFETY: every allocator operation delegates to `System` with its original arguments.
+// SAFETY: requests either fail with null or delegate to System unchanged.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count_allocation();
+        if reject_allocation() {
+            return std::ptr::null_mut();
+        }
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         count_allocation();
+        if reject_allocation() {
+            return std::ptr::null_mut();
+        }
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -39,6 +57,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         count_allocation();
+        if reject_allocation() {
+            return std::ptr::null_mut();
+        }
         // SAFETY: `GlobalAlloc` supplies the original allocation arguments.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -60,6 +81,20 @@ pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     let result = operation();
     drop(guard);
     (result, ALLOCATIONS.with(Cell::get))
+}
+
+/// Reject this thread's allocations persistently after the allowed prefix.
+pub(crate) fn fail_allocations_after<T>(count: usize, operation: impl FnOnce() -> T) -> T {
+    struct Restore(Option<usize>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FAIL_AFTER.with(|remaining| remaining.set(self.0));
+        }
+    }
+    let guard = Restore(FAIL_AFTER.with(|remaining| remaining.replace(Some(count))));
+    let result = operation();
+    drop(guard);
+    result
 }
 
 pub(crate) fn initialize_python() {

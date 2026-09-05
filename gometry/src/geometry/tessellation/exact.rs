@@ -2170,65 +2170,61 @@ fn exact_ratio_bracket(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     proposal: f64,
-) -> Option<(u64, u64)> {
+) -> Result<Option<(u64, u64)>> {
     const MAX_ULP_STEPS: usize = 4;
     let max_bits = f64::MAX.to_bits();
-    let compare = |bits: u64| {
-        ExactDyadic::from_f64(f64::from_bits(bits))
-            .product(denominator)
-            .cmp(numerator)
+    let compare = |bits: u64| -> Result<Ordering> {
+        Ok(ExactDyadic::try_from_f64(f64::from_bits(bits))?
+            .try_product(denominator)?
+            .cmp(numerator))
     };
     let mut bits = proposal.to_bits();
-    match compare(bits) {
-        Ordering::Equal => return Some((bits, bits)),
+    match compare(bits)? {
+        Ordering::Equal => return Ok(Some((bits, bits))),
         Ordering::Less => {
             for _ in 0..MAX_ULP_STEPS {
                 if bits == max_bits {
-                    return None;
+                    return Ok(None);
                 }
                 let lower = bits;
                 bits += 1;
-                match compare(bits) {
+                match compare(bits)? {
                     Ordering::Less => {},
-                    Ordering::Equal => return Some((bits, bits)),
-                    Ordering::Greater => return Some((lower, bits)),
+                    Ordering::Equal => return Ok(Some((bits, bits))),
+                    Ordering::Greater => return Ok(Some((lower, bits))),
                 }
             }
         },
         Ordering::Greater => {
             for _ in 0..MAX_ULP_STEPS {
                 if bits == 0 {
-                    return None;
+                    return Ok(None);
                 }
                 let upper = bits;
                 bits -= 1;
-                match compare(bits) {
+                match compare(bits)? {
                     Ordering::Greater => {},
-                    Ordering::Equal => return Some((bits, bits)),
-                    Ordering::Less => return Some((bits, upper)),
+                    Ordering::Equal => return Ok(Some((bits, bits))),
+                    Ordering::Less => return Ok(Some((bits, upper))),
                 }
             }
         },
     }
-    None
+    Ok(None)
 }
 
 fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
     let sign = numerator.sign().quotient(denominator.sign());
-    let numerator = numerator.clone().abs();
-    let denominator = denominator.clone().abs();
+    let numerator = numerator.try_clone()?.abs();
+    let denominator = denominator.try_clone()?.abs();
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    let max = ExactDyadic::from_f64(f64::MAX).product(&denominator);
+    let max = ExactDyadic::try_from_f64(f64::MAX)?.try_product(&denominator)?;
     if numerator.cmp(&max) == Ordering::Greater {
-        let overflow_midpoint = ExactDyadic::from_f64(f64::MAX)
-            .add(ExactDyadic {
-                negative: false,
-                limbs: vec![1],
-                exponent: 970,
-            })
-            .product(&denominator);
+        let overflow_midpoint = ExactDyadic::try_from_f64(f64::MAX)?
+            .try_add(ExactDyadic::try_from_f64(2.0_f64.powi(970))?)?
+            .try_product(&denominator)?;
         if numerator.cmp(&overflow_midpoint) == Ordering::Less {
             return Ok(if sign == ExactSign::Negative {
                 -f64::MAX
@@ -2236,15 +2232,13 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
                 f64::MAX
             });
         }
-        return Err(GeometryErrorKind::voronoi(
-            "exact vertex is outside the finite binary64 range",
-        ));
+        return Err(GeometryErrorKind::ExactCoordinateOutOfRange.into());
     }
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
         let mid = low + (high - low).div_ceil(2);
-        let product = ExactDyadic::from_f64(f64::from_bits(mid)).product(&denominator);
+        let product = ExactDyadic::try_from_f64(f64::from_bits(mid))?.try_product(&denominator)?;
         if product.cmp(&numerator) == Ordering::Greater {
             high = mid - 1;
         } else {
@@ -2257,10 +2251,10 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     } else {
         let upper = f64::from_bits(low + 1);
         // Compare 2*n/d with lower+upper. Equality is the rounding tie.
-        let twice_numerator = numerator.product(&ExactDyadic::from_f64(2.0));
-        let midpoint_scaled = ExactDyadic::from_f64(lower)
-            .add(ExactDyadic::from_f64(upper))
-            .product(&denominator);
+        let twice_numerator = numerator.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+        let midpoint_scaled = ExactDyadic::try_from_f64(lower)?
+            .try_add(ExactDyadic::try_from_f64(upper)?)?
+            .try_product(&denominator)?;
         match twice_numerator.cmp(&midpoint_scaled) {
             Ordering::Less => lower,
             Ordering::Greater => upper,
@@ -2284,19 +2278,22 @@ pub(in crate::geometry) fn round_ratio(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
 ) -> Result<f64> {
+    if denominator.is_zero() {
+        return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
+    }
     let sign = numerator.sign().quotient(denominator.sign());
-    let magnitude_numerator = numerator.clone().abs();
-    let magnitude_denominator = denominator.clone().abs();
+    let magnitude_numerator = numerator.try_clone()?.abs();
+    let magnitude_denominator = denominator.try_clone()?.abs();
     if let Some(proposal) = approximate_ratio(&magnitude_numerator, &magnitude_denominator)
         && let Some((low, high)) =
-            exact_ratio_bracket(&magnitude_numerator, &magnitude_denominator, proposal)
+            exact_ratio_bracket(&magnitude_numerator, &magnitude_denominator, proposal)?
     {
         let lower = f64::from_bits(low);
         let upper = f64::from_bits(high);
-        let twice_numerator = magnitude_numerator.product(&ExactDyadic::from_f64(2.0));
-        let midpoint_scaled = ExactDyadic::from_f64(lower)
-            .add(ExactDyadic::from_f64(upper))
-            .product(&magnitude_denominator);
+        let twice_numerator = magnitude_numerator.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+        let midpoint_scaled = ExactDyadic::try_from_f64(lower)?
+            .try_add(ExactDyadic::try_from_f64(upper)?)?
+            .try_product(&magnitude_denominator)?;
         let rounded = match twice_numerator.cmp(&midpoint_scaled) {
             Ordering::Less => lower,
             Ordering::Equal if low & 1 == 0 => lower,
@@ -2521,6 +2518,45 @@ mod tests {
             ),
             ExactSign::Negative
         );
+    }
+
+    #[test]
+    fn ratio_rounding_rejects_zero_denominators() {
+        for numerator in [ExactDyadic::zero(), ExactDyadic::one()] {
+            let error = round_ratio(&numerator, &ExactDyadic::zero()).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactRatioZeroDenominator)
+            ));
+        }
+    }
+
+    #[test]
+    fn ratio_rounding_propagates_each_allocation_failure() {
+        use crate::error::{ErrorKind, ResourceError};
+        use crate::test_support::{allocation_count, fail_allocations_after};
+
+        let cases = [
+            (ExactDyadic::one(), ExactDyadic::from_f64(3.0)),
+            (
+                ExactDyadic::from_f64(f64::from_bits(1)),
+                ExactDyadic::from_f64(2.0),
+            ),
+            (ExactDyadic::from_f64(f64::MAX), ExactDyadic::from_f64(0.5)),
+            (ExactDyadic::one(), ExactDyadic::zero()),
+        ];
+        for (numerator, denominator) in cases {
+            let (_, count) = allocation_count(|| round_ratio(&numerator, &denominator));
+            for prefix in 0..count {
+                let error =
+                    fail_allocations_after(prefix, || round_ratio(&numerator, &denominator))
+                        .unwrap_err();
+                assert!(
+                    matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
+                    "allocation prefix {prefix}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -345,6 +345,8 @@ impl From<Error> for PyErr {
                 | G::AntimeridianPoleOrdinates
                 | G::Triangulation(_)
                 | G::Voronoi(_)
+                | G::ExactRatioZeroDenominator
+                | G::ExactCoordinateOutOfRange
                 | G::OrdinateDropped(_)
                 | G::MissingMeasure
                 | G::NonMonotonicMeasure

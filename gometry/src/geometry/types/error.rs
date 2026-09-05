@@ -109,6 +109,10 @@ pub enum GeometryErrorKind {
     Triangulation(Box<str>),
     #[error("Voronoi construction failed: {0}")]
     Voronoi(Box<str>),
+    #[error("exact ratio has a zero denominator")]
+    ExactRatioZeroDenominator,
+    #[error("exact vertex is outside the finite binary64 range")]
+    ExactCoordinateOutOfRange,
     #[error("Frechet distance requires a LineString or single-line MultiLineString")]
     FrechetLineStringRequired,
     #[error("{0} cannot represent Z/M; remove the unsupported ordinates explicitly first")]

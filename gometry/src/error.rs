@@ -1,15 +1,12 @@
-//! The crate-wide error type: one pointer-sized handle over the domain error
-//! kinds.
+//! The crate-wide error type with allocation-free resource failure reporting.
 //!
 //! Core modules return [`Result`]; the Python boundary converts exactly once
 //! (`impl From<Error> for PyErr` in `crate::py::errors`, which also owns the
 //! exception classes). Domain vocabulary stays in the owning module —
 //! `GeometryErrorKind` in `geometry`, `CrsError` in `crs`, `IoError` in `io`,
 //! `FrameError` in `metadata` — and composes
-//! here. Because the whole kind sits behind one `Box`, variants carry their
-//! fields directly (no per-variant payload boxing), `Result<T, Error>` stays
-//! register-friendly on hot per-row paths, and the allocation happens only on
-//! the error path.
+//! here. Domain payloads are boxed; allocation failure and size overflow use
+//! static kinds so reporting exhausted resources needs no further allocation.
 
 use thiserror::Error as ThisError;
 
@@ -37,10 +34,7 @@ pub(crate) enum ResourceError {
 /// still work under the same import.
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// The crate error: a boxed [`ErrorKind`], so the type is pointer-sized and
-/// large messages are heap-allocated only when an error actually occurs. One
-/// pointer keeps `Result<T, Error>` register-returnable on hot per-row paths;
-/// fields belong on the kind variants, not on `Error` itself.
+/// The crate error, with boxed domain details and allocation-free resource errors.
 // The `std::io::Error` naming precedent: the crate error IS named `Error`.
 #[expect(
     clippy::error_impl_error,
@@ -49,7 +43,18 @@ pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, ThisError)]
 #[error(transparent)]
 #[repr(transparent)]
-pub struct Error(Box<ErrorKind>);
+pub struct Error(ErrorStorage);
+
+#[derive(Debug, ThisError)]
+enum ErrorStorage {
+    #[error(transparent)]
+    Owned(Box<ErrorKind>),
+    #[error(transparent)]
+    Static(&'static ErrorKind),
+}
+
+static ALLOCATION_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Allocation);
+static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
 
 /// The domain error kinds. Adding a kind forces a deliberate Python exception
 /// classification in `py::errors` (the conversion match has no wildcard arm).
@@ -69,18 +74,25 @@ pub(crate) enum ErrorKind {
 
 impl Error {
     pub(crate) fn kind(&self) -> &ErrorKind {
-        &self.0
+        match &self.0 {
+            ErrorStorage::Owned(kind) => kind,
+            ErrorStorage::Static(kind) => kind,
+        }
     }
 
     pub(crate) fn with_parse_position(mut self, position: usize) -> Self {
-        if let ErrorKind::Io(error) = self.0.as_mut() {
+        if let ErrorStorage::Owned(kind) = &mut self.0
+            && let ErrorKind::Io(error) = kind.as_mut()
+        {
             error.set_position_if_missing(position);
         }
         self
     }
 
     pub(crate) fn with_parse_path(mut self, path: &str) -> Self {
-        if let ErrorKind::Io(error) = self.0.as_mut() {
+        if let ErrorStorage::Owned(kind) = &mut self.0
+            && let ErrorKind::Io(error) = kind.as_mut()
+        {
             error.set_path_if_missing(path);
         }
         self
@@ -89,7 +101,18 @@ impl Error {
 
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
-        Self(Box::new(kind))
+        Self(match kind {
+            ErrorKind::Resource(ResourceError::Allocation) => {
+                ErrorStorage::Static(&ALLOCATION_ERROR)
+            },
+            ErrorKind::Resource(ResourceError::SizeOverflow) => {
+                ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
+            },
+            kind => match Box::try_new(kind) {
+                Ok(kind) => ErrorStorage::Owned(kind),
+                Err(_) => ErrorStorage::Static(&ALLOCATION_ERROR),
+            },
+        })
     }
 }
 
@@ -120,6 +143,35 @@ impl From<FrameError> for Error {
 impl From<ResourceError> for Error {
     fn from(error: ResourceError) -> Self {
         ErrorKind::Resource(error).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, ErrorKind, ResourceError};
+    use crate::test_support::fail_allocations_after;
+
+    #[test]
+    fn resource_errors_survive_persistent_allocation_failure() {
+        let allocation = fail_allocations_after(0, || Error::from(ResourceError::Allocation));
+        assert!(matches!(
+            allocation.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
+        let overflow = fail_allocations_after(0, || Error::from(ResourceError::SizeOverflow));
+        assert!(matches!(
+            overflow.kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        let context = fail_allocations_after(0, || {
+            Error::from(ResourceError::SizeOverflowContext(
+                "coordinate count overflow",
+            ))
+        });
+        assert!(matches!(
+            context.kind(),
+            ErrorKind::Resource(ResourceError::Allocation)
+        ));
     }
 }
 
