@@ -2566,11 +2566,31 @@ impl LiftedChain {
         }
         let total = last.longitude.difference(first.longitude)?;
         let edge_count = i64::try_from(self.edges.len()).ok()?;
-        (-edge_count..=edge_count).find(|&degree| {
-            ExactExpansion::exact_degree_turns(degree)
-                .and_then(|expected| total.sub(&expected))
-                .is_some_and(|difference| difference.ordering() == Ordering::Equal)
-        })
+        let raw_alias_turn = if first.longitude.raw.to_bits() == last.longitude.raw.to_bits() {
+            0
+        } else if first.longitude.raw.to_bits() == (-HALF_TURN_DEGREES).to_bits()
+            && last.longitude.raw.to_bits() == HALF_TURN_DEGREES.to_bits()
+        {
+            1
+        } else if first.longitude.raw.to_bits() == HALF_TURN_DEGREES.to_bits()
+            && last.longitude.raw.to_bits() == (-HALF_TURN_DEGREES).to_bits()
+        {
+            -1
+        } else {
+            return None;
+        };
+        let degree = last
+            .longitude
+            .turns
+            .checked_sub(first.longitude.turns)?
+            .checked_add(raw_alias_turn)?;
+        if !(-edge_count..=edge_count).contains(&degree) {
+            return None;
+        }
+        ExactExpansion::exact_degree_turns(degree)
+            .and_then(|expected| total.sub(&expected))
+            .is_some_and(|difference| difference.ordering() == Ordering::Equal)
+            .then_some(degree)
     }
 
     #[cfg_attr(
