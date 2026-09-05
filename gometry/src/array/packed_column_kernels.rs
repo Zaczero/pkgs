@@ -164,6 +164,12 @@ pub(crate) fn clip_lines_packed_xy(
     rect: Bounds,
     domain: crate::geometry::TopologyDomain,
 ) -> PackedColumnResult<Option<PackedColumnOutput>> {
+    if let crate::geometry::TopologyDomain::Geographic(frame) = domain
+        && (rect.crosses_antimeridian()
+            || !crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame))
+    {
+        return Ok(None);
+    }
     let coords = line_columns.coords();
     if coords.zs().is_some() || coords.ms().is_some() {
         return Ok(None);

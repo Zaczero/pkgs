@@ -554,6 +554,59 @@ def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
         assert gm.equals(gm.GeometryArray([shape]).clip_by_rect(*rect)[0], expected)
 
 
+def test_packed_geographic_clip_uses_native_grad_seam() -> None:
+    grad_line = gm.LineString([(-199, 0), (199, 0)], crs=4807)
+    grad_rect = (198, -1, -198, 1)
+    grad_expected = gm.from_wkt(
+        'MULTILINESTRING ((-200 0, -199 0), (199 0, 200 0))', crs=4807
+    )
+    assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
+    assert gm.equals(
+        gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
+    )
+
+
+def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
+    grad_line = gm.LineString([(-2, 0), (2, 0)], crs=4807)
+    grad_rect = (1, -1, -1, 1)
+    grad_expected = gm.from_wkt(
+        'MULTILINESTRING ((-2 0, -1 0), (1 0, 2 0))', crs=4807
+    )
+    assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
+    assert gm.equals(
+        gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
+    )
+
+
+def test_packed_geographic_clip_declines_ordered_alias_rectangle() -> None:
+    alias_line = gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326)
+    alias_rect = (170, -1, 190, 1)
+    alias_expected = gm.from_wkt(
+        'MULTILINESTRING ((-175 0, -170 0), (170 0, 175 0))', crs=4326
+    )
+    assert gm.equals(alias_line.clip_by_rect(*alias_rect), alias_expected)
+    assert gm.equals(
+        gm.GeometryArray([alias_line]).clip_by_rect(*alias_rect)[0], alias_expected
+    )
+
+
+def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> None:
+    canonical_line = gm.LineString([(-2, 0), (0, 0), (2, 0)], crs=4326)
+    canonical_expected = gm.LineString([(-1, 0), (0, 0), (1, 0)], crs=4326)
+    assert gm.equals(
+        gm.GeometryArray([canonical_line]).clip_by_rect(-1, -1, 1, 1)[0],
+        canonical_expected,
+    )
+
+    rows = gm.GeometryArray(
+        [canonical_line, gm.LineString([], crs=4326), canonical_line]
+    )
+    rows = rows._with_missing([False, False, True]).clip_by_rect(-1, -1, 1, 1)
+    assert gm.equals(rows[0], canonical_expected)
+    assert rows[1].to_wkt() == 'LINESTRING EMPTY'
+    assert rows[2] is None
+
+
 def test_crossing_line_and_multiline_predicates_and_planar_ops() -> None:
     """Crossing linework uses geographic predicates; simplify/hull stay planar."""
     line = gm.LineString([(170, 10), (-170, 10)], crs=4326)
