@@ -611,6 +611,21 @@ def test_set_coordinates_validation_errors() -> None:
         poly.set_coordinates(opened)
 
 
+def test_set_coordinates_accepts_positive_negative_and_zero_strides() -> None:
+    line = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
+    storage = np.array([[10.0, 20.0], [11.0, 21.0], [12.0, 22.0]])
+
+    positive = line.set_coordinates(x=storage[:, 0], y=storage[:, 1])
+    negative = line.set_coordinates(x=storage[::-1, 0], y=storage[::-1, 1])
+    zero = line.set_coordinates(
+        x=np.broadcast_to(30.0, 3),
+        y=np.broadcast_to(40.0, 3),
+    )
+    assert list(positive.coords) == [(10.0, 20.0), (11.0, 21.0), (12.0, 22.0)]
+    assert list(negative.coords) == [(12.0, 22.0), (11.0, 21.0), (10.0, 20.0)]
+    assert list(zero.coords) == [(30.0, 40.0)] * 3
+
+
 def test_numpy_scalar_coordinates_and_float32_matrix_are_admitted() -> None:
     point = gm.Point(np.float32(1.0), np.int64(2), z=np.float64(3.0))
     assert point.to_wkt() == 'POINT Z (1 2 3)'

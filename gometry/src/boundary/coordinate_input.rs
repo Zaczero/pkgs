@@ -22,7 +22,7 @@ use crate::boundary::buffer_endian::{buffer_to_arc_f64, buffer_to_vec_f64};
 use crate::geometry::column_all_finite;
 use crate::py::errors::InvalidGeometryError;
 use crate::{
-    CoordSeq, CoordinateAxes, PyBuffer, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
+    CoordSeq, PyBuffer, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
     collect_py_iter_exact_from_iter, collect_py_iter_from_iter, f64_required, f64_scalar_named,
     finite_f64_required, py_iter_or_error,
 };
@@ -609,28 +609,6 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     if !(2..=4).contains(&d) {
         return Ok(None);
     }
-    // Empty (0, D): axes from width / optional z,m — matches extract_points empty.
-    if n == 0 {
-        let axes = if z.is_some() || m.is_some() {
-            if d > 2 {
-                return Err(InvalidGeometryError::new_err(
-                    "inline Z/M coordinates cannot be combined with z/m arrays",
-                ));
-            }
-            CoordinateAxes::new(
-                crate::geometry::HasZ(z.is_some()),
-                crate::geometry::HasM(m.is_some()),
-            )
-        } else {
-            match d {
-                2 => CoordinateAxes::XY,
-                3 => CoordinateAxes::XYZ,
-                4 => CoordinateAxes::XYZM,
-                _ => unreachable!(),
-            }
-        };
-        return Ok(Some(CoordSeq::empty(axes)));
-    }
     if d > 2 && (z.is_some() || m.is_some()) {
         return Err(InvalidGeometryError::new_err(
             "inline Z/M coordinates cannot be combined with z/m arrays",
@@ -756,7 +734,7 @@ pub(crate) fn coordinate_arc_values_exact(
         if buffer.is_c_contiguous() {
             return buffer_to_arc_f64(py, &buffer);
         }
-        return buffer_to_vec_f64(py, &buffer).map(Into::into);
+        return coordinate_arc_values_from_buffer(py, &buffer);
     }
     coordinate_values_exact(py, value, name, expected, on_len).map(Into::into)
 }
@@ -1206,8 +1184,9 @@ pub(crate) type CoordinateColumns<'a> = (&'a [f64], &'a [f64], ZtLaneRefs<'a>);
 
 /// Parsed, broadcast-aligned `x`/`y`/`z`/`t` columns for the raw coordinate
 /// entry points (`crs_transform`, `crs_apply`, `crs_roundtrip`). Owns the
-/// cross-field invariants: `t` requires `z`, scalar-in/scalar-out detection
-/// happens before broadcasting, and every present column shares one length.
+/// cross-field invariants: T-only lanes are allowed, scalar-in/scalar-out
+/// detection happens before broadcasting, and every present column shares one
+/// length.
 pub(crate) struct CrsCoordinateArgs {
     pub x: CoordinateInput,
     pub y: CoordinateInput,

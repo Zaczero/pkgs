@@ -106,10 +106,24 @@ def test_buffer_ingest_shapes_deterministic() -> None:
     assert len(pts_s) == n
     assert float(pts_s[3].x) == 3.0
 
+    reversed_pts = gm.points(xs[::-1], ys[::-1])
+    assert float(reversed_pts[0].x) == float(x[-1])
+    assert float(reversed_pts[-1].y) == pytest.approx(y[0])
+
+    repeated_pts = gm.points(
+        np.broadcast_to(x[0], n),
+        np.broadcast_to(y[0], n),
+    )
+    assert [point.x for point in repeated_pts[:3]] == [0.0, 0.0, 0.0]
+
     # N x D LineString constructor.
     nd = np.column_stack([x, y])
     line = gm.LineString(nd)
     assert len(line.coords) == n
+    reversed_rows = gm.LineString(nd[::-1])
+    assert tuple(reversed_rows.coords[0]) == (float(x[-1]), float(y[-1]))
+    reversed_columns = gm.LineString(nd[:, ::-1])
+    assert tuple(reversed_columns.coords[0]) == (float(y[0]), float(x[0]))
 
     pt = gm.Point(1.0, 2.0)
     wkb = pt.to_wkb()

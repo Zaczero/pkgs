@@ -69,6 +69,16 @@ def test_b5_indirect_2d_matrix_via_test_owned_producer() -> None:
     assert list(line.coords) == expected, list(line.coords)
 
 
+@pytest.mark.parametrize('axis', ['z', 'm'])
+def test_b5_indirect_empty_matrix_checks_optional_axis_length(axis: str) -> None:
+    matrix = _indirect([], (0, 2))
+    with pytest.raises(gm.InvalidGeometryError):
+        gm.LineString(matrix, **{axis: [1.0]})
+
+    empty = gm.LineString(_indirect([], (0, 2)), **{axis: []})
+    assert empty.coordinate_axes == ('XYZ' if axis == 'z' else 'XYM')
+
+
 def test_b5_legacy_testbuffer_path_still_works_when_present() -> None:
     """If CPython ships ``_testbuffer``, keep the original path green too."""
     _testbuffer = pytest.importorskip('_testbuffer')

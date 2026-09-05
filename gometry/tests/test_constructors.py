@@ -253,6 +253,33 @@ def test_sequence_and_column_constructors_preserve_explicit_axes() -> None:
     assert gm.MultiPoint([], m=[]).coordinate_axes == 'XYM'
     assert gm.LineString(np.empty((0, 4))).coordinate_axes == 'XYZM'
 
+    empty_xy = gm.LineString(np.empty((0, 2)))
+    empty_xyz = gm.LineString(np.empty((0, 2)), z=[])
+    empty_xym = gm.LineString(np.empty((0, 2)), m=[])
+    empty_xyzm = gm.LineString(np.empty((0, 2)), z=[], m=[])
+    empty_inline_xyz = gm.LineString(np.empty((0, 3)))
+    empty_inline_xyzm = gm.LineString(np.empty((0, 4)))
+    assert [
+        empty.coordinate_axes
+        for empty in (
+            empty_xy,
+            empty_xyz,
+            empty_xym,
+            empty_xyzm,
+            empty_inline_xyz,
+            empty_inline_xyzm,
+        )
+    ] == ['XY', 'XYZ', 'XYM', 'XYZM', 'XYZ', 'XYZM']
+    assert [
+        np.asarray(empty.coords).shape
+        for empty in (empty_xy, empty_xyz, empty_xym, empty_xyzm)
+    ] == [(0, 2), (0, 3), (0, 3), (0, 4)]
+    for axis in ('z', 'm'):
+        with pytest.raises(
+            gm.InvalidGeometryError,
+        ):
+            gm.LineString(np.empty((0, 2)), **{axis: [1.0]})
+
     polygon = gm.Polygon([(0, 0), (1, 0), (0, 1)], z=[1, 2, 3])
     assert polygon.coordinate_axes == 'XYZ'
     assert polygon.to_wkt().startswith('POLYGON Z')
