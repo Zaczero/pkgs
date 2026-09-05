@@ -78,7 +78,7 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// Two-pass CSR build: assign unique indices, count multiplicity, place
 /// `(ordinal, reversed)` into a single flat `entries` vector. Unique input
 /// pays HashMap inserts + two flat vecs — never N tiny heap `Vec`s.
-fn dedup_undirected_segments_sourced(
+pub(crate) fn dedup_undirected_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> (Vec<Segment>, SegmentProvenance) {
     let segments = segments.into_iter();

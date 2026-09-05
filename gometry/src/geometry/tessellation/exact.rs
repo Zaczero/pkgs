@@ -14,8 +14,10 @@ use std::cmp::Ordering;
 
 #[cfg(test)]
 use crate::geometry::GENERATED_ITEM_LIMIT;
+use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
+use crate::try_reserve_vec;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PointInCycle {
@@ -258,37 +260,64 @@ impl ExactDyadic {
         limbs.len() + shift / 64 + usize::from(!shift.is_multiple_of(64))
     }
 
-    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Vec<u64> {
+    fn write_sum_aligned(left: Aligned<'_>, right: Aligned<'_>, out: &mut Vec<u64>) {
+        debug_assert!(out.is_empty());
         let length = left.len.max(right.len);
-        let mut result = Vec::with_capacity(length + 1);
         let mut carry = 0_u128;
         for index in 0..length {
             let sum = u128::from(left.word(index)) + u128::from(right.word(index)) + carry;
-            result.push(sum as u64);
+            out.push(sum as u64);
             carry = sum >> 64;
         }
         if carry != 0 {
-            result.push(carry as u64);
+            out.push(carry as u64);
         }
-        result
     }
 
-    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Vec<u64> {
-        let mut result = Vec::with_capacity(larger.len);
+    fn write_diff_aligned(larger: Aligned<'_>, smaller: Aligned<'_>, out: &mut Vec<u64>) {
+        debug_assert!(out.is_empty());
         let mut borrow = 0_i128;
         for index in 0..larger.len {
             let difference =
                 i128::from(larger.word(index)) - i128::from(smaller.word(index)) - borrow;
             if difference < 0 {
-                result.push((difference + (1_i128 << 64)) as u64);
+                out.push((difference + (1_i128 << 64)) as u64);
                 borrow = 1;
             } else {
-                result.push(difference as u64);
+                out.push(difference as u64);
                 borrow = 0;
             }
         }
         debug_assert_eq!(borrow, 0);
+    }
+
+    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Vec<u64> {
+        let length = left.len.max(right.len);
+        let mut result = Vec::with_capacity(length + 1);
+        Self::write_sum_aligned(left, right, &mut result);
         result
+    }
+
+    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Vec<u64> {
+        let mut result = Vec::with_capacity(larger.len);
+        Self::write_diff_aligned(larger, smaller, &mut result);
+        result
+    }
+
+    fn try_add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Result<Vec<u64>> {
+        let length = left.len.max(right.len);
+        let needed = length.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        let mut result = Vec::new();
+        try_reserve_vec(&mut result, needed)?;
+        Self::write_sum_aligned(left, right, &mut result);
+        Ok(result)
+    }
+
+    fn try_subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> Result<Vec<u64>> {
+        let mut result = Vec::new();
+        try_reserve_vec(&mut result, larger.len)?;
+        Self::write_diff_aligned(larger, smaller, &mut result);
+        Ok(result)
     }
 
     fn compare_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Ordering {
@@ -331,40 +360,78 @@ impl ExactDyadic {
         result
     }
 
+    pub(in crate::geometry) fn try_add(self, other: Self) -> Result<Self> {
+        if self.is_zero() {
+            return Ok(other);
+        }
+        if other.is_zero() {
+            return Ok(self);
+        }
+        let exponent = self.exponent.min(other.exponent);
+        let left_shift = usize::try_from(self.exponent - exponent)
+            .map_err(|_| ResourceError::SizeOverflow)?;
+        let right_shift = usize::try_from(other.exponent - exponent)
+            .map_err(|_| ResourceError::SizeOverflow)?;
+        let left = Aligned::new(&self.limbs, left_shift);
+        let right = Aligned::new(&other.limbs, right_shift);
+        let (negative, limbs) = if self.negative == other.negative {
+            (self.negative, Self::try_add_aligned(left, right)?)
+        } else {
+            match Self::compare_aligned(left, right) {
+                Ordering::Greater => (self.negative, Self::try_subtract_aligned(left, right)?),
+                Ordering::Less => (other.negative, Self::try_subtract_aligned(right, left)?),
+                Ordering::Equal => return Ok(Self::zero()),
+            }
+        };
+        let mut result = Self {
+            negative,
+            limbs,
+            exponent,
+        };
+        result.trim();
+        Ok(result)
+    }
+
     pub(in crate::geometry) fn subtract(self, other: Self) -> Self {
         self.add(other.neg())
+    }
+
+    pub(in crate::geometry) fn try_subtract(self, other: Self) -> Result<Self> {
+        self.try_add(other.neg())
+    }
+
+    fn write_product(short: &[u64], long: &[u64], out: &mut Vec<u64>) {
+        debug_assert!(out.is_empty());
+        let mut carry = 0_u128;
+        for &right in long {
+            let value = u128::from(short[0]) * u128::from(right) + carry;
+            out.push(value as u64);
+            carry = value >> 64;
+        }
+        out.push(carry as u64);
+        for (left_index, &left) in short.iter().enumerate().skip(1) {
+            let mut carry = 0_u128;
+            for (right_index, &right) in long.iter().enumerate() {
+                let index = left_index + right_index;
+                let value = u128::from(out[index]) + u128::from(left) * u128::from(right) + carry;
+                out[index] = value as u64;
+                carry = value >> 64;
+            }
+            out.push(carry as u64);
+        }
     }
 
     pub(in crate::geometry) fn product(&self, other: &Self) -> Self {
         if self.is_zero() || other.is_zero() {
             return Self::zero();
         }
-        // V6: schoolbook without the zero-fill. The first partial-product row is
-        // written, later rows accumulate. Identical arithmetic; one fewer pass
-        // and a plain (not zeroed) allocation.
         let (short, long) = if self.limbs.len() <= other.limbs.len() {
             (&self.limbs, &other.limbs)
         } else {
             (&other.limbs, &self.limbs)
         };
         let mut limbs: Vec<u64> = Vec::with_capacity(short.len() + long.len());
-        let mut carry = 0_u128;
-        for &right in long {
-            let value = u128::from(short[0]) * u128::from(right) + carry;
-            limbs.push(value as u64);
-            carry = value >> 64;
-        }
-        limbs.push(carry as u64);
-        for (left_index, &left) in short.iter().enumerate().skip(1) {
-            let mut carry = 0_u128;
-            for (right_index, &right) in long.iter().enumerate() {
-                let index = left_index + right_index;
-                let value = u128::from(limbs[index]) + u128::from(left) * u128::from(right) + carry;
-                limbs[index] = value as u64;
-                carry = value >> 64;
-            }
-            limbs.push(carry as u64);
-        }
+        Self::write_product(short, long, &mut limbs);
         let mut result = Self {
             negative: self.negative != other.negative,
             limbs,
@@ -372,6 +439,67 @@ impl ExactDyadic {
         };
         result.trim();
         result
+    }
+
+    pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+        if self.is_zero() || other.is_zero() {
+            return Ok(Self::zero());
+        }
+        let (short, long) = if self.limbs.len() <= other.limbs.len() {
+            (&self.limbs, &other.limbs)
+        } else {
+            (&other.limbs, &self.limbs)
+        };
+        let needed = short
+            .len()
+            .checked_add(long.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut limbs = Vec::new();
+        try_reserve_vec(&mut limbs, needed)?;
+        Self::write_product(short, long, &mut limbs);
+        let mut result = Self {
+            negative: self.negative != other.negative,
+            limbs,
+            exponent: self.exponent + other.exponent,
+        };
+        result.trim();
+        Ok(result)
+    }
+
+    pub(in crate::geometry) fn try_from_f64(value: f64) -> Result<Self> {
+        debug_assert!(value.is_finite());
+        if value == 0.0 {
+            return Ok(Self::zero());
+        }
+        let bits = value.to_bits();
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let encoded_exponent = ((bits >> 52) & 0x7FF) as i64;
+        let (significand, exponent) = if encoded_exponent == 0 {
+            (fraction, -1074)
+        } else {
+            ((1_u64 << 52) | fraction, encoded_exponent - 1023 - 52)
+        };
+        let mut limbs = Vec::new();
+        try_reserve_vec(&mut limbs, 1)?;
+        limbs.push(significand);
+        let mut value = Self {
+            negative: bits >> 63 != 0,
+            limbs,
+            exponent,
+        };
+        value.trim();
+        Ok(value)
+    }
+
+    pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
+        let mut limbs = Vec::new();
+        try_reserve_vec(&mut limbs, self.limbs.len())?;
+        limbs.extend_from_slice(&self.limbs);
+        Ok(Self {
+            negative: self.negative,
+            limbs,
+            exponent: self.exponent,
+        })
     }
 
     pub(in crate::geometry) fn square(&self) -> Self {
@@ -396,6 +524,14 @@ impl ExactDyadic {
         } else {
             order
         }
+    }
+
+    pub(in crate::geometry) fn cmp_magnitude(&self, other: &Self) -> Ordering {
+        let exponent = self.exponent.min(other.exponent);
+        Self::compare_aligned(
+            Aligned::new(&self.limbs, (self.exponent - exponent) as usize),
+            Aligned::new(&other.limbs, (other.exponent - exponent) as usize),
+        )
     }
 }
 
@@ -1848,6 +1984,21 @@ pub(in crate::geometry) fn compare_ratios(
         order = order.reverse();
     }
     order
+}
+
+pub(in crate::geometry) fn try_compare_ratios(
+    an: &ExactDyadic,
+    ad: &ExactDyadic,
+    bn: &ExactDyadic,
+    bd: &ExactDyadic,
+) -> Result<Ordering> {
+    let left = an.try_product(bd)?;
+    let right = bn.try_product(ad)?;
+    let mut order = left.cmp(&right);
+    if ad.sign().as_i8() * bd.sign().as_i8() < 0 {
+        order = order.reverse();
+    }
+    Ok(order)
 }
 
 const SQUARED_DISTANCE_ERRBOUND: f64 = 128.0 * f64::EPSILON;

@@ -93,6 +93,7 @@ pub(crate) fn overlay_declared_axes(inputs: &[&Shape], op: OverlayOp) -> Coordin
 mod areal;
 mod assembly;
 mod clip;
+mod exact_partition;
 mod nary;
 mod noding;
 mod rect;
