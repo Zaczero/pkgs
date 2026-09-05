@@ -448,6 +448,17 @@ fn orient2d_filtered(a: XY, b: XY, c: XY) -> Option<ExactSign> {
 fn orient2d_float(a: XY, b: XY, c: XY) -> Option<ExactSign> {
     const ERRBOUND: f64 = (3.0 + 16.0 * f64::EPSILON) * f64::EPSILON;
     let (acx, acy, bcx, bcy) = (a.x - c.x, a.y - c.y, b.x - c.x, b.y - c.y);
+    // Components in [2^-450, 2^450] lie on the 2^-502 lattice.
+    // Degree-two products and cancellations cannot underflow; the upper
+    // bound also leaves room for the determinant sum and its error bound.
+    const MIN_COMPONENT: f64 = f64::from_bits((1023 - 450) << 52);
+    const MAX_COMPONENT: f64 = f64::from_bits((1023 + 450) << 52);
+    if [acx, acy, bcx, bcy]
+        .iter()
+        .any(|value| *value != 0.0 && !(MIN_COMPONENT..=MAX_COMPONENT).contains(&value.abs()))
+    {
+        return None;
+    }
     let (left, right) = (acx * bcy, acy * bcx);
     let det = left - right;
     let detsum = left.abs() + right.abs();
@@ -471,6 +482,19 @@ fn incircle_float(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     let (adx, ady) = (a.x - d.x, a.y - d.y);
     let (bdx, bdy) = (b.x - d.x, b.y - d.y);
     let (cdx, cdy) = (c.x - d.x, c.y - d.y);
+    // The relative-error filter requires normal intermediate arithmetic.
+    // Components in [2^-200, 2^200] lie on the 2^-252 lattice, so every
+    // nonzero degree-four intermediate is at least 2^-1008. Products and
+    // their sums stay below 2^804, and a nonzero permanent is at least
+    // 2^-800, keeping its error bound normal too.
+    const MIN_COMPONENT: f64 = f64::from_bits((1023 - 200) << 52);
+    const MAX_COMPONENT: f64 = f64::from_bits((1023 + 200) << 52);
+    if [adx, ady, bdx, bdy, cdx, cdy]
+        .iter()
+        .any(|value| *value != 0.0 && !(MIN_COMPONENT..=MAX_COMPONENT).contains(&value.abs()))
+    {
+        return None;
+    }
     let (bdxcdy, cdxbdy) = (bdx * cdy, cdx * bdy);
     let alift = adx * adx + ady * ady;
     let (cdxady, adxcdy) = (cdx * ady, adx * cdy);
@@ -2135,6 +2159,75 @@ pub(in crate::geometry) fn round_ratio(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn predicate_filters_preserve_signs_across_exponent_ranges() {
+        for exponent in [-600, -451, -450, -201, -200, 0, 199, 200, 449, 450, 600] {
+            let scale = 2.0_f64.powi(exponent);
+            let origin = XY::new(0.0, 0.0);
+            let east = XY::new(scale, 0.0);
+            let north = XY::new(0.0, scale);
+            let inside = XY::new(scale * 0.25, scale * 0.25);
+            assert_eq!(
+                super::orient2d(origin, east, north),
+                super::ExactSign::Positive
+            );
+            assert_eq!(
+                super::incircle(origin, east, north, inside),
+                super::ExactSign::Positive
+            );
+            if let Some(sign) = super::orient2d_float(origin, east, north) {
+                assert_eq!(
+                    sign,
+                    super::ExactSign::Positive,
+                    "orientation exponent {exponent}"
+                );
+            }
+            if let Some(sign) = super::incircle_float(origin, east, north, inside) {
+                assert_eq!(
+                    sign,
+                    super::ExactSign::Positive,
+                    "incircle exponent {exponent}"
+                );
+            }
+            if exponent == 0 {
+                assert_eq!(
+                    super::orient2d_float(origin, east, north),
+                    Some(super::ExactSign::Positive)
+                );
+                assert_eq!(
+                    super::incircle_float(origin, east, north, inside),
+                    Some(super::ExactSign::Positive)
+                );
+            }
+        }
+    }
+
+    fn check_cocircular_underflow(exponent: i32) {
+        let scale = 2.0_f64.powi(exponent);
+        let points = [
+            XY::new(5.0 * scale, 0.0),
+            XY::new(3.0 * scale, 4.0 * scale),
+            XY::new(0.0, 5.0 * scale),
+            XY::new(-3.0 * scale, 4.0 * scale),
+        ];
+        let [a, b, c, d] = points;
+        assert_eq!(super::incircle_dyadic(a, b, c, d), super::ExactSign::Zero);
+        if let Some(sign) = super::incircle_float(a, b, c, d) {
+            assert_eq!(sign, super::ExactSign::Zero, "scale exponent {exponent}");
+        }
+        assert_eq!(super::incircle(a, b, c, d), super::ExactSign::Zero);
+    }
+
+    #[test]
+    fn incircle_cocircular_underflow_positive() {
+        check_cocircular_underflow(-270);
+    }
+
+    #[test]
+    fn incircle_cocircular_underflow_negative() {
+        check_cocircular_underflow(-271);
+    }
+
     /// The stage-A filters are sound only if a decided verdict always equals
     /// the dyadic one; the corpus mixes random sites with near-degenerate
     /// ones (collinear and cocircular up to a few ulps) so both the decided
