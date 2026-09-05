@@ -190,7 +190,6 @@ impl Coverer {
         let mut cells: Vec<(CellId, bool)> = Vec::new();
         // Visible phase-2 frontier (candidates already at/above min_level).
         let mut queue: BinaryHeap<(Reverse<u8>, CellId, CellClass)> = BinaryHeap::new();
-        let mut queued_visible = 0_usize;
         // Non-visible boundary candidates can still have visible descendants.
         // Keep them depth-first so scratch scales with depth/fanout, not the
         // number of discarded candidates.
@@ -210,7 +209,6 @@ impl Coverer {
             &cells,
             &mut dfs,
             &mut queue,
-            &mut queued_visible,
             &mut hidden,
             &mut scratch,
         )?;
@@ -220,7 +218,6 @@ impl Coverer {
             &mut cells,
             &mut dfs,
             &mut queue,
-            &mut queued_visible,
             &mut hidden,
             &mut staged,
             &mut scratch,
@@ -230,7 +227,6 @@ impl Coverer {
             rule,
             &mut cells,
             &mut queue,
-            &mut queued_visible,
             &mut hidden,
             &mut staged,
             &mut scratch,
@@ -266,7 +262,6 @@ impl Coverer {
         cells: &[(CellId, bool)],
         dfs: &mut Vec<(u8, CellId, CellClass)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        queued_visible: &mut usize,
         hidden: &mut Vec<(u8, CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
     ) -> Result<(), CoverBudgetExceeded> {
@@ -285,12 +280,11 @@ impl Coverer {
                         ensure_cover_budget(
                             cells
                                 .len()
-                                .saturating_add(*queued_visible)
+                                .saturating_add(queue.len())
                                 .saturating_add(usize::from(visible)),
                             self.hard_budget(),
                         )?;
                         if visible {
-                            *queued_visible += 1;
                             queue.push((Reverse(0), id, class));
                         } else {
                             hidden.push((0, id, class));
@@ -319,7 +313,6 @@ impl Coverer {
         cells: &mut Vec<(CellId, bool)>,
         dfs: &mut Vec<(u8, CellId, CellClass)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        queued_visible: &mut usize,
         hidden: &mut Vec<(u8, CellId, CellClass)>,
         staged: &mut Vec<(CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
@@ -327,12 +320,12 @@ impl Coverer {
         while let Some((level, id, class)) = dfs.pop() {
             debug_assert!(level < self.min_level);
             // Proven base: emitted + phase-2 queue (not the unresolved DFS).
-            let proven = cells.len() + *queued_visible;
+            let proven = cells.len() + queue.len();
             match class {
                 CellClass::Outside => unreachable!("Outside never enters the frontier"),
                 CellClass::Interior => {
                     emit_interior_descendants(self, id, level, proven, cells)?;
-                    debug_assert_budget(cells.len(), *queued_visible, self.hard_budget());
+                    debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                 },
                 CellClass::Boundary => {
                     stage_children_at(ctx, id, level + 1, staged);
@@ -346,12 +339,11 @@ impl Coverer {
                             ensure_cover_budget(
                                 cells
                                     .len()
-                                    .saturating_add(*queued_visible)
+                                    .saturating_add(queue.len())
                                     .saturating_add(usize::from(visible)),
                                 self.hard_budget(),
                             )?;
                             if visible {
-                                *queued_visible += 1;
                                 queue.push((Reverse(child_level), child, child_class));
                             } else {
                                 hidden.push((child_level, child, child_class));
@@ -380,7 +372,6 @@ impl Coverer {
         rule: CoverRule,
         cells: &mut Vec<(CellId, bool)>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, CellClass)>,
-        queued_visible: &mut usize,
         hidden: &mut Vec<(u8, CellId, CellClass)>,
         staged: &mut Vec<(CellId, CellClass)>,
         scratch: &mut Vec<(CellId, CellClass)>,
@@ -389,7 +380,6 @@ impl Coverer {
             let (level, id, class, visible) = if let Some((level, id, class)) = hidden.pop() {
                 (level, id, class, false)
             } else if let Some((Reverse(level), id, class)) = queue.pop() {
-                *queued_visible -= 1;
                 (level, id, class, true)
             } else {
                 break;
@@ -408,7 +398,7 @@ impl Coverer {
                     .iter()
                     .filter(|&&(child, child_class)| is_visible(ctx, rule, child, child_class))
                     .count();
-                let base = cells.len() + *queued_visible;
+                let base = cells.len() + queue.len();
                 let projected = base.saturating_add(staged_visible);
                 let fits_target = projected <= self.target_budget();
                 let fits_hard = self.hard_budget().is_none_or(|limit| projected <= limit);
@@ -416,7 +406,6 @@ impl Coverer {
                     for &(child, child_class) in &*staged {
                         let child_visible = is_visible(ctx, rule, child, child_class);
                         if child_visible {
-                            *queued_visible += 1;
                             queue.push((Reverse(target), child, child_class));
                         } else {
                             hidden.push((target, child, child_class));
@@ -431,7 +420,7 @@ impl Coverer {
             if visible {
                 let projected = cells
                     .len()
-                    .saturating_add(*queued_visible)
+                    .saturating_add(queue.len())
                     .saturating_add(1);
                 ensure_cover_budget(projected, self.hard_budget())?;
                 cells.push((id, class == CellClass::Interior));
