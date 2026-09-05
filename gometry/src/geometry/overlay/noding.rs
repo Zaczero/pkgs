@@ -7,9 +7,8 @@ use crate::geometry::segments::{
     segment_envelopes_disjoint,
 };
 use crate::geometry::{
-    HashMap, HashMapExt as _, Orientation, PointKey, Segment,
-    XY, dedup_consecutive_xy, for_each_candidate_pair, same_point, single_chain,
-    undirected_segment_edge_key,
+    HashMap, HashMapExt as _, Orientation, PointKey, Segment, XY, dedup_consecutive_xy,
+    for_each_candidate_pair, same_point, single_chain, undirected_segment_edge_key,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -40,6 +39,13 @@ impl SegmentProvenance {
         let start = self.offsets[piece] as usize;
         let end = self.offsets[piece + 1] as usize;
         &self.entries[start..end]
+    }
+
+    /// Adopt a caller-built CSR. Allocation of `offsets`/`entries` is the
+    /// caller's fallible work; this only binds the two columns.
+    pub(crate) fn from_csr(offsets: Vec<u32>, entries: Vec<SegmentSource>) -> Self {
+        debug_assert!(!offsets.is_empty());
+        Self { offsets, entries }
     }
 
     pub(crate) const fn len(&self) -> usize {
