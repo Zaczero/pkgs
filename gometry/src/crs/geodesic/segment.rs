@@ -649,7 +649,7 @@ impl IntersectSolver {
             t4 = t1;
         } else {
             t3 = t5;
-            t4 = Self::polarb(geodesic, radius, d, tol);
+            t4 = Self::polarb(geodesic, d, tol);
             std::mem::swap(&mut t1, &mut t2);
         }
         let d1 = t2 / 2.0;
@@ -868,7 +868,7 @@ impl IntersectSolver {
         )
     }
 
-    fn polarb(geodesic: &Geodesic, radius: f64, d: f64, tol: f64) -> f64 {
+    fn polarb(geodesic: &Geodesic, d: f64, tol: f64) -> f64 {
         if geodesic.f == 0.0 {
             return d;
         }
@@ -900,7 +900,6 @@ impl IntersectSolver {
                 sx = sx.max(s2);
             }
         }
-        let _ = radius;
         2.0 * sx
     }
 
@@ -925,7 +924,7 @@ impl IntersectSolver {
         }
         let mut azi0 = 46.0;
         let mut ds0 = 0.0;
-        let mut s0 = Self::conjdist_static(geodesic, radius, tol, azi0, &mut ds0)?;
+        Self::conjdist_static(geodesic, radius, tol, azi0, &mut ds0)?;
         let mut azi1 = 44.0;
         let mut ds1 = 0.0;
         let mut s1 = Self::conjdist_static(geodesic, radius, tol, azi1, &mut ds1)?;
@@ -938,7 +937,6 @@ impl IntersectSolver {
             let azimuth = (azi0 * ds1 - azi1 * ds0) / (ds1 - ds0);
             azi0 = azi1;
             ds0 = ds1;
-            s0 = s1;
             azi1 = azimuth;
             s1 = Self::conjdist_static(geodesic, radius, tol, azi1, &mut ds1)?;
             if ds1.abs() < dsx {
@@ -949,7 +947,6 @@ impl IntersectSolver {
                 break;
             }
         }
-        let _ = s0;
         Ok(sx)
     }
 
