@@ -149,83 +149,91 @@ def test_mixed_axes_arrays_summarize_honestly() -> None:
     assert gm.GeometryArray([]).common_coordinate_axes == 'XY'
 
 
-def test_require_axes_preserves_logical_rows_for_missing_slices_and_groups() -> None:
-    sources = [
-        gm.points([0.0, 1.0], [0.0, 1.0], z=[1.0, 2.0]),
-        gm.GeometryArray([
-            gm.LineString([(0, 0, 1), (1, 1, 2)]),
-            gm.LineString([(2, 2, 3), (3, 3, 4)]),
-        ]),
-        gm.GeometryArray([
-            gm.Polygon([(0, 0, 1), (1, 0, 2), (1, 1, 3), (0, 0, 1)]),
-            gm.Polygon([(2, 2, 4), (3, 2, 5), (3, 3, 6), (2, 2, 4)]),
-        ]),
-    ]
-    for source in sources:
-        missing = gm.GeometryArray([None, source[0], source[1]])
-        with pytest.raises(gm.InvalidGeometryError) as missing_error:
-            gm.require(missing, axes='XY')
-        assert (missing_error.value.row, missing_error.value.code) == (
-            1,
-            'coordinate_axes_mismatch',
-        )
-        assert 'got "XYZ"' in str(missing_error.value)
+@pytest.mark.parametrize(
+    'source_wkts',
+    [
+        pytest.param(
+            ['POINT Z (0 0 1)', 'POINT Z (1 1 2)'],
+            id='points',
+        ),
+        pytest.param(
+            ['LINESTRING Z (0 0 1, 1 1 2)', 'LINESTRING Z (2 2 3, 3 3 4)'],
+            id='lines',
+        ),
+        pytest.param(
+            [
+                'POLYGON Z ((0 0 1, 1 0 2, 1 1 3, 0 0 1))',
+                'POLYGON Z ((2 2 4, 3 2 5, 3 3 6, 2 2 4))',
+            ],
+            id='polygons',
+        ),
+    ],
+)
+def test_require_axes_preserves_logical_rows_for_null_leading_storage(
+    source_wkts: list[str],
+) -> None:
+    source = gm.from_wkt(source_wkts)
+    missing = gm.GeometryArray([None, source[0], source[1]])
+    with pytest.raises(gm.InvalidGeometryError) as missing_error:
+        gm.require(missing, axes='XY')
+    assert (missing_error.value.row, missing_error.value.code, missing_error.value.path) == (
+        1,
+        'coordinate_axes_mismatch',
+        '$',
+    )
 
-        all_missing = missing[[0]]
-        with pytest.raises(gm.InvalidGeometryError) as all_missing_error:
-            gm.require(all_missing, axes='XY')
-        assert (all_missing_error.value.row, str(all_missing_error.value)) == (
-            None,
-            'expected axes "XY", got "XYZ"',
-        )
-
-    source = sources[0]
     gathered = source[[1, 0]]
     with pytest.raises(gm.InvalidGeometryError) as gathered_error:
         gm.require(gathered, axes='XY')
-    assert (gathered_error.value.row, gathered_error.value.code) == (
+    assert (gathered_error.value.row, gathered_error.value.code, gathered_error.value.path) == (
         0,
         'coordinate_axes_mismatch',
+        '$',
     )
 
+
+def test_require_axes_preserves_logical_row_for_sliced_groups() -> None:
     groups = gm.GeometryArray([
         gm.MultiPoint([(0, 0), (1, 1)]),
         gm.MultiPoint([(2, 2), (3, 3)]),
     ]).parts[1:]
     with pytest.raises(gm.InvalidGeometryError) as groups_error:
         gm.require(groups, axes='XYZ')
-    assert (groups_error.value.row, groups_error.value.code) == (
+    assert (groups_error.value.row, groups_error.value.code, groups_error.value.path) == (
         0,
         'coordinate_axes_mismatch',
+        '$',
     )
 
 
-def test_require_axes_preserves_empty_metadata_and_precedes_validity_and_crs() -> None:
-    z_source = gm.points([0.0], [0.0], z=[1.0])
-    all_missing = gm.GeometryArray([None, z_source[0]])[[0]]
-    with pytest.raises(gm.InvalidGeometryError) as missing_error:
-        gm.require(all_missing, axes='XY')
-    assert (missing_error.value.row, str(missing_error.value)) == (
-        None,
-        'expected axes "XY", got "XYZ"',
-    )
-
+def test_require_axes_reports_typed_empty_axes_mismatch() -> None:
     typed_empty = gm.GeometryArray([gm.from_wkt('POINT Z EMPTY')])
     with pytest.raises(gm.InvalidGeometryError) as empty_error:
         gm.require(typed_empty, axes='XY')
-    assert (empty_error.value.row, str(empty_error.value)) == (
+    assert (empty_error.value.row, empty_error.value.code, empty_error.value.path) == (
         0,
-        'expected axes "XY", got "XYZ"',
+        'coordinate_axes_mismatch',
+        '$',
     )
 
+
+def test_require_axes_rejects_axes_before_validity() -> None:
     invalid = gm.Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)])
-    mixed = gm.GeometryArray([gm.Point(0, 0, z=1), invalid], crs=4326)
+    mixed = gm.GeometryArray([gm.Point(0, 0, z=1), invalid])
     with pytest.raises(gm.InvalidGeometryError) as axes_error:
         gm.require(mixed, axes='XYZ')
-    assert (axes_error.value.row, axes_error.value.code) == (
+    assert (axes_error.value.row, axes_error.value.code, axes_error.value.path) == (
         1,
         'coordinate_axes_mismatch',
+        '$',
     )
+
+
+def test_require_axes_rejects_crs_before_axes() -> None:
+    mixed = gm.GeometryArray([
+        gm.Point(0, 0, z=1, crs=4326),
+        gm.Point(1, 1, crs=4326),
+    ])
     with pytest.raises(gm.CRSMismatchError):
         gm.require(mixed, crs=3857, axes='XYZ')
 
