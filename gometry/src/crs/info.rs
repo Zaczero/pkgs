@@ -7,12 +7,12 @@
 
 use crate::crs::{
     CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY, CString,
-    CachedCrsInfo, CachedProjectionFactorsObject, CrsError, CrsInfo, CrsProjOptions, DatumInfo,
-    EngineInfo, OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns,
-    ProjectionFactors, RuntimeState, TransformExecution, TransformOptions, c_option_ptrs,
-    copy_proj_c_string, create_crs_transform_object, cstring, ensure_thread_caches_current,
-    lru_resolve, normalize, normalize_pair, proj_context_error_message, runtime_state_snapshot,
-    with_proj_context_at, with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
+    CachedCrsInfo, CachedProjectionFactorsObject, CrsError, CrsInfo, CrsProjOptions, EngineInfo,
+    OperationInfo, OwnedPj, ProjContext, ProjObject, ProjectionFactorColumns, ProjectionFactors,
+    RuntimeState, TransformExecution, TransformOptions, c_option_ptrs, copy_proj_c_string,
+    create_crs_transform_object, cstring, ensure_thread_caches_current, lru_resolve, normalize,
+    normalize_pair, proj_context_error_message, runtime_state_snapshot, with_proj_context_at,
+    with_proj_diagnostic_pipeline_at, with_proj_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::column_all_finite;
@@ -68,45 +68,16 @@ pub(crate) fn info_with_state(
     })
 }
 
-/// Whether one datum is a backend-admissible dynamic reference frame. PROJ
-/// marks actual dynamic frames with a reference epoch; an ensemble merely
-/// containing dynamic realizations does not inherit that property. WGS 84's
-/// EPSG ensemble is the deliberate exception: PROJ accepts coordinate epochs
-/// for it and its derived CRSs.
-fn datum_is_dynamic(datum: &DatumInfo) -> bool {
-    datum.frame_reference_epoch.is_some()
-        || (datum.authority.as_deref() == Some("EPSG") && datum.code.as_deref() == Some("6326"))
-}
-
-/// Whether a CRS admits a coordinate epoch in PROJ — the question behind the
-/// epoch-through-`to_crs` policy. One cached `info` lookup per distinct CRS.
-///
-/// Recurses through compound sub-CRSs and datum ensembles: a compound whose
-/// horizontal component is dynamic (e.g. EPSG:9707 = WGS 84 + height) is
-/// dynamic even when the compound object's own datum slot is empty.
+/// Geometry `Frame` epoch policy: the cached `admits_geometry_epoch` fact
+/// built with the CRS info snapshot. Dynamic PJ types and the EPSG:6326
+/// identity admit an epoch; ensemble members do not confer it.
 pub(crate) fn is_dynamic(value: &str) -> Result<bool> {
     let state = runtime_state_snapshot()?;
     is_dynamic_with_state(value, &state)
 }
 
 pub(crate) fn is_dynamic_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
-    is_dynamic_info(info_with_state(value, state)?.as_ref(), state)
-}
-
-fn is_dynamic_info(crs: &CrsInfo, state: &RuntimeState) -> Result<bool> {
-    if crs.datum.as_ref().is_some_and(datum_is_dynamic) {
-        return Ok(true);
-    }
-    // Compound components only — never re-resolve a datum/ensemble authority
-    // code as a CRS (EPSG:6326 is a datum ensemble, not a constructible CRS).
-    for sub in &crs.sub_crs {
-        if !sub.crs.is_empty()
-            && is_dynamic_info(info_with_state(&sub.crs, state)?.as_ref(), state)?
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(info_with_state(value, state)?.admits_geometry_epoch)
 }
 
 pub(crate) fn factors(
@@ -630,9 +601,8 @@ mod tests {
         }
     }
 
-    /// The epoch-through-`to_crs` classification: WGS84's explicitly handled
-    /// ensemble and dynamic frames (ITRF2014) admit an epoch; a static frame
-    /// and a merely dynamic-member ensemble (ETRS89) do not.
+    /// Geometry epoch policy: WGS84's 6326 identity and dynamic frames admit
+    /// an epoch; a static frame and a merely dynamic-member ensemble do not.
     #[test]
     fn dynamic_classification_matches_frame_physics() {
         for (crs, expected) in [

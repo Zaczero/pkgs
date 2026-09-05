@@ -216,25 +216,50 @@ pub(crate) fn owned_authority_object_info(
     Some(info)
 }
 
-pub(crate) fn sub_crs_infos(context: &ProjContext, crs: &OwnedPj) -> Vec<AuthorityObjectInfo> {
-    // Dynamic length: walk until PROJ returns null. A fixed 32-cap silently
-    // truncated compound trees (never acceptable); there is no practical
-    // compound with hundreds of components, but growth is fallible via Vec.
-    let mut items = Vec::new();
+/// Walk CompoundCRS children until PROJ returns null. `checked_add` fails
+/// `info()` if the C `int` index overflows, matching the compound axis walk.
+/// Callers type-gate CompoundCRS so this does not log on other kinds.
+fn for_each_compound_sub_crs(
+    context: &ProjContext,
+    crs: &OwnedPj,
+    normalized: &str,
+    mut visit: impl FnMut(&OwnedPj) -> Result<()>,
+) -> Result<()> {
     let mut index = 0_i32;
     loop {
-        // SAFETY: DOC-H. Typed owners; returns uniquely owned sub-CRS or null.
+        // SAFETY: DOC-H. Typed CompoundCRS; uniquely owned sub-CRS or null.
         let object =
             unsafe { proj_sys::proj_crs_get_sub_crs(context.as_ptr(), crs.as_ptr(), index) };
         // SAFETY: non-null returns are uniquely owned.
-        let object = unsafe { OwnedPj::try_from_owned(object) };
-        let Some(info) = owned_authority_object_info(context, object) else {
+        let Some(object) = (unsafe { OwnedPj::try_from_owned(object) }) else {
             break;
         };
-        items.push(info);
-        index = index.saturating_add(1);
+        visit(&object)?;
+        index = index.checked_add(1).ok_or_else(|| {
+            CrsError::crs_create(normalized, "compound CRS component count overflowed")
+        })?;
     }
-    items
+    Ok(())
+}
+
+/// Compound components plus whether any child admits a geometry epoch.
+///
+/// Type-gated to CompoundCRS by the caller.
+pub(crate) fn sub_crs_infos(
+    context: &ProjContext,
+    crs: &OwnedPj,
+    normalized: &str,
+) -> Result<(Vec<AuthorityObjectInfo>, bool)> {
+    let mut items = Vec::new();
+    let mut admits_geometry_epoch = false;
+    for_each_compound_sub_crs(context, crs, normalized, |child| {
+        if live_crs_admits_geometry_epoch(context, child, normalized)? {
+            admits_geometry_epoch = true;
+        }
+        items.push(authority_object_info(context, child));
+        Ok(())
+    })?;
+    Ok((items, admits_geometry_epoch))
 }
 
 pub(crate) fn owned_crs_coordinate_operation_info(
@@ -356,10 +381,83 @@ pub(crate) fn datum_object_info(context: &ProjContext, datum: &OwnedPj) -> Datum
         authority,
         code,
         kind: crs_type_name(type_),
-        frame_reference_epoch: epoch.and_then(finite_nonnegative),
+        frame_reference_epoch: epoch.filter(|year| year.is_finite()),
         ensemble_accuracy: None,
         ensemble_members: Vec::new(),
     }
+}
+
+fn identity_is_epsg_6326(object: &OwnedPj) -> bool {
+    matches!(
+        id_authority(object),
+        Some((authority, code)) if authority == "EPSG" && code == "6326"
+    )
+}
+
+const fn pj_type_is_dynamic_frame(type_: proj_sys::PJ_TYPE) -> bool {
+    matches!(
+        type_,
+        proj_sys::PJ_TYPE_PJ_TYPE_DYNAMIC_GEODETIC_REFERENCE_FRAME
+            | proj_sys::PJ_TYPE_PJ_TYPE_DYNAMIC_VERTICAL_REFERENCE_FRAME
+    )
+}
+
+/// Geometry epoch policy on already-built datum metadata: dynamic PJ type or
+/// EPSG:6326 identity. Does not read `frame_reference_epoch`.
+pub(crate) fn datum_admits_geometry_epoch(datum: &DatumInfo) -> bool {
+    matches!(
+        datum.kind,
+        "dynamic_geodetic_reference_frame" | "dynamic_vertical_reference_frame"
+    ) || (datum.authority.as_deref() == Some("EPSG") && datum.code.as_deref() == Some("6326"))
+}
+
+fn live_single_crs_admits_geometry_epoch(context: &ProjContext, crs: &OwnedPj) -> bool {
+    // SAFETY: DOC-H. Typed SingleCRS; uniquely owned ensemble or null.
+    let ensemble = unsafe { proj_sys::proj_crs_get_datum_ensemble(context.as_ptr(), crs.as_ptr()) };
+    if let Some(ensemble) = unsafe { OwnedPj::try_from_owned(ensemble) } {
+        return identity_is_epsg_6326(&ensemble);
+    }
+    // SAFETY: DOC-H. Typed SingleCRS; uniquely owned datum or null.
+    let datum = unsafe { proj_sys::proj_crs_get_datum(context.as_ptr(), crs.as_ptr()) };
+    let Some(datum) = (unsafe { OwnedPj::try_from_owned(datum) }) else {
+        return false;
+    };
+    // SAFETY: live owned datum on the creating thread.
+    let type_ = unsafe { proj_sys::proj_get_type(datum.as_ptr()) };
+    pj_type_is_dynamic_frame(type_) || identity_is_epsg_6326(&datum)
+}
+
+/// Nested compound/bound/single classification on a live child PJ. No
+/// `DatumInfo` and no ensemble-member vectors.
+pub(crate) fn live_crs_admits_geometry_epoch(
+    context: &ProjContext,
+    crs: &OwnedPj,
+    normalized: &str,
+) -> Result<bool> {
+    // SAFETY: live owned CRS on the creating thread.
+    let type_ = unsafe { proj_sys::proj_get_type(crs.as_ptr()) };
+    if type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+        let mut admits = false;
+        for_each_compound_sub_crs(context, crs, normalized, |child| {
+            if live_crs_admits_geometry_epoch(context, child, normalized)? {
+                admits = true;
+            }
+            Ok(())
+        })?;
+        return Ok(admits);
+    }
+    if type_ == proj_sys::PJ_TYPE_PJ_TYPE_BOUND_CRS {
+        // SAFETY: BoundCRS; uniquely owned base CRS or null.
+        let source = unsafe { proj_sys::proj_get_source_crs(context.as_ptr(), crs.as_ptr()) };
+        let Some(source) = (unsafe { OwnedPj::try_from_owned(source) }) else {
+            return Err(CrsError::crs_create(
+                normalized,
+                "bound CRS does not expose its source CRS",
+            ));
+        };
+        return live_crs_admits_geometry_epoch(context, &source, normalized);
+    }
+    Ok(live_single_crs_admits_geometry_epoch(context, crs))
 }
 
 pub(crate) fn ellipsoid_info(context: &ProjContext, object: &OwnedPj) -> Option<EllipsoidInfo> {

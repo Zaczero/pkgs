@@ -14,9 +14,10 @@ pub(super) use metadata::{
 pub(crate) use objects::Confidence;
 pub(super) use objects::{
     authority_object_info, create_crs_transform_object, crs_coordinate_operation_info_from_pj,
-    datum_info, ellipsoid_info, exported_owned_crs, id_authority, operation_info_from_pj,
-    owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
-    split_authority, sub_crs_infos, validate_min_confidence,
+    datum_admits_geometry_epoch, datum_info, ellipsoid_info, exported_owned_crs, id_authority,
+    live_crs_admits_geometry_epoch, operation_info_from_pj, owned_authority_object_info,
+    owned_crs_coordinate_operation_info, prime_meridian_info, split_authority, sub_crs_infos,
+    validate_min_confidence,
 };
 pub(super) use operations::{
     crs_type_name, grids, method_info, operation_parameters, operation_steps,

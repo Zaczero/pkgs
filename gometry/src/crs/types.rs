@@ -134,6 +134,9 @@ pub(crate) struct CrsInfo {
     pub ellipsoid: Option<EllipsoidInfo>,
     pub prime_meridian: Option<PrimeMeridianInfo>,
     pub(crate) geographic_frame: Option<crate::geographic::GeographicFrame>,
+    /// Geometry `Frame` epoch policy, computed from live PROJ objects while
+    /// this snapshot is built. Omitted from the public info dict.
+    pub(crate) admits_geometry_epoch: bool,
 }
 
 impl CrsInfo {

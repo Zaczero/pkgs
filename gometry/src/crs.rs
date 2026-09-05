@@ -115,9 +115,10 @@ pub(crate) use introspect::Confidence;
 use introspect::{
     CompoundAxisMetadata, area_of_use, authority_object_info, axes, axis_role,
     compound_axis_metadata, coordinate_system_type, create_crs_transform_object, crs_type_name,
-    datum_info, domain_infos, ellipsoid_info, exported_owned_crs, geographic_frame, id_authority,
-    operation_info_from_pj, owned_authority_object_info, owned_crs_coordinate_operation_info,
-    prime_meridian_info, split_authority, sub_crs_infos, validate_min_confidence,
+    datum_admits_geometry_epoch, datum_info, domain_infos, ellipsoid_info, exported_owned_crs,
+    geographic_frame, id_authority, live_crs_admits_geometry_epoch, operation_info_from_pj,
+    owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
+    split_authority, sub_crs_infos, validate_min_confidence,
 };
 pub(crate) use local::{
     LOCAL_SCALE_ERROR_LIMIT, estimate_local_crs, estimate_local_crs_at, local_crs_fits_at,

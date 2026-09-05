@@ -9,8 +9,9 @@ use crate::crs::{
     CrsProjJsonOptions, CrsProjOptions, CrsWktOptions, IdentifyCandidate, OwnedPj, ProjContext,
     ProjIntList, ProjObjList, ProjObject, ProjectionFactorColumns, ProjectionFactors, RuntimeState,
     area_of_use, authority_object_info, axes, axis_role, c_option_ptrs, compound_axis_metadata,
-    coordinate_system_type, copy_proj_c_string, crs_type_name, cstring, datum_info, domain_infos,
-    ellipsoid_info, exported_owned_crs, geographic_frame, id_authority, optional_c_string,
+    coordinate_system_type, copy_proj_c_string, crs_type_name, cstring,
+    datum_admits_geometry_epoch, datum_info, domain_infos, ellipsoid_info, exported_owned_crs,
+    geographic_frame, id_authority, live_crs_admits_geometry_epoch, optional_c_string,
     owned_authority_object_info, owned_crs_coordinate_operation_info, prime_meridian_info,
     proj_context_error_message, proj_transform_error, ptr, split_authority, sub_crs_infos,
 };
@@ -194,6 +195,25 @@ impl ProjObject {
         } else {
             geographic_frame(context, object, &normalized)?
         };
+        let datum = datum_info(context, object);
+        let (sub_crs, compound_admits) = if type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+            sub_crs_infos(context, object, &normalized)?
+        } else {
+            (Vec::new(), false)
+        };
+        let admits_geometry_epoch = if type_ == proj_sys::PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+            compound_admits
+        } else if type_ == proj_sys::PJ_TYPE_PJ_TYPE_BOUND_CRS {
+            let Some(source) = source_crs.as_ref() else {
+                return Err(CrsError::crs_create(
+                    normalized,
+                    "bound CRS does not expose its source CRS",
+                ));
+            };
+            live_crs_admits_geometry_epoch(context, source, &normalized)?
+        } else {
+            datum.as_ref().is_some_and(datum_admits_geometry_epoch)
+        };
         Ok(CrsInfo {
             crs: normalized,
             name,
@@ -211,16 +231,17 @@ impl ProjObject {
             area_of_use: area_of_use(context, object),
             axes,
             domains: domain_infos(context, object),
-            sub_crs: sub_crs_infos(context, object),
+            sub_crs,
             source_crs: owned_authority_object_info(context, source_crs),
             target_crs: owned_authority_object_info(context, target_crs),
             coordinate_operation: owned_crs_coordinate_operation_info(context, coord_op),
             geodetic_crs: owned_authority_object_info(context, geodetic_crs),
             horizontal_datum: owned_authority_object_info(context, horizontal_datum),
-            datum: datum_info(context, object),
+            datum,
             ellipsoid: ellipsoid_info(context, object),
             prime_meridian: prime_meridian_info(context, object),
             geographic_frame,
+            admits_geometry_epoch,
         })
     }
 
