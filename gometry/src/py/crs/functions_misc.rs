@@ -27,16 +27,6 @@ pub(crate) fn crs_parse_required(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
 // Canonical CRS identifier: the same parser as `crs_parse_required` / geometry
 // `to_crs`, so equivalent spellings ("Epsg:4326", "EPSG:4326") share one cached
 // pipeline and the in-core fast path.
-//
-// Crate-internal only.  This carried `#[pyfunction]` and a full user-facing
-// numpydoc block, but was registered nowhere — absent from `register()`, from
-// `__init__.py`, from `_lib.pyi`, and from the runtime.  It was the crate's only
-// unregistered `#[pyfunction]`, and the family-inventory gate is a hard-coded
-// allowlist so it could not catch that.  Registering it would also duplicate
-// `str(gm.CRS(v))`, which already returns the canonical string.
-//
-// A byte-identical twin named `crs_canonical` used to sit beside this and was
-// called interchangeably within a single file; it has been folded in here.
 pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(crs_parse_required(value)?.to_string())
 }
