@@ -22,6 +22,24 @@ pub(crate) struct IndexedTopologyScratch {
 }
 
 impl IndexedTopology {
+    pub(crate) fn successor_slot(&self, slot: u32) -> u32 {
+        let slot = slot as usize;
+        let target = self.targets[slot] as usize;
+        let start = self.starts[target] as usize;
+        let end = self.starts[target + 1] as usize;
+        let reverse = self.twins[slot] as usize;
+        if reverse == start { (end - 1) as u32 } else { (reverse - 1) as u32 }
+    }
+
+    pub(crate) fn predecessor_slot(&self, slot: u32) -> u32 {
+        let slot = slot as usize;
+        let origin = self.owners[slot] as usize;
+        let start = self.starts[origin] as usize;
+        let end = self.starts[origin + 1] as usize;
+        let next = if slot + 1 == end { start } else { slot + 1 };
+        self.twins[next]
+    }
+
     pub(crate) fn clear(&mut self) {
         self.starts.clear();
         self.targets.clear();
@@ -98,11 +116,7 @@ impl IndexedTopology {
         scratch.successor.clear();
         scratch.successor.resize(slots, u32::MAX);
         for slot in 0..slots {
-            let target = self.targets[slot] as usize;
-            let row = self.starts[target] as usize..self.starts[target + 1] as usize;
-            let reverse = self.twins[slot] as usize;
-            let position = reverse - row.start;
-            scratch.successor[slot] = (row.start + (position + row.len() - 1) % row.len()) as u32;
+            scratch.successor[slot] = self.successor_slot(slot as u32);
         }
         self.face_of.clear();
         self.face_of.resize(slots, u32::MAX);

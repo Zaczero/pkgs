@@ -32,6 +32,7 @@ use crate::geometry::{
     Point, PointKey, Polygon, RTreeObject as _, Ring, Shape, Strictness, VoronoiBoundary, XY,
     coverage_is_valid, polygon_is_valid,
 };
+use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 #[cfg(test)]
 use crate::geometry::{GENERATED_ITEM_LIMIT, tessellation::shape};
 
@@ -47,9 +48,7 @@ dense_id!(SiteId);
 dense_id!(PrimitiveId);
 dense_id!(VertexId);
 dense_id!(EdgeId);
-dense_id!(HalfEdgeId);
-dense_id!(GraphComponentId);
-dense_id!(OrbitId);
+dense_id!(BoundaryFaceId);
 dense_id!(RegionId);
 dense_id!(EmbeddedVertexId);
 dense_id!(ClipSegmentId);
@@ -1334,48 +1333,9 @@ fn node_primitives(
     Ok(NodedAtoms { vertices, edges })
 }
 
-struct AtomicHalfEdge {
-    origin: VertexId,
-    target: VertexId,
-    twin: HalfEdgeId,
-    edge: EdgeId,
-    transition: Transition,
-}
-
-struct RotationVertex {
+struct ExactVertex {
     point: exact::ExactPoint,
     fixed_xy: Option<XY>,
-    star_start: u32,
-    star_len: u32,
-}
-
-struct WalkedHalfEdge {
-    origin: VertexId,
-    target: VertexId,
-    twin: HalfEdgeId,
-    next: HalfEdgeId,
-    prev: HalfEdgeId,
-    edge: EdgeId,
-    component: GraphComponentId,
-    orbit: OrbitId,
-    transition: Transition,
-}
-
-struct LocalOrbit {
-    seed: HalfEdgeId,
-    component: GraphComponentId,
-    orientation: ExactSign,
-    half_edges: Box<[HalfEdgeId]>,
-}
-
-struct LocalDcel {
-    vertices: Vec<RotationVertex>,
-    edges: Vec<AtomicEdge>,
-    half_edges: Vec<WalkedHalfEdge>,
-    stars: Vec<HalfEdgeId>,
-    orbits: Vec<LocalOrbit>,
-    exterior_orbit: Vec<OrbitId>,
-    frame_component: GraphComponentId,
 }
 
 fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
@@ -1386,360 +1346,57 @@ fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     node
 }
 
-fn build_local_dcel(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<LocalDcel> {
-    let edge_count = atoms.edges.len();
-    budget.add(2_usize.saturating_mul(edge_count))?;
-    budget.add(2_usize.saturating_mul(edge_count))?;
-    let mut half_edges = Vec::new();
-    reserve_exact(&mut half_edges, edge_count * 2)?;
-    let mut outgoing = vec![Vec::<HalfEdgeId>::new(); atoms.vertices.len()];
-    for (index, edge) in atoms.edges.iter().enumerate() {
-        let edge_id =
-            EdgeId(u32::try_from(index).map_err(|_| voronoi_error("too many exact edges"))?);
-        let forward =
-            HalfEdgeId(u32::try_from(index * 2).map_err(|_| voronoi_error("too many half-edges"))?);
-        let reverse = HalfEdgeId(forward.0 + 1);
-        half_edges.push(AtomicHalfEdge {
-            origin: edge.endpoints[0],
-            target: edge.endpoints[1],
-            twin: reverse,
-            edge: edge_id,
-            transition: edge.forward,
-        });
-        half_edges.push(AtomicHalfEdge {
-            origin: edge.endpoints[1],
-            target: edge.endpoints[0],
-            twin: forward,
-            edge: edge_id,
-            transition: edge.forward.reversed(),
-        });
-        outgoing[edge.endpoints[0].0 as usize].push(forward);
-        outgoing[edge.endpoints[1].0 as usize].push(reverse);
-    }
-    for (vertex, star) in outgoing.iter_mut().enumerate() {
-        if star.len() < 2 {
-            return Err(voronoi_error("exact Voronoi subdivision contains a dangle"));
-        }
-        let origin = &atoms.vertices[vertex].point;
-        for index in 1..star.len() {
-            let mut cursor = index;
-            while cursor > 0
-                && exact::angle_ccw_cmp(
-                    origin,
-                    &atoms.vertices[half_edges[star[cursor].0 as usize].target.0 as usize].point,
-                    &atoms.vertices[half_edges[star[cursor - 1].0 as usize].target.0 as usize]
-                        .point,
-                )? == Ordering::Less
-            {
-                star.swap(cursor, cursor - 1);
-                cursor -= 1;
-            }
-        }
-        for pair in star.windows(2) {
-            exact::angle_ccw_cmp(
-                origin,
-                &atoms.vertices[half_edges[pair[0].0 as usize].target.0 as usize].point,
-                &atoms.vertices[half_edges[pair[1].0 as usize].target.0 as usize].point,
-            )
-            .map_err(|_| {
-                voronoi_error(format!(
-                    "exact angular tie at {:?} toward {:?} and {:?}",
-                    origin.round_nearest_even(),
-                    atoms.vertices[half_edges[pair[0].0 as usize].target.0 as usize]
-                        .point
-                        .round_nearest_even(),
-                    atoms.vertices[half_edges[pair[1].0 as usize].target.0 as usize]
-                        .point
-                        .round_nearest_even(),
-                ))
-            })?;
-        }
-    }
-    let mut stars: Vec<HalfEdgeId> = Vec::new();
-    reserve_exact(&mut stars, edge_count * 2)?;
-    let mut vertices = Vec::new();
-    reserve_exact(&mut vertices, atoms.vertices.len())?;
-    for (vertex, star) in atoms.vertices.into_iter().zip(&outgoing) {
-        vertices.push(RotationVertex {
-            point: vertex.point,
-            fixed_xy: vertex.fixed_xy,
-            star_start: u32::try_from(stars.len())
-                .map_err(|_| voronoi_error("too many star slots"))?,
-            star_len: u32::try_from(star.len())
-                .map_err(|_| voronoi_error("Voronoi star is too large"))?,
-        });
-        stars.extend(star);
-    }
-    let mut next = vec![None; half_edges.len()];
-    let mut prev = vec![None; half_edges.len()];
-    for (index, half_edge) in half_edges.iter().enumerate() {
-        let vertex = &vertices[half_edge.target.0 as usize];
-        let star =
-            &stars[vertex.star_start as usize..(vertex.star_start + vertex.star_len) as usize];
-        let twin_position = star
-            .iter()
-            .position(|&candidate| candidate == half_edge.twin)
-            .ok_or_else(|| voronoi_error("half-edge twin is absent from target star"))?;
-        let successor = star[(twin_position + star.len() - 1) % star.len()];
-        next[index] = Some(successor);
-        if prev[successor.0 as usize]
-            .replace(HalfEdgeId(index as u32))
-            .is_some()
-        {
-            return Err(voronoi_error("half-edge has two exact predecessors"));
-        }
-    }
-    let next = next
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| voronoi_error("unset half-edge successor"))?;
-    let prev = prev
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| voronoi_error("unset half-edge predecessor"))?;
-    let mut parents: Vec<_> = (0..vertices.len()).collect();
-    for edge in &atoms.edges {
-        let left = uf_root(&mut parents, edge.endpoints[0].0 as usize);
-        let right = uf_root(&mut parents, edge.endpoints[1].0 as usize);
-        if left != right {
-            parents[right] = left;
-        }
-    }
-    let mut root_ids = HashMap::with_capacity(vertices.len());
-    let roots: Vec<_> = (0..vertices.len())
-        .map(|vertex| {
-            let root = uf_root(&mut parents, vertex);
-            let next = root_ids.len();
-            *root_ids.entry(root).or_insert(next)
-        })
-        .collect();
-    let mut temporary_orbit = vec![None; half_edges.len()];
-    let mut cycles = Vec::new();
-    for seed in 0..half_edges.len() {
-        if temporary_orbit[seed].is_some() {
-            continue;
-        }
-        let temporary = cycles.len();
-        let mut cycle = Vec::new();
-        let mut current = HalfEdgeId(seed as u32);
-        loop {
-            if let Some(existing) = temporary_orbit[current.0 as usize] {
-                if existing != temporary || current.0 as usize != seed {
-                    return Err(voronoi_error("exact half-edge walks merge local orbits"));
-                }
-                break;
-            }
-            temporary_orbit[current.0 as usize] = Some(temporary);
-            cycle.push(current);
-            current = next[current.0 as usize];
-            if cycle.len() > half_edges.len() {
-                return Err(voronoi_error("exact orbit does not close"));
-            }
-        }
-        cycles.push(cycle);
-    }
-    cycles.sort_by_key(|cycle| cycle.iter().min().copied().unwrap());
-    let mut orbit_by_halfedge = vec![OrbitId(u32::MAX); half_edges.len()];
-    let mut orbits = Vec::new();
-    let mut exterior = vec![None; root_ids.len()];
-    for (orbit_index, mut cycle) in cycles.into_iter().enumerate() {
-        let least = cycle
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, id)| **id)
-            .unwrap()
-            .0;
-        cycle.rotate_left(least);
-        let points: Vec<_> = cycle
-            .iter()
-            .map(|id| {
-                vertices[half_edges[id.0 as usize].origin.0 as usize]
-                    .point
-                    .clone()
-            })
-            .collect();
-        let orientation = exact::cycle_orientation(&points)?;
-        let component =
-            GraphComponentId(roots[half_edges[cycle[0].0 as usize].origin.0 as usize] as u32);
-        let orbit = OrbitId(orbit_index as u32);
-        for half_edge in &cycle {
-            orbit_by_halfedge[half_edge.0 as usize] = orbit;
-        }
-        if orientation == ExactSign::Negative
-            && exterior[component.0 as usize].replace(orbit).is_some()
-        {
-            return Err(voronoi_error(
-                "edge component has more than one negative local orbit",
-            ));
-        }
-        orbits.push(LocalOrbit {
-            seed: cycle[0],
-            component,
-            orientation,
-            half_edges: cycle.into_boxed_slice(),
-        });
-    }
-    let exterior_orbit = exterior
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| voronoi_error("edge component has no negative local orbit"))?;
-    for (index, half_edge) in half_edges.iter().enumerate() {
-        if orbit_by_halfedge[index] == orbit_by_halfedge[half_edge.twin.0 as usize] {
-            return Err(voronoi_error("exact Voronoi subdivision contains a bridge"));
-        }
-    }
-    let frame_edge = atoms
-        .edges
-        .iter()
-        .position(|edge| edge.frame_side.is_some())
-        .ok_or_else(|| voronoi_error("private frame is absent"))?;
-    let frame_component =
-        GraphComponentId(roots[atoms.edges[frame_edge].endpoints[0].0 as usize] as u32);
-    let walked = half_edges
-        .into_iter()
-        .enumerate()
-        .map(|(index, half_edge)| WalkedHalfEdge {
-            origin: half_edge.origin,
-            target: half_edge.target,
-            twin: half_edge.twin,
-            next: next[index],
-            prev: prev[index],
-            edge: half_edge.edge,
-            component: GraphComponentId(roots[half_edge.origin.0 as usize] as u32),
-            orbit: orbit_by_halfedge[index],
-            transition: half_edge.transition,
-        })
-        .collect();
-    Ok(LocalDcel {
-        vertices,
-        edges: atoms.edges,
-        half_edges: walked,
-        stars,
-        orbits,
-        exterior_orbit,
-        frame_component,
-    })
+fn build_exact_subdivision(atoms: NodedAtoms, budget: &mut ExpansionBudget) -> Result<ExactSubdivision> {
+    let vertices = atoms.vertices.len(); let edges = atoms.edges.len(); let slots = edges.saturating_mul(2);
+    budget.add(slots)?; budget.add(slots)?;
+    let mut topology = IndexedTopology::default(); let mut scratch = IndexedTopologyScratch::default();
+    let mut edge_of_slot = Vec::new(); let mut cursors = Vec::new(); let mut exact_vertices = Vec::new();
+    for reserve in [topology.starts.try_reserve(vertices + 1), topology.targets.try_reserve(slots), topology.owners.try_reserve(slots), topology.twins.try_reserve(slots), topology.component_of.try_reserve(vertices), topology.face_of.try_reserve(slots), topology.face_starts.try_reserve(slots + 1), topology.face_slots.try_reserve(slots), scratch.component_stack.try_reserve(vertices), scratch.face_cursor.try_reserve(vertices), scratch.successor.try_reserve(slots), scratch.edge_slots.try_reserve(edges), edge_of_slot.try_reserve(slots), cursors.try_reserve(vertices), exact_vertices.try_reserve(vertices)] { reserve.map_err(|_| voronoi_error("could not allocate exact Voronoi topology"))?; }
+    topology.starts.resize(vertices + 1, 0);
+    for edge in &atoms.edges { topology.starts[edge.endpoints[0].0 as usize + 1] += 1; topology.starts[edge.endpoints[1].0 as usize + 1] += 1; }
+    for index in 1..topology.starts.len() { topology.starts[index] += topology.starts[index - 1]; }
+    cursors.extend_from_slice(&topology.starts[..vertices]); topology.targets.resize(slots, 0); edge_of_slot.resize(slots, 0);
+    for (edge, atom) in atoms.edges.iter().enumerate() { let edge = u32::try_from(edge).map_err(|_| voronoi_error("too many exact edges"))?; for (origin, target) in [(atom.endpoints[0], atom.endpoints[1]), (atom.endpoints[1], atom.endpoints[0])] { let slot = cursors[origin.0 as usize] as usize; topology.targets[slot] = target.0; edge_of_slot[slot] = edge; cursors[origin.0 as usize] += 1; } }
+    for vertex in 0..vertices { let row = topology.starts[vertex] as usize..topology.starts[vertex + 1] as usize; if row.len() < 2 { return Err(voronoi_error("exact Voronoi subdivision contains a dangle")); } let origin = &atoms.vertices[vertex].point; for index in row.start + 1..row.end { let mut cursor = index; while cursor > row.start && exact::angle_ccw_cmp(origin, &atoms.vertices[topology.targets[cursor] as usize].point, &atoms.vertices[topology.targets[cursor - 1] as usize].point)? == Ordering::Less { topology.targets.swap(cursor, cursor - 1); edge_of_slot.swap(cursor, cursor - 1); cursor -= 1; } } for slot in row.start + 1..row.end { exact::angle_ccw_cmp(origin, &atoms.vertices[topology.targets[slot - 1] as usize].point, &atoms.vertices[topology.targets[slot] as usize].point).map_err(|_| voronoi_error("exact angular tie"))?; } }
+    exact_vertices.extend(atoms.vertices.into_iter().map(|vertex| ExactVertex { point: vertex.point, fixed_xy: vertex.fixed_xy })); topology.finish(&edge_of_slot, &mut scratch);
+    for slot in 0..slots { if topology.face_of[slot] == topology.face_of[topology.twins[slot] as usize] { return Err(voronoi_error("exact Voronoi subdivision contains a bridge")); } }
+    Ok(ExactSubdivision { vertices: exact_vertices, edges: atoms.edges, topology, edge_of_slot, regions: Vec::new(), region_of_boundary_face: Vec::new(), unbounded: RegionId(0) })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FaceLabel {
+struct RegionLabel {
     frame_winding: i8,
     clip_winding: i32,
     owner: Option<SiteId>,
 }
 
-struct GlobalHalfEdge {
-    origin: VertexId,
-    target: VertexId,
-    twin: HalfEdgeId,
-    next: HalfEdgeId,
-    prev: HalfEdgeId,
-    edge: EdgeId,
-    component: GraphComponentId,
-    orbit: OrbitId,
-    face: RegionId,
-    transition: Transition,
-}
-
 struct ExactRegion {
-    outer: Option<OrbitId>,
-    inner: Vec<OrbitId>,
-    label: FaceLabel,
+    outer: Option<BoundaryFaceId>,
+    inner: Vec<BoundaryFaceId>,
+    label: RegionLabel,
     unbounded: bool,
 }
 
 struct ExactSubdivision {
-    vertices: Vec<RotationVertex>,
+    vertices: Vec<ExactVertex>,
     edges: Vec<AtomicEdge>,
-    half_edges: Vec<GlobalHalfEdge>,
-    stars: Vec<HalfEdgeId>,
-    orbits: Vec<LocalOrbit>,
-    faces: Vec<ExactRegion>,
+    topology: IndexedTopology,
+    edge_of_slot: Vec<u32>,
+    regions: Vec<ExactRegion>,
+    region_of_boundary_face: Vec<RegionId>,
     unbounded: RegionId,
 }
 
 fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
-    if subdivision.unbounded != RegionId(0)
-        || subdivision.faces.first().is_none_or(|face| !face.unbounded)
-        || subdivision.faces.iter().skip(1).any(|face| face.unbounded)
-    {
-        return Err(voronoi_error(
-            "exact subdivision has no unique unbounded face",
-        ));
-    }
-    let mut star_membership = vec![0_u8; subdivision.half_edges.len()];
-    for (vertex_index, vertex) in subdivision.vertices.iter().enumerate() {
-        let start = vertex.star_start as usize;
-        let end = start + vertex.star_len as usize;
-        for &half_edge in subdivision
-            .stars
-            .get(start..end)
-            .ok_or_else(|| voronoi_error("exact subdivision star row is out of bounds"))?
-        {
-            let edge = subdivision
-                .half_edges
-                .get(half_edge.0 as usize)
-                .ok_or_else(|| voronoi_error("exact subdivision star names no half-edge"))?;
-            if edge.origin
-                != VertexId(
-                    u32::try_from(vertex_index)
-                        .map_err(|_| voronoi_error("too many exact vertices"))?,
-                )
-            {
-                return Err(voronoi_error("exact subdivision star has the wrong origin"));
-            }
-            *star_membership
-                .get_mut(half_edge.0 as usize)
-                .ok_or_else(|| voronoi_error("exact subdivision star id is out of bounds"))? += 1;
-        }
-    }
-    if star_membership.iter().any(|count| *count != 1) {
-        return Err(voronoi_error(
-            "exact subdivision half-edge does not occur in exactly one star",
-        ));
-    }
-    for edge in &subdivision.edges {
-        if edge.clip_sources.windows(2).any(|pair| pair[0] >= pair[1])
-            || (edge.forward.clip_delta != 0 && edge.clip_sources.is_empty())
-        {
-            return Err(voronoi_error(
-                "exact atomic edge has incoherent clip provenance",
-            ));
-        }
-    }
-    let mut orbit_faces = vec![None; subdivision.orbits.len()];
-    for (index, half_edge) in subdivision.half_edges.iter().enumerate() {
-        let twin = &subdivision.half_edges[half_edge.twin.0 as usize];
-        let next = &subdivision.half_edges[half_edge.next.0 as usize];
-        let prev = &subdivision.half_edges[half_edge.prev.0 as usize];
-        if twin.twin != HalfEdgeId(index as u32)
-            || twin.origin != half_edge.target
-            || twin.target != half_edge.origin
-            || twin.edge != half_edge.edge
-            || twin.component != half_edge.component
-            || twin.transition != half_edge.transition.reversed()
-            || next.prev != HalfEdgeId(index as u32)
-            || prev.next != HalfEdgeId(index as u32)
-            || next.component != half_edge.component
-            || subdivision.orbits[half_edge.orbit.0 as usize].component != half_edge.component
-            || half_edge.face.0 as usize >= subdivision.faces.len()
-        {
-            return Err(voronoi_error("exact global half-edge invariants disagree"));
-        }
-        match &mut orbit_faces[half_edge.orbit.0 as usize] {
-            Some(face) if *face != half_edge.face => {
-                return Err(voronoi_error(
-                    "one exact local orbit maps to multiple global faces",
-                ));
-            },
-            slot @ None => *slot = Some(half_edge.face),
-            Some(_) => {},
-        }
-    }
+    if subdivision.unbounded != RegionId(0) || subdivision.regions.first().is_none_or(|region| !region.unbounded) || subdivision.regions.iter().skip(1).any(|region| region.unbounded) { return Err(voronoi_error("exact subdivision has no unique unbounded region")); }
+    let topology = &subdivision.topology;
+    if subdivision.region_of_boundary_face.len() != topology.face_starts.len() - 1 { return Err(voronoi_error("one exact boundary face has no merged region")); }
+    for edge in &subdivision.edges { if edge.clip_sources.windows(2).any(|pair| pair[0] >= pair[1]) || (edge.forward.clip_delta != 0 && edge.clip_sources.is_empty()) { return Err(voronoi_error("exact atomic edge has incoherent clip provenance")); } }
+    for slot in 0..topology.targets.len() { let twin = topology.twins[slot] as usize; let edge = subdivision.edge_of_slot[slot] as usize; if topology.twins[twin] != slot as u32 || topology.owners[slot] != topology.targets[twin] || topology.targets[slot] != topology.owners[twin] || subdivision.edge_of_slot[twin] as usize != edge || topology.component_of[topology.owners[slot] as usize] != topology.component_of[topology.owners[twin] as usize] || topology.predecessor_slot(topology.successor_slot(slot as u32)) != slot as u32 || subdivision.region_of_boundary_face[topology.face_of[slot] as usize].0 as usize >= subdivision.regions.len() { return Err(voronoi_error("exact indexed topology invariants disagree")); } }
     Ok(())
 }
 
-fn crossed_label(left: FaceLabel, transition: Transition) -> Result<FaceLabel> {
+fn crossed_label(left: RegionLabel, transition: Transition) -> Result<RegionLabel> {
     let owner = match transition.owner {
         OwnerTransition::Preserve => left.owner,
         OwnerTransition::Boundary {
@@ -1754,284 +1411,76 @@ fn crossed_label(left: FaceLabel, transition: Transition) -> Result<FaceLabel> {
             right
         },
     };
-    Ok(FaceLabel {
+    Ok(RegionLabel {
         frame_winding: left.frame_winding - transition.frame_delta,
         clip_winding: left.clip_winding - transition.clip_delta,
         owner,
     })
 }
 
-fn graft_components(local: LocalDcel, budget: &mut ExpansionBudget) -> Result<ExactSubdivision> {
-    let component_count = local.exterior_orbit.len();
-    let mut orbit_point_cache = Vec::new();
-    reserve_exact(&mut orbit_point_cache, local.orbits.len())?;
-    let mut orbit_envelopes = Vec::new();
-    reserve_exact(&mut orbit_envelopes, local.orbits.len())?;
-    for orbit in 0..local.orbits.len() {
-        let edge_count = local.orbits[orbit].half_edges.len();
-        budget.add(edge_count)?;
-        let mut points = Vec::new();
-        reserve_exact(&mut points, edge_count)?;
-        points.extend(local.orbits[orbit].half_edges.iter().map(|half_edge| {
-            local.vertices[local.half_edges[half_edge.0 as usize].origin.0 as usize]
-                .point
-                .clone()
-        }));
-        orbit_envelopes.push(exact_envelope(&points));
-        orbit_point_cache.push(points);
+fn graft_components(subdivision: &mut ExactSubdivision, budget: &mut ExpansionBudget) -> Result<()> {
+    let topology = &subdivision.topology;
+    let boundary_faces = topology.face_starts.len() - 1;
+    let components = topology.component_of.iter().copied().max().map_or(0, |id| id as usize + 1);
+    let mut face_points = Vec::new(); let mut orientation = Vec::new(); let mut face_component = Vec::new();
+    for reserve in [face_points.try_reserve(boundary_faces), orientation.try_reserve(boundary_faces), face_component.try_reserve(boundary_faces), subdivision.region_of_boundary_face.try_reserve(boundary_faces), subdivision.regions.try_reserve(boundary_faces + 1)] { reserve.map_err(|_| voronoi_error("could not allocate exact region graft"))?; }
+    let mut exterior = vec![None; components];
+    for face in 0..boundary_faces {
+        let walk = &topology.face_slots[topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
+        budget.add(walk.len())?;
+        let points: Vec<_> = walk.iter().map(|&slot| subdivision.vertices[topology.owners[slot as usize] as usize].point.clone()).collect();
+        let sign = exact::cycle_orientation(&points)?;
+        let component = topology.component_of[topology.owners[walk[0] as usize] as usize] as usize;
+        if sign == ExactSign::Negative && exterior[component].replace(BoundaryFaceId(face as u32)).is_some() { return Err(voronoi_error("edge component has more than one negative boundary face")); }
+        face_points.push(points); orientation.push(sign); face_component.push(component);
     }
-    let mut component_min = vec![None; component_count];
-    for half_edge in &local.half_edges {
-        let minimum = &mut component_min[half_edge.component.0 as usize];
-        if minimum.is_none_or(|current| half_edge.origin < current) {
-            *minimum = Some(half_edge.origin);
-        }
-    }
-    let component_min = component_min
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .expect("component has an edge");
-    let positive: Vec<Vec<OrbitId>> = (0..component_count)
-        .map(|component| {
-            local
-                .orbits
-                .iter()
-                .enumerate()
-                .filter(|(_, orbit)| {
-                    orbit.component.0 as usize == component
-                        && orbit.orientation == ExactSign::Positive
-                })
-                .map(|(orbit, _)| OrbitId(orbit as u32))
-                .collect()
-        })
-        .collect();
-    let mut indexed_positive = Vec::new();
-    let mut unindexed_positive = Vec::new();
-    for orbit in positive.iter().flatten().copied() {
-        if let Some(envelope) = orbit_envelopes[orbit.0 as usize] {
-            indexed_positive.push(IndexedExactEnvelope {
-                index: orbit.0 as usize,
-                envelope,
-            });
-        } else {
-            unindexed_positive.push(orbit.0 as usize);
-        }
-    }
-    let positive_tree = BulkRTree::bulk_load_with_params(indexed_positive);
-    let mut parent_orbit = vec![None; component_count];
-    for component in 0..component_count {
-        if component == local.frame_component.0 as usize {
-            continue;
-        }
-        let probe = &local.vertices[component_min[component].0 as usize].point;
-        let candidate_orbits = exact_envelope_candidates(
-            &positive_tree,
-            &unindexed_positive,
-            exact_envelope(std::slice::from_ref(probe)),
-            local.orbits.len(),
-        );
+    let exterior: Vec<_> = exterior.into_iter().collect::<Option<Vec<_>>>().ok_or_else(|| voronoi_error("edge component has no negative boundary face"))?;
+    let frame_edge = subdivision.edges.iter().position(|edge| edge.frame_side.is_some()).ok_or_else(|| voronoi_error("private frame is absent"))?;
+    let frame_component = topology.component_of[subdivision.edges[frame_edge].endpoints[0].0 as usize] as usize;
+    let mut component_min = vec![None; components];
+    for &owner in &topology.owners { let slot = &mut component_min[topology.component_of[owner as usize] as usize]; if slot.is_none_or(|current| owner < current) { *slot = Some(owner); } }
+    let component_min: Vec<_> = component_min.into_iter().collect::<Option<Vec<_>>>().ok_or_else(|| voronoi_error("component has no edge"))?;
+    let positive: Vec<Vec<BoundaryFaceId>> = (0..components).map(|component| (0..boundary_faces).filter(|&face| face_component[face] == component && orientation[face] == ExactSign::Positive).map(|face| BoundaryFaceId(face as u32)).collect()).collect();
+    let mut indexed = Vec::new(); let mut unindexed = Vec::new();
+    for face in positive.iter().flatten().copied() { if let Some(envelope) = exact_envelope(&face_points[face.0 as usize]) { indexed.push(IndexedExactEnvelope { index: face.0 as usize, envelope }); } else { unindexed.push(face.0 as usize); } }
+    let tree = BulkRTree::bulk_load_with_params(indexed);
+    let mut parent = vec![None; components];
+    for component in 0..components {
+        if component == frame_component { continue; }
+        let probe = &subdivision.vertices[component_min[component] as usize].point;
+        let mask = exact_envelope_candidates(&tree, &unindexed, exact_envelope(std::slice::from_ref(probe)), boundary_faces);
         let mut candidates = Vec::new();
-        for other in 0..component_count {
-            if other == component {
-                continue;
-            }
-            for &orbit in &positive[other] {
-                if !candidate_orbits[orbit.0 as usize] {
-                    continue;
-                }
-                budget.add(orbit_point_cache[orbit.0 as usize].len())?;
-                match exact::point_in_cycle(&orbit_point_cache[orbit.0 as usize], probe) {
-                    exact::PointInCycle::Inside => candidates.push(orbit),
-                    exact::PointInCycle::Boundary => {
-                        return Err(voronoi_error(
-                            "disconnected exact components meet without a noded edge",
-                        ));
-                    },
-                    exact::PointInCycle::Outside => {},
-                }
+        for other in 0..components {
+            if other == component { continue; }
+            for &face in &positive[other] {
+                let relation = exact::point_in_cycle(&face_points[face.0 as usize], probe);
+                if mask[face.0 as usize] && relation == exact::PointInCycle::Inside { candidates.push(face); }
             }
         }
-        budget.add(
-            candidates
-                .iter()
-                .map(|orbit| orbit_point_cache[orbit.0 as usize].len())
-                .sum::<usize>()
-                .saturating_mul(2),
-        )?;
         let mut candidates = candidates.into_iter();
-        let mut parent = candidates.next().expect("nonempty component candidates");
+        let mut selected = candidates.next().ok_or_else(|| voronoi_error("exact component has no containing boundary face"))?;
         for candidate in candidates {
-            let parent_probe = &local.vertices[local.half_edges
-                [local.orbits[parent.0 as usize].seed.0 as usize]
-                .origin
-                .0 as usize]
-                .point;
-            if exact::point_in_cycle(&orbit_point_cache[candidate.0 as usize], parent_probe)
-                == exact::PointInCycle::Inside
-            {
-                continue;
-            }
-            let candidate_probe = &local.vertices[local.half_edges
-                [local.orbits[candidate.0 as usize].seed.0 as usize]
-                .origin
-                .0 as usize]
-                .point;
-            if exact::point_in_cycle(&orbit_point_cache[parent.0 as usize], candidate_probe)
-                != exact::PointInCycle::Inside
-            {
-                return Err(voronoi_error(
-                    "exact component containment is non-laminar or parentless",
-                ));
-            }
-            parent = candidate;
+            let selected_probe = &face_points[selected.0 as usize][0];
+            if exact::point_in_cycle(&face_points[candidate.0 as usize], selected_probe) == exact::PointInCycle::Inside { continue; }
+            let candidate_probe = &face_points[candidate.0 as usize][0];
+            if exact::point_in_cycle(&face_points[selected.0 as usize], candidate_probe) != exact::PointInCycle::Inside { return Err(voronoi_error("exact component containment is non-laminar or parentless")); }
+            selected = candidate;
         }
-        parent_orbit[component] = Some(parent);
+        parent[component] = Some(selected);
     }
-    let mut depth = vec![None; component_count];
-    depth[local.frame_component.0 as usize] = Some(0_usize);
-    for _ in 0..component_count {
-        for component in 0..component_count {
-            if depth[component].is_some() {
-                continue;
-            }
-            let parent = parent_orbit[component].expect("non-root parent");
-            let parent_component = local.orbits[parent.0 as usize].component.0 as usize;
-            if let Some(parent_depth) = depth[parent_component] {
-                depth[component] = Some(parent_depth + 1);
-            }
-        }
+    let mut depth = vec![None; components]; depth[frame_component] = Some(0usize);
+    for _ in 0..components { for component in 0..components { if depth[component].is_none() { let parent_face = parent[component].expect("non-root parent"); if let Some(parent_depth) = depth[face_component[parent_face.0 as usize]] { depth[component] = Some(parent_depth + 1); } } } }
+    let depth: Vec<_> = depth.into_iter().collect::<Option<Vec<_>>>().ok_or_else(|| voronoi_error("exact component containment forest is cyclic"))?;
+    let mut order: Vec<_> = (0..components).collect(); order.sort_by_key(|&component| (depth[component], component_min[component]));
+    subdivision.region_of_boundary_face.resize(boundary_faces, RegionId(u32::MAX));
+    let mut labels = vec![None; boundary_faces];
+    subdivision.regions.push(ExactRegion { outer: None, inner: Vec::new(), label: RegionLabel { frame_winding: 0, clip_winding: 0, owner: None }, unbounded: true });
+    for component in order { let outside = exterior[component]; let (region, label) = if component == frame_component { (RegionId(0), subdivision.regions[0].label) } else { let parent_face = parent[component].expect("child parent"); let region = subdivision.region_of_boundary_face[parent_face.0 as usize]; subdivision.regions[region.0 as usize].inner.push(outside); (region, subdivision.regions[region.0 as usize].label) }; subdivision.region_of_boundary_face[outside.0 as usize] = region; labels[outside.0 as usize] = Some(label); for &face in &positive[component] { let region = RegionId(subdivision.regions.len() as u32); subdivision.region_of_boundary_face[face.0 as usize] = region; subdivision.regions.push(ExactRegion { outer: Some(face), inner: Vec::new(), label, unbounded: false }); }
+        let mut queue = VecDeque::new(); queue.push_back(outside); while let Some(left) = queue.pop_front() { let label = labels[left.0 as usize].ok_or_else(|| voronoi_error("unlabelled boundary face"))?; let walk = &topology.face_slots[topology.face_starts[left.0 as usize] as usize..topology.face_starts[left.0 as usize + 1] as usize]; for &slot in walk { let edge = &subdivision.edges[subdivision.edge_of_slot[slot as usize] as usize]; let transition = if topology.owners[slot as usize] == edge.endpoints[0].0 { edge.forward } else { edge.forward.reversed() }; let right = BoundaryFaceId(topology.face_of[topology.twins[slot as usize] as usize]); let right_label = crossed_label(label, transition)?; match labels[right.0 as usize] { Some(existing) if existing != right_label => return Err(voronoi_error("inconsistent exact region-label propagation")), None => { labels[right.0 as usize] = Some(right_label); queue.push_back(right); }, _ => {} } } }
+        for face in std::iter::once(outside).chain(positive[component].iter().copied()) { let label = labels[face.0 as usize].ok_or_else(|| voronoi_error("unlabelled exact boundary face"))?; let region = subdivision.region_of_boundary_face[face.0 as usize]; if region != subdivision.region_of_boundary_face[outside.0 as usize] || face == outside { subdivision.regions[region.0 as usize].label = label; } }
     }
-    let depth = depth
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| voronoi_error("exact component containment forest is cyclic"))?;
-    let mut order: Vec<_> = (0..component_count).collect();
-    order.sort_by_key(|&component| (depth[component], component_min[component]));
-    let mut face_of_orbit: Vec<Option<RegionId>> = vec![None; local.orbits.len()];
-    let mut label_of_orbit: Vec<Option<FaceLabel>> = vec![None; local.orbits.len()];
-    let mut faces = vec![ExactRegion {
-        outer: None,
-        inner: Vec::new(),
-        label: FaceLabel {
-            frame_winding: 0,
-            clip_winding: 0,
-            owner: None,
-        },
-        unbounded: true,
-    }];
-    for component in order {
-        let exterior = local.exterior_orbit[component];
-        let (exterior_face, exterior_label) = if component == local.frame_component.0 as usize {
-            (RegionId(0), faces[0].label)
-        } else {
-            let parent = parent_orbit[component].expect("child parent");
-            let face = face_of_orbit[parent.0 as usize]
-                .ok_or_else(|| voronoi_error("parent face was not created before child"))?;
-            faces[face.0 as usize].inner.push(exterior);
-            (face, faces[face.0 as usize].label)
-        };
-        face_of_orbit[exterior.0 as usize] = Some(exterior_face);
-        label_of_orbit[exterior.0 as usize] = Some(exterior_label);
-        for &orbit in &positive[component] {
-            let face = RegionId(
-                u32::try_from(faces.len()).map_err(|_| voronoi_error("too many exact faces"))?,
-            );
-            face_of_orbit[orbit.0 as usize] = Some(face);
-            faces.push(ExactRegion {
-                outer: Some(orbit),
-                inner: Vec::new(),
-                label: exterior_label,
-                unbounded: false,
-            });
-        }
-        let component_orbits = std::iter::once(exterior)
-            .chain(positive[component].iter().copied())
-            .count();
-        budget.add(component_orbits)?;
-        let mut queue = VecDeque::new();
-        queue.reserve(component_orbits);
-        queue.push_back(exterior);
-        while let Some(left) = queue.pop_front() {
-            let left_label = label_of_orbit[left.0 as usize]
-                .ok_or_else(|| voronoi_error("unlabelled queued exact local orbit"))?;
-            for &half_edge_id in &local.orbits[left.0 as usize].half_edges {
-                let half_edge = &local.half_edges[half_edge_id.0 as usize];
-                let left = half_edge.orbit;
-                let right = local.half_edges[half_edge.twin.0 as usize].orbit;
-                debug_assert_eq!(left, half_edge.orbit);
-                let right_label = crossed_label(left_label, half_edge.transition)?;
-                match label_of_orbit[right.0 as usize] {
-                    Some(existing) if existing != right_label => {
-                        return Err(voronoi_error("inconsistent exact face-label propagation"));
-                    },
-                    None => {
-                        label_of_orbit[right.0 as usize] = Some(right_label);
-                        queue.push_back(right);
-                    },
-                    _ => {},
-                }
-            }
-        }
-        for orbit in std::iter::once(exterior).chain(positive[component].iter().copied()) {
-            let label = label_of_orbit[orbit.0 as usize]
-                .ok_or_else(|| voronoi_error("unlabelled exact local orbit"))?;
-            let face = face_of_orbit[orbit.0 as usize].expect("face assigned");
-            if face != exterior_face || orbit == exterior {
-                faces[face.0 as usize].label = label;
-            }
-        }
-    }
-    for face in &mut faces {
-        face.inner.sort_unstable();
-    }
-    for (index, face) in faces.iter().enumerate() {
-        if !matches!(face.label.frame_winding, 0 | 1) || !matches!(face.label.clip_winding, 0 | 1) {
-            return Err(voronoi_error("exact Voronoi face has non-binary winding"));
-        }
-        if index == 0 {
-            if face.label
-                != (FaceLabel {
-                    frame_winding: 0,
-                    clip_winding: 0,
-                    owner: None,
-                })
-            {
-                return Err(voronoi_error("exact unbounded face has a nonempty label"));
-            }
-        } else if face.label.frame_winding != 1 || face.label.owner.is_none() {
-            return Err(voronoi_error("bounded exact face has no unique owner"));
-        }
-    }
-    let global_half_edges = local
-        .half_edges
-        .into_iter()
-        .map(|half_edge| {
-            Ok(GlobalHalfEdge {
-                origin: half_edge.origin,
-                target: half_edge.target,
-                twin: half_edge.twin,
-                next: half_edge.next,
-                prev: half_edge.prev,
-                edge: half_edge.edge,
-                component: half_edge.component,
-                orbit: half_edge.orbit,
-                face: face_of_orbit[half_edge.orbit.0 as usize]
-                    .ok_or_else(|| voronoi_error("half-edge orbit has no global face"))?,
-                transition: half_edge.transition,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let subdivision = ExactSubdivision {
-        vertices: local.vertices,
-        edges: local.edges,
-        half_edges: global_half_edges,
-        stars: local.stars,
-        orbits: local.orbits,
-        faces,
-        unbounded: RegionId(0),
-    };
-    validate_exact_subdivision(&subdivision)?;
-    Ok(subdivision)
+    for region in &mut subdivision.regions { region.inner.sort_unstable(); }
+    validate_exact_subdivision(subdivision)
 }
 
 struct ExactSimpleRing {
@@ -2072,91 +1521,20 @@ fn canonicalize_ring(vertices: &mut Vec<VertexId>, edges: &mut Vec<EdgeId>) {
     vertices.push(vertices[0]);
 }
 
-fn split_orbit(
-    subdivision: &ExactSubdivision,
-    face: RegionId,
-    orbit: OrbitId,
-) -> Result<Vec<ExactSimpleRing>> {
-    let walk = &subdivision.orbits[orbit.0 as usize].half_edges;
-    let direct_vertices: Vec<_> = walk
-        .iter()
-        .map(|half_edge| subdivision.half_edges[half_edge.0 as usize].origin)
-        .collect();
-    if direct_vertices
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-        == direct_vertices.len()
-    {
-        let mut vertices = direct_vertices;
-        let mut edges: Vec<_> = walk
-            .iter()
-            .map(|half_edge| subdivision.half_edges[half_edge.0 as usize].edge)
-            .collect();
-        vertices.push(vertices[0]);
-        let points: Vec<_> = vertices[..vertices.len() - 1]
-            .iter()
-            .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
-            .collect();
-        let orientation = exact::cycle_orientation(&points)?;
-        canonicalize_ring(&mut vertices, &mut edges);
-        return Ok(vec![ExactSimpleRing {
-            face,
-            vertices: vertices.into_boxed_slice(),
-            edges: edges.into_boxed_slice(),
-            orientation,
-        }]);
+fn split_boundary_face(subdivision: &ExactSubdivision, region: RegionId, boundary_face: BoundaryFaceId) -> Result<Vec<ExactSimpleRing>> {
+    let topology = &subdivision.topology;
+    let walk = &topology.face_slots[topology.face_starts[boundary_face.0 as usize] as usize..topology.face_starts[boundary_face.0 as usize + 1] as usize];
+    let direct_vertices: Vec<_> = walk.iter().map(|&slot| VertexId(topology.owners[slot as usize])).collect();
+    let direct_edges: Vec<_> = walk.iter().map(|&slot| EdgeId(subdivision.edge_of_slot[slot as usize])).collect();
+    if direct_vertices.iter().copied().collect::<std::collections::BTreeSet<_>>().len() == direct_vertices.len() {
+        let mut vertices = direct_vertices; let mut edges = direct_edges; vertices.push(vertices[0]);
+        let points: Vec<_> = vertices[..vertices.len()-1].iter().map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()).collect();
+        let orientation = exact::cycle_orientation(&points)?; canonicalize_ring(&mut vertices, &mut edges);
+        return Ok(vec![ExactSimpleRing { face: region, vertices: vertices.into_boxed_slice(), edges: edges.into_boxed_slice(), orientation }]);
     }
-    let mut path = Vec::<VertexId>::new();
-    let mut path_edges = Vec::<EdgeId>::new();
-    let mut positions = vec![None; subdivision.vertices.len()];
-    let mut result = Vec::new();
-    for step in 0..=walk.len() {
-        let half_edge_id = walk[step % walk.len()];
-        let half_edge = &subdivision.half_edges[half_edge_id.0 as usize];
-        let vertex = half_edge.origin;
-        let incoming = (step > 0)
-            .then(|| subdivision.half_edges[walk[(step - 1) % walk.len()].0 as usize].edge);
-        if let Some(position) = positions[vertex.0 as usize] {
-            let mut vertices = path[position..].to_vec();
-            vertices.push(vertex);
-            let mut edges = path_edges[position..].to_vec();
-            edges.push(incoming.expect("a repeated walk vertex has an incoming edge"));
-            if vertices.len() < 4 || edges.len() + 1 != vertices.len() {
-                return Err(voronoi_error("pinch split produced a short exact ring"));
-            }
-            for removed in &path[position + 1..] {
-                positions[removed.0 as usize] = None;
-            }
-            path.truncate(position + 1);
-            path_edges.truncate(position);
-            let points: Vec<_> = vertices[..vertices.len() - 1]
-                .iter()
-                .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone())
-                .collect();
-            let orientation = exact::cycle_orientation(&points)?;
-            canonicalize_ring(&mut vertices, &mut edges);
-            result.push(ExactSimpleRing {
-                face,
-                vertices: vertices.into_boxed_slice(),
-                edges: edges.into_boxed_slice(),
-                orientation,
-            });
-        } else {
-            positions[vertex.0 as usize] = Some(path.len());
-            path.push(vertex);
-            if let Some(edge) = incoming {
-                path_edges.push(edge);
-            }
-        }
-    }
-    if path.len() != 1 || !path_edges.is_empty() {
-        return Err(voronoi_error(
-            "pinch split left a residual exact boundary path",
-        ));
-    }
-    Ok(result)
+    let mut path = Vec::<VertexId>::new(); let mut path_edges = Vec::<EdgeId>::new(); let mut positions = vec![None; subdivision.vertices.len()]; let mut result = Vec::new();
+    for step in 0..=walk.len() { let slot = walk[step % walk.len()] as usize; let vertex = VertexId(topology.owners[slot]); let incoming = (step > 0).then(|| EdgeId(subdivision.edge_of_slot[walk[(step - 1) % walk.len()] as usize])); if let Some(position) = positions[vertex.0 as usize] { let mut vertices = path[position..].to_vec(); vertices.push(vertex); let mut edges = path_edges[position..].to_vec(); edges.push(incoming.expect("repeated boundary vertex has an incoming edge")); if vertices.len() < 4 { return Err(voronoi_error("pinch split produced a short exact ring")); } for removed in &path[position + 1..] { positions[removed.0 as usize] = None; } path.truncate(position + 1); path_edges.truncate(position); let points: Vec<_> = vertices[..vertices.len()-1].iter().map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()).collect(); let orientation = exact::cycle_orientation(&points)?; canonicalize_ring(&mut vertices, &mut edges); result.push(ExactSimpleRing { face: region, vertices: vertices.into_boxed_slice(), edges: edges.into_boxed_slice(), orientation }); } else { positions[vertex.0 as usize] = Some(path.len()); path.push(vertex); if let Some(edge) = incoming { path_edges.push(edge); } } }
+    if path.len() != 1 || !path_edges.is_empty() { return Err(voronoi_error("pinch split left a residual exact boundary path")); } Ok(result)
 }
 
 fn assemble_cells(
@@ -2164,14 +1542,14 @@ fn assemble_cells(
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<ExactCellPart>> {
     let mut parts = Vec::new();
-    for (face_index, face) in subdivision.faces.iter().enumerate() {
+    for (face_index, face) in subdivision.regions.iter().enumerate() {
         if face.label.frame_winding != 1 || face.label.clip_winding != 1 {
             continue;
         }
         let face_id = RegionId(face_index as u32);
         let mut rings = Vec::new();
         for orbit in face.outer.into_iter().chain(face.inner.iter().copied()) {
-            rings.extend(split_orbit(subdivision, face_id, orbit)?);
+            rings.extend(split_boundary_face(subdivision, face_id, orbit)?);
         }
         let positives: Vec<_> = rings
             .iter()
@@ -2358,20 +1736,21 @@ fn assemble_edges(
     subdivision: &ExactSubdivision,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<ExactEdgeChain>> {
-    let mut selected: Vec<_> = subdivision
-        .edges
-        .iter()
-        .enumerate()
-        .filter_map(|(index, edge)| {
-            let separator = edge.separator?;
-            let left = &subdivision.faces[subdivision.half_edges[index * 2].face.0 as usize].label;
-            let right =
-                &subdivision.faces[subdivision.half_edges[index * 2 + 1].face.0 as usize].label;
-            ((left.frame_winding == 1 && left.clip_winding == 1)
-                || (right.frame_winding == 1 && right.clip_winding == 1))
-                .then_some((separator, EdgeId(index as u32)))
-        })
-        .collect();
+    let mut forward_slot = Vec::new();
+    forward_slot.try_reserve(subdivision.edges.len()).map_err(|_| voronoi_error("could not allocate exact edge slots"))?;
+    forward_slot.resize(subdivision.edges.len(), u32::MAX);
+    for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
+        let atomic = &subdivision.edges[edge as usize];
+        if subdivision.topology.owners[slot] == atomic.endpoints[0].0 { forward_slot[edge as usize] = slot as u32; }
+    }
+    let mut selected: Vec<_> = subdivision.edges.iter().enumerate().filter_map(|(index, edge)| {
+        let separator = edge.separator?; let slot = forward_slot[index] as usize;
+        debug_assert_ne!(slot, u32::MAX as usize);
+        let left = &subdivision.regions[subdivision.region_of_boundary_face[subdivision.topology.face_of[slot] as usize].0 as usize].label;
+        let twin = subdivision.topology.twins[slot] as usize;
+        let right = &subdivision.regions[subdivision.region_of_boundary_face[subdivision.topology.face_of[twin] as usize].0 as usize].label;
+        ((left.frame_winding == 1 && left.clip_winding == 1) || (right.frame_winding == 1 && right.clip_winding == 1)).then_some((separator, EdgeId(index as u32)))
+    }).collect();
     selected.sort_unstable();
     let mut result = Vec::new();
     let mut start = 0;
@@ -2895,7 +2274,7 @@ fn embed(
     };
     let mut labelled = Vec::new();
     for part in parts {
-        if subdivision.faces[part.face.0 as usize].label.owner != Some(part.owner) {
+        if subdivision.regions[part.face.0 as usize].label.owner != Some(part.owner) {
             return Err(voronoi_error("embedded cell lost its exact face owner"));
         }
         let shell_coordinates = coordinates(&part.shell.vertices)?;
@@ -3098,8 +2477,8 @@ pub(super) fn build(
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget)?;
     let primitives = build_primitives(sites, &primal_edges, &complex, &clip, budget)?;
     let atoms = node_primitives(primitives, sites, &adjacency, &clip, budget)?;
-    let local = build_local_dcel(atoms, budget)?;
-    let subdivision = graft_components(local, budget)?;
+    let mut subdivision = build_exact_subdivision(atoms, budget)?;
+    graft_components(&mut subdivision, budget)?;
     let parts = assemble_cells(&subdivision, budget)?;
     let chains = assemble_edges(&subdivision, budget)?;
     embed(&subdivision, parts, chains, &clip, sites, true, budget)
@@ -3255,11 +2634,9 @@ pub(super) fn build_collinear_edges(
     let vertices = exact_points
         .iter()
         .zip(fixed)
-        .map(|(point, fixed_xy)| RotationVertex {
+        .map(|(point, fixed_xy)| ExactVertex {
             point: point.clone(),
             fixed_xy,
-            star_start: 0,
-            star_len: 0,
         })
         .collect::<Vec<_>>();
     let vertex_id = |point: &exact::ExactPoint| -> VertexId {
@@ -3336,19 +2713,19 @@ pub(super) fn build_collinear_edges(
     let subdivision = ExactSubdivision {
         vertices,
         edges,
-        half_edges: Vec::new(),
-        stars: Vec::new(),
-        orbits: Vec::new(),
-        faces: vec![ExactRegion {
+        topology: IndexedTopology::default(),
+        edge_of_slot: Vec::new(),
+        regions: vec![ExactRegion {
             outer: None,
             inner: Vec::new(),
-            label: FaceLabel {
+            label: RegionLabel {
                 frame_winding: 0,
                 clip_winding: 0,
                 owner: None,
             },
             unbounded: true,
         }],
+        region_of_boundary_face: Vec::new(),
         unbounded: RegionId(0),
     };
     let embedded = embed(
@@ -3460,59 +2837,8 @@ mod tests {
             .collect()
     }
 
-    fn assert_local_euler_and_frame_root(local: &LocalDcel) {
-        let components = local.exterior_orbit.len();
-        assert_eq!(
-            local.vertices.len() as isize - local.edges.len() as isize
-                + local.orbits.len() as isize,
-            2 * components as isize,
-            "each connected planar component has V-E+F=2"
-        );
-
-        let frame_exterior = local.exterior_orbit[local.frame_component.0 as usize];
-        let restored_outside_twins = local
-            .half_edges
-            .iter()
-            .filter(|half_edge| {
-                local.edges[half_edge.edge.0 as usize].frame_side.is_some()
-                    && half_edge.transition.frame_delta == -1
-                    && half_edge.orbit == frame_exterior
-            })
-            .count();
-        let mutated_exterior = local
-            .exterior_orbit
-            .iter()
-            .copied()
-            .find(|orbit| *orbit != frame_exterior);
-        if let Some(mutated_exterior) = mutated_exterior {
-            let mutated_outside_twins = local
-                .half_edges
-                .iter()
-                .filter(|half_edge| {
-                    local.edges[half_edge.edge.0 as usize].frame_side.is_some()
-                        && half_edge.transition.frame_delta == -1
-                        && half_edge.orbit == mutated_exterior
-                })
-                .count();
-            assert_ne!(mutated_outside_twins, restored_outside_twins);
-            assert_eq!(mutated_outside_twins, 0);
-        }
-        assert!(restored_outside_twins >= 4);
-    }
-
-    fn assert_global_euler(subdivision: &ExactSubdivision) {
-        let components = subdivision
-            .half_edges
-            .iter()
-            .map(|half_edge| half_edge.component)
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        assert_eq!(
-            subdivision.vertices.len() as isize - subdivision.edges.len() as isize
-                + subdivision.faces.len() as isize,
-            1 + components as isize
-        );
-    }
+    fn assert_local_euler_and_frame_root(subdivision: &ExactSubdivision) { let components = subdivision.topology.component_of.iter().copied().collect::<std::collections::BTreeSet<_>>().len(); let faces = subdivision.topology.face_starts.len() - 1; assert_eq!(subdivision.vertices.len() as isize - subdivision.edges.len() as isize + faces as isize, 2 * components as isize); }
+    fn assert_global_euler(subdivision: &ExactSubdivision) { let components = subdivision.topology.component_of.iter().copied().collect::<std::collections::BTreeSet<_>>().len(); assert_eq!(subdivision.vertices.len() as isize - subdivision.edges.len() as isize + subdivision.regions.len() as isize, 1 + components as isize); }
 
     #[test]
     fn exact_cycle_validator_accepts_one_shell_hole_tangency() {
@@ -3833,9 +3159,9 @@ mod tests {
         let primitives =
             build_primitives(&sites, &primal_edges, &complex, &clip, &mut budget).unwrap();
         let atoms = node_primitives(primitives, &sites, &adjacency, &clip, &mut budget).unwrap();
-        let local = build_local_dcel(atoms, &mut budget).unwrap();
-        assert_local_euler_and_frame_root(&local);
-        let subdivision = graft_components(local, &mut budget).unwrap();
+        let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+        assert_local_euler_and_frame_root(&subdivision);
+        graft_components(&mut subdivision, &mut budget).unwrap();
         assert_global_euler(&subdivision);
         let parts = assemble_cells(&subdivision, &mut budget).unwrap();
         for part in &parts {
@@ -3878,13 +3204,12 @@ mod tests {
         let primitives =
             build_primitives(&sites, &primal_edges, &complex, &clip, &mut budget).unwrap();
         let atoms = node_primitives(primitives, &sites, &adjacency, &clip, &mut budget).unwrap();
-        let local = build_local_dcel(atoms, &mut budget).unwrap();
-        assert!(local.exterior_orbit.len() > 1);
-        assert_local_euler_and_frame_root(&local);
-        let subdivision = graft_components(local, &mut budget).unwrap();
+        let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+        assert_local_euler_and_frame_root(&subdivision);
+        graft_components(&mut subdivision, &mut budget).unwrap();
         assert_global_euler(&subdivision);
         let inherited = subdivision
-            .faces
+            .regions
             .iter()
             .enumerate()
             .filter(|(face, value)| *face != 0 && !value.inner.is_empty())
@@ -4080,7 +3405,7 @@ mod tests {
 
     #[test]
     fn transition_and_budget_mutants_report_distinct_restored_values() {
-        let left = FaceLabel {
+        let left = RegionLabel {
             frame_winding: 1,
             clip_winding: 1,
             owner: Some(SiteId(0)),
@@ -4108,7 +3433,7 @@ mod tests {
         assert_eq!(restored.owner, Some(SiteId(1)));
 
         let inherited = left;
-        let zero_seeded = FaceLabel {
+        let zero_seeded = RegionLabel {
             frame_winding: 0,
             clip_winding: 0,
             owner: None,
@@ -4372,7 +3697,7 @@ mod tests {
 //   (a) capping the two unbounded rays of a hull cell on the private frame,
 //   (b) clipping each cell to the clip rectangle, and
 //   (c) the rounding certificate.
-// Everything `build_primitives` / `node_primitives` / `build_local_dcel` /
+// Everything `build_primitives` / `node_primitives` / `build_exact_subdivision` /
 // `graft_components` / `assemble_cells` does is replaced by (a) and (b).
 //
 // Rectangle clips (`Envelope` / `Padded`) use the direct half-edge lane. The
