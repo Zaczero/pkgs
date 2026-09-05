@@ -14,6 +14,7 @@
 //! dedup, while construction uses a transient reciprocal-edge index.
 
 mod build;
+mod indexed;
 mod loop_ops;
 mod walk;
 mod winding;
@@ -24,12 +25,13 @@ pub(crate) use loop_ops::{
 };
 pub(crate) use walk::{
     build_csr, compare_departures, dedup_vertices_and_edges, sort_rows_counterclockwise,
-    split_ring_at_pinches, walk_faces,
+    split_ring_at_pinches,
 };
 pub(crate) use winding::{
-    Arrangement, ArrangementSpares, Columns, Face, FinishSpares, TypedSpares, WindingWeight,
+    Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight,
     arrangement_spares, region_spares, typed_spares,
 };
+pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
 
 #[cfg(test)]
 mod tests;

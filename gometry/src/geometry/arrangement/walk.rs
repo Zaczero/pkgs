@@ -4,10 +4,10 @@
 )]
 use std::cmp::Ordering;
 
-use crate::geometry::arrangement::{Face, WindingWeight};
+use crate::geometry::arrangement::WindingWeight;
 use crate::geometry::{
     HashMap, Orientation, PointKey, Segment, XY,
-    open_xy_cycle_sign, orientation, same_point, wrap_index,
+    open_xy_cycle_sign, orientation, same_point,
 };
 
 pub(crate) fn split_ring_at_pinches(
@@ -51,55 +51,30 @@ pub(crate) fn split_ring_at_pinches(
 /// gates ring and exact-magnitude materialization: winding consumers read only
 /// exact signs and the face CSR (boundaries come from
 /// [`Arrangement::region_rings`]), so their walks skip both costs.
-pub(crate) fn walk_faces<const RINGS: bool>(
-    points: &[XY],
-    starts: &[u32],
-    targets: &[u32],
-    owners: &[u32],
-    twins: &[u32],
-    component_of: &[u32],
-    // Recycled buffer (cleared/refilled here).
-    face_of: Vec<u32>,
-) -> (Vec<u32>, Vec<Face>) {
-    let mut face_of = face_of;
-    face_of.clear();
-    face_of.resize(targets.len(), u32::MAX);
-    let mut faces: Vec<Face> = Vec::new();
+pub(crate) fn arrangement_faces<const RINGS: bool>(
+    points: &[XY], topology: &crate::geometry::arrangement::IndexedTopology,
+) -> Vec<crate::geometry::arrangement::Face> {
+    let mut faces = Vec::new();
     // One cycle scratch for sign classification when rings are not kept
     // (`RINGS=false`); for `RINGS=true` each completed cycle is moved into the
     // face and the next face reuses a fresh buffer (no free-list needed —
     // faces own their rings for the arrangement lifetime).
     let mut cycle_scratch = Vec::with_capacity(16);
-    for seed in 0..targets.len() {
-        if face_of[seed] != u32::MAX {
-            continue;
-        }
-        let face_id = faces.len() as u32;
+    for face in 0..topology.face_starts.len() - 1 {
         let mut cycle = if RINGS {
             Vec::with_capacity(16)
         } else {
             cycle_scratch.clear();
             std::mem::take(&mut cycle_scratch)
         };
-        cycle.push(points[owners[seed] as usize]);
-        let mut slot = seed;
-        loop {
-            face_of[slot] = face_id;
-            let to = points[targets[slot] as usize];
+        for &slot in &topology.face_slots[topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize] {
+            let slot = slot as usize;
+            if cycle.is_empty() { cycle.push(points[topology.owners[slot] as usize]); }
+            let to = points[topology.targets[slot] as usize];
             cycle.push(to);
-            // Continue clockwise of the reversal at `to`.
-            let reverse = twins[slot] as usize;
-            let range = starts[targets[slot] as usize] as usize
-                ..starts[targets[slot] as usize + 1] as usize;
-            let row_len = range.end - range.start;
-            let position = reverse - range.start;
-            slot = range.start + wrap_index(position + row_len - 1, row_len);
-            if slot == seed {
-                break;
-            }
         }
         let area_sign = open_xy_cycle_sign(&cycle);
-        faces.push(Face {
+        faces.push(crate::geometry::arrangement::Face {
             ring: if RINGS {
                 cycle
             } else {
@@ -107,10 +82,10 @@ pub(crate) fn walk_faces<const RINGS: bool>(
                 Vec::new()
             },
             area_sign,
-            component: component_of[owners[seed] as usize],
+            component: topology.component_of[topology.owners[topology.face_slots[topology.face_starts[face] as usize] as usize] as usize],
         });
     }
-    (face_of, faces)
+    faces
 }
 
 /// Vertex dedup + undirected edge dedup with net direction counting.
@@ -195,9 +170,9 @@ pub(crate) fn build_csr<W: WindingWeight>(
     // Recycled buffers (cleared/refilled here).
     mut starts: Vec<u32>,
     mut targets: Vec<u32>,
-    mut owners: Vec<u32>,
     mut multiplicities: Vec<W>,
-) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<W>) {
+    mut edge_of_slot: Vec<u32>,
+) -> (Vec<u32>, Vec<u32>, Vec<W>, Vec<u32>) {
     starts.clear();
     starts.resize(vertex_count + 1, 0);
     for &(a, b, _) in edges {
@@ -211,23 +186,23 @@ pub(crate) fn build_csr<W: WindingWeight>(
     let mut cursor = starts.clone();
     targets.clear();
     targets.resize(half_edge_count, 0);
-    owners.clear();
-    owners.resize(half_edge_count, 0);
     multiplicities.clear();
     multiplicities.resize(half_edge_count, W::UNSET);
-    for &(a, b, multiplicity) in edges {
+    edge_of_slot.clear();
+    edge_of_slot.resize(half_edge_count, 0);
+    for (edge, &(a, b, multiplicity)) in edges.iter().enumerate() {
         let slot_a = cursor[a as usize] as usize;
         targets[slot_a] = b;
-        owners[slot_a] = a;
         multiplicities[slot_a] = multiplicity;
+        edge_of_slot[slot_a] = edge as u32;
         cursor[a as usize] += 1;
         let slot_b = cursor[b as usize] as usize;
         targets[slot_b] = a;
-        owners[slot_b] = b;
         multiplicities[slot_b] = multiplicity.neg();
+        edge_of_slot[slot_b] = edge as u32;
         cursor[b as usize] += 1;
     }
-    (starts, targets, owners, multiplicities)
+    (starts, targets, multiplicities, edge_of_slot)
 }
 
 /// Sort every CSR row counter-clockwise by departure angle.
@@ -236,10 +211,11 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
     starts: &[u32],
     targets: &mut [u32],
     multiplicities: &mut [W],
+    edge_of_slot: &mut [u32],
 ) {
     // One scratch row reused across every vertex (rows are tiny; per-row
     // allocations dominated this pass).
-    let mut row: Vec<(u32, W)> = Vec::new();
+    let mut row: Vec<(u32, W, u32)> = Vec::new();
     for vertex in 0..starts.len() - 1 {
         let range = starts[vertex] as usize..starts[vertex + 1] as usize;
         // Degree <= 2 needs NO ordering work at all: a two-neighbor fan has
@@ -252,7 +228,7 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
         row.extend(
             range
                 .clone()
-                .map(|slot| (targets[slot], multiplicities[slot])),
+                .map(|slot| (targets[slot], multiplicities[slot], edge_of_slot[slot])),
         );
         let origin = points[vertex];
         row.sort_unstable_by(|left, right| {
@@ -264,9 +240,10 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
                 right.0,
             )
         });
-        for (offset, &(target, multiplicity)) in range.zip(&row) {
+        for (offset, &(target, multiplicity, edge)) in range.zip(&row) {
             targets[offset] = target;
             multiplicities[offset] = multiplicity;
+            edge_of_slot[offset] = edge;
         }
     }
 }

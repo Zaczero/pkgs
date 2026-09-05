@@ -1,11 +1,10 @@
-use crate::geometry::arrangement;
-use super::winding::twin_slot_spares;
 use crate::geometry::arrangement::{
-    Arrangement, Columns, Face, FinishSpares, TypedSpares, WindingWeight, arrangement_spares,
+    Arrangement, Face, TypedSpares, WindingWeight, arrangement_spares,
     build_csr, dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts,
     positional_loop_pieces, region_spares, single_loop_cuts, single_loop_pieces,
-    sort_rows_counterclockwise, split_ring_at_pinches, typed_spares, walk_faces,
+    sort_rows_counterclockwise, split_ring_at_pinches, typed_spares,
 };
+use crate::geometry::arrangement;
 use crate::geometry::{HashMap, PointKey, Segment, XY, wrap_index};
 
 impl Arrangement<i32> {
@@ -42,13 +41,13 @@ impl Arrangement<i32> {
             debug_assert_ne!(start, end, "graph bundles exclude zero-length edges");
             indexed_edges.push((start, end, 1));
         }
-        let (starts, mut targets, owners, mut multiplicities) = build_csr(
+        let (starts, mut targets, mut multiplicities, mut edge_of_slot) = build_csr(
             arrangement_points.len(),
             &indexed_edges,
-            std::mem::take(&mut spares.starts),
-            std::mem::take(&mut spares.targets),
-            std::mem::take(&mut spares.owners),
+            std::mem::take(&mut spares.topology.starts),
+            std::mem::take(&mut spares.topology.targets),
             std::mem::take(&mut typed.multiplicities),
+            std::mem::take(&mut spares.edge_of_slot),
         );
         indexed_edges.clear();
         sort_rows_counterclockwise(
@@ -56,29 +55,14 @@ impl Arrangement<i32> {
             &starts,
             &mut targets,
             &mut multiplicities,
+            &mut edge_of_slot,
         );
-        let mut twins = std::mem::take(&mut spares.twins);
-        populate_twins(&mut twins, &targets, &owners);
-        Self::finish_topology::<false>(
-            Columns {
-                points: arrangement_points,
-                starts,
-                targets,
-                owners,
-                twins,
-                multiplicities,
-            },
-            std::mem::take(&mut spares.ids),
-            false,
-            FinishSpares {
-                component_of: std::mem::take(&mut spares.component_of),
-                face_of: std::mem::take(&mut spares.face_of),
-                face_starts: std::mem::take(&mut spares.face_starts),
-                face_slots: std::mem::take(&mut spares.face_slots),
-            },
-            spares,
-            typed,
-        )
+        spares.points = arrangement_points;
+        spares.topology.starts = starts;
+        spares.topology.targets = targets;
+        spares.edge_of_slot = edge_of_slot;
+        typed.multiplicities = multiplicities;
+        Self::finish_topology::<false>(std::mem::take(&mut spares.ids), spares, typed)
     }
 
     /// Specialized constructor for ONE closed loop's raw (un-noded)
@@ -115,7 +99,7 @@ impl Arrangement<i32> {
         debug_assert_eq!(points.len(), vertex_count);
         // Degrees are structural — chain vertices 2, crossings 4 — so the
         // CSR shape needs no edge sort.
-        let mut starts = std::mem::take(&mut spares.starts);
+        let mut starts = std::mem::take(&mut spares.topology.starts);
         starts.clear();
         starts.reserve(vertex_count + 1);
         starts.push(0);
@@ -126,66 +110,49 @@ impl Arrangement<i32> {
         }
         let half_edge_count = total as usize;
         debug_assert_eq!(half_edge_count, 2 * pieces.len());
-        let mut targets = std::mem::take(&mut spares.targets);
+        let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
         targets.resize(half_edge_count, 0);
-        let mut owners = std::mem::take(&mut spares.owners);
-        owners.clear();
-        owners.resize(half_edge_count, 0);
-        let mut twins = std::mem::take(&mut spares.twins);
+        let mut edge_of_slot = std::mem::take(&mut spares.edge_of_slot);
+        edge_of_slot.clear();
+        edge_of_slot.resize(half_edge_count, 0);
         let mut multiplicities = std::mem::take(&mut typed.multiplicities);
         multiplicities.clear();
         multiplicities.resize(half_edge_count, 0);
         let mut filled = std::mem::take(&mut spares.filled);
         filled.clear();
         filled.resize(vertex_count, 0);
-        for &(from, to) in &pieces {
+        for (edge, &(from, to)) in pieces.iter().enumerate() {
             let slot = (starts[from as usize] + filled[from as usize]) as usize;
             filled[from as usize] += 1;
             targets[slot] = to;
-            owners[slot] = from;
             multiplicities[slot] = 1;
+            edge_of_slot[slot] = edge as u32;
             let twin = (starts[to as usize] + filled[to as usize]) as usize;
             filled[to as usize] += 1;
             targets[twin] = from;
-            owners[twin] = to;
             multiplicities[twin] = -1;
+            edge_of_slot[twin] = edge as u32;
         }
-        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities) {
+        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot) {
             // Restock the pools (contents are stale by definition) and let
             // the general path own the case.
             spares.points = points;
-            spares.starts = starts;
-            spares.targets = targets;
-            spares.owners = owners;
-            spares.twins = twins;
+            spares.topology.starts = starts;
+            spares.topology.targets = targets;
+            spares.edge_of_slot = edge_of_slot;
             spares.ids = ids;
             spares.filled = filled;
             typed.multiplicities = multiplicities;
             return None;
         }
-        populate_twins(&mut twins, &targets, &owners);
+        spares.points = points;
+        spares.topology.starts = starts;
+        spares.topology.targets = targets;
+        spares.edge_of_slot = edge_of_slot;
         spares.filled = filled;
-        Some(Self::finish_topology::<false>(
-            Columns {
-                points,
-                starts,
-                targets,
-                owners,
-                twins,
-                multiplicities,
-            },
-            ids,
-            true,
-            FinishSpares {
-                component_of: std::mem::take(&mut spares.component_of),
-                face_of: std::mem::take(&mut spares.face_of),
-                face_starts: std::mem::take(&mut spares.face_starts),
-                face_slots: std::mem::take(&mut spares.face_slots),
-            },
-            spares,
-            typed,
-        ))
+        typed.multiplicities = multiplicities;
+        Some(Self::finish_topology::<false>(ids, spares, typed))
     }
 }
 
@@ -218,7 +185,7 @@ impl<W: WindingWeight> Arrangement<W> {
         let (is_cut, pieces, anchor_ids) =
             positional_loop_pieces(segments, loop_ranges, &cuts, group_count, &mut points);
         debug_assert_eq!(points.len(), vertex_count);
-        let mut starts = std::mem::take(&mut spares.starts);
+        let mut starts = std::mem::take(&mut spares.topology.starts);
         starts.clear();
         starts.reserve(vertex_count + 1);
         starts.push(0);
@@ -229,44 +196,41 @@ impl<W: WindingWeight> Arrangement<W> {
         }
         let half_edge_count = total as usize;
         debug_assert_eq!(half_edge_count, 2 * pieces.len());
-        let mut targets = std::mem::take(&mut spares.targets);
+        let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
         targets.resize(half_edge_count, 0);
-        let mut owners = std::mem::take(&mut spares.owners);
-        owners.clear();
-        owners.resize(half_edge_count, 0);
-        let mut twins = std::mem::take(&mut spares.twins);
+        let mut edge_of_slot = std::mem::take(&mut spares.edge_of_slot);
+        edge_of_slot.clear();
+        edge_of_slot.resize(half_edge_count, 0);
         let mut multiplicities = std::mem::take(&mut typed.multiplicities);
         multiplicities.clear();
         multiplicities.resize(half_edge_count, W::UNSET);
         let mut filled = std::mem::take(&mut spares.filled);
         filled.clear();
         filled.resize(vertex_count, 0);
-        for &(from, to, loop_index) in &pieces {
+        for (edge, &(from, to, loop_index)) in pieces.iter().enumerate() {
             let weight = weight_of_loop(loop_index as usize);
             let slot = (starts[from as usize] + filled[from as usize]) as usize;
             filled[from as usize] += 1;
             targets[slot] = to;
-            owners[slot] = from;
             multiplicities[slot] = weight;
+            edge_of_slot[slot] = edge as u32;
             let twin = (starts[to as usize] + filled[to as usize]) as usize;
             filled[to as usize] += 1;
             targets[twin] = from;
-            owners[twin] = to;
             multiplicities[twin] = weight.neg();
+            edge_of_slot[twin] = edge as u32;
         }
-        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities) {
+        if !order_single_loop_rows(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot) {
             spares.points = points;
-            spares.starts = starts;
-            spares.targets = targets;
-            spares.owners = owners;
-            spares.twins = twins;
+            spares.topology.starts = starts;
+            spares.topology.targets = targets;
+            spares.edge_of_slot = edge_of_slot;
             spares.ids = ids;
             spares.filled = filled;
             typed.multiplicities = multiplicities;
             return None;
         }
-        populate_twins(&mut twins, &targets, &owners);
         // Only the loop ANCHORS are ever looked up (component probes map
         // anchors -> components); inserting all 40k vertices for K=2
         // lookups was pure waste. Duplicate keys already bailed.
@@ -275,26 +239,12 @@ impl<W: WindingWeight> Arrangement<W> {
             ids.insert(PointKey::new(points[anchor as usize]), anchor);
         }
         spares.filled = filled;
-        Some(Self::finish_topology::<false>(
-            Columns {
-                points,
-                starts,
-                targets,
-                owners,
-                twins,
-                multiplicities,
-            },
-            ids,
-            false,
-            FinishSpares {
-                component_of: std::mem::take(&mut spares.component_of),
-                face_of: std::mem::take(&mut spares.face_of),
-                face_starts: std::mem::take(&mut spares.face_starts),
-                face_slots: std::mem::take(&mut spares.face_slots),
-            },
-            spares,
-            typed,
-        ))
+        spares.points = points;
+        spares.topology.starts = starts;
+        spares.topology.targets = targets;
+        spares.edge_of_slot = edge_of_slot;
+        typed.multiplicities = multiplicities;
+        Some(Self::finish_topology::<false>(ids, spares, typed))
     }
 
     /// Build from noded directed segments, `weight_of(index)` giving each
@@ -318,138 +268,48 @@ impl<W: WindingWeight> Arrangement<W> {
             std::mem::take(&mut spares.points),
             std::mem::take(&mut typed.edges),
         );
-        let vertex_count = points.len();
-        let (starts, mut targets, owners, mut multiplicities) = build_csr(
-            vertex_count,
+        let (starts, mut targets, mut multiplicities, mut edge_of_slot) = build_csr(
+            points.len(),
             &edges,
-            std::mem::take(&mut spares.starts),
-            std::mem::take(&mut spares.targets),
-            std::mem::take(&mut spares.owners),
+            std::mem::take(&mut spares.topology.starts),
+            std::mem::take(&mut spares.topology.targets),
             std::mem::take(&mut typed.multiplicities),
+            std::mem::take(&mut spares.edge_of_slot),
         );
         typed.edges = edges;
         typed.edges.clear();
-        sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities);
-        let mut twins = std::mem::take(&mut spares.twins);
-        populate_twins(&mut twins, &targets, &owners);
-        Self::finish_topology::<RINGS>(
-            Columns {
-                points,
-                starts,
-                targets,
-                owners,
-                twins,
-                multiplicities,
-            },
-            ids,
-            connected,
-            FinishSpares {
-                component_of: std::mem::take(&mut spares.component_of),
-                face_of: std::mem::take(&mut spares.face_of),
-                face_starts: std::mem::take(&mut spares.face_starts),
-                face_slots: std::mem::take(&mut spares.face_slots),
-            },
-            spares,
-            typed,
-        )
+        sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot);
+        spares.points = points;
+        spares.topology.starts = starts;
+        spares.topology.targets = targets;
+        spares.edge_of_slot = edge_of_slot;
+        typed.multiplicities = multiplicities;
+        let _ = connected;
+        Self::finish_topology::<RINGS>(ids, spares, typed)
     }
 
     /// Post-CSR assembly shared by every constructor: connected components,
     /// the global face walk, and the face CSR. The topology columns are
     /// already final — everything here is derived.
     pub(crate) fn finish_topology<const RINGS: bool>(
-        columns: Columns<W>,
         ids: HashMap<PointKey, u32>,
-        connected: bool,
-        mut spares: FinishSpares,
         mut core: crate::scratch_pool::ScratchLease<
             arrangement::ArrangementSpares,
         >,
-        mut typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
+        typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
     ) -> Self {
-        let Columns {
-            points,
-            starts,
-            targets,
-            owners,
-            twins,
-            multiplicities,
-        } = columns;
-        let vertex_count = points.len();
-        let half_edge_count = targets.len();
-        // Components over vertices — skipped entirely when the construction
-        // already PROVED connectivity (one chained closed loop).
-        let (component_of, component_count) = if connected {
-            let mut component_of = std::mem::take(&mut spares.component_of);
-            component_of.clear();
-            component_of.resize(vertex_count, 0);
-            (component_of, 1)
-        } else {
-            let mut components = crate::collections::UnionFind::new(vertex_count);
-            for slot in 0..half_edge_count {
-                components.union(owners[slot] as usize, targets[slot] as usize);
-            }
-            // Roots are dense vertex indices: a sentinel-filled Vec replaces
-            // a hash map for the first-seen component numbering.
-            let mut component_id_of_root = std::mem::take(&mut core.component_id_of_root);
-            component_id_of_root.clear();
-            component_id_of_root.resize(vertex_count, u32::MAX);
-            let mut component_count = 0_u32;
-            let mut component_of = std::mem::take(&mut spares.component_of);
-            component_of.clear();
-            component_of.reserve(vertex_count);
-            for vertex in 0..vertex_count {
-                let id = &mut component_id_of_root[components.find(vertex)];
-                if *id == u32::MAX {
-                    *id = component_count;
-                    component_count += 1;
-                }
-                component_of.push(*id);
-            }
-            core.component_id_of_root = component_id_of_root;
-            (component_of, component_count)
+        let component_count = {
+            let crate::geometry::arrangement::ArrangementSpares {
+                topology,
+                topology_scratch,
+                edge_of_slot,
+                ..
+            } = &mut *core;
+            topology.finish(edge_of_slot, topology_scratch)
         };
-        let (face_of, faces) = walk_faces::<RINGS>(
-            &points,
-            &starts,
-            &targets,
-            &owners,
-            &twins,
-            &component_of,
-            std::mem::take(&mut spares.face_of),
-        );
-        // CSR by face for the winding fill.
-        let mut face_starts = std::mem::take(&mut spares.face_starts);
-        face_starts.clear();
-        face_starts.resize(faces.len() + 1, 0);
-        for &face in &face_of {
-            face_starts[face as usize + 1] += 1;
-        }
-        for index in 0..faces.len() {
-            face_starts[index + 1] += face_starts[index];
-        }
-        let mut face_cursor = std::mem::take(&mut core.face_cursor);
-        face_cursor.clear();
-        face_cursor.extend_from_slice(&face_starts);
-        let mut face_slots = std::mem::take(&mut spares.face_slots);
-        face_slots.clear();
-        face_slots.resize(half_edge_count, 0);
-        for (slot, &face) in face_of.iter().enumerate() {
-            face_slots[face_cursor[face as usize] as usize] = slot as u32;
-            face_cursor[face as usize] += 1;
-        }
-        core.points = points;
-        core.starts = starts;
-        core.targets = targets;
-        core.owners = owners;
-        core.twins = twins;
-        core.face_of = face_of;
-        core.face_starts = face_starts;
-        core.face_slots = face_slots;
+        core.edge_of_slot.clear();
         core.ids = ids;
-        core.component_of = component_of;
-        core.face_cursor = face_cursor;
-        typed.multiplicities = multiplicities;
+        let faces = crate::geometry::arrangement::walk::arrangement_faces::<RINGS>(&core.points, &core.topology);
         Self {
             core,
             typed,
@@ -706,26 +566,5 @@ impl<W: WindingWeight> Arrangement<W> {
                 self.face_of[twin],
             );
         }
-    }
-}
-
-/// Build the reciprocal half-edge column after angular row ordering. Every
-/// retained entry is one `u32` (four bytes) per half-edge.
-fn populate_twins(twins: &mut Vec<u32>, targets: &[u32], owners: &[u32]) {
-    twins.clear();
-    twins.resize(targets.len(), u32::MAX);
-    let mut scratch = twin_slot_spares();
-    scratch.by_endpoints.clear();
-    scratch.by_endpoints.reserve(targets.len());
-    for (slot, (&owner, &target)) in std::iter::zip(owners, targets).enumerate() {
-        assert!(
-            scratch
-                .by_endpoints
-                .insert((owner, target), slot as u32)
-                .is_none()
-        );
-    }
-    for (slot, (&owner, &target)) in std::iter::zip(owners, targets).enumerate() {
-        twins[slot] = scratch.by_endpoints[&(target, owner)];
     }
 }

@@ -280,6 +280,7 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
     starts: &[u32],
     targets: &mut [u32],
     multiplicities: &mut [W],
+    edge_of_slot: &mut [u32],
 ) -> bool {
     for vertex in 0..starts.len() - 1 {
         let row = starts[vertex] as usize..starts[vertex + 1] as usize;
@@ -291,12 +292,13 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
             if a > b {
                 targets.swap(row.start, row.start + 1);
                 multiplicities.swap(row.start, row.start + 1);
+                edge_of_slot.swap(row.start, row.start + 1);
             }
         } else {
             let origin = points[vertex];
-            let mut entries = [(0_u32, W::UNSET); 4];
+            let mut entries = [(0_u32, W::UNSET, 0_u32); 4];
             for (entry, slot) in std::iter::zip(&mut entries, row.clone()) {
-                *entry = (targets[slot], multiplicities[slot]);
+                *entry = (targets[slot], multiplicities[slot], edge_of_slot[slot]);
             }
             let entries = &mut entries[..row.len()];
             entries.sort_unstable_by(|left, right| {
@@ -315,9 +317,10 @@ pub(crate) fn order_single_loop_rows<W: WindingWeight>(
                 return false;
             }
             for (slot, entry) in std::iter::zip(row, entries) {
-                let (target, multiplicity) = *entry;
+                let (target, multiplicity, edge) = *entry;
                 targets[slot] = target;
                 multiplicities[slot] = multiplicity;
+                edge_of_slot[slot] = edge;
             }
         }
     }

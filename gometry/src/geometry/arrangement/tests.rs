@@ -251,12 +251,14 @@ fn positional_fan_order_survives_opposite_finite_extremes() {
     let starts = [0, 4, 6, 8, 10, 12];
     let mut targets = [1, 2, 3, 4, 0, 2, 0, 1, 0, 4, 0, 3];
     let mut multiplicities = [1_i32, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    let mut edge_of_slot = [0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5];
 
     assert!(order_single_loop_rows(
         &points,
         &starts,
         &mut targets,
         &mut multiplicities,
+        &mut edge_of_slot,
     ));
     assert_eq!(targets[..4], [1, 2, 4, 3]);
     assert_eq!(multiplicities[..4], [1, 2, 4, 3]);
@@ -300,8 +302,9 @@ fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
     let starts = [0, 3, 4, 5, 6];
     let mut targets = [1, 2, 3, 0, 0, 0];
     let mut multiplicities = [1_i32, 2, 3, 4, 5, 6];
+    let mut edge_of_slot = [0, 1, 2, 0, 1, 2];
 
-    sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities);
+    sort_rows_counterclockwise(&points, &starts, &mut targets, &mut multiplicities, &mut edge_of_slot);
 
     assert_eq!(targets[..3], [2, 1, 3]);
     assert_eq!(multiplicities[..3], [2, 1, 3]);

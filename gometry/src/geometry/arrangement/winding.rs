@@ -1,4 +1,5 @@
 use crate::geometry::{AreaSign, HashMap, PointKey, XY};
+use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::scratch_pool::{
     RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes, hash_map_retained_bytes,
 };
@@ -75,18 +76,11 @@ pub(crate) struct Face {
 #[derive(Default)]
 pub(crate) struct ArrangementSpares {
     pub(crate) points: Vec<XY>,
-    pub(crate) starts: Vec<u32>,
-    pub(crate) targets: Vec<u32>,
-    pub(crate) owners: Vec<u32>,
-    pub(crate) twins: Vec<u32>,
-    pub(crate) face_of: Vec<u32>,
-    pub(crate) face_starts: Vec<u32>,
-    pub(crate) face_slots: Vec<u32>,
+    pub(crate) topology: IndexedTopology,
+    pub(crate) topology_scratch: IndexedTopologyScratch,
+    pub(crate) edge_of_slot: Vec<u32>,
     pub(crate) ids: HashMap<PointKey, u32>,
-    pub(crate) component_of: Vec<u32>,
     pub(crate) filled: Vec<u32>,
-    pub(crate) component_id_of_root: Vec<u32>,
-    pub(crate) face_cursor: Vec<u32>,
     pub(crate) outer: Vec<Option<u32>>,
     pub(crate) winding_queue: std::collections::VecDeque<u32>,
 }
@@ -94,36 +88,32 @@ pub(crate) struct ArrangementSpares {
 impl RetainScratch for ArrangementSpares {
     fn clear_for_reuse(&mut self) {
         self.points.clear();
-        self.starts.clear();
-        self.targets.clear();
-        self.owners.clear();
-        self.twins.clear();
-        self.face_of.clear();
-        self.face_starts.clear();
-        self.face_slots.clear();
+        self.topology.clear();
+        self.topology_scratch.clear();
+        self.edge_of_slot.clear();
         self.ids.clear();
-        self.component_of.clear();
         self.filled.clear();
-        self.component_id_of_root.clear();
-        self.face_cursor.clear();
         self.outer.clear();
         self.winding_queue.clear();
     }
 
     fn retained_bytes(&self) -> usize {
         flat_vec_retained_bytes(&self.points)
-            .saturating_add(flat_vec_retained_bytes(&self.starts))
-            .saturating_add(flat_vec_retained_bytes(&self.targets))
-            .saturating_add(flat_vec_retained_bytes(&self.owners))
-            .saturating_add(flat_vec_retained_bytes(&self.twins))
-            .saturating_add(flat_vec_retained_bytes(&self.face_of))
-            .saturating_add(flat_vec_retained_bytes(&self.face_starts))
-            .saturating_add(flat_vec_retained_bytes(&self.face_slots))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.starts))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.targets))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.owners))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.twins))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.component_of))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.face_of))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.face_starts))
+            .saturating_add(flat_vec_retained_bytes(&self.topology.face_slots))
+            .saturating_add(flat_vec_retained_bytes(&self.edge_of_slot))
             .saturating_add(hash_map_retained_bytes(&self.ids))
-            .saturating_add(flat_vec_retained_bytes(&self.component_of))
             .saturating_add(flat_vec_retained_bytes(&self.filled))
-            .saturating_add(flat_vec_retained_bytes(&self.component_id_of_root))
-            .saturating_add(flat_vec_retained_bytes(&self.face_cursor))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.component_id_of_root))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.face_cursor))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.successor))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.edge_slots))
             .saturating_add(flat_vec_retained_bytes(&self.outer))
             .saturating_add(
                 self.winding_queue
@@ -221,49 +211,6 @@ pub(crate) fn region_spares() -> ScratchLease<RegionSpares> {
     ScratchPool::checkout(&REGION_SPARES)
 }
 
-/// Construction-only reciprocal-edge index. It is separate from the core
-/// lease so its capacity returns to the pool as soon as topology is finished.
-#[derive(Default)]
-pub(crate) struct TwinSlotSpares {
-    pub(crate) by_endpoints: HashMap<(u32, u32), u32>,
-}
-
-impl RetainScratch for TwinSlotSpares {
-    fn clear_for_reuse(&mut self) {
-        self.by_endpoints.clear();
-    }
-
-    fn retained_bytes(&self) -> usize {
-        hash_map_retained_bytes(&self.by_endpoints)
-    }
-}
-
-thread_local! {
-    static TWIN_SLOT_SPARES: ScratchPool<TwinSlotSpares> = ScratchPool::new(TwinSlotSpares::default());
-}
-
-pub(crate) fn twin_slot_spares() -> ScratchLease<TwinSlotSpares> {
-    ScratchPool::checkout(&TWIN_SLOT_SPARES)
-}
-
-/// The six topology columns every constructor must produce — bundled so
-/// [`Arrangement::finish_topology`] has one obvious signature.
-pub(crate) struct Columns<W> {
-    pub(crate) points: Vec<XY>,
-    pub(crate) starts: Vec<u32>,
-    pub(crate) targets: Vec<u32>,
-    pub(crate) owners: Vec<u32>,
-    pub(crate) twins: Vec<u32>,
-    pub(crate) multiplicities: Vec<W>,
-}
-
-/// The pooled buffers [`Arrangement::finish_topology`] consumes.
-pub(crate) struct FinishSpares {
-    pub(crate) component_of: Vec<u32>,
-    pub(crate) face_of: Vec<u32>,
-    pub(crate) face_starts: Vec<u32>,
-    pub(crate) face_slots: Vec<u32>,
-}
 
 /// The arrangement over one noded segment set.
 pub(crate) struct Arrangement<W: WindingWeight = i32> {
@@ -294,6 +241,16 @@ impl<W: WindingWeight> std::ops::Deref for Arrangement<W> {
     }
 }
 
+impl std::ops::Deref for ArrangementSpares {
+    type Target = IndexedTopology;
+
+    fn deref(&self) -> &Self::Target { &self.topology }
+}
+
+impl std::ops::DerefMut for ArrangementSpares {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.topology }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,8 +278,11 @@ mod tests {
         scratch.face_slots.reserve_exact(19);
         scratch.component_of.reserve_exact(23);
         scratch.filled.reserve_exact(29);
-        scratch.component_id_of_root.reserve_exact(31);
-        scratch.face_cursor.reserve_exact(37);
+        scratch.topology_scratch.component_id_of_root.reserve_exact(31);
+        scratch.topology_scratch.face_cursor.reserve_exact(37);
+        scratch.topology_scratch.successor.reserve_exact(41);
+        scratch.topology_scratch.edge_slots.reserve_exact(43);
+        scratch.edge_of_slot.reserve_exact(47);
         scratch.outer.reserve_exact(41);
         scratch.winding_queue.reserve_exact(43);
         scratch.ids.reserve(29);
@@ -339,8 +299,11 @@ mod tests {
                 .saturating_add(hash_map_retained_bytes(&scratch.ids))
                 .saturating_add(flat_vec_retained_bytes(&scratch.component_of))
                 .saturating_add(flat_vec_retained_bytes(&scratch.filled))
-                .saturating_add(flat_vec_retained_bytes(&scratch.component_id_of_root))
-                .saturating_add(flat_vec_retained_bytes(&scratch.face_cursor))
+                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.component_id_of_root))
+                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.face_cursor))
+                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.successor))
+                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.edge_slots))
+                .saturating_add(flat_vec_retained_bytes(&scratch.edge_of_slot))
                 .saturating_add(flat_vec_retained_bytes(&scratch.outer))
                 .saturating_add(
                     scratch
