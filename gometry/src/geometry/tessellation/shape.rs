@@ -435,15 +435,13 @@ impl Shape {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let canonical = canonical_voronoi_sites(self.unique_xy_points(), tolerance);
         if canonical.len() < 2 {
-            return Ok(voronoi_dcel::EmbeddedEdges::Chains(Vec::new()));
+            return voronoi_dcel::empty_packed_edges();
         }
         let points: Vec<_> = canonical.iter().map(|site| site.point).collect();
         if monotone_chain_hull(&points).len() >= 3 {
-            return Ok(voronoi_dcel::build(&canonical, boundary, budget, true)?.into_edges());
+            return voronoi_dcel::build_edges(&canonical, boundary, budget, true);
         }
-        Ok(voronoi_dcel::EmbeddedEdges::Chains(voronoi_dcel::build_collinear_edges(
-            &canonical, boundary, budget,
-        )?))
+        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget)
     }
 
     pub fn boundary(&self) -> Result<Self> {

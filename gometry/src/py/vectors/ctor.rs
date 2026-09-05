@@ -54,6 +54,23 @@ impl Groups {
         })
     }
 
+    /// Adopt a packed line column whose rows are already grouped by input
+    /// provenance: `group_offsets` counts LineString rows in `coords`/`line_offsets`.
+    pub(crate) fn from_packed_line_groups(
+        frame: crate::Frame,
+        coords: crate::geometry::CoordSeq,
+        line_offsets: crate::geometry::CsrOffsetColumn,
+        group_offsets: Vec<i64>,
+    ) -> PyResult<Self> {
+        let values = PyGeometryArray::packed_lines(coords, line_offsets, frame);
+        validate_csr_offsets(&group_offsets, values.len())?;
+        let n = group_offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
+        Self::from_geometry_csr(Arc::new(values), group_offsets.into(), 0..n)
+    }
+
     /// Adopt a fallible geometry CSR builder after its detached row walk.
     pub(crate) fn from_geometry_builder(
         frame: crate::Frame,

@@ -192,3 +192,62 @@ impl PackedColumnBuilder {
         Ok((out_coords, out_offsets))
     }
 }
+
+/// Join packed line columns in one append pass. Pairwise prefix concat copies
+/// already-merged vertices again on every extra column.
+pub(crate) fn concat_packed_line_columns(
+    columns: impl IntoIterator<Item = (CoordSeq, CsrOffsetColumn)>,
+) -> CrateResult<(CoordSeq, CsrOffsetColumn)> {
+    let mut builder = None;
+    for (coords, offsets) in columns {
+        let n_lines = offsets.len().saturating_sub(1);
+        if n_lines == 0 {
+            continue;
+        }
+        let ends = offsets.as_slice();
+        let builder = match builder.as_mut() {
+            Some(builder) => builder,
+            None => {
+                builder = Some(PackedColumnBuilder::try_like(&coords, coords.len())?);
+                builder.as_mut().expect("just inserted")
+            },
+        };
+        for line in 0..n_lines {
+            builder.push_window(&coords, ends[line] as usize..ends[line + 1] as usize)?;
+        }
+    }
+    match builder {
+        Some(builder) => {
+            let vertices = builder.vertex_len();
+            builder.finish(vertices)
+        },
+        None => Ok((
+            CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None),
+            CsrOffsetColumn::try_new(vec![0], 0)?,
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoordSeq, CsrOffsetColumn, concat_packed_line_columns};
+
+    #[test]
+    fn concat_packed_line_columns_appends_coordinates_in_input_order() {
+        let first = CoordSeq::from_vecs(vec![0.0, 1.0], vec![0.0, 0.0], None, None);
+        let first_offsets = CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap();
+        let second = CoordSeq::from_vecs(vec![2.0, 3.0, 3.0, 4.0], vec![2.0, 2.0, 2.0, 3.0], None, None);
+        let second_offsets = CsrOffsetColumn::try_new(vec![0, 2, 4], 4).unwrap();
+        let empty = CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None);
+        let empty_offsets = CsrOffsetColumn::try_new(vec![0], 0).unwrap();
+        let (coords, offsets) = concat_packed_line_columns([
+            (first, first_offsets),
+            (empty, empty_offsets),
+            (second, second_offsets),
+        ])
+        .unwrap();
+        assert_eq!(coords.xs(), &[0.0, 1.0, 2.0, 3.0, 3.0, 4.0]);
+        assert_eq!(coords.ys(), &[0.0, 0.0, 2.0, 2.0, 2.0, 3.0]);
+        assert_eq!(offsets.as_slice(), &[0, 2, 4, 6]);
+    }
+}

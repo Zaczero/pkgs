@@ -370,6 +370,41 @@ def test_mixed_magnitude_partition_is_complete(
     )
 
 
+def test_array_voronoi_edges_concat_preserves_missing_and_empty_groups() -> None:
+    arr = gm.GeometryArray([
+        gm.MultiPoint([(0.0, 0.0), (2.0, 2.0)]),
+        None,
+        gm.MultiPoint([(0.0, 0.0)]),
+        gm.MultiPoint([(0.0, 0.0), (4.0, 4.0)]),
+    ])
+    edges = arr.voronoi_edges(clip='envelope')
+    assert isinstance(edges, gm.Groups)
+    assert len(edges) == 4
+    assert edges.offsets.tolist() == [0, 1, 1, 1, 2]
+    assert len(edges[1]) == 0
+    assert len(edges[2]) == 0
+
+    def undirected(line: gm.Geometry) -> tuple[tuple[float, float], ...]:
+        coordinates = tuple(tuple(xy[:2]) for xy in line.coords)
+        return min(coordinates, tuple(reversed(coordinates)))
+
+    assert undirected(edges[0][0]) == ((0.0, 2.0), (2.0, 0.0))
+    assert undirected(edges[3][0]) == ((0.0, 4.0), (4.0, 0.0))
+
+
+def test_array_voronoi_edges_match_scalar_packed_chains() -> None:
+    sites = gm.MultiPoint([(-4.0, -3.0), (4.0, -2.0), (3.0, 4.0), (-3.0, 3.0), (0.0, 0.0)])
+    clip = gm.box(-6.0, -6.0, 6.0, 6.0)
+    scalar = sites.voronoi_edges(clip=clip)
+    grouped = gm.GeometryArray([sites]).voronoi_edges(clip=clip)
+    assert len(grouped) == 1
+    packed = grouped[0]
+    assert _normalized_edges(scalar) == _normalized_edges(packed)
+    assert [tuple(tuple(xy) for xy in edge.coords) for edge in scalar] == [
+        tuple(tuple(xy) for xy in edge.coords) for edge in packed
+    ]
+
+
 def test_cocircular_diagram_keeps_one_vertex_for_all_orders() -> None:
     sites = ((22.0, -61.0), (62.0, -19.0), (-22.0, 61.0), (-62.0, 19.0))
     diagrams = set()

@@ -355,7 +355,9 @@ pub(crate) use prepared::{
 };
 mod storage_helpers;
 mod storage_types;
-pub(crate) use packed_column_builder::{PackedColumnBuilder, PointColumnBuilder};
+pub(crate) use packed_column_builder::{
+    PackedColumnBuilder, PointColumnBuilder, concat_packed_line_columns,
+};
 pub(crate) use storage_helpers::{
     column_window, packed_centroid_xy, packed_surface_point, row_bounds, row_bounds_3d,
     row_bounds_values, row_ord_extremes,

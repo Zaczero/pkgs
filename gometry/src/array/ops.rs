@@ -793,13 +793,69 @@ impl PyGeometryArray {
         clip: &VoronoiClipInput,
     ) -> PyResult<crate::py::vectors::Groups> {
         let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edges")?;
-        self.flat_map_shapes_groups_budgeted(
-            py,
-            "voronoi_edges",
-            "sites/clip topology",
-            move |_, shape, budget| {
-                shape.voronoi_edges_budgeted(tolerance, boundary.as_borrowed(), budget)
-            },
+        let array = self.clone();
+        let frame = self.frame.clone();
+        let packed = py
+            .detach(move || {
+                let mut budget =
+                    crate::geometry::ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+                let mut columns = Vec::new();
+                let mut group_offsets = vec![0_i64];
+                for logical_row in array.row_operation().rows_with_missing(|| ()) {
+                    let (row, n_lines) = match logical_row {
+                        ArrayRow::Missing { logical, .. } => (logical, 0_usize),
+                        ArrayRow::Present(row) => {
+                            let logical = row.logical();
+                            let (coords, offsets) = row
+                                .row()
+                                .with_shape(|shape| {
+                                    shape.voronoi_edge_column_budgeted(
+                                        tolerance,
+                                        boundary.as_borrowed(),
+                                        &mut budget,
+                                    )
+                                })
+                                .map_err(|error| (logical, error))?;
+                            let n_lines = offsets.len().saturating_sub(1);
+                            if n_lines > 0 {
+                                columns.push((coords, offsets));
+                            }
+                            (logical, n_lines)
+                        },
+                    };
+                    let next = group_offsets
+                        .last()
+                        .copied()
+                        .unwrap_or(0)
+                        .checked_add(i64::try_from(n_lines).map_err(|_| {
+                            (
+                                row,
+                                crate::geometry::GeometryErrorKind::message(
+                                    "Voronoi edge group overflow",
+                                ),
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            (
+                                row,
+                                crate::geometry::GeometryErrorKind::message(
+                                    "Voronoi edge group overflow",
+                                ),
+                            )
+                        })?;
+                    group_offsets.push(next);
+                }
+                Ok((columns, group_offsets))
+            })
+            .map_err(rows_err)?;
+        let (columns, group_offsets) = packed;
+        let (coords, line_offsets) =
+            py.detach(move || crate::array::concat_packed_line_columns(columns))?;
+        crate::py::vectors::Groups::from_packed_line_groups(
+            frame,
+            coords,
+            line_offsets,
+            group_offsets,
         )
     }
 

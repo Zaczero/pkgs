@@ -28,7 +28,7 @@ use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::{CertifiedDelaunay, CertifiedPrimalEdge, DelaunayComplex, EMPTY, Site, certified_delaunay, delaunay_complex, exact};
 use crate::geometry::{
-    BulkRTree, CoordSeq, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, LineSeq,
+    BulkRTree, CoordSeq, CoordWindow, CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, HashMap, HashMapExt as _, LineSeq,
     Point, PointKey, Polygon, RTreeObject as _, Ring, Shape, Strictness, VoronoiBoundary, XY,
     coverage_is_valid, polygon_is_valid,
 };
@@ -2197,6 +2197,117 @@ fn assemble_cells(
     Ok(parts)
 }
 
+fn walk_separator_from(
+    separator: [SiteId; 2],
+    group: &[([SiteId; 2], EdgeId)],
+    incident: &std::collections::BTreeMap<VertexId, Vec<(usize, VertexId)>>,
+    used: &mut [bool],
+    start: VertexId,
+    budget: &mut ExpansionBudget,
+    result: &mut Vec<ExactEdgeChain>,
+) -> Result<()> {
+    let mut current = start;
+    let mut vertices = vec![current];
+    let mut chain_edges = Vec::new();
+    loop {
+        let next = incident
+            .get(&current)
+            .into_iter()
+            .flatten()
+            .find(|(slot, _)| !used[*slot]);
+        let Some(&(slot, next_vertex)) = next else {
+            break;
+        };
+        used[slot] = true;
+        chain_edges.push(group[slot].1);
+        current = next_vertex;
+        vertices.push(current);
+    }
+    if vertices.len() < 2 {
+        return Err(voronoi_error("empty Voronoi edge chain"));
+    }
+    if vertices.first() == vertices.last() {
+        return Err(voronoi_error("Voronoi separator forms a closed cycle"));
+    }
+    let mut reversed = vertices.clone();
+    reversed.reverse();
+    if reversed < vertices {
+        vertices = reversed;
+        chain_edges.reverse();
+    }
+    budget.add(vertices.len())?;
+    result.push(ExactEdgeChain {
+        separator,
+        vertices: vertices.into_boxed_slice(),
+        edges: chain_edges.into_boxed_slice(),
+    });
+    Ok(())
+}
+
+fn assemble_separator_group(
+    subdivision: &ExactSubdivision,
+    separator: [SiteId; 2],
+    group: &[([SiteId; 2], EdgeId)],
+    budget: &mut ExpansionBudget,
+    result: &mut Vec<ExactEdgeChain>,
+) -> Result<()> {
+    let mut incident: std::collections::BTreeMap<VertexId, Vec<(usize, VertexId)>> =
+        std::collections::BTreeMap::new();
+    for (slot, (_, edge_id)) in group.iter().enumerate() {
+        let [left, right] = subdivision.edges[edge_id.0 as usize].endpoints;
+        incident.entry(left).or_default().push((slot, right));
+        incident.entry(right).or_default().push((slot, left));
+    }
+    if incident.values().any(|neighbors| neighbors.len() > 2) {
+        return Err(voronoi_error("Voronoi separator branches"));
+    }
+    let mut used = vec![false; group.len()];
+    for (slot, (_, edge_id)) in group.iter().enumerate() {
+        if used[slot] {
+            continue;
+        }
+        let [left, right] = subdivision.edges[edge_id.0 as usize].endpoints;
+        let start = if incident
+            .get(&left)
+            .is_some_and(|neighbors| neighbors.len() == 1)
+        {
+            left
+        } else if incident
+            .get(&right)
+            .is_some_and(|neighbors| neighbors.len() == 1)
+        {
+            right
+        } else {
+            continue;
+        };
+        walk_separator_from(
+            separator,
+            group,
+            &incident,
+            &mut used,
+            start,
+            budget,
+            result,
+        )?;
+    }
+    for (slot, (_, edge_id)) in group.iter().enumerate() {
+        if used[slot] {
+            continue;
+        }
+        let start = subdivision.edges[edge_id.0 as usize].endpoints[0];
+        walk_separator_from(
+            separator,
+            group,
+            &incident,
+            &mut used,
+            start,
+            budget,
+            result,
+        )?;
+    }
+    Ok(())
+}
+
 fn assemble_edges(
     subdivision: &ExactSubdivision,
     budget: &mut ExpansionBudget,
@@ -2225,68 +2336,7 @@ fn assemble_edges(
         while end < selected.len() && selected[end].0 == separator {
             end += 1;
         }
-        let group = &selected[start..end];
-        let mut used = vec![false; group.len()];
-        for seed in 0..group.len() {
-            if used[seed] {
-                continue;
-            }
-            let mut degree = std::collections::BTreeMap::<VertexId, usize>::new();
-            for (_, edge) in group {
-                for vertex in subdivision.edges[edge.0 as usize].endpoints {
-                    *degree.entry(vertex).or_default() += 1;
-                }
-            }
-            if degree.values().any(|degree| *degree > 2) {
-                return Err(voronoi_error("Voronoi separator branches"));
-            }
-            let seed_edge = &subdivision.edges[group[seed].1.0 as usize];
-            let mut current = if degree[&seed_edge.endpoints[0]] == 1 {
-                seed_edge.endpoints[0]
-            } else {
-                seed_edge.endpoints[1]
-            };
-            let mut vertices = vec![current];
-            let mut chain_edges = Vec::new();
-            loop {
-                let next = group.iter().enumerate().find(|(slot, (_, edge))| {
-                    !used[*slot]
-                        && subdivision.edges[edge.0 as usize]
-                            .endpoints
-                            .contains(&current)
-                });
-                let Some((slot, (_, edge_id))) = next else {
-                    break;
-                };
-                used[slot] = true;
-                chain_edges.push(*edge_id);
-                let edge = &subdivision.edges[edge_id.0 as usize];
-                current = if edge.endpoints[0] == current {
-                    edge.endpoints[1]
-                } else {
-                    edge.endpoints[0]
-                };
-                vertices.push(current);
-            }
-            if vertices.len() < 2 {
-                return Err(voronoi_error("empty Voronoi edge chain"));
-            }
-            if vertices.first() == vertices.last() {
-                return Err(voronoi_error("Voronoi separator forms a closed cycle"));
-            }
-            let mut reversed = vertices.clone();
-            reversed.reverse();
-            if reversed < vertices {
-                vertices = reversed;
-                chain_edges.reverse();
-            }
-            budget.add(vertices.len())?;
-            result.push(ExactEdgeChain {
-                separator,
-                vertices: vertices.into_boxed_slice(),
-                edges: chain_edges.into_boxed_slice(),
-            });
-        }
+        assemble_separator_group(subdivision, separator, &selected[start..end], budget, &mut result)?;
         start = end;
     }
     result.sort_by(|left, right| {
@@ -2303,22 +2353,58 @@ pub(super) struct EmbeddedVoronoi {
     clip: Shape,
 }
 
-/// Voronoi edges before any line geometry exists. The subdivision and
-/// collinear lanes assemble chains; the dual lane certifies cancellation on
-/// raw segments and materialises geometry only in the shape the caller asks
-/// for: one packed line column for an array, or line rows.
+/// Voronoi edges before any line geometry exists. Exact and collinear lanes
+/// emit one packed XY column; the dual lane certifies cancellation on raw
+/// segments and packs only when a caller asks for a column or rows.
+#[derive(Clone)]
 pub(super) enum EmbeddedEdges {
-    Chains(Vec<LineSeq>),
+    Packed {
+        coords: CoordSeq,
+        offsets: CsrOffsetColumn,
+    },
     Segments(Vec<[XY; 2]>),
 }
 
+pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
+    Ok(EmbeddedEdges::Packed {
+        coords: CoordSeq::from_vecs(Vec::new(), Vec::new(), None, None),
+        offsets: CsrOffsetColumn::try_new(vec![0], 0)?,
+    })
+}
+
+fn pack_separator_chains(
+    chains: &[ExactEdgeChain],
+    xy_of: impl Fn(VertexId) -> Result<XY>,
+) -> Result<EmbeddedEdges> {
+    let vertices: usize = chains.iter().map(|chain| chain.vertices.len()).sum();
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    reserve_exact(&mut xs, vertices)?;
+    reserve_exact(&mut ys, vertices)?;
+    let mut ends = Vec::new();
+    reserve_exact(&mut ends, chains.len().saturating_add(1))?;
+    ends.push(0);
+    for chain in chains {
+        for &vertex in chain.vertices.iter() {
+            let point = xy_of(vertex)?;
+            xs.push(point.x);
+            ys.push(point.y);
+        }
+        ends.push(xs.len());
+    }
+    Ok(EmbeddedEdges::Packed {
+        coords: CoordSeq::from_vecs(xs, ys, None, None),
+        offsets: CsrOffsetColumn::try_new(ends, vertices)?,
+    })
+}
+
 impl EmbeddedEdges {
-    /// Canonical form: each segment runs from its lexicographically smaller
-    /// endpoint, and the list is ordered by both endpoints. Chains keep their
-    /// construction order.
+    /// Canonical form: each dual segment runs from its lexicographically
+    /// smaller endpoint, and the list is ordered by both endpoints. Packed
+    /// chains keep their construction order.
     fn canonical(self) -> Self {
         match self {
-            Self::Chains(chains) => Self::Chains(chains),
+            Self::Packed { coords, offsets } => Self::Packed { coords, offsets },
             Self::Segments(mut segments) => {
                 for segment in &mut segments {
                     if lex_xy(segment[0], segment[1]).is_gt() {
@@ -2335,7 +2421,21 @@ impl EmbeddedEdges {
 
     pub(super) fn into_line_seqs(self) -> Result<Vec<LineSeq>> {
         match self.canonical() {
-            Self::Chains(chains) => Ok(chains),
+            Self::Packed { coords, offsets } => {
+                let ends = offsets.as_slice();
+                if ends.len() <= 1 {
+                    return Ok(Vec::new());
+                }
+                (0..ends.len() - 1)
+                    .map(|line| {
+                        let start = ends[line] as usize;
+                        let end = ends[line + 1] as usize;
+                        let xs = coords.xs()[start..end].to_vec();
+                        let ys = coords.ys()[start..end].to_vec();
+                        LineSeq::try_new(CoordSeq::from_vecs(xs, ys, None, None))
+                    })
+                    .collect()
+            },
             Self::Segments(segments) => segments
                 .into_iter()
                 .map(|[a, b]| LineSeq::try_new(CoordSeq::from_vecs(vec![a.x, b.x], vec![a.y, b.y], None, None)))
@@ -2347,6 +2447,7 @@ impl EmbeddedEdges {
     /// no per-edge geometry, no per-edge allocation.
     pub(super) fn into_line_column(self) -> Result<(CoordSeq, CsrOffsetColumn)> {
         match self.canonical() {
+            Self::Packed { coords, offsets } => Ok((coords, offsets)),
             Self::Segments(segments) => {
                 let vertices = segments.len() * 2;
                 let mut xs = Vec::with_capacity(vertices);
@@ -2356,22 +2457,6 @@ impl EmbeddedEdges {
                     ys.extend([a.y, b.y]);
                 }
                 let ends = (0..=segments.len()).map(|edge| edge * 2).collect();
-                Ok((CoordSeq::from_vecs(xs, ys, None, None), CsrOffsetColumn::try_new(ends, vertices)?))
-            },
-            Self::Chains(chains) => {
-                let vertices: usize = chains.iter().map(|chain| chain.len()).sum();
-                let mut xs = Vec::with_capacity(vertices);
-                let mut ys = Vec::with_capacity(vertices);
-                let mut ends = Vec::with_capacity(chains.len() + 1);
-                ends.push(0);
-                for chain in &chains {
-                    for index in 0..chain.len() {
-                        let point = chain.point_at(index).xy();
-                        xs.push(point.x);
-                        ys.push(point.y);
-                    }
-                    ends.push(xs.len());
-                }
                 Ok((CoordSeq::from_vecs(xs, ys, None, None), CsrOffsetColumn::try_new(ends, vertices)?))
             },
         }
@@ -2919,13 +3004,10 @@ fn embed(
         // gap between the rounded partition and the source clip.  That numerical
         // equality is deliberately not part of the topological-snap contract.
     }
-    let edges = chains
-        .into_iter()
-        .map(|chain| LineSeq::try_new(CoordSeq::from(coordinates(&chain.vertices)?)))
-        .collect::<Result<Vec<_>>>()?;
+    let edges = pack_separator_chains(&chains, |vertex| embedded_point(vertex))?;
     Ok(EmbeddedVoronoi {
         polygons,
-        edges: EmbeddedEdges::Chains(edges),
+        edges,
         clip: comparison_clip,
     })
 }
@@ -2947,8 +3029,6 @@ pub(super) fn build(
         let xy = site.point.xy();
         (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal())
     });
-    // Three non-collinear sites are one certified face; the dual needs no
-    // more than that. Subnormal coordinates stay on the exact lane.
     if combinatorial_dual
         && sites.len() >= 3
         && normal_or_zero
@@ -2989,11 +3069,20 @@ pub(super) fn build(
     embed(&subdivision, parts, chains, &clip, sites, true, budget)
 }
 
+pub(super) fn build_edges(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    combinatorial_dual: bool,
+) -> Result<EmbeddedEdges> {
+    Ok(build(sites, boundary, budget, combinatorial_dual)?.into_edges())
+}
+
 pub(super) fn build_collinear_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
-) -> Result<Vec<LineSeq>> {
+) -> Result<EmbeddedEdges> {
     let mesh = certified_delaunay(sites);
     let order = mesh
         .collinear_order()
@@ -3020,7 +3109,7 @@ pub(super) fn build_collinear_edges(
             .reduce(f64::max)
             .unwrap();
         if min_x == max_x || min_y == max_y {
-            return Ok(Vec::new());
+            return empty_packed_edges();
         }
     }
     let clip = normalize_clip(sites, boundary, budget)?;
@@ -3232,17 +3321,24 @@ pub(super) fn build_collinear_edges(
         budget,
     )?;
     let comparison_clip = embedded.clip.clone();
-    let edges = embedded.into_edges().into_line_seqs()?;
-    for edge in &edges {
+    let packed = embedded.into_edges();
+    let EmbeddedEdges::Packed { coords, offsets } = &packed else {
+        return Err(voronoi_error("collinear Voronoi edges are packed chains"));
+    };
+    let ends = offsets.as_slice();
+    for line in 0..ends.len().saturating_sub(1) {
+        let start = ends[line] as usize;
+        let end = ends[line + 1] as usize;
+        let edge = LineSeq::row_view(coords, CoordWindow::from_range(start..end, coords.len()));
         budget.add(edge.len())?;
-        if !Shape::LineString(edge.clone())
+        if !Shape::LineString(edge)
             .difference(&comparison_clip, Strictness::Lenient)?
             .is_empty()
         {
             return Err(embedding_failure());
         }
     }
-    Ok(edges)
+    Ok(packed)
 }
 
 #[cfg(test)]
@@ -3894,6 +3990,173 @@ mod tests {
         );
     }
 
+    #[test]
+    fn packed_separator_column_matches_chain_coordinates() {
+        let (sites, polygon) = separator_fixture();
+        let mut budget = ExpansionBudget::new("test", "packed chains");
+        let packed = build_edges(
+            &sites,
+            VoronoiBoundary::Polygon(&polygon),
+            &mut budget,
+            true,
+        )
+        .unwrap();
+        let (coords, offsets) = packed.clone().into_line_column().unwrap();
+        let lines = packed.into_line_seqs().unwrap();
+        assert!(!lines.is_empty());
+        let ends = offsets.as_slice();
+        assert_eq!(ends.len(), lines.len() + 1);
+        assert_eq!(ends[0], 0);
+        assert_eq!(ends[ends.len() - 1] as usize, coords.len());
+        let mut cursor = 0_usize;
+        for (line, &end) in lines.iter().zip(&ends[1..]) {
+            let end = end as usize;
+            assert_eq!(end - cursor, line.len());
+            for index in 0..line.len() {
+                assert_eq!(coords.point_at(cursor + index).xy(), line.point_at(index).xy());
+            }
+            cursor = end;
+        }
+    }
+
+    #[test]
+    fn coincident_frame_separator_emits_one_packed_chain_and_excludes_frame_only() {
+        let (sites, polygon) = coincident_frame_fixture();
+        let mut budget = ExpansionBudget::new("test", "coincident packed");
+        let lines = build_edges(
+            &sites,
+            VoronoiBoundary::Polygon(&polygon),
+            &mut budget,
+            true,
+        )
+        .unwrap()
+        .into_line_seqs()
+        .unwrap();
+        let bottom = [XY::new(-1.0, 0.0), XY::new(0.5, 0.0)];
+        let matching = lines
+            .iter()
+            .filter(|line| {
+                (0..line.len().saturating_sub(1)).any(|index| {
+                    let a = line.point_at(index).xy();
+                    let b = line.point_at(index + 1).xy();
+                    a == bottom[0] && b == bottom[1] || a == bottom[1] && b == bottom[0]
+                })
+            })
+            .count();
+        assert_eq!(matching, 1);
+        let frame_only = lines.iter().any(|line| {
+            (0..line.len()).all(|index| {
+                let xy = line.point_at(index).xy();
+                (xy.x == -1.0 || xy.x == 0.5 || xy.y == 0.0 || xy.y == 2.0)
+                    && !(xy == bottom[0] || xy == bottom[1] || (xy.y == 0.0 && xy.x > -1.0 && xy.x < 0.5))
+            }) && (0..line.len().saturating_sub(1)).all(|index| {
+                let a = line.point_at(index).xy();
+                let b = line.point_at(index + 1).xy();
+                !(a == bottom[0] && b == bottom[1] || a == bottom[1] && b == bottom[0])
+            })
+        });
+        assert!(!frame_only, "frame-only support appeared as a packed chain");
+    }
+
+    #[test]
+    fn interior_first_separator_order_emits_one_full_chain() {
+        let sites = sites_xy(&[(0.0, -1.0), (0.0, 1.0), (2.0, 0.5)]);
+        let polygon = Polygon::new(
+            closed_ring(&[
+                (-1.0, 0.0),
+                (-0.5, 0.0),
+                (0.0, 0.0),
+                (0.5, 0.0),
+                (0.5, 2.0),
+                (-1.0, 2.0),
+            ]),
+            Vec::new(),
+        );
+        let mut budget = ExpansionBudget::new("test", "interior-first chain");
+        let atoms = node_polygon(&sites, &polygon, &mut budget);
+        let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+        let primal_edges = certified_delaunay(&sites).primal_edges();
+        let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
+        graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
+        let assembled = assemble_edges(&subdivision, &mut budget).unwrap();
+        let separator = [SiteId(0), SiteId(1)];
+        let matching: Vec<_> = assembled
+            .iter()
+            .filter(|chain| chain.separator == separator)
+            .collect();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].edges.len(), 3);
+        assert_eq!(matching[0].vertices.len(), 4);
+        let known = [
+            XY::new(-1.0, 0.0),
+            XY::new(-0.5, 0.0),
+            XY::new(0.0, 0.0),
+            XY::new(0.5, 0.0),
+        ];
+        let round = |vertex: VertexId| {
+            let vertex = &subdivision.vertices[vertex.0 as usize];
+            vertex
+                .fixed_xy
+                .map_or_else(|| vertex.point.round_nearest_even(), Ok)
+                .unwrap()
+        };
+        let assembled_coordinates: Vec<_> = matching[0].vertices.iter().copied().map(round).collect();
+        assert_eq!(assembled_coordinates.as_slice(), known.as_slice());
+        let mut group: Vec<_> = matching[0]
+            .edges
+            .iter()
+            .map(|&edge| (separator, edge))
+            .collect();
+        group.rotate_left(1);
+        let [left, right] = subdivision.edges[group[0].1.0 as usize].endpoints;
+        let mut degree = std::collections::BTreeMap::<VertexId, usize>::new();
+        for (_, edge_id) in &group {
+            for vertex in subdivision.edges[edge_id.0 as usize].endpoints {
+                *degree.entry(vertex).or_default() += 1;
+            }
+        }
+        assert_eq!(degree[&left], 2);
+        assert_eq!(degree[&right], 2);
+        let mut chains = Vec::new();
+        assemble_separator_group(&subdivision, separator, &group, &mut budget, &mut chains).unwrap();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].edges.len(), 3);
+        assert_eq!(chains[0].vertices.len(), 4);
+        let shuffled_coordinates: Vec<_> = chains[0].vertices.iter().copied().map(round).collect();
+        assert_eq!(shuffled_coordinates.as_slice(), known.as_slice());
+    }
+
+    #[test]
+    fn edges_only_embed_still_rejects_colliding_binary64_vertices() {
+        let offset = 1e16;
+        let sites: Vec<_> = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (5.0, 5.0),
+            (2.0, 8.0),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (x, y))| Site {
+            id,
+            point: Point::new_raw_xy(offset + x, offset + y),
+        })
+        .collect();
+        let clip = Polygon::new(rectangle(offset - 1.0, offset - 1.0, offset + 11.0, offset + 11.0), Vec::new());
+        let mut budget = ExpansionBudget::new("test", "edges-only collision");
+        let error = match build_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget, true) {
+            Ok(_) => panic!("colliding exact vertices unexpectedly embedded on the edges-only path"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("no topology-preserving binary64 embedding")
+        );
+    }
+
     fn closed_ring(points: &[(f64, f64)]) -> Ring {
         Ring::closed(
             points
@@ -4230,7 +4493,10 @@ mod tests {
         )]);
         let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
         let edges =
-            build_collinear_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget).unwrap();
+            build_collinear_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget)
+                .unwrap()
+                .into_line_seqs()
+                .unwrap();
         assert_eq!(edges.len(), 4);
         let mut endpoints: Vec<_> = edges
             .iter()
@@ -4283,6 +4549,8 @@ mod tests {
         assert!(
             build_collinear_edges(&sites, VoronoiBoundary::Envelope, &mut budget)
                 .unwrap()
+                .into_line_seqs()
+                .unwrap()
                 .is_empty()
         );
     }
@@ -4298,7 +4566,10 @@ mod tests {
             })
             .collect();
         let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
-        let edges = build_collinear_edges(&sites, VoronoiBoundary::Envelope, &mut budget).unwrap();
+        let edges = build_collinear_edges(&sites, VoronoiBoundary::Envelope, &mut budget)
+            .unwrap()
+            .into_line_seqs()
+            .unwrap();
         assert_eq!(edges.len(), 1);
         let mut endpoints: Vec<_> = edges[0].iter().map(|point| point.xy()).collect();
         endpoints.sort_by(|left, right| left.x.total_cmp(&right.x));
