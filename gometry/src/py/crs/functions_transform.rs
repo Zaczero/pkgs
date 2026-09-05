@@ -844,8 +844,11 @@ fn classify_bounds_shape(
 /// Returns
 /// -------
 /// float or numpy.ndarray
-///     The round-trip error per coordinate; scalar in, scalar out, and
-///     lane inputs return a read-only ``float64`` ``numpy.ndarray``.
+///     Euclidean residual of the raw input columns in their original units
+///     after the out-and-back legs. When Z or T is present the hypot mixes
+///     those column units with X and Y. There is no geodesic distance and no
+///     circular-longitude normalization. Scalar in, scalar out, and lane
+///     inputs return a read-only ``float64`` ``numpy.ndarray``.
 ///
 /// Raises
 /// ------

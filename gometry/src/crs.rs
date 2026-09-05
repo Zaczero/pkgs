@@ -103,9 +103,8 @@ pub(crate) use geodesic::{
 };
 pub(crate) use grids::grid_info;
 use in_core::{
-    InCoreTransform, lonlat_to_web_mercator_xy, transform_in_core_xy_batch,
-    transform_in_core_xy_batch_indexed, try_in_core_transform_with_state, utm_crs,
-    web_mercator_to_lonlat_xy,
+    InCoreTransform, transform_in_core_xy_batch, transform_in_core_xy_batch_indexed,
+    try_in_core_transform_with_state, utm_crs,
 };
 pub(crate) use info::{
     AngularUnit, engine_info_with_state, ensure_same_geodesic_len, factor_columns, factors,

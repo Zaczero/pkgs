@@ -47,6 +47,46 @@ def test_crs_roundtrip_admitted_in_core_pair_scalar_and_zt_batch() -> None:
     assert proj_pipeline['entries'] == 0
 
 
+def test_crs_roundtrip_web_mercator_world_edge_xy_matches_zt() -> None:
+    # WGS 84 ellipsoid a (EPSG:7030) is the Web Mercator sphere radius R.
+    # The projected plane spans one world width 2Rπ. Canonicalize maps +Rπ to
+    # −Rπ, so the Euclidean X residual is that one world width.
+    world_half = 6_378_137.0 * math.pi
+    gm.crs_clear_cache()
+    xy = gm.crs_roundtrip(3857, 4326, world_half, 0.0)
+    gm.crs_clear_cache()
+    z = gm.crs_roundtrip(3857, 4326, world_half, 0.0, 10.0)
+    assert xy == z
+    assert xy == pytest.approx(40075016.68557848, abs=1e-8)
+
+
+def test_crs_roundtrip_web_mercator_xy_records_in_core_engine() -> None:
+    gm.crs_clear_cache()
+    assert gm.crs_roundtrip(4326, 3857, -73.0, 41.0) < 1e-9
+    info = gm.crs_cache_info()
+    assert info['last_transform_engine'] == 'in_core'
+    assert info['transform_invocations'] >= 1
+
+
+def test_crs_roundtrip_empty_web_mercator_clears_engine_keeps_invocations() -> None:
+    gm.crs_clear_cache()
+    gm.crs_transform(4326, 3857, -73.0, 41.0)
+    prior = gm.crs_cache_info()
+    assert prior['last_transform_engine'] is not None
+    invocations = prior['transform_invocations']
+    assert invocations >= 1
+    empty = gm.crs_roundtrip(4326, 3857, [], [])
+    assert len(empty) == 0
+    info = gm.crs_cache_info()
+    assert info['last_transform_engine'] is None
+    assert info['transform_invocations'] == invocations
+
+
+def test_crs_roundtrip_web_mercator_rejects_latitude_outside_domain() -> None:
+    with pytest.raises(gm.TransformError):
+        gm.crs_roundtrip(4326, 3857, 0.0, 90.0)
+
+
 def test_same_crs_unequal_epochs_use_a_real_plan_on_every_transform_surface() -> None:
     """Epoch motion must not be erased by the CRS identity shortcut."""
     source = gm.Point(1_000_000.0, 2_000_000.0, z=3_000_000.0, crs=7789, epoch=2010.0)

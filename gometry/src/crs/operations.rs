@@ -12,9 +12,9 @@ use crate::crs::{
     CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CachedCrsOperations, CrsError,
     OperationInfo, OwnedPj, ProjContext, ProjDirection, ProjObjList, ProjOperationFactoryContext,
     RuntimeState, TransformExecution, TransformOptions, TransformPlan, create_crs_transform_object,
-    cstring, ensure_thread_caches_current, is_wgs84_lonlat, lonlat_to_web_mercator_xy, lru_resolve,
-    normalize_pair, operation_info_from_pj, proj_context_error_message, runtime_state_snapshot,
-    validate_coordinate_lanes, web_mercator_to_lonlat_xy, with_proj_diagnostic_pipeline_at,
+    cstring, ensure_thread_caches_current, lru_resolve, normalize_pair, operation_info_from_pj,
+    proj_context_error_message, runtime_state_snapshot, validate_coordinate_lanes,
+    with_proj_diagnostic_pipeline_at,
 };
 use crate::error::Result;
 use crate::geometry::{REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, simd_indexed_map_f64};
@@ -43,18 +43,6 @@ pub(crate) fn roundtrip_errors(
     };
     options.validate()?;
     let (source, target) = normalize_pair(source, target)?;
-    if options.allows_in_core() && z.is_none() && t.is_none() {
-        if is_wgs84_lonlat(&source) && target == "EPSG:3857" {
-            return roundtrip_web_mercator_errors(x, y, direction, iterations, true)
-                .map(|errors| (errors, TransformExecution::default()))
-                .map_err(|error| CrsError::transform(source, target, error.to_string()));
-        }
-        if source == "EPSG:3857" && is_wgs84_lonlat(&target) {
-            return roundtrip_web_mercator_errors(x, y, direction, iterations, false)
-                .map(|errors| (errors, TransformExecution::default()))
-                .map_err(|error| CrsError::transform(source, target, error.to_string()));
-        }
-    }
     let state = runtime_state_snapshot()?;
     if options.allows_in_core() {
         let forward = TransformPlan::new_with_options_at(
@@ -207,55 +195,6 @@ fn roundtrip_errors_with_transformers(
         y,
         roundtrip_zt.error_lanes(),
     ))
-}
-
-fn roundtrip_web_mercator_errors(
-    x: &[f64],
-    y: &[f64],
-    direction: ProjDirection,
-    iterations: i32,
-    forward_is_lonlat_to_web: bool,
-) -> Result<Vec<f64>> {
-    let mut roundtrip_x = x.to_vec();
-    let mut roundtrip_y = y.to_vec();
-    for _ in 0..iterations {
-        let first_is_lonlat_to_web = match direction {
-            ProjDirection::Forward => forward_is_lonlat_to_web,
-            ProjDirection::Inverse => !forward_is_lonlat_to_web,
-        };
-        transform_web_mercator_coordinates(
-            &mut roundtrip_x,
-            &mut roundtrip_y,
-            first_is_lonlat_to_web,
-        )?;
-        transform_web_mercator_coordinates(
-            &mut roundtrip_x,
-            &mut roundtrip_y,
-            !first_is_lonlat_to_web,
-        )?;
-    }
-    let count = roundtrip_x.len();
-    let mut errors = vec![0.0; count];
-    let (rtx, _) = roundtrip_x.as_chunks::<REDUCE_LANES>();
-    let (rty, _) = roundtrip_y.as_chunks::<REDUCE_LANES>();
-    let (ox, _) = x.as_chunks::<REDUCE_LANES>();
-    let (oy, _) = y.as_chunks::<REDUCE_LANES>();
-    simd_indexed_map_f64(
-        count,
-        &mut errors,
-        |index| {
-            let dx = roundtrip_x[index] - x[index];
-            let dy = roundtrip_y[index] - y[index];
-            roundtrip_norm(dx, dy, 0.0, 0.0)
-        },
-        |start| {
-            let chunk = start / REDUCE_LANES;
-            let dx = ReduceSimd::from_array(rtx[chunk]) - ReduceSimd::from_array(ox[chunk]);
-            let dy = ReduceSimd::from_array(rty[chunk]) - ReduceSimd::from_array(oy[chunk]);
-            roundtrip_norm_lanes(dx, dy, ReduceSimd::splat(0.0), ReduceSimd::splat(0.0))
-        },
-    );
-    Ok(errors)
 }
 
 pub(crate) fn roundtrip_error_distances(
@@ -506,23 +445,6 @@ fn roundtrip_error_at(
         .zip(roundtrip_t)
         .map_or(0.0, |(original, result)| result[index] - original[index]);
     roundtrip_norm(dx, dy, dz, dt)
-}
-
-fn transform_web_mercator_coordinates(
-    x: &mut [f64],
-    y: &mut [f64],
-    lonlat_to_web: bool,
-) -> Result<()> {
-    for (x, y) in x.iter_mut().zip(y.iter_mut()) {
-        let (next_x, next_y) = if lonlat_to_web {
-            lonlat_to_web_mercator_xy(*x, *y)?
-        } else {
-            web_mercator_to_lonlat_xy(*x, *y)
-        };
-        *x = next_x;
-        *y = next_y;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

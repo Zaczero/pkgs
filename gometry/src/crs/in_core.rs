@@ -29,14 +29,6 @@ use crate::crs::local::UtmZone as LocalUtmZone;
 use crate::crs::{TransformFailure, parse_epsg};
 use crate::error::Result;
 
-pub(super) fn lonlat_to_web_mercator_xy(lon: f64, lat: f64) -> Result<(f64, f64)> {
-    webmerc::lonlat_to_web_mercator_xy(lon, lat)
-}
-
-pub(super) fn web_mercator_to_lonlat_xy(x: f64, y: f64) -> (f64, f64) {
-    webmerc::web_mercator_to_lonlat_xy(x, y)
-}
-
 #[derive(Clone, Copy, Debug)]
 pub(super) enum ProjSetup {
     WebMercator(Projected<webmerc::WebMerc>),

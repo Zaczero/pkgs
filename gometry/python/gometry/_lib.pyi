@@ -10304,6 +10304,10 @@ class CRS:
     def to_cf(self, *, wkt_version: WktVersion = 'WKT2_2019') -> CrsCfInfo:
         """CF (Climate and Forecast) grid-mapping attributes as a dict.
 
+        Projected ``units`` is ``m``, ``ft``, or ``us-ft`` when every horizontal
+        axis admits the same token. Otherwise the reconstructible grid mapping
+        and ``units`` are omitted; ``crs_wkt`` still carries the full CRS.
+
         Parameters
         ----------
         wkt_version : str, optional
@@ -18241,8 +18245,11 @@ def crs_roundtrip(
     Returns
     -------
     float or numpy.ndarray
-        The round-trip error per coordinate; scalar in, scalar out, and
-        lane inputs return a read-only ``float64`` ``numpy.ndarray``.
+        Euclidean residual of the raw input columns in their original units
+        after the out-and-back legs. When Z or T is present the hypot mixes
+        those column units with X and Y. There is no geodesic distance and no
+        circular-longitude normalization. Scalar in, scalar out, and lane
+        inputs return a read-only ``float64`` ``numpy.ndarray``.
 
     Raises
     ------
