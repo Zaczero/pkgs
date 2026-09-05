@@ -221,6 +221,10 @@ impl PyCrs {
 
     /// CF (Climate and Forecast) grid-mapping attributes as a dict.
     ///
+    /// Projected ``units`` is ``m``, ``ft``, or ``us-ft`` when every horizontal
+    /// axis admits the same token. Otherwise the reconstructible grid mapping
+    /// and ``units`` are omitted; ``crs_wkt`` still carries the full CRS.
+    ///
     /// Parameters
     /// ----------
     /// wkt_version : str, optional

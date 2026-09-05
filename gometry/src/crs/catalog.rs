@@ -10,6 +10,16 @@ use crate::error::Result;
 /// Maximum CRS search result limit accepted by the search API.
 pub(crate) const CRS_SEARCH_MAX_LIMIT: usize = 1_000;
 
+/// Metres per CF projected linear-unit token `m` (EPSG:9001).
+pub(crate) const CF_LINEAR_METRE: f64 = 1.0;
+/// Metres per CF projected linear-unit token `ft` (EPSG:9002, international foot).
+pub(crate) const CF_LINEAR_INTERNATIONAL_FOOT: f64 = 0.3048;
+/// Metres per CF projected linear-unit token `us-ft`.
+///
+/// EPSG:9003 / PROJ `+units=us-ft` is the ratio 1200/3937. Shared by CF export
+/// admission and CF parse false-easting scale.
+pub(crate) const CF_LINEAR_US_SURVEY_FOOT: f64 = 1200.0 / 3937.0;
+
 pub(crate) fn validate_search_limit(limit: i64) -> Result<NonZeroUsize> {
     if !(1..=CRS_SEARCH_MAX_LIMIT as i64).contains(&limit) {
         return Err(CrsError::invalid(format!(
@@ -38,8 +48,9 @@ pub(crate) use export::{
 #[cfg(test)]
 pub(crate) use identify::authority_matches;
 pub(crate) use identify::{
-    non_deprecated, search, to_2d, to_3d, to_authority, to_authority_with_state, to_cf,
-    to_epsg, identify_with_state};
+    identify_with_state, non_deprecated, search, to_2d, to_3d, to_authority,
+    to_authority_with_state, to_cf, to_epsg,
+};
 pub(crate) use lookup::{
     authorities_with_state, catalog, catalog_with_state, celestial_bodies_with_state, codes,
     geoid_models,

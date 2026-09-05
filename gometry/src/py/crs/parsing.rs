@@ -1,9 +1,9 @@
-use crate::py::errors::InvalidGeometryError;
 use crate::py::crs::{
     Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
     PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _,
     PyTypeError, crs, crs_arc, finite_f64_required,
 };
+use crate::py::errors::InvalidGeometryError;
 // ---- CRS/CF input parsing (relocated from the crate root; consumed here and
 // by the crate-central `parse_crs`) ----
 
@@ -473,13 +473,13 @@ fn cf_standard_parallel_values(value: &Bound<'_, PyAny>, maximum: usize) -> PyRe
 /// the projected CRS is foot-based. Defaults to metres when omitted.
 fn cf_projected_units(dict: &Bound<'_, PyDict>) -> PyResult<(&'static str, f64)> {
     let Some(text) = dict_string(dict, "units")?.or(dict_string(dict, "proj_units")?) else {
-        return Ok(("m", 1.0));
+        return Ok(("m", crs::CF_LINEAR_METRE));
     };
     match text.as_str() {
-        "m" | "metre" | "meter" | "metres" | "meters" => Ok(("m", 1.0)),
-        "ft" | "foot" | "feet" => Ok(("ft", 0.3048)),
+        "m" | "metre" | "meter" | "metres" | "meters" => Ok(("m", crs::CF_LINEAR_METRE)),
+        "ft" | "foot" | "feet" => Ok(("ft", crs::CF_LINEAR_INTERNATIONAL_FOOT)),
         "us-ft" | "US survey foot" | "us_survey_foot" | "ftUS" => {
-            Ok(("us-ft", 0.304_800_609_601_219))
+            Ok(("us-ft", crs::CF_LINEAR_US_SURVEY_FOOT))
         },
         other => Err(CRSError::new_err(format!(
             "unsupported CF projected units {other:?}; expected m, ft, or us-ft"

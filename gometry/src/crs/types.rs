@@ -292,13 +292,41 @@ pub(crate) struct PrimeMeridianInfo {
     pub unit_conversion_factor: f64,
 }
 
-#[derive(Debug, Clone, IntoPyObject)]
+#[derive(Debug, Clone)]
 pub(crate) struct AxisInfo {
     pub name: Option<String>,
     pub abbreviation: Option<String>,
     pub direction: Option<String>,
     pub unit_name: Option<String>,
     pub unit_conversion_factor: f64,
+    /// Catalog identity from `proj_cs_get_axis_info`. Not part of `CrsAxisInfo`.
+    pub(crate) unit_authority: Option<String>,
+    pub(crate) unit_code: Option<String>,
+}
+
+impl<'py> IntoPyObject<'py> for AxisInfo {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let Self {
+            name,
+            abbreviation,
+            direction,
+            unit_name,
+            unit_conversion_factor,
+            unit_authority: _,
+            unit_code: _,
+        } = self;
+        let dict = PyDict::new(py);
+        dict.set_item("name", name)?;
+        dict.set_item("abbreviation", abbreviation)?;
+        dict.set_item("direction", direction)?;
+        dict.set_item("unit_name", unit_name)?;
+        dict.set_item("unit_conversion_factor", unit_conversion_factor)?;
+        Ok(dict)
+    }
 }
 
 #[derive(Debug, Clone, IntoPyObject)]

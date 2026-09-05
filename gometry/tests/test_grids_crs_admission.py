@@ -378,7 +378,7 @@ def test_c9_cf_projected_units_from_metadata():
     degrees. PROJ may identify the rebuilt definition (e.g. EPSG:10913).
     """
     cf = dict(gm.CRS(2227).to_cf())
-    assert cf.get('units') in ('us-ft', 'ft')
+    assert cf.get('units') == 'us-ft'
     del cf['crs_wkt']
     rebuilt = gm.CRS(cf)
     proj = rebuilt.to_proj()

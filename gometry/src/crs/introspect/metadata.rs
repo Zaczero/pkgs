@@ -154,6 +154,8 @@ pub(crate) fn axes(context: &ProjContext, object: &OwnedPj) -> Vec<AxisInfo> {
                 direction: proj_c_string!(direction),
                 unit_name: proj_c_string!(unit_name),
                 unit_conversion_factor,
+                unit_authority: proj_c_string!(unit_auth_name),
+                unit_code: proj_c_string!(unit_code),
             });
         }
     }

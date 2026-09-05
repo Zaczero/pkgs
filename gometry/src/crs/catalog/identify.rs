@@ -1,14 +1,15 @@
-use crate::crs::catalog::export;
 use std::ptr;
 
 use crate::crs::catalog::{
+    CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT,
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
     add_cf_lambert_conformal_conic_parameters, add_cf_lambert_cylindrical_equal_area_parameters,
     add_cf_mercator_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cached_export, is_operation_method, is_transverse_mercator,
+    add_cf_projection_parameters, cached_export, export, is_operation_method,
+    is_transverse_mercator,
 };
 use crate::crs::{
-    AuthorityObjectInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
+    AuthorityObjectInfo, AxisInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
     CRS_SEARCH_CACHE, CRS_SEARCH_CACHE_CAPACITY, CachedAuthorityObjects, CachedCrsAuthorityMatches,
     CachedCrsSearch, CfValue, Confidence, CrsError, CrsExportKind, CrsInfo, CrsObjectKind,
     CrsSearchOptions, CrsWktOptions, IdentifyCandidate, NON_DEPRECATED_CACHE,
@@ -19,22 +20,82 @@ use crate::crs::{
 };
 use crate::error::Result;
 
-/// Map PROJ axis unit metadata to a CF/`+units=` token for projected CRS.
-fn cf_proj_units_token(unit_name: &str, to_metre: f64) -> String {
-    let lower = unit_name.to_ascii_lowercase();
-    if lower.contains("us survey")
-        || lower.contains("u.s. survey")
-        || (to_metre - 0.304_800_609_601_219).abs() < 1e-12
-    {
-        "us-ft".to_owned()
-    } else if lower.contains("foot") || lower.contains("feet") || (to_metre - 0.3048).abs() < 1e-9 {
-        "ft".to_owned()
-    } else if (to_metre - 1.0).abs() < 1e-12 || lower.contains("metr") {
-        "m".to_owned()
-    } else {
-        // Unknown linear unit: emit the native name so parse can reject or map.
-        unit_name.to_owned()
+/// ULP allowance for identified EPSG:9003 only.
+///
+/// `1200/3937` is the definition (`pj_units[].factor`, `+units=us-ft`). The
+/// EPSG SQL REAL `3.04800609601219241184e-01` sits 1 ULP from that ratio;
+/// the 15-digit decimal `"0.304800609601219"` (WKT/PROJJSON round-trip)
+/// sits 3 ULP away. The bound is the maximum distance from the ratio along
+/// those routes, not an endpoint-to-endpoint span. Unidentified custom
+/// factors must match the ratio exactly.
+const US_SURVEY_FOOT_IDENTIFIED_MAX_ULP: u64 = 3;
+
+fn cf_axis_is_horizontal(axis: &AxisInfo) -> bool {
+    match axis.direction.as_deref() {
+        Some(direction)
+            if direction.eq_ignore_ascii_case("up")
+                || direction.eq_ignore_ascii_case("down")
+                || direction.eq_ignore_ascii_case("future")
+                || direction.eq_ignore_ascii_case("past")
+                || direction.eq_ignore_ascii_case("geocentricz") =>
+        {
+            false
+        },
+        _ => true,
     }
+}
+
+fn us_survey_foot_identified_consistent(factor: f64) -> bool {
+    factor
+        .to_bits()
+        .abs_diff(CF_LINEAR_US_SURVEY_FOOT.to_bits())
+        <= US_SURVEY_FOOT_IDENTIFIED_MAX_ULP
+}
+
+/// Admit a CF/`+units=` token from axis identity and conversion factor.
+///
+/// Names never participate. Invalid factors are rejected before ULP distance.
+fn cf_proj_units_token(axis: &AxisInfo) -> Option<&'static str> {
+    let factor = axis.unit_conversion_factor;
+    if !factor.is_finite() || factor <= 0.0 {
+        return None;
+    }
+    let identified_epsg = axis.unit_authority.as_deref() == Some("EPSG");
+    match (identified_epsg, axis.unit_code.as_deref()) {
+        (true, Some("9001")) if factor == CF_LINEAR_METRE => return Some("m"),
+        (true, Some("9002")) if factor == CF_LINEAR_INTERNATIONAL_FOOT => return Some("ft"),
+        (true, Some("9003")) if us_survey_foot_identified_consistent(factor) => {
+            return Some("us-ft");
+        },
+        (true, Some("9001" | "9002" | "9003")) => return None,
+        _ => {},
+    }
+    if factor == CF_LINEAR_METRE {
+        Some("m")
+    } else if factor == CF_LINEAR_INTERNATIONAL_FOOT {
+        Some("ft")
+    } else if factor == CF_LINEAR_US_SURVEY_FOOT {
+        Some("us-ft")
+    } else {
+        None
+    }
+}
+
+/// Same admitted token on every horizontal axis, or `None` (omit mapping).
+fn projected_cf_units_token(info: &CrsInfo) -> Option<&'static str> {
+    let mut admitted = None;
+    for axis in &info.axes {
+        if !cf_axis_is_horizontal(axis) {
+            continue;
+        }
+        let token = cf_proj_units_token(axis)?;
+        match admitted {
+            None => admitted = Some(token),
+            Some(previous) if previous == token => {},
+            Some(_) => return None,
+        }
+    }
+    admitted
 }
 
 pub(crate) fn identify_with_state(
@@ -174,12 +235,8 @@ fn to_cf_with_state(
             "CRS.to_cf() does not support compound CRS {normalized}; convert components separately"
         )));
     }
-    let wkt = export::to_wkt_with_options_at(
-        &normalized,
-        wkt_version,
-        &CrsWktOptions::default(),
-        state,
-    )?;
+    let wkt =
+        export::to_wkt_with_options_at(&normalized, wkt_version, &CrsWktOptions::default(), state)?;
     let mut items = Vec::with_capacity(16);
     items.push(("crs_wkt", CfValue::String(wkt)));
     if let Some(ellipsoid) = &info.ellipsoid {
@@ -208,15 +265,23 @@ fn to_cf_with_state(
             items.push(("prime_meridian_name", CfValue::String(name.clone())));
         }
     }
-    push_cf_crs_names_and_units(&mut items, &info);
+    let projected_units = (info.kind == "projected")
+        .then(|| projected_cf_units_token(&info))
+        .flatten();
+    push_cf_crs_names(&mut items, &info);
+    if let Some(token) = projected_units {
+        items.push(("units", CfValue::String(token.to_owned())));
+    }
     if let Some(name) = info.datum.as_ref().and_then(|datum| datum.name.clone()) {
         items.push(("horizontal_datum_name", CfValue::String(name)));
     }
-    push_cf_grid_mapping(&mut items, &info);
+    if info.kind != "projected" || projected_units.is_some() {
+        push_cf_grid_mapping(&mut items, &info);
+    }
     Ok(items)
 }
 
-fn push_cf_crs_names_and_units(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo) {
+fn push_cf_crs_names(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo) {
     if matches!(info.kind, "geographic" | "geographic_2d" | "geographic_3d") {
         if let Some(name) = &info.name {
             items.push(("geographic_crs_name", CfValue::String(name.clone())));
@@ -231,15 +296,6 @@ fn push_cf_crs_names_and_units(items: &mut Vec<(&'static str, CfValue)>, info: &
     }
     if let Some(name) = &info.name {
         items.push(("projected_crs_name", CfValue::String(name.clone())));
-    }
-    // Native horizontal linear unit — CF parse must not hard-code metres.
-    if let Some(axis) = info.axes.first()
-        && let Some(unit_name) = axis.unit_name.as_deref()
-    {
-        items.push((
-            "units",
-            CfValue::String(cf_proj_units_token(unit_name, axis.unit_conversion_factor)),
-        ));
     }
 }
 
@@ -410,4 +466,144 @@ fn search_uncached(
         }
         Ok(items)
     })?
+}
+
+#[cfg(test)]
+mod unit_token_tests {
+    use super::{AxisInfo, cf_proj_units_token};
+
+    const METRE: f64 = 1.0;
+    const INTERNATIONAL_FOOT: f64 = 0.3048;
+    const US_SURVEY_FOOT: f64 = 1200.0 / 3937.0;
+    /// EPSG SQL REAL for 9003 (`unit_of_measure.sql`).
+    const US_SURVEY_FOOT_SQL: f64 = 3.048_006_096_012_192_411_84e-1;
+    /// 15-digit decimal used by WKT/PROJJSON round-trip of 9003.
+    const US_SURVEY_FOOT_DECIMAL15: f64 = 0.304_800_609_601_219;
+
+    fn axis(factor: f64, authority: Option<&str>, code: Option<&str>, direction: &str) -> AxisInfo {
+        AxisInfo {
+            name: Some("Easting".to_owned()),
+            abbreviation: Some("E".to_owned()),
+            direction: Some(direction.to_owned()),
+            unit_name: Some("banana".to_owned()),
+            unit_conversion_factor: factor,
+            unit_authority: authority.map(str::to_owned),
+            unit_code: code.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn identified_epsg_units_ignore_names() {
+        assert_eq!(
+            cf_proj_units_token(&axis(METRE, Some("EPSG"), Some("9001"), "east")),
+            Some("m")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(
+                INTERNATIONAL_FOOT,
+                Some("EPSG"),
+                Some("9002"),
+                "east"
+            )),
+            Some("ft")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(US_SURVEY_FOOT, Some("EPSG"), Some("9003"), "east")),
+            Some("us-ft")
+        );
+    }
+
+    #[test]
+    fn identified_us_survey_foot_admits_sql_and_decimal_routes() {
+        assert_eq!(
+            US_SURVEY_FOOT_SQL
+                .to_bits()
+                .abs_diff(US_SURVEY_FOOT.to_bits()),
+            1
+        );
+        assert_eq!(
+            US_SURVEY_FOOT_DECIMAL15
+                .to_bits()
+                .abs_diff(US_SURVEY_FOOT.to_bits()),
+            3
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(
+                US_SURVEY_FOOT_SQL,
+                Some("EPSG"),
+                Some("9003"),
+                "east"
+            )),
+            Some("us-ft")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(
+                US_SURVEY_FOOT_DECIMAL15,
+                Some("EPSG"),
+                Some("9003"),
+                "east"
+            )),
+            Some("us-ft")
+        );
+        let beyond = f64::from_bits(US_SURVEY_FOOT.to_bits() + 4);
+        assert_eq!(
+            cf_proj_units_token(&axis(beyond, Some("EPSG"), Some("9003"), "east")),
+            None
+        );
+    }
+
+    #[test]
+    fn unidentified_factors_are_exact_and_ignore_names() {
+        assert_eq!(
+            cf_proj_units_token(&axis(METRE, None, None, "east")),
+            Some("m")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(INTERNATIONAL_FOOT, None, None, "east")),
+            Some("ft")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(US_SURVEY_FOOT, None, None, "east")),
+            Some("us-ft")
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(1.000_000_000_000_5, None, None, "east")),
+            None
+        );
+        assert_eq!(cf_proj_units_token(&axis(2.5, None, None, "east")), None);
+        assert_eq!(
+            cf_proj_units_token(&axis(f64::NAN, None, None, "east")),
+            None
+        );
+        assert_eq!(cf_proj_units_token(&axis(0.0, None, None, "east")), None);
+        assert_eq!(
+            cf_proj_units_token(&axis(-1.0, Some("EPSG"), Some("9001"), "east")),
+            None
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(US_SURVEY_FOOT_SQL, None, None, "east")),
+            None
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(US_SURVEY_FOOT_DECIMAL15, None, None, "east")),
+            None
+        );
+    }
+
+    #[test]
+    fn inconsistent_identified_code_is_rejected() {
+        assert_eq!(
+            cf_proj_units_token(&axis(2.5, Some("EPSG"), Some("9003"), "east")),
+            None
+        );
+        assert_eq!(
+            cf_proj_units_token(&axis(
+                INTERNATIONAL_FOOT,
+                Some("EPSG"),
+                Some("9001"),
+                "east"
+            )),
+            None
+        );
+    }
 }

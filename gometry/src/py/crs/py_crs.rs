@@ -98,7 +98,10 @@ impl PyCrs {
 
     /// Generation-stamped ``identify()`` for this receiver: a PROJ database
     /// query per distinct authority filter, then a clone of the answer.
-    pub(crate) fn cached_identify(&self, authority: Option<&str>) -> PyResult<Vec<crs::IdentifyCandidate>> {
+    pub(crate) fn cached_identify(
+        &self,
+        authority: Option<&str>,
+    ) -> PyResult<Vec<crs::IdentifyCandidate>> {
         let state = crs::runtime_state_snapshot()?;
         let generation = state.generation;
         {
@@ -230,11 +233,15 @@ impl HeapSize for crs::AxisInfo {
             direction,
             unit_name,
             unit_conversion_factor: _unit_conversion_factor,
+            unit_authority,
+            unit_code,
         } = self;
         name.heap_bytes()
             + abbreviation.heap_bytes()
             + direction.heap_bytes()
             + unit_name.heap_bytes()
+            + unit_authority.heap_bytes()
+            + unit_code.heap_bytes()
     }
 }
 
