@@ -1073,39 +1073,38 @@ fn build_primitives(
     let dual_count = primitives.len().saturating_sub(dual_start);
     let pair_count = dual_count.saturating_mul(clip_count.saturating_add(4));
     budget.add(pair_count)?;
-    let mut event_pairs = Vec::new();
-    reserve_exact(&mut event_pairs, pair_count)?;
     for dual in dual_start..primitives.len() {
-        event_pairs.extend((4..dual_start).map(|clip| (dual, clip, false)));
-        event_pairs.extend((0..4).map(|frame| (dual, frame, true)));
-    }
-    for (left, right, dual_frame) in event_pairs {
-        match exact::segment_intersection(
-            &primitives[left].start,
-            &primitives[left].end,
-            &primitives[right].start,
-            &primitives[right].end,
-        ) {
-            exact::SegmentIntersection::None => {},
-            exact::SegmentIntersection::Point(point) => {
-                if dual_frame {
-                    if ![&primitives[left].start, &primitives[left].end]
-                        .iter()
-                        .any(|endpoint| endpoint.same_position(&point))
-                    {
-                        continue;
+        for (left, right, dual_frame) in (4..dual_start)
+            .map(|clip| (dual, clip, false))
+            .chain((0..4).map(|frame| (dual, frame, true)))
+        {
+            match exact::segment_intersection(
+                &primitives[left].start,
+                &primitives[left].end,
+                &primitives[right].start,
+                &primitives[right].end,
+            ) {
+                exact::SegmentIntersection::None => {},
+                exact::SegmentIntersection::Point(point) => {
+                    if dual_frame {
+                        if ![&primitives[left].start, &primitives[left].end]
+                            .iter()
+                            .any(|endpoint| endpoint.same_position(&point))
+                        {
+                            continue;
+                        }
                     }
-                }
-                budgeted_try_push(&mut primitives[left].events, point.clone(), budget)?;
-                budgeted_try_push(&mut primitives[right].events, point, budget)?;
-            },
-            exact::SegmentIntersection::Overlap { start, end } => {
-                budget.add(4)?;
-                reserve_exact(&mut primitives[left].events, 2)?;
-                primitives[left].events.extend([start.clone(), end.clone()]);
-                reserve_exact(&mut primitives[right].events, 2)?;
-                primitives[right].events.extend([start, end]);
-            },
+                    budgeted_try_push(&mut primitives[left].events, point.clone(), budget)?;
+                    budgeted_try_push(&mut primitives[right].events, point, budget)?;
+                },
+                exact::SegmentIntersection::Overlap { start, end } => {
+                    budget.add(4)?;
+                    reserve_exact(&mut primitives[left].events, 2)?;
+                    primitives[left].events.extend([start.clone(), end.clone()]);
+                    reserve_exact(&mut primitives[right].events, 2)?;
+                    primitives[right].events.extend([start, end]);
+                },
+            }
         }
     }
     Ok(primitives)
