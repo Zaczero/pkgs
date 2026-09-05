@@ -516,7 +516,10 @@ derivable and drop only the axis that cannot be sourced:
 
 - Operations whose output vertices are **copied from input vertices** preserve Z/M:
   [`simplify`][gometry.Geometry.simplify], [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], and
-  the triangulations keep every surviving vertex's ordinates.
+  the triangulations keep every surviving vertex's ordinates. The geometric XY
+  hull is independent of input point order (±0.0 compares as the same ordinate).
+  When several input vertices share an XY position, hulls copy the first vertex
+  in storage order, including its Z/M and signed-zero spelling.
 - Operations whose new vertices are **resolvable against the input** — overlay,
   [`clip_by_rect`][gometry.Geometry.clip_by_rect], linear referencing — interpolate Z/M along source segments. If
   an axis has a genuinely unsourceable output vertex (such as a clip-rectangle

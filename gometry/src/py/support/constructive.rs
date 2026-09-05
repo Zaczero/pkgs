@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original,
-    shape_from_open_hull, smallest_enclosing_circle,
+    GeodesicMetric as _, Point, PointKey,
+    VertexProvenance, emit_from_original, geometric_xy_cmp, shape_from_open_hull,
+    smallest_enclosing_circle,
 };
 use crate::py::support::{
     Bound, Crs, Frame, FromPyObject, Polygon, PolygonizeFull, Py, PyAny, PyAnyMethods as _, PyErr,
@@ -322,9 +323,7 @@ pub(crate) fn metric_concave_hull(
                 if pairs.is_empty() {
                     return Ok(Vec::new());
                 }
-                pairs.sort_unstable_by(|(left, _), (right, _)| {
-                    left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
-                });
+                pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
                 let mut projected_points = Vec::new();
                 crate::boundary::try_reserve_vec(&mut projected_points, pairs.len())?;
                 for &(point, _) in &pairs {

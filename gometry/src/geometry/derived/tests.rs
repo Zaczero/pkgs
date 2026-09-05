@@ -1,6 +1,15 @@
+use std::cmp::Ordering;
+
 use crate::geometry::derived::concave::point_xy_cmp;
 use crate::geometry::derived::native_concave_hull;
-use crate::geometry::{CoordSeq, LineSeq, Point, Shape, empty_geometry};
+use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Point, Shape, ZOrdinate, empty_geometry};
+
+fn hull_vertices(points: &[Point]) -> Vec<Point> {
+    super::monotone_chain_hull(points)
+        .into_iter()
+        .map(|index| points[index])
+        .collect()
+}
 
 fn minimum_area_rectangle_area(hull: &[Point]) -> f64 {
     let ring = super::minimum_area_rectangle(hull).expect("finite rectangle");
@@ -19,7 +28,7 @@ fn minimum_area_rectangle_axis_aligned_square() {
         point(4.0, 4.0),
         point(0.0, 4.0),
     ];
-    let hull = super::monotone_chain_hull(&square);
+    let hull = hull_vertices(&square);
     assert!((minimum_area_rectangle_area(&hull) - 16.0).abs() <= 1.0e-12);
 }
 
@@ -27,8 +36,8 @@ fn minimum_area_rectangle_axis_aligned_square() {
 fn minimum_area_rectangle_equilateral_triangle() {
     let side = 4.0;
     let height = side * 3.0_f64.sqrt() / 2.0;
-    let hull =
-        super::monotone_chain_hull(&[point(0.0, 0.0), point(side, 0.0), point(side / 2.0, height)]);
+    let points = [point(0.0, 0.0), point(side, 0.0), point(side / 2.0, height)];
+    let hull = hull_vertices(&points);
     assert!((minimum_area_rectangle_area(&hull) - side * height).abs() <= 1.0e-9);
 }
 
@@ -44,7 +53,7 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
     let rectangle = multipoint
         .minimum_rotated_rectangle()
         .expect("minimum rotated rectangle");
-    let hull = super::monotone_chain_hull(&points);
+    let hull = hull_vertices(&points);
     let expected_area = minimum_area_rectangle_area(&hull);
     assert!((rectangle.area() - expected_area).abs() <= 1.0e-12);
     assert!(expected_area > 0.0);
@@ -52,6 +61,17 @@ fn minimum_rotated_rectangle_multipoint_matches_hull_rectangle() {
 
 fn point(x: f64, y: f64) -> Point {
     Point::new_raw_xy(x, y)
+}
+
+fn point_z(x: f64, y: f64, z: f64) -> Point {
+    Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(None)).unwrap()
+}
+
+fn origin_on(hull: &Shape) -> Point {
+    hull.points_vec()
+        .into_iter()
+        .find(|point| point.x == 0.0 && point.y == 0.0)
+        .expect("hull contains the origin")
 }
 
 fn hull_points() -> Vec<Point> {
@@ -77,6 +97,189 @@ fn convex_hull_dedups_signed_zero_duplicates() {
     let hull = multipoint(&points).convex_hull().expect("convex hull");
     assert!(hull.equals(&Shape::Point(point(0.0, 0.0))));
     assert!(!matches!(hull, Shape::LineString(_)));
+}
+
+#[test]
+fn convex_hull_copies_first_seen_vertex_at_duplicate_xy() {
+    let points = vec![
+        point_z(0.0, 0.0, 10.0),
+        point_z(1.0, 0.0, 20.0),
+        point_z(0.0, 1.0, 30.0),
+        point_z(0.0, 0.0, 99.0),
+    ];
+    let hull = multipoint(&points).convex_hull().expect("convex hull");
+    assert!(hull.has_z());
+    let origin = origin_on(&hull);
+    assert_eq!(origin.z(), Some(10.0));
+    assert_eq!(origin.x.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn geometric_xy_cmp_equates_signed_zeros() {
+    assert_eq!(
+        super::geometric_xy_cmp(point(-0.0, 1.0), point(0.0, 1.0)),
+        Ordering::Equal
+    );
+    assert!(super::geometric_xy_cmp(point(-0.0, 0.0), point(0.0, 1.0)).is_lt());
+}
+
+fn mixed_signed_zero_rectangle() -> Vec<Point> {
+    vec![
+        point(-0.0, 1.0),
+        point(0.0, 0.0),
+        point(1.0, 0.0),
+        point(1.0, 2.0),
+        point(-0.0, 2.0),
+    ]
+}
+
+fn assert_open_hull_is_mixed_zero_rectangle(hull: &Shape) {
+    let verts = hull.points_vec();
+    let open = &verts[..verts.len() - 1];
+    assert_eq!(open.len(), 4);
+    assert!(
+        open.iter().all(|point| !(point.x == 0.0 && point.y == 1.0)),
+        "collinear midpoint must not survive the strict hull"
+    );
+    let origin = open
+        .iter()
+        .find(|point| point.x == 0.0 && point.y == 0.0)
+        .expect("bottom-left");
+    assert_eq!(origin.x.to_bits(), 0.0_f64.to_bits());
+    let top_left = open
+        .iter()
+        .find(|point| point.x == 0.0 && point.y == 2.0)
+        .expect("top-left");
+    assert_eq!(top_left.x.to_bits(), (-0.0_f64).to_bits());
+}
+
+#[test]
+fn convex_hull_mixed_signed_zero_rectangle_drops_collinear_midpoint() {
+    let hull = multipoint(&mixed_signed_zero_rectangle())
+        .convex_hull()
+        .expect("convex hull");
+    assert_open_hull_is_mixed_zero_rectangle(&hull);
+}
+
+fn open_hull_contains(hull: &Shape, expected: Point) -> bool {
+    let verts = hull.points_vec();
+    let open = &verts[..verts.len() - 1];
+    open.iter().any(|point| {
+        point.x.to_bits() == expected.x.to_bits()
+            && point.y.to_bits() == expected.y.to_bits()
+            && point.z() == expected.z()
+            && point.m() == expected.m()
+    })
+}
+
+#[test]
+fn concave_hull_uniform_zero_rectangle_keeps_collinear_edge_site() {
+    let midpoint = point_z(0.0, 1.0, 50.0);
+    let points = vec![
+        point_z(0.0, 0.0, 10.0),
+        point_z(1.0, 0.0, 20.0),
+        point_z(1.0, 2.0, 30.0),
+        point_z(0.0, 2.0, 40.0),
+        midpoint,
+    ];
+    let hull = multipoint(&points)
+        .concave_hull(10.0, 0.0)
+        .expect("concave hull");
+    assert!(hull.has_z());
+    assert!(open_hull_contains(&hull, midpoint));
+}
+
+#[test]
+fn concave_hull_mixed_signed_zero_rectangle_keeps_collinear_edge_site() {
+    let midpoint =
+        Point::new_axes(-0.0, 1.0, ZOrdinate(Some(50.0)), MOrdinate(Some(5.0))).unwrap();
+    let points = vec![
+        midpoint,
+        Point::new_axes(0.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(1.0))).unwrap(),
+        Point::new_axes(1.0, 0.0, ZOrdinate(Some(20.0)), MOrdinate(Some(2.0))).unwrap(),
+        Point::new_axes(1.0, 2.0, ZOrdinate(Some(30.0)), MOrdinate(Some(3.0))).unwrap(),
+        Point::new_axes(-0.0, 2.0, ZOrdinate(Some(40.0)), MOrdinate(Some(4.0))).unwrap(),
+    ];
+    let hull = multipoint(&points)
+        .concave_hull(10.0, 0.0)
+        .expect("concave hull");
+    assert!(hull.has_z());
+    assert!(hull.has_m());
+    assert!(open_hull_contains(&hull, midpoint));
+}
+
+#[test]
+fn convex_hull_transposed_signed_zero_collinear_drops_midpoint() {
+    let points = vec![
+        point(0.0, -0.0),
+        point(0.0, 1.0),
+        point(2.0, 1.0),
+        point(2.0, 0.0),
+        point(1.0, -0.0),
+    ];
+    let hull = multipoint(&points).convex_hull().expect("convex hull");
+    let verts = hull.points_vec();
+    let open = &verts[..verts.len() - 1];
+    assert_eq!(open.len(), 4);
+    assert!(open.iter().all(|point| !(point.x == 1.0 && point.y == 0.0)));
+}
+
+#[test]
+fn convex_hull_mixed_signed_zero_keeps_first_seen_zm() {
+    let points = vec![
+        Point::new_axes(-0.0, 1.0, ZOrdinate(Some(50.0)), MOrdinate(Some(5.0))).unwrap(),
+        Point::new_axes(0.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(1.0))).unwrap(),
+        Point::new_axes(1.0, 0.0, ZOrdinate(Some(20.0)), MOrdinate(Some(2.0))).unwrap(),
+        Point::new_axes(1.0, 2.0, ZOrdinate(Some(30.0)), MOrdinate(Some(3.0))).unwrap(),
+        Point::new_axes(-0.0, 2.0, ZOrdinate(Some(40.0)), MOrdinate(Some(4.0))).unwrap(),
+    ];
+    let hull = multipoint(&points).convex_hull().expect("convex hull");
+    assert!(hull.has_z());
+    assert!(hull.has_m());
+    let origin = origin_on(&hull);
+    assert_eq!(origin.z(), Some(10.0));
+    assert_eq!(origin.m(), Some(1.0));
+    assert_eq!(origin.x.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn minimum_rotated_rectangle_mixed_signed_zero_matches_rectangle_area() {
+    let rectangle = multipoint(&mixed_signed_zero_rectangle())
+        .minimum_rotated_rectangle()
+        .expect("minimum rotated rectangle");
+    assert!((rectangle.area() - 2.0).abs() <= 1.0e-12);
+}
+
+#[test]
+fn convex_hull_keeps_first_seen_signed_zero_spelling() {
+    let points = vec![
+        point_z(0.0, 0.0, 10.0),
+        point_z(-0.0, 0.0, 20.0),
+        point_z(1.0, 0.0, 30.0),
+        point_z(0.0, 1.0, 40.0),
+    ];
+    let hull = multipoint(&points).convex_hull().expect("convex hull");
+    let origin = origin_on(&hull);
+    assert_eq!(origin.z(), Some(10.0));
+    assert_eq!(origin.x.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn concave_hull_copies_first_seen_vertex_at_duplicate_xy() {
+    let points = vec![
+        point_z(0.0, 0.0, 10.0),
+        point_z(4.0, 0.0, 20.0),
+        point_z(4.0, 4.0, 30.0),
+        point_z(0.0, 4.0, 40.0),
+        point_z(2.0, 1.0, 50.0),
+        point_z(0.0, 0.0, 99.0),
+    ];
+    let hull = multipoint(&points)
+        .concave_hull(1.0, 0.0)
+        .expect("concave hull");
+    assert!(hull.has_z());
+    let origin = origin_on(&hull);
+    assert_eq!(origin.z(), Some(10.0));
 }
 
 fn assert_covers_points(hull: &Shape, points: &[Point]) {

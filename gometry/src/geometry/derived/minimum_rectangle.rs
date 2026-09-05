@@ -1514,6 +1514,13 @@ mod tests {
         Point::new_raw_xy(x, y)
     }
 
+    fn hull_vertices(points: &[Point]) -> Vec<Point> {
+        super::super::monotone_chain_hull(points)
+            .into_iter()
+            .map(|index| points[index])
+            .collect()
+    }
+
     #[test]
     fn exact_projection_breaks_rounded_plateau() {
         let points = [
@@ -1573,7 +1580,7 @@ mod tests {
                         point(offset + cos * x - sin * y, -offset + sin * x + cos * y)
                     })
                     .collect::<Vec<_>>();
-                let hull = super::super::monotone_chain_hull(&points);
+                let hull = hull_vertices(&points);
                 assert_eq!(hull.len(), vertices);
                 let _ = select_minimum_candidate(&hull);
             }
@@ -1699,7 +1706,7 @@ mod tests {
             point(5.0, 7.0),
             point(1.0, 7.0),
         ];
-        let rectangle = super::super::monotone_chain_hull(&rectangle);
+        let rectangle = hull_vertices(&rectangle);
         let candidate = select_minimum_candidate(&rectangle);
         assert!(legacy_rectangle_is_certified(
             &rectangle,
@@ -1739,11 +1746,12 @@ mod tests {
     #[test]
     fn scaled_triangle_has_no_finite_minimum_rectangle() {
         let scale = 1.01e308;
-        let hull = super::super::monotone_chain_hull(&[
+        let points = [
             point(-1.75 * scale, -1.75 * scale),
             point(-1.5 * scale, -0.25 * scale),
             point(-1.75 * scale, -1.5 * scale),
-        ]);
+        ];
+        let hull = hull_vertices(&points);
         let error = minimum_area_rectangle(&hull).expect_err("unrepresentable support wedge");
         assert_eq!(
             error.to_string(),

@@ -19,7 +19,10 @@ impl Shape {
             return Ok(Self::empty_polygon());
         }
         let points = self.points_vec();
-        let open = monotone_chain_hull(&points);
+        let open: Vec<Point> = monotone_chain_hull(&points)
+            .into_iter()
+            .map(|index| points[index])
+            .collect();
         if open.len() < 3 {
             return carry_ordinates(
                 shape_from_open_hull(&open, Self::empty_polygon),
@@ -108,21 +111,23 @@ impl Shape {
         if self.is_empty() {
             return Ok(empty_geometry());
         }
-        // Native monotone chain over the coordinates (robust orientation
-        // turns, collinear vertices dropped — the GEOS/strict convention);
-        // no geo conversion round-trip. Degenerate hulls reduce to
-        // Point/LineString like every degenerate polygon.
-        let hull = monotone_chain_hull(&self.points_vec());
-        let shape = shape_from_open_hull(&hull, empty_geometry);
-        // Hull vertices are a subset of the input vertices, so Z/M always
-        // resolve by exact match.
-        carry_ordinates(shape, &[self], "convex_hull", false)
+        // Native monotone chain over first-seen XY vertices (robust
+        // orientation turns, collinear vertices dropped — the GEOS/strict
+        // convention). Degenerate hulls reduce to Point/LineString like
+        // every degenerate polygon. Surviving vertices are copies of those
+        // source points, including Z/M and signed-zero spelling.
+        let points = self.first_seen_xy_vertices();
+        let hull: Vec<Point> = monotone_chain_hull(&points)
+            .into_iter()
+            .map(|index| points[index])
+            .collect();
+        Ok(shape_from_open_hull(&hull, empty_geometry))
     }
 
     pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
         let concavity = NonNegative::try_new("concavity", concavity)?.get();
         let length_threshold = NonNegative::try_new("length_threshold", length_threshold)?.get();
-        let mut points = self.unique_xy_points();
+        let mut points = self.first_seen_xy_vertices();
         if points.is_empty() {
             return Ok(Self::empty_polygon());
         }
@@ -132,9 +137,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
-        let hull = shape_from_open_hull(&hull, Self::empty_polygon);
-        // Hull vertices are a subset of the input vertices (see convex_hull).
-        carry_ordinates(hull, &[self], "concave_hull", false)
+        Ok(shape_from_open_hull(&hull, Self::empty_polygon))
     }
 
     /// The west/south/east/north extreme vertices `[west, south, east,

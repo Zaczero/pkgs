@@ -1,11 +1,11 @@
 use std::cmp::Ordering;
-use crate::geometry::tessellation::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 use std::collections::BinaryHeap;
 
-use crate::geometry::derived::monotone_chain_hull;
+use crate::geometry::derived::{geometric_xy_cmp, monotone_chain_hull};
+use crate::geometry::tessellation::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
 use crate::geometry::{
-    HashMap, Point, PointKey, Ring, Segment, canonical_ring, delaunay_triangulation,
-    point_distance, point_segment_distance, ring_winding, same_point,
+    Point, Ring, Segment, delaunay_triangulation, point_distance, point_segment_distance,
+    ring_winding,
 };
 
 pub(crate) fn native_concave_hull(
@@ -14,11 +14,11 @@ pub(crate) fn native_concave_hull(
     length_threshold: f64,
 ) -> Vec<usize> {
     if points.len() < 3 {
-        return hull_indices_from_points(points);
+        return monotone_chain_hull(points);
     }
     let triangulation = delaunay_triangulation(points);
     if triangulation.triangles.is_empty() {
-        return hull_indices_from_points(points);
+        return monotone_chain_hull(points);
     }
 
     let triangle_count = triangulation.triangles.len() / 3;
@@ -67,23 +67,7 @@ pub(crate) fn native_concave_hull(
     }
 
     extract_concave_boundary(points, &triangulation, &alive)
-        .unwrap_or_else(|| hull_indices_from_points(points))
-}
-
-fn hull_indices_from_points(points: &[Point]) -> Vec<usize> {
-    let hull = monotone_chain_hull(points);
-    let indices_by_xy: HashMap<PointKey, usize> = points
-        .iter()
-        .enumerate()
-        .map(|(index, &point)| (PointKey::new(point), index))
-        .collect();
-    hull.iter()
-        .map(|point| {
-            *indices_by_xy
-                .get(&PointKey::new(*point))
-                .expect("monotone-chain hull vertices come from input points")
-        })
-        .collect()
+        .unwrap_or_else(|| monotone_chain_hull(points))
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -159,11 +143,7 @@ fn can_peel_boundary_triangle(
         && edge_point_distance(a, c).min(edge_point_distance(c, b)) < max_length
 }
 
-fn edge_length(
-    points: &[Point],
-    triangulation: &Triangulation,
-    halfedge: usize,
-) -> f64 {
+fn edge_length(points: &[Point], triangulation: &Triangulation, halfedge: usize) -> f64 {
     let (start, end) = edge_indices(triangulation, halfedge);
     edge_point_distance(points[start], points[end])
 }
@@ -187,14 +167,10 @@ fn edge_indices(triangulation: &Triangulation, halfedge: usize) -> (usize, usize
 }
 
 pub(crate) fn point_xy_cmp(left: &Point, right: &Point) -> Ordering {
-    left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
+    geometric_xy_cmp(*left, *right)
 }
 
-fn is_boundary_halfedge(
-    triangulation: &Triangulation,
-    alive: &[bool],
-    halfedge: usize,
-) -> bool {
+fn is_boundary_halfedge(triangulation: &Triangulation, alive: &[bool], halfedge: usize) -> bool {
     if !alive[halfedge / 3] {
         return false;
     }
@@ -291,32 +267,32 @@ fn extract_concave_boundary(
             return None;
         }
     }
-    let mut closed: Vec<Point> = ring.iter().map(|&index| points[index]).collect();
-    closed.push(points[start]);
-    if closed.len() < Ring::MIN_VERTICES_CLOSED || ring_winding(&closed).is_degenerate() {
+    canonicalize_open_hull_indices(points, ring)
+}
+
+/// CCW open cycle rotated to its lexicographically least XY vertex.
+fn canonicalize_open_hull_indices(points: &[Point], mut ring: Vec<usize>) -> Option<Vec<usize>> {
+    if ring.is_empty() {
         return None;
     }
-    let mut canonical = canonical_ring(&closed, false);
-    if canonical
-        .last()
-        .is_some_and(|&last| same_point(last, canonical[0]))
-    {
-        canonical.pop();
+    let mut closed: Vec<Point> = ring.iter().map(|&index| points[index]).collect();
+    closed.push(points[ring[0]]);
+    let winding = ring_winding(&closed);
+    if closed.len() < Ring::MIN_VERTICES_CLOSED || winding.is_degenerate() {
+        return None;
     }
-    let indices_by_xy: HashMap<PointKey, usize> = ring
-        .into_iter()
-        .map(|index| (PointKey::new(points[index]), index))
-        .collect();
-    Some(
-        canonical
-            .into_iter()
-            .map(|point| {
-                *indices_by_xy
-                    .get(&PointKey::new(point))
-                    .expect("canonical concave ring vertices come from boundary")
-            })
-            .collect(),
-    )
+    if winding.reverse_for_clockwise(false) {
+        ring.reverse();
+    }
+    let start = (1..ring.len()).fold(0, |best, candidate| {
+        if point_xy_cmp(&points[ring[candidate]], &points[ring[best]]).is_lt() {
+            candidate
+        } else {
+            best
+        }
+    });
+    ring.rotate_left(start);
+    Some(ring)
 }
 
 /// Record `candidate` in a degree-two adjacency slot. Returns `true` if the

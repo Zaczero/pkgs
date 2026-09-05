@@ -1,5 +1,7 @@
 """Z/M preservation and fixed dimensional behavior across derived operations."""
 
+import math
+
 import gometry as gm
 import pytest
 
@@ -223,3 +225,187 @@ def test_polygon_centroid_normalizes_negative_zero() -> None:
 
     x, y = next(iter((gm.box(-1, -1, 1, 1)).centroid().coords))
     assert math.copysign(1.0, x) == 1.0 and math.copysign(1.0, y) == 1.0
+
+
+def _origin_coord(geom: gm.Geometry) -> tuple[float, ...]:
+    for coord in geom.coords:
+        if coord[0] == 0.0 and coord[1] == 0.0:
+            return coord
+    raise AssertionError(f'no origin vertex on {geom.to_wkt()}')
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_copies_first_seen_z_at_duplicate_xy(op: str) -> None:
+    points = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], z=[10.0, 20.0, 30.0, 99.0])
+    hull = getattr(points, op)()
+    assert hull.coordinate_axes == 'XYZ'
+    origin = _origin_coord(hull)
+    assert origin == (0.0, 0.0, 10.0)
+    assert math.copysign(1.0, origin[0]) == 1.0
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_copies_first_seen_m_at_duplicate_xy(op: str) -> None:
+    points = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], m=[1.0, 2.0, 3.0, 9.0])
+    hull = getattr(points, op)()
+    assert hull.coordinate_axes == 'XYM'
+    assert _origin_coord(hull) == (0.0, 0.0, 1.0)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_copies_first_seen_xyzm_when_z_and_m_conflict(op: str) -> None:
+    points = gm.MultiPoint(
+        [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)],
+        z=[10.0, 20.0, 30.0, 99.0],
+        m=[1.0, 2.0, 3.0, 8.0],
+    )
+    hull = getattr(points, op)()
+    assert hull.coordinate_axes == 'XYZM'
+    assert _origin_coord(hull) == (0.0, 0.0, 10.0, 1.0)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_closing_vertex_conflict_keeps_first_seen(op: str) -> None:
+    line = gm.LineString([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], z=[10.0, 20.0, 30.0, 99.0])
+    hull = getattr(line, op)()
+    assert hull.coordinate_axes == 'XYZ'
+    assert _origin_coord(hull) == (0.0, 0.0, 10.0)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_all_coincident_keeps_first_seen_z(op: str) -> None:
+    points = gm.MultiPoint([(1.0, 2.0), (1.0, 2.0), (1.0, 2.0)], z=[4.0, 5.0, 6.0])
+    hull = getattr(points, op)()
+    assert hull.geometry_type == 'Point'
+    assert hull.coordinate_axes == 'XYZ'
+    assert next(iter(hull.coords)) == (1.0, 2.0, 4.0)
+
+
+@pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])
+def test_hull_collinear_keeps_endpoint_ordinates(op: str) -> None:
+    points = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)], z=[1.0, 2.0, 3.0])
+    hull = getattr(points, op)()
+    assert hull.geometry_type == 'LineString'
+    assert hull.coordinate_axes == 'XYZ'
+    assert list(hull.coords) == [(0.0, 0.0, 1.0), (2.0, 2.0, 3.0)]
+
+
+def test_convex_hull_mixed_signed_zero_rectangle_drops_collinear_midpoint() -> None:
+    cloud = gm.MultiPoint([(-0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (-0.0, 2.0)])
+    hull = cloud.convex_hull()
+    open_coords = list(hull.exterior.coords)[:-1]
+    assert len(open_coords) == 4
+    assert (0.0, 1.0) not in {(coord[0], coord[1]) for coord in open_coords}
+    origin = next(coord for coord in open_coords if coord[1] == 0.0 and coord[0] == 0.0)
+    assert math.copysign(1.0, origin[0]) == 1.0
+    top_left = next(coord for coord in open_coords if coord[1] == 2.0 and coord[0] == 0.0)
+    assert math.copysign(1.0, top_left[0]) == -1.0
+
+
+def test_concave_hull_uniform_zero_rectangle_keeps_collinear_edge_site() -> None:
+    cloud = gm.MultiPoint(
+        [(0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0), (0.0, 1.0)],
+        z=[10.0, 20.0, 30.0, 40.0, 50.0],
+    )
+    hull = cloud.concave_hull(concavity=10.0)
+    assert hull.coordinate_axes == 'XYZ'
+    assert (0.0, 1.0, 50.0) in list(hull.exterior.coords)
+
+
+def test_concave_hull_mixed_signed_zero_rectangle_keeps_collinear_edge_site() -> None:
+    cloud = gm.MultiPoint(
+        [(-0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (-0.0, 2.0)],
+        z=[50.0, 10.0, 20.0, 30.0, 40.0],
+        m=[5.0, 1.0, 2.0, 3.0, 4.0],
+    )
+    hull = cloud.concave_hull(concavity=10.0)
+    assert hull.coordinate_axes == 'XYZM'
+    edge = next(coord for coord in hull.exterior.coords if coord[1] == 1.0)
+    assert edge[2] == 50.0
+    assert edge[3] == 5.0
+    assert math.copysign(1.0, edge[0]) == -1.0
+
+
+def test_convex_hull_transposed_signed_zero_collinear_drops_midpoint() -> None:
+    cloud = gm.MultiPoint([(0.0, -0.0), (0.0, 1.0), (2.0, 1.0), (2.0, 0.0), (1.0, -0.0)])
+    hull = cloud.convex_hull()
+    open_coords = list(hull.exterior.coords)[:-1]
+    assert len(open_coords) == 4
+    assert (1.0, 0.0) not in {(coord[0], coord[1]) for coord in open_coords}
+
+
+def test_hull_mixed_signed_zero_keeps_first_seen_zm() -> None:
+    cloud = gm.MultiPoint(
+        [(-0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (-0.0, 2.0)],
+        z=[50.0, 10.0, 20.0, 30.0, 40.0],
+        m=[5.0, 1.0, 2.0, 3.0, 4.0],
+    )
+    hull = cloud.convex_hull()
+    assert hull.coordinate_axes == 'XYZM'
+    origin = _origin_coord(hull)
+    assert origin[2] == 10.0
+    assert origin[3] == 1.0
+    assert math.copysign(1.0, origin[0]) == 1.0
+
+
+def test_minimum_rotated_rectangle_mixed_signed_zero_has_rectangle_area() -> None:
+    cloud = gm.MultiPoint([(-0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (-0.0, 2.0)])
+    rectangle = cloud.minimum_rotated_rectangle()
+    assert rectangle.area == pytest.approx(2.0)
+
+
+def test_convex_hull_keeps_first_seen_signed_zero_spelling() -> None:
+    points = gm.MultiPoint(
+        [(0.0, 0.0), (-0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+        z=[10.0, 20.0, 30.0, 40.0],
+    )
+    hull = points.convex_hull()
+    origin = _origin_coord(hull)
+    assert hull.coordinate_axes == 'XYZ'
+    assert origin[2] == 10.0
+    assert math.copysign(1.0, origin[0]) == 1.0
+
+
+def test_convex_hull_ignores_unselected_interior_ordinate_collision() -> None:
+    points = gm.MultiPoint(
+        [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (2.0, 1.0), (2.0, 1.0)],
+        z=[1.0, 2.0, 3.0, 4.0, 5.0, 99.0],
+    )
+    hull = points.convex_hull()
+    assert hull.coordinate_axes == 'XYZ'
+    assert _origin_coord(hull) == (0.0, 0.0, 1.0)
+
+
+def test_concave_hull_keeps_first_seen_on_selected_interior_collision() -> None:
+    points = gm.MultiPoint(
+        [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (2.0, 1.0), (2.0, 1.0)],
+        z=[1.0, 2.0, 3.0, 4.0, 5.0, 99.0],
+    )
+    hull = points.concave_hull(concavity=1.0)
+    assert hull.coordinate_axes == 'XYZ'
+    interior = [coord for coord in hull.coords if coord[:2] == (2.0, 1.0)]
+    assert interior == [(2.0, 1.0, 5.0)]
+
+
+def test_hull_first_seen_ordinates_on_scalar_and_array() -> None:
+    conflict = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)], z=[10.0, 20.0, 30.0, 99.0])
+    unique = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], z=[10.0, 20.0, 30.0])
+    array = gm.GeometryArray([conflict, unique])
+    convex = array.convex_hull()
+    concave = array.concave_hull()
+    for hulls, scalar in ((convex, conflict.convex_hull()), (concave, conflict.concave_hull())):
+        assert hulls[0].coordinate_axes == 'XYZ'
+        assert _origin_coord(hulls[0]) == (0.0, 0.0, 10.0)
+        assert gm.equals_exact(hulls[0], scalar)
+        assert hulls[1].coordinate_axes == 'XYZ'
+
+
+def test_convex_hull_akl_filter_keeps_known_hull_vertices() -> None:
+    corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    interior = [(1.0 + (index % 16) * 0.5, 1.0 + (index // 16) * 0.5) for index in range(256)]
+    coords = corners + interior + [(0.0, 0.0)]
+    z = [1.0, 2.0, 3.0, 4.0] + [100.0 + index for index in range(256)] + [99.0]
+    hull = gm.MultiPoint(coords, z=z).convex_hull()
+    assert hull.coordinate_axes == 'XYZ'
+    selected = {(coord[0], coord[1], coord[2]) for coord in list(hull.exterior.coords)[:-1]}
+    assert selected == {(0.0, 0.0, 1.0), (10.0, 0.0, 2.0), (10.0, 10.0, 3.0), (0.0, 10.0, 4.0)}

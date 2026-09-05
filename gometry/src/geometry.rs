@@ -74,7 +74,7 @@ mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
-    centroid_line_row_columns, centroid_polygon_row_columns, native_concave_hull,
+    centroid_line_row_columns, centroid_polygon_row_columns, geometric_xy_cmp, native_concave_hull,
     point_on_surface_line_columns, point_on_surface_polygon_row_columns, shape_from_open_hull,
     smallest_enclosing_circle,
 };

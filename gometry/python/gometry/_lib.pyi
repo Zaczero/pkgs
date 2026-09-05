@@ -2799,9 +2799,10 @@ class Geometry:
         """Compute the concave hull of the geometry. CRS-aware via local projection
         (approximate) and does NOT auto-split antimeridian-crossing geographic input;
         call ``split_antimeridian`` first. Uses gometry's chi-shape kernel: Delaunay
-        boundary triangles are peeled from longest edge to shortest, with output
-        independent of input point order. Hull vertices are input vertices, so X/Y/Z/M
-        ordinates are preserved exactly.
+        boundary triangles are peeled from longest edge to shortest. The geometric XY
+        hull is independent of input point order. Hull vertices are copies of input
+        vertices, so X/Y/Z/M ordinates are preserved exactly. When several input vertices
+        share an XY position, the first in storage order is the survivor.
 
         Parameters
         ----------
@@ -3547,8 +3548,9 @@ class Geometry:
     def convex_hull(self) -> Point | LineString | Polygon | GeometryCollection:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first. Hull vertices are input vertices, so Z/M
-        ordinates are preserved.
+        ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
+        ordinates are preserved. When several input vertices share an XY position, the
+        first in storage order is the survivor.
 
         Returns
         -------
@@ -7916,9 +7918,10 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
         """Compute the concave hull of the geometry. CRS-aware via local projection
         (approximate) and does NOT auto-split antimeridian-crossing geographic input;
         call ``split_antimeridian`` first. Uses gometry's chi-shape kernel: Delaunay
-        boundary triangles are peeled from longest edge to shortest, with output
-        independent of input point order. Hull vertices are input vertices, so X/Y/Z/M
-        ordinates are preserved exactly.
+        boundary triangles are peeled from longest edge to shortest. The geometric XY
+        hull is independent of input point order. Hull vertices are copies of input
+        vertices, so X/Y/Z/M ordinates are preserved exactly. When several input vertices
+        share an XY position, the first in storage order is the survivor.
 
         Parameters
         ----------
@@ -8709,8 +8712,9 @@ class GeometryArray(Sequence[_GeometryT_co | None]):
     ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
-        ``split_antimeridian`` first. Hull vertices are input vertices, so Z/M
-        ordinates are preserved.
+        ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
+        ordinates are preserved. When several input vertices share an XY position, the
+        first in storage order is the survivor.
 
         Returns
         -------

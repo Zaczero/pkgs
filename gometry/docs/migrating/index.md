@@ -131,7 +131,7 @@ free functions ([`gm.from_wkb`][gometry.from_wkb], [`gm.from_wkt`][gometry.from_
 geometry ([`geom.to_wkb(include_srid=True)`][gometry.Geometry.to_wkb], [`geom.to_wkt()`][gometry.Geometry.to_wkt], [`geom.to_geojson()`][gometry.Geometry.to_geojson],
 [`geom.to_arrow()`][gometry.Geometry.to_arrow] for [GeoArrow](https://geoarrow.org/) columnar interchange).
 Vertex-subset ops (`simplify`, `convex_hull`, triangulation) preserve Z/M where
-Shapely drops it.
+Shapely drops it. Hulls copy the first input vertex at a duplicated XY.
 
 ## Coming from pyproj
 

@@ -102,6 +102,20 @@ impl Shape {
         });
         unique
     }
+
+    /// XY-unique vertices in first-seen order, keeping each survivor's full
+    /// coordinates (Z/M and signed-zero spelling).
+    pub(crate) fn first_seen_xy_vertices(&self) -> Vec<Point> {
+        let capacity = self.coord_count();
+        let mut seen = HashSet::with_capacity(capacity);
+        let mut unique = Vec::with_capacity(capacity);
+        self.for_each_point(|point| {
+            if seen.insert(PointKey::new(point)) {
+                unique.push(point);
+            }
+        });
+        unique
+    }
 }
 
 pub(crate) fn unique_xy_points<I>(points: I) -> Vec<Point>
