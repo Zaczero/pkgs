@@ -397,33 +397,60 @@ fn paren_body(value: &str) -> Result<&str> {
     if !value.starts_with('(') {
         return Err(IoError::wkt("WKT is missing opening parenthesis"));
     }
-    let mut depth = 0_u32;
-    for (idx, ch) in value.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
+    let bytes = value.as_bytes();
+    let close = find_wkt_closing_parenthesis(
+        bytes,
+        0,
+        "invalid WKT parentheses",
+        "WKT is missing closing parenthesis",
+    )?;
+    if !value
+        .get(close + 1..)
+        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?
+        .trim()
+        .is_empty()
+    {
+        return Err(IoError::wkt("trailing text after WKT geometry"));
+    }
+    value
+        .get(1..close)
+        .map(str::trim)
+        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))
+}
+
+fn find_wkt_closing_parenthesis(
+    bytes: &[u8],
+    open: usize,
+    invalid_error: &'static str,
+    unclosed_error: &'static str,
+) -> Result<usize> {
+    if bytes.get(open) != Some(&b'(') {
+        return Err(IoError::wkt(invalid_error));
+    }
+    let mut depth = 1_usize;
+    let mut index = open
+        .checked_add(1)
+        .ok_or_else(|| IoError::wkt(invalid_error))?;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'(' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| IoError::wkt(invalid_error))?;
+            },
+            b')' => {
                 depth = depth
                     .checked_sub(1)
-                    .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?;
+                    .ok_or_else(|| IoError::wkt(invalid_error))?;
                 if depth == 0 {
-                    if !value
-                        .get(idx + 1..)
-                        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?
-                        .trim()
-                        .is_empty()
-                    {
-                        return Err(IoError::wkt("trailing text after WKT geometry"));
-                    }
-                    return value
-                        .get(1..idx)
-                        .map(str::trim)
-                        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"));
+                    return Ok(index);
                 }
             },
             _ => {},
         }
+        index += 1;
     }
-    Err(IoError::wkt("WKT is missing closing parenthesis"))
+    Err(IoError::wkt(unclosed_error))
 }
 
 fn parse_wkt_polygon_body(value: &str, axes: CoordinateAxes) -> Result<Polygon> {
@@ -593,35 +620,19 @@ fn split_wkt_members(value: &str) -> Result<Vec<WktMember<'_>>> {
             index += 5;
             members.push(WktMember::Empty);
         } else if bytes[index] == b'(' {
-            index += 1;
-            let start = index;
-            let mut depth = 1_u32;
-            let mut closed = false;
-            while index < bytes.len() {
-                match bytes[index] {
-                    b'(' => depth += 1,
-                    b')' => {
-                        depth = depth
-                            .checked_sub(1)
-                            .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?;
-                        if depth == 0 {
-                            let group = value
-                                .get(start..index)
-                                .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?
-                                .trim();
-                            index += 1;
-                            members.push(WktMember::Group(group));
-                            closed = true;
-                            break;
-                        }
-                    },
-                    _ => {},
-                }
-                index += 1;
-            }
-            if !closed {
-                return Err(IoError::wkt("unclosed WKT member parentheses"));
-            }
+            let open = index;
+            let close = find_wkt_closing_parenthesis(
+                bytes,
+                open,
+                "invalid WKT member parentheses",
+                "unclosed WKT member parentheses",
+            )?;
+            let group = value
+                .get(open + 1..close)
+                .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?
+                .trim();
+            index = close + 1;
+            members.push(WktMember::Group(group));
         } else {
             return Err(IoError::wkt(
                 "expected WKT member (parenthesized group or EMPTY)",

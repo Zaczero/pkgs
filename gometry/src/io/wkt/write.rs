@@ -91,13 +91,11 @@ impl WktNumberFormat {
                     let _ = write!(out, "{value}");
                 }
             },
-            Self::Fixed(precision) => {
-                let _ = write!(out, "{value:.*}", usize::from(precision));
-            },
-            Self::Trimmed(precision) => {
+            Self::Fixed(precision) | Self::Trimmed(precision) => {
                 let start = out.len();
                 let _ = write!(out, "{value:.*}", usize::from(precision));
-                if let Some(rendered) = out.get(start..)
+                if matches!(self, Self::Trimmed(_))
+                    && let Some(rendered) = out.get(start..)
                     && rendered.contains('.')
                 {
                     let keep = rendered.trim_end_matches('0').trim_end_matches('.').len();
