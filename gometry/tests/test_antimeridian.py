@@ -136,6 +136,86 @@ def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None
     assert gm.equals(arr.point_on_surface()[0], scalar_surface)
 
 
+def test_centroid_uses_native_frame_period_for_grad_seam_scalar_and_array() -> None:
+    factor = cast('float', gm.CRS(4807).axes[0]['unit_conversion_factor'])
+    scale = math.degrees(factor)
+    line = gm.LineString(
+        [(170.0 / scale, -10.0 / scale), (-170.0 / scale, 10.0 / scale)],
+        crs=4807,
+    )
+    centroid = line.centroid()
+    array_centroid = gm.GeometryArray([line]).centroid()[0]
+
+    # The native seam is ±200 grads, the same location as ±180 degrees. The
+    # half-open canonical representative can differ in sign at the seam.
+    assert abs(centroid.x * scale) == pytest.approx(180.0)
+    assert centroid.y * scale == pytest.approx(0.0)
+    assert centroid.crs == 'EPSG:4807'
+    assert gm.equals(centroid, array_centroid)
+    assert abs(array_centroid.x * scale) == pytest.approx(180.0)
+
+
+def _epsg_4807_degree_scale() -> float:
+    factor = cast('float', gm.CRS(4807).axes[0]['unit_conversion_factor'])
+    return math.degrees(factor)
+
+
+def test_grad_centroid_nonsymmetric_crossing_rewraps_away_from_seam() -> None:
+    scale = _epsg_4807_degree_scale()
+    degree_line = gm.LineString([(170.0, 0.0), (-160.0, 20.0)], crs=4326)
+    grad_line = gm.LineString(
+        [(170.0 / scale, 0.0), (-160.0 / scale, 20.0 / scale)],
+        crs=4807,
+    )
+
+    degree_centroid = degree_line.centroid()
+    grad_centroid = grad_line.centroid()
+    assert degree_centroid.x == pytest.approx(-175.0)
+    assert degree_centroid.y == pytest.approx(10.0)
+    assert grad_centroid.x * scale == pytest.approx(-175.0)
+    assert grad_centroid.y * scale == pytest.approx(10.0)
+    assert gm.equals(grad_centroid, gm.GeometryArray([grad_line]).centroid()[0])
+
+
+def test_grad_centroid_non_crossing_uses_direct_kernel() -> None:
+    scale = _epsg_4807_degree_scale()
+    ordinary = gm.LineString(
+        [(0.0, 0.0), (10.0 / scale, 2.0 / scale)],
+        crs=4807,
+    )
+    ordinary_centroid = ordinary.centroid()
+    assert ordinary.crosses_antimeridian is False
+    assert ordinary_centroid.x == pytest.approx(5.0 / scale)
+    assert ordinary_centroid.y == pytest.approx(1.0 / scale)
+
+
+def test_grad_centroid_pole_and_interior_use_split_normalization() -> None:
+    scale = _epsg_4807_degree_scale()
+    # Interior and pole-enclosing routes still use split normalization rather
+    # than the unwrapped centroid chart.
+    degree_cap = gm.Polygon(
+        [(-45.0, 40.0), (45.0, 40.0), (135.0, 40.0), (-135.0, 40.0)],
+        crs=4326,
+    )
+    grad_cap = gm.Polygon(
+        [
+            (-45.0 / scale, 40.0 / scale),
+            (45.0 / scale, 40.0 / scale),
+            (135.0 / scale, 40.0 / scale),
+            (-135.0 / scale, 40.0 / scale),
+        ],
+        crs=4807,
+    )
+    degree_surface = degree_cap.point_on_surface()
+    grad_surface = grad_cap.point_on_surface()
+    assert grad_surface.x * scale == pytest.approx(degree_surface.x)
+    assert grad_surface.y * scale == pytest.approx(degree_surface.y)
+    degree_cap_centroid = degree_cap.centroid()
+    grad_cap_centroid = grad_cap.centroid()
+    assert grad_cap_centroid.x * scale == pytest.approx(degree_cap_centroid.x)
+    assert grad_cap_centroid.y * scale == pytest.approx(degree_cap_centroid.y)
+
+
 def test_packed_bounds_match_scalar_antimeridian_crossing() -> None:
     poly = gm.from_wkt('POLYGON((170 40,-170 40,-170 50,170 50,170 40))', crs=4326)
     assert poly.bounds == (170.0, 40.0, -170.0, 50.0)

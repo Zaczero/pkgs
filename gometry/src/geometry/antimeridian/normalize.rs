@@ -306,20 +306,38 @@ pub(crate) fn repair_data_in_frame(
         .transpose()
 }
 
-/// Shift western longitudes by ``+360`` so a crossing geometry is contiguous
-/// for planar centroid, ``point_on_surface``, and bounds.
-pub(crate) fn unwrap_longitude(shape: &Shape) -> Result<Shape> {
-    shape.map_xy_with(|x, y| Ok((if x < 0.0 { x + 360.0 } else { x }, y)))
+/// Shift canonical western longitudes by one native full turn so a crossing
+/// geometry is contiguous for the planar centroid kernel.
+fn unwrap_longitude(shape: &Shape, frame: GeographicFrame) -> Result<Shape> {
+    let axis = frame.longitude();
+    shape.map_xy_with(|x, y| {
+        let longitude = axis
+            .canonicalize(x)
+            .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?
+            .get();
+        Ok((
+            if longitude < 0.0 {
+                longitude + axis.period()
+            } else {
+                longitude
+            },
+            y,
+        ))
+    })
 }
 
-/// Wrap a longitude into ``[-180, 180]``.
-fn wrap_longitude(lon: f64) -> f64 {
-    (lon + 180.0).rem_euclid(360.0) - 180.0
+/// Canonicalize a native longitude into the frame's half-open seam interval.
+fn wrap_longitude(lon: f64, frame: GeographicFrame) -> Result<f64> {
+    frame
+        .longitude()
+        .canonicalize(lon)
+        .map(|longitude| longitude.get())
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()).into())
 }
 
 /// Rewrap a derived point's longitude after an unwrapped planar kernel.
-fn rewrap_point(point: Point) -> Result<Point> {
-    point.with_xy(wrap_longitude(point.x), point.y)
+fn rewrap_point(point: Point, frame: GeographicFrame) -> Result<Point> {
+    point.with_xy(wrap_longitude(point.x, frame)?, point.y)
 }
 
 /// Derived representative point (centroid / `point_on_surface`) on a crossing
@@ -329,12 +347,13 @@ fn rewrap_point(point: Point) -> Result<Point> {
 ///   inside) AND any pole-enclosing geometry route through the seam+pole SPLIT —
 ///   the unwrapped form of a polar cap is a degenerate longitude sliver (a
 ///   longitude shift can't reconstruct the cap), and the split's planar kernel
-///   yields a point genuinely inside the true region. The split is in
-///   `[-180, 180]`, so no rewrap is needed. `force_2d` keeps the split infallible
+///   yields a point genuinely inside the true region. The split is in the
+///   frame's canonical longitude interval, so no rewrap is needed.
+///   `force_2d` keeps the split infallible
 ///   (a Z/M pole closure would otherwise trip the ordinate gate).
-/// * every other crossing `centroid` uses unwrap-rewrap, which gives the TRUE
-///   geographic centroid (the split's two opposite-seam halves would average to
-///   a meaningless mid-longitude).
+/// * every other crossing `centroid` uses unwrap-rewrap for the planar centroid
+///   on the contiguous native longitude chart (the split's two opposite-seam
+///   halves would average to a meaningless mid-longitude).
 #[derive(Clone, Copy)]
 pub(crate) enum DerivedPointStrategy {
     Centroid,
@@ -343,23 +362,21 @@ pub(crate) enum DerivedPointStrategy {
 
 pub(crate) fn derived_point_unwrapped(
     shape: &Shape,
-    domain: TopologyDomain,
+    frame: GeographicFrame,
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    let encloses_pole = match domain {
-        TopologyDomain::Cartesian => false,
-        TopologyDomain::Geographic(frame) => {
-            shape_encloses_pole_in_frame(shape, frame, true)
-                || shape_encloses_pole_in_frame(shape, frame, false)
-        },
-    };
+    let encloses_pole = shape_encloses_pole_in_frame(shape, frame, true)
+        || shape_encloses_pole_in_frame(shape, frame, false);
     if matches!(strategy, DerivedPointStrategy::Interior) || encloses_pole {
-        return kernel(&try_topology_split(shape, domain)?);
+        return kernel(&try_topology_split(
+            shape,
+            TopologyDomain::Geographic(frame),
+        )?);
     }
-    let unwrapped = unwrap_longitude(shape)?;
+    let unwrapped = unwrap_longitude(shape, frame)?;
     match kernel(&unwrapped)? {
-        Shape::Point(point) => Ok(Shape::Point(rewrap_point(point)?)),
+        Shape::Point(point) => Ok(Shape::Point(rewrap_point(point, frame)?)),
         other => Ok(other),
     }
 }
@@ -371,10 +388,14 @@ pub(crate) fn unary_antimeridian_derived(
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    if needs_topology_split(shape, domain) {
-        derived_point_unwrapped(shape, domain, strategy, kernel)
-    } else {
-        kernel(shape)
+    match domain {
+        TopologyDomain::Cartesian => kernel(shape),
+        TopologyDomain::Geographic(frame)
+            if crate::geometry::crosses_antimeridian_in_frame(shape, frame) =>
+        {
+            derived_point_unwrapped(shape, frame, strategy, kernel)
+        },
+        TopologyDomain::Geographic(_) => kernel(shape),
     }
 }
 
