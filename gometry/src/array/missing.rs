@@ -26,14 +26,25 @@ impl ValidityMask {
             len,
             "missing mask length must match array length"
         );
+        Self::from_missing_iter(len, missing)
+    }
+
+    fn from_missing_iter(len: usize, missing: impl IntoIterator<Item = bool>) -> Option<Self> {
         let mut bytes = vec![0_u8; len.div_ceil(8)];
         let mut valid_count = 0;
+        let mut rows = 0;
         for (row, is_missing) in missing.into_iter().enumerate() {
+            debug_assert!(row < len, "validity iterator exceeds declared length");
             if !is_missing {
                 bytes[row / 8] |= 1 << (row % 8);
                 valid_count += 1;
             }
+            rows = row + 1;
         }
+        debug_assert_eq!(
+            rows, len,
+            "validity iterator length must match declared length"
+        );
         (valid_count != len).then(|| Self {
             bytes: bytes.into(),
             bit_offset: 0,
@@ -343,12 +354,11 @@ pub(crate) fn union_pair(
                 right.len(),
                 "validity union requires row alignment"
             );
-            ValidityMask::from_vec(
+            ValidityMask::from_missing_iter(
                 left.len(),
                 left.iter()
                     .zip(right.iter())
-                    .map(|(left, right)| left || right)
-                    .collect(),
+                    .map(|(left, right)| left || right),
             )
         },
     }
@@ -366,11 +376,9 @@ pub(crate) fn union_many<'a>(
             "validity union requires row alignment"
         );
     }
-    ValidityMask::from_vec(
+    ValidityMask::from_missing_iter(
         first.len(),
-        (0..first.len())
-            .map(|row| masks.iter().any(|mask| mask.is_missing(row)))
-            .collect(),
+        (0..first.len()).map(|row| masks.iter().any(|mask| mask.is_missing(row))),
     )
 }
 
@@ -459,6 +467,85 @@ mod tests {
         ]);
         assert_eq!(union_pair(Some(&left), None), Some(left.clone()));
         assert_eq!(union_many([Some(&left), None, Some(&right)]), Some(pair));
+    }
+
+    #[test]
+    fn union_handles_unaligned_windows_with_independent_missing_counts() {
+        let offset_one = ValidityMask::from_sparse(16, &[1, 4])
+            .unwrap()
+            .window(1, 5)
+            .unwrap();
+        let offset_seven = ValidityMask::from_sparse(16, &[7, 9, 11])
+            .unwrap()
+            .window(7, 5)
+            .unwrap();
+        let union = union_pair(Some(&offset_one), Some(&offset_seven)).unwrap();
+        assert_eq!(union.iter().collect::<Vec<_>>(), [
+            true, false, true, true, true
+        ]);
+        assert_eq!(union.missing_count(), 4);
+        assert_eq!(union.present_count(), 1);
+
+        let offset_nine = ValidityMask::from_sparse(16, &[9, 12])
+            .unwrap()
+            .window(9, 5)
+            .unwrap();
+        let other = ValidityMask::from_vec(5, vec![false, false, true, false, false]).unwrap();
+        let union = union_pair(Some(&offset_nine), Some(&other)).unwrap();
+        assert_eq!(union.iter().collect::<Vec<_>>(), [
+            true, false, true, true, false
+        ]);
+        assert_eq!(union.missing_count(), 3);
+        assert_eq!(union.present_count(), 2);
+    }
+
+    #[test]
+    fn union_many_duplicate_masks_preserves_their_logical_bits() {
+        let mask = ValidityMask::from_sparse(9, &[1, 7]).unwrap();
+        let union = union_many([Some(&mask), Some(&mask)]).unwrap();
+        assert_eq!(union, mask);
+        assert_eq!(union.iter().collect::<Vec<_>>(), [
+            false, true, false, false, false, false, false, true, false,
+        ]);
+        assert_eq!(union.missing_count(), 2);
+        assert_eq!(union.present_count(), 7);
+    }
+
+    #[test]
+    fn empty_and_all_present_inputs_produce_no_mask() {
+        assert!(ValidityMask::from_vec(0, Vec::new()).is_none());
+        assert!(ValidityMask::from_vec(5, vec![false; 5]).is_none());
+        assert!(union_pair(None, None).is_none());
+        assert!(union_many([None, None]).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "validity union requires row alignment")]
+    fn union_pair_rejects_mismatched_lengths() {
+        let left = ValidityMask::from_vec(1, vec![true]).unwrap();
+        let right = ValidityMask::from_vec(2, vec![true, false]).unwrap();
+        let _ = union_pair(Some(&left), Some(&right));
+    }
+
+    #[test]
+    #[should_panic(expected = "validity union requires row alignment")]
+    fn union_many_rejects_mismatched_lengths() {
+        let left = ValidityMask::from_vec(1, vec![true]).unwrap();
+        let right = ValidityMask::from_vec(2, vec![true, false]).unwrap();
+        let _ = union_many([Some(&left), Some(&right)]);
+    }
+
+    #[test]
+    fn equality_compares_live_bits_for_a_window_and_packed_mask() {
+        let window = ValidityMask::from_sparse(16, &[1, 4])
+            .unwrap()
+            .window(1, 5)
+            .unwrap();
+        let packed = ValidityMask::from_vec(5, vec![true, false, false, true, false]).unwrap();
+        assert_eq!(window, packed);
+
+        let different = ValidityMask::from_vec(5, vec![true, false, false, false, false]).unwrap();
+        assert_ne!(window, different);
     }
 
     #[test]
