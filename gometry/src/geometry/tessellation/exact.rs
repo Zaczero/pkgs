@@ -982,19 +982,16 @@ impl ExactPoint {
                 })
             }),
             Coords::Certified { recipe, exact, .. } => exact.get_or_init(|| {
-                let point = match *recipe {
-                    Recipe::Circumcenter(sites) => line_intersection(
+                let coords = match *recipe {
+                    Recipe::Circumcenter(sites) => intersection_homogeneous(
                         &ExactLine::perpendicular_bisector(sites[0], sites[1]),
                         &ExactLine::perpendicular_bisector(sites[0], sites[2]),
                     ),
-                    Recipe::BisectorHit { sites, side } => line_intersection(
+                    Recipe::BisectorHit { sites, side } => intersection_homogeneous(
                         &ExactLine::perpendicular_bisector(sites[0], sites[1]),
                         &ExactLine::through_points(&Self::from_xy(side[0]), &Self::from_xy(side[1]))
                             .expect("a frame side has two distinct corners"),
                     ),
-                };
-                let Coords::Exact(coords) = point.coords else {
-                    unreachable!("an intersection is built exact")
                 };
                 Box::new(coords)
             }),
@@ -1760,16 +1757,23 @@ fn orient_points_exact(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> ExactS
     sign
 }
 
-/// Cross product of two exact homogeneous lines. The returned point is not
-/// normalized: signed products and ratio comparison operate directly on it.
-pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> ExactPoint {
+/// Cross product of two exact homogeneous lines as raw coordinates. The result
+/// is not normalized: signed products and ratio comparison operate directly on
+/// it.
+fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Homogeneous {
     let a = &a.0;
     let b = &b.0;
-    ExactPoint::homogeneous(
-        a[1].product(&b[2]).subtract(a[2].product(&b[1])),
-        a[2].product(&b[0]).subtract(a[0].product(&b[2])),
-        a[0].product(&b[1]).subtract(a[1].product(&b[0])),
-    )
+    Homogeneous {
+        x: a[1].product(&b[2]).subtract(a[2].product(&b[1])),
+        y: a[2].product(&b[0]).subtract(a[0].product(&b[2])),
+        w: a[0].product(&b[1]).subtract(a[1].product(&b[0])),
+    }
+}
+
+/// Cross product of two exact homogeneous lines, with certified bounds.
+pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> ExactPoint {
+    let Homogeneous { x, y, w } = intersection_homogeneous(a, b);
+    ExactPoint::homogeneous(x, y, w)
 }
 
 pub(super) fn signed_line_product(line: &ExactLine, point: &ExactPoint) -> ExactSign {
@@ -2494,6 +2498,61 @@ mod tests {
         assert_eq!(
             center,
             XY::new(-1.224_017_584_342_978_8e-15, -4.414_489_648_450_088e-16)
+        );
+    }
+
+    #[test]
+    fn certified_materialization_preserves_exact_homogeneous_coordinates() {
+        let center = circumcenter(
+            XY::new(0.0, 0.0),
+            XY::new(4.0, 0.0),
+            XY::new(0.0, 2.0),
+        )
+        .unwrap();
+        assert!(matches!(&center.coords, Coords::Certified { .. }));
+        assert_eq!(
+            compare_ratios(
+                center.x(),
+                center.w(),
+                &ExactDyadic::from_f64(2.0),
+                &ExactDyadic::one(),
+            ),
+            Ordering::Equal,
+        );
+        assert_eq!(
+            compare_ratios(
+                center.y(),
+                center.w(),
+                &ExactDyadic::from_f64(1.0),
+                &ExactDyadic::one(),
+            ),
+            Ordering::Equal,
+        );
+
+        let hit = match ExactPoint::certified_bisector_hit(
+            [XY::new(0.0, 0.0), XY::new(4.0, 2.0)],
+            [XY::new(-10.0, 7.0), XY::new(10.0, 7.0)],
+        ) {
+            FrameHit::Point(point) => point,
+            other => panic!("expected a certified bisector hit, got {other:?}"),
+        };
+        assert_eq!(
+            compare_ratios(
+                hit.x(),
+                hit.w(),
+                &ExactDyadic::from_f64(-1.0),
+                &ExactDyadic::one(),
+            ),
+            Ordering::Equal,
+        );
+        assert_eq!(
+            compare_ratios(
+                hit.y(),
+                hit.w(),
+                &ExactDyadic::from_f64(7.0),
+                &ExactDyadic::one(),
+            ),
+            Ordering::Equal,
         );
     }
 
