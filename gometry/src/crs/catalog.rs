@@ -37,9 +37,10 @@ mod units;
 
 pub(crate) use cf::{
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
-    add_cf_lambert_conformal_conic_parameters, add_cf_lambert_cylindrical_equal_area_parameters,
-    add_cf_mercator_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
+    add_cf_lambert_conformal_conic_1sp_parameters, add_cf_lambert_conformal_conic_parameters,
+    add_cf_lambert_cylindrical_equal_area_parameters, add_cf_mercator_parameters,
+    add_cf_polar_stereographic_parameters, add_cf_projection_parameters,
+    cf_lcc_1sp_stored_unity_scale, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
     is_operation_method, is_transverse_mercator,
 };
 pub(crate) use export::{

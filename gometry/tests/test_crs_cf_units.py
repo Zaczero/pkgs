@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 import gometry as gm
@@ -209,3 +210,158 @@ def test_near_unit_nextafter_metre_is_wkt_only() -> None:
     assert 'grid_mapping_name' not in cf
     with pytest.raises(gm.CRSError):
         gm.CRS(_pure(cf))
+
+
+_LCC1SP = """PROJCRS["probe",
+ BASEGEOGCRS["WGS 84",
+  DATUM["World Geodetic System 1984",
+   ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],
+  PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],
+ CONVERSION["LCC 1SP",
+  METHOD["Lambert Conic Conformal (1SP)",ID["EPSG",9801]],
+  PARAMETER["Latitude of natural origin",40,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],
+  PARAMETER["Longitude of natural origin",-100,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],
+  {scale}
+  PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],
+  PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],
+ CS[Cartesian,2],
+  AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]],
+  AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["metre",1]]]"""
+
+
+def _lcc1sp_scale(value: str, unit: str) -> str:
+    return (
+        f'PARAMETER["Scale factor at natural origin",{value},'
+        f'SCALEUNIT[{unit}],ID["EPSG",8805]],'
+    )
+
+
+def _lcc1sp(*, scale: str | None = None) -> str:
+    clause = scale if scale is not None else _lcc1sp_scale('1', '"unity",1')
+    return _LCC1SP.format(scale=clause)
+
+
+def _scale_params(crs: object) -> list[Mapping[str, Any]]:
+    operation = gm.CRS(crs).info['coordinate_operation']
+    assert isinstance(operation, Mapping)
+    parameters = operation['parameters']
+    assert isinstance(parameters, Sequence)
+    return [
+        param
+        for param in parameters
+        if param.get('code') == '8805'
+        or param.get('name') == 'Scale factor at natural origin'
+    ]
+
+
+def _assert_pure_cf_transform(source: object, easting: float, northing: float) -> None:
+    cf = _pure(_cf(source))
+    rebuilt = gm.CRS(cf)
+    native = gm.crs_transform(source, 4326, easting, northing)
+    roundtrip = gm.crs_transform(rebuilt, 4326, easting, northing)
+    assert native == pytest.approx(roundtrip)
+
+
+def test_epsg_3388_mercator_b_pure_cf() -> None:
+    cf = _cf(3388)
+    assert cf['grid_mapping_name'] == 'mercator'
+    assert cf['standard_parallel'] == pytest.approx(42.0)
+    assert 'scale_factor_at_projection_origin' not in cf
+    del cf['crs_wkt']
+    assert gm.CRS(cf).to_epsg() == 3388
+    _assert_pure_cf_transform(3388, 165704.29, 5171848.07)
+
+
+def test_epsg_24200_and_3448_lcc1sp_pure_cf() -> None:
+    for code, easting, northing in (
+        (24200, 250000.0, 150000.0),
+        (3448, 750000.0, 650000.0),
+    ):
+        cf = _cf(code)
+        assert cf['grid_mapping_name'] == 'lambert_conformal_conic'
+        assert cf['standard_parallel'] == pytest.approx(18.0)
+        assert cf['latitude_of_projection_origin'] == pytest.approx(18.0)
+        assert 'scale_factor_at_projection_origin' not in cf
+        del cf['crs_wkt']
+        assert gm.CRS(cf).to_epsg() == code
+        _assert_pure_cf_transform(code, easting, northing)
+
+
+def test_epsg_27563_non_unity_scale_is_wkt_only() -> None:
+    cf = _cf(27563)
+    assert 'grid_mapping_name' not in cf
+    assert 'crs_wkt' in cf
+    scales = _scale_params(27563)
+    assert len(scales) == 1
+    assert scales[0]['value'] == pytest.approx(0.999877499)
+    assert scales[0]['unit_conversion_factor'] == 1.0
+
+
+def test_custom_southern_mercator_b_pure_cf() -> None:
+    source = '+proj=merc +lat_ts=-30 +lon_0=20 +ellps=WGS84 +type=crs'
+    cf = _cf(source)
+    assert cf['grid_mapping_name'] == 'mercator'
+    assert cf['standard_parallel'] == pytest.approx(-30.0)
+    assert 'scale_factor_at_projection_origin' not in cf
+    _assert_pure_cf_transform(source, 0.0, 0.0)
+    _assert_pure_cf_transform(source, 1_000_000.0, 2_000_000.0)
+
+
+def test_unidentified_unity_scale_admits_lcc1sp() -> None:
+    wkt = _lcc1sp(scale=_lcc1sp_scale('1', '"banana",1'))
+    scales = _scale_params(wkt)
+    assert len(scales) == 1
+    assert scales[0]['value'] == 1.0
+    assert scales[0]['unit_conversion_factor'] == 1.0
+    cf = _cf(wkt)
+    assert cf['grid_mapping_name'] == 'lambert_conformal_conic'
+    assert cf['standard_parallel'] == pytest.approx(40.0)
+    assert 'scale_factor_at_projection_origin' not in cf
+    _assert_pure_cf_transform(wkt, 0.0, 0.0)
+
+
+def test_lcc1sp_product_identity_scale_is_wkt_only() -> None:
+    wkt = _lcc1sp(scale=_lcc1sp_scale('0.5', '"unity",2'))
+    scales = _scale_params(wkt)
+    assert len(scales) == 1
+    assert scales[0]['value'] == 0.5
+    assert scales[0]['unit_conversion_factor'] == 2.0
+    assert 'grid_mapping_name' not in _cf(wkt)
+
+
+def test_lcc1sp_adjacent_float_scale_is_wkt_only() -> None:
+    adjacent = math.nextafter(1.0, math.inf)
+    wkt = _lcc1sp(scale=_lcc1sp_scale(repr(adjacent), '"unity",1'))
+    scales = _scale_params(wkt)
+    assert len(scales) == 1
+    assert scales[0]['value'] == adjacent
+    assert scales[0]['unit_conversion_factor'] == 1.0
+    assert 'grid_mapping_name' not in _cf(wkt)
+
+
+def test_lcc1sp_missing_scale_is_wkt_only() -> None:
+    wkt = _lcc1sp(scale='')
+    assert _scale_params(wkt) == []
+    assert 'grid_mapping_name' not in _cf(wkt)
+
+
+def test_lcc1sp_duplicate_scale_is_wkt_only() -> None:
+    wkt = _lcc1sp(
+        scale=_lcc1sp_scale('1', '"unity",1') + _lcc1sp_scale('1', '"unity",1')
+    )
+    assert len(_scale_params(wkt)) != 1
+    assert 'grid_mapping_name' not in _cf(wkt)
+
+
+def test_lcc2sp_and_mercator_a_and_unsupported_units_unchanged() -> None:
+    lcc2 = _cf(3034)
+    assert lcc2['grid_mapping_name'] == 'lambert_conformal_conic'
+    assert lcc2['standard_parallel'] == pytest.approx([35.0, 65.0])
+    merc_a = _cf(3395)
+    assert merc_a['grid_mapping_name'] == 'mercator'
+    assert merc_a['scale_factor_at_projection_origin'] == pytest.approx(1.0)
+    assert 'standard_parallel' not in merc_a
+    unsupported = _cf(_wkt('"kilometre",1000'))
+    assert 'grid_mapping_name' not in unsupported
+    assert 'units' not in unsupported
+    assert 'crs_wkt' in unsupported

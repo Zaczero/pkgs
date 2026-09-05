@@ -295,6 +295,12 @@ const CF_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
         kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
+        codes: &["8823"],
+        names: &["Latitude of 1st standard parallel"],
+        cf_key: "standard_parallel",
+        kind: CfNumericKind::Angle,
+    },
+    CfParameterMapping {
         codes: &["8805"],
         names: &["Scale factor at natural origin"],
         cf_key: "scale_factor_at_projection_origin",
@@ -373,6 +379,85 @@ const CF_LAMBERT_CYLINDRICAL_EQUAL_AREA_PARAMETERS: &[CfParameterMapping] = &[
         kind: CfNumericKind::Length,
     },
 ];
+
+const CF_LAMBERT_CONFORMAL_CONIC_1SP_FRAME: &[CfParameterMapping] = &[
+    CfParameterMapping {
+        codes: &["8802"],
+        names: &["Longitude of natural origin"],
+        cf_key: "longitude_of_central_meridian",
+        kind: CfNumericKind::Angle,
+    },
+    CfParameterMapping {
+        codes: &["8806"],
+        names: &["False easting"],
+        cf_key: "false_easting",
+        kind: CfNumericKind::Length,
+    },
+    CfParameterMapping {
+        codes: &["8807"],
+        names: &["False northing"],
+        cf_key: "false_northing",
+        kind: CfNumericKind::Length,
+    },
+];
+
+fn is_lcc_1sp_scale(parameter: &OperationParameterInfo) -> bool {
+    parameter.code.as_deref() == Some("8805")
+        || parameter.name.as_deref() == Some("Scale factor at natural origin")
+}
+
+fn is_lcc_1sp_natural_origin_latitude(parameter: &OperationParameterInfo) -> bool {
+    parameter.code.as_deref() == Some("8801")
+        || parameter.name.as_deref() == Some("Latitude of natural origin")
+}
+
+/// Admit CF 1SP Lambert conformal only when stored scale is unity.
+///
+/// Exactly one 8805 (code or name) with `value == 1.0` and conversion factor
+/// `== 1.0`. Missing, duplicate, non-unity factor, or any other stored value
+/// fail closed — no product, epsilon, or converted identity.
+pub(crate) fn cf_lcc_1sp_stored_unity_scale(parameters: &[OperationParameterInfo]) -> bool {
+    let mut found = None;
+    for parameter in parameters {
+        if !is_lcc_1sp_scale(parameter) {
+            continue;
+        }
+        if found.is_some() {
+            return false;
+        }
+        found = Some(parameter);
+    }
+    found.is_some_and(|parameter| parameter.value == 1.0 && parameter.unit_conversion_factor == 1.0)
+}
+
+pub(crate) fn add_cf_lambert_conformal_conic_1sp_parameters(
+    crs: &str,
+    items: &mut Vec<(&'static str, CfValue)>,
+    parameters: &[OperationParameterInfo],
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    let export = CfNumericExport { crs, axis_to_metre };
+    let mut latitude_of_origin = None;
+    for parameter in parameters {
+        if is_lcc_1sp_natural_origin_latitude(parameter) {
+            latitude_of_origin = Some(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+        }
+    }
+    if let Some(lat0) = latitude_of_origin {
+        items.push(("latitude_of_projection_origin", CfValue::Float(lat0)));
+    }
+    add_cf_projection_parameters(
+        crs,
+        items,
+        parameters,
+        CF_LAMBERT_CONFORMAL_CONIC_1SP_FRAME,
+        axis_to_metre,
+    )?;
+    if let Some(lat0) = latitude_of_origin {
+        items.push(("standard_parallel", CfValue::Float(lat0)));
+    }
+    Ok(())
+}
 
 pub(crate) fn add_cf_lambert_azimuthal_equal_area_parameters(
     crs: &str,
@@ -538,4 +623,89 @@ pub(crate) fn add_cf_lambert_cylindrical_equal_area_parameters(
         CF_LAMBERT_CYLINDRICAL_EQUAL_AREA_PARAMETERS,
         axis_to_metre,
     )
+}
+
+#[cfg(test)]
+mod lcc_1sp_scale_tests {
+    use super::cf_lcc_1sp_stored_unity_scale;
+    use crate::crs::OperationParameterInfo;
+
+    fn param(
+        code: Option<&str>,
+        name: Option<&str>,
+        value: f64,
+        factor: f64,
+    ) -> OperationParameterInfo {
+        OperationParameterInfo {
+            name: name.map(str::to_owned),
+            authority: Some("EPSG".to_owned()),
+            code: code.map(str::to_owned),
+            value,
+            value_string: None,
+            unit_conversion_factor: factor,
+            unit_name: None,
+            unit_authority: None,
+            unit_code: None,
+            unit_category: None,
+        }
+    }
+
+    fn scale(value: f64, factor: f64) -> OperationParameterInfo {
+        param(
+            Some("8805"),
+            Some("Scale factor at natural origin"),
+            value,
+            factor,
+        )
+    }
+
+    #[test]
+    fn stored_unity_admits() {
+        assert!(cf_lcc_1sp_stored_unity_scale(&[scale(1.0, 1.0)]));
+        assert!(cf_lcc_1sp_stored_unity_scale(&[param(
+            None,
+            Some("Scale factor at natural origin"),
+            1.0,
+            1.0,
+        )]));
+        assert!(cf_lcc_1sp_stored_unity_scale(&[param(
+            Some("8805"),
+            None,
+            1.0,
+            1.0,
+        )]));
+    }
+
+    #[test]
+    fn missing_duplicate_and_non_unity_fail_closed() {
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[param(
+            Some("8801"),
+            Some("Latitude of natural origin"),
+            18.0,
+            1.0,
+        )]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[
+            scale(1.0, 1.0),
+            param(Some("8805"), None, 1.0, 1.0),
+        ]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[
+            scale(1.0, 1.0),
+            param(None, Some("Scale factor at natural origin"), 1.0, 1.0),
+        ]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(0.999_877_499, 1.0)]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(0.5, 2.0)]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(
+            1.0,
+            1.0_f64.next_up()
+        )]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(
+            1.0_f64.next_up(),
+            1.0
+        )]));
+        assert!(!cf_lcc_1sp_stored_unity_scale(&[scale(
+            1.0_f64.next_down(),
+            1.0
+        )]));
+    }
 }

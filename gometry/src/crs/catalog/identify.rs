@@ -3,10 +3,11 @@ use std::ptr;
 use crate::crs::catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT,
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
-    add_cf_lambert_conformal_conic_parameters, add_cf_lambert_cylindrical_equal_area_parameters,
-    add_cf_mercator_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cached_export, cf_prime_meridian_longitude_degrees,
-    cf_projected_axis_to_metre, export, is_operation_method, is_transverse_mercator,
+    add_cf_lambert_conformal_conic_1sp_parameters, add_cf_lambert_conformal_conic_parameters,
+    add_cf_lambert_cylindrical_equal_area_parameters, add_cf_mercator_parameters,
+    add_cf_polar_stereographic_parameters, add_cf_projection_parameters, cached_export,
+    cf_lcc_1sp_stored_unity_scale, cf_prime_meridian_longitude_degrees, cf_projected_axis_to_metre,
+    export, is_operation_method, is_transverse_mercator,
 };
 use crate::crs::{
     AuthorityObjectInfo, AxisInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
@@ -353,7 +354,22 @@ fn push_cf_grid_mapping(
             &operation.parameters,
             axis_to_metre,
         )?;
-    } else if is_operation_method(operation, "9804", "Mercator (variant A)") {
+    } else if is_operation_method(operation, "9801", "Lambert Conic Conformal (1SP)")
+        && cf_lcc_1sp_stored_unity_scale(&operation.parameters)
+    {
+        items.push((
+            "grid_mapping_name",
+            CfValue::String("lambert_conformal_conic".to_owned()),
+        ));
+        add_cf_lambert_conformal_conic_1sp_parameters(
+            crs,
+            items,
+            &operation.parameters,
+            axis_to_metre,
+        )?;
+    } else if is_operation_method(operation, "9804", "Mercator (variant A)")
+        || is_operation_method(operation, "9805", "Mercator (variant B)")
+    {
         items.push(("grid_mapping_name", CfValue::String("mercator".to_owned())));
         add_cf_mercator_parameters(crs, items, &operation.parameters, axis_to_metre)?;
     } else if is_operation_method(operation, "9829", "Polar Stereographic (variant B)")
