@@ -41,8 +41,16 @@ impl IndexedTopology {
         debug_assert_eq!(edge_of_slot.len(), slots);
         debug_assert_eq!(slots % 2, 0);
 
+        debug_assert!(self.owners.capacity() >= slots);
+        debug_assert!(self.twins.capacity() >= slots);
+        debug_assert!(self.component_of.capacity() >= vertices);
+        debug_assert!(self.face_of.capacity() >= slots);
+        debug_assert!(self.face_starts.capacity() >= slots + 1);
+        debug_assert!(self.face_slots.capacity() >= slots);
+        debug_assert!(scratch.component_stack.capacity() >= vertices);
+        debug_assert!(scratch.successor.capacity() >= slots);
+        debug_assert!(scratch.edge_slots.capacity() >= slots / 2);
         self.owners.clear();
-        self.owners.reserve(slots);
         for vertex in 0..vertices {
             let row = self.starts[vertex] as usize..self.starts[vertex + 1] as usize;
             debug_assert!(row.end <= slots);
@@ -69,7 +77,6 @@ impl IndexedTopology {
         self.component_of.clear();
         self.component_of.resize(vertices, u32::MAX);
         scratch.component_stack.clear();
-        scratch.component_stack.reserve(vertices);
         let mut component_count = 0;
         for seed in 0..vertices {
             if self.component_of[seed] != u32::MAX { continue; }
@@ -102,7 +109,6 @@ impl IndexedTopology {
         self.face_starts.clear();
         self.face_starts.push(0);
         self.face_slots.clear();
-        self.face_slots.reserve(slots);
         for seed in 0..slots {
             if self.face_of[seed] != u32::MAX { continue; }
             let face = (self.face_starts.len() - 1) as u32;
@@ -127,5 +133,51 @@ impl IndexedTopologyScratch {
         self.face_cursor.clear();
         self.successor.clear();
         self.edge_slots.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finish(starts: &[u32], targets: &[u32], edges: &[u32]) -> IndexedTopology {
+        let mut topology = IndexedTopology {
+            starts: starts.to_vec(),
+            targets: targets.to_vec(),
+            ..Default::default()
+        };
+        let vertices = starts.len() - 1;
+        let slots = targets.len();
+        topology.owners.reserve(slots);
+        topology.twins.reserve(slots);
+        topology.component_of.reserve(vertices);
+        topology.face_of.reserve(slots);
+        topology.face_starts.reserve(slots + 1);
+        topology.face_slots.reserve(slots);
+        let mut scratch = IndexedTopologyScratch::default();
+        scratch.component_stack.reserve(vertices);
+        scratch.successor.reserve(slots);
+        scratch.edge_slots.reserve(slots / 2);
+        topology.finish(edges, &mut scratch);
+        topology
+    }
+
+    #[test]
+    fn indexes_parallel_disconnected_and_isolated_vertices() {
+        // Vertices 0 and 1 have two distinct reciprocal edges. Vertices 2--4
+        // form an independent triangle; vertex 5 is intentionally isolated.
+        let topology = finish(
+            &[0, 2, 4, 6, 8, 10, 10],
+            &[1, 1, 0, 0, 3, 4, 2, 4, 2, 3],
+            &[0, 1, 0, 1, 2, 4, 2, 3, 4, 3],
+        );
+        assert_eq!(topology.component_of, [0, 0, 1, 1, 1, 2]);
+        assert_eq!(topology.twins, [2, 3, 0, 1, 6, 8, 4, 9, 5, 7]);
+        assert_eq!(topology.face_starts.first(), Some(&0));
+        assert_eq!(topology.face_starts.last(), Some(&10));
+        for (slot, &twin) in topology.twins.iter().enumerate() {
+            assert_eq!(topology.twins[twin as usize], slot as u32);
+            assert_eq!(topology.owners[slot], topology.targets[twin as usize]);
+        }
     }
 }

@@ -305,6 +305,17 @@ impl<W: WindingWeight> Arrangement<W> {
                 edge_of_slot,
                 ..
             } = &mut *core;
+            let vertices = topology.starts.len().saturating_sub(1);
+            let slots = topology.targets.len();
+            topology.owners.reserve(slots);
+            topology.twins.reserve(slots);
+            topology.component_of.reserve(vertices);
+            topology.face_of.reserve(slots);
+            topology.face_starts.reserve(slots + 1);
+            topology.face_slots.reserve(slots);
+            topology_scratch.component_stack.reserve(vertices);
+            topology_scratch.successor.reserve(slots);
+            topology_scratch.edge_slots.reserve(slots / 2);
             topology.finish(edge_of_slot, topology_scratch)
         };
         core.edge_of_slot.clear();
