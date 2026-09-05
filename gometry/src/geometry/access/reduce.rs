@@ -832,54 +832,6 @@ pub(crate) fn centroid_ring_sums(
     )
 }
 
-/// Local-frame centroid accumulators: `(Σ area2_l, Σ area2_l*(lx1+lx2), Σ area2_l*(ly1+ly2))`
-/// with per-axis `l* = coord*s - anchor*s` (scale-before-subtraction). Shared-e
-/// multi-ring rescue finishes as `anchor + (c_l / s_axis) / (3 * sa_l / …)` —
-/// caller unscales x by `1/sx` and y by `1/sy` independently so a huge X and
-/// tiny Y (or the reverse) both stay normal.
-pub(crate) fn centroid_ring_sums_local(
-    xs: &[f64],
-    ys: &[f64],
-    pairs: usize,
-    anchor: (f64, f64),
-    sx: f64,
-    sy: f64,
-) -> (f64, f64, f64) {
-    let (ax, ay) = anchor;
-    let id_x = sx.to_bits() == 1.0_f64.to_bits();
-    let id_y = sy.to_bits() == 1.0_f64.to_bits();
-    (0..pairs).fold((0.0_f64, 0.0_f64, 0.0_f64), |(sa, scx, scy), index| {
-        // `x*s - origin*s`, never `(x - origin)*s` — the latter overflows on
-        // opposite-sign extremes even when the scaled residual is representable.
-        let lx1 = if id_x {
-            xs[index] - ax
-        } else {
-            xs[index] * sx - ax * sx
-        };
-        let ly1 = if id_y {
-            ys[index] - ay
-        } else {
-            ys[index] * sy - ay * sy
-        };
-        let lx2 = if id_x {
-            xs[index + 1] - ax
-        } else {
-            xs[index + 1] * sx - ax * sx
-        };
-        let ly2 = if id_y {
-            ys[index + 1] - ay
-        } else {
-            ys[index + 1] * sy - ay * sy
-        };
-        let area2 = lx1 * ly2 - lx2 * ly1;
-        (
-            sa + area2,
-            scx + area2 * (lx1 + lx2),
-            scy + area2 * (ly1 + ly2),
-        )
-    })
-}
-
 pub(crate) fn line_length(points: &CoordSeq) -> f64 {
     line_length_columns(points.xs(), points.ys())
 }

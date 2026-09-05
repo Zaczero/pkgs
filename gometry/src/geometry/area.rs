@@ -167,16 +167,8 @@ fn expansion_product(left: &[f64], right: &[f64]) -> Vec<f64> {
     product
 }
 
-/// Exact local triangle-fan sums for the rare case where a shared `f64`
-/// shoelace frame rounded a representable area to zero.  Inputs are already
-/// translated and power-of-two scaled by the caller's one polygon-wide frame;
-/// the returned values are therefore all in that same local coordinate system.
-///
-/// The three values are twice-area and the two corresponding centroid
-/// numerators (`Σ (xᵢ+xᵢ₊₁) cross`, likewise `y`).  Keeping them together is
-/// important: area and centroid must never disagree about whether a polygon
-/// has a representably nonzero interior.
-pub(crate) fn exact_ring_area_centroid_sums_local(
+/// Exact local ring area for the shared-frame area fallback.
+fn exact_ring_area_sum_local(
     xs: &[f64],
     ys: &[f64],
     pairs: usize,
@@ -184,10 +176,8 @@ pub(crate) fn exact_ring_area_centroid_sums_local(
     oy: f64,
     sx: f64,
     sy: f64,
-) -> (f64, f64, f64) {
+) -> f64 {
     let mut area = vec![0.0];
-    let mut moment_x = vec![0.0];
-    let mut moment_y = vec![0.0];
     for index in 0..pairs {
         let x0 = exact_scaled_residual(xs[index], ox, sx);
         let y0 = exact_scaled_residual(ys[index], oy, sy);
@@ -198,14 +188,9 @@ pub(crate) fn exact_ring_area_centroid_sums_local(
         for term in &mut reverse {
             *term = -*term;
         }
-        let cross = expansion_sum(&forward, &reverse);
-        area = expansion_sum(&area, &cross);
-        let x_sum = expansion_sum(&x0, &x1);
-        let y_sum = expansion_sum(&y0, &y1);
-        moment_x = expansion_sum(&moment_x, &expansion_product(&cross, &x_sum));
-        moment_y = expansion_sum(&moment_y, &expansion_product(&cross, &y_sum));
+        area = expansion_sum(&area, &expansion_sum(&forward, &reverse));
     }
-    (estimate(&area), estimate(&moment_x), estimate(&moment_y))
+    estimate(&area)
 }
 
 /// Axis residual extent for scale selection. Prefer the finite `|x - origin|`
@@ -897,8 +882,7 @@ pub(crate) fn polygon_area_measure_with(
             if pairs == 0 {
                 return;
             }
-            let (ring_area2, ..) =
-                exact_ring_area_centroid_sums_local(xs, ys, pairs, ox, oy, sx, sy);
+            let ring_area2 = exact_ring_area_sum_local(xs, ys, pairs, ox, oy, sx, sy);
             if hole {
                 exact_area2 -= ring_area2.abs();
             } else {

@@ -25,7 +25,7 @@ pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 pub(crate) use access::{
     REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero, centroid_ring_sums,
-    centroid_ring_sums_local, column_all_finite, column_mean2, column_minmax,
+    column_all_finite, column_mean2, column_minmax,
     line_length_3d_columns, line_length_columns, pair_map4_guarded_f64, pair_select_mask,
     shape_axes_all_z, simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all,
     simd_mask_any, simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask,
@@ -35,7 +35,7 @@ pub(crate) use access::{
 pub(crate) use area::ring_area_measure_columns;
 pub(crate) use area::{
     AreaSign, RingDecisionArea, RingWinding, closed_columns_winding,
-    exact_ring_area_centroid_sums_local, open_point_cycle_decision, open_point_cycle_winding,
+    open_point_cycle_decision, open_point_cycle_winding,
     open_xy_cycle_decision, open_xy_cycle_sign, open_xy_cycle_winding,
     polygon_area_measure_columns, polygon_area_measure_with, ring_area_measure, ring_decision_area,
     ring_winding,

@@ -2,11 +2,11 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdFloat as _;
 use std::simd::{Select as _, StdFloat as _};
 
+use crate::geometry::exact_arith::product_sum::ExactCentroidSums;
 use crate::geometry::{
     AxisFrame, Coordinates as _, Point, Polygon, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring,
-    Shape, XY, axis_pow2_scale, canonicalize_zero, centroid_ring_sums, centroid_ring_sums_local,
-    closed_columns_winding, column_mean2, exact_ring_area_centroid_sums_local, point_distance,
-    scaled_residual, simd_reduce_f64,
+    Shape, XY, axis_pow2_scale, canonicalize_zero, centroid_ring_sums, closed_columns_winding,
+    column_mean2, point_distance, scaled_residual, simd_reduce_f64,
 };
 fn accumulate_ring_centroid(
     xs: &[f64],
@@ -42,7 +42,7 @@ fn finish_areal_centroid(area_sum2: f64, cg3: (f64, f64)) -> Option<(f64, f64)> 
     // Reject non-finite so a moment overflow cannot reach `Point::new`.
     // Reject subnormal |area|: cg/area collapses toward the origin even when
     // the ring is a positive square (e.g. [0,2e-162]²) — leave None for the
-    // shared-scale / lineal cascade.
+    // exact-areal / lineal cascade.
     let area_abs = area_sum2.abs();
     if area_abs > 0.0 && !area_sum2.is_normal() {
         return None;
@@ -58,173 +58,29 @@ fn finish_areal_centroid(area_sum2: f64, cg3: (f64, f64)) -> Option<(f64, f64)> 
     }
 }
 
-/// Shared-extent areal centroid: bbox-midpoint anchor (finite `f64::midpoint`),
-/// per-axis power-of-two scales, local triangle-fan sums as `x*s - origin*s`,
-/// then fused map-back `(anchor*s + local) / s`. The midpoint anchor keeps the
-/// residual centroid near zero for centered shapes so densified extreme
-/// rectangles do not amplify ULP noise by `1/s`; per-axis scales keep a
-/// huge-X/tiny-Y ring from underflowing moment products.
-fn exact_shared_centroid_sums(
-    visit: &impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
-    anchor_x: f64,
-    anchor_y: f64,
-    scale_x: f64,
-    scale_y: f64,
-) -> (f64, f64, f64) {
-    let mut sums = (0.0_f64, 0.0_f64, 0.0_f64);
-    visit(&mut |xs, ys, hole| {
-        let pairs = xs.len().saturating_sub(1);
-        if pairs == 0 {
-            return;
-        }
-        let (area, x, y) = exact_ring_area_centroid_sums_local(
-            xs, ys, pairs, anchor_x, anchor_y, scale_x, scale_y,
-        );
-        let ccw = closed_columns_winding(xs, ys, pairs).is_ccw();
-        let sign = if hole == ccw { 1.0 } else { -1.0 };
-        sums.0 += sign * area;
-        sums.1 += sign * x;
-        sums.2 += sign * y;
-    });
-    sums
-}
-
-fn finish_shared_areal_centroid(
-    area: f64,
-    moment_x: f64,
-    moment_y: f64,
-    anchor_x: f64,
-    anchor_y: f64,
-    scale_x: f64,
-    scale_y: f64,
-    driver_x: f64,
-    driver_y: f64,
-) -> Option<(f64, f64)> {
-    if !(area.abs() > 0.0 && area.is_finite()) {
-        return None;
-    }
-    // Local residual centroid in the scaled frame (O(1) extents). Densified
-    // extreme rings leave O(eps) accumulation noise in the moments; zero it
-    // before unscaling so `noise / s` cannot become world-scale error.
-    let local_extent_x = (driver_x * scale_x).max(1.0);
-    let local_extent_y = (driver_y * scale_y).max(1.0);
-    let mut local_x = moment_x / (3.0 * area);
-    let mut local_y = moment_y / (3.0 * area);
-    if local_x.abs() <= local_extent_x * f64::EPSILON * 64.0 {
-        local_x = 0.0;
-    }
-    if local_y.abs() <= local_extent_y * f64::EPSILON * 64.0 {
-        local_y = 0.0;
-    }
-    // Fused map-back avoids anchor + huge cancellation at extreme corners.
-    Some((
-        canonicalize_zero((anchor_x * scale_x + local_x) / scale_x),
-        canonicalize_zero((anchor_y * scale_y + local_y) / scale_y),
-    ))
-}
-
-fn areal_centroid_shared_scale(
+/// Exact areal centroid over original stored coordinates.  This cold fallback
+/// avoids both shared-frame cancellation and a rounded ring-orientation gate.
+fn exact_areal_centroid(
     visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool)),
 ) -> Option<(f64, f64)> {
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    let mut any = false;
-    visit(&mut |xs, ys, _hole| {
-        for (&x, &y) in xs.iter().zip(ys.iter()) {
-            any = true;
-            min_x = min_x.min(x);
-            max_x = max_x.max(x);
-            min_y = min_y.min(y);
-            max_y = max_y.max(y);
-        }
-    });
-    if !any || !min_x.is_finite() {
-        return None;
-    }
-    // Midpoint is exact for opposite extremes (`±1e308` → 0) and a much better
-    // fan origin than the first vertex for densified extreme rings.
-    let ax = f64::midpoint(min_x, max_x);
-    let ay = f64::midpoint(min_y, max_y);
-    let mut max_abs_x = ax.abs().max(min_x.abs()).max(max_x.abs());
-    let mut max_abs_y = ay.abs().max(min_y.abs()).max(max_y.abs());
-    let mut max_dx = 0.0_f64;
-    let mut max_dy = 0.0_f64;
-    let mut overflow_x = false;
-    let mut overflow_y = false;
-    visit(&mut |xs, ys, _hole| {
-        for (&x, &y) in xs.iter().zip(ys.iter()) {
-            max_abs_x = max_abs_x.max(x.abs());
-            max_abs_y = max_abs_y.max(y.abs());
-            let dx = (x - ax).abs();
-            let dy = (y - ay).abs();
-            if dx.is_finite() {
-                max_dx = max_dx.max(dx);
-            } else {
-                overflow_x = true;
-            }
-            if dy.is_finite() {
-                max_dy = max_dy.max(dy);
-            } else {
-                overflow_y = true;
-            }
-        }
-    });
-    // Prefer finite residual extent; on overflow scale from absolute coords so
-    // `x*s - origin*s` stays representable (e.g. ±1e308 rectangle).
-    let driver_x = if overflow_x || !max_dx.is_finite() {
-        max_abs_x
-    } else if max_dx > 0.0 {
-        max_dx
-    } else {
-        max_abs_x
-    };
-    let driver_y = if overflow_y || !max_dy.is_finite() {
-        max_abs_y
-    } else if max_dy > 0.0 {
-        max_dy
-    } else {
-        max_abs_y
-    };
-    if driver_x == 0.0 && driver_y == 0.0 {
-        return None;
-    }
-    let scale_x = axis_pow2_scale(driver_x.max(f64::MIN_POSITIVE));
-    let scale_y = axis_pow2_scale(driver_y.max(f64::MIN_POSITIVE));
-    let mut sa = 0.0_f64;
-    let mut scx = 0.0_f64;
-    let mut scy = 0.0_f64;
+    let mut sums = ExactCentroidSums::zero();
     visit(&mut |xs, ys, hole| {
         let pairs = xs.len().saturating_sub(1);
-        if pairs == 0 {
-            return;
+        let mut ring = ExactCentroidSums::zero();
+        for index in 0..pairs {
+            ring.add_edge(xs[index], ys[index], xs[index + 1], ys[index + 1]);
         }
-        let ccw = closed_columns_winding(xs, ys, pairs).is_ccw();
-        let sign = if hole == ccw { 1.0 } else { -1.0 };
-        let (sa_l, sx_l, sy_l) =
-            centroid_ring_sums_local(xs, ys, pairs, (ax, ay), scale_x, scale_y);
-        sa += sign * sa_l;
-        scx += sign * sx_l;
-        scy += sign * sy_l;
+        sums.merge_ring(&ring, hole);
     });
-    // The ordinary shared-frame fold is deliberately the hot path.  A rounded
-    // zero is not a geometrical zero, though: the exact shoelace tails can
-    // still carry a representable area and its centroid.  Recompute all three
-    // coupled sums in the SAME shared frame so area cannot select an areal
-    // answer while centroid falls through to its lineal fallback.
-    if sa == 0.0 {
-        (sa, scx, scy) = exact_shared_centroid_sums(&visit, ax, ay, scale_x, scale_y);
-    }
-    finish_shared_areal_centroid(sa, scx, scy, ax, ay, scale_x, scale_y, driver_x, driver_y)
+    sums.finish()
 }
 
 /// Column kernel for polygonal centroid (dimension-2 pass) over one polygon's
 /// ring window range.
-/// Prefer the local-frame areal centroid when world-space moments lose digits:
+/// Use the exact original-coordinate centroid when world-space moments lose digits:
 /// tiny extents (subnormal / near-subnormal area) or huge coordinates.
-const AREAL_SHARED_SCALE_MIN_EXTENT: f64 = 1e-8;
-const AREAL_SHARED_SCALE_MAX_COORD: f64 = 1e12;
+const AREAL_EXACT_MIN_EXTENT: f64 = 1e-8;
+const AREAL_EXACT_MAX_COORD: f64 = 1e12;
 
 fn centroid_polygon_columns(
     xs: &[f64],
@@ -232,8 +88,8 @@ fn centroid_polygon_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
 ) -> Option<(f64, f64)> {
-    let shared = || {
-        areal_centroid_shared_scale(|visit| {
+    let exact = || {
+        exact_areal_centroid(|visit| {
             for ring_index in rings.clone() {
                 let start = ring_offsets[ring_index] as usize;
                 let end = ring_offsets[ring_index + 1] as usize;
@@ -276,15 +132,15 @@ fn centroid_polygon_columns(
             .max(min_x.abs())
             .max(max_y.abs())
             .max(min_y.abs());
-        extent < AREAL_SHARED_SCALE_MIN_EXTENT || max_abs > AREAL_SHARED_SCALE_MAX_COORD
+        extent < AREAL_EXACT_MIN_EXTENT || max_abs > AREAL_EXACT_MAX_COORD
     } else {
         false
     };
     if extreme {
-        return shared().or_else(|| finish_areal_centroid(area_sum2, cg3));
+        return exact();
     }
-    // Ordinary path: classical JTS fan (kernel-parity snapshot bit-identity).
-    finish_areal_centroid(area_sum2, cg3).or_else(shared)
+    // Ordinary coordinates retain the single-pass triangle fan.
+    finish_areal_centroid(area_sum2, cg3).or_else(exact)
 }
 
 fn lineal_centroid_segment_contrib(xs: &[f64], ys: &[f64], segment: usize) -> (f64, f64, f64) {
@@ -618,12 +474,12 @@ pub(crate) fn centroid_polygon_row_columns(
 }
 
 /// Single-polygon areal centroid (shell + holes). One classical JTS fan that
-/// also tracks extent; shared-scale only when the fan rejects or extent is
+/// also tracks extent; exact accumulation only when the fan rejects or extent is
 /// extreme. Ordinary mid-range polygons pay a single vertex pass (no separate
 /// pre-scan).
 fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64)> {
-    let shared = || {
-        areal_centroid_shared_scale(|visit| {
+    let exact = || {
+        exact_areal_centroid(|visit| {
             polygon_rings(polygon, &mut |ring, hole| {
                 let Some((xs, ys)) = ring.xy_columns() else {
                     return;
@@ -658,15 +514,15 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64)> {
             .max(min_x.abs())
             .max(max_y.abs())
             .max(min_y.abs());
-        extent < AREAL_SHARED_SCALE_MIN_EXTENT || max_abs > AREAL_SHARED_SCALE_MAX_COORD
+        extent < AREAL_EXACT_MIN_EXTENT || max_abs > AREAL_EXACT_MAX_COORD
     } else {
         false
     };
-    // Extreme extents: prefer shared-scale (classical moments overflow / lose digits).
+    // Extreme extents: prefer exact accumulation (classical moments overflow / lose digits).
     if extreme {
-        return shared().or_else(|| finish_areal_centroid(area_sum2, cg3));
+        return exact();
     }
-    finish_areal_centroid(area_sum2, cg3).or_else(shared)
+    finish_areal_centroid(area_sum2, cg3).or_else(exact)
 }
 
 /// Neumaier compensated sum — used only on the cold stable-merge path when
@@ -718,7 +574,7 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
         return None;
     }
     // Fast path: unscaled weighted sum when coordinates are mid-range.
-    if max_abs_x.max(max_abs_y) <= AREAL_SHARED_SCALE_MAX_COORD {
+    if max_abs_x.max(max_abs_y) <= AREAL_EXACT_MAX_COORD {
         let mut sx = 0.0_f64;
         let mut sy = 0.0_f64;
         let mut w_sum = 0.0_f64;
@@ -786,8 +642,8 @@ fn visit_areal_polygons(shape: &Shape, visit: &mut dyn FnMut(&Polygon)) {
     }
 }
 
-fn areal_centroid_shared_scale_shape(shape: &Shape) -> Option<(f64, f64)> {
-    areal_centroid_shared_scale(|visit| {
+fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64)> {
+    exact_areal_centroid(|visit| {
         visit_areal_polygons(shape, &mut |polygon| {
             polygon_rings(polygon, &mut |ring, hole| {
                 if let Some((xs, ys)) = ring.xy_columns() {
@@ -817,7 +673,7 @@ pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
                 return areal_centroid_polygon(&polygons[0]);
             }
             if areal_has_unrepresentable_component(shape) {
-                return areal_centroid_shared_scale_shape(shape);
+                return exact_areal_centroid_shape(shape);
             }
             let mut parts = Vec::with_capacity(polygons.len());
             for polygon in polygons {
@@ -833,7 +689,7 @@ pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
         },
         Shape::GeometryCollection(geometries) => {
             if areal_has_unrepresentable_component(shape) {
-                return areal_centroid_shared_scale_shape(shape);
+                return exact_areal_centroid_shape(shape);
             }
             let mut parts = Vec::new();
             for geometry in geometries {
@@ -938,7 +794,7 @@ fn stable_point_mean(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
         max_abs_y = max_abs_y.max(y.abs());
     }
     let max_abs = max_abs_x.max(max_abs_y);
-    if max_abs <= AREAL_SHARED_SCALE_MAX_COORD
+    if max_abs <= AREAL_EXACT_MAX_COORD
         && let Some((mx, my)) = column_mean2(xs, ys)
         && mx.is_finite()
         && my.is_finite()

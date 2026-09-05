@@ -165,6 +165,58 @@ def _stored_ring_area(vertices: list[tuple[float, float]]) -> Fraction:
     return abs(total) / 2
 
 
+def _assert_exact_centroid(geometry, expected_x: Fraction, expected_y: Fraction) -> None:
+    values = [geometry.centroid(), gm.GeometryArray([geometry]).centroid()[0]]
+    for centroid in values:
+        assert float(centroid.x) == float(expected_x)
+        assert float(centroid.y) == float(expected_y)
+
+
+def test_shared_centroid_retains_primary_residual_when_reversed() -> None:
+    """The primary residual survives both scalar/packed paths and ring reversal."""
+    k = 2**50
+    vertices = [(-k, 0), (k, 0), (1, k)]
+    expected = Fraction(1, 3), Fraction(k, 3)
+    polygon = gm.Polygon(vertices)
+    _assert_exact_centroid(polygon, *expected)
+    _assert_exact_centroid(gm.Polygon(list(reversed(vertices))), *expected)
+
+
+def test_shared_centroid_retains_translated_primary_residual() -> None:
+    k = 2**50
+    vertices = [(-k, 0), (k, 0), (1, k)]
+    translated = gm.Polygon([(x + k, y - k) for x, y in vertices])
+    _assert_exact_centroid(translated, Fraction(k) + Fraction(1, 3), Fraction(-2 * k, 3))
+
+
+def test_shared_centroid_uses_exact_hole_moments_and_canonical_zero() -> None:
+    k = 2**50
+    vertices = [(-k, 0), (k, 0), (1, k)]
+    shell = [(-2 * k, -k), (2 * k, -k), (2 * k, 2 * k), (-2 * k, 2 * k)]
+    holed = gm.Polygon(shell, [vertices])
+    _assert_exact_centroid(holed, Fraction(-1, 33), Fraction(17 * k, 33))
+    centered_hole = gm.Polygon(shell, [[(-k, 0), (k, 0), (0, k)]])
+    _assert_exact_centroid(centered_hole, Fraction(0), Fraction(17 * k, 33))
+    assert float(centered_hole.centroid().x).hex() == '0x0.0p+0'
+
+
+def test_shared_centroid_recovers_residual_lost_before_final_snap() -> None:
+    cancellation_k = 2**54
+    cancellation = gm.Polygon([(-cancellation_k, 0), (cancellation_k, 0), (1, cancellation_k)])
+    _assert_exact_centroid(cancellation, Fraction(1, 3), Fraction(cancellation_k, 3))
+
+
+def test_shared_centroid_multipart_reuses_exact_component_centroids() -> None:
+    k = 2**50
+    polygon = gm.Polygon([(-k, 0), (k, 0), (1, k)])
+    expected = Fraction(1, 3), Fraction(k, 3)
+    for aggregate in (
+        gm.MultiPolygon([polygon, polygon]),
+        gm.GeometryCollection([polygon, polygon]),
+    ):
+        _assert_exact_centroid(aggregate, *expected)
+
+
 def test_finite_cancellation_area_rescue_is_rotation_and_multipart_invariant() -> None:
     """A finite but cancellation-damaged shoelace must take the exact frame."""
     epsilon = 2.0**-27
