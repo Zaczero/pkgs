@@ -366,6 +366,42 @@ def test_s2_bbox_uses_the_same_atomic_union_and_global_budget() -> None:
             )
 
 
+def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> None:
+    """Adaptive bbox windows share one finite deduplicated output budget."""
+    separated = gm.MultiPoint([(0.0, 0.0), (120.0, 0.0)], crs=4326)
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(
+            separated,
+            cell_rule='bbox',
+            min_level=0,
+            max_level=4,
+            target_cells=64,
+            max_cells=1,
+        )
+
+    covered = gm.s2_cover(
+        separated,
+        cell_rule='bbox',
+        min_level=0,
+        max_level=4,
+        target_cells=64,
+        max_cells=2,
+    )
+    assert len(covered) == 2
+    assert [cell.id for cell in covered] == sorted({cell.id for cell in covered})
+
+    same_cell = gm.MultiPoint([(-75.0, 40.0), (-74.99, 40.01)], crs=4326)
+    deduplicated = gm.s2_cover(
+        same_cell,
+        cell_rule='bbox',
+        min_level=0,
+        max_level=4,
+        target_cells=64,
+        max_cells=1,
+    )
+    assert len(deduplicated) == 1
+
+
 def test_s2_cover_superset_invariant_over_handwritten_corpus() -> None:
     """Every source point must lie in some returned cell.
 

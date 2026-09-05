@@ -21,19 +21,10 @@ use crate::py::cells::{
     Bound, CellRule, PyErr, PyGeometry, PyModule, PyModuleMethods as _, PyResult,
 };
 
-/// Level-budget knobs shared by cover construction and lazy membership.
-struct S2Budget {
-    min_level: u8,
-    max_level: u8,
-    level_mod: u8,
-    max_cells: Option<usize>,
-    target_cells: usize,
-}
-
 /// Failure that can occur while building a union of atomic S2 covers.
 ///
-/// The cover budget is cacheable by lazy membership; allocation is transient
-/// and must remain a Python memory error rather than a poisoned partition.
+/// Allocation is transient and must remain a Python memory error rather than a
+/// poisoned partition.
 #[derive(Debug)]
 pub(super) enum S2ComponentCoverError {
     Budget(crate::grid::CoverBudgetExceeded),
@@ -264,6 +255,11 @@ fn cover_s2_shapes(
         return Ok(Vec::new());
     }
 
+    // A finite hard cap also bounds the aggregate adaptive target. Otherwise
+    // each independent bbox window can spend the full quality target before
+    // the deduplicated aggregate sink sees its cells.
+    let target_cells = max_cells.map_or(target_cells, |limit| target_cells.min(limit));
+
     // `target_cells` describes the returned coverage, not every syntactic
     // member of a Multi* carrier.  First measure each component's irreducible
     // min-level emission, then apportion only the remaining global budget.
@@ -309,9 +305,7 @@ fn cover_s2_shapes(
         targets
     };
     let mut tagged = Vec::new();
-    let mut unique = (min_level == max_level)
-        .then(|| max_cells.map(|_| BTreeMap::<CellId, bool>::new()))
-        .flatten();
+    let mut unique = max_cells.map(|_| BTreeMap::<CellId, bool>::new());
     for (component, component_target) in components.iter().zip(component_targets) {
         let covered = cover_s2_component(
             component,
@@ -401,12 +395,11 @@ pub(super) fn cover_s2_components(
     .map(Covering::into_cells)
 }
 
-/// Select visible cells + lazy/seeded membership from a tagged coverer emission.
+/// Select visible cells from a tagged coverer emission.
 fn membership_from_tagged(
     tagged: Vec<(CellId, bool)>,
     cell_rule: CellRule,
     bbox_visible: Option<Vec<CellId>>,
-    max_cells: Option<usize>,
 ) -> PyResult<Vec<CellId>> {
     if cell_rule == CellRule::Bbox {
         return Ok(bbox_visible.expect("bbox cells were built"));
@@ -416,15 +409,12 @@ fn membership_from_tagged(
         crate::try_reserve_vec(&mut cells, tagged.len()).map_err(PyErr::from)?;
     }
     match cell_rule {
-        // Overlap already builds the annotated product — seed the inspection
-        // partition so interior/boundary do not re-cover.
         CellRule::Bbox => unreachable!("bbox membership returned before allocation"),
         // Rule-specific visibility was decided by the cover traversal. The
-        // tagged stream therefore contains only retained result cells.
+        // tagged stream therefore contains only retained, budgeted result
+        // cells.
         CellRule::Overlap | CellRule::Within | CellRule::Center => {
             for (cell, _) in tagged {
-                crate::grid::ensure_cover_budget(cells.len().saturating_add(1), max_cells)
-                    .map_err(coverage_ops::cover_budget_err)?;
                 crate::try_push_vec(&mut cells, cell).map_err(PyErr::from)?;
             }
         },
@@ -435,21 +425,13 @@ fn membership_from_tagged(
 /// Build an exact-classified S2 coverage of `geometry` (the
 /// ``s2_cover(...)`` backend).
 ///
-/// Visible cells come from the coverer for `cell_rule` only. The inspection
-/// partition is lazy across all grids (seeded immediately only for the
-/// overlap rule, which already produces the annotated product).
+/// Visible cells come from the coverer for `cell_rule` only; the tagged
+/// emission has already applied its visibility and finite-budget policy.
 pub(crate) fn build_coverage(
     geometry: &PyGeometry,
-    parsed: S2LevelBudget,
+    budget: S2LevelBudget,
     cell_rule: CellRule,
 ) -> PyResult<Vec<CellId>> {
-    let budget = S2Budget {
-        min_level: parsed.min_level,
-        max_level: parsed.max_level,
-        level_mod: parsed.level_mod,
-        max_cells: parsed.max_cells,
-        target_cells: parsed.target_cells,
-    };
     let (membership_geometry, cover_shape) = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
         // Cover each non-wrapped lon/lat window separately and deduplicate.
@@ -515,7 +497,7 @@ pub(crate) fn build_coverage(
         (tagged, None)
     };
 
-    let cells = membership_from_tagged(tagged, cell_rule, bbox_visible, budget.max_cells)?;
+    let cells = membership_from_tagged(tagged, cell_rule, bbox_visible)?;
     Ok(cells)
 }
 
