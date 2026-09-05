@@ -28,6 +28,9 @@ use crate::py::errors::InvalidGeometryError;
 /// zoom : int or sequence of int
 ///     Zoom level (0-29; finer at higher values). A scalar broadcasts to
 ///     every row; an array supplies one zoom per row.
+///     Geographic point ownership follows the emitted binary64 tile edges,
+///     with west-inclusive/east-exclusive longitude and
+///     north-inclusive/south-exclusive latitude ties.
 ///
 /// Returns
 /// -------

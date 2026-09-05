@@ -552,6 +552,13 @@ Geohash and tiles are *rectangular* grids — every cell is an exact lon/lat
 rectangle, and their cover keys use those rectangles rather than a separate
 bounding-box approximation. They wear the same API as H3 and S2.
 
+Tile point ownership is representational: geographic construction uses the
+same emitted binary64 edges as the tile footprint. Longitude is
+west-inclusive/east-exclusive, and latitude is north-inclusive/south-exclusive
+at shared edges. This defines stable cell IDs for stored floating-point
+coordinates; it is not a claim that the ideal Web Mercator transcendental
+function is exactly rounded in binary64.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 point = gm.Point(13.4, 52.5, crs=4326)

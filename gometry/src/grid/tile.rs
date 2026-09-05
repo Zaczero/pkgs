@@ -64,6 +64,48 @@ pub(crate) struct Tile {
 
 crate::heapless!(Tile);
 
+fn tile_cells(zoom: u8) -> f64 {
+    2_f64.powi(i32::from(zoom))
+}
+
+/// One emitted longitude boundary in the canonical `[-180, 180]` spelling.
+fn longitude_boundary(index: u32, cells: f64) -> f64 {
+    f64::from(index) / cells * 360.0 - 180.0
+}
+
+/// One emitted latitude boundary, with rows increasing southward.
+fn latitude_boundary(index: u32, cells: f64) -> f64 {
+    let n = PI * (1.0 - 2.0 * f64::from(index) / cells);
+    n.sinh().atan().to_degrees()
+}
+
+/// Correct a longitude seed against the emitted half-open boundaries.
+fn locate_longitude(lon: f64, seed: u32, cells: f64) -> u32 {
+    let limit = cells as u32;
+    let mut index = seed.min(limit - 1);
+    while index > 0 && lon < longitude_boundary(index, cells) {
+        index -= 1;
+    }
+    while index + 1 < limit && lon >= longitude_boundary(index + 1, cells) {
+        index += 1;
+    }
+    index
+}
+
+/// Correct a latitude seed against the emitted north-inclusive, south-exclusive
+/// boundaries. The boundary at row `index` is that row's north edge.
+fn locate_latitude(lat: f64, seed: u32, cells: f64) -> u32 {
+    let limit = cells as u32;
+    let mut index = seed.min(limit - 1);
+    while index > 0 && lat > latitude_boundary(index, cells) {
+        index -= 1;
+    }
+    while index + 1 < limit && lat <= latitude_boundary(index + 1, cells) {
+        index += 1;
+    }
+    index
+}
+
 impl Tile {
     /// The packed id: zoom in bits 63..58, Morton-interleaved `x`/`y`
     /// (y in the higher bit of each pair, so the id sorts in quadkey
@@ -101,32 +143,22 @@ impl Tile {
         if !latitude_in_tile_domain(lat) {
             return None;
         }
-        let cells = 2_f64.powi(i32::from(zoom));
-        let x = ((lon + 180.0) / 360.0 * cells).floor();
+        let cells = tile_cells(zoom);
+        let last = cells - 1.0;
+        // The forward projection is only a seed. Point ownership follows the
+        // rounded boundaries emitted by `bounds()` on both axes.
+        let x_seed = (((lon + 180.0) / 360.0 * cells).floor().clamp(0.0, last)) as u32;
         let lat_rad = lat.to_radians();
         // Canonical Web Mercator forward form: one tangent instead of the
-        // equivalent `tan(lat) + sec(lat)` pair used by the traditional
-        // slippy-map spelling. This is the same one-trig identity used by the
-        // in-core projection kernel.
+        // equivalent `tan(lat) + sec(lat)` pair. This is the same one-trig
+        // identity used by the in-core projection kernel.
         let mercator_y = (PI / 4.0 + lat_rad / 2.0).tan().ln();
         let normalized_y = (1.0 - mercator_y / PI) / 2.0 * cells;
-        let fraction = normalized_y.fract().abs();
-        let boundary_distance = fraction.min(1.0 - fraction);
-        // The two algebraically equivalent spellings round differently only
-        // within a few ulps of an integer tile boundary. Preserve the existing
-        // public row assignment there with the historical expression; ordinary
-        // coordinates stay on the one-trig fast path.
-        let boundary_slack = 16.0 * f64::EPSILON * cells;
-        let y = if boundary_distance <= boundary_slack {
-            ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / PI) / 2.0 * cells).floor()
-        } else {
-            normalized_y.floor()
-        };
-        let last = cells - 1.0;
+        let y_seed = normalized_y.floor().clamp(0.0, last) as u32;
         Some(Self {
             z: zoom,
-            x: x.clamp(0.0, last) as u32,
-            y: y.clamp(0.0, last) as u32,
+            x: locate_longitude(lon, x_seed, cells),
+            y: locate_latitude(lat, y_seed, cells),
         })
     }
 
@@ -171,22 +203,21 @@ impl Tile {
     }
 
     /// Lon/lat bounds (mercantile `bounds`).
+    ///
+    /// The returned binary64 edges are the representational boundaries used
+    /// for point ownership; this does not claim exact ideal-transcendental
+    /// Web Mercator inversion.
     #[expect(
         clippy::same_name_method,
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) fn bounds(self) -> Bounds {
-        let cells = 2_f64.powi(i32::from(self.z));
-        let lon = |x: f64| x / cells * 360.0 - 180.0;
-        let lat = |y: f64| {
-            let n = PI * (1.0 - 2.0 * y / cells);
-            n.sinh().atan().to_degrees()
-        };
+        let cells = tile_cells(self.z);
         Bounds::new_raw(
-            lon(f64::from(self.x)),
-            lat(f64::from(self.y) + 1.0),
-            lon(f64::from(self.x) + 1.0),
-            lat(f64::from(self.y)),
+            longitude_boundary(self.x, cells),
+            latitude_boundary(self.y + 1, cells),
+            longitude_boundary(self.x + 1, cells),
+            latitude_boundary(self.y, cells),
         )
     }
 
@@ -265,14 +296,14 @@ impl crate::grid::coverer::RectCell for Tile {
         Self::children(self).into_iter()
     }
     fn push_children_bounds(self, parent: Bounds, out: &mut Vec<(Self, Bounds)>) {
-        // Lon is linear in tile x; lat is mercator — one mid-row latitude
-        // (parent y + 0.5) splits the four children, matching `bounds()` bit-
-        // for-bit without four full sinh/atan recomputes.
-        let mid_lon = f64::midpoint(parent.minx(), parent.maxx());
-        // `1 << z` is exact for z ≤ 29 (TILE_MAX_ZOOM); same value as `2.0.powi(z)`.
-        let cells = f64::from(1_u32 << u32::from(self.z));
-        let n = PI * (1.0 - 2.0 * (f64::from(self.y) + 0.5) / cells);
-        let mid_lat = n.sinh().atan().to_degrees();
+        // Child edges use the same emitted-boundary functions as `bounds()`.
+        // The child grid has twice the parent's cell count, so the shared
+        // midpoint is just its odd-indexed boundary.
+        let child_cells = tile_cells(self.z) * 2.0;
+        let child_x = self.x * 2;
+        let child_y = self.y * 2;
+        let mid_lon = longitude_boundary(child_x + 1, child_cells);
+        let mid_lat = latitude_boundary(child_y + 1, child_cells);
         let kids = Self::children(self);
         out.push((
             kids[0],
@@ -309,15 +340,6 @@ impl crate::grid::coverer::RectCell for Tile {
 mod tests {
     use super::*;
 
-    fn reference_tile_y(lat: f64, zoom: u8) -> u32 {
-        let cells = 2_f64.powi(i32::from(zoom));
-        let lat_rad = lat
-            .clamp(-TILE_MAX_LATITUDE, TILE_MAX_LATITUDE)
-            .to_radians();
-        let y = ((1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / PI) / 2.0 * cells).floor();
-        y.clamp(0.0, cells - 1.0) as u32
-    }
-
     #[test]
     fn push_children_bounds_match_child_bounds_bit_exact() {
         use crate::grid::coverer::RectCell as _;
@@ -333,6 +355,11 @@ mod tests {
                 z: 15,
                 x: 10_000,
                 y: 12_000,
+            },
+            Tile {
+                z: 28,
+                x: 123_456_789,
+                y: 234_567_890,
             },
         ];
         for parent in parents {
@@ -491,9 +518,21 @@ mod tests {
     }
 
     #[test]
-    fn one_trig_web_mercator_matches_tile_rows_at_boundaries() {
+    fn maximum_zoom_id_round_trips_full_morton_payload() {
+        let last = (1_u32 << TILE_MAX_ZOOM) - 1;
+        let tile = Tile {
+            z: TILE_MAX_ZOOM,
+            x: last,
+            y: last,
+        };
+        assert_eq!(tile.id(), 0x77FF_FFFF_FFFF_FFFF);
+        assert_eq!(Tile::from_id(tile.id()), Some(tile));
+    }
+
+    #[test]
+    fn emitted_latitude_boundaries_have_stable_owners() {
         for zoom in 0..=TILE_MAX_ZOOM {
-            let cells = 1_u32 << u32::from(zoom);
+            let cells = tile_cells(zoom) as u32;
             let rows = [
                 0,
                 1.min(cells - 1),
@@ -504,43 +543,154 @@ mod tests {
                 cells - 1,
             ];
             for row in rows {
-                let n = PI * (1.0 - 2.0 * f64::from(row) / f64::from(cells));
-                let boundary = n.sinh().atan().to_degrees();
-                for lat in [boundary.next_down(), boundary, boundary.next_up()] {
-                    if !(-TILE_MAX_LATITUDE..=TILE_MAX_LATITUDE).contains(&lat) {
-                        assert!(
-                            Tile::from_lonlat(0.0, lat, zoom).is_none(),
-                            "zoom={zoom} row={row} lat={lat:?}"
-                        );
-                        continue;
-                    }
+                let boundary = latitude_boundary(row, f64::from(cells));
+                assert_eq!(
+                    Tile::from_lonlat(0.0, boundary, zoom).expect("in domain").y,
+                    row,
+                    "exact north edge: zoom={zoom} row={row}"
+                );
+                if row > 0 {
                     assert_eq!(
-                        Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
-                        reference_tile_y(lat, zoom),
-                        "zoom={zoom} row={row} lat={lat:?}"
+                        Tile::from_lonlat(0.0, boundary.next_up(), zoom)
+                            .expect("in domain")
+                            .y,
+                        row - 1,
+                        "north of edge: zoom={zoom} row={row}"
+                    );
+                }
+                if row + 1 < cells {
+                    assert_eq!(
+                        Tile::from_lonlat(0.0, boundary.next_down(), zoom)
+                            .expect("in domain")
+                            .y,
+                        row,
+                        "south of edge: zoom={zoom} row={row}"
                     );
                 }
             }
-            for lat in [
-                -85.051_128_779_806_6,
-                -80.0,
-                -66.513_260_443_111_86,
-                -45.0,
-                -1e-12,
-                0.0,
-                1e-12,
-                45.0,
-                66.513_260_443_111_86,
-                80.0,
-                85.051_128_779_806_6,
-            ] {
+        }
+    }
+
+    #[test]
+    fn named_latitude_boundaries_keep_literal_row_ownership() {
+        let cases = [
+            (4, 79.171_334_640_819_44, 2),
+            (4, 79.171_334_640_819_45, 2),
+            (4, 79.171_334_640_819_47, 1),
+            (4, -74.019_543_311_502_28, 13),
+            (29, 83.731_647_374_545_96, 20_227_569),
+            (29, 83.731_647_374_545_97, 20_227_569),
+            (29, 83.731_647_374_545_99, 20_227_568),
+            (29, -80.579_680_698_441_98, 481_729_089),
+        ];
+        for (zoom, lat, expected) in cases {
+            assert_eq!(
+                Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
+                expected,
+                "zoom={zoom} lat={lat:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn emitted_longitude_boundaries_are_half_open() {
+        let cases = [
+            (1, 1, -5e-324, 0),
+            (1, 1, 0.0, 1),
+            (1, 1, 5e-324, 1),
+            (29, 268_435_456, 0.0, 268_435_456),
+        ];
+        for (zoom, index, lon, expected) in cases {
+            assert_eq!(
+                Tile::from_lonlat(lon, 0.0, zoom).expect("in domain").x,
+                expected,
+                "zoom={zoom} index={index} lon={lon:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn emitted_boundaries_are_strictly_ordered() {
+        for zoom in 0..=TILE_MAX_ZOOM {
+            let cells = tile_cells(zoom) as u32;
+            let count = if zoom <= 20 { cells + 1 } else { 1_001 };
+            let mut previous_lon = longitude_boundary(0, f64::from(cells));
+            let mut previous_lat = latitude_boundary(0, f64::from(cells));
+            for offset in 1..count {
+                let index = if zoom <= 20 {
+                    offset
+                } else {
+                    u32::try_from(u64::from(offset) * u64::from(cells) / u64::from(count - 1))
+                        .expect("sampled boundary index fits u32")
+                };
+                let lon = longitude_boundary(index, f64::from(cells));
+                let lat = latitude_boundary(index, f64::from(cells));
+                assert!(lon > previous_lon, "longitude zoom={zoom} index={index}");
+                assert!(lat < previous_lat, "latitude zoom={zoom} index={index}");
+                previous_lon = lon;
+                previous_lat = lat;
+            }
+            assert_eq!(
+                latitude_boundary(0, f64::from(cells)).to_bits(),
+                TILE_MAX_LATITUDE.to_bits(),
+                "north edge zoom={zoom}"
+            );
+            assert_eq!(
+                latitude_boundary(cells, f64::from(cells)).to_bits(),
+                (-TILE_MAX_LATITUDE).to_bits(),
+                "south edge zoom={zoom}"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_and_child_boundaries_are_bit_identical() {
+        for zoom in 0..TILE_MAX_ZOOM {
+            let cells = tile_cells(zoom);
+            let child_cells = cells * 2.0;
+            let count = cells as u32;
+            let indices = if zoom <= 20 {
+                (0..=count).collect::<Vec<_>>()
+            } else {
+                (0_u32..=1_000)
+                    .map(|offset| {
+                        u32::try_from(u64::from(offset) * u64::from(count) / 1_000)
+                            .expect("sampled boundary index fits u32")
+                    })
+                    .collect::<Vec<_>>()
+            };
+            for index in indices {
                 assert_eq!(
-                    Tile::from_lonlat(0.0, lat, zoom).expect("in domain").y,
-                    reference_tile_y(lat, zoom),
-                    "zoom={zoom} lat={lat:?}"
+                    longitude_boundary(index, cells).to_bits(),
+                    longitude_boundary(index * 2, child_cells).to_bits(),
+                    "longitude zoom={zoom} index={index}"
+                );
+                assert_eq!(
+                    latitude_boundary(index, cells).to_bits(),
+                    latitude_boundary(index * 2, child_cells).to_bits(),
+                    "latitude zoom={zoom} index={index}"
                 );
             }
-            for lat in [-90.0, 90.0, 86.0, -86.0] {
+        }
+    }
+
+    #[test]
+    fn outer_latitude_edges_keep_admission_and_error_contract() {
+        for zoom in 0..=TILE_MAX_ZOOM {
+            let last = tile_cells(zoom) as u32 - 1;
+            assert_eq!(
+                Tile::from_lonlat(0.0, TILE_MAX_LATITUDE, zoom)
+                    .expect("north edge is in domain")
+                    .y,
+                0
+            );
+            assert_eq!(
+                Tile::from_lonlat(0.0, -TILE_MAX_LATITUDE, zoom)
+                    .expect("south edge is in domain")
+                    .y,
+                last
+            );
+            for lat in [-90.0, 90.0, -86.0, 86.0] {
                 assert!(
                     Tile::from_lonlat(0.0, lat, zoom).is_none(),
                     "zoom={zoom} lat={lat:?}"

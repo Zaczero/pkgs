@@ -13258,6 +13258,10 @@ class Tile(_NumericCell):
     so sorted ids group spatial neighbors. Convert via ``Tile(value)``,
     ``Tile(Point(...), zoom=...)``, ``Tile(lon=..., lat=..., zoom=...)``, or
     ``Tile(x=..., y=..., zoom=...)``. Coordinate frames are always named.
+    Geographic point ownership follows the emitted binary64 tile boundaries,
+    with longitude west-inclusive/east-exclusive and latitude
+    north-inclusive/south-exclusive ties. This is a representational boundary
+    contract, not a claim of exact ideal-transcendental Web Mercator rounding.
     """
 
     __match_args__: Final = ('id',)
@@ -19038,6 +19042,9 @@ def tile_cover(
 
     zoom : int
         Tile zoom (``0``-``29``; finer at higher values).
+        Tile rectangles use their emitted binary64 boundaries; this is a
+        representational contract rather than exact ideal-transcendental
+        Web Mercator arithmetic.
 
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize. ``'within'`` selects cells entirely inside;
@@ -19098,6 +19105,9 @@ def tile_cells(
     zoom : int or sequence of int
         Zoom level (0-29; finer at higher values). A scalar broadcasts to
         every row; an array supplies one zoom per row.
+        Geographic point ownership follows the emitted binary64 tile edges,
+        with west-inclusive/east-exclusive longitude and
+        north-inclusive/south-exclusive latitude ties.
 
     Returns
     -------

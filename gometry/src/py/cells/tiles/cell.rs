@@ -31,6 +31,10 @@ use crate::py::errors::{parse_error, tag_parse_format};
 /// so sorted ids group spatial neighbors. Convert via ``Tile(value)``,
 /// ``Tile(Point(...), zoom=...)``, ``Tile(lon=..., lat=..., zoom=...)``, or
 /// ``Tile(x=..., y=..., zoom=...)``. Coordinate frames are always named.
+/// Geographic point ownership follows the emitted binary64 tile boundaries,
+/// with longitude west-inclusive/east-exclusive and latitude
+/// north-inclusive/south-exclusive ties. This is a representational boundary
+/// contract, not a claim of exact ideal-transcendental Web Mercator rounding.
 #[pyclass(
     name = "Tile",
     module = "gometry",

@@ -216,6 +216,47 @@ def test_tile_construct_keywords_disambiguate_coordinate_frames() -> None:
         gm.Tile(13.4, lon=13.4, lat=52.5, zoom=12, x=105, y=201)
 
 
+def test_tile_boundary_owner_is_shared_by_scalar_and_array_construction() -> None:
+    cases = [
+        (4, -180.0, 79.171_334_640_819_44, 0, 2),
+        (4, -180.0, 79.171_334_640_819_45, 0, 2),
+        (4, -180.0, 79.171_334_640_819_47, 0, 1),
+        (4, -180.0, -74.019_543_311_502_28, 0, 13),
+        (29, -180.0, 83.731_647_374_545_96, 0, 20_227_569),
+        (29, -180.0, 83.731_647_374_545_97, 0, 20_227_569),
+        (29, -180.0, 83.731_647_374_545_99, 0, 20_227_568),
+        (29, -180.0, -80.579_680_698_441_98, 0, 481_729_089),
+        (1, np.nextafter(0.0, -np.inf), 1.0, 0, 0),
+        (1, 0.0, 1.0, 1, 0),
+    ]
+    for zoom, lon, lat, expected_x, expected_y in cases:
+        scalar = gm.Tile(lon=lon, lat=lat, zoom=zoom)
+        assert (scalar.x, scalar.y) == (expected_x, expected_y)
+        assert gm.Tile(gm.Point(lon, lat, crs=4326), zoom=zoom) == scalar
+
+    cells = gm.tile_cells(
+        [case[1] for case in cases],
+        [case[2] for case in cases],
+        zoom=[case[0] for case in cases],
+    )
+    assert [(cell.zoom, cell.x, cell.y) for cell in cells] == [
+        (zoom, expected_x, expected_y)
+        for zoom, _, _, expected_x, expected_y in cases
+    ]
+
+
+@pytest.mark.parametrize('zoom', [0, 4, 29])
+def test_tile_outer_latitude_edges_keep_admission_contract(zoom: int) -> None:
+    cells = 1 << zoom
+    assert gm.Tile(lon=0.0, lat=85.051_128_779_806_6, zoom=zoom).y == 0
+    assert gm.Tile(lon=0.0, lat=-85.051_128_779_806_6, zoom=zoom).y == cells - 1
+    for lat in (-90.0, 90.0, -86.0, 86.0):
+        with pytest.raises(gm.GeometryError):
+            gm.Tile(lon=0.0, lat=lat, zoom=zoom)
+        with pytest.raises(gm.GeometryError):
+            gm.tile_cells([0.0], [lat], zoom=zoom)
+
+
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_children_count_parity_across_grids(grid: GridCase) -> None:
     """`children_count` is uniform: equals materialized children, default = +1,

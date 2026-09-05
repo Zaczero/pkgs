@@ -46,6 +46,9 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult
 ///
 /// zoom : int
 ///     Tile zoom (``0``-``29``; finer at higher values).
+///     Tile rectangles use their emitted binary64 boundaries; this is a
+///     representational contract rather than exact ideal-transcendental
+///     Web Mercator arithmetic.
 ///
 /// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
 ///     Which cells to materialize. ``'within'`` selects cells entirely inside;
