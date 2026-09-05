@@ -12,7 +12,7 @@
 
 use std::cmp::Ordering;
 use std::mem;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 
 use crate::error::ResourceError;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
@@ -23,13 +23,80 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
 use crate::geometry::{
-    ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY, same_point,
-    for_each_candidate_pair, single_chain,
+    ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Polygon, Result, Segment, XY,
+    for_each_candidate_pair, same_point, single_chain,
 };
 use crate::try_reserve_vec;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(in crate::geometry) struct NodeId(pub u32);
+
+struct ArealSources {
+    segments: Vec<Segment>,
+    source_rings: Vec<Option<u32>>,
+    polygon_rings: Vec<Range<usize>>,
+    ring_count: usize,
+}
+
+impl ArealSources {
+    fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
+        let mut sources = Self {
+            segments: Vec::new(),
+            source_rings: Vec::new(),
+            polygon_rings: Vec::new(),
+            ring_count: 0,
+        };
+        try_reserve_vec(&mut sources.polygon_rings, polygons.len())?;
+        for polygon in polygons {
+            let first_ring = sources.ring_count;
+            for ring in polygon.as_ref().rings() {
+                let ring_id =
+                    u32::try_from(sources.ring_count).map_err(|_| ResourceError::SizeOverflow)?;
+                sources.ring_count = sources
+                    .ring_count
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                let (xs, ys) = (ring.xs(), ring.ys());
+                let mut count = xs.len();
+                if count > 1 && xs[0] == xs[count - 1] && ys[0] == ys[count - 1] {
+                    count -= 1;
+                }
+                let total = sources
+                    .segments
+                    .len()
+                    .checked_add(count)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                u32::try_from(total).map_err(|_| ResourceError::SizeOverflow)?;
+                try_reserve_vec(&mut sources.segments, count)?;
+                try_reserve_vec(&mut sources.source_rings, count)?;
+                for from in 0..count {
+                    let to = if from + 1 == count { 0 } else { from + 1 };
+                    sources.segments.push(Segment {
+                        start: XY::new(xs[from], ys[from]),
+                        end: XY::new(xs[to], ys[to]),
+                    });
+                    sources.source_rings.push(Some(ring_id));
+                }
+            }
+            sources.polygon_rings.push(first_ring..sources.ring_count);
+        }
+        Ok(sources)
+    }
+
+    fn occupied(&self, windings: &[i64], odd: bool) -> bool {
+        let filled = |ring: usize| {
+            if odd {
+                windings[ring] % 2 != 0
+            } else {
+                windings[ring] != 0
+            }
+        };
+        self.polygon_rings.iter().any(|rings| {
+            let mut rings = rings.clone();
+            rings.next().is_some_and(filled) && !rings.any(filled)
+        })
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) enum NodeRecipe {
@@ -1431,6 +1498,78 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stored_ring_sources_keep_direction_and_shell_hole_composition() {
+        let polygon = |wkt| match crate::io::parse_wkt(wkt).unwrap() {
+            crate::geometry::Shape::Polygon(polygon) => polygon,
+            _ => unreachable!(),
+        };
+        let polygons = [
+            polygon("POLYGON ((0 0,0 4,4 4,4 0,0 0),(1 1,1 3,3 3,3 1,1 1))"),
+            polygon("POLYGON ((8 0,10 0,10 2,8 2,8 0))"),
+        ];
+        let sources = super::ArealSources::new(&polygons).unwrap();
+        assert_eq!(sources.ring_count, 3);
+        assert_eq!(sources.polygon_rings, [0..2, 2..3]);
+        assert_eq!(sources.segments[0].start, super::XY::new(0.0, 0.0));
+        assert_eq!(sources.segments[0].end, super::XY::new(0.0, 4.0));
+        assert_eq!(sources.segments[4].start, super::XY::new(1.0, 1.0));
+        assert_eq!(sources.segments[4].end, super::XY::new(1.0, 3.0));
+        assert_eq!(sources.source_rings, [
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2)
+        ]);
+        let case = run(&sources.segments);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        let mut labels = Vec::new();
+        partition
+            .visit_face_windings(
+                &topology,
+                &edges,
+                &faces,
+                &sources.source_rings,
+                sources.ring_count,
+                |_, winding| {
+                    labels.push((
+                        [winding[0], winding[1], winding[2]],
+                        sources.occupied(winding, false),
+                    ));
+                    Ok(())
+                },
+            )
+            .unwrap();
+        labels.sort_unstable();
+        assert_eq!(labels, [
+            ([-1, -1, 0], false),
+            ([-1, 0, 0], true),
+            ([0, 0, 0], false),
+            ([0, 0, 1], true)
+        ]);
+        for (windings, nonzero, parity) in [
+            ([0, 0, 0], false, false),
+            ([-2, 0, 0], true, false),
+            ([-1, -2, 0], false, true),
+            ([-1, 1, 0], false, false),
+            ([0, 1, 0], false, false),
+            ([-1, -1, 1], true, true),
+        ] {
+            assert_eq!(sources.occupied(&windings, false), nonzero, "{windings:?}");
+            assert_eq!(sources.occupied(&windings, true), parity, "{windings:?}");
+        }
+    }
+
     use super::super::noding::dedup_undirected_segments_sourced;
     use super::*;
     use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
