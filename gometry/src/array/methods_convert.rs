@@ -463,11 +463,7 @@ impl PyGeometryArray {
                     }
                 })?;
             if let Some(result) = clipped {
-                return Ok(if self.has_missing() {
-                    self.scatter_present_result(result)
-                } else {
-                    result
-                });
+                return Ok(result);
             }
         }
         self.map_shapes(|shape| {
