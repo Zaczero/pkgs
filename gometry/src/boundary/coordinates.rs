@@ -258,6 +258,11 @@ impl CoordinateView {
                 total
             },
             CoordinateOwner::Array { storage, missing } => {
+                if let (Some(missing), GeometryArrayStorage::Packed(PackedStorage::Points { .. })) =
+                    (missing.as_ref(), storage.as_ref())
+                {
+                    return missing.present_count();
+                }
                 if missing.is_some() {
                     let mut total = 0;
                     self.for_each(&mut |_, _, _, run| match run {
@@ -303,9 +308,8 @@ impl CoordinateView {
                 storage,
                 missing: Some(missing),
             } => match storage.as_ref() {
-                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                    let rows = crate::array::point_logical_len(coords, row_map.as_deref());
-                    (0..rows).filter(|&row| missing.is_valid(row)).count()
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
+                    missing.present_count()
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..

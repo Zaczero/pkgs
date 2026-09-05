@@ -425,6 +425,75 @@ def test_get_coordinates_return_index_gathered_selection() -> None:
     assert win_groups.offsets.tolist() == [0, 3, 5]
 
 
+@pytest.mark.parametrize(
+    ('missing', 'expected_rows'),
+    [
+        pytest.param([False, True, False], [0, 2], id='middle-null'),
+        pytest.param([True, False, False], [1, 2], id='leading-null'),
+        pytest.param([False, False, True], [0, 1], id='trailing-null'),
+    ],
+)
+def test_compact_nullable_point_coordinate_indices(
+    missing: list[bool], expected_rows: list[int]
+) -> None:
+    points = [
+        gm.Point(10.0, 20.0, z=30.0, m=40.0),
+        gm.Point(11.0, 21.0, z=31.0, m=41.0),
+        gm.Point(12.0, 22.0, z=32.0, m=42.0),
+    ]
+    values = [
+        point if not is_missing else None
+        for point, is_missing in zip(points, missing, strict=True)
+    ]
+    array = gm.GeometryArray(values)
+    expected_points = [points[row] for row in expected_rows]
+
+    assert len(array.coords) == len(expected_points)
+    assert array.coords.coordinate_axes == 'XYZM'
+    np.testing.assert_array_equal(array.coords.row_index, expected_rows)
+    columns = array.coords.to_dict(index=True)
+    np.testing.assert_array_equal(columns['index'], expected_rows)
+    np.testing.assert_array_equal(columns['x'], [point.x for point in expected_points])
+    np.testing.assert_array_equal(columns['z'], [point.z for point in expected_points])
+
+    matrix, indexes = gm.get_coordinates(values, axes='XYZM', return_index=True)
+    np.testing.assert_array_equal(indexes, expected_rows)
+    np.testing.assert_array_equal(
+        matrix,
+        [[point.x, point.y, point.z, point.m] for point in expected_points],
+    )
+
+
+def test_compact_nullable_point_coordinate_indices_preserve_slices_and_edges() -> None:
+    array = gm.GeometryArray([
+        gm.Point(10.0, 20.0, z=30.0),
+        None,
+        gm.Point(12.0, 22.0, z=32.0),
+    ])
+    reversed_array = array[::-1]
+    assert len(reversed_array.coords) == 2
+    np.testing.assert_array_equal(reversed_array.coords.row_index, [0, 2])
+    np.testing.assert_array_equal(reversed_array.coords.to_dict(index=True)['index'], [0, 2])
+    window = array[1:]
+    assert len(window.coords) == 1
+    np.testing.assert_array_equal(window.coords.row_index, [1])
+    np.testing.assert_array_equal(window.coords.to_dict(index=True)['index'], [1])
+
+    all_missing = array[[1]]
+    assert len(all_missing.coords) == 0
+    np.testing.assert_array_equal(all_missing.coords.row_index, [])
+    np.testing.assert_array_equal(all_missing.coords.to_dict(index=True)['index'], [])
+
+    empty = gm.from_wkt('POINT ZM EMPTY')
+    assert len(empty.coords) == 0
+    assert empty.coords.coordinate_axes == 'XYZM'
+    np.testing.assert_array_equal(empty.coords.row_index, [])
+    np.testing.assert_array_equal(empty.coords.to_dict(index=True)['index'], [])
+    matrix, indexes = gm.get_coordinates(empty, axes='XYZM', return_index=True)
+    assert matrix.shape == (0, 4)
+    np.testing.assert_array_equal(indexes, [])
+
+
 def _coordinate_roundtrip_geometries() -> list[gm.Geometry]:
     return [
         gm.Point(1, 2),
