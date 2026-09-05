@@ -48,6 +48,18 @@ pub(in crate::geometry) struct ExactSpan {
     pub unique: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VisibilityHit {
+    Node(NodeId),
+    Span(u32),
+}
+
+struct GlobalFaces {
+    walk_faces: Vec<u32>,
+    component_hosts: Vec<u32>,
+    count: u32,
+}
+
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactPartition<'a> {
     unique: &'a [Segment],
@@ -99,7 +111,11 @@ impl<'a> ExactPartition<'a> {
         }
     }
 
-    pub(in crate::geometry) fn compare_nodes(&self, left: NodeId, right: NodeId) -> Result<Ordering> {
+    pub(in crate::geometry) fn compare_nodes(
+        &self,
+        left: NodeId,
+        right: NodeId,
+    ) -> Result<Ordering> {
         if left == right {
             return Ok(Ordering::Equal);
         }
@@ -127,9 +143,7 @@ impl<'a> ExactPartition<'a> {
         // An atom follows its representative source's increasing parameter.
         let (a, b) = departure(left);
         let (c, d) = departure(right);
-        let upper = |start: XY, end: XY| {
-            end.y > start.y || (end.y == start.y && end.x > start.x)
-        };
+        let upper = |start: XY, end: XY| end.y > start.y || (end.y == start.y && end.x > start.x);
         let halves = upper(c, d).cmp(&upper(a, b));
         if halves != Ordering::Equal {
             return Ok(halves);
@@ -141,8 +155,14 @@ impl<'a> ExactPartition<'a> {
         let ay = difference(b.y, a.y)?;
         let bx = difference(d.x, c.x)?;
         let by = difference(d.y, c.y)?;
-        let sign = ax.try_product(&by)?.try_subtract(ay.try_product(&bx)?)?.sign();
-        debug_assert!(left == right || sign != ExactSign::Zero, "distinct atoms share a departure ray");
+        let sign = ax
+            .try_product(&by)?
+            .try_subtract(ay.try_product(&bx)?)?
+            .sign();
+        debug_assert!(
+            left == right || sign != ExactSign::Zero,
+            "distinct atoms share a departure ray"
+        );
         Ok(match sign {
             ExactSign::Positive => Ordering::Less,
             ExactSign::Negative => Ordering::Greater,
@@ -152,10 +172,17 @@ impl<'a> ExactPartition<'a> {
 
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
         let vertices = self.recipes.len();
-        let slots = self.spans.len().checked_mul(2).ok_or(ResourceError::SizeOverflow)?;
+        let slots = self
+            .spans
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
         u32::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?;
         let mut topology = IndexedTopology::default();
-        try_reserve_vec(&mut topology.starts, vertices.checked_add(1).ok_or(ResourceError::SizeOverflow)?)?;
+        try_reserve_vec(
+            &mut topology.starts,
+            vertices.checked_add(1).ok_or(ResourceError::SizeOverflow)?,
+        )?;
         topology.starts.resize(vertices + 1, 0);
         for span in &self.spans {
             topology.starts[span.start.0 as usize + 1] += 1;
@@ -179,14 +206,19 @@ impl<'a> ExactPartition<'a> {
         let mut row = Vec::new();
         for node in 0..vertices {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
-            if range.len() <= 2 {
+            // Visibility wedges need the angular origin even for degree two.
+            if range.len() <= 1 {
                 continue;
             }
             row.clear();
             try_reserve_vec(&mut row, range.len())?;
             row.extend_from_slice(&edge_of_slot[range.clone()]);
             let order = try_sort_indices(row.len(), |left, right| {
-                self.compare_departures(NodeId(node as u32), row[left as usize] as usize, row[right as usize] as usize)
+                self.compare_departures(
+                    NodeId(node as u32),
+                    row[left as usize] as usize,
+                    row[right as usize] as usize,
+                )
             })?;
             for (slot, index) in range.zip(order) {
                 edge_of_slot[slot] = row[index as usize];
@@ -197,14 +229,21 @@ impl<'a> ExactPartition<'a> {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
             for &edge in &edge_of_slot[range] {
                 let span = self.spans[edge as usize];
-                topology.targets.push(if span.start.0 == node as u32 { span.end.0 } else { span.start.0 });
+                topology.targets.push(if span.start.0 == node as u32 {
+                    span.end.0
+                } else {
+                    span.start.0
+                });
             }
         }
         try_reserve_vec(&mut topology.owners, slots)?;
         try_reserve_vec(&mut topology.twins, slots)?;
         try_reserve_vec(&mut topology.component_of, vertices)?;
         try_reserve_vec(&mut topology.face_of, slots)?;
-        try_reserve_vec(&mut topology.face_starts, slots.checked_add(1).ok_or(ResourceError::SizeOverflow)?)?;
+        try_reserve_vec(
+            &mut topology.face_starts,
+            slots.checked_add(1).ok_or(ResourceError::SizeOverflow)?,
+        )?;
         try_reserve_vec(&mut topology.face_slots, slots)?;
         let mut scratch = IndexedTopologyScratch::default();
         try_reserve_vec(&mut scratch.component_stack, vertices)?;
@@ -212,6 +251,190 @@ impl<'a> ExactPartition<'a> {
         try_reserve_vec(&mut scratch.edge_slots, self.spans.len())?;
         topology.finish(&edge_of_slot, &mut scratch);
         Ok((topology, edge_of_slot))
+    }
+
+    fn component_minima(&self, topology: &IndexedTopology) -> Result<Vec<NodeId>> {
+        let mut minima: Vec<NodeId> = Vec::new();
+        for (node, &component) in topology.component_of.iter().enumerate() {
+            let node = NodeId(node as u32);
+            if component as usize == minima.len() {
+                try_reserve_vec(&mut minima, 1)?;
+                minima.push(node);
+            } else {
+                let minimum = &mut minima[component as usize];
+                if self.compare_nodes(node, *minimum)? == Ordering::Less {
+                    *minimum = node;
+                }
+            }
+        }
+        Ok(minima)
+    }
+
+    fn exterior_walk(
+        &self,
+        topology: &IndexedTopology,
+        edges: &[u32],
+        root: NodeId,
+    ) -> Result<Option<u32>> {
+        let range = topology.starts[root.0 as usize] as usize
+            ..topology.starts[root.0 as usize + 1] as usize;
+        let mut chosen = None;
+        let mut has_upper = false;
+        let [_, ry, rw] = self.homogeneous(root)?;
+        for slot in range {
+            let target = NodeId(topology.targets[slot]);
+            let [_, ty, tw] = self.homogeneous(target)?;
+            let upper = try_compare_ratios(&ty, &tw, &ry, &rw)? != Ordering::Less;
+            // The leftward wedge follows the highest upper ray, or the highest
+            // lower ray when every departure points down and right.
+            if chosen.is_none() || (upper && !has_upper) {
+                chosen = Some(slot);
+                has_upper = upper;
+                continue;
+            }
+            if upper != has_upper {
+                continue;
+            }
+            let prior = chosen.unwrap();
+            if self.compare_departures(root, edges[prior] as usize, edges[slot] as usize)?
+                == Ordering::Less
+            {
+                chosen = Some(slot);
+            }
+        }
+        Ok(chosen.map(|slot| topology.face_of[slot]))
+    }
+
+    fn global_faces(&self, topology: &IndexedTopology, edges: &[u32]) -> Result<GlobalFaces> {
+        let minima = self.component_minima(topology)?;
+        let walks = topology.face_starts.len().saturating_sub(1);
+        let size = walks.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        u32::try_from(size).map_err(|_| ResourceError::SizeOverflow)?;
+        let mut links = Vec::new();
+        try_reserve_vec(&mut links, size)?;
+        links.extend(0..size as u32);
+        let mut component_hosts = Vec::new();
+        try_reserve_vec(&mut component_hosts, minima.len())?;
+        for root in minima {
+            let host = self
+                .first_left_contact(topology, root)?
+                .map_or(0, |hit| self.contact_walk(topology, edges, hit) + 1);
+            component_hosts.push(host);
+            if let Some(exterior) = self.exterior_walk(topology, edges, root)? {
+                // Every link reaches a component with a strictly smaller
+                // minimum x, so exterior links cannot form a cycle.
+                links[exterior as usize + 1] = host;
+            }
+        }
+        for start in 1..size {
+            let mut root = start as u32;
+            while links[root as usize] != root {
+                root = links[root as usize];
+            }
+            let mut node = start as u32;
+            while links[node as usize] != root {
+                let next = links[node as usize];
+                links[node as usize] = root;
+                node = next;
+            }
+        }
+        let mut labels = Vec::new();
+        try_reserve_vec(&mut labels, size)?;
+        labels.resize(size, 0);
+        let mut count = 1;
+        for node in 1..size {
+            if links[node] == node as u32 {
+                labels[node] = count;
+                count += 1;
+            }
+        }
+        for host in &mut component_hosts {
+            *host = labels[links[*host as usize] as usize];
+        }
+        let mut walk_faces = Vec::new();
+        try_reserve_vec(&mut walk_faces, walks)?;
+        walk_faces.extend(links[1..].iter().map(|&root| labels[root as usize]));
+        Ok(GlobalFaces {
+            walk_faces,
+            component_hosts,
+            count,
+        })
+    }
+
+    fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], hit: VisibilityHit) -> u32 {
+        let slot = match hit {
+            VisibilityHit::Node(node) => {
+                // A first leftward contact cannot have a departure toward the
+                // query: that atom would have supplied a closer contact.
+                topology.starts[node.0 as usize + 1] as usize - 1
+            },
+            VisibilityHit::Span(edge) => {
+                let span = self.spans[edge as usize];
+                let source = self.unique[span.unique as usize];
+                let origin = if source.end.y > source.start.y {
+                    span.end
+                } else {
+                    span.start
+                };
+                (topology.starts[origin.0 as usize] as usize
+                    ..topology.starts[origin.0 as usize + 1] as usize)
+                    .find(|&slot| edges[slot] == edge)
+                    .expect("contact atom has a departure slot")
+            },
+        };
+        topology.face_of[slot]
+    }
+
+    fn first_left_contact(
+        &self,
+        topology: &IndexedTopology,
+        query: NodeId,
+    ) -> Result<Option<VisibilityHit>> {
+        let component = topology.component_of[query.0 as usize];
+        let [qx, qy, qw] = self.homogeneous(query)?;
+        let mut nearest: Option<(ExactDyadic, ExactDyadic, VisibilityHit)> = None;
+        for (edge, span) in self.spans.iter().enumerate() {
+            if topology.component_of[span.start.0 as usize] == component {
+                continue;
+            }
+            let [ax, ay, aw] = self.homogeneous(span.start)?;
+            let [bx, by, bw] = self.homogeneous(span.end)?;
+            let a_side = try_compare_ratios(&ay, &aw, &qy, &qw)?;
+            let b_side = try_compare_ratios(&by, &bw, &qy, &qw)?;
+            let (x, w, hit) = if a_side == Ordering::Equal && b_side == Ordering::Equal {
+                if try_compare_ratios(&ax, &aw, &bx, &bw)? == Ordering::Greater {
+                    (ax, aw, VisibilityHit::Node(span.start))
+                } else {
+                    (bx, bw, VisibilityHit::Node(span.end))
+                }
+            } else if a_side == Ordering::Equal {
+                (ax, aw, VisibilityHit::Node(span.start))
+            } else if b_side == Ordering::Equal {
+                (bx, bw, VisibilityHit::Node(span.end))
+            } else if a_side == b_side {
+                continue;
+            } else {
+                let source = self.unique[span.unique as usize];
+                let sx = ExactDyadic::try_from_f64(source.start.x)?;
+                let sy = ExactDyadic::try_from_f64(source.start.y)?;
+                let dx = ExactDyadic::try_from_f64(source.end.x)?.try_subtract(sx.try_clone()?)?;
+                let dy = ExactDyadic::try_from_f64(source.end.y)?.try_subtract(sy.try_clone()?)?;
+                let w = dy.try_product(&qw)?;
+                let height = qy.try_clone()?.try_subtract(sy.try_product(&qw)?)?;
+                let x = sx.try_product(&w)?.try_add(dx.try_product(&height)?)?;
+                (x, w, VisibilityHit::Span(edge as u32))
+            };
+            if try_compare_ratios(&x, &w, &qx, &qw)? != Ordering::Less {
+                continue;
+            }
+            if let Some((nx, nw, _)) = &nearest
+                && try_compare_ratios(&x, &w, nx, nw)? != Ordering::Greater
+            {
+                continue;
+            }
+            nearest = Some((x, w, hit));
+        }
+        Ok(nearest.map(|(_, _, hit)| hit))
     }
 }
 
@@ -443,7 +666,9 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             push_contact_cut(&mut cuts[source], SourceParam::End, end_handle[source])?;
         }
         order.push(try_sort_indices(cuts[source].len(), |left, right| {
-            cuts[source][left as usize].param.cmp(&cuts[source][right as usize].param, &zero, &one)
+            cuts[source][left as usize]
+                .param
+                .cmp(&cuts[source][right as usize].param, &zero, &one)
         })?);
         union_equal_params(&cuts[source], &order[source], &mut forest, &zero, &one)?;
     }
@@ -827,7 +1052,10 @@ fn aggregate_atoms(
     Ok((spans, SegmentProvenance::from_csr(offsets, entries)))
 }
 
-fn try_sort_indices(n: usize, mut compare: impl FnMut(u32, u32) -> Result<Ordering>) -> Result<Vec<u32>> {
+fn try_sort_indices(
+    n: usize,
+    mut compare: impl FnMut(u32, u32) -> Result<Ordering>,
+) -> Result<Vec<u32>> {
     let count = u32::try_from(n).map_err(|_| ResourceError::SizeOverflow)?;
     let mut src = Vec::new();
     try_reserve_vec(&mut src, n)?;
@@ -1461,9 +1689,13 @@ mod tests {
             }
             let case = run(&sources);
             let partition = case.partition();
-            let constructed: Vec<_> = partition.recipes.iter().enumerate()
+            let constructed: Vec<_> = partition
+                .recipes
+                .iter()
+                .enumerate()
                 .filter(|(_, recipe)| matches!(recipe, NodeRecipe::Constructed { .. }))
-                .map(|(index, _)| NodeId(index as u32)).collect();
+                .map(|(index, _)| NodeId(index as u32))
+                .collect();
             assert_eq!(constructed.len(), 1);
             let crossing = constructed[0];
             let departures: Vec<_> = [
@@ -1471,17 +1703,30 @@ mod tests {
                 XY::new(4.0, 2.0),
                 XY::new(1.0, 0.0),
                 XY::new(0.0, -1.0),
-            ].into_iter().map(|point| {
+            ]
+            .into_iter()
+            .map(|point| {
                 let target = stored_node(&partition, point).unwrap();
-                partition.spans.iter().position(|span| {
-                    (span.start == crossing && span.end == target)
-                        || (span.end == crossing && span.start == target)
-                }).unwrap()
-            }).collect();
+                partition
+                    .spans
+                    .iter()
+                    .position(|span| {
+                        (span.start == crossing && span.end == target)
+                            || (span.end == crossing && span.start == target)
+                    })
+                    .unwrap()
+            })
+            .collect();
             for (position, &left) in departures.iter().enumerate() {
                 for &right in &departures[position + 1..] {
-                    assert_eq!(partition.compare_departures(crossing, left, right).unwrap(), Ordering::Less);
-                    assert_eq!(partition.compare_departures(crossing, right, left).unwrap(), Ordering::Greater);
+                    assert_eq!(
+                        partition.compare_departures(crossing, left, right).unwrap(),
+                        Ordering::Less
+                    );
+                    assert_eq!(
+                        partition.compare_departures(crossing, right, left).unwrap(),
+                        Ordering::Greater
+                    );
                 }
             }
             let [x, y, w] = partition.homogeneous(crossing).unwrap();
@@ -1496,15 +1741,31 @@ mod tests {
             let three = ExactDyadic::try_from_f64(3.0).unwrap();
             let zero = ExactDyadic::try_from_f64(0.0).unwrap();
             let one = ExactDyadic::try_from_f64(1.0).unwrap();
-            assert_eq!(try_compare_ratios(&x, &w, &four, &three).unwrap(), Ordering::Equal);
-            assert_eq!(try_compare_ratios(&y, &w, &zero, &one).unwrap(), Ordering::Equal);
+            assert_eq!(
+                try_compare_ratios(&x, &w, &four, &three).unwrap(),
+                Ordering::Equal
+            );
+            assert_eq!(
+                try_compare_ratios(&y, &w, &zero, &one).unwrap(),
+                Ordering::Equal
+            );
             let left = stored_node(&partition, XY::new(1.0, 0.0)).unwrap();
             let right = stored_node(&partition, XY::new(3.0, 0.0)).unwrap();
-            assert_eq!(partition.compare_nodes(left, crossing).unwrap(), Ordering::Less);
-            assert_eq!(partition.compare_nodes(right, crossing).unwrap(), Ordering::Greater);
-            let mut owner_counts: Vec<_> = partition.spans.iter().enumerate()
+            assert_eq!(
+                partition.compare_nodes(left, crossing).unwrap(),
+                Ordering::Less
+            );
+            assert_eq!(
+                partition.compare_nodes(right, crossing).unwrap(),
+                Ordering::Greater
+            );
+            let mut owner_counts: Vec<_> = partition
+                .spans
+                .iter()
+                .enumerate()
                 .filter(|(_, span)| span.start == crossing || span.end == crossing)
-                .map(|(index, _)| partition.owners(index).len()).collect();
+                .map(|(index, _)| partition.owners(index).len())
+                .collect();
             owner_counts.sort_unstable();
             assert_eq!(owner_counts, [1, 1, 3, 3]);
             assert_eq!(partition.spans.len(), 9);
@@ -1514,14 +1775,14 @@ mod tests {
     #[test]
     fn local_walks_keep_nested_components_and_bridge_sides_separate() {
         let case = run(&[
+            seg(8.0, 8.0, 9.0, 9.0),
+            seg(4.0, 2.0, 3.0, 4.0),
             seg(0.0, 0.0, 8.0, 0.0),
             seg(8.0, 0.0, 8.0, 8.0),
             seg(8.0, 8.0, 0.0, 8.0),
             seg(0.0, 8.0, 0.0, 0.0),
             seg(2.0, 2.0, 4.0, 2.0),
-            seg(4.0, 2.0, 3.0, 4.0),
             seg(3.0, 4.0, 2.0, 2.0),
-            seg(8.0, 8.0, 9.0, 9.0),
             seg(6.0, 6.0, 6.0, 6.0),
         ]);
         let partition = case.partition();
@@ -1529,12 +1790,35 @@ mod tests {
         let outer = stored_node(&partition, XY::new(0.0, 0.0)).unwrap().0 as usize;
         let inner = stored_node(&partition, XY::new(2.0, 2.0)).unwrap().0 as usize;
         let isolated = stored_node(&partition, XY::new(6.0, 6.0)).unwrap().0 as usize;
+        let minima = partition.component_minima(&topology).unwrap();
+        assert_eq!(minima.len(), 3);
+        assert_eq!(
+            minima[topology.component_of[outer] as usize],
+            NodeId(outer as u32)
+        );
+        assert_eq!(
+            minima[topology.component_of[inner] as usize],
+            NodeId(inner as u32)
+        );
+        assert_eq!(
+            minima[topology.component_of[isolated] as usize],
+            NodeId(isolated as u32)
+        );
         assert_ne!(topology.component_of[outer], topology.component_of[inner]);
-        assert_ne!(topology.component_of[outer], topology.component_of[isolated]);
-        assert_ne!(topology.component_of[inner], topology.component_of[isolated]);
+        assert_ne!(
+            topology.component_of[outer],
+            topology.component_of[isolated]
+        );
+        assert_ne!(
+            topology.component_of[inner],
+            topology.component_of[isolated]
+        );
         assert_eq!(topology.starts[isolated], topology.starts[isolated + 1]);
-        let mut lengths: Vec<_> = topology.face_starts.windows(2)
-            .map(|window| window[1] - window[0]).collect();
+        let mut lengths: Vec<_> = topology
+            .face_starts
+            .windows(2)
+            .map(|window| window[1] - window[0])
+            .collect();
         lengths.sort_unstable();
         assert_eq!(lengths, [3, 3, 4, 6]);
         let tip = stored_node(&partition, XY::new(9.0, 9.0)).unwrap().0 as usize;
@@ -1542,6 +1826,139 @@ mod tests {
         let twin = topology.twins[slot] as usize;
         assert_eq!(topology.face_of[slot], topology.face_of[twin]);
         assert_eq!(edges[slot], edges[twin]);
+        let outer_walk = partition
+            .exterior_walk(&topology, &edges, NodeId(outer as u32))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outer_walk, topology.face_of[slot]);
+        let inner_walk = partition
+            .exterior_walk(&topology, &edges, NodeId(inner as u32))
+            .unwrap()
+            .unwrap();
+        assert_ne!(inner_walk, outer_walk);
+        assert_eq!(
+            partition
+                .exterior_walk(&topology, &edges, NodeId(isolated as u32))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            partition
+                .first_left_contact(&topology, NodeId(outer as u32))
+                .unwrap(),
+            None
+        );
+        let wall_start = stored_node(&partition, XY::new(0.0, 8.0)).unwrap();
+        let wall = partition
+            .spans
+            .iter()
+            .position(|span| {
+                (span.start == wall_start && span.end == NodeId(outer as u32))
+                    || (span.end == wall_start && span.start == NodeId(outer as u32))
+            })
+            .unwrap();
+        for query in [inner, isolated] {
+            assert_eq!(
+                partition
+                    .first_left_contact(&topology, NodeId(query as u32))
+                    .unwrap(),
+                Some(VisibilityHit::Span(wall as u32))
+            );
+        }
+        let host = partition.contact_walk(&topology, &edges, VisibilityHit::Span(wall as u32));
+        assert_ne!(host, outer_walk);
+        let wall_slot = (topology.starts[outer] as usize..topology.starts[outer + 1] as usize)
+            .find(|&slot| edges[slot] == wall as u32)
+            .unwrap();
+        assert_eq!(host, topology.face_of[topology.twins[wall_slot] as usize]);
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(faces.count, 3);
+        assert_eq!(faces.walk_faces[outer_walk as usize], 0);
+        assert_eq!(
+            faces.walk_faces[inner_walk as usize],
+            faces.walk_faces[host as usize]
+        );
+        assert_ne!(faces.walk_faces[host as usize], 0);
+        assert_eq!(
+            faces.component_hosts[topology.component_of[isolated] as usize],
+            faces.walk_faces[host as usize]
+        );
+    }
+
+    #[test]
+    fn exterior_walk_at_minimum_with_only_lower_departures() {
+        let case = run(&[
+            seg(0.0, 0.0, 2.0, -3.0),
+            seg(2.0, -3.0, 3.0, -1.0),
+            seg(3.0, -1.0, 0.0, 0.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let root = stored_node(&partition, XY::new(0.0, 0.0)).unwrap();
+        let upper_target = stored_node(&partition, XY::new(3.0, -1.0)).unwrap();
+        let slot = (topology.starts[root.0 as usize] as usize
+            ..topology.starts[root.0 as usize + 1] as usize)
+            .find(|&slot| topology.targets[slot] == upper_target.0)
+            .unwrap();
+        let exterior = partition
+            .exterior_walk(&topology, &edges, root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exterior, topology.face_of[slot]);
+        assert_ne!(exterior, topology.face_of[topology.twins[slot] as usize]);
+    }
+
+    #[test]
+    fn visibility_keeps_horizontal_and_tangent_vertex_contacts() {
+        for segments in [
+            vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)],
+            vec![
+                seg(0.0, 2.0, 2.0, 0.0),
+                seg(2.0, 0.0, 3.0, 2.0),
+                seg(4.0, 0.0, 4.0, 0.0),
+            ],
+        ] {
+            let case = run(&segments);
+            let partition = case.partition();
+            let (topology, _) = partition.local_topology().unwrap();
+            let query = stored_node(&partition, XY::new(4.0, 0.0)).unwrap();
+            let contact = stored_node(&partition, XY::new(2.0, 0.0)).unwrap();
+            assert_eq!(
+                partition.first_left_contact(&topology, query).unwrap(),
+                Some(VisibilityHit::Node(contact))
+            );
+        }
+    }
+
+    #[test]
+    fn vertex_visibility_links_disconnected_exteriors_to_infinity() {
+        let case = run(&[
+            seg(0.0, 2.0, 2.0, 0.0),
+            seg(2.0, 0.0, 3.0, 2.0),
+            seg(3.0, 2.0, 0.0, 2.0),
+            seg(4.0, 0.0, 6.0, 0.0),
+            seg(6.0, 0.0, 5.0, 1.0),
+            seg(5.0, 1.0, 4.0, 0.0),
+            seg(8.0, 0.0, 8.0, 0.0),
+        ]);
+        let partition = case.partition();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let root = stored_node(&partition, XY::new(4.0, 0.0)).unwrap();
+        let contact = stored_node(&partition, XY::new(2.0, 0.0)).unwrap();
+        assert_eq!(
+            partition.first_left_contact(&topology, root).unwrap(),
+            Some(VisibilityHit::Node(contact))
+        );
+        let faces = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(faces.count, 3);
+        assert_eq!(faces.component_hosts, [0, 0, 0]);
+        let exterior = partition
+            .exterior_walk(&topology, &edges, root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(faces.walk_faces[exterior as usize], 0);
+        let host = partition.contact_walk(&topology, &edges, VisibilityHit::Node(contact));
+        assert_eq!(faces.walk_faces[host as usize], 0);
     }
 
     #[test]
