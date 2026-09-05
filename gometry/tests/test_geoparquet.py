@@ -206,6 +206,43 @@ def test_geoparquet_geometry_types_labels(parquet_path: str) -> None:
     assert labels == {'Point Z', 'GeometryCollection'}
 
 
+def test_geoparquet_geometry_types_helper_accepts_more_than_sixteen_labels() -> None:
+    geometries = gm.GeometryArray([
+        gm.from_wkt('POINT (0 0)'),
+        gm.from_wkt('POINT Z (0 0 1)'),
+        gm.from_wkt('POINT M (0 0 1)'),
+        gm.from_wkt('POINT ZM (0 0 1 1)'),
+        gm.from_wkt('LINESTRING (0 0, 1 1)'),
+        gm.from_wkt('LINESTRING Z (0 0 1, 1 1 1)'),
+        gm.from_wkt('LINESTRING M (0 0 1, 1 1 1)'),
+        gm.from_wkt('LINESTRING ZM (0 0 1 1, 1 1 1 1)'),
+        gm.from_wkt('POLYGON ((0 0, 1 0, 0 1, 0 0))'),
+        gm.from_wkt('POLYGON Z ((0 0 1, 1 0 1, 0 1 1, 0 0 1))'),
+        gm.from_wkt('POLYGON M ((0 0 1, 1 0 1, 0 1 1, 0 0 1))'),
+        gm.from_wkt('POLYGON ZM ((0 0 1 1, 1 0 1 1, 0 1 1 1, 0 0 1 1))'),
+        gm.from_wkt('MULTIPOINT ((0 0), (1 1))'),
+        gm.from_wkt('MULTIPOINT Z ((0 0 1), (1 1 1))'),
+        gm.from_wkt('MULTIPOINT M ((0 0 1), (1 1 1))'),
+        gm.from_wkt('MULTIPOINT ZM ((0 0 1 1), (1 1 1 1))'),
+        gm.from_wkt('MULTILINESTRING ((0 0, 1 1))'),
+        gm.from_wkt('MULTILINESTRING Z ((0 0 1, 1 1 1))'),
+        gm.from_wkt('MULTILINESTRING M ((0 0 1, 1 1 1))'),
+        gm.from_wkt('MULTILINESTRING ZM ((0 0 1 1, 1 1 1 1))'),
+    ])
+
+    labels = geometries._geoparquet_geometry_types()
+    assert len(labels) == 20
+    assert labels == sorted(labels)
+    assert {label.rsplit(' ', 1)[-1] for label in labels if ' ' in label} >= {
+        'Z',
+        'M',
+        'ZM',
+    }
+    assert {'Point', 'LineString', 'Polygon', 'MultiPoint', 'MultiLineString'} <= {
+        label.split(' ', 1)[0] for label in labels
+    }
+
+
 def test_geoparquet_writer_rejects_m_ordinates(parquet_path: str) -> None:
     values = gm.GeometryArray([gm.Point(0, 0, m=2, crs=4326)])
     with pytest.raises(gm.GeometryError, match='does not support M ordinates'):

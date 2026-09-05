@@ -703,7 +703,8 @@ PackedStorage::Lines { coords, .. } | PackedStorage::Polygons { coords, .. }) =>
                 }
             },
         }
-        try_collect_values(labels, 16)
+        let label_count = labels.len();
+        try_collect_values(labels.into_iter(), label_count)
     }
     /// Top-level parts grouped by source row.
     ///

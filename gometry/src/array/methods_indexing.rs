@@ -218,6 +218,9 @@ fn classify_and_collect_generic_sequence(
             if matches!(kind, FancyIndex::Invalid) {
                 return Ok(CollectedFancyIndex::Invalid);
             }
+            if mask.is_empty() {
+                crate::try_reserve_vec(&mut mask, items.len())?;
+            }
             mask.push(bound.extract::<bool>()?);
         } else {
             let integer = match crate::py_index_object("index", bound) {
