@@ -7,8 +7,8 @@
     reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
 )]
 use crate::geometry::{
-    Coordinates, Point, finish_planar_squared_min, packed_line_metrics, point_distance,
-    point_distance_squared, same_topological_coordinate,
+    Coordinates, Point, axis_extent, axis_pow2_scale, finish_planar_squared_min,
+    packed_line_metrics, point_distance, point_distance_squared, same_topological_coordinate,
 };
 pub(crate) fn frechet_distance_line_columns(
     left_xs: &[f64],
@@ -470,19 +470,21 @@ fn frechet_dp_columns_distance_framed(
         .copied()
         .or_else(|| long_ys.first().copied())
         .unwrap_or(0.0);
-    let mut max_abs = 0.0_f64;
-    for (&x, &y) in short_xs.iter().zip(short_ys) {
-        max_abs = max_abs.max((x - origin_x).abs()).max((y - origin_y).abs());
-    }
-    for (&x, &y) in long_xs.iter().zip(long_ys) {
-        max_abs = max_abs.max((x - origin_x).abs()).max((y - origin_y).abs());
-    }
+    let max_abs_x = axis_extent(
+        short_xs.iter().copied().chain(long_xs.iter().copied()),
+        origin_x,
+    );
+    let max_abs_y = axis_extent(
+        short_ys.iter().copied().chain(long_ys.iter().copied()),
+        origin_y,
+    );
+    let Some(max_abs) = max_abs_x.zip(max_abs_y).map(|(x, y)| x.max(y)) else {
+        return f64::INFINITY;
+    };
     if max_abs == 0.0 {
         return 0.0;
     }
-    let exp = max_abs.log2().floor();
-    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
-    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let scale = axis_pow2_scale(max_abs);
     let map = |xs: &[f64], ys: &[f64]| -> (Vec<f64>, Vec<f64>) {
         (
             xs.iter()
@@ -496,6 +498,25 @@ fn frechet_dp_columns_distance_framed(
     let (sxs, sys) = map(short_xs, short_ys);
     let (lxs, lys) = map(long_xs, long_ys);
     frechet_dp_columns_distance(&sxs, &sys, &lxs, &lys) / scale
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framed_distance_rescues_finite_opposite_extreme_operands() {
+        let magnitude = f64::MAX;
+        let short_x = [-magnitude, magnitude];
+        let short_y = [0.0, 0.0];
+        let long_x = [-magnitude, 0.0];
+        let long_y = [0.0, 0.0];
+
+        assert_eq!(
+            frechet_dp_columns_distance_framed(&short_x, &short_y, &long_x, &long_y).to_bits(),
+            magnitude.to_bits()
+        );
+    }
 }
 
 fn frechet_columns_vertexwise_equal(

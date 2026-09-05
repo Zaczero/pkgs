@@ -17,7 +17,7 @@
 mod access;
 mod frame;
 pub(crate) use frame::{
-    AxisFrame, axis_pow2_scale, power_of_two_exponent,
+    AxisFrame, axis_extent, axis_pow2_scale, power_of_two_exponent,
     scale_by_power_of_two, scaled_residual, unscale_area,
 };
 mod area;

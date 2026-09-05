@@ -6,7 +6,8 @@ use crate::error::Result;
 use crate::geometry::constructive::reversed_points;
 use crate::geometry::{
     AxisFrame, BinaryHeap, CoordSeq, Coordinates, GeometryErrorKind, Ordering, Point, REDUCE_LANES,
-    ReduceSimd, compare_f64, compare_point_slices, compare_points, power_of_two_exponent,
+    ReduceSimd, axis_pow2_scale, compare_f64, compare_point_slices, compare_points,
+    power_of_two_exponent,
     ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, simd_map_f64,
     topology_coordinate_bits_simd, try_simd_map_f64, wrap_index,
 };
@@ -317,9 +318,7 @@ pub(crate) fn stable_snap_ordinate(value: f64, origin: f64, size: f64) -> f64 {
     if max_abs == 0.0 || !max_abs.is_finite() {
         return classic;
     }
-    let exp = max_abs.log2().floor();
-    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
-    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let scale = axis_pow2_scale(max_abs);
     let delta = value * scale - origin * scale;
     let sized = size * scale;
     if sized == 0.0 || !sized.is_finite() || !delta.is_finite() {

@@ -6,17 +6,17 @@
 //! topology.  Consumers that need an area undo the two exponents together;
 //! consumers that only need a robust predicate retain the framed values.
 
+use crate::geometry::exact_arith::{exact_power_of_two, floor_binary_exponent};
 use crate::geometry::{Point, XY};
 
 /// Positive power-of-two scale that maps a finite nonzero magnitude close to
 /// one.  Tiny axes scale up and huge axes scale down.
 pub(crate) fn axis_pow2_scale(max_abs: f64) -> f64 {
-    if max_abs == 0.0 || !max_abs.is_finite() {
+    if max_abs <= 0.0 || !max_abs.is_finite() {
         return 1.0;
     }
-    let exp = max_abs.log2().floor();
-    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
-    f64::from_bits(((scale_exp + 1023) as u64) << 52)
+    let scale_exp = (-floor_binary_exponent(max_abs)).clamp(-1022, 1023);
+    exact_power_of_two(i16::try_from(scale_exp).expect("axis scale exponent fits i16"))
 }
 
 /// Residual in a power-of-two frame.
@@ -37,7 +37,7 @@ pub(crate) fn scaled_residual(value: f64, origin: f64, scale: f64) -> f64 {
 pub(crate) fn scale_by_power_of_two(mut value: f64, mut exponent: i32) -> f64 {
     while exponent != 0 {
         let step = exponent.clamp(-1022, 1023);
-        let factor = f64::from_bits(((step + 1023) as u64) << 52);
+        let factor = exact_power_of_two(i16::try_from(step).expect("scale step fits i16"));
         value *= factor;
         exponent -= step;
     }
@@ -46,7 +46,7 @@ pub(crate) fn scale_by_power_of_two(mut value: f64, mut exponent: i32) -> f64 {
 
 pub(crate) fn power_of_two_exponent(scale: f64) -> i32 {
     debug_assert!(scale.is_normal() && scale.is_sign_positive());
-    ((scale.to_bits() >> 52) & 0x7FF) as i32 - 1023
+    floor_binary_exponent(scale)
 }
 
 /// Undo an area in one exponent operation.  Separately unscaling the axes can
@@ -58,7 +58,11 @@ pub(crate) fn unscale_area(value: f64, scale_x: f64, scale_y: f64) -> f64 {
     )
 }
 
-fn axis_extent(values: impl IntoIterator<Item = f64>, origin: f64) -> Option<f64> {
+/// Maximum finite residual magnitude from `origin`.
+///
+/// When a finite subtraction overflows, return the maximum finite operand
+/// magnitude instead so [`scaled_residual`] can scale both operands first.
+pub(crate) fn axis_extent(values: impl IntoIterator<Item = f64>, origin: f64) -> Option<f64> {
     let mut extent = 0.0_f64;
     let mut absolute = origin.abs();
     let mut overflowed = false;
@@ -177,3 +181,34 @@ impl AxisFrame {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_scale_uses_the_exact_binary_exponent_at_boundaries() {
+        assert_eq!(
+            axis_pow2_scale(0.25_f64.next_down()).to_bits(),
+            8.0_f64.to_bits()
+        );
+        assert_eq!(
+            axis_pow2_scale(f64::from_bits((1_u64 << 52) - 1)).to_bits(),
+            2.0_f64.powi(1023).to_bits()
+        );
+    }
+
+    #[test]
+    fn axis_scale_keeps_zero_and_nonfinite_inputs_as_identity() {
+        for value in [0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(axis_pow2_scale(value).to_bits(), 1.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn overflowing_finite_residuals_keep_a_finite_scaled_operand_pair() {
+        let magnitude = 1.0e308_f64;
+        let extent = axis_extent([magnitude], -magnitude).expect("finite input");
+        let scale = axis_pow2_scale(extent);
+        assert!(scaled_residual(magnitude, -magnitude, scale).is_finite());
+    }
+}

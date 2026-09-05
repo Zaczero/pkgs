@@ -11,10 +11,10 @@ use crate::geometry::constructive::{
 use crate::geometry::{
     AxisFrame, Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon,
-    ReduceSimd, Ring, Shape, Strictness, ZOrdinate, carry_ordinates, clip_multipoint_columns,
-    clip_polygonal, clipped_line_parts, clipped_linestring, column_all_finite,
-    compare_point_slices, compare_points, compare_polygons, compare_shapes, line_parts_to_shape,
-    same_topological_coordinate, simd_xy_map_f64, simd_xy_map_one_f64,
+    ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
+    column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
+    line_parts_to_shape, same_topological_coordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
 
 /// Which optional ordinate [`Shape::set_z`]/[`Shape::set_m`] act on.
@@ -433,10 +433,7 @@ pub(crate) fn stable_affine_xy(
     if max_abs == 0.0 || !max_abs.is_finite() {
         return (classic_x, classic_y);
     }
-    // Map max |ordinate| into ~[0.5, 1).
-    let exp = max_abs.log2().floor();
-    let scale_exp = (-exp).clamp(-1022.0, 1023.0) as i32;
-    let scale = f64::from_bits(((scale_exp + 1023) as u64) << 52);
+    let scale = axis_pow2_scale(max_abs);
     let (xs, ys) = (x * scale, y * scale);
     let rx = (a * xs + b * ys) / scale + xoff;
     let ry = (d * xs + e * ys) / scale + yoff;
