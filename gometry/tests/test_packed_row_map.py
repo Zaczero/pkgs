@@ -221,6 +221,22 @@ def test_packed_polygon_per_row_bounds_include_external_hole() -> None:
     )
 
 
+def test_packed_polygon_bounds_keep_empty_and_missing_rows() -> None:
+    values = gm.GeometryArray([
+        _external_hole_polygon(),
+        gm.Polygon([], crs=3857),
+        None,
+    ], crs=3857)
+    np.testing.assert_array_equal(
+        values.bounds,
+        np.array([
+            _EXTERNAL_HOLE_BOUNDS,
+            [np.nan, np.nan, np.nan, np.nan],
+            [np.nan, np.nan, np.nan, np.nan],
+        ]),
+    )
+
+
 def test_packed_polygon_cold_total_bounds_include_external_hole() -> None:
     assert _external_hole_array().total_bounds == _EXTERNAL_HOLE_BOUNDS
 
