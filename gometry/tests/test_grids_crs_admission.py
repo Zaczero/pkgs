@@ -327,6 +327,151 @@ def test_c2_polar_stereo_variant_b_uses_standard_parallel():
     assert 'k_0=' not in text and '+k=' not in text
 
 
+_DEG = math.pi / 180.0
+_GRAD = math.pi / 200.0
+# International foot (EPSG:9002), exact.
+_INTL_FOOT = 0.3048
+
+
+def _polar_a_wkt(
+    *,
+    lat: float,
+    lon: float,
+    k: float,
+    false_easting: float,
+    false_northing: float,
+    angle_unit: str,
+    angle_factor: float,
+    length_unit: str,
+    length_factor: float,
+    axis_unit: str | None = None,
+    axis_factor: float | None = None,
+) -> str:
+    axis_unit = axis_unit or length_unit
+    axis_factor = length_factor if axis_factor is None else axis_factor
+    return f"""PROJCRS["probe polar A",
+  BASEGEOGCRS["WGS 84",
+    DATUM["World Geodetic System 1984",
+      ELLIPSOID["WGS 84",6378137,298.257223563]],
+    PRIMEM["Greenwich",0,ANGLEUNIT["degree",{_DEG}]],
+    UNIT["degree",{_DEG}]],
+  CONVERSION["probe",
+    METHOD["Polar Stereographic (variant A)",ID["EPSG",9810]],
+    PARAMETER["Latitude of natural origin",{lat},ANGLEUNIT["{angle_unit}",{angle_factor}],ID["EPSG",8801]],
+    PARAMETER["Longitude of natural origin",{lon},ANGLEUNIT["{angle_unit}",{angle_factor}],ID["EPSG",8802]],
+    PARAMETER["Scale factor at natural origin",{k},SCALEUNIT["unity",1],ID["EPSG",8805]],
+    PARAMETER["False easting",{false_easting},LENGTHUNIT["{length_unit}",{length_factor}],ID["EPSG",8806]],
+    PARAMETER["False northing",{false_northing},LENGTHUNIT["{length_unit}",{length_factor}],ID["EPSG",8807]]],
+  CS[Cartesian,2],
+    AXIS["easting (E)",east,ORDER[1],LENGTHUNIT["{axis_unit}",{axis_factor}]],
+    AXIS["northing (N)",north,ORDER[2],LENGTHUNIT["{axis_unit}",{axis_factor}]]]"""
+
+
+def _cf_projection_keys(crs: object) -> dict[str, object]:
+    cf = dict(gm.CRS(crs).to_cf())
+    cf.pop('crs_wkt', None)
+    return cf
+
+
+def test_c2_polar_a_custom_degree_and_grad_export_same_cf_degrees():
+    """100 gon / 50 gon must export as 90° / 45°, not as stored grads."""
+    degree = _polar_a_wkt(
+        lat=90.0,
+        lon=45.0,
+        k=0.999,
+        false_easting=1000.0,
+        false_northing=2000.0,
+        angle_unit='degree',
+        angle_factor=_DEG,
+        length_unit='metre',
+        length_factor=1.0,
+    )
+    grad = _polar_a_wkt(
+        lat=100.0,
+        lon=50.0,
+        k=0.999,
+        false_easting=1000.0,
+        false_northing=2000.0,
+        angle_unit='grad',
+        angle_factor=_GRAD,
+        length_unit='metre',
+        length_factor=1.0,
+    )
+    radian = _polar_a_wkt(
+        lat=math.pi / 2.0,
+        lon=math.pi / 4.0,
+        k=0.999,
+        false_easting=1000.0,
+        false_northing=2000.0,
+        angle_unit='radian',
+        angle_factor=1.0,
+        length_unit='metre',
+        length_factor=1.0,
+    )
+    keys = (
+        'latitude_of_projection_origin',
+        'straight_vertical_longitude_from_pole',
+        'scale_factor_at_projection_origin',
+        'false_easting',
+        'false_northing',
+    )
+    expected = {
+        'latitude_of_projection_origin': 90.0,
+        'straight_vertical_longitude_from_pole': 45.0,
+        'scale_factor_at_projection_origin': 0.999,
+        'false_easting': 1000.0,
+        'false_northing': 2000.0,
+    }
+    for source in (degree, grad, radian):
+        cf = _cf_projection_keys(source)
+        assert cf['grid_mapping_name'] == 'polar_stereographic'
+        for key, value in expected.items():
+            assert cf[key] == pytest.approx(value)
+        rebuilt = {k: cf[k] for k in ('grid_mapping_name', *keys)}
+        rebuilt['semi_major_axis'] = 6_378_137.0
+        rebuilt['inverse_flattening'] = 298.257223563
+        assert gm.crs_transform(rebuilt, 4326, 1000.0, 2000.0) == pytest.approx(
+            gm.crs_transform(source, 4326, 1000.0, 2000.0)
+        )
+
+
+def test_c2_polar_a_metre_offsets_on_foot_axes_use_axis_units():
+    """False easting/northing follow the projected axis, not metres.
+
+    Parameter offsets are 1000 m and 2500 m; axes are the international foot
+    (0.3048 m). Expected CF values are 1000/0.3048 and 2500/0.3048, written as
+    independent literals so a swapped pair or a metres leftover fails.
+    """
+    wkt = _polar_a_wkt(
+        lat=90.0,
+        lon=45.0,
+        k=0.994,
+        false_easting=1000.0,
+        false_northing=2500.0,
+        angle_unit='degree',
+        angle_factor=_DEG,
+        length_unit='metre',
+        length_factor=1.0,
+        axis_unit='foot',
+        axis_factor=_INTL_FOOT,
+    )
+    cf = _cf_projection_keys(wkt)
+    assert cf['units'] == 'ft'
+    assert cf['false_easting'] == pytest.approx(3280.839895013123)
+    assert cf['false_northing'] == pytest.approx(8202.099737532808)
+    rebuilt = dict(cf)
+    east, north = cf['false_easting'] + 100.0, cf['false_northing'] + 200.0
+    assert gm.crs_transform(rebuilt, 4326, east, north) == pytest.approx(
+        gm.crs_transform(wkt, 4326, east, north)
+    )
+
+
+def test_c2_paris_prime_meridian_exports_degrees():
+    """EPSG:4807 stores 2.5969213 gon; CF longitude_of_prime_meridian is degrees."""
+    cf = gm.CRS(4807).to_cf()
+    assert cf['longitude_of_prime_meridian'] == pytest.approx(2.33722917)
+
+
 # ---------------------------------------------------------------------------
 # C7 - standard_parallel exact arity
 # ---------------------------------------------------------------------------

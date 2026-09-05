@@ -408,10 +408,39 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     polar_cf = cast('dict[str, object]', gm.CRS(3413).to_cf())
     assert polar_cf['grid_mapping_name'] == 'polar_stereographic'
     assert polar_cf['standard_parallel'] == pytest.approx(70.0)
+    assert polar_cf['latitude_of_projection_origin'] == pytest.approx(90.0)
     assert polar_cf['straight_vertical_longitude_from_pole'] == pytest.approx(-45.0)
+    assert 'scale_factor_at_projection_origin' not in polar_cf
     polar_cf_without_wkt = dict(polar_cf)
     del polar_cf_without_wkt['crs_wkt']
     assert gm.CRS(polar_cf_without_wkt).to_epsg() == 3413
+    polar_south_cf = cast('dict[str, object]', gm.CRS(3031).to_cf())
+    assert polar_south_cf['grid_mapping_name'] == 'polar_stereographic'
+    assert polar_south_cf['standard_parallel'] == pytest.approx(-71.0)
+    assert polar_south_cf['latitude_of_projection_origin'] == pytest.approx(-90.0)
+    assert polar_south_cf['straight_vertical_longitude_from_pole'] == pytest.approx(0.0)
+    assert 'scale_factor_at_projection_origin' not in polar_south_cf
+    ups_north_cf = cast('dict[str, object]', gm.CRS(5041).to_cf())
+    assert ups_north_cf['grid_mapping_name'] == 'polar_stereographic'
+    assert ups_north_cf['latitude_of_projection_origin'] == pytest.approx(90.0)
+    assert ups_north_cf['straight_vertical_longitude_from_pole'] == pytest.approx(0.0)
+    assert ups_north_cf['scale_factor_at_projection_origin'] == pytest.approx(0.994)
+    assert ups_north_cf['false_easting'] == pytest.approx(2_000_000.0)
+    assert ups_north_cf['false_northing'] == pytest.approx(2_000_000.0)
+    ups_north_without_wkt = dict(ups_north_cf)
+    del ups_north_without_wkt['crs_wkt']
+    assert gm.crs_transform(
+        ups_north_without_wkt, 4326, 2_000_000.0, 2_000_000.0
+    ) == pytest.approx(gm.crs_transform(5041, 4326, 2_000_000.0, 2_000_000.0))
+    ups_south_cf = cast('dict[str, object]', gm.CRS(5042).to_cf())
+    assert ups_south_cf['latitude_of_projection_origin'] == pytest.approx(-90.0)
+    assert ups_south_cf['straight_vertical_longitude_from_pole'] == pytest.approx(0.0)
+    assert ups_south_cf['scale_factor_at_projection_origin'] == pytest.approx(0.994)
+    ups_south_without_wkt = dict(ups_south_cf)
+    del ups_south_without_wkt['crs_wkt']
+    assert gm.crs_transform(
+        ups_south_without_wkt, 4326, 2_000_000.0, 2_000_000.0
+    ) == pytest.approx(gm.crs_transform(5042, 4326, 2_000_000.0, 2_000_000.0))
     cylindrical_equal_area_cf = cast('dict[str, object]', gm.CRS(6933).to_cf())
     assert (
         cylindrical_equal_area_cf['grid_mapping_name']

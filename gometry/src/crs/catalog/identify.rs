@@ -5,8 +5,8 @@ use crate::crs::catalog::{
     CF_TRANSVERSE_MERCATOR_PARAMETERS, add_cf_lambert_azimuthal_equal_area_parameters,
     add_cf_lambert_conformal_conic_parameters, add_cf_lambert_cylindrical_equal_area_parameters,
     add_cf_mercator_parameters, add_cf_polar_stereographic_parameters,
-    add_cf_projection_parameters, cached_export, export, is_operation_method,
-    is_transverse_mercator,
+    add_cf_projection_parameters, cached_export, cf_prime_meridian_longitude_degrees,
+    cf_projected_axis_to_metre, export, is_operation_method, is_transverse_mercator,
 };
 use crate::crs::{
     AuthorityObjectInfo, AxisInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
@@ -259,7 +259,10 @@ fn to_cf_with_state(
     if let Some(prime_meridian) = &info.prime_meridian {
         items.push((
             "longitude_of_prime_meridian",
-            CfValue::Float(prime_meridian.longitude),
+            CfValue::Float(cf_prime_meridian_longitude_degrees(
+                &normalized,
+                prime_meridian,
+            )?),
         ));
         if let Some(name) = &prime_meridian.name {
             items.push(("prime_meridian_name", CfValue::String(name.clone())));
@@ -276,7 +279,8 @@ fn to_cf_with_state(
         items.push(("horizontal_datum_name", CfValue::String(name)));
     }
     if info.kind != "projected" || projected_units.is_some() {
-        push_cf_grid_mapping(&mut items, &info);
+        let axis_to_metre = cf_projected_axis_to_metre(&normalized, &info)?;
+        push_cf_grid_mapping(&normalized, &mut items, &info, axis_to_metre)?;
     }
     Ok(items)
 }
@@ -299,16 +303,21 @@ fn push_cf_crs_names(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo) {
     }
 }
 
-fn push_cf_grid_mapping(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo) {
+fn push_cf_grid_mapping(
+    crs: &str,
+    items: &mut Vec<(&'static str, CfValue)>,
+    info: &CrsInfo,
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
     if matches!(info.kind, "geographic" | "geographic_2d" | "geographic_3d") {
         items.push((
             "grid_mapping_name",
             CfValue::String("latitude_longitude".to_owned()),
         ));
-        return;
+        return Ok(());
     }
     let Some(operation) = &info.coordinate_operation else {
-        return;
+        return Ok(());
     };
     if is_transverse_mercator(operation) {
         items.push((
@@ -316,25 +325,37 @@ fn push_cf_grid_mapping(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo
             CfValue::String("transverse_mercator".to_owned()),
         ));
         add_cf_projection_parameters(
+            crs,
             items,
             &operation.parameters,
             CF_TRANSVERSE_MERCATOR_PARAMETERS,
-        );
+            axis_to_metre,
+        )?;
     } else if is_operation_method(operation, "9820", "Lambert Azimuthal Equal Area") {
         items.push((
             "grid_mapping_name",
             CfValue::String("lambert_azimuthal_equal_area".to_owned()),
         ));
-        add_cf_lambert_azimuthal_equal_area_parameters(items, &operation.parameters);
+        add_cf_lambert_azimuthal_equal_area_parameters(
+            crs,
+            items,
+            &operation.parameters,
+            axis_to_metre,
+        )?;
     } else if is_operation_method(operation, "9802", "Lambert Conic Conformal (2SP)") {
         items.push((
             "grid_mapping_name",
             CfValue::String("lambert_conformal_conic".to_owned()),
         ));
-        add_cf_lambert_conformal_conic_parameters(items, &operation.parameters);
+        add_cf_lambert_conformal_conic_parameters(
+            crs,
+            items,
+            &operation.parameters,
+            axis_to_metre,
+        )?;
     } else if is_operation_method(operation, "9804", "Mercator (variant A)") {
         items.push(("grid_mapping_name", CfValue::String("mercator".to_owned())));
-        add_cf_mercator_parameters(items, &operation.parameters);
+        add_cf_mercator_parameters(crs, items, &operation.parameters, axis_to_metre)?;
     } else if is_operation_method(operation, "9829", "Polar Stereographic (variant B)")
         || is_operation_method(operation, "9810", "Polar Stereographic (variant A)")
     {
@@ -342,14 +363,20 @@ fn push_cf_grid_mapping(items: &mut Vec<(&'static str, CfValue)>, info: &CrsInfo
             "grid_mapping_name",
             CfValue::String("polar_stereographic".to_owned()),
         ));
-        add_cf_polar_stereographic_parameters(items, &operation.parameters);
+        add_cf_polar_stereographic_parameters(crs, items, &operation.parameters, axis_to_metre)?;
     } else if is_operation_method(operation, "9835", "Lambert Cylindrical Equal Area") {
         items.push((
             "grid_mapping_name",
             CfValue::String("lambert_cylindrical_equal_area".to_owned()),
         ));
-        add_cf_lambert_cylindrical_equal_area_parameters(items, &operation.parameters);
+        add_cf_lambert_cylindrical_equal_area_parameters(
+            crs,
+            items,
+            &operation.parameters,
+            axis_to_metre,
+        )?;
     }
+    Ok(())
 }
 
 pub(crate) fn non_deprecated(value: &str) -> Result<Vec<AuthorityObjectInfo>> {

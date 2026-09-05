@@ -163,4 +163,4 @@ const WGS84_A: f64 = 6_378_137.0;
 const WGS84_F: f64 = 1.0 / 298.257_223_563;
 const UTM_K0: f64 = 0.9996;
 const TRANSFORM_BOUNDS_MAX_DENSIFY: u32 = 10_000;
-const DEGREE_TO_RADIAN: f64 = std::f64::consts::PI / 180.0;
+pub(crate) const DEGREE_TO_RADIAN: f64 = std::f64::consts::PI / 180.0;

@@ -1,4 +1,8 @@
-use crate::crs::{CfValue, CrsCoordinateOperationInfo, OperationParameterInfo};
+use crate::crs::{
+    CfValue, CrsCoordinateOperationInfo, CrsError, CrsInfo, DEGREE_TO_RADIAN,
+    OperationParameterInfo, PrimeMeridianInfo,
+};
+use crate::error::Result;
 
 pub(crate) fn is_transverse_mercator(operation: &CrsCoordinateOperationInfo) -> bool {
     is_operation_method(operation, "9807", "Transverse Mercator")
@@ -14,17 +18,172 @@ pub(crate) fn is_operation_method(
     })
 }
 
-pub(crate) fn add_cf_parameters(
+/// CF numeric quantity kind. The schema names the target unit; PROJ metadata
+/// supplies only the conversion factor from the stored value.
+#[derive(Clone, Copy)]
+pub(crate) enum CfNumericKind {
+    /// CF latitudes and longitudes, in degrees.
+    Angle,
+    /// False easting/northing, in the projected CRS axis unit.
+    Length,
+    /// Scale factors, unity.
+    Scale,
+}
+
+#[derive(Clone, Copy)]
+struct CfNumericExport<'a> {
+    crs: &'a str,
+    axis_to_metre: Option<f64>,
+}
+
+impl CfNumericExport<'_> {
+    fn convert_parameter(
+        &self,
+        parameter: &OperationParameterInfo,
+        kind: CfNumericKind,
+    ) -> Result<f64> {
+        let what = parameter
+            .name
+            .as_deref()
+            .or(parameter.code.as_deref())
+            .unwrap_or("parameter");
+        cf_numeric_value(
+            self.crs,
+            parameter.value,
+            parameter.unit_conversion_factor,
+            kind,
+            self.axis_to_metre,
+            what,
+        )
+    }
+}
+
+fn cf_numeric_target_factor(
+    crs: &str,
+    kind: CfNumericKind,
+    axis_to_metre: Option<f64>,
+    what: &str,
+) -> Result<f64> {
+    match kind {
+        CfNumericKind::Angle => Ok(DEGREE_TO_RADIAN),
+        CfNumericKind::Scale => Ok(1.0),
+        CfNumericKind::Length => {
+            let Some(factor) = axis_to_metre else {
+                return Err(CrsError::export(
+                    crs,
+                    "CF",
+                    format!(
+                        "cannot export {what} as CF: projected linear parameters require a projected axis unit"
+                    ),
+                ));
+            };
+            valid_factor(crs, factor, "projected axis")
+        },
+    }
+}
+
+fn valid_factor(crs: &str, factor: f64, what: &str) -> Result<f64> {
+    if factor.is_finite() && factor > 0.0 {
+        Ok(factor)
+    } else {
+        Err(CrsError::export(
+            crs,
+            "CF",
+            format!(
+                "cannot export {what} as CF: unit conversion factor must be finite and positive"
+            ),
+        ))
+    }
+}
+
+fn cf_numeric_value(
+    crs: &str,
+    value: f64,
+    source_factor: f64,
+    kind: CfNumericKind,
+    axis_to_metre: Option<f64>,
+    what: &str,
+) -> Result<f64> {
+    if !value.is_finite() {
+        return Err(CrsError::export(
+            crs,
+            "CF",
+            format!("cannot export {what} as CF: value must be finite"),
+        ));
+    }
+    let source_factor = valid_factor(crs, source_factor, what)?;
+    let target_factor = cf_numeric_target_factor(crs, kind, axis_to_metre, what)?;
+    if source_factor == target_factor {
+        return Ok(value);
+    }
+    let converted = value * (source_factor / target_factor);
+    if converted.is_finite() {
+        Ok(converted)
+    } else {
+        Err(CrsError::export(
+            crs,
+            "CF",
+            format!("cannot export {what} as CF: unit conversion overflowed"),
+        ))
+    }
+}
+
+/// Metres per unit of the first projected axis, or `None` for non-projected CRS.
+///
+/// Errors when the first two axes disagree: CF has one linear `units` token.
+pub(crate) fn cf_projected_axis_to_metre(crs: &str, info: &CrsInfo) -> Result<Option<f64>> {
+    if info.kind != "projected" {
+        return Ok(None);
+    }
+    let Some(first) = info.axes.first() else {
+        return Ok(None);
+    };
+    let factor = valid_factor(crs, first.unit_conversion_factor, "projected axis")?;
+    if let Some(second) = info.axes.get(1)
+        && second.unit_conversion_factor != factor
+    {
+        return Err(CrsError::export(
+            crs,
+            "CF",
+            format!(
+                "projected axes have unequal unit conversion factors ({factor} vs {}); CF cannot represent anisotropic projected axes",
+                second.unit_conversion_factor
+            ),
+        ));
+    }
+    Ok(Some(factor))
+}
+
+pub(crate) fn cf_prime_meridian_longitude_degrees(
+    crs: &str,
+    prime_meridian: &PrimeMeridianInfo,
+) -> Result<f64> {
+    cf_numeric_value(
+        crs,
+        prime_meridian.longitude,
+        prime_meridian.unit_conversion_factor,
+        CfNumericKind::Angle,
+        None,
+        "longitude_of_prime_meridian",
+    )
+}
+
+fn add_cf_parameters(
+    export: CfNumericExport<'_>,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-    key: impl Fn(&OperationParameterInfo) -> Option<&'static str>,
-) {
+    mappings: &[CfParameterMapping],
+) -> Result<()> {
     for parameter in parameters {
-        let Some(key) = key(parameter) else {
+        let Some(mapping) = cf_projection_parameter_mapping(parameter, mappings) else {
             continue;
         };
-        items.push((key, CfValue::Float(parameter.value)));
+        items.push((
+            mapping.cf_key,
+            CfValue::Float(export.convert_parameter(parameter, mapping.kind)?),
+        ));
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -32,28 +191,33 @@ pub(crate) struct CfParameterMapping {
     pub codes: &'static [&'static str],
     pub names: &'static [&'static str],
     pub cf_key: &'static str,
+    pub kind: CfNumericKind,
 }
 
 pub(crate) fn add_cf_projection_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
     mappings: &[CfParameterMapping],
-) {
-    add_cf_parameters(items, parameters, |parameter| {
-        cf_projection_parameter_key(parameter, mappings)
-    });
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    add_cf_parameters(
+        CfNumericExport { crs, axis_to_metre },
+        items,
+        parameters,
+        mappings,
+    )
 }
 
-pub(crate) fn cf_projection_parameter_key(
+fn cf_projection_parameter_mapping(
     parameter: &OperationParameterInfo,
     mappings: &[CfParameterMapping],
-) -> Option<&'static str> {
+) -> Option<CfParameterMapping> {
     let code = parameter.code.as_deref();
     let name = parameter.name.as_deref();
-    mappings.iter().find_map(|mapping| {
-        (code.is_some_and(|code| mapping.codes.contains(&code))
-            || name.is_some_and(|name| mapping.names.contains(&name)))
-        .then_some(mapping.cf_key)
+    mappings.iter().copied().find(|mapping| {
+        code.is_some_and(|code| mapping.codes.contains(&code))
+            || name.is_some_and(|name| mapping.names.contains(&name))
     })
 }
 
@@ -62,26 +226,31 @@ pub(crate) const CF_TRANSVERSE_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
         codes: &["8801"],
         names: &["Latitude of natural origin"],
         cf_key: "latitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8802"],
         names: &["Longitude of natural origin"],
         cf_key: "longitude_of_central_meridian",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8805"],
         names: &["Scale factor at natural origin"],
         cf_key: "scale_factor_at_central_meridian",
+        kind: CfNumericKind::Scale,
     },
     CfParameterMapping {
         codes: &["8806"],
         names: &["False easting"],
         cf_key: "false_easting",
+        kind: CfNumericKind::Length,
     },
     CfParameterMapping {
         codes: &["8807"],
         names: &["False northing"],
         cf_key: "false_northing",
+        kind: CfNumericKind::Length,
     },
 ];
 
@@ -90,21 +259,25 @@ const CF_LAMBERT_AZIMUTHAL_EQUAL_AREA_PARAMETERS: &[CfParameterMapping] = &[
         codes: &["8801"],
         names: &["Latitude of natural origin"],
         cf_key: "latitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8802"],
         names: &["Longitude of natural origin"],
         cf_key: "longitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8806"],
         names: &["False easting"],
         cf_key: "false_easting",
+        kind: CfNumericKind::Length,
     },
     CfParameterMapping {
         codes: &["8807"],
         names: &["False northing"],
         cf_key: "false_northing",
+        kind: CfNumericKind::Length,
     },
 ];
 
@@ -113,44 +286,64 @@ const CF_MERCATOR_PARAMETERS: &[CfParameterMapping] = &[
         codes: &["8801"],
         names: &["Latitude of natural origin"],
         cf_key: "latitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8802"],
         names: &["Longitude of natural origin"],
         cf_key: "longitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8805"],
         names: &["Scale factor at natural origin"],
         cf_key: "scale_factor_at_projection_origin",
+        kind: CfNumericKind::Scale,
     },
     CfParameterMapping {
         codes: &["8806"],
         names: &["False easting"],
         cf_key: "false_easting",
+        kind: CfNumericKind::Length,
     },
     CfParameterMapping {
         codes: &["8807"],
         names: &["False northing"],
         cf_key: "false_northing",
+        kind: CfNumericKind::Length,
     },
 ];
 
 const CF_POLAR_STEREOGRAPHIC_PARAMETERS: &[CfParameterMapping] = &[
     CfParameterMapping {
+        codes: &["8801"],
+        names: &["Latitude of natural origin"],
+        cf_key: "latitude_of_projection_origin",
+        kind: CfNumericKind::Angle,
+    },
+    CfParameterMapping {
+        codes: &["8802"],
+        names: &["Longitude of natural origin"],
+        cf_key: "straight_vertical_longitude_from_pole",
+        kind: CfNumericKind::Angle,
+    },
+    CfParameterMapping {
         codes: &["8805"],
         names: &["Scale factor at natural origin"],
         cf_key: "scale_factor_at_projection_origin",
+        kind: CfNumericKind::Scale,
     },
     CfParameterMapping {
         codes: &["8806"],
         names: &["False easting"],
         cf_key: "false_easting",
+        kind: CfNumericKind::Length,
     },
     CfParameterMapping {
         codes: &["8807"],
         names: &["False northing"],
         cf_key: "false_northing",
+        kind: CfNumericKind::Length,
     },
 ];
 
@@ -159,70 +352,96 @@ const CF_LAMBERT_CYLINDRICAL_EQUAL_AREA_PARAMETERS: &[CfParameterMapping] = &[
         codes: &["8823"],
         names: &["Latitude of 1st standard parallel"],
         cf_key: "standard_parallel",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8802"],
         names: &["Longitude of natural origin"],
         cf_key: "longitude_of_central_meridian",
+        kind: CfNumericKind::Angle,
     },
     CfParameterMapping {
         codes: &["8806"],
         names: &["False easting"],
         cf_key: "false_easting",
+        kind: CfNumericKind::Length,
     },
     CfParameterMapping {
         codes: &["8807"],
         names: &["False northing"],
         cf_key: "false_northing",
+        kind: CfNumericKind::Length,
     },
 ];
 
 pub(crate) fn add_cf_lambert_azimuthal_equal_area_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-) {
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
     add_cf_projection_parameters(
+        crs,
         items,
         parameters,
         CF_LAMBERT_AZIMUTHAL_EQUAL_AREA_PARAMETERS,
-    );
+        axis_to_metre,
+    )
 }
 
 pub(crate) fn add_cf_lambert_conformal_conic_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-) {
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    let export = CfNumericExport { crs, axis_to_metre };
     let mut standard_parallel = Vec::new();
     for parameter in parameters {
         match parameter.code.as_deref() {
             Some("8821") => items.push((
                 "latitude_of_projection_origin",
-                CfValue::Float(parameter.value),
+                CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Angle)?),
             )),
             Some("8822") => items.push((
                 "longitude_of_central_meridian",
-                CfValue::Float(parameter.value),
+                CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Angle)?),
             )),
-            Some("8823" | "8824") => standard_parallel.push(parameter.value),
-            Some("8826") => items.push(("false_easting", CfValue::Float(parameter.value))),
-            Some("8827") => items.push(("false_northing", CfValue::Float(parameter.value))),
+            Some("8823" | "8824") => {
+                standard_parallel.push(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+            },
+            Some("8826") => items.push((
+                "false_easting",
+                CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Length)?),
+            )),
+            Some("8827") => items.push((
+                "false_northing",
+                CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Length)?),
+            )),
             _ => match parameter.name.as_deref() {
                 Some("Latitude of false origin") => items.push((
                     "latitude_of_projection_origin",
-                    CfValue::Float(parameter.value),
+                    CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Angle)?),
                 )),
                 Some("Longitude of false origin") => items.push((
                     "longitude_of_central_meridian",
-                    CfValue::Float(parameter.value),
+                    CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Angle)?),
                 )),
                 Some("Latitude of 1st standard parallel" | "Latitude of 2nd standard parallel") => {
-                    standard_parallel.push(parameter.value);
+                    standard_parallel
+                        .push(export.convert_parameter(parameter, CfNumericKind::Angle)?);
                 },
                 Some("Easting at false origin" | "False easting") => {
-                    items.push(("false_easting", CfValue::Float(parameter.value)));
+                    items.push((
+                        "false_easting",
+                        CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Length)?),
+                    ));
                 },
                 Some("Northing at false origin" | "False northing") => {
-                    items.push(("false_northing", CfValue::Float(parameter.value)));
+                    items.push((
+                        "false_northing",
+                        CfValue::Float(export.convert_parameter(parameter, CfNumericKind::Length)?),
+                    ));
                 },
                 _ => {},
             },
@@ -233,29 +452,59 @@ pub(crate) fn add_cf_lambert_conformal_conic_parameters(
     } else if !standard_parallel.is_empty() {
         items.push(("standard_parallel", CfValue::FloatList(standard_parallel)));
     }
+    Ok(())
 }
 
 pub(crate) fn add_cf_mercator_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-) {
-    add_cf_projection_parameters(items, parameters, CF_MERCATOR_PARAMETERS);
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    add_cf_projection_parameters(
+        crs,
+        items,
+        parameters,
+        CF_MERCATOR_PARAMETERS,
+        axis_to_metre,
+    )
 }
 
 pub(crate) fn add_cf_polar_stereographic_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-) {
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
+    let export = CfNumericExport { crs, axis_to_metre };
     let mut standard_parallel = None;
     let mut straight_vertical = None;
-    add_cf_projection_parameters(items, parameters, CF_POLAR_STEREOGRAPHIC_PARAMETERS);
+    add_cf_projection_parameters(
+        crs,
+        items,
+        parameters,
+        CF_POLAR_STEREOGRAPHIC_PARAMETERS,
+        axis_to_metre,
+    )?;
     for parameter in parameters {
         match parameter.code.as_deref() {
-            Some("8832") => standard_parallel = Some(parameter.value),
-            Some("8833") => straight_vertical = Some(parameter.value),
+            Some("8832") => {
+                standard_parallel =
+                    Some(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+            },
+            Some("8833") => {
+                straight_vertical =
+                    Some(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+            },
             _ => match parameter.name.as_deref() {
-                Some("Latitude of standard parallel") => standard_parallel = Some(parameter.value),
-                Some("Longitude of origin") => straight_vertical = Some(parameter.value),
+                Some("Latitude of standard parallel") => {
+                    standard_parallel =
+                        Some(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+                },
+                Some("Longitude of origin") => {
+                    straight_vertical =
+                        Some(export.convert_parameter(parameter, CfNumericKind::Angle)?);
+                },
                 _ => {},
             },
         }
@@ -273,15 +522,20 @@ pub(crate) fn add_cf_polar_stereographic_parameters(
             CfValue::Float(value),
         ));
     }
+    Ok(())
 }
 
 pub(crate) fn add_cf_lambert_cylindrical_equal_area_parameters(
+    crs: &str,
     items: &mut Vec<(&'static str, CfValue)>,
     parameters: &[OperationParameterInfo],
-) {
+    axis_to_metre: Option<f64>,
+) -> Result<()> {
     add_cf_projection_parameters(
+        crs,
         items,
         parameters,
         CF_LAMBERT_CYLINDRICAL_EQUAL_AREA_PARAMETERS,
-    );
+        axis_to_metre,
+    )
 }
