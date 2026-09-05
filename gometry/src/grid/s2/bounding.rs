@@ -53,7 +53,8 @@ pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
     shape.for_each_point(|point| {
         n_points += 1;
         if n_points == 1 {
-            only = Some(point_from_lonlat(point.x, point.y));
+            let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
+            only = Some(point_from_lonlat(lon, lat));
         }
     });
     if n_points == 0 {

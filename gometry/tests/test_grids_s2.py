@@ -732,6 +732,37 @@ def test_s2_bounding_cell_point_aggregates_use_bbox_path() -> None:
             ), (got.token, cx, cy)
 
 
+def test_s2_bounding_cell_single_point_uses_canonical_seam_owner() -> None:
+    expected = '7000000000000001'
+    cells = []
+    for lon in (-180.0, 180.0):
+        point = gm.Point(lon, 0.0, crs=4326)
+        cells.extend(
+            [
+                gm.s2_bounding_cell(point),
+                gm.s2_bounding_cell(gm.GeometryCollection([point])),
+                gm.s2_bounding_cell(gm.GeometryArray([None, point, None])),
+            ]
+        )
+    assert {cell.token for cell in cells} == {expected}
+    assert {cell.level for cell in cells} == {30}
+
+    # Nearby physical points remain distinct from the seam owner.
+    west = gm.s2_bounding_cell(gm.Point(-179.9, 0.0, crs=4326))
+    east = gm.s2_bounding_cell(gm.Point(179.9, 0.0, crs=4326))
+    assert west != east
+    assert west.level == east.level == 30
+
+    ordinary = gm.s2_bounding_cell(gm.Point(13.4, 52.5, crs=4326))
+    assert ordinary.level == 30
+
+    poles = [
+        gm.s2_bounding_cell(gm.Point(lon, 90.0, crs=4326))
+        for lon in (-180.0, 0.0, 180.0)
+    ]
+    assert all(cell == poles[0] for cell in poles)
+
+
 def test_s2_bounding_cell_cube_vertex_microbox_never_non_containing() -> None:
     """Cube-vertex 1e-4° boxes: containing cell or multi-face raise (never non-contain).
 
