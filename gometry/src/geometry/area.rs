@@ -7,7 +7,7 @@ use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f
 #[cfg(test)]
 use crate::geometry::expansion::two_sum;
 use crate::geometry::expansion::{
-    expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim, two_product,
+    expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
 };
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
@@ -113,7 +113,6 @@ const fn area_sign_to_winding(sign: AreaSign) -> RingWinding {
 // Fast Robust Geometric Predicates", 1997) -----------------------------------
 
 const EPSILON: f64 = f64::EPSILON;
-const ERRBOUND: f64 = (3.0 + 16.0 * EPSILON) * EPSILON;
 
 fn estimate(e: &[f64]) -> f64 {
     let mut q = e[0];
@@ -202,7 +201,10 @@ fn exact_ring_area_sum_local(
 /// lane-wise OR rather than a branch, and the `|x|` fallback span is computed
 /// only on the overflow path that reads it. This runs inside every exact ring
 /// area sign, which is why it is written for the vector unit.
-fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: f64) -> (f64, bool) {
+fn axis_extent_for_scale(
+    values: impl IntoIterator<Item = f64> + Clone,
+    origin: f64,
+) -> (f64, bool) {
     let mut max_delta = 0.0_f64;
     let mut overflow = false;
     for x in values.clone() {
@@ -221,40 +223,15 @@ fn axis_extent_for_scale(values: impl IntoIterator<Item = f64> + Clone, origin: 
 }
 
 /// The power-of-two frame a ring's cross terms are evaluated in.
-///
-/// `residuals_finite` records what the extent scan already learned: that
-/// every `value - origin` is finite, so the frame's residual is the plain
-/// `(value - origin) * scale` and needs no per-element fallback. Discarding
-/// that flag is what forced [`scaled_residual`]'s branch into the fold.
 #[derive(Clone, Copy)]
 struct RingFrame {
     ox: f64,
     oy: f64,
     sx: f64,
     sy: f64,
-    residuals_finite: bool,
 }
 
-impl RingFrame {
-    /// The x residual, branchless where the scan proved the subtraction finite.
-    fn x(self, value: f64) -> f64 {
-        if self.residuals_finite {
-            (value - self.ox) * self.sx
-        } else {
-            scaled_residual(value, self.ox, self.sx)
-        }
-    }
-
-    fn y(self, value: f64) -> f64 {
-        if self.residuals_finite {
-            (value - self.oy) * self.sy
-        } else {
-            scaled_residual(value, self.oy, self.sy)
-        }
-    }
-}
-
-/// Scale/origin for the filtered ring-sign path — no column allocation.
+/// Scale/origin for the area-measurement path without column allocation.
 /// Returns `(ox, oy, sx, sy)` with `sx == 0.0` for a fully-collapsed ring
 /// (both axes zero). Per-axis positive power-of-two scales preserve sign of
 /// the shoelace cross product while keeping each edge term normal.
@@ -265,7 +242,6 @@ fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
             oy: 0.0,
             sx: 0.0,
             sy: 0.0,
-            residuals_finite: true,
         };
     }
     let ox = xs[0];
@@ -279,7 +255,6 @@ fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
             oy,
             sx: 0.0,
             sy: 0.0,
-            residuals_finite,
         };
     }
     RingFrame {
@@ -287,196 +262,132 @@ fn ring_normalize_params(xs: &[f64], ys: &[f64]) -> RingFrame {
         oy,
         sx: axis_pow2_scale(max_dx),
         sy: axis_pow2_scale(max_dy),
-        residuals_finite,
     }
-}
-
-/// Expansion sum of cross terms for the uncertain filtered path. Columns are
-/// already origin-normalized (and typically scale-normalized). Two ping-pong
-/// buffers avoid cloning the live expansion prefix on every edge.
-fn expansion_cross_terms_edges(
-    xs: &[f64],
-    ys: &[f64],
-    edge_count: usize,
-    mut edge_at: impl FnMut(usize) -> (usize, usize),
-) -> Vec<f64> {
-    if edge_count == 0 {
-        return vec![0.0];
-    }
-    let (start_idx, _) = edge_at(0);
-    let origin_x = xs[start_idx];
-    let origin_y = ys[start_idx];
-    let mut live = vec![0.0];
-    let mut scratch = Vec::new();
-    for edge in 0..edge_count {
-        let (from, to) = edge_at(edge);
-        let ax = xs[from] - origin_x;
-        let ay = ys[from] - origin_y;
-        let bx = xs[to] - origin_x;
-        let by = ys[to] - origin_y;
-        let (axby1, axby0) = two_product(ax, by);
-        let (aybx1, aybx0) = two_product(ay, bx);
-        // Merge the two exact product expansions before adding the edge to
-        // the live expansion.  Appending loose terms loses the increasing-
-        // magnitude invariant that `fast_expansion_sum_zeroelim` requires;
-        // the second product also retains its subtraction sign.
-        let axby = [axby0, axby1];
-        let aybx = [-aybx0, -aybx1];
-        let mut term = [0.0; 4];
-        let term_len = fast_expansion_sum_zeroelim(&axby, &aybx, &mut term, false)
-            .expect("cross-term buffer holds both products");
-        scratch.clear();
-        scratch.resize(live.len() + term_len, 0.0);
-        let hlen = fast_expansion_sum_zeroelim(&live, &term[..term_len], &mut scratch, false)
-            .expect("scratch holds both expansions");
-        // Ping-pong: live expansion is `scratch[..hlen]`; swap so `live` holds
-        // it and `scratch` keeps capacity for the next edge (no `to_vec`).
-        std::mem::swap(&mut live, &mut scratch);
-        live.truncate(hlen);
-    }
-    live
-}
-
-fn classify_half_area(half: f64) -> AreaSign {
-    if half > 0.0 {
-        AreaSign::Positive
-    } else if half < 0.0 {
-        AreaSign::Negative
-    } else {
-        AreaSign::Zero
-    }
-}
-
-/// The filtered cross-term fold over an edge enumeration: the approximate
-/// half-area (doubled) and the largest term, which together decide whether
-/// the sign is certain.
-fn filtered_cross_terms(
-    xs: &[f64],
-    ys: &[f64],
-    edge_count: usize,
-    frame: RingFrame,
-    mut edge_at: impl FnMut(usize) -> (usize, usize),
-) -> (f64, f64) {
-    let mut approx = 0.0_f64;
-    let mut max_term = 0.0_f64;
-    for edge in 0..edge_count {
-        let (i, j) = edge_at(edge);
-        let term = frame.x(xs[i]) * frame.y(ys[j]) - frame.x(xs[j]) * frame.y(ys[i]);
-        approx += term;
-        max_term = max_term.max(term.abs());
-    }
-    (approx, max_term)
-}
-
-/// [`filtered_cross_terms`] for a closed ring, whose edges are the contiguous
-/// pairs `(i, i + 1)` and whose origin shift is the ordinary identity scale.
-///
-/// The general fold indexes through a closure and re-derives each residual's
-/// finiteness per element, which keeps it scalar. Here the edges are two
-/// offset slices and the frame's residual is a plain shift and scale, the
-/// shape LLVM vectorizes; the sum reassociates because the error bound below
-/// holds for any summation order, a tree sum being no worse than the
-/// sequential one it replaces. Every ring winding in the library lands here.
-fn filtered_ring_cross_terms(xs: &[f64], ys: &[f64], pairs: usize, frame: RingFrame) -> (f64, f64) {
-    if !frame.residuals_finite {
-        return filtered_cross_terms(xs, ys, pairs, frame, |index| (index, index + 1));
-    }
-    let (ox, oy, sx, sy) = (frame.ox, frame.oy, frame.sx, frame.sy);
-    let mut approx = 0.0_f64;
-    let mut max_term = 0.0_f64;
-    for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
-        .iter()
-        .zip(&xs[1..=pairs])
-        .zip(ys[..pairs].iter().zip(&ys[1..=pairs]))
-    {
-        let (ax, ay) = ((x0 - ox) * sx, (y0 - oy) * sy);
-        let (bx, by) = ((x1 - ox) * sx, (y1 - oy) * sy);
-        let term = ax.algebraic_mul(by).algebraic_sub(bx.algebraic_mul(ay));
-        approx = approx.algebraic_add(term);
-        max_term = max_term.max(term.abs());
-    }
-    (approx, max_term)
-}
-
-/// The verdict a filtered fold supports, or `None` when the rounding bound
-/// leaves the sign open and the exact expansion has to settle it.
-fn filtered_verdict(approx: f64, max_term: f64, edge_count: usize) -> Option<AreaSign> {
-    let half = approx / 2.0;
-    let bound = ERRBOUND * max_term * edge_count as f64;
-    if half > bound {
-        return Some(AreaSign::Positive);
-    }
-    if half < -bound {
-        return Some(AreaSign::Negative);
-    }
-    None
-}
-
-/// Filtered ring-sign over an edge enumeration. Ordinary (decisive) rings
-/// allocate nothing; expansion buffers are built only on the uncertain path.
-fn exact_half_area_sign_filtered_edges(
-    xs: &[f64],
-    ys: &[f64],
-    edge_count: usize,
-    mut edge_at: impl FnMut(usize) -> (usize, usize),
-) -> AreaSign {
-    if edge_count == 0 {
-        return AreaSign::Zero;
-    }
-    let frame = ring_normalize_params(xs, ys);
-    if frame.sx == 0.0 {
-        return AreaSign::Zero;
-    }
-    let (approx, max_term) = filtered_cross_terms(xs, ys, edge_count, frame, &mut edge_at);
-    if let Some(sign) = filtered_verdict(approx, max_term, edge_count) {
-        return sign;
-    }
-    // Uncertain: the expansion path settles it. This includes
-    // `max_term == 0.0`: unequal exact product tails can survive even when
-    // every rounded cross term is zero.
-    exact_ring_sign_by_expansion(xs, ys, edge_count, frame, edge_at)
 }
 
 /// The exact area sign of a CLOSED ring stored as columns, whose edges are the
 /// contiguous pairs `(i, i + 1)`.
 ///
-/// This is the library's ring-orientation predicate — staging, validity, ring
-/// canonicalization and the areal engines all reach it — so the ordinary case
-/// takes the vectorized contiguous fold rather than the general enumeration.
-/// A scaled ring (extreme magnitudes) and an undecided filter both fall back
-/// to the shared exact path.
+/// Staging, validity, canonicalization and areal topology share this
+/// original-coordinate predicate, independently of rounded area measurement.
 pub(crate) fn exact_ring_area_sign_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaSign {
-    if pairs == 0 {
-        return AreaSign::Zero;
-    }
-    let frame = ring_normalize_params(xs, ys);
-    if frame.sx == 0.0 {
-        return AreaSign::Zero;
-    }
-    let (approx, max_term) = filtered_ring_cross_terms(xs, ys, pairs, frame);
-    if let Some(sign) = filtered_verdict(approx, max_term, pairs) {
-        return sign;
-    }
-    exact_ring_sign_by_expansion(xs, ys, pairs, frame, |index| (index, index + 1))
+    cycle_sign(pairs, |index| {
+        (
+            XY::new(xs[index], ys[index]),
+            XY::new(xs[index + 1], ys[index + 1]),
+        )
+    })
 }
 
-/// The exact expansion tail shared by both filtered entries: normalized
-/// columns built once, then the cross-term expansion summed exactly.
-fn exact_ring_sign_by_expansion(
-    xs: &[f64],
-    ys: &[f64],
-    edge_count: usize,
-    frame: RingFrame,
-    edge_at: impl FnMut(usize) -> (usize, usize),
-) -> AreaSign {
-    let mut nxs = Vec::with_capacity(xs.len());
-    let mut nys = Vec::with_capacity(ys.len());
-    for index in 0..xs.len() {
-        nxs.push(frame.x(xs[index]));
-        nys.push(frame.y(ys[index]));
+fn cycle_sign(edge_count: usize, mut edge_at: impl FnMut(usize) -> (XY, XY)) -> AreaSign {
+    use crate::geometry::exact_arith::product_sum::ExactSum;
+
+    if edge_count == 0 {
+        return AreaSign::Zero;
     }
-    let expansion = expansion_cross_terms_edges(&nxs, &nys, edge_count, edge_at);
-    classify_half_area(estimate(&expansion) / 2.0)
+    if let Some(sign) = rounded_translated_cycle_sign(edge_count, &mut edge_at) {
+        return sign;
+    }
+
+    let mut sum = ExactSum::zero();
+    for index in 0..edge_count {
+        let (a, b) = edge_at(index);
+        sum.add_product(1, a.x, b.y);
+        sum.add_product(-1, b.x, a.y);
+    }
+    match sum.ordering() {
+        std::cmp::Ordering::Less => AreaSign::Negative,
+        std::cmp::Ordering::Equal => AreaSign::Zero,
+        std::cmp::Ordering::Greater => AreaSign::Positive,
+    }
+}
+
+/// One rounded-residual filter over a contiguous closed cycle. For finite
+/// `r = fl(d)`, `(u*|r| + min_subnormal/2)/(1-u) <= EPSILON*|r| +
+/// min_subnormal` bounds translation error against the original shoelace sum.
+fn rounded_translated_cycle_sign(
+    edge_count: usize,
+    mut edge_at: impl FnMut(usize) -> (XY, XY),
+) -> Option<AreaSign> {
+    if edge_count > 1 << 26 {
+        return None;
+    }
+    let (origin, _) = edge_at(0);
+    if !origin.x.is_finite() || !origin.y.is_finite() {
+        return None;
+    }
+    let mut previous = XY::new(0.0, 0.0);
+    let mut maximum_x_residual = 0.0_f64;
+    let mut maximum_y_residual = 0.0_f64;
+    let mut maximum_product = 0.0_f64;
+    let mut sum = 0.0_f64;
+    for index in 0..edge_count {
+        let (_, destination) = edge_at(index);
+        let next = if index + 1 == edge_count {
+            XY::new(0.0, 0.0)
+        } else {
+            XY::new(destination.x - origin.x, destination.y - origin.y)
+        };
+        maximum_x_residual = maximum_x_residual.max(next.x.abs());
+        maximum_y_residual = maximum_y_residual.max(next.y.abs());
+        let left = previous.x * next.y;
+        let right = next.x * previous.y;
+        maximum_product = maximum_product.max(left.abs()).max(right.abs());
+        let difference = left - right;
+        sum += difference;
+        previous = next;
+    }
+
+    // A nonfinite residual contaminates a strict product and difference, then
+    // persists through the sequential sum; reject before max-derived bounds.
+    if !sum.is_finite() {
+        return None;
+    }
+
+    let error_x = rounded_residual_error_bound(maximum_x_residual);
+    let error_y = rounded_residual_error_bound(maximum_y_residual);
+    let translation_term = outward_add(
+        outward_add(
+            outward_mul(error_x, maximum_y_residual),
+            outward_mul(error_y, maximum_x_residual),
+        ),
+        outward_mul(error_x, error_y),
+    );
+    let translation_error = outward_mul(2.0 * edge_count as f64, translation_term);
+    let edge_count_squared = (edge_count as f64) * (edge_count as f64);
+    // Products, subtraction, and n-1 sequential additions contribute at most
+    // 16u*n^2*m + 8*MIN_POSITIVE*n^2 for n <= 2^26.
+    let arithmetic_error = outward_add(
+        outward_mul(8.0 * f64::EPSILON * edge_count_squared, maximum_product),
+        outward_mul(8.0 * f64::MIN_POSITIVE, edge_count_squared),
+    );
+    let bound = outward_add(arithmetic_error, translation_error);
+    if !bound.is_finite() {
+        return None;
+    }
+    if sum > bound {
+        Some(AreaSign::Positive)
+    } else if sum < -bound {
+        Some(AreaSign::Negative)
+    } else {
+        None
+    }
+}
+
+/// A conservative absolute error bound for a finite rounded subtraction.
+fn rounded_residual_error_bound(maximum_residual: f64) -> f64 {
+    outward_add(
+        outward_mul(f64::EPSILON, maximum_residual),
+        f64::from_bits(1),
+    )
+}
+
+fn outward_mul(left: f64, right: f64) -> f64 {
+    (left * right).next_up()
+}
+
+fn outward_add(left: f64, right: f64) -> f64 {
+    (left + right).next_up()
 }
 
 fn exact_open_xy_sign(points: &[XY]) -> AreaSign {
@@ -484,52 +395,9 @@ fn exact_open_xy_sign(points: &[XY]) -> AreaSign {
     if count < 2 {
         return AreaSign::Zero;
     }
-    // Work on XY directly — no SoA transpose for the ordinary filtered path.
-    // Build thin column views only if the expansion fallback fires. Per-axis
-    // power-of-two scales (same rule as closed rings) keep tiny and mixed-axis
-    // rings decisive.
-    let mut approx = 0.0_f64;
-    let mut max_term = 0.0_f64;
-    let ox = points[0].x;
-    let oy = points[0].y;
-    let (max_dx, overflow_x) = axis_extent_for_scale(points.iter().map(|p| p.x), ox);
-    let (max_dy, overflow_y) = axis_extent_for_scale(points.iter().map(|p| p.y), oy);
-    if !overflow_x && !overflow_y && max_dx == 0.0 && max_dy == 0.0 {
-        return AreaSign::Zero;
-    }
-    let sx = axis_pow2_scale(max_dx);
-    let sy = axis_pow2_scale(max_dy);
-    for index in 0..count {
-        let i = index;
-        let j = wrap_index(index + 1, count);
-        let axi = scaled_residual(points[i].x, ox, sx);
-        let ayi = scaled_residual(points[i].y, oy, sy);
-        let bxj = scaled_residual(points[j].x, ox, sx);
-        let byj = scaled_residual(points[j].y, oy, sy);
-        let term = axi * byj - bxj * ayi;
-        approx += term;
-        max_term = max_term.max(term.abs());
-    }
-    let half = approx / 2.0;
-    let bound = ERRBOUND * max_term * count as f64;
-    if half > bound {
-        return AreaSign::Positive;
-    }
-    if half < -bound {
-        return AreaSign::Negative;
-    }
-    let xs: Vec<f64> = points
-        .iter()
-        .map(|p| scaled_residual(p.x, ox, sx))
-        .collect();
-    let ys: Vec<f64> = points
-        .iter()
-        .map(|p| scaled_residual(p.y, oy, sy))
-        .collect();
-    let expansion = expansion_cross_terms_edges(&xs, &ys, count, |index| {
-        (index, wrap_index(index + 1, count))
-    });
-    classify_half_area(estimate(&expansion) / 2.0)
+    cycle_sign(count, |index| {
+        (points[index], points[wrap_index(index + 1, count)])
+    })
 }
 
 fn exact_open_point_sign(points: &[Point]) -> AreaSign {
@@ -537,13 +405,11 @@ fn exact_open_point_sign(points: &[Point]) -> AreaSign {
     if count < 2 {
         return AreaSign::Zero;
     }
-    // Point slices are rare vs arrangement XY cycles; one column gather still
-    // beats the prior path that allocated columns AND the full edge list AND
-    // always-normalized copies before the filter.
-    let xs: Vec<f64> = points.iter().map(|point| point.x).collect();
-    let ys: Vec<f64> = points.iter().map(|point| point.y).collect();
-    exact_half_area_sign_filtered_edges(&xs, &ys, count, |index| {
-        (index, wrap_index(index + 1, count))
+    cycle_sign(count, |index| {
+        (
+            points[index].xy(),
+            points[wrap_index(index + 1, count)].xy(),
+        )
     })
 }
 
@@ -623,7 +489,7 @@ fn exact_cycle_area_measure_columns(
     edge_count: usize,
     edge_at: impl FnMut(usize) -> (usize, usize),
 ) -> f64 {
-    let RingFrame { ox, oy, sx, sy, .. } = ring_normalize_params(xs, ys);
+    let RingFrame { ox, oy, sx, sy } = ring_normalize_params(xs, ys);
     if sx == 0.0 {
         return 0.0;
     }
@@ -1088,100 +954,189 @@ fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
 mod tests {
     use super::*;
 
-    /// The closed-ring filter reassociates its sum and drops the residual
-    /// branch, so it must still agree with the exact expansion on every ring —
-    /// above all where the filter is undecided and the sign comes from the
-    /// expansion in both paths.
     #[test]
-    fn vectorized_ring_filter_agrees_with_the_exact_expansion() {
-        let reference = |xs: &[f64], ys: &[f64], pairs: usize| -> AreaSign {
-            let frame = ring_normalize_params(xs, ys);
-            if frame.sx == 0.0 {
-                return AreaSign::Zero;
-            }
-            exact_ring_sign_by_expansion(xs, ys, pairs, frame, |index| (index, index + 1))
-        };
-        let mut state = 0x2545_F491_4F6C_DD1D_u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        let mut checked = 0_usize;
-        let mut undecided = 0_usize;
-        for case in 0..4000 {
-            let count = 3 + (next() % 12) as usize;
-            let mut xs = Vec::with_capacity(count + 1);
-            let mut ys = Vec::with_capacity(count + 1);
-            // Half the cases sit far from the origin, where the shift is what
-            // keeps the filter meaningful.
-            let offset = if case % 2 == 0 { 0.0 } else { 1.0e7 };
-            match case % 3 {
-                // Ordinary rings, area shrinking with the case index.
-                0 => {
-                    let scale = 2.0_f64.powi(-(case % 60));
-                    for _ in 0..count {
-                        xs.push(((next() % 2048) as f64 - 1024.0) * scale + offset);
-                        ys.push(((next() % 2048) as f64 - 1024.0) * scale + offset);
-                    }
-                },
-                // Collinear vertices: the area is exactly zero, so the filter
-                // is undecided and only the expansion can answer.
-                1 => {
-                    for _ in 0..count {
-                        let step = ((next() % 4096) as f64 - 2048.0) / 64.0;
-                        xs.push(step + offset);
-                        ys.push(step.mul_add(3.0, 1.0) + offset);
-                    }
-                },
-                // Collinear but for one vertex nudged by a few ULP: a real but
-                // vanishing area, right at the rounding bound.
-                _ => {
-                    for index in 0..count {
-                        let step = ((next() % 4096) as f64 - 2048.0) / 64.0;
-                        let x = step + offset;
-                        let mut y = step.mul_add(3.0, 1.0) + offset;
-                        if index == count / 2 {
-                            let ulps = 1 + next() % 4;
-                            for _ in 0..ulps {
-                                y = f64::from_bits(y.to_bits() + 1);
-                            }
-                        }
-                        xs.push(x);
-                        ys.push(y);
-                    }
-                },
-            }
-            xs.push(xs[0]);
-            ys.push(ys[0]);
-            let pairs = count;
-            let frame = ring_normalize_params(&xs, &ys);
-            if frame.sx != 0.0 {
-                let (approx, max_term) = filtered_ring_cross_terms(&xs, &ys, pairs, frame);
-                if filtered_verdict(approx, max_term, pairs).is_none() {
-                    undecided += 1;
-                }
-            }
-            assert_eq!(
-                exact_ring_area_sign_columns(&xs, &ys, pairs),
-                reference(&xs, &ys, pairs),
-                "case {case}: xs={xs:?} ys={ys:?}"
-            );
-            checked += 1;
-        }
-        assert!(checked == 4000, "every case ran");
-        assert!(
-            undecided > 20,
-            "only {undecided} rings reached the undecided filter; the corpus stopped exercising the exact tail"
+    fn near_collinear_ring_preserves_original_product_sum() {
+        // Exact doubled area is -485 / 2^56; translating to rounded
+        // coordinates erased the only noncollinear vertex.
+        let xs = [
+            19.34375,
+            -30.765_625,
+            -18.265_625,
+            0.140_625,
+            -3.109_375,
+            30.359_375,
+            19.34375,
+        ];
+        let ys = [
+            59.03125,
+            -91.296_875,
+            -53.796_875,
+            1.421_875_000_000_000_4,
+            -8.328_125,
+            92.078_125,
+            59.03125,
+        ];
+        assert_eq!(
+            exact_ring_area_sign_columns(&xs, &ys, 6),
+            AreaSign::Negative
         );
     }
 
-    /// Coordinates whose `value - origin` overflows: the scan reports it, and
-    /// the frame must then form each residual as `value * scale - origin *
-    /// scale` instead of subtracting first. Taking the plain difference here
-    /// yields an infinity and loses the sign entirely, so the orientation of a
-    /// ring spanning most of the float range is the check that path has to pass.
+    #[test]
+    fn ring_sign_retains_product_tails_and_subnormal_products() {
+        for epsilon in [2.0_f64.powi(-27), 2.0_f64.powi(-28)] {
+            let xs = [0.0, 1.0, 1.0 - epsilon, 0.0];
+            let ys = [0.0, 1.0 + epsilon, 1.0, 0.0];
+            assert_eq!(
+                exact_ring_area_sign_columns(&xs, &ys, 3),
+                AreaSign::Positive
+            );
+        }
+        let tiny = f64::from_bits(1);
+        assert_eq!(
+            exact_ring_area_sign_columns(&[0.0, tiny, 0.0, 0.0], &[0.0, 0.0, tiny, 0.0], 3),
+            AreaSign::Positive
+        );
+    }
+
+    #[test]
+    fn translated_thin_triangle_retains_clockwise_sign() {
+        let tiny = 2.0_f64.powi(-54);
+        let xs = [1.0, 0.0, tiny, 1.0];
+        let ys = [0.0, 1.0, 1.0, 0.0];
+        assert_eq!(
+            exact_ring_area_sign_columns(&xs, &ys, 3),
+            AreaSign::Negative
+        );
+    }
+
+    #[test]
+    fn ring_sign_defers_underflowed_products_to_exact_sum() {
+        for exponent in [-537, -600] {
+            let tiny = 2.0_f64.powi(exponent);
+            assert_eq!(
+                exact_ring_area_sign_columns(&[0.0, tiny, 0.0, 0.0], &[0.0, 0.0, tiny, 0.0], 3),
+                AreaSign::Positive,
+                "2^{exponent} triangle"
+            );
+        }
+    }
+
+    #[test]
+    fn ring_sign_defers_overflowing_differences_and_sums_to_exact_sum() {
+        let huge = f64::MAX;
+        // Both products are finite, but MAX - -MAX is not.
+        assert_eq!(
+            exact_ring_area_sign_columns(&[huge, -huge, 0.0, huge], &[1.0, 1.0, 0.0, 1.0], 3),
+            AreaSign::Positive
+        );
+        // Each directed cross product is finite, but their sequential sum is not.
+        assert_eq!(
+            exact_ring_area_sign_columns(
+                &[huge, huge, 0.0, 0.0, huge],
+                &[0.0, 1.0, 1.0, 0.0, 0.0],
+                4
+            ),
+            AreaSign::Positive
+        );
+    }
+
+    #[test]
+    fn rounded_filter_defers_residual_product_and_sum_overflow_to_exact_sum() {
+        let huge = f64::MAX;
+        // The second residual is -MAX - MAX, which is nonfinite.
+        assert_eq!(
+            exact_ring_area_sign_columns(&[huge, -huge, huge, huge], &[0.0, 0.0, 1.0, 0.0], 3),
+            AreaSign::Negative
+        );
+        // Residual products overflow before their cross difference is formed.
+        assert_eq!(
+            exact_ring_area_sign_columns(
+                &[0.0, huge, huge, 0.0, 0.0],
+                &[0.0, 0.0, huge, huge, 0.0],
+                4
+            ),
+            AreaSign::Positive
+        );
+        // Two finite MAX cross terms overflow the running translated sum.
+        assert_eq!(
+            exact_ring_area_sign_columns(
+                &[0.0, huge, huge, 0.0, 0.0],
+                &[0.0, 0.0, 1.0, 1.0, 0.0],
+                4
+            ),
+            AreaSign::Positive
+        );
+    }
+
+    #[test]
+    fn rounded_residual_error_bound_covers_stored_dyadic_subtractions() {
+        let tiny = f64::from_bits(1);
+        // 2^-54 is lost when subtracting from one; its known exact residual
+        // error must remain inside the residual-relative enclosure.
+        let rounded = 2.0_f64.powi(-54) - 1.0;
+        assert!(2.0_f64.powi(-54) <= rounded_residual_error_bound(rounded.abs()));
+        let subnormal = 2.0 * tiny - 5.0 * tiny;
+        assert_eq!(subnormal, -3.0 * tiny);
+        assert!(rounded_residual_error_bound(subnormal.abs()) >= tiny);
+        let signed_zero = -0.0_f64 - 0.0;
+        assert_eq!(signed_zero.to_bits(), (-0.0_f64).to_bits());
+        assert!(rounded_residual_error_bound(signed_zero.abs()) >= tiny);
+    }
+
+    #[test]
+    fn closed_column_zero_one_and_two_edge_cycles_are_zero() {
+        assert_eq!(
+            exact_ring_area_sign_columns(&[0.0], &[0.0], 0),
+            AreaSign::Zero
+        );
+        assert_eq!(
+            exact_ring_area_sign_columns(&[1.0, 1.0], &[-1.0, -1.0], 1),
+            AreaSign::Zero
+        );
+        assert_eq!(
+            exact_ring_area_sign_columns(&[0.0, 1.0, 0.0], &[0.0, 0.0, 0.0], 2),
+            AreaSign::Zero
+        );
+    }
+
+    #[test]
+    fn rounded_translated_rings_preserve_both_orientations() {
+        let offset = 1.0e7;
+        let positive_xs = [offset, offset + 1.0, offset, offset];
+        let positive_ys = [offset, offset, offset + 1.0, offset];
+        let negative_xs = [offset, offset, offset + 1.0, offset];
+        let negative_ys = [offset, offset + 1.0, offset, offset];
+        assert_eq!(
+            exact_ring_area_sign_columns(&positive_xs, &positive_ys, 3),
+            AreaSign::Positive
+        );
+        assert_eq!(
+            exact_ring_area_sign_columns(&negative_xs, &negative_ys, 3),
+            AreaSign::Negative
+        );
+    }
+
+    #[test]
+    fn open_thin_triangle_retains_clockwise_sign() {
+        let points = [
+            XY::new(1.0, 0.0),
+            XY::new(0.0, 1.0),
+            XY::new(2.0_f64.powi(-54), 1.0),
+        ];
+        assert_eq!(open_xy_cycle_sign(&points), AreaSign::Negative);
+        let reversed = [points[2], points[1], points[0]];
+        assert_eq!(open_xy_cycle_sign(&reversed), AreaSign::Positive);
+        let point_cycle = [
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 1.0),
+            Point::new_raw_xy(2.0_f64.powi(-54), 1.0),
+        ];
+        assert_eq!(exact_open_point_sign(&point_cycle), AreaSign::Negative);
+    }
+
+    /// Raw products for these rings overflow, so the scalar certificate must
+    /// decline and leave their orientation to the exact sum.
     #[test]
     fn rings_spanning_the_float_range_keep_their_orientation() {
         let huge = f64::MAX;
@@ -1191,12 +1146,14 @@ mod tests {
         let ccw_ys = [-huge, -huge, huge, -huge];
         let cw_xs = [-huge, 0.0, huge, -huge];
         let cw_ys = [-huge, huge, -huge, -huge];
-        assert!(
-            !ring_normalize_params(&ccw_xs, &ccw_ys).residuals_finite,
-            "the corpus must actually reach the overflowing-residual frame"
+        assert_eq!(
+            exact_ring_area_sign_columns(&ccw_xs, &ccw_ys, 3),
+            AreaSign::Positive
         );
-        assert_eq!(exact_ring_area_sign_columns(&ccw_xs, &ccw_ys, 3), AreaSign::Positive);
-        assert_eq!(exact_ring_area_sign_columns(&cw_xs, &cw_ys, 3), AreaSign::Negative);
+        assert_eq!(
+            exact_ring_area_sign_columns(&cw_xs, &cw_ys, 3),
+            AreaSign::Negative
+        );
     }
 
     #[test]
