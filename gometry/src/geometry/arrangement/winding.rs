@@ -110,7 +110,7 @@ impl RetainScratch for ArrangementSpares {
             .saturating_add(flat_vec_retained_bytes(&self.edge_of_slot))
             .saturating_add(hash_map_retained_bytes(&self.ids))
             .saturating_add(flat_vec_retained_bytes(&self.filled))
-            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.component_id_of_root))
+            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.component_stack))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.face_cursor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.successor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.edge_slots))
@@ -278,7 +278,7 @@ mod tests {
         scratch.face_slots.reserve_exact(19);
         scratch.component_of.reserve_exact(23);
         scratch.filled.reserve_exact(29);
-        scratch.topology_scratch.component_id_of_root.reserve_exact(31);
+        scratch.topology_scratch.component_stack.reserve_exact(31);
         scratch.topology_scratch.face_cursor.reserve_exact(37);
         scratch.topology_scratch.successor.reserve_exact(41);
         scratch.topology_scratch.edge_slots.reserve_exact(43);
@@ -299,7 +299,7 @@ mod tests {
                 .saturating_add(hash_map_retained_bytes(&scratch.ids))
                 .saturating_add(flat_vec_retained_bytes(&scratch.component_of))
                 .saturating_add(flat_vec_retained_bytes(&scratch.filled))
-                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.component_id_of_root))
+                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.component_stack))
                 .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.face_cursor))
                 .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.successor))
                 .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.edge_slots))

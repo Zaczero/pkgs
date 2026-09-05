@@ -1,5 +1,3 @@
-use crate::collections::UnionFind;
-
 /// Geometry-independent CSR topology. Rows are supplied in their final cyclic
 /// order; this type only derives reciprocal slots, components, and boundary
 /// walks from that combinatorial embedding.
@@ -17,7 +15,7 @@ pub(crate) struct IndexedTopology {
 
 #[derive(Default)]
 pub(crate) struct IndexedTopologyScratch {
-    pub(crate) component_id_of_root: Vec<u32>,
+    pub(crate) component_stack: Vec<u32>,
     pub(crate) face_cursor: Vec<u32>,
     pub(crate) successor: Vec<u32>,
     pub(crate) edge_slots: Vec<[u32; 2]>,
@@ -68,17 +66,26 @@ impl IndexedTopology {
             self.twins[right as usize] = left;
         }
 
-        let mut components = UnionFind::new(vertices);
-        for slot in 0..slots { components.union(self.owners[slot] as usize, self.targets[slot] as usize); }
-        scratch.component_id_of_root.clear();
-        scratch.component_id_of_root.resize(vertices, u32::MAX);
         self.component_of.clear();
-        self.component_of.reserve(vertices);
+        self.component_of.resize(vertices, u32::MAX);
+        scratch.component_stack.clear();
+        scratch.component_stack.reserve(vertices);
         let mut component_count = 0;
-        for vertex in 0..vertices {
-            let id = &mut scratch.component_id_of_root[components.find(vertex)];
-            if *id == u32::MAX { *id = component_count; component_count += 1; }
-            self.component_of.push(*id);
+        for seed in 0..vertices {
+            if self.component_of[seed] != u32::MAX { continue; }
+            self.component_of[seed] = component_count;
+            scratch.component_stack.push(seed as u32);
+            while let Some(vertex) = scratch.component_stack.pop() {
+                let row = self.starts[vertex as usize] as usize..self.starts[vertex as usize + 1] as usize;
+                for &neighbor in &self.targets[row] {
+                    let neighbor = neighbor as usize;
+                    if self.component_of[neighbor] == u32::MAX {
+                        self.component_of[neighbor] = component_count;
+                        scratch.component_stack.push(neighbor as u32);
+                    }
+                }
+            }
+            component_count += 1;
         }
 
         scratch.successor.clear();
@@ -116,7 +123,7 @@ impl IndexedTopology {
 
 impl IndexedTopologyScratch {
     pub(crate) fn clear(&mut self) {
-        self.component_id_of_root.clear();
+        self.component_stack.clear();
         self.face_cursor.clear();
         self.successor.clear();
         self.edge_slots.clear();
