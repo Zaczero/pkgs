@@ -23,8 +23,8 @@ use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
 use crate::geometry::{CoordWindow, LineSeq, MOrdinate, TopologyDomain, ZOrdinate};
 
-/// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
 pub(crate) type TransformedBounds = (f64, f64, f64, f64);
+/// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
 
 /// Backend-neutral edge samples for one bounds row. Geographic source windows
