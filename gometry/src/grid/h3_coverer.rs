@@ -104,7 +104,15 @@ pub(crate) fn h3_cover_shape(
         // Merge immediately and enforce the budget again against the realized
         // deduplicated aggregate.
         let covered = h3_cover(&source, plan, rule, max_cells)?;
-        merge_h3_component(&mut merged, &covered, max_cells)
+        if covered.is_empty() {
+            return Ok(());
+        }
+        if merged.is_empty() {
+            merged = covered;
+            Ok(())
+        } else {
+            merge_h3_component(&mut merged, &covered, max_cells)
+        }
     })?;
     Ok(merged)
 }
