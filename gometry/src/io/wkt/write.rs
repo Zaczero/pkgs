@@ -119,11 +119,16 @@ fn format_wkt(
     output_dimension: Option<WktDimension>,
     format: WktNumberFormat,
 ) -> Result<String> {
-    // Reserve enough for the largest supported fixed-format f64 representation
-    // and for structural tokens, including empty nested geometries.
+    // Four shortest plain f64 values fit within 1,315 bytes, while four
+    // precision-255 fixed values fit within 2,271 bytes. Structural tokens
+    // cover the remaining delimiters, including empty nested geometries.
+    let coordinate_bytes_per_coord = match format {
+        WktNumberFormat::Shortest => 1344,
+        WktNumberFormat::Fixed(_) | WktNumberFormat::Trimmed(_) => 2304,
+    };
     let coordinate_bytes = shape
         .coord_count()
-        .checked_mul(4096)
+        .checked_mul(coordinate_bytes_per_coord)
         .ok_or_else(|| IoError::wkt("WKT coordinate byte length overflows usize"))?;
     let structural_bytes = wkt_structure_count(shape)?
         .checked_mul(128)
@@ -156,6 +161,10 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
 
 fn wkt_structure_count(shape: &Shape) -> Result<usize> {
     match shape {
+        Shape::MultiPoint(points) => points
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
         Shape::MultiLineString(lines) => lines
             .len()
             .checked_add(1)

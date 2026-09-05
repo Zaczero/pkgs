@@ -144,7 +144,8 @@ fn write_rejects_geojson_unrepresentable_axes_and_members() {
     to_geojson_string::<true>(&measured, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
 
     let explicit_empty = parse_wkt("MULTIPOINT (EMPTY, (1 2))").unwrap();
-    to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian).unwrap_err();
+    to_geojson_string::<true>(&explicit_empty, crate::geometry::TopologyDomain::Cartesian)
+        .unwrap_err();
 }
 
 #[test]
@@ -212,6 +213,26 @@ fn nested_empty_members_are_preserved_by_both_geojson_readers() {
 
         assert_eq!(direct, parse_geojson(&value).unwrap(), "kind={kind}");
     }
+}
+
+#[test]
+fn xyz_geojson_extreme_values_parse_and_round_trip() {
+    let shape = Shape::Point(
+        Point::new_axes(
+            180.0,
+            -90.0,
+            crate::geometry::ZOrdinate(Some(-f64::from_bits(1))),
+            crate::geometry::MOrdinate(None),
+        )
+        .unwrap(),
+    );
+    let text = crate::io::geojson::to_geojson_string::<true>(
+        &shape,
+        crate::geometry::TopologyDomain::Cartesian,
+    )
+    .expect("extreme XYZ GeoJSON writes");
+    let value: Value = serde_json::from_str(&text).expect("extreme GeoJSON parses as JSON");
+    assert_eq!(parse_geojson(&value).unwrap(), shape);
 }
 
 #[test]

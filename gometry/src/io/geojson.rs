@@ -1,9 +1,9 @@
-use crate::boundary::metadata;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use serde_json::Value;
 
+use crate::boundary::metadata;
 use crate::geometry::{
     CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     TopologyDomain, ZOrdinate,
@@ -43,9 +43,10 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
 ) -> Result<String> {
     validate_geojson_value::<INCLUDE_Z>(shape)?;
     let prepared = geojson_output_shape(shape, domain)?;
+    // Three zmij-formatted ordinates and their delimiters fit within 80 bytes.
     let coordinate_bytes = prepared
         .coord_count()
-        .checked_mul(4096)
+        .checked_mul(80)
         .ok_or_else(|| IoError::geojson("GeoJSON coordinate byte length overflows usize"))?;
     let structural_bytes = geojson_structure_count(&prepared)?
         .checked_mul(128)
@@ -106,6 +107,10 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
 }
 fn geojson_structure_count(shape: &Shape) -> Result<usize> {
     match shape {
+        Shape::MultiPoint(points) => points
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| IoError::geojson("GeoJSON structural count overflows usize")),
         Shape::MultiLineString(lines) => lines
             .len()
             .checked_add(1)
@@ -754,11 +759,11 @@ enum JsonPath<'a> {
 }
 
 impl JsonPath<'_> {
-    fn key(&self, key: &'static str) -> JsonPath<'_> {
+    const fn key(&self, key: &'static str) -> JsonPath<'_> {
         JsonPath::Key { parent: self, key }
     }
 
-    fn index(&self, index: usize) -> JsonPath<'_> {
+    const fn index(&self, index: usize) -> JsonPath<'_> {
         JsonPath::Index {
             parent: self,
             index,

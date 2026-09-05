@@ -158,6 +158,75 @@ mod tests {
     }
 
     #[test]
+    fn shortest_wkt_xyzm_negative_min_subnormal_round_trips() {
+        const MIN_SUBNORMAL: &str = "-0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005";
+        let input =
+            format!("POINT ZM ({MIN_SUBNORMAL} {MIN_SUBNORMAL} {MIN_SUBNORMAL} {MIN_SUBNORMAL})");
+        let parsed = parse_wkt(&input).expect("negative minimum subnormal WKT parses");
+        let rendered = to_wkt(&parsed).expect("negative minimum subnormal WKT writes");
+        assert_eq!(rendered, input);
+        assert_eq!(parse_wkt(&rendered).unwrap(), parsed);
+    }
+
+    #[test]
+    fn precision_255_wkt_preserves_extreme_fixed_and_trimmed_forms() {
+        const MAX_INTEGER: &str = "-179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368";
+        let shape = Shape::Point(
+            Point::new_axes(
+                -f64::MAX,
+                -f64::MAX,
+                ZOrdinate(Some(-f64::MAX)),
+                MOrdinate(Some(-f64::MAX)),
+            )
+            .unwrap(),
+        );
+
+        let fixed = to_wkt_display(&shape, WktNumberFormat::Fixed(255)).unwrap();
+        let fixed_coordinates = fixed
+            .strip_prefix("POINT ZM (")
+            .unwrap()
+            .strip_suffix(')')
+            .unwrap();
+        for rendered in fixed_coordinates.split(' ') {
+            let (integer, fraction) = rendered.split_once('.').unwrap();
+            assert_eq!(integer, MAX_INTEGER);
+            assert_eq!(fraction.len(), 255);
+            assert!(fraction.bytes().all(|byte| byte == b'0'));
+        }
+        assert_eq!(parse_wkt(&fixed).unwrap(), shape);
+
+        let trimmed = to_wkt_display(&shape, WktNumberFormat::Trimmed(255)).unwrap();
+        let trimmed_coordinates = trimmed
+            .strip_prefix("POINT ZM (")
+            .unwrap()
+            .strip_suffix(')')
+            .unwrap();
+        assert_eq!(trimmed_coordinates.split(' ').count(), 4);
+        assert!(
+            trimmed_coordinates
+                .split(' ')
+                .all(|value| value == MAX_INTEGER)
+        );
+        assert_eq!(parse_wkt(&trimmed).unwrap(), shape);
+    }
+
+    #[test]
+    fn sparse_multipoint_wkt_members_are_reserved_and_round_trip() {
+        let input = format!(
+            "MULTIPOINT ({})",
+            std::iter::repeat("EMPTY")
+                .take(1024)
+                .chain(std::iter::once("(1 2)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let parsed = parse_wkt(&input).expect("sparse MultiPoint WKT parses");
+        let rendered = to_wkt(&parsed).expect("sparse MultiPoint WKT writes");
+        assert_eq!(rendered, input);
+        assert_eq!(parse_wkt(&rendered).unwrap(), parsed);
+    }
+
+    #[test]
     fn direct_geojson_writer_matches_reference_value_tree() {
         let polygon = Polygon::new(
             Ring::closed(vec![
